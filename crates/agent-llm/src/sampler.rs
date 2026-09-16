@@ -61,6 +61,8 @@ pub enum SamplerEvent {
 /// `set_provider` hot-swaps for the *next* call — in-flight streams finish.
 pub struct Sampler {
     provider: Arc<dyn LlmProvider>,
+    /// Egress masker — scrubs resolved secrets from outbound request bodies.
+    masker: crate::masking::EgressMasker,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,7 +74,16 @@ pub struct SampleRequest<'a> {
 
 impl Sampler {
     pub fn new(provider: Arc<dyn LlmProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            masker: crate::masking::EgressMasker::new(vec![]),
+        }
+    }
+
+    /// Install the resolved secrets for egress masking — called once config
+    /// resolves `env:`/`keyring:` handles into real key material.
+    pub fn set_masker(&mut self, secrets: Vec<String>) {
+        self.masker = crate::masking::EgressMasker::new(secrets);
     }
 
     /// Hot-swap: next call uses the new provider. In-flight calls unaffected.
@@ -131,7 +142,10 @@ impl Sampler {
     }
 
     /// One attempt: drive the provider stream under idle-timeout and
-    /// doom-loop supervision.
+    /// doom-loop supervision. **Egress masking** scrubs secret material out
+    /// of the request messages before they hit the wire; **stream salvage**
+    /// returns the partial text alongside the error so the caller can keep
+    /// it visible + retry with a continuation prompt.
     async fn sample_once<F>(
         &self,
         req: &SampleRequest<'_>,
@@ -141,11 +155,25 @@ impl Sampler {
     where
         F: FnMut(&StreamChunk),
     {
+        // Egress mask: scrub secrets from outbound messages (defense in
+        // depth — sandbox env sanitize is the first wall, this is second).
+        let masked: Vec<ChatMessage> = messages
+            .iter()
+            .map(|m| {
+                let mut m = m.clone();
+                if let Some(c) = &m.content {
+                    let (s, _) = self.masker.scrub(c);
+                    m.content = Some(s);
+                }
+                m
+            })
+            .collect();
+
         let mut stream = self
             .provider
             .chat_stream(
                 req.model,
-                messages,
+                &masked,
                 req.tools.cloned(),
                 req.temperature,
             )

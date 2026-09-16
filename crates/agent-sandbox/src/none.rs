@@ -50,6 +50,20 @@ impl SandboxBackend for NoneBackend {
             .kill_on_drop(true)
             .process_group(0); // own process group → group-kill on timeout
 
+        // Linux: PR_SET_PDEATHSIG — the child gets SIGKILL the instant the
+        // parent dies, so a GUI crash can't orphan a `sleep 600`.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            command.pre_exec(|| {
+                // prctl(PR_SET_PDEATHSIG, SIGKILL) — raw syscall via libc,
+                // zero deps (libc is already in the graph via tokio).
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+
         let child = command.spawn().context("spawn sh")?;
         let child_id = child.id();
         // `wait_with_output` collects piped stdout/stderr atomically.

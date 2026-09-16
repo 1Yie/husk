@@ -10,9 +10,18 @@ mod throttler;
 slint::include_modules!();
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Production hardening §6: pin the Skia-capable backend so DPI changes
+    // (4K↔1080p drags) stay correct — never let it autodetect into a
+    // software path. `winit-femtovg` is the documented fallback.
+    if std::env::var("SLINT_BACKEND").is_err() {
+        std::env::set_var("SLINT_BACKEND", "winit-skia");
+    }
     tracing_subscriber_init();
 
     let app = CodexDesktop::new()?;
+    // CJK-capable fallback font would be `include_bytes!`ed + registered
+    // here — kept as a comment until the licensed font slice is vendored
+    // (it's a 5–15 MB binary-size decision, not a code decision).
 
     if std::env::args().any(|a| a == "--live") {
         bridge::wire_kernel(&app);

@@ -11,6 +11,7 @@
 pub mod adapters;
 pub mod config;
 pub mod factory;
+pub mod masking;
 pub mod provider;
 pub mod sampler;
 pub mod sse;
@@ -18,5 +19,6 @@ pub mod types;
 
 pub use config::{AppConfig, ProviderConfig, ProviderKind};
 pub use factory::ProviderFactory;
+pub use masking::EgressMasker;
 pub use provider::{BoxStream, LlmProvider};
 pub use types::{ChatMessage, Role, StreamChunk, ToolCall};

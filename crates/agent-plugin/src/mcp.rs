@@ -89,14 +89,25 @@ impl McpClient {
             .unwrap_or_default();
 
         let stderr_log = Arc::new(Mutex::new(Vec::<String>::new()));
-        let mut child = tokio::process::Command::new(command)
-            .args(&args)
+        let mut cmd = tokio::process::Command::new(command);
+        cmd.args(&args)
             .env_clear()
             .envs(&env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        // Linux: PR_SET_PDEATHSIG — an MCP node server can't outlive the host.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd
             .spawn()
             .with_context(|| format!("spawn MCP `{command} {}`", args.join(" ")))?;
 

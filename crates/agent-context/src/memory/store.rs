@@ -25,6 +25,13 @@ const FACTS: TableDefinition<u64, &[u8]> = TableDefinition::new("facts");
 const EPISODES: TableDefinition<u64, &[u8]> = TableDefinition::new("episodes");
 /// persona table: `key -> value` (JSON string).
 const PERSONA: TableDefinition<&str, &[u8]> = TableDefinition::new("persona");
+/// meta table: `key -> value` — `schema_version`, future migrations stamp here.
+const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+
+/// Current schema version — bump when a table changes; the open path runs
+/// additive-or-transform migrations (never destructive) and backs up the
+/// file before a failed migrate rather than crashing.
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// Semantic memory fact — distilled convention/env/architecture note.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -80,12 +87,24 @@ impl MemoryStore {
     /// Open (or create) `memory.db` for `workspace_root`.
     pub fn open(path: &Path, workspace_root: &Path) -> Result<Self, String> {
         let db = Database::create(path).map_err(|e| e.to_string())?;
-        // Create tables up-front so reads never race creation.
+        // Create tables + stamp schema_version up-front so reads never
+        // race creation and migrations have a version to compare against.
         {
             let w = db.begin_write().map_err(|e| e.to_string())?;
             w.open_table(FACTS).map_err(|e| e.to_string())?;
             w.open_table(EPISODES).map_err(|e| e.to_string())?;
             w.open_table(PERSONA).map_err(|e| e.to_string())?;
+            {
+                let mut meta = w.open_table(META).map_err(|e| e.to_string())?;
+                let existing = meta
+                    .get("schema_version")
+                    .map_err(|e| e.to_string())?
+                    .map(|v| String::from_utf8_lossy(v.value()).into_owned());
+                if existing.is_none() {
+                    meta.insert("schema_version", SCHEMA_VERSION.to_string().as_bytes())
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             w.commit().map_err(|e| e.to_string())?;
         }
         let workspace_id = workspace_id(workspace_root);

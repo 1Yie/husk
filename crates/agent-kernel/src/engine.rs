@@ -248,6 +248,20 @@ impl Engine {
                 .await;
 
             if let Err(e) = res {
+                // ---- Stream salvage (hardening §4) ----
+                // Partial text stays visible; mark it `interrupted` so the
+                // UI renders a cut-off banner instead of discarding.
+                if !round_text.is_empty() {
+                    history.push(ChatMessage {
+                        role: agent_llm::Role::Assistant,
+                        content: Some(format!("{round_text}\n\n*[interrupted — transport error]*")),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(
+                        "stream interrupted — partial response preserved".into(),
+                    ));
+                }
                 self.set_state(io, AgentState::Failed(e.to_string()));
                 let _ = io.ui_tx.try_send(UiEvent::Error(e.to_string()));
                 return Err(e.to_string());

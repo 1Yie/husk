@@ -11,6 +11,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+libc = "0.2.189"
 
 [dev-dependencies]
 tempfile = "3"
