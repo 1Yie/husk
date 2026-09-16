@@ -25,10 +25,17 @@ export struct SessionMessageData {
     role: string,             // "user" | "agent" | "system" | "tool"
     text: string,             // markdown-lite; rendered incrementally
     reasoning: string,        // accumulated ReasoningDelta; shown in collapsible "Thinking…"
-    steps: [ActionStepData],  // tool calls inside this turn
+    step_ids: [int],          // references into Bridge.active_steps — NOT a nested model
     has_diff: bool,
     streaming: bool,          // caret/typing indicator
 }
+
+// NOTE: do NOT put `steps: [ActionStepData]` inside SessionMessageData.
+// Nested arrays inside structs map to immutable slices on the Rust side —
+// Slint's change notifier can't see deep mutations, so updating one step's
+// state would require deep-copying the whole message (re-mount flicker).
+// Active steps live in the flat `Bridge.active_steps` model; archived
+// messages resolve their step_ids against it at render time.
 
 export struct PluginInfo {
     id: string,
@@ -124,7 +131,7 @@ export global Theme {
     in-out property <color> diff_del_fg: #f38ba8;
     in-out property <color> warn:        #f9e2af;
     in-out property <color> error:       #f38ba8;
-    in-out property <color> mono_font:   "JetBrains Mono";
+    in-out property <string> mono_font:  "JetBrains Mono";   // font-family is a string, not a color — <color> here fails slint-build
 }
 ```
 
@@ -163,6 +170,7 @@ export global Bridge {
     in-out property <[MemoryFactData]> memory_facts;    // inspectable/deletable
     in-out property <[BranchCandidateData]> branches;   // non-empty while Branching
     in-out property <bool> steered;                     // current turn was steered
+    in-out property <[ActionStepData]> active_steps;    // flat model — steps mutate in place here
 }
 ```
 
@@ -172,9 +180,13 @@ export global Bridge {
 
 Renders `[DiffLineData]`: per-line `Rectangle` tinted `diff_add_bg`/`diff_del_bg`, `+`/`-`/space gutter, mono font 12 px, optional line-number column (`old_lineno`/`new_lineno`, `-1` → blank), `clip: true`, horizontal scroll for long lines. Keep row height fixed (20 px) — use `ListView` for >500 lines so layout stays O(visible).
 
+**Nested-scroll rule**: a `ListView` inside a `ListView` row breaks virtualization (inner list can't get a definite height constraint → outer row measures it → layout explodes on large diffs, wheel events fight). Therefore:
+- Inline diffs inside chat bubbles cap at **50 lines collapsed** with `max-height: 400px` and their own internal scroll — never an unconstrained inner `ListView`.
+- Large diffs (>50 lines) open in the **`workspace_view` slide-over** (full-height, dedicated scroll), not inline in the bubble.
+
 ### components/tool_status.slint
 
-Card per `ActionStepData`: spinner while `running`, accent border `awaiting_confirm`, green check `success`, red `error`, strikethrough `denied`. `expandable` opens inline `DiffViewer` or command output preview (≤200 lines, mono).
+Card per `ActionStepData`: spinner while `running`, accent border `awaiting_confirm`, green check `success`, red `error`, strikethrough `denied`. `expandable` opens inline `DiffViewer` or command output preview (≤200 lines, mono, `max-height: 400px` — see nested-scroll rule); anything larger routes to `workspace_view`.
 
 **Live sandbox telemetry**: while a `bash` step is `running`, its card foot shows `SandboxTelemetry` — elapsed s, peak MB, backend badge (`bwrap`/`sandbox-exec`/`job-object`), snapshot mode chip; `sandboxed: false` forces a warn-colored "UNSANDBOXED" badge.
 
@@ -218,6 +230,8 @@ Root `Window` with `session_view` default; `workspace_view` slides in from right
 
 - All model mutation goes through `slint::invoke_from_event_loop` — never touch `Slint` objects off the UI thread.
 - `messages` is a `VecModel<SessionMessageData>`; streaming updates mutate `text` of the last row in place (`set_row_data`), not push/remove.
+- **`set_row_data` lifecycle (mandatory 3-step)**: (1) turn start → `VecModel.push(SessionMessageData{streaming: true, ..})` reserves the row; (2) each 33 ms throttle flush → `set_row_data(len-1, updated)` — calling it before the push is an out-of-bounds panic; (3) turn end → `set_row_data(len-1, final{streaming: false})`. Same lifecycle for `active_steps` rows.
+- `active_steps` is a flat `VecModel<ActionStepData>` keyed by `step_id` — step state changes `set_row_data` the matching row only; never rebuild the array per tick.
 - `pending` set → UI blocks input focus to approval banner; `approve_tool`/`deny_tool` resumes the kernel loop.
 - `stats.tokens_used` updated once per sampling turn end (from `StreamChunk::Done` usage), not per token.
 - `model_options` loaded at startup from `config.toml`; `set_model` applies to the next turn and updates `stats.active_provider`/`active_model`; a provider with unresolved `env:` key stays listed but `available: false` (greyed out).
@@ -225,4 +239,10 @@ Root `Window` with `session_view` default; `workspace_view` slides in from right
 - `plugin_consent` blocks the turn exactly like `pending` — input disabled until a callback resolves it.
 - `running_sandboxes` updated at ~4 Hz by the bridge (same `invoke_from_event_loop` path); entries keyed by `step_id`, removed on step end.
 - `sandbox_unsafe` shows a persistent status-bar chip; when true every bash approval is forced regardless of permission mode.
-- `plugins` list refreshes on startup + `reload_plugins`; toggling `enabled` takes effect on the next LLM request (schema list rebuilt). ("grok unavailable → running on ollama") and sets `stats.degraded` until the primary recovers.
+- `plugins` list refreshes on startup + `reload_plugins`; toggling `enabled` takes effect on the next LLM request (schema list rebuilt).
+
+## Implementation phasing (for AI-assisted builds)
+
+1. **Mock data first**: before writing `bridge.rs`, populate `main.rs` with static stub models — two messages, one `critical` `PendingApprovalData`, one `SandboxTelemetry` — and visually verify Catppuccin theme + layout. Backend wiring comes after the UI is confirmed.
+2. **Core callbacks first**: wire only `submit_prompt`, `approve_tool`/`deny_tool`, and `steer` end-to-end before touching the rest. `delete_memory_fact`, `reload_plugins`, `set_model` are secondary — stub them to no-ops initially.
+3. **Model primitives**: `VecModel` for flat lists only; `MapModel`/`FilterModel` adapters in Slint rather than restructuring Rust data per view.

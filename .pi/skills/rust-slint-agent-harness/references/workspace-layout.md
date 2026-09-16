@@ -17,6 +17,9 @@ desktop-agent/
     │       ├── bridge.rs          # UiCommand ⇄ UiEvent channel wiring, invoke_from_event_loop
     │       └── throttler.rs       # 33 ms frame-aligned token coalescer
     │
+    ├── app-cli/                   # [distribution] headless binary — same kernel, `--headless` / remote worker
+    │   └── src/main.rs
+    │
     ├── agent-kernel/              # [orchestration] NO Slint, NO reqwest — pure async engine
     │   └── src/
     │       ├── engine.rs          # AgentState machine, ReAct loop
@@ -31,7 +34,7 @@ desktop-agent/
     │       │   ├── fast_grep.rs   # grep-searcher
     │       │   ├── fs_read.rs     # read_file / list_dir
     │       │   └── shell.rs       # bash tool → delegates to agent-sandbox
-    │       └── events.rs          # UiCommand / UiEvent / AgentEvent enums (the UI contract in Rust)
+    │       └── channels.rs        # mpsc channel setup + ChildRegistry wiring
     │
     ├── agent-context/             # [perception/cognition]
     │   └── src/
@@ -61,6 +64,11 @@ desktop-agent/
     │       ├── wasm.rs            # Wasmtime host (WASI capability sandbox)
     │       └── mcp.rs             # stdio JSON-RPC bridge
     │
+    ├── agent-ipc/                 # [channel contract] UiCommand/UiEvent/AgentEvent + wire codec
+    │   └── src/
+    │       ├── events.rs          # the enums BOTH kernel and UI share
+    │       └── codec.rs           # serde + length-prefixed framing (future gRPC reuse)
+    │
     └── agent-llm/                 # [provider drivers]
         └── src/
             ├── types.rs           # ChatMessage/ToolCall/StreamChunk (normalized)
@@ -77,15 +85,17 @@ desktop-agent/
 ## Dependency law (enforced by `cargo metadata` lint in CI)
 
 ```text
-app-desktop ──▶ agent-kernel ──┬──▶ agent-context
-                               ├──▶ agent-sandbox
-                               ├──▶ agent-plugin
-                               └──▶ agent-llm
+app-desktop ──┐
+              ├──▶ agent-kernel ──┬──▶ agent-context
+app-cli    ───┘        │          ├──▶ agent-sandbox
+                  agent-ipc ◀─────┼──▶ agent-plugin
+                       ▲          └──▶ agent-llm
+            (events contract shared by kernel + both frontends)
 ```
 
 - **Downstream crates never depend upward.** `agent-llm` doesn't know what a tool is; `agent-sandbox` doesn't know what an LLM is.
 - `agent-plugin` depends on `agent-llm` types only for `ToolCall` shape (or duplicate the 3-field struct — prefer dependency).
-- The kernel talks to UI exclusively through `events.rs` enums (`UiCommand` in, `UiEvent` out) — a channel boundary, not a call boundary. This is what makes headless mode and the future gRPC mesh free.
+- **`agent-ipc` owns the UI contract** (`UiCommand`/`UiEvent`/`AgentEvent`). Both `agent-kernel` and `app-desktop` depend on it — putting these enums inside `agent-kernel` would force the UI crate to reach into orchestration internals just to translate types, and would couple `app-cli`/future mesh binaries to kernel internals too. Kernel↔UI is a **channel boundary, not a call boundary**: kernel emits `UiEvent`, any consumer renders it. This is what makes headless mode and the future gRPC mesh free.
 - **Tools are kernel-side** (`agent-kernel/src/tools/`): they orchestrate sandbox+context but the registry lives next to the engine that dispatches them.
 
 ## Root Cargo.toml
@@ -109,23 +119,51 @@ tracing = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 eventsource-stream = "0.2"
 
+[profile.dev]
+panic = "unwind"       # tests need unwinding; debug UX needs backtraces
+
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 panic = "abort"        # no unwinding → smaller, faster; crash = process death + restart, never half-state
 strip = true
+debug = "line-tables-only"   # keep symbols for crash reports without full debuginfo
 ```
+
+**Panic-profile hazard**: `panic = "abort"` in release silently breaks `#[should_panic]` tests *when run under `--release`* and turns recoverable `catch_unwind` paths into process death. Dev profile stays `unwind` so `cargo test` and debugging behave normally; only the shipped binary aborts. If a library ever needs `catch_unwind` in release (e.g. around plugin/WASM traps — Wasmtime handles its own, but audit third-party calls), that crate is wrong for `panic=abort` — document any exception explicitly.
 
 ## Rules of thumb (industrial floor)
 
 1. **No C/C++ dynamic linkage** — `rustls-tls` mandatory; `default-features = false` on everything; audit `cargo tree` for `*-sys` crates pulling system libs before each release.
 2. **Type-driven edges** — `serde_json::Value` may exist at wire boundaries only; it must deserialize into a concrete struct before crossing a crate boundary.
 3. **Headless testability** — `agent-kernel` ships `tests/` driving the full ReAct loop through `MockProvider` + in-memory sandbox; CI runs `cargo test -p agent-kernel` with no display server.
-4. **Kernel CLI exists** — `agent-kernel` gets a tiny `examples/headless.rs` (or a `app-cli` crate later) proving the engine runs without Slint; this is also the future remote-worker binary.
+4. **Kernel CLI exists** — `app-cli` is a real binary crate from day one (`--headless` mode, future remote worker); it shares `agent-ipc` events with `app-desktop` so both frontends are thin adapters over the same kernel.
 5. **UI is an adapter** — everything in `app-desktop` is translation: `UiEvent` → Slint models, Slint callbacks → `UiCommand`. Zero business logic above the channel.
-6. **One binary ships** — `cargo build --release -p app-desktop` produces the single static artifact; other crates are libraries (except the future `--headless` worker mode in kernel).
+6. **One binary ships** — `cargo build --release -p app-desktop` produces the single static artifact; other crates are libraries (except `app-cli`, the future `--headless` worker binary).
+7. **Feature hygiene** — optional heavy deps gate behind cargo features: `memory` (libsql+fastembed), `vision` (xcap+candle), `mesh` (tonic). `app-desktop` enables `memory` by default; `app-cli` can ship `default-features = false` for a minimal remote worker. Keeps the core lean when capability flags are off.
+8. **Circular-dep guard** — `cargo metadata`-based CI lint asserts the DAG above; a PR that adds `agent-llm → agent-kernel` or `agent-context → agent-kernel` fails the lint, not the reviewer.
+9. **Events live in `agent-ipc`, not kernel** — `UiCommand`/`UiEvent`/`AgentEvent` are the wire contract; kernel publishes/consumes, UI translates, `app-cli` reuses. No `app-desktop → agent-kernel::types` imports for event shapes.
+
+## Build-order alignment with SKILL.md stages
+
+| Stage | Crate(s) touched | Proves |
+|-------|------------------|--------|
+| 1 | `agent-context` | workspace scan + git sniff standalone-testable |
+| 2 | `agent-llm` | provider abstraction + `MockProvider` headless driver |
+| 3 | `agent-kernel` (tools) | registry dispatch, truncation budgets |
+| 4 | `agent-kernel` (engine) + `agent-ipc` | ReAct loop emits `UiEvent` — headless `cargo test -p agent-kernel` |
+| 5 | `app-desktop` | first Slint render of a real stream |
+| 6 | `agent-kernel` (permissions) + `agent-context` (hunks) | consent flow + undo |
+| 7 | `agent-kernel` (compaction) | two-pass summarize |
+| 8 | `agent-sandbox` | L2 isolation on one platform first |
+| 9 | `agent-plugin` | WASM + MCP runtimes behind `Plugin` trait |
+| 10 | `agent-context` (memory) + `agent-kernel` (steering) | recall injection + mid-turn steer |
+| 11 | `agent-llm` (masking) + `agent-context` (store) + `app-desktop` (boot) | hardening |
+| 12 | `app-desktop` | polish |
+
+`app-cli` gets built alongside stage 4 — it is the headless proof vehicle, not an afterthought.
 
 ## Migration note
 
-Earlier references assumed a flat `src/` single crate. This layout supersedes it: `src/kernel/*` → `crates/agent-kernel/src/*`, `src/llm/*` → `crates/agent-llm/src/*`, `src/sandbox/*` → `crates/agent-sandbox/src/*`, `src/bridge/*` → `crates/app-desktop/src/{bridge,throttler}.rs`, `ui/` → `crates/app-desktop/ui/`. Build-table stage numbers are unchanged.
+Earlier references assumed a flat `src/` single crate. This layout supersedes it: `src/kernel/*` → `crates/agent-kernel/src/*`, `src/llm/*` → `crates/agent-llm/src/*`, `src/sandbox/*` → `crates/agent-sandbox/src/*`, `src/bridge/*` → `crates/app-desktop/src/{bridge,throttler}.rs`, `ui/` → `crates/app-desktop/ui/`. Build-table stage numbers are unchanged; `events.rs` moved to `crates/agent-ipc/src/events.rs` (shared UI contract).
