@@ -1,0 +1,21 @@
+[package]
+name = "app-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Headless CLI frontend for the agent kernel — thin adapter over agent-ipc events"
+license = "MIT"
+
+[[bin]]
+name = "agent-cli"
+path = "src/main.rs"
+
+[dependencies]
+agent-kernel = { path = "../agent-kernel" }
+agent-llm = { path = "../agent-llm" }
+agent-ipc = { path = "../agent-ipc" }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

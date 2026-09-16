@@ -1,0 +1,85 @@
+//! `app-cli` — headless CLI frontend for the agent kernel.
+//!
+//! Contract (workspace-layout §4): a real binary from day one — thin
+//! adapter over `agent-ipc` events, sharing the same kernel as
+//! `app-desktop`. `--headless` prints `UiEvent`s to stdout; future remote
+//! worker mode pipes them over a socket.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use agent_ipc::{UiCommand, UiEvent};
+use agent_kernel::session::{SessionActor, SessionConfig};
+use agent_llm::adapters::mock::MockProvider;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let headless = args.iter().any(|a| a == "--headless");
+    let workspace = args
+        .iter()
+        .position(|a| a == "--workspace")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap());
+    let prompt = args
+        .iter()
+        .position(|a| a == "--prompt")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+
+    if !headless {
+        eprintln!("usage: agent-cli --headless [--workspace DIR] [--prompt TEXT]");
+        eprintln!("       (the GUI binary is `agent-desktop`)");
+        std::process::exit(2);
+    }
+
+    // Headless = same kernel, stdout event pump instead of Slint.
+    let provider = Arc::new(MockProvider::default());
+    let cfg = SessionConfig {
+        workspace_root: workspace,
+        provider,
+        model: "mock".into(),
+        temperature: 0.0,
+        permission_mode: "auto".into(),
+        track_dirty: false,
+    };
+    let (mut actor, channels) = SessionActor::spawn(cfg);
+    let cmd_tx = actor.command_sender();
+    let mut ev_rx = channels.event_rx;
+
+    // Event pump — print each UiEvent as a line (JSON for the future
+    // `--remote` worker mode to reuse verbatim).
+    let pump = tokio::spawn(async move {
+        while let Some(ev) = ev_rx.recv().await {
+            match &ev {
+                UiEvent::TextDelta(t) => print!("{t}"),
+                UiEvent::ReasoningDelta(_) => {}
+                UiEvent::StateChanged(s) => eprintln!("\n[state] {s:?}"),
+                UiEvent::SystemMessage(m) => eprintln!("[sys] {m}"),
+                UiEvent::Error(e) => eprintln!("[err] {e}"),
+                UiEvent::AssistantMessage(m) => println!("\n{m}"),
+                UiEvent::ToolCallStarted { name } => eprintln!("[tool →] {name}"),
+                UiEvent::ToolCallFinished { name, ok, .. } => {
+                    eprintln!("[tool ✓] {name} ok={ok}")
+                }
+                _ => {}
+            }
+            // Flush on delta so streaming reads live.
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+    });
+
+    // Drive the actor; send the prompt if one was given.
+    let run = tokio::spawn(async move { actor.run().await });
+    if let Some(p) = prompt {
+        let _ = cmd_tx.send(UiCommand::Prompt { text: p }).await;
+    }
+    // `--headless` without a prompt just idles until killed — the worker
+    // mode is a future socket server; for now the pump reports readiness.
+    let _ = tokio::signal::ctrl_c().await;
+    run.abort();
+    pump.abort();
+    Ok(())
+}
