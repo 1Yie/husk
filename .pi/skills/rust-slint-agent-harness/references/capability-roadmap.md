@@ -37,7 +37,7 @@ Ordering legend: **P1** = ship in v1.x (high leverage, contained scope) · **P2*
 
 - All memory is **local, inspectable, deletable**: workspace panel exposes Facts/Persona lists with delete buttons; `--forget <workspace>` wipes a project's rows.
 - Secrets never distilled: the sanitizer denylist patterns apply to distiller output.
-- Memory retrieval is advisory context — the LLM is told in the system prompt that memory may be stale; `read_file` ground truth always wins.
+- Memory retrieval is advisory context — the LLM is told in the system prompt that memory may be stale; `smart_read` ground truth always wins.
 
 ## 2. Steering — mixed-initiative interaction (P1)
 

@@ -51,7 +51,7 @@ The architecture covers fast/light/safe. This document covers **surviving real u
 **Mechanism**:
 
 - **Stream salvage**: `SamplerActor` persists received chunks as they arrive (in-memory + write actor). On transport `Err` mid-stream: keep partial text visible, mark the message `interrupted`, retry with a **continuation prompt** ("Your previous response was cut off after: <tail 200 chars>. Continue from exactly that point.") — cheaper than full resample and preserves UX.
-- **Offline degrade**: `ProviderFactory` marks providers `available: false` on connect-refused; if `fallback_chain` ends in a local provider (`ollama`/`llama.cpp`), degrade kicks in automatically with the `stats.degraded` UI state already defined. Fully offline + no local model → workspace tools (`grep`, `read_file`, `list_dir`, AST index) still function — the agent can browse/index, just not reason.
+- **Offline degrade**: `ProviderFactory` marks providers `available: false` on connect-refused; if `fallback_chain` ends in a local provider (`ollama`/`llama.cpp`), degrade kicks in automatically with the `stats.degraded` UI state already defined. Fully offline + no local model → workspace tools (`grep`, `smart_read`, `list_dir`, AST index) still function — the agent can browse/index, just not reason.
 - Retry policy from llm-provider-layer stays: backoff on transport/429/5xx, doom-loop guard, never retry 4xx.
 
 **Acceptance**: `kill` the proxy mid-stream → partial text stays, retry banner appears, continuation resumes within backoff ≤ 3 attempts before surfacing `Failed`.

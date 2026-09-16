@@ -30,9 +30,9 @@ desktop-agent/
     │       ├── compaction.rs      # two-pass summarize, prefire
     │       ├── tools/             # built-in tool registry
     │       │   ├── registry.rs    # ToolSpec + dispatch; plugin tools merge here
-    │       │   ├── fs_patch.rs    # search_replace / apply_patch via similar
+    │       │   ├── fs_patch.rs    # fuzzy_patch / apply_patch via similar (see native-tools.md)
     │       │   ├── fast_grep.rs   # grep-searcher
-    │       │   ├── fs_read.rs     # read_file / list_dir
+    │       │   ├── fs_read.rs     # smart_read (outline/range/search) / list_dir
     │       │   └── shell.rs       # bash tool → delegates to agent-sandbox
     │       └── channels.rs        # mpsc channel setup + ChildRegistry wiring
     │

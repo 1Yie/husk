@@ -14,7 +14,7 @@ export struct DiffLineData {
 
 export struct ActionStepData {
     id: int,
-    name: string,             // tool name: "search_replace", "bash"…
+    name: string,             // tool name: "fuzzy_patch", "bash"…
     state: string,            // "running" | "awaiting_confirm" | "success" | "error" | "denied"
     detail: string,           // one-line summary: path, command, match count
     expandable: bool,

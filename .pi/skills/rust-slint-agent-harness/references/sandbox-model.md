@@ -154,7 +154,7 @@ Audit is **pre-spawn string analysis** — it complements, never replaces, the O
 - `bash` tool: **always** L2 (or loud `none`).
 - MCP plugin servers: optional per manifest (`sandboxed: true`) — they are child processes too; run under the same backend when feasible.
 - WASM plugins: already L1 by construction.
-- `search_replace`/`apply_patch`/`read_file`: in-process, governed by tool-layer path checks, not process sandbox. **Path check = `std::fs::canonicalize` first, then workspace-prefix compare** — a `ln -s ~/.ssh/id_rsa $WORKSPACE/x` inside the workspace must resolve to its real path and be rejected; string-prefix checks alone are a symlink-escape hole.
+- `fuzzy_patch`/`apply_patch`/`smart_read`: in-process, governed by tool-layer path checks, not process sandbox. **Path check = `std::fs::canonicalize` first, then workspace-prefix compare** — a `ln -s ~/.ssh/id_rsa $WORKSPACE/x` inside the workspace must resolve to its real path and be rejected; string-prefix checks alone are a symlink-escape hole.
 
 ## UI contract hooks (see slint-ui-contract.md)
 
@@ -184,5 +184,5 @@ Audit is **pre-spawn string analysis** — it complements, never replaces, the O
 - [ ] Sandbox spawn overhead ≤ 20 ms measured (bwrap/sandbox-exec warm)
 - [ ] `cargo check` inside sandbox succeeds (toolchain cache ro-mounted, `CARGO_TARGET_DIR` writable)
 - [ ] CoW run: snapshot at `/run/user/$UID/...` survives mount ordering — command sees it at `$WORKSPACE`
-- [ ] `ln -s ~/.ssh/id_rsa ws/x` → `read_file ws/x` rejected after canonicalize
+- [ ] `ln -s ~/.ssh/id_rsa ws/x` → `smart_read ws/x` rejected after canonicalize
 - [ ] `export database_url=postgres://u:p@h/db` → stripped (case-insensitive denylist)

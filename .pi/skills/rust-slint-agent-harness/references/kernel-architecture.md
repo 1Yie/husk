@@ -69,7 +69,7 @@ pub struct ToolSpec {
 }
 ```
 
-Built-ins: `read_file`, `list_dir`, `grep`, `search_replace`, `apply_patch`, `bash`. Registry produces the `tools` array for the LLM request and dispatches by name.
+Built-ins: `smart_read` (outline/range/search via tree-sitter), `list_dir`, `grep`, `fuzzy_patch` (search/replace blocks, 4-tier match + content_hash guard), `apply_patch`, `bash`. Registry produces the `tools` array for the LLM request and dispatches by name. **File IO is fully in-process — no `cat`/`patch` subprocess.** Full spec: `native-tools.md`.
 
 ## Permission modes (kernel/permissions.rs)
 
@@ -111,7 +111,7 @@ The `bash` tool NEVER calls `Command` directly — always through `SandboxBacken
 |--------|-----|----------|
 | Tool result → model | 40 KB (≈10k tok), per-tool overridable | head 30% + `… [truncated N bytes] …` + tail 70% (errors land in tail) |
 | `bash` result | 20 KB chars (≈5k tok) | same head/tail fold |
-| `read_file` | 1000 lines OR 25k tok | hard cut + continuation hint `offset=` |
+| `smart_read` range | 1000 lines OR 25k tok | hard cut + continuation hint `offset=`; `outline` mode ~100 tok skeleton |
 | `grep` | 5 MiB stdout, 20 s | count matches, then truncate lines |
 | `list_dir` | entry budget | "too large to list fully" marker |
 | Plugin tool result | same 40 KB default | same head/tail fold — plugins are not exempt |
@@ -142,6 +142,8 @@ Two-pass: split history into prefix/suffix → summarize prefix to `NOTE₁` →
 | Async trait/stream | `async-trait`, `futures` (BoxStream) |
 | Walk | `ignore::WalkBuilder` |
 | Grep | `grep-searcher` + `grep-regex` (in-process; fallback: shell `rg`) |
+| AST/outline | `tree-sitter` + per-language grammars (feature-gated) |
+| Content hash | `xxhash-rust` or `blake3` (drift detection for patches) |
 | Diff | `similar` (unified + line ops) |
 | Patch apply | `diffy` or hand-rolled on `similar` hunks |
 | Git | `git2` (status/diff), or shell `git` for v1 simplicity |
