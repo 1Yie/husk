@@ -66,6 +66,10 @@ pub struct Engine {
     context_window: usize,
     /// Stage 7: compaction retry-storm suppression.
     compaction_suppressor: CompactionSuppressor,
+    /// Stage 9: ordered hook chain (veto/mutate before+after tools).
+    hooks: crate::hooks::HookChain,
+    /// Plugin tool router — built-in names win; plugins fill the rest.
+    plugin_router: Option<Arc<agent_plugin::PluginManager>>,
 }
 
 impl Engine {
@@ -87,7 +91,19 @@ impl Engine {
             decision: Arc::new(std::sync::Mutex::new(None)),
             context_window: 256_000,
             compaction_suppressor: CompactionSuppressor::default(),
+            hooks: crate::hooks::HookChain::new(),
+            plugin_router: None,
         }
+    }
+
+    /// SessionActor installs the plugin manager once plugins register.
+    pub fn set_plugins(&mut self, mgr: Arc<agent_plugin::PluginManager>) {
+        self.plugin_router = Some(mgr);
+    }
+
+    /// SessionActor installs the hook chain (registered plugins/built-ins).
+    pub fn set_hooks(&mut self, chain: crate::hooks::HookChain) {
+        self.hooks = chain;
     }
 
     /// The active model's context window — SessionActor sets it from config.
@@ -280,6 +296,19 @@ impl Engine {
                         serde_json::json!({ "_malformed": call.arguments })
                     });
 
+                // ---- Stage 9: before_tool hooks (veto/mutate, pre-gate) ----
+                let mut call_mut = call.clone();
+                if !self.hooks.run_before_tool(&mut call_mut).await {
+                    let msg = format!("tool `{}` vetoed by hook", call.name);
+                    let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                        name: call.name.clone(), ok: false,
+                        content: msg.clone(), ui_type: None,
+                    });
+                    history.push(ChatMessage::tool_result(call.id.clone(), msg));
+                    continue;
+                }
+                let call = &call_mut; // hooks may have rewritten args
+
                 // ---- Stage 6: permission gate before dispatch ----
                 let is_readonly = self.registry.is_readonly(&call.name);
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
@@ -340,14 +369,28 @@ impl Engine {
                     None
                 };
 
-                let (content, ui_type, ok) = match self
+                let (mut content, ui_type, ok) = match self
                     .registry
-                    .dispatch(&call.name, args, self.ctx.clone())
+                    .dispatch(&call.name, args.clone(), self.ctx.clone())
                     .await
                 {
                     Ok(res) => (res.content, res.ui_type.map(|s| s.to_string()), true),
-                    Err(e) => (e.to_string(), None, false),
+                    Err(e) => {
+                        // Built-in miss → try the plugin router (built-in
+                        // names are reserved and can't be shadowed).
+                        if let Some(mgr) = &self.plugin_router {
+                            match mgr.dispatch_tool_call(&call.name, args).await {
+                                Ok(out) => (out, None, true),
+                                Err(_) => (e.to_string(), None, false),
+                            }
+                        } else {
+                            (e.to_string(), None, false)
+                        }
+                    }
                 };
+
+                // ---- Stage 9: after_tool hooks (may mutate output) ----
+                self.hooks.run_after_tool(&call, &mut content).await;
 
                 // Record the write post-dispatch so Undo sees every mutation.
                 if is_write && ok {

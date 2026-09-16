@@ -10,6 +10,7 @@ agent-context = { path = "../agent-context" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }
 agent-sandbox = { path = "../agent-sandbox" }
+agent-plugin = { path = "../agent-plugin" }
 async-trait.workspace = true
 futures.workspace = true
 serde.workspace = true

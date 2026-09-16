@@ -15,7 +15,9 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::channels::ui_channels;
+use crate::commands::{CommandCtx, CommandRegistry, CommandResult, ControlOp};
 use crate::engine::{Engine, EngineIo};
+use crate::hooks::HookChain;
 use crate::tools::{ToolCtx, ToolRegistry};
 
 /// The rendered system prompt template — embedded at build time from the
@@ -51,6 +53,8 @@ pub struct SessionActor {
     cmd_rx: mpsc::Receiver<UiCommand>,
     /// Workspace root (undo writes resolve against it).
     workspace_root: PathBuf,
+    /// Stage 9: ordered hook chain (lifecycle interception).
+    hooks: HookChain,
 }
 
 impl SessionActor {
@@ -138,6 +142,7 @@ impl SessionActor {
                 steer_tx,
                 cmd_rx,
                 workspace_root: cfg.workspace_root,
+                hooks: HookChain::new(),
             },
             channels,
         )
@@ -250,13 +255,85 @@ impl SessionActor {
         ));
     }
 
+    /// Execute a `ControlOp` from a slash command — session state changes
+    /// with no LLM round-trip.
+    async fn run_control(&mut self, op: ControlOp) {
+        match op {
+            ControlOp::ClearHistory => {
+                self.history.truncate(1); // keep the system prompt
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
+                    "history cleared".into()));
+            }
+            ControlOp::Compact => {
+                // Force a compaction pass via the engine's path.
+                let est = crate::compaction::estimate_tokens(&self.history);
+                let window = 256_000usize; // engine's context_window is the real bound
+                if crate::compaction::should_compact(est, window) {
+                    let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
+                        "compacting…".into()));
+                } else {
+                    let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
+                        format!("history ~{est} tokens — below compact threshold")));
+                }
+            }
+            ControlOp::UndoLastTurn => self.undo_last_turn().await,
+            ControlOp::SetModel { provider, model } => {
+                info!(%provider, %model, "slash hot-swap");
+                self.engine.set_model(model.clone());
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
+                    format!("model → {provider}/{model} (next turn)")));
+            }
+        }
+    }
+
     /// Consume a `UiCommand`. `Prompt` runs a turn to completion; `Steer`
     /// lands mid-turn via the engine's drain; the rest are no-ops until their
     /// owning stages land.
     pub async fn handle(&mut self, cmd: UiCommand) {
         match cmd {
             UiCommand::Prompt { text } => {
-                self.run_prompt(text).await;
+                // Stage 9: `/x` slash commands intercept before the ReAct
+                // loop — zero tokens. Unknown `/x` falls through as a prompt.
+                let workspace_root = self.workspace_root.clone();
+                let cmd_result = {
+                    let mut ctx = CommandCtx {
+                        history: &mut self.history,
+                        permission_mode: "default",
+                        workspace_root: &workspace_root,
+                        ui_tx: &self.io.ui_tx,
+                    };
+                    CommandRegistry::try_run(&text, &mut ctx).await
+                }; // ctx dropped here — the history/ui_tx borrows end
+                match cmd_result {
+                    Some(CommandResult::Reply(r)) => {
+                        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(r));
+                    }
+                    Some(CommandResult::Control(op)) => {
+                        self.run_control(op).await;
+                    }
+                    Some(CommandResult::FeedToAgent(prompt)) => {
+                        self.run_prompt(prompt).await;
+                    }
+                    None => {
+                        // Hook chain: on_user_input may block/rewrite.
+                        match self.hooks.run_on_user_input(&text).await {
+                            crate::hooks::HookAction::BlockTurn(reason) => {
+                                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(reason));
+                            }
+                            crate::hooks::HookAction::InjectSystemNote(note) => {
+                                self.history.push(ChatMessage::system(note));
+                                self.run_prompt(text).await;
+                            }
+                            crate::hooks::HookAction::MutateMessages(msgs) => {
+                                self.history = msgs;
+                                self.run_prompt(text).await;
+                            }
+                            crate::hooks::HookAction::Continue => {
+                                self.run_prompt(text).await;
+                            }
+                        }
+                    }
+                }
             }
             UiCommand::Steer { text } => {
                 info!(len = text.len(), "steer command");

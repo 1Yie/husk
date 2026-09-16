@@ -9,8 +9,10 @@
 //! ReAct loop runs headless on `MockProvider` (`cargo test -p agent-kernel`).
 
 pub mod channels;
+pub mod commands;
 pub mod compaction;
 pub mod engine;
+pub mod hooks;
 pub mod permissions;
 pub mod session;
 pub mod tools;
