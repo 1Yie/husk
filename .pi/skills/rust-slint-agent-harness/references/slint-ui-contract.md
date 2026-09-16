@@ -70,6 +70,19 @@ export struct MemoryFactData {
     confidence: float,
 }
 
+export struct SlashCommandData {
+    name: string,             // "diff" — invoked as /diff; plugin ones prefixed "plugin:name"
+    description: string,
+    source: string,           // "builtin" | "plugin:<id>" | "mcp:<server>"
+}
+
+export struct ContextBadgeData {
+    provider: string,         // provider name or plugin id
+    title: string,            // "Git Diff", "Memory: 3 facts"
+    tokens: int,
+    injected: bool,           // false = dropped by budget pressure
+}
+
 export struct BranchCandidateData {
     label: string,            // "Plan A: refactor interface"
     state: string,            // "running" | "adopted" | "pruned"
@@ -155,6 +168,7 @@ export global Bridge {
     callback accept_suggestion(int /*id*/);
     callback dismiss_suggestion(int /*id*/);
     callback delete_memory_fact(int /*id*/);
+    callback run_command(string /*name*/, string /*args*/);   // slash dispatch
 
     // kernel → UI (set as properties / model pushes)
     in-out property <[SessionMessageData]> messages;
@@ -171,6 +185,8 @@ export global Bridge {
     in-out property <[BranchCandidateData]> branches;   // non-empty while Branching
     in-out property <bool> steered;                     // current turn was steered
     in-out property <[ActionStepData]> active_steps;    // flat model — steps mutate in place here
+    in-out property <[SlashCommandData]> slash_commands;   // for the / autocomplete popup
+    in-out property <[ContextBadgeData]> context_badges;   // what fed this turn's prompt
 }
 ```
 
@@ -209,6 +225,12 @@ Layout: message `ListView` (auto-scroll pinned to bottom unless user scrolled up
 **Branch card**: while `agent_state == "Branching"`, `branches` renders per-candidate rows (label, spinner/check/✂, result line); adopted branch's diff then flows through the normal approval path.
 
 **Memory panel**: settings sub-page lists `memory_facts` grouped by kind (fact/persona/episode) with confidence bar and per-row delete → `delete_memory_fact`.
+
+**Slash autocomplete**: typing `/` in the input opens a popup over it listing `slash_commands` (name + description + source badge); Tab/Enter completes → `Bridge.run_command(name, args)`. Unknown `/x` submits as normal text with a hint.
+
+**Context badges**: row above input shows `context_badges` — `provider:title (N tok)`; `injected: false` renders dimmed with a strikethrough so the user sees budget drops; click → remove that provider for subsequent turns.
+
+**Hook trace**: when a hook mutates or vetoes, the affected `ActionStepData` card gains a dimmed `⚡ hook <id>` footer line — silent interventions are always visible.
 
 ### views/plugin_settings_view.slint
 

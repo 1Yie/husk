@@ -87,6 +87,14 @@ Plugin tools flow through the same pipeline (`readonly` defaults `false`); capab
 
 Readonly shell whitelist: `ls cat head tail grep rg find git{status,diff,log,show} kubectl-get`… — configurable.
 
+## Extension pipeline (hooks / commands / providers)
+
+Three interception surfaces wrap the ReAct loop (full spec: `plugin-system.md` §Extension points):
+
+- **Commands** (`commands.rs`): input starting with `/` is intercepted by `CommandRegistry` **before** the LLM loop — zero tokens. `CommandResult::{Reply, ControlAction, FeedToAgent}`. MCP `prompts/*` and WASM `command_execute` both register here under `plugin_id:name`.
+- **Hooks** (`hooks.rs`): ordered `AgentHook` chain — `on_user_input` → `before_tool_execute` (veto/rewrite, runs *before* the permission gate and cannot approve) → `after_tool_execute` → `on_state_transition`. Per-hook 2 s timeout, degradation = `Continue`. WASM/built-in only.
+- **Providers** (`agent-context/src/providers.rs`): `ContextProvider` trait returns `ContextChunk{priority, title, content, tokens}`; built-ins (workspace/git/memory) are ordinary registrations. Assembly sorts by priority, fills budget, drops the rest with UI-visible badges. MCP `resources/*` maps here.
+
 ## Execution sandbox (`crates/agent-sandbox/`)
 
 The `bash` tool NEVER calls `Command` directly — always through `SandboxBackend::run_command`. Full spec in `sandbox-model.md`. Contract points:

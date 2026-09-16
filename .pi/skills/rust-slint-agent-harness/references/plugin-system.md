@@ -26,6 +26,13 @@ A plugin = `manifest.json` (self-describing) + entry artifact (`.wasm` or MCP se
     "context_providers": [
       { "id": "workflow_linter",
         "description": "Inject .github/workflows YAML context into prompts" }
+    ],
+    "commands": [                          // slash commands → CommandRegistry
+      { "name": "ci", "description": "Show latest CI status", "action": "tool:fetch_ci_status" }
+    ],
+    "hooks": [                             // WASM-only; MCP can't hook
+      { "event": "before_tool_execute", "filter": { "tool": "bash" } },
+      { "event": "after_tool_execute" }
     ]
   }
 }
@@ -180,6 +187,107 @@ pub struct PluginManager {
 - `collect_dynamic_contexts(workspace)`: fan out `provide_context` with per-plugin 2 s timeout; each result tagged `<plugin_context id="...">` and appended after the workspace skeleton in the prompt.
 - Discovery: scan `~/.config/<app>/plugins/*/manifest.json` + `<repo>/.agent/plugins/*/` at startup; repo-local plugins require per-repo trust consent.
 - Lifecycle: enable/disable persisted in config; disable = drop `Arc`, purge `tool_router` entries, kill MCP child. Hot-reload on manifest file change (debounced 500 ms).
+
+## Extension points beyond tools (Hooks / Commands / Providers)
+
+Tools alone make plugins **passive** — they only fire when the model decides to call them. Three more dimensions turn the plugin layer into an event-driven lifecycle system:
+
+```
+Providers  → data/context ingestion        (prompt-time, automatic)
+Commands   → deterministic user control    (slash, bypasses the LLM loop)
+Hooks      → lifecycle interception        (AOP over the state machine)
+Tools      → action execution              (model-invoked)
+```
+
+### Hooks — middleware over the state machine (`agent-kernel/src/hooks.rs`)
+
+```rust
+pub enum HookAction {
+    Continue,
+    MutateMessages(Vec<ChatMessage>),   // rewrite the outbound context
+    BlockTurn(String),                  // stop this turn with a reason
+    InjectSystemNote(String),           // silent system-prompt addition
+}
+
+#[async_trait]
+pub trait AgentHook: Send + Sync {
+    fn id(&self) -> &str;
+    async fn on_user_input(&self, _input: &str) -> anyhow::Result<HookAction> { Ok(HookAction::Continue) }
+    async fn before_tool_execute(&self, _call: &mut ToolCall) -> anyhow::Result<bool> { Ok(true) } // false = veto
+    async fn after_tool_execute(&self, _call: &ToolCall, _output: &mut String) -> anyhow::Result<()> { Ok(()) }
+    async fn on_state_transition(&self, _old: &AgentState, _new: &AgentState) {}
+}
+```
+
+Pipeline rules:
+- Hooks run as an **ordered chain** (registration order); each gets a bounded timeout (default 2 s) — a slow hook degrades to `Continue`, never stalls the turn.
+- `before_tool_execute` runs **before** the permission/audit gate — a hook can veto or rewrite args, but cannot *approve* (safety stays with permissions).
+- `after_tool_execute` output mutation is capped by the same TruncationConfig; hook output is marked in UI (`⚡ hook <id>` line under the step card).
+- WASM plugins export hook fns by convention (`agent_on_input`, `agent_before_tool`, `agent_after_tool`); MCP servers can't be hooks (stdio latency + no interception semantics) — hooks are WASM/built-in only.
+
+### Commands — deterministic slash control (`agent-kernel/src/commands.rs`)
+
+Input starting with `/` is intercepted by `CommandRegistry` **before** the ReAct loop — zero tokens spent:
+
+```rust
+#[async_trait]
+pub trait SlashCommand: Send + Sync {
+    fn name(&self) -> &'static str;            // "diff", "model", "clear"
+    fn description(&self) -> &'static str;
+    async fn execute(&self, ctx: &CommandContext) -> anyhow::Result<CommandResult>;
+}
+
+pub enum CommandResult {
+    Reply(String),                  // local echo, no LLM call
+    ControlAction(ControlOp),       // reset session, switch model, undo turn…
+    FeedToAgent(String),            // wraps result into a normal prompt
+}
+```
+
+- Built-ins ship first: `/clear`, `/diff`, `/model`, `/compact`, `/undo`.
+- MCP `prompts/list`+`prompts/get` maps here: server prompt templates surface as `/plugin_id:name` commands → `FeedToAgent`.
+- WASM plugins export `command_execute(name, args_json)` → registered under `plugin_id:name`.
+- Unknown `/x` falls through to the LLM as normal text (with a hint the command wasn't found).
+
+### Context providers — modular prompt assembly (`agent-context/src/providers.rs`)
+
+Refactors the hardcoded workspace/git/memory injection into a trait so plugins join the same pipeline:
+
+```rust
+#[async_trait]
+pub trait ContextProvider: Send + Sync {
+    fn name(&self) -> &str;
+    async fn provide_context(&self, workspace: &Path) -> Option<ContextChunk>;
+}
+
+pub struct ContextChunk {
+    pub priority: u8,          // higher survives compaction/budget pressure
+    pub title: String,         // "Git Diff", "Memory: 3 facts"
+    pub content: String,
+    pub estimated_tokens: usize,
+}
+```
+
+- Built-in providers (workspace skeleton, git status, memory recall) become ordinary registrations — **the kernel treats its own context the same as plugin context**.
+- Assembly order: sort by `priority` desc → fill the context budget → remainder dropped with a UI-visible note (context badges show what was injected vs. dropped).
+- MCP `resources/list`+`resources/read` maps here: readable URIs become provider chunks; the plugin's `provide_context` in the base trait is the WASM equivalent.
+
+### Runtime → extension-point matrix
+
+| Point | WASM plugin | MCP plugin | Built-in |
+|-------|------------|------------|----------|
+| Tools | `export_tools` | `tools/call` | registry |
+| Providers | `provide_context` | `resources/*` | workspace/git/memory |
+| Commands | `command_execute` | `prompts/*` | `/clear` `/diff` `/model`… |
+| Hooks | `agent_*` fns | ❌ (no interception semantics) | masking, audit, distill |
+
+With this matrix the harness consumes **all three MCP primitives** (tools + resources + prompts), not just tools.
+
+### Phased rollout
+
+1. **Commands first** — cheapest, immediate UX win; built-ins only, then open to plugins.
+2. **Providers second** — refactor existing injection into the trait; plugin `provide_context` already exists.
+3. **Hooks last** — add when a concrete need appears (output formatting, secret pre-filter, auto-fix); the chain is cheap to add but every hook is a per-turn latency + failure surface.
 
 ## Kernel integration points
 
