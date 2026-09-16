@@ -1,0 +1,159 @@
+# Execution Sandbox Spec
+
+Design goal: **every command the agent runs executes inside an enforced boundary, and the boundary costs milliseconds, not seconds.** Layered isolation — pick the lightest tier that contains the risk. A missing sandbox backend degrades loudly, never silently.
+
+## Layered defense model
+
+| Tier | Workload | Mechanism | Cold start | Overhead |
+|------|----------|-----------|-----------|----------|
+| **L1** memory/logic isolation | plugin scripts, WASM tools, parsers | Wasmtime (already spec'd in `plugin-system.md`) | <1 ms | KBs |
+| **L2** native process sandbox — **the core tier** | `bash` tool: `cargo check`, `npm test`, builds, scripts | Linux: bubblewrap / Landlock LSM · macOS: `sandbox-exec` profile · Windows: Job Objects + restricted tokens | 5–20 ms | ≈ bare process |
+| **L3** microVM — exceptional only | untrusted repo builds, kernel-adjacent work, explicitly flagged danger | Firecracker/QEMU microVM | 100–300 ms | 50–100 MB |
+
+v1 ships **L1 + L2**. L3 is a `SandboxBackend` impl behind the same trait — add later without touching callers.
+
+## L2 — four control dimensions
+
+1. **Filesystem isolation**: system dirs (`/usr`, `/lib`, `/bin`, `C:\Windows`) read-only; sensitive dirs (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.bash_history`, browser profiles) denied outright; **only `$WORKSPACE` + per-run tmp (`/tmp/agent-run-*`) writable**.
+2. **Network control**: default per `SandboxConfig.allow_network`; offline runs unshare the net namespace (Linux) / deny `network*` (macOS). When on, document that package fetches work; future: proxy-locked egress.
+3. **Resource limits**: max memory (default 2048 MB), max wall timeout (per-call `timeout_secs`, bash tool hard cap 600 s), process/thread count cap where the platform allows. Timeout kills the **process tree** (pgid kill / Job Object terminate), not just the leader — no orphaned grandchildren.
+4. **Env sanitization**: never inherit host env wholesale. Allowlist: `PATH LANG LC_* HOME TERM TMPDIR USER SHELL` + toolchain vars (`CARGO_HOME`, `GOPATH`, `NODE_ENV`…) explicitly configured. Denylist patterns: `*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AWS_*`, `GITHUB_*`, `OPENAI_*`, `ANTHROPIC_*` — denylist wins over allowlist.
+
+## Unified backend trait (`crates/agent-sandbox/src/traits.rs`)
+
+```rust
+#[derive(Debug, Clone)]
+pub struct SandboxConfig {
+    pub workspace_dir: PathBuf,
+    pub allow_network: bool,
+    pub max_memory_mb: u64,      // default 2048
+    pub timeout_secs: u64,       // default 60; caller may raise ≤ 600
+    pub env_vars: Vec<(String, String)>,  // post-sanitization additions
+    pub snapshot: SnapshotMode,  // Off | Cow | Required
+}
+
+#[derive(Debug)]
+pub struct CommandOutput {
+    pub status: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub is_timeout: bool,
+    pub peak_memory_mb: Option<u64>,
+    pub elapsed_ms: u64,
+}
+
+#[async_trait]
+pub trait SandboxBackend: Send + Sync {
+    fn id(&self) -> &'static str;                 // "bwrap" | "landlock" | "sandbox-exec" | "job-object" | "none"
+    fn tier(&self) -> SandboxTier;                // L1 | L2 | L3
+    async fn run_command(&self, cmd: &str, args: &[&str], cfg: &SandboxConfig)
+        -> anyhow::Result<CommandOutput>;
+}
+```
+
+## Platform backends
+
+### Linux — `linux_bwrap.rs` (primary), `linux_landlock.rs` (zero-dep fallback)
+
+Bubblewrap assembly (the proven argument set):
+
+```text
+bwrap
+  --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /bin /bin
+  --ro-bind /etc/resolv.conf /etc/resolv.conf   # only when allow_network
+  --proc /proc --dev /dev
+  --bind  $WORKSPACE $WORKSPACE                 # the ONLY rw host path
+  --tmpfs /tmp
+  [--unshare-net]                               # when !allow_network
+  --clearenv --setenv K V ...
+  --chdir $WORKSPACE
+  --die-with-parent                             # no orphans if host dies
+  -- sh -c "<cmd>"
+```
+
+`landlock` crate (kernel ≥5.13) = no external binary: restrict fs access to workspace+tmp rw, everything else read/deny. Use when `bwrap` not on `PATH`.
+
+### macOS — `macos_seatbelt.rs`
+
+`sandbox-exec -p <profile>` with generated SBPL:
+
+```scheme
+(version 1) (deny default)
+(allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library") (subpath "/bin"))
+(allow file-read* file-write* (subpath "$WORKSPACE") (subpath "/tmp"))
+(allow process-exec process-fork)
+(deny file-read* (subpath "$HOME/.ssh") (subpath "$HOME/.gnupg") (subpath "$HOME/.aws"))
+(allow network*)   ; only when allow_network
+```
+
+`sandbox-exec` is deprecated-but-present on every macOS; App Sandbox entitlements are the long-term path for a distributed binary.
+
+### Windows — `windows_job.rs`
+
+Job Object with `JOB_OBJECT_LIMIT_PROCESS_MEMORY`, `KillOnJobClose`, active-process limit; restricted token strips privileges. FS isolation is weaker than Unix — compensate: env sanitization + audit gate are stricter, and writable scope is enforced at the tool layer (paths outside workspace rejected pre-spawn).
+
+### Fallback chain & degradation
+
+`detect_backend()` at startup: Linux → `bwrap` → `landlock` → `none`; macOS → `sandbox-exec` → `none`; Windows → `job-object` → `none`.
+
+Running on `none` is **allowed but loud**: config must set `sandbox.allow_unsandboxed = true`, UI shows a persistent warn chip ("UNSANDBOXED"), and every `bash` call requires confirmation regardless of permission mode.
+
+## CoW snapshots (`crates/agent-sandbox/src/cow.rs`)
+
+"Bold agent, instant regret medicine": clone workspace → let agent mutate → merge back or discard.
+
+```text
+real workspace ──reflink clone──▶ /tmp/agent-run-XXXX/  (<20 ms for 10k files)
+     ▲                                   │
+     └── merge diff on success ◀── agent edits + builds + tests here
+                                     └── on failure/abort: rm -rf, workspace untouched
+```
+
+- `SnapshotMode::Cow` via `reflink-copy` (APFS/Btrfs/XFS). Fallback chain: reflink → hardlink → full copy → run-in-place (with a UI note). Never block the turn on a slow copy — cap snapshot setup at 2 s, then degrade.
+- Merge-back: `similar`-diff snapshot vs. real → funnel through the **same** `AwaitingToolConfirmation` diff review → apply → record hunks in HunkTracker (`origin: "sandbox-merge"`).
+- `SnapshotMode::Required` (config per project): every `bash`/patch turn runs against a snapshot; `Cow` = opt-in per command or per turn; `Off` = direct writes.
+
+## Pre-execution audit (`crates/agent-sandbox/src/audit.rs`)
+
+Before any `bash` dispatch, pattern-match the command. Result feeds `AwaitingToolConfirmation.risk` and the sandbox config.
+
+| Match (regex/pattern) | Level | Effect |
+|----------------------|-------|--------|
+| `rm -rf`, `rm -fr`, `mkfs`, `dd of=/dev`, `> /dev/sd`, fork-bomb `:(){…}` | **Critical** | red card; runs only after explicit approve; forced `snapshot: Required` |
+| `git push --force`, `git reset --hard`, `sudo`, `chmod -R 777`, `curl/wget … \| sh`/`bash` | **Elevated** | confirmation required in every mode incl. `acceptEdits` |
+| `npm install`, `cargo add`, `brew install`, `pip install` | **Network-mutating** | confirmation + forces `allow_network` prompt |
+| paths outside `$WORKSPACE`, `$HOME` writes | **Scope-violation** | denied unless user approves sandbox widening for that call |
+| everything else | **Normal** | sandbox defaults; confirm per permission mode |
+
+Audit is **pre-spawn string analysis** — it complements, never replaces, the OS sandbox. A critical command the user approves still runs sandboxed (with CoW), never on the raw host.
+
+## Who runs sandboxed
+
+- `bash` tool: **always** L2 (or loud `none`).
+- MCP plugin servers: optional per manifest (`sandboxed: true`) — they are child processes too; run under the same backend when feasible.
+- WASM plugins: already L1 by construction.
+- `search_replace`/`apply_patch`/`read_file`: in-process, governed by tool-layer path checks (workspace root prefix + symlink resolution), not process sandbox.
+
+## UI contract hooks (see slint-ui-contract.md)
+
+- `PendingApprovalData.risk`: `"normal" | "elevated" | "critical" | "network"` + `audit_reason` shows the matched pattern. Critical renders the red banner variant.
+- `SandboxTelemetry` per running step: `elapsed_ms`, `peak_memory_mb`, `sandboxed` (backend id or "none"), `snapshot` mode — live-updating card while `ExecutingTool`.
+- Persistent warn chip when backend is `none` or a snapshot merge is pending.
+
+## Non-negotiables
+
+- Env sanitization applies to **every** spawn, including sandboxed ones — sandbox contains damage, sanitization prevents leakage.
+- Timeout always kills the whole process group/tree.
+- Audit denial and sandbox widening decisions are logged per-session (audit trail viewable in workspace panel).
+- `none` backend never runs silently; `sandbox.allow_unsandboxed` is opt-in only.
+
+## Acceptance checklist
+
+- [ ] Sandboxed `cat ~/.ssh/id_rsa` fails on Linux and macOS
+- [ ] `env` inside sandbox contains no `*_KEY`/`_TOKEN`/`_SECRET`
+- [ ] `--unshare-net` / `(deny network*)` verified: `curl` to localhost fails when `allow_network: false`
+- [ ] 60 s timeout on `while true; do :; done` kills entire tree, no orphan procs (`pgrep` clean)
+- [ ] Reflink snapshot of 5k-file workspace < 50 ms; merge-back diff appears in approval UI
+- [ ] `rm -rf /` audit → critical card; even after approve it runs inside CoW snapshot
+- [ ] Backend `none` → warn chip visible + every bash call confirms
+- [ ] Sandbox spawn overhead ≤ 20 ms measured (bwrap/sandbox-exec warm)
