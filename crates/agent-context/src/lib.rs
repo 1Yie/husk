@@ -7,8 +7,10 @@
 
 pub mod git;
 pub mod hunks;
+pub mod memory;
 pub mod workspace;
 
 pub use git::{git_snapshot, GitSnapshot};
 pub use hunks::{HunkTracker, TrackingMode, UndoOp};
+pub use memory::{Episode, Fact, MemoryStore, Persona, TurnDistiller, TurnRecord};
 pub use workspace::{WorkspaceScanner, WorkspaceTree};

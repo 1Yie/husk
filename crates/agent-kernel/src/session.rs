@@ -8,7 +8,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_context::{git_snapshot, HunkTracker, TrackingMode, WorkspaceScanner};
+use agent_context::{
+    git_snapshot, memory::TurnRecord, HunkTracker, MemoryStore, TrackingMode,
+    TurnDistiller, WorkspaceScanner,
+};
 use agent_ipc::{AgentState, UiCommand, UiEvent};
 use agent_llm::types::ChatMessage;
 use tokio::sync::mpsc;
@@ -55,6 +58,9 @@ pub struct SessionActor {
     workspace_root: PathBuf,
     /// Stage 9: ordered hook chain (lifecycle interception).
     hooks: HookChain,
+    /// Stage 10: memory store + post-turn distiller (background task).
+    memory: Option<Arc<MemoryStore>>,
+    distiller: Option<Arc<TurnDistiller>>,
 }
 
 impl SessionActor {
@@ -77,8 +83,29 @@ impl SessionActor {
             .replace("{{WORKSPACE_ROOT}}", &cfg.workspace_root.display().to_string())
             .replace("{{PERMISSION_MODE}}", &cfg.permission_mode)
             .replace("{{WORKSPACE_TREE}}", &workspace_tree)
-            .replace("{{GIT_STATUS}}", &git_status)
-            .replace("{{MEMORY_BLOCK}}", "(no memory yet — Stage 10)");
+            .replace("{{GIT_STATUS}}", &git_status);
+
+        // Stage 10: memory store — `memory.db` at ~/.local/share/agent-rs/,
+        // partitioned by `hash(canonical_root)`. The `{{MEMORY_BLOCK}}` is
+        // refreshed per-turn (recall happens in `run_prompt`, not once at
+        // spawn — the block must track the evolving store).
+        let (memory, distiller, initial_memory_block) = {
+            let db_dir = dirs_data().map(|d| d.join("agent-rs"));
+            let store = db_dir.and_then(|d| {
+                let _ = std::fs::create_dir_all(&d);
+                MemoryStore::open(&d.join("memory.db"), &cfg.workspace_root).ok()
+            });
+            match store {
+                Some(s) => {
+                    let s = Arc::new(s);
+                    let block = s.memory_block("workspace").unwrap_or_default();
+                    (Some(s.clone()), Some(Arc::new(TurnDistiller::new(s))), block)
+                }
+                None => (None, None, "(no memory)".to_string()),
+            }
+        };
+        let system_prompt = system_prompt
+            .replace("{{MEMORY_BLOCK}}", &initial_memory_block);
 
         let history = vec![ChatMessage::system(system_prompt)];
 
@@ -143,6 +170,8 @@ impl SessionActor {
                 cmd_rx,
                 workspace_root: cfg.workspace_root,
                 hooks: HookChain::new(),
+                memory,
+                distiller,
             },
             channels,
         )
@@ -201,19 +230,57 @@ impl SessionActor {
         info!("user prompt ({} chars)", text.len());
         self.state = AgentState::ScanningWorkspace;
         let turn = self.hunks.begin_turn();
+
+        // Stage 10: refresh the `<memory>` block before the turn — recall
+        // top-k facts + recent episodes for this prompt. The block lives in
+        // the system message (history[0]); swap its placeholder region.
+        if let Some(m) = &self.memory {
+            if let Ok(block) = m.memory_block(&text) {
+                if !block.trim().is_empty() {
+                    if let Some(sys) = self.history.get_mut(0) {
+                        if let Some(c) = &sys.content {
+                            let new = c.replace("(no memory)", &block);
+                            sys.content = Some(new);
+                        }
+                    }
+                }
+            }
+        }
+
+        let outcome_text = text.clone();
         match self.engine.run_turn(&mut self.io, &mut self.history, text, &mut self.hunks).await {
             Ok(outcome) => {
                 self.state = AgentState::Finished;
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
-                // Hunk recording happens inside fuzzy_patch post-write via the
-                // tool's diff — the tracker is filled by ToolCallFinished
-                // wiring in the bridge (Stage 6.5); for now the tracker has
-                // the turn boundary so `undo_plan` scoping is correct.
+                self.queue_distill(TurnRecord {
+                    task: outcome_text,
+                    outcome: "success".into(),
+                    files: self.hunks.files_in_turn(turn).iter()
+                        .map(|p| p.to_string_lossy().into_owned()).collect(),
+                    correction: None,
+                    steered_with: None,
+                });
             }
             Err(e) => {
                 self.state = AgentState::Failed(e.clone());
                 warn!("turn failed: {e}");
+                self.queue_distill(TurnRecord {
+                    task: outcome_text,
+                    outcome: "failed".into(),
+                    files: self.hunks.files_in_turn(turn).iter()
+                        .map(|p| p.to_string_lossy().into_owned()).collect(),
+                    correction: None,
+                    steered_with: None,
+                });
             }
+        }
+    }
+
+    /// Stage 10: hand the turn's record to the background distiller — never
+    /// blocks the turn's completion path.
+    fn queue_distill(&mut self, record: TurnRecord) {
+        if let Some(d) = &self.distiller {
+            d.spawn_distill(record);
         }
     }
 
@@ -375,6 +442,13 @@ impl SessionActor {
             }
         }
     }
+}
+
+/// Data dir for `memory.db` — `~/.local/share` (XDG) or HOME fallback.
+fn dirs_data() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
 }
 
 /// `chrono`-free date stamp for the prompt — good enough for "today" context

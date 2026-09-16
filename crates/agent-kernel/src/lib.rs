@@ -15,4 +15,5 @@ pub mod engine;
 pub mod hooks;
 pub mod permissions;
 pub mod session;
+pub mod steering;
 pub mod tools;

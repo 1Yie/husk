@@ -131,10 +131,16 @@ impl Engine {
         self.model = model.into();
     }
 
-    /// Drain any pending steering texts between tool calls.
+    /// Drain any pending steering texts between tool calls — marks the
+    /// turn `steered` for UI provenance.
     fn drain_steering(&mut self, io: &mut EngineIo) {
         while let Ok(text) = io.steer_rx.try_recv() {
             self.steer_queue.push_back(text);
+        }
+        if !self.steer_queue.is_empty() {
+            // Notify the UI the turn was steered (provenance marker).
+            let _ = io.ui_tx.try_send(UiEvent::SystemMessage(
+                "[steered] steering input queued".into()));
         }
     }
 
