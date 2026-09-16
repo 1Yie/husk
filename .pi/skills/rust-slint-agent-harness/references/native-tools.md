@@ -62,6 +62,59 @@ pub struct PatchResult {
 
 `apply_patch` (multi-hunk unified diff) still exists for genuinely multi-site changes, but `fuzzy_patch` is the default edit tool — it covers ~90% of edits with a far simpler model contract.
 
+## Extended native primitives — five dimensions
+
+The pattern for all of these: **Rust does the heavy/dirty work locally (AST, stream filtering, formatting), compresses to dense signal, then feeds the model.** No subprocess glue, no bulk token dumps.
+
+### A. Semantic navigation (`tree-sitter`-backed)
+
+| Tool | What it does | Token effect |
+|------|--------------|--------------|
+| `symbol_outline` | Cross-file/workspace symbol index — `struct`/`enum`/`trait`/`fn` signatures + doc comments, bodies folded. Per-file version = `smart_read(mode="outline")`; this is the workspace-level index | 3k-line file → ~150 tok skeleton |
+| `smart_grep` | `grep` hit lines annotated with enclosing AST scope: `engine.rs:142 [inside impl Harness::run_turn]` — model knows where a match lives without opening the file | kills the open-file-to-check round trip |
+| `find_references_lite` | tree-sitter/ctags call-site index: all references to a symbol grouped by file with call signatures | replaces ls→grep→open loops |
+
+`smart_grep` = `grep-searcher` hit → walk up the file's tree-sitter scopes to the nearest enclosing item header → emit `file:line [inside <scope>]`. Falls back to bare `file:line` for unsupported languages.
+
+### B. PTY & streaming execution
+
+- **`pty_session`** (`portable-pty`): real pseudo-terminal instead of `Command::output`. Rust async-scans the output stream for interaction patterns (`[y/N]`, `password:`, `press any key`, `Are you sure`) → raises a UI intercept card or injects a policy-configured response. **This kills the #1 agent deadlock: interactive commands hanging until timeout.** Secrets prompts (password) always escalate to the user — never auto-fill.
+- **`smart_test_runner`**: stream filter on the sandboxed test process — drops `passed`/progress noise, keeps only failed test names + assertion location + panic backtrace frames. 20k-line test log → ≤300 tok diagnostic. Works for `cargo test`, `pytest`, `vitest`/`jest` via per-framework failure-pattern tables.
+
+### C. Workspace & self-repair
+
+- **`linter_auto_fix`**: implicit hook after every successful `fuzzy_patch` write — run `rustfmt`/`prettier`/`ruff format` (and `clippy --fix` in safe mode) on touched files. The model writes logic; formatting/imports fix themselves for free. Runs inside the same sandbox; output diffs merge into the same approval/undo unit as the patch that triggered them.
+- **`undo_hunk`**: reverse-apply a recorded hunk from HunkTracker by file+line ref ("undo the engine.rs change") — pure local `similar` reverse patch, zero regeneration. Backs the UI's Undo/Rewind.
+
+### D. Local memory & conventions
+
+- **`fast_semantic_search`**: `fastembed-rs` ONNX embeddings (bge-small, CPU SIMD, ~30 MB, cached locally) + `libsql`/sqlite-vss or in-memory HNSW. "Where's the auth logic?" → ~20 ms local recall with file+line, no cloud round-trip. See capability-roadmap §1 for the memory layer this feeds.
+- **`convention_distill`**: on entering a new workspace, scan `.editorconfig`, `rustfmt.toml`, `tsconfig.json`, formatter configs + last ~20 commit messages → distill a ≤200-tok "project rules" block ("4-space indent, no unwrap(), Conventional Commits") injected at session start. Reuses the memory distiller machinery.
+
+### E. Desktop power tools (OS-level senses)
+
+- **`clipboard_diff`** (`arboard`): on window focus, sniff clipboard for compiler-error/panic shapes → offer "clipboard has a 15-line Rust panic — Tab to fix" affordance. Pattern-gated (only fires on recognizable error text), never reads clipboard silently in the background.
+- **`active_window_context`**: OS APIs (macOS Accessibility, Wayland) → focused window title / open file path → "check this file for bugs" resolves without the user naming a path. Consent-gated like other sensing (capability-roadmap §3).
+
+## Tool matrix & phasing
+
+| Tool | Dimension | Replaces | Savings | Deps |
+|------|-----------|----------|---------|------|
+| `smart_read`/`symbol_outline` | A | `cat`, path guessing | ~90% | tree-sitter |
+| `fuzzy_patch` | — | full rewrite, strict diffs | ~85% + correctness | similar |
+| `smart_grep` | A | grep + open loops | ~75% | grep-searcher + tree-sitter |
+| `find_references_lite` | A | multi-turn search | ~80% | tree-sitter/ctags |
+| `smart_test_runner` | B | log dumps | ~85% | regex + stream |
+| `pty_session` | B | deadlocking `Command` | deadlock prevention | portable-pty |
+| `linter_auto_fix` | C | model fix-up turns | ~100% of those turns | std::process (sandboxed) |
+| `undo_hunk` | C | regenerate-to-revert | ~100% | similar + HunkTracker |
+| `fast_semantic_search` | D | external vector DB | fully local | fastembed-rs + libsql |
+| `convention_distill` | D | manual style prompting | ~1 prompt/turn | memory distill |
+| `clipboard_diff` | E | paste + explain | UX-level | arboard |
+| `active_window_context` | E | naming paths | UX-level | OS accessibility APIs |
+
+**Phase 1 ships**: `smart_read` + `fuzzy_patch` + `smart_test_runner` — these three alone change the speed/success/token economics of everyday edits. Phase 2: `smart_grep` + `pty_session` + `linter_auto_fix`. Phase 3: the rest.
+
 ## The edit loop end-to-end
 
 ```text

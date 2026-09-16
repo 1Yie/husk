@@ -69,7 +69,7 @@ pub struct ToolSpec {
 }
 ```
 
-Built-ins: `smart_read` (outline/range/search via tree-sitter), `list_dir`, `grep`, `fuzzy_patch` (search/replace blocks, 4-tier match + content_hash guard), `apply_patch`, `bash`. Registry produces the `tools` array for the LLM request and dispatches by name. **File IO is fully in-process — no `cat`/`patch` subprocess.** Full spec: `native-tools.md`.
+Built-ins: `smart_read` (outline/range/search via tree-sitter), `list_dir`, `smart_grep` (scope-annotated hits), `find_references_lite`, `fuzzy_patch` (search/replace blocks, 4-tier match + content_hash guard), `apply_patch`, `undo_hunk`, `bash`/`pty_session` (PTY + interaction detection), `smart_test_runner` (failure-only filtering), `linter_auto_fix` (post-write format hook), `fast_semantic_search` (local embeddings), `convention_distill`. Registry produces the `tools` array for the LLM request and dispatches by name. **File IO is fully in-process — no `cat`/`patch` subprocess.** Full spec + phasing: `native-tools.md`.
 
 ## Permission modes (kernel/permissions.rs)
 
@@ -143,6 +143,8 @@ Two-pass: split history into prefix/suffix → summarize prefix to `NOTE₁` →
 | Walk | `ignore::WalkBuilder` |
 | Grep | `grep-searcher` + `grep-regex` (in-process; fallback: shell `rg`) |
 | AST/outline | `tree-sitter` + per-language grammars (feature-gated) |
+| PTY | `portable-pty` (interaction-pattern detection) |
+| Clipboard | `arboard` (pattern-gated sniff on focus) |
 | Content hash | `xxhash-rust` or `blake3` (drift detection for patches) |
 | Diff | `similar` (unified + line ops) |
 | Patch apply | `diffy` or hand-rolled on `similar` hunks |
