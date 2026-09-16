@@ -1,0 +1,224 @@
+//! `ToolSpec` + dispatch — one registry for built-ins and plugin tools.
+//!
+//! Contract (kernel-architecture.md §Tool registry):
+//!
+//! ```text
+//! pub struct ToolSpec {
+//!     pub name: &'static str,
+//!     pub schema: serde_json::Value,   // JSON Schema for the LLM
+//!     pub readonly: bool,             // skips confirmation in `default` mode
+//!     pub exec: fn(Args, &ToolCtx) -> BoxFuture<ToolResult>,
+//! }
+//! ```
+//!
+//! Plugin tools merge here under `plugin_id:name` (Stage 9). The registry
+//! produces the `tools` array for the LLM request and dispatches by name.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
+
+/// Arguments as delivered by the model — a JSON object.
+pub type Args = serde_json::Value;
+
+/// Shared context handed to every tool invocation.
+#[derive(Clone)]
+pub struct ToolCtx {
+    /// Canonical workspace root — all path args resolve and are checked
+    /// against this (symlink-escape guard: canonicalize before compare).
+    pub workspace_root: Arc<Path>,
+    /// The sandbox backend for process tools (`bash`, `test_runner`, pty).
+    /// `id() == "none"` means loud-unsandboxed: every `bash` must confirm.
+    pub sandbox: Arc<dyn agent_sandbox::SandboxBackend>,
+}
+
+impl ToolCtx {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let root = root.canonicalize().unwrap_or(root);
+        let (sandbox, _loud) = agent_sandbox::detect_backend();
+        Self {
+            workspace_root: Arc::from(root.as_path()),
+            sandbox: Arc::from(sandbox),
+        }
+    }
+
+    /// Explicit backend (tests / custom wiring).
+    pub fn with_sandbox(root: impl Into<PathBuf>, sandbox: Arc<dyn agent_sandbox::SandboxBackend>) -> Self {
+        let root = root.into();
+        let root = root.canonicalize().unwrap_or(root);
+        Self { workspace_root: Arc::from(root.as_path()), sandbox }
+    }
+
+    /// Resolve a model-supplied path against the workspace root and prove it
+    /// stays inside. Returns the canonical path or a sandbox-escape error.
+    pub fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
+        let p = Path::new(path);
+        let joined = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            self.workspace_root.join(p)
+        };
+        // Canonicalize requires the path to exist; for writes to new files,
+        // canonicalize the parent and re-attach the filename.
+        let canon = match joined.canonicalize() {
+            Ok(c) => c,
+            Err(_) => {
+                let parent = joined
+                    .parent()
+                    .and_then(|p| p.canonicalize().ok())
+                    .ok_or_else(|| ToolError::PathEscape(path.to_string()))?;
+                parent.join(joined.file_name().ok_or_else(|| {
+                    ToolError::PathEscape(path.to_string())
+                })?)
+            }
+        };
+        if !canon.starts_with(&*self.workspace_root) {
+            return Err(ToolError::PathEscape(path.to_string()));
+        }
+        Ok(canon)
+    }
+}
+
+/// Tool execution result — `content` is model-facing text (already folded
+/// under the truncation budget), `ui` is an optional typed card for the
+/// DiffViewer/status strip.
+#[derive(Debug)]
+pub struct ToolResult {
+    pub content: String,
+    /// Typed UI card hint (e.g. `"diff"`, `"table"`, `"markdown"`), rendered
+    /// as a rich card when present — plugins obey the same contract.
+    pub ui_type: Option<&'static str>,
+    /// True when the patch matched approximately — approval card must say so.
+    pub fuzzy: bool,
+}
+
+impl ToolResult {
+    pub fn text(content: impl Into<String>) -> Self {
+        Self { content: content.into(), ui_type: None, fuzzy: false }
+    }
+}
+
+/// Errors tools can raise. Message text is model-facing — ambiguity errors
+/// must *teach the fix* ("add context lines"), per native-tools.md.
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    #[error("{0}")]
+    Args(String),
+
+    #[error("path escapes workspace: {0}")]
+    PathEscape(String),
+
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("{0}")]
+    Failed(String),
+}
+
+/// One tool: name, schema for the LLM, readonly flag, exec fn.
+pub struct ToolSpec {
+    pub name: &'static str,
+    /// JSON Schema object describing the tool's parameters.
+    pub schema: serde_json::Value,
+    /// Read-only tools auto-run in `default` permission mode.
+    pub readonly: bool,
+    pub exec: fn(Args, Arc<ToolCtx>) -> BoxFuture<'static, Result<ToolResult, ToolError>>,
+}
+
+/// Name → spec map. `BTreeMap` keeps the `tools` array deterministic
+/// (provider prompt-cache friendly).
+#[derive(Default)]
+pub struct ToolRegistry {
+    specs: BTreeMap<&'static str, ToolSpec>,
+}
+
+impl ToolRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register the phase-1 built-in set.
+    pub fn with_builtins() -> Self {
+        let mut r = Self::new();
+        r.register(crate::tools::fs_read::spec());
+        r.register(crate::tools::fs_patch::spec());
+        r.register(crate::tools::list_dir::spec());
+        r.register(crate::tools::grep::spec());
+        r.register(crate::tools::test_runner::spec());
+        r.register(crate::tools::bash::spec());
+        r
+    }
+
+    pub fn register(&mut self, spec: ToolSpec) {
+        self.specs.insert(spec.name, spec);
+    }
+
+    /// The `tools` array for an LLM request (OpenAI `function` shape).
+    pub fn request_schema(&self) -> serde_json::Value {
+        let tools: Vec<serde_json::Value> = self
+            .specs
+            .values()
+            .map(|s| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": s.name,
+                        "description": s.schema["description"].clone(),
+                        "parameters": s.schema["parameters"].clone(),
+                    }
+                })
+            })
+            .collect();
+        serde_json::Value::Array(tools)
+    }
+
+    /// Dispatch by name. Unknown tool → model-facing error string so the
+    /// model can self-correct instead of crashing the turn.
+    pub async fn dispatch(
+        &self,
+        name: &str,
+        args: Args,
+        ctx: Arc<ToolCtx>,
+    ) -> Result<ToolResult, ToolError> {
+        match self.specs.get(name) {
+            Some(spec) => (spec.exec)(args, ctx).await,
+            None => Err(ToolError::Failed(format!(
+                "unknown tool '{name}' — available: {}",
+                self.specs.keys().copied().collect::<Vec<_>>().join(", ")
+            ))),
+        }
+    }
+
+    pub fn is_readonly(&self, name: &str) -> bool {
+        self.specs.get(name).map(|s| s.readonly).unwrap_or(false)
+    }
+
+    pub fn len(&self) -> usize {
+        self.specs.len()
+    }
+}
+
+/// Helper: pull a required string arg with a teaching error.
+pub fn arg_str<'a>(args: &'a Args, key: &str) -> Result<&'a str, ToolError> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::Args(format!("missing required string arg '{key}'")))
+}
+
+/// Helper: pull an optional usize arg.
+pub fn arg_usize(args: &Args, key: &str) -> Option<usize> {
+    args.get(key).and_then(|v| v.as_u64()).map(|v| v as usize)
+}
+
+/// Derive a JSON Schema `parameters` object from a serde shape via schemars,
+/// and attach the tool description separately.
+pub fn schema_for<T: schemars::JsonSchema>(
+    description: &str,
+) -> serde_json::Value {
+    let params = schemars::schema_for!(T);
+    let params = serde_json::to_value(params).unwrap_or_default();
+    serde_json::json!({ "description": description, "parameters": params })
+}

@@ -1,0 +1,47 @@
+// CodexDesktop — the three-zone workbench root.
+// Spec: codex-desktop-design.md §4.
+
+import { CodexTheme } from "codex_theme.slint";
+import {
+    Bridge,
+    ActionStepData,
+    DiffLineData,
+    ModelOption,
+    PendingApprovalData,
+    SessionMessageData,
+    SessionStats,
+} from "globals.slint";
+import { SlimSidebar } from "views/sidebar.slint";
+import { ExecutionStream } from "views/execution_stream.slint";
+import { DiffStage } from "components/diff_stage.slint";
+
+// Re-export the globals + structs so Rust's `slint::include_modules!` sees
+// them as the public API surface of this component file.
+export { Bridge, CodexTheme }
+export { ActionStepData, DiffLineData, ModelOption, PendingApprovalData,
+         SessionMessageData, SessionStats }
+
+export component CodexDesktop inherits Window {
+    title: "agent-rs";
+    min-width: 1080px;
+    min-height: 720px;
+    background: CodexTheme.bg_workspace;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        SlimSidebar {}
+        Rectangle { width: 1px; background: CodexTheme.border_hairline; }
+
+        ExecutionStream {
+            width: 420px;
+        }
+        Rectangle { width: 1px; background: CodexTheme.border_hairline; }
+
+        DiffStage {
+            pending: Bridge.pending;
+            diff_lines: Bridge.pending_diff;
+            changed_files: Bridge.changed_files;
+        }
+    }
+}

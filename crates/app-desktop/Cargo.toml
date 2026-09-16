@@ -1,0 +1,19 @@
+[package]
+name = "app-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Slint GUI shell — the ONLY Slint-dependent crate; a thin adapter over agent-kernel"
+license = "MIT"
+
+[dependencies]
+agent-ipc = { path = "../agent-ipc" }
+agent-kernel = { path = "../agent-kernel" }
+agent-llm = { path = "../agent-llm" }
+agent-sandbox = { path = "../agent-sandbox" }
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+slint = "1"
+
+[build-dependencies]
+slint-build = "1"

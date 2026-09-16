@@ -1,0 +1,62 @@
+// SlimSidebar — icon-width rail: workspace, session dots, env status.
+// Spec: codex-desktop-design.md §4(a).
+
+import { CodexTheme } from "../codex_theme.slint";
+import { Bridge } from "../globals.slint";
+
+export component SlimSidebar inherits Rectangle {
+    width: 64px;
+    background: CodexTheme.bg_panel;
+
+    VerticalLayout {
+        padding-top: 16px;
+        padding-bottom: 16px;
+        spacing: 16px;
+        alignment: space-between;
+
+        // top: workspace + session placeholders
+        VerticalLayout {
+            spacing: 12px;
+            alignment: center;
+            Rectangle {
+                width: 32px; height: 32px; border-radius: 6px;
+                background: CodexTheme.bg_hover;
+                Text {
+                    text: "◈";
+                    color: CodexTheme.text_white;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            // session activity dot — purple while the kernel is working
+            Rectangle {
+                width: 8px; height: 8px; border-radius: 4px;
+                background: Bridge.stats.agent_state == "Reasoning"
+                         || Bridge.stats.agent_state == "StreamingToken"
+                         || Bridge.stats.agent_state == "ExecutingTool"
+                    ? CodexTheme.status_running
+                    : CodexTheme.text_dim;
+            }
+        }
+
+        // bottom: sandbox + provider status
+        VerticalLayout {
+            spacing: 8px;
+            alignment: center;
+            Text {
+                text: Bridge.sandbox_unsafe ? "⚠" : "⛨";
+                font-size: 14px;
+                color: Bridge.sandbox_unsafe ? CodexTheme.warn : CodexTheme.diff_add;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: Bridge.stats.active_model;
+                font-family: CodexTheme.font_mono;
+                font-size: 8px;
+                color: CodexTheme.text_dim;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}

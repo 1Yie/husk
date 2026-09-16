@@ -1,0 +1,175 @@
+// ExecutionStream — the left main column: session header, message timeline
+// (prompts as text blocks, reasoning folded, tool capsules), input capsule.
+// Spec: codex-desktop-design.md §4(b).
+
+import { ListView } from "std-widgets.slint";
+import { CodexTheme } from "../codex_theme.slint";
+import { Bridge, SessionMessageData, ActionStepData } from "../globals.slint";
+import { CodexStepCapsule } from "../components/step_capsule.slint";
+
+component PromptBlock inherits Rectangle {
+    in property <string> text;
+    border-radius: 4px;
+    background: CodexTheme.bg_card;
+    border-width: 1px;
+    border-color: CodexTheme.border_hairline;
+    VerticalLayout { padding: 8px;
+    Text {
+        text: root.text;
+        font-family: CodexTheme.font_sans;
+        font-size: 13px;
+        color: CodexTheme.text_white;
+        wrap: word-wrap;
+    }
+    }
+}
+
+component AgentText inherits Text {
+    font-family: CodexTheme.font_sans;
+    font-size: 13px;
+    color: CodexTheme.text_secondary;
+    wrap: word-wrap;
+}
+
+component ReasoningFold inherits Rectangle {
+    in property <string> text;
+    in property <bool> streaming;
+    height: 20px;
+    Text {
+        text: "⠋ Thinking…" + (root.streaming ? "" : " (collapsed)");
+        font-family: CodexTheme.font_mono;
+        font-size: 10px;
+        color: CodexTheme.text_muted;
+        vertical-alignment: center;
+    }
+}
+
+component CaretCaret inherits Rectangle {
+    // solid blinking block caret — 500ms toggle
+    in property <bool> on;
+    width: 7px; height: 14px;
+    background: on ? CodexTheme.accent : transparent;
+}
+
+export component ExecutionStream inherits Rectangle {
+    background: CodexTheme.bg_panel;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        // ---- header ----
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "CURRENT SESSION";
+                font-family: CodexTheme.font_mono;
+                font-size: 10px;
+                font-weight: 700;
+                color: CodexTheme.text_muted;
+                letter-spacing: 1px;
+            }
+            Text {
+                text: Bridge.stats.agent_state;
+                font-family: CodexTheme.font_mono;
+                font-size: 10px;
+                color: Bridge.stats.degraded ? CodexTheme.warn
+                     : CodexTheme.diff_add;
+            }
+        }
+
+        // ---- timeline ----
+        ListView {
+            vertical-stretch: 1;
+            for msg in Bridge.messages: VerticalLayout {
+                spacing: 6px;
+                padding-bottom: 8px;
+
+                if msg.role == "user": PromptBlock { text: msg.text; }
+
+                if msg.role == "agent" || msg.role == "system": VerticalLayout {
+                    spacing: 4px;
+                    if msg.reasoning != "": ReasoningFold {
+                        text: msg.reasoning;
+                        streaming: msg.streaming;
+                    }
+                    HorizontalLayout {
+                        spacing: 0px;
+                        AgentText { text: msg.text; }
+                        if msg.streaming: CaretCaret {
+                            on: Math.mod(animation-tick(), 1s) < 0.5s;
+                        }
+                    }
+                }
+
+                // tool capsules belonging to this message are interleaved in
+                // the flat active_steps model — the stream renders them in
+                // order via the same ListView pass below.
+            }
+        }
+
+        // ---- active steps strip (running tool capsules) ----
+        for step in Bridge.active_steps: CodexStepCapsule { step: step; }
+
+        // ---- input capsule ----
+        Rectangle {
+            height: 84px;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: input.has-focus ? CodexTheme.border_focus : CodexTheme.border_hairline;
+            background: CodexTheme.bg_card;
+
+            VerticalLayout {
+                padding: 10px;
+                spacing: 6px;
+
+                input := TextInput {
+                    font-family: CodexTheme.font_sans;
+                    font-size: 13px;
+                    color: CodexTheme.text_white;
+                    vertical-stretch: 1;
+                    // placeholder text overlays via a Text sibling when empty
+                }
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: Bridge.stats.agent_state == "Reasoning"
+                           || Bridge.stats.agent_state == "StreamingToken"
+                           || Bridge.stats.agent_state == "ExecutingTool"
+                            ? "Steer the agent…  (Enter sends mid-turn)"
+                            : "⌘⏎ to run  •  / for commands";
+                        font-family: CodexTheme.font_mono;
+                        font-size: 10px;
+                        color: CodexTheme.text_muted;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 22px; height: 22px; border-radius: 4px;
+                        background: CodexTheme.bg_hover;
+                        Text {
+                            text: "→";
+                            color: CodexTheme.text_white;
+                            font-family: CodexTheme.font_mono;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => {
+                                if (Bridge.stats.agent_state == "Reasoning"
+                                 || Bridge.stats.agent_state == "StreamingToken"
+                                 || Bridge.stats.agent_state == "ExecutingTool") {
+                                    Bridge.steer(input.text);
+                                } else {
+                                    Bridge.submit_prompt(input.text);
+                                }
+                                input.text = "";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

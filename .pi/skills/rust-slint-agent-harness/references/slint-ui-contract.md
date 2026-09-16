@@ -1,6 +1,8 @@
 # Slint UI Contract
 
-The bridge (`crates/app-desktop/src/bridge.rs`) owns every binding listed here. Rust fills the models; Slint renders declaratively. All `.slint` files live under `crates/app-desktop/ui/`. Theme: Catppuccin Mocha.
+The bridge (`crates/app-desktop/src/bridge.rs`) owns every binding listed here. Rust fills the models; Slint renders declaratively. All `.slint` files live under `crates/app-desktop/ui/`.
+
+**Visual language**: `codex-desktop-design.md` — the app presents as a Codex-Desktop-style task workbench (slim sidebar + execution stream + diff review stage), not a chat stream. The `Theme` global below is the deprecated Catppuccin set; new code uses `CodexTheme` from `codex_theme.slint`. Structs and `Bridge` callbacks in this file are the wire contract and are unchanged by the visual re-skin.
 
 ## globals.slint — structs (Rust `slint::Struct` mirrors)
 
@@ -129,6 +131,10 @@ export struct SessionStats {
 ```
 
 ## globals.slint — Theme
+
+> **Deprecated** — superseded by `CodexTheme` in `codex_theme.slint`
+> (codex-desktop-design.md §2). Kept here so existing component sketches
+> still resolve; new components must import `CodexTheme`.
 
 ```slint
 export global Theme {

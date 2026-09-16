@@ -1,0 +1,25 @@
+[package]
+name = "agent-llm"
+version = "0.1.0"
+edition = "2021"
+description = "Pluggable LLM provider layer: normalized StreamChunk over OpenAI-compat/Anthropic/mock adapters"
+license = "MIT"
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true
+bytes.workspace = true
+toml.workspace = true
+dirs.workspace = true
+keyring.workspace = true
+
+[dependencies.tokio]
+workspace = true
+features = ["time"]
