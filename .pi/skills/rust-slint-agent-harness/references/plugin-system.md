@@ -87,10 +87,83 @@ Operational guards:
 
 ## MCP bridge (`crates/agent-plugin/src/mcp.rs`)
 
-- Spawn per manifest `entry.command`; handshake `initialize` → `tools/list` → cache schemas → translate into `export_tools()`.
-- `call_tool` → JSON-RPC `tools/call` over stdin; per-call timeout; response `content[]` concatenated to `String`.
-- Sandbox is weaker (full process) → MCP plugins get the **same permission-mode gates as `bash`** plus an explicit install-time consent ("This plugin runs `npx foo-server` — trust?"); declared in UI as `kind: "mcp"` with a distinct badge.
+MCP is **full JSON-RPC 2.0 over stdio**, not just "spawn and call". Spec target: protocol version `2024-11-05`. The client must implement the complete lifecycle — anything less fails to load real community servers.
+
+### Lifecycle (mandatory sequence)
+
+```text
+spawn(command, args, env)          # Stdio piped stdin/stdout, stderr → log ring buffer
+   │
+   ▼
+initialize {protocolVersion, capabilities, clientInfo}
+   │◀── server returns ServerCapabilities {tools?, resources?, prompts?}
+   ▼
+notifications/initialized         # handshake complete
+   │
+   ▼
+tools/list → cache schemas → export_tools()   # gated on server caps
+resources/list, prompts/list                   # when caps declare them
+   │
+   ▼ (steady state)
+tools/call, resources/read, prompts/get
+notifications/tools/list_changed  → re-list, hot-reload without restart
+notifications/cancelled, progress → forward to step card
+   │
+   ▼ (shutdown)
+graceful: drain pending → kill child → reap
+```
+
+### Client skeleton
+
+```rust
+pub struct McpClient {
+    stdin: Arc<Mutex<ChildStdin>>,
+    req_id: AtomicU64,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
+    server_caps: ServerCapabilities,          // what the server declared at initialize
+    _process: Child,
+}
+```
+
+- **Background reader task**: `BufReader::new(stdout).lines()` loop demultiplexes — `id` present → resolve `pending[id]` oneshot; `method` present → notification → internal handler (`tools/list_changed` → re-list + refresh router). Per-call timeout on the oneshot (default 30 s).
+- `call_rpc(method, params)`: allocate id → insert oneshot → `serde_json` line + `\n` → await.
+- `call_tool`: `tools/call` → concatenate `content[]` items where `type == "text"`; non-text content (image/blob) → placeholder marker `[mcp: <type> content omitted]`.
+- Env for the child comes **only** from manifest `env` + the sandbox env allowlist — never inherit host env.
+
+### Three primitives, not one
+
+| Primitive | Methods | Kernel mapping |
+|-----------|---------|----------------|
+| **Tools** | `tools/list`, `tools/call` | `export_tools()` / `call_tool()` — same as today |
+| **Resources** | `resources/list`, `resources/read`, `resources/subscribe` | surface as a `context_provider`: readable URIs (logs, DB schema, files) injected as `<plugin_context>` or exposed via a `read_resource` tool shim |
+| **Prompts** | `prompts/list`, `prompts/get` | surfaced to the UI slash-command menu — user-invoked templates, rendered client-side then submitted as a normal prompt |
+
+Server capabilities gate everything: a server that didn't declare `resources` never gets `resources/list` called.
+
+### Standard config format (community-compatible)
+
+Support the de-facto `mcpServers` shape so users paste configs straight from Claude Desktop / community docs:
+
+```toml
+# config.toml — also accept mcpServers JSON blocks
+[mcp_servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "env:GITHUB_TOKEN" }
+
+[mcp_servers.sqlite]
+command = "uvx"
+args = ["mcp-server-sqlite", "--db-path", "./test.db"]
+```
+
+Each `mcp_servers.*` entry synthesizes a `kind: "mcp"` manifest internally — no separate manifest file required.
+
+### Safety posture
+
+- Sandbox is weaker (full process) → MCP plugins get the **same permission-mode gates as `bash`** plus explicit install-time consent ("This plugin runs `npx foo-server` — trust?"); UI badge `kind: "mcp"`.
+- Optionally runnable under `SandboxBackend` (manifest `sandboxed: true`) when the server is local-binary-safe.
 - Stderr → log ring buffer, surfaced on plugin error cards.
+- Child death = plugin `status: "error"` in settings; auto-restart with backoff (max 3) on transport failure, never mid-request.
 
 ## PluginManager (`crates/agent-plugin/src/manager.rs`)
 
@@ -138,3 +211,8 @@ pub struct PluginManager {
 - [ ] `plugin_id:tool` namespacing resolves collisions deterministically
 - [ ] Consent dialog deny → tool result "denied by user", agent loop continues
 - [ ] Disable plugin → its tools vanish from next LLM request's schema list
+- [ ] Full MCP handshake: `initialize` → `notifications/initialized` → `tools/list` against a real server (e.g. `@modelcontextprotocol/server-filesystem`)
+- [ ] `notifications/tools/list_changed` → tools hot-reload without restart
+- [ ] Server-declared caps gate: server without `resources` never receives `resources/list`
+- [ ] `mcpServers` TOML entry boots a community server with only `command`/`args`/`env`
+- [ ] MCP child killed → error card + session alive; backoff-restart ≤3

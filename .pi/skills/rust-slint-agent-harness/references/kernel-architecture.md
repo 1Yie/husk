@@ -54,6 +54,7 @@ Transitions: `Idle→ScanningWorkspace→Reasoning→StreamingToken→{Finished 
 | SSE idle timeout | 300 s → `IdleTimeout` error |
 | Doom-loop detection | repeated identical generation pattern → abort + resample, budget `doom_max_retries` (default 3) |
 | Retry | exponential backoff on transport + 429/5xx; never on other 4xx |
+| Mid-stream failure | salvage partial text (`interrupted` marker) + continuation-prompt retry, ≤3 attempts — see production-hardening §4 |
 | Fallback | retry budget exhausted → next `fallback_chain` provider; emit `system` degrade message to UI |
 | APIs | `LlmProvider` trait; `openai_compat` first (OpenAI/xAI/DeepSeek/Ollama/vLLM), `anthropic` v2 |
 
@@ -147,6 +148,9 @@ Two-pass: split history into prefix/suffix → summarize prefix to `NOTE₁` →
 | MCP plugins | stdio JSON-RPC client (hand-rolled or `rmcp`) |
 | Memory (P1) | `libsql` (embedded) + `fastembed-rs` (ONNX embeddings) |
 | Vision (P2) | `screenshots`/`xcap` capture + local VLM via llama.cpp or `candle` |
+| Secrets | `keyring` (OS credential store) + egress masker in agent-llm |
+| Persistence | `libsql`/`sqlx` WAL + single-writer actor; `refinery` migrations |
+| Self-update | `self_update` (GitHub Releases, atomic replace) |
 
 ## Workspace scanner contract (crates/agent-context/src/workspace.rs)
 
@@ -171,3 +175,7 @@ Two-pass: split history into prefix/suffix → summarize prefix to `NOTE₁` →
 - [ ] `UiCommand::Steer` mid-turn adjusts plan without re-running completed tools
 - [ ] Memory recall injects relevant facts in session 2 without re-prompting
 - [ ] Ambient compile-error probe emits suggestion chip, never auto-starts a turn
+- [ ] `kill -9` host mid-tool → zero orphan processes (pgrep clean)
+- [ ] Configured secret never appears raw in outbound request body or logs
+- [ ] 200 concurrent DB writes + reads → zero `database is locked`
+- [ ] v0.2 binary boots a v0.1 `memory.db` — migrates, zero loss

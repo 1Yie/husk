@@ -28,7 +28,8 @@ llm/
 ├── sse.rs            # shared SSE helpers on eventsource-stream
 ├── sampler.rs        # SamplerActor: wraps a provider stream with resilience policy
 ├── factory.rs        # ProviderFactory: ProviderConfig -> Arc<dyn LlmProvider>
-├── config.rs         # config.toml schema + hot-reload
+├── config.rs         # config.toml schema + hot-reload + env:/keyring: resolution
+├── masking.rs        # egress secret redaction on every outbound request
 ├── fallback.rs       # FallbackPolicy: retry → backup provider
 └── adapters/
     ├── openai_compat.rs
@@ -146,7 +147,8 @@ fallback_chain = ["ollama"]
 ```
 
 - `ProviderFactory::build(&ProviderConfig)` keys on `type`; unknown type = config error at load, not at first request.
-- `api_key` values starting with `env:` resolve from process env at startup; missing var → warn + mark provider unavailable (don't panic).
+- `api_key` indirections: `env:VAR` resolves from process env; `keyring:<service>/<account>` resolves from the OS credential store (macOS Keychain / Windows CredMan / Secret Service). Plaintext allowed but warns at load. Missing source → provider marked `available: false`, never panic.
+- **Egress masker**: every outbound request body passes through a replacer built from all resolved secrets + credential patterns (`*_KEY`, `*_TOKEN`, `ghp_*`, `sk-*`, `xai-*`…). Match → `[REDACTED_<kind>]`. Covers tool results too — `env`/`.env` reads are the classic leak path. See production-hardening §2.
 - Hot-swap path: UI dropdown → `Bridge::set_model(provider, model)` → kernel replaces `Arc<dyn LlmProvider>` + stores `active_model`. Applies to the **next** turn; never interrupt an in-flight stream.
 - Optional `notify` watch on `config.toml` → reload providers table without restart.
 
@@ -160,6 +162,7 @@ SamplerActor consumes `BoxStream<StreamChunk>` and applies policy uniformly:
 | Doom-loop | identical repeated generation → abort + resample, `doom_max_retries = 3` |
 | Retry | exponential backoff on transport errors + 429/5xx; never on 4xx |
 | Fallback | after retry budget exhausted → next entry in `fallback_chain` (if configured); surface degrade event to UI as a `system` message |
+| Mid-stream cut | salvage received chunks → mark `interrupted` → continuation-prompt retry (≤3) rather than discard — see production-hardening §4 |
 | Usage | last `Done` chunk's token counts feed `SessionStats.tokens_used` |
 
 ## Testing contract

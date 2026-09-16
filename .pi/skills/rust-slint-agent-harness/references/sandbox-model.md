@@ -16,7 +16,7 @@ v1 ships **L1 + L2**. L3 is a `SandboxBackend` impl behind the same trait — ad
 
 1. **Filesystem isolation**: system dirs (`/usr`, `/lib`, `/bin`, `C:\Windows`) read-only; sensitive dirs (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.bash_history`, browser profiles) denied outright; **only `$WORKSPACE` + per-run tmp (`/tmp/agent-run-*`) writable**.
 2. **Network control**: default per `SandboxConfig.allow_network`; offline runs unshare the net namespace (Linux) / deny `network*` (macOS). When on, document that package fetches work; future: proxy-locked egress.
-3. **Resource limits**: max memory (default 2048 MB), max wall timeout (per-call `timeout_secs`, bash tool hard cap 600 s), process/thread count cap where the platform allows. Timeout kills the **process tree** (pgid kill / Job Object terminate), not just the leader — no orphaned grandchildren.
+3. **Resource limits**: max memory (default 2048 MB), max wall timeout (per-call `timeout_secs`, bash tool hard cap 600 s), process/thread count cap where the platform allows. Timeout kills the **process tree** (pgid kill / Job Object terminate), not just the leader — no orphaned grandchildren. Every spawn registers in the kernel's `ChildRegistry` with parent-death wiring (`prctl(PR_SET_PDEATHSIG)` Linux / `setpgid`+group-kill macOS / `KILL_ON_JOB_CLOSE` Windows) — `kill -9` on the host leaves zero survivors. See production-hardening §1.
 4. **Env sanitization**: never inherit host env wholesale. Allowlist: `PATH LANG LC_* HOME TERM TMPDIR USER SHELL` + toolchain vars (`CARGO_HOME`, `GOPATH`, `NODE_ENV`…) explicitly configured. Denylist patterns: `*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AWS_*`, `GITHUB_*`, `OPENAI_*`, `ANTHROPIC_*` — denylist wins over allowlist.
 
 ## Unified backend trait (`crates/agent-sandbox/src/traits.rs`)
@@ -153,6 +153,7 @@ Audit is **pre-spawn string analysis** — it complements, never replaces, the O
 - [ ] `env` inside sandbox contains no `*_KEY`/`_TOKEN`/`_SECRET`
 - [ ] `--unshare-net` / `(deny network*)` verified: `curl` to localhost fails when `allow_network: false`
 - [ ] 60 s timeout on `while true; do :; done` kills entire tree, no orphan procs (`pgrep` clean)
+- [ ] `kill -9` on host while sandboxed cmd + MCP server run → zero survivors in 1 s
 - [ ] Reflink snapshot of 5k-file workspace < 50 ms; merge-back diff appears in approval UI
 - [ ] `rm -rf /` audit → critical card; even after approve it runs inside CoW snapshot
 - [ ] Backend `none` → warn chip visible + every bash call confirms

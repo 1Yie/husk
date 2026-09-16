@@ -25,6 +25,7 @@ These are invariants. Violating any of them breaks the product thesis.
 8. **Plugins are sandboxed, dual-track.** WASM (Wasmtime, capability-gated WASI) for trusted/high-perf extensions; MCP stdio for ecosystem breadth. Both map to one `Plugin` trait (tools + context providers). Manifest permissions are exhaustive maximums — anything undeclared is physically denied. Plugin output obeys the same truncation budgets as built-ins.
 9. **Every command runs in a sandbox.** `bash` never spawns a bare host process: L2 tier (bubblewrap/Landlock on Linux, `sandbox-exec` on macOS, Job Objects on Windows) restricts fs to workspace+tmp rw, sanitizes env secrets, caps memory/timeout, kills process trees. Pre-execution audit escalates `rm -rf`/`git push -f`/`curl|sh` to critical-confirm. Optional CoW snapshots give instant rollback. `none` backend is opt-in and loud.
 10. **Sessions are steerable, memory is layered.** Mid-turn user input hot-patches the plan via `UiCommand::Steer` without resetting the state machine. Long-term cognition lives in local LibSQL + FastEmbed: episodic (turn outcomes), semantic (project conventions), persona (user style) — all inspectable, deletable, scoped per workspace.
+11. **Death and secrets are engineered.** Every spawned child registers in a `ChildRegistry` with parent-death wiring (prctl/pgid/Job Object) — `kill -9` on the host leaves zero orphans. Secrets resolve via `keyring:`/`env:` indirection, never cross to the model raw: an egress masker redacts them from every outbound request.
 
 ## Build Order
 
@@ -42,7 +43,8 @@ Crate topology is a Cargo workspace — see `references/workspace-layout.md`. Im
 | 8 | Execution sandbox | `crates/agent-sandbox/src/*` | `SandboxBackend` trait + platform backends; env sanitization + resource limits verified; audit gate escalates dangerous commands; CoW snapshot/merge works |
 | 9 | Plugin system | `crates/agent-plugin/src/*` | `PluginManager` routes plugin tools + context providers; WASM sandbox enforces manifest permissions; MCP stdio bridge works; consent dialog round-trip |
 | 10 | Memory + steering | `crates/agent-context/src/memory/*`, `crates/agent-kernel/src/steering.rs` | LibSQL store + FastEmbed recall injects `<memory>` into prompts; `UiCommand::Steer` mid-turn hot-patches plan; ambient error probe suggests fixes |
-| 11 | Polish | tray, hotkeys, `~/.config` | single `cargo build --release -p app-desktop` binary; cold start < 300 ms |
+| 11 | Production hardening | `agent-llm/src/masking.rs`, `agent-context/src/memory/store.rs`, boot sequence | WAL + single-writer actor live; `keyring:` secrets + egress masker verified; child-registry orphan test passes; mid-stream salvage + offline degrade work; migrations + self-update safe; CJK/HiDPI correct on fresh VM |
+| 12 | Polish | tray, hotkeys, `~/.config` | single `cargo build --release -p app-desktop` binary; cold start < 300 ms |
 
 ## Reference Files
 
@@ -52,6 +54,7 @@ Load these on demand — do not re-derive their contents from memory:
 - **`references/llm-provider-layer.md`** — pluggable LLM engine spec: `LlmProvider` trait, normalized `StreamChunk`, OpenAI-compat/Anthropic adapters, `config.toml` schema with `env:` key indirection, hot-swap, fallback chains, mock provider for tests.
 - **`references/plugin-system.md`** — dual-track plugin spec: manifest contract, `Plugin` trait, Wasmtime capability sandbox (fs preopens, network allowlist, fuel + timeouts), MCP stdio bridge, `PluginManager` routing, consent flow, typed UI cards, hostile-plugin test checklist.
 - **`references/sandbox-model.md`** — layered execution isolation: L1 WASM / L2 native process (bwrap, Landlock, sandbox-exec, Job Objects) / L3 microVM; `SandboxBackend` trait, four control dimensions (fs/net/resources/env), audit levels, CoW snapshot merge-back, degradation policy.
+- **`references/production-hardening.md`** — six delivery-grade blind spots: process-tree lifecycle (pdeathsig/pgid/Job Object, ChildRegistry, ordered shutdown), keyring secrets + egress masker, SQLite WAL + single-writer actor, mid-stream salvage + offline degrade, refinery migrations + self-update, embedded CJK fonts + HiDPI. Includes crate landing map and boot order.
 - **`references/capability-roadmap.md`** — the five deep-water upgrades with priorities: P1 layered memory (LibSQL+FastEmbed, distiller, per-workspace scoping) + mid-turn steering + ambient probes; P2 visual grounding (screenshot tool, local VLM) + branch-and-verify planning over CoW forks; P3 remote headless workers via gRPC mesh. Includes `AgentState` deltas and anti-goals.
 - **`references/slint-ui-contract.md`** — the Slint-side data contract: every `struct`, `global`, callback, and component property the bridge must implement, plus Catppuccin-Mocha theme tokens.
 - **`references/workspace-layout.md`** — Cargo workspace factory layout: six crates, one-way dependency law (`app-desktop → agent-kernel → {context, sandbox, plugin, llm}`), root `Cargo.toml` + release profile, headless-testability rules, `UiCommand`/`UiEvent` channel contract.
