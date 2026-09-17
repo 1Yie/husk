@@ -1,13 +1,14 @@
 //! `smart_read` — structured file reads that never `cat`.
 //!
-//! Three modes (native-tools.md): `outline` (tree-sitter skeleton — Stage 3
-//! ships a regex-based signature extractor; tree-sitter grammars land with
-//! Phase 2), `range` (numbered lines + `content_hash`), `search` (matching
-//! lines with numbers).
+//! Three modes (native-tools.md): `outline` (signature skeleton — a regex-
+//! based Phase-1 extractor; tree-sitter grammars land with Phase 2),
+//! `range` (numbered lines + `content_hash`), `search` (matching lines).
 //!
-//! Every response carries `content_hash` (xxh3 of the read window) so
-//! `fuzzy_patch` can detect drift between read and write.
+//! Every response carries `content_hash` — xxh3 of the **full file** — so
+//! `fuzzy_patch` can detect drift between read and write. (Full-file hash,
+//! not window: the patcher verifies nothing else changed anywhere.)
 
+use std::fmt::Write;
 use std::sync::Arc;
 
 use futures::FutureExt;
@@ -20,6 +21,10 @@ use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec
 const MAX_RANGE_LINES: usize = 1000;
 /// `search` mode cap on matching lines returned.
 const MAX_SEARCH_HITS: usize = 200;
+/// `outline` mode cap before truncation.
+const MAX_OUTLINE_ITEMS: usize = 400;
+/// Max extra lines a multi-line signature may absorb (`fn (\n args…\n) ->`).
+const MAX_SIG_SPAN: usize = 4;
 
 #[derive(Debug, serde::Serialize, Deserialize, schemars::JsonSchema)]
 struct SmartReadArgs {
@@ -64,15 +69,19 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         }
     });
 
+    // Collect once — O(1) random access for range + outline's look-back and
+    // signature-span peeking (no per-line `content.lines().nth()` rescan).
+    let lines: Vec<&str> = content.lines().collect();
+
     match mode {
-        "outline" => Ok(ToolResult::text(outline(&parsed.path, &content, &hash))),
+        "outline" => Ok(ToolResult::text(outline(&parsed.path, &lines, &hash))),
         "search" => {
             let pat = parsed.pattern.as_deref().ok_or_else(|| {
                 ToolError::Args("search mode requires 'pattern'".into())
             })?;
-            Ok(ToolResult::text(search(&parsed.path, &content, pat, &hash)))
+            Ok(ToolResult::text(search(&parsed.path, &lines, pat, &hash)))
         }
-        _ => Ok(ToolResult::text(range(&parsed.path, &content, parsed.start, parsed.end, &hash))),
+        _ => Ok(ToolResult::text(range(&parsed.path, &lines, parsed.start, parsed.end, &hash))),
     }
 }
 
@@ -81,36 +90,41 @@ fn header(path: &str, hash: &str) -> String {
 }
 
 /// `range` mode: numbered `NNNN │ code` lines, hard cap + continuation hint.
-fn range(path: &str, content: &str, start: Option<usize>, end: Option<usize>, hash: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
+/// Guards empty files and out-of-bounds slices — `start`/`end` clamped to
+/// `1..=total`, `s > e` returns a friendly error rather than panicking.
+fn range(path: &str, lines: &[&str], start: Option<usize>, end: Option<usize>, hash: &str) -> String {
     let total = lines.len();
-    let s = start.unwrap_or(1).max(1);
-    let e = end.unwrap_or(total).min(total).min(s + MAX_RANGE_LINES - 1);
-    if s > total {
-        return format!(
-            "{header}{path}: {total} lines total; requested start {s} is past EOF",
-            header = header(path, hash)
-        );
-    }
     let mut out = header(path, hash);
+    if total == 0 {
+        out.push_str("(empty file)\n");
+        return out;
+    }
+    let s = start.unwrap_or(1).max(1).min(total + 1); // 1..=total, allow past-EOF msg
+    if s > total {
+        let _ = writeln!(out, "{path}: {total} lines total; requested start {s} is past EOF");
+        return out;
+    }
+    let req_end = end.unwrap_or(total).min(total);
+    if req_end < s {
+        let _ = writeln!(out, "invalid range: start ({s}) > end ({req_end})");
+        return out;
+    }
+    let e = req_end.min(s + MAX_RANGE_LINES - 1);
     for (i, line) in lines[s - 1..e].iter().enumerate() {
-        let _ = std::fmt::Write::write_fmt(
-            &mut out,
-            format_args!("{:>4} │ {}\n", s + i, line),
-        );
+        let _ = writeln!(out, "{:>4} │ {}", s + i, line);
     }
     if e < total {
-        out.push_str(&format!("… [truncated — {total} lines total, continue with start={}] …\n", e + 1));
+        let _ = writeln!(out, "… [truncated — {total} lines total, continue with start={}] …", e + 1);
     }
     out
 }
 
 /// `search` mode: matching lines with numbers, capped.
-fn search(path: &str, content: &str, pattern: &str, hash: &str) -> String {
-    let re = regex_lite(pattern);
+fn search(path: &str, lines: &[&str], pattern: &str, hash: &str) -> String {
+    let re = regex::Regex::new(pattern).ok();
     let mut out = header(path, hash);
     let mut hits = 0usize;
-    for (i, line) in content.lines().enumerate() {
+    for (i, line) in lines.iter().enumerate() {
         let matched = match &re {
             Some(r) => r.is_match(line),
             None => line.contains(pattern),
@@ -118,51 +132,62 @@ fn search(path: &str, content: &str, pattern: &str, hash: &str) -> String {
         if matched {
             hits += 1;
             if hits <= MAX_SEARCH_HITS {
-                out.push_str(&format!("{:>4} │ {}\n", i + 1, line));
+                let _ = writeln!(out, "{:>4} │ {}", i + 1, line);
             }
         }
     }
     if hits == 0 {
         out.push_str("no matches\n");
     } else if hits > MAX_SEARCH_HITS {
-        out.push_str(&format!("… [{hits} matches total, first {MAX_SEARCH_HITS} shown] …\n"));
+        let _ = writeln!(out, "… [{hits} matches total, first {MAX_SEARCH_HITS} shown] …");
     }
     out
 }
 
-/// Cheap regex via `grep-regex` if it compiles, else literal substring.
-fn regex_lite(pattern: &str) -> Option<regex::Regex> {
-    regex::Regex::new(pattern).ok()
-}
-
-/// `outline` mode: signature skeleton. Regex-based Phase-1 extraction —
-/// `fn`/`struct`/`enum`/`trait`/`impl`/`pub` lines + common JS/TS/Python
-/// signatures; bodies folded. Tree-sitter grammars land in Phase 2.
-fn outline(path: &str, content: &str, hash: &str) -> String {
+/// `outline` mode: signature skeleton. O(n) — indexes into the pre-collected
+/// `lines` slice for the doc-comment look-back and multi-line signature span,
+/// never rescans `content`. Absorbs up to `MAX_SIG_SPAN` continuation lines
+/// for a signature that doesn't end `{`/`;` on its first line.
+fn outline(path: &str, lines: &[&str], hash: &str) -> String {
     let mut out = header(path, hash);
     let mut emitted = 0usize;
-    let mut prev_blank = false;
-    for (i, line) in content.lines().enumerate() {
-        let t = line.trim_end();
-        let is_sig = looks_like_signature(t);
-        if is_sig {
-            // Attach a preceding doc comment line if adjacent.
-            if prev_blank && i > 0 {
-                let prev = content.lines().nth(i - 1).unwrap_or("").trim();
-                if prev.starts_with("///") || prev.starts_with('#') || prev.starts_with("*") || prev.starts_with("//") {
-                    out.push_str(&format!("{:>4} │ {}\n", i, prev));
+    let total = lines.len();
+    let mut i = 0;
+    while i < total {
+        let t = lines[i].trim_end();
+        if looks_like_signature(t) {
+            // Attach a doc comment directly above (O(1) index — not nth()).
+            if i > 0 {
+                let prev = lines[i - 1].trim();
+                if prev.starts_with("///") || prev.starts_with("**") || prev.starts_with('*')
+                    || (prev.starts_with("//") && !prev.starts_with("////"))
+                {
+                    let _ = writeln!(out, "{:>4} │ {}", i, prev);
                 }
             }
-            out.push_str(&format!("{:>4} │ {}\n", i + 1, t));
+            // Absorb continuation lines for a signature that doesn't close on
+            // line 1 — `pub async fn f(\n    &self,\n    x: T,\n) -> R {`.
+            let mut end = i;
+            let mut sig = t.to_string();
+            while end + 1 < total
+                && end - i < MAX_SIG_SPAN
+                && !sig.trim_end().ends_with('{')
+                && !sig.trim_end().ends_with(';')
+                && !sig.trim_end().ends_with('}')
+            {
+                end += 1;
+                sig.push(' ');
+                sig.push_str(lines[end].trim());
+            }
+            let _ = writeln!(out, "{:>4} │ {}", i + 1, sig);
             emitted += 1;
-            prev_blank = false;
-        } else {
-            prev_blank = t.trim().is_empty() || t.trim_start().starts_with("//") || t.trim_start().starts_with('#');
+            i = end; // skip the absorbed continuation lines
+            if emitted >= MAX_OUTLINE_ITEMS {
+                out.push_str("… [outline truncated] …\n");
+                break;
+            }
         }
-        if emitted >= 400 {
-            out.push_str("… [outline truncated] …\n");
-            break;
-        }
+        i += 1;
     }
     if emitted == 0 {
         out.push_str("(no recognizable signatures — use mode=range)\n");
@@ -173,7 +198,7 @@ fn outline(path: &str, content: &str, hash: &str) -> String {
 /// Phase-1 heuristic: does this line open a named item?
 fn looks_like_signature(trimmed: &str) -> bool {
     let t = trimmed.trim_start();
-    if t.starts_with("//") || t.starts_with('#') && !t.starts_with("#[") {
+    if t.starts_with("//") || (t.starts_with('#') && !t.starts_with("#[")) {
         return false;
     }
     const PREFIXES: &[&str] = &[
@@ -208,5 +233,48 @@ mod regex {
             use grep_matcher::Matcher;
             self.0.is_match(line.as_bytes()).unwrap_or(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(s: &str) -> Vec<&str> {
+        s.lines().collect()
+    }
+
+    #[test]
+    fn range_empty_file_is_friendly() {
+        let out = range("e.rs", &lines(""), Some(1), Some(10), "h");
+        assert!(out.contains("(empty file)"));
+    }
+
+    #[test]
+    fn range_past_eof_is_friendly() {
+        let out = range("t.rs", &lines("a\nb\nc"), Some(5), Some(10), "h");
+        assert!(out.contains("past EOF"));
+    }
+
+    #[test]
+    fn range_start_gt_end_is_friendly() {
+        let out = range("t.rs", &lines("a\nb\nc"), Some(3), Some(1), "h");
+        assert!(out.contains("invalid range"));
+    }
+
+    #[test]
+    fn outline_multiline_signature_is_absorbed() {
+        let code = "/// Service entry\npub async fn bootstrap(\n    port: u16,\n    host: &str,\n) -> anyhow::Result<()> {\n    body()\n}\n";
+        let out = outline("s.rs", &lines(code), "h");
+        assert!(out.contains("/// Service entry"));
+        assert!(out.contains("pub async fn bootstrap( port: u16, host: &str, ) -> anyhow::Result<()> {"));
+    }
+
+    #[test]
+    fn outline_single_line_signature_unchanged() {
+        let code = "fn foo() {\n    x()\n}\nfn bar() {}\n";
+        let out = outline("s.rs", &lines(code), "h");
+        assert!(out.contains("fn foo() {"));
+        assert!(out.contains("fn bar() {}"));
     }
 }
