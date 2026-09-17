@@ -81,6 +81,21 @@ impl App {
                 let _ = open::that_detached(uri.as_str());
                 Task::none()
             }
+            Message::CopyMessage(i) => {
+                // Copy the message's raw markdown source to the clipboard.
+                let text = self
+                    .active_view()
+                    .and_then(|v| match v.stream.get(i) {
+                        Some(StreamItem::Message(m)) => Some(m.text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                if text.is_empty() {
+                    Task::none()
+                } else {
+                    iced::clipboard::write(text)
+                }
+            }
             Message::Tick => {
                 self.tick = self.tick.wrapping_add(1);
                 // Drain the tagged kernel queue — route each event to its

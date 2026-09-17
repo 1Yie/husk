@@ -238,6 +238,19 @@ impl App {
                 c = c.push(md);
                 if m.streaming {
                     c = c.push(text("▮").size(14).color(theme::ACCENT));
+                } else {
+                    // Copy affordance — markdown isn't selectable in iced, so
+                    // a quiet "⧉ copy" under the answer lets the user grab the
+                    // full text (raw markdown source) to the clipboard.
+                    c = c.push(
+                        button(text("⧉ copy").size(10).color(theme::TEXT_MUTED))
+                            .on_press(Message::CopyMessage(i))
+                            .padding([2, 0])
+                            .style(|_t, _st| button::Style {
+                                background: None,
+                                ..Default::default()
+                            }),
+                    );
                 }
                 c.into()
             }

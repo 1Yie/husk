@@ -15,6 +15,8 @@ pub enum Message {
     NewSession,
     ToggleReasoning(usize),
     ToggleStep(usize),
+    /// Copy a message's full text to the clipboard.
+    CopyMessage(usize),
 
     // ---- frame ----
     /// ~60Hz pump — drains the kernel `std::sync::mpsc` + animates dots.
