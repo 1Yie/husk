@@ -250,6 +250,12 @@ impl LlmProvider for GenericOpenAiProvider {
             req = req.header(k, v);
         }
 
+        // Session trace — dump the outbound body so a silently-empty reply
+        // can be correlated to the exact request shape. Remove before ship.
+        if std::env::var("AGENT_DUMP_REQ").is_ok() {
+            eprintln!("\n===REQ===\n{}\n===/REQ===", serde_json::to_string(&body).unwrap());
+        }
+
         let resp = req.send().await.context("chat completions request")?;
         if !resp.status().is_success() {
             let status = resp.status();

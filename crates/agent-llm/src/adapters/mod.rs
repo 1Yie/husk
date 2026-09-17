@@ -3,6 +3,8 @@
 pub mod anthropic;
 pub mod mock;
 pub mod openai_compat;
+pub mod openai_responses;
 
 pub use mock::MockProvider;
 pub use openai_compat::GenericOpenAiProvider;
+pub use openai_responses::OpenAiResponsesProvider;

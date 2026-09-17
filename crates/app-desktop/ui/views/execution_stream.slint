@@ -7,29 +7,16 @@ import { CodexTheme } from "../codex_theme.slint";
 import { Bridge, SessionMessageData, ActionStepData } from "../globals.slint";
 import { CodexStepCapsule } from "../components/step_capsule.slint";
 
-// User message — right-aligned chat bubble.
-component PromptBlock inherits Rectangle {
-    in property <string> text;
-    border-radius: 12px;
-    background: CodexTheme.bg_hover;
-    HorizontalLayout {
-        padding: 0px;
-        Rectangle { horizontal-stretch: 2; } // spacer pushes bubble right
-        Rectangle {
-            horizontal-stretch: 8;
-            border-radius: 12px;
-            background: CodexTheme.accent;
-            VerticalLayout { padding: 9px; padding-left: 12px; padding-right: 12px;
-                Text {
-                    text: root.text;
-                    font-family: CodexTheme.font_sans;
-                    font-size: 13px;
-                    color: #ffffff;
-                    wrap: word-wrap;
-                }
-            }
-        }
-    }
+// User message — plain right-aligned text, same look as agent text.
+// No bubble, no background — just text aligned to the right edge.
+component PromptBlock inherits Text {
+    in property <string> content;
+    text: root.content;
+    font-family: CodexTheme.font_sans;
+    font-size: 13px;
+    color: CodexTheme.text_white;
+    wrap: word-wrap;
+    horizontal-alignment: right;
 }
 
 // Agent loading indicator — three pulsing dots while the kernel works.
@@ -99,7 +86,7 @@ export component ExecutionStream inherits Rectangle {
                 spacing: 6px;
                 padding-bottom: 8px;
 
-                if msg.role == "user": PromptBlock { text: msg.text; }
+                if msg.role == "user": PromptBlock { content: msg.text; }
 
                 if msg.role == "agent" || msg.role == "system": VerticalLayout {
                     spacing: 4px;

@@ -72,6 +72,7 @@ pub struct ProviderConfig {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     OpenaiCompat,
+    OpenaiResponses,
     Anthropic,
     Mock,
 }

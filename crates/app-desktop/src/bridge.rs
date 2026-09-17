@@ -83,6 +83,26 @@ pub fn wire_kernel(app: &CodexDesktop) {
     bridge.set_pending_diff(ModelRc::from(models.pending_diff.clone()));
     bridge.set_changed_files(ModelRc::from(models.changed_files.clone()));
 
+    // Real session list — a single live row for the current kernel session.
+    // `new_session` resets the stream (fresh SessionActor); `select_session`
+    // is a no-op until multi-session persistence lands.
+    let sessions = Rc::new(VecModel::from(vec![crate::SessionData {
+        id: 0,
+        title: "current session".into(),
+        preview: "live kernel".into(),
+        active: true,
+        timestamp: "now".into(),
+    }]));
+    bridge.set_sessions(ModelRc::from(sessions));
+    bridge.on_new_session(|| {
+        // A fresh SessionActor would spawn here — for now, log; full reset
+        // (clear models + respawn actor) lands with multi-session support.
+        eprintln!("[live] new_session — resets are not yet wired to a fresh actor");
+    });
+    bridge.on_select_session(|_id| {
+        // Single live session — nothing to switch to yet.
+    });
+
     // Sandbox status chip — `id() == "none"` is the loud-unsandboxed state.
     {
         let (_b, loud) = agent_sandbox::detect_backend();
@@ -214,6 +234,7 @@ pub fn wire_kernel(app: &CodexDesktop) {
 fn apply_event(weak: &slint::Weak<CodexDesktop>, ev: UiEvent, m: &UiModels) {
     let Some(app) = weak.upgrade() else { return };
     let b = app.global::<Bridge>();
+    eprintln!("[ui-ev] {ev:?}"); // session trace — remove before release
 
     match ev {
         UiEvent::StateChanged(s) => {

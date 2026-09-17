@@ -22,11 +22,23 @@ pub enum Role {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
+    /// `None` serializes as `""` on the wire — some OpenAI-compat backends
+    /// (devin verified) treat a literal `content:null` on an assistant
+    /// tool-call message as malformed and return an empty stream instead of
+    /// an error, which surfaces as "the agent went quiet after a tool".
+    #[serde(serialize_with = "content_as_string")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+}
+
+fn content_as_string<S: serde::Serializer>(
+    c: &Option<String>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_str(c.as_deref().unwrap_or(""))
 }
 
 impl ChatMessage {
@@ -44,12 +56,50 @@ impl ChatMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
     /// JSON assembled incrementally from `args_delta` fragments.
     pub arguments: String,
+}
+
+// OpenAI wire shape: `{"id":…,"type":"function","function":{"name":…,
+// "arguments":"{…}"}}` — NOT our flat `{id,name,arguments}`. A tool-call
+// round-trip serialized flat makes the next request's assistant message
+// malformed and the model stops responding after the first tool call
+// (verified against devin/swe-2).
+impl Serialize for ToolCall {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("ToolCall", 3)?;
+        st.serialize_field("id", &self.id)?;
+        st.serialize_field("type", "function")?;
+        st.serialize_field("function", &serde_json::json!({
+            "name": self.name,
+            "arguments": self.arguments,
+        }))?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolCall {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Accept both the OpenAI shape and the flat shape on the way in.
+        #[derive(Deserialize)]
+        struct Flat { id: String, name: String, arguments: String }
+        #[derive(Deserialize)]
+        struct Func { name: String, arguments: String }
+        #[derive(Deserialize)]
+        struct OpenAi { id: String, function: Func }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Any { Oa(OpenAi), Fl(Flat) }
+        match Any::deserialize(d)? {
+            Any::Oa(o) => Ok(ToolCall { id: o.id, name: o.function.name, arguments: o.function.arguments }),
+            Any::Fl(f) => Ok(ToolCall { id: f.id, name: f.name, arguments: f.arguments }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
