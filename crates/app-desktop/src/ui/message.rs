@@ -21,4 +21,7 @@ pub enum Message {
     Tick,
     /// Track user scroll position so auto-pin releases when they scroll up.
     Scrolled(scrollable::Viewport),
+    /// A Markdown link was clicked — opened externally (no-op for now; the
+    /// Uri is available for an `open::that` hook if we want it).
+    LinkClicked(iced::widget::markdown::Uri),
 }

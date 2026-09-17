@@ -28,10 +28,36 @@ pub struct MessageRow {
     #[allow(dead_code)]
     pub id: usize,
     pub role: Role,
+    /// Raw text (markdown source for agent messages).
     pub text: String,
+    /// Parsed markdown items — kept in sync with `text` so `view` can render
+    /// without re-borrowing. Rebuilt whenever `text` changes.
+    pub items: Vec<iced::widget::markdown::Item>,
     pub reasoning: String,
     pub reasoning_open: bool,
     pub streaming: bool,
+    /// Reasoning phase ended (the agent's answer started / turn finished) —
+    /// flips the "Thinking…" header to a collapsed "Thought" label.
+    pub thinking_done: bool,
+}
+
+impl MessageRow {
+    /// Construct a row, parsing `text` into markdown items.
+    pub fn new(id: usize, role: Role, text: String) -> Self {
+        let items = iced::widget::markdown::parse(&text).collect();
+        Self {
+            id, role, text, items,
+            reasoning: String::new(),
+            reasoning_open: false,
+            streaming: false,
+            thinking_done: false,
+        }
+    }
+
+    /// Re-parse `text` → `items` after a streaming append.
+    pub fn reparse(&mut self) {
+        self.items = iced::widget::markdown::parse(&self.text).collect();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,12 +134,23 @@ pub struct StatsRow {
     pub degraded: bool,
 }
 
+/// One entry in the rendered stream — an interleaved sequence of chat
+/// messages and tool-call capsules, so the tool chain shows WHERE each call
+/// happened in the turn (Codex-style) instead of a detached bottom strip.
+#[derive(Debug)]
+pub enum StreamItem {
+    Message(MessageRow),
+    Tool(StepRow),
+}
+
 /// One session's rendered state — the stream, steps, and pending approval
 /// the UI shows when this session is active.
 #[derive(Debug, Default)]
 pub struct SessionView {
-    pub messages: Vec<MessageRow>,
-    pub active_steps: Vec<StepRow>,
+    /// Ordered stream: user/agent/system messages + tool capsules interleaved.
+    pub stream: Vec<StreamItem>,
+    /// Pending write/diff approval — `Some` ⇒ the matching capsule shows
+    /// accept/deny inline. (Index refers into `stream`)
     pub pending: Option<ApprovalRow>,
     pub pending_diff: Vec<DiffLine>,
     /// Hunk-tracker feed — sidebar/slide-over surface (contract §workspace).
@@ -180,17 +217,10 @@ impl App {
         }
     }
 
-    /// The active session's rendered view (or an empty default).
-    pub fn view_for(&self, id: i64) -> &SessionView {
-        static EMPTY: SessionView = SessionView {
-            messages: Vec::new(),
-            active_steps: Vec::new(),
-            pending: None,
-            pending_diff: Vec::new(),
-            changed_files: Vec::new(),
-            is_active: false,
-        };
-        self.views.get(&id).unwrap_or(&EMPTY)
+    /// The active session's rendered view — `None` before any event lands
+    /// (markdown items are `!Sync`, so no shared empty static is possible).
+    pub fn view_for(&self, id: i64) -> Option<&SessionView> {
+        self.views.get(&id)
     }
 
     /// Active session's view (mutable — create on demand).
@@ -198,8 +228,8 @@ impl App {
         self.views.entry(self.active_id).or_default()
     }
 
-    /// The currently-visible session's view (read).
-    pub fn active_view(&self) -> &SessionView {
+    /// The currently-visible session's view (read) — `None` = empty stream.
+    pub fn active_view(&self) -> Option<&SessionView> {
         self.view_for(self.active_id)
     }
 
@@ -207,13 +237,16 @@ impl App {
     pub fn demo() -> Self {
         let mut views = HashMap::new();
         views.insert(0, SessionView {
-            messages: vec![
-                MessageRow { id: 0, role: Role::User, text: "fix the borrow error in engine.rs".into(), reasoning: String::new(), reasoning_open: false, streaming: false },
-                MessageRow { id: 1, role: Role::Agent, text: "Reading the engine module to locate the borrow conflict.".into(), reasoning: "scanning src/engine.rs…".into(), reasoning_open: false, streaming: false },
-            ],
-            active_steps: vec![
-                StepRow { id: 0, name: "smart_read".into(), state: StepState::Success, detail: "src/engine.rs · 48 lines".into(), expanded: false },
-                StepRow { id: 1, name: "fuzzy_patch".into(), state: StepState::AwaitingConfirm, detail: "src/engine.rs · +14 −3".into(), expanded: false },
+            stream: vec![
+                StreamItem::Message(MessageRow::new(0, Role::User, "fix the borrow error in `engine.rs` — **urgent**".into())),
+                StreamItem::Message({
+                    let mut m = MessageRow::new(1, Role::Agent, "Reading `engine.rs` to locate the borrow conflict.\n\n- check `run_turn` borrow of `self.state`\n- try a `Mutex`".into());
+                    m.reasoning = "scanning src/engine.rs…".into();
+                    m.thinking_done = true;
+                    m
+                }),
+                StreamItem::Tool(StepRow { id: 0, name: "smart_read".into(), state: StepState::Success, detail: "src/engine.rs · 48 lines".into(), expanded: false }),
+                StreamItem::Tool(StepRow { id: 1, name: "fuzzy_patch".into(), state: StepState::AwaitingConfirm, detail: "src/engine.rs · +14 −3".into(), expanded: false }),
             ],
             pending: Some(ApprovalRow {
                 step_id: 1,
@@ -265,23 +298,45 @@ impl App {
 pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionView {
     let mut v = SessionView::default();
     for (i, m) in history.iter().enumerate() {
+        // Tool result messages → a finished tool capsule in the chain.
+        if m.role == agent_llm::types::Role::Tool {
+            v.stream.push(StreamItem::Tool(StepRow {
+                id: i,
+                name: m.tool_call_id.clone().unwrap_or_else(|| "tool".into()),
+                state: StepState::Success,
+                detail: m.content.clone().unwrap_or_default().chars().take(60).collect(),
+                expanded: false,
+            }));
+            continue;
+        }
         let role = match m.role {
             agent_llm::types::Role::User => Role::User,
             agent_llm::types::Role::Assistant => Role::Agent,
             _ => Role::System,
         };
         let text = m.content.clone().unwrap_or_default();
+        if text.trim().is_empty() && m.tool_calls.is_none() {
+            continue;
+        }
+        // An assistant message carrying tool_calls contributes a capsule per
+        // call so the chain shows what was invoked, in order.
+        if let Some(calls) = &m.tool_calls {
+            for c in calls {
+                v.stream.push(StreamItem::Tool(StepRow {
+                    id: i,
+                    name: c.name.clone(),
+                    state: StepState::Success,
+                    detail: String::new(),
+                    expanded: false,
+                }));
+            }
+        }
         if text.trim().is_empty() {
             continue;
         }
-        v.messages.push(MessageRow {
-            id: i,
-            role,
-            text,
-            reasoning: String::new(),
-            reasoning_open: false,
-            streaming: false,
-        });
+        let mut row = MessageRow::new(i, role, text);
+        row.thinking_done = true;
+        v.stream.push(StreamItem::Message(row));
     }
     v
 }

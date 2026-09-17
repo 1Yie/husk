@@ -8,8 +8,25 @@ use iced::widget::{
 use iced::{Alignment, Border, Element, Length};
 
 use super::message::Message;
-use super::state::{App, DiffKind, Role, SessionRow, StepState};
+use super::state::{App, DiffKind, Role, SessionRow, StepState, StreamItem};
 use super::theme;
+
+/// Codex-flavored markdown styling — inline code on a card chip, monospace
+/// code blocks, accent-colored links.
+fn md_style() -> iced::widget::markdown::Style {
+    iced::widget::markdown::Style {
+        font: theme::SANS,
+        inline_code_highlight: iced::widget::markdown::Highlight {
+            background: theme::BG_CARD.into(),
+            border: Border::default().rounded(3.0),
+        },
+        inline_code_padding: iced::padding::left(2).right(2),
+        inline_code_color: theme::ACCENT,
+        inline_code_font: theme::MONO,
+        code_block_font: theme::MONO,
+        link_color: theme::ACCENT,
+    }
+}
 
 impl App {
     pub fn view(&self) -> Element<'_, Message> {
@@ -111,17 +128,32 @@ impl App {
     // Stream column — messages + steps strip + input capsule + status bar.
     // ------------------------------------------------------------------
     fn stream_column(&self) -> Element<'_, Message> {
-        let view = self.active_view();
         let mut col = Column::new().height(Length::Fill).width(Length::Fill);
 
-        let mut msgs = Column::new().spacing(12).padding(16).width(Length::Fill);
-        for (i, m) in view.messages.iter().enumerate() {
-            msgs = msgs.push(self.message_row(i, m));
-        }
-        if view.is_active
-            && !view.messages.last().map(|m| m.streaming).unwrap_or(false)
-        {
-            msgs = msgs.push(self.loading_dots());
+        let mut msgs = Column::new().spacing(10).padding(16).width(Length::Fill);
+        let mut is_active = false;
+        if let Some(view) = self.active_view() {
+            is_active = view.is_active;
+            for (i, item) in view.stream.iter().enumerate() {
+                match item {
+                    StreamItem::Message(m) => msgs = msgs.push(self.message_row(i, m)),
+                    StreamItem::Tool(s) => msgs = msgs.push(self.tool_inline(i, s, view)),
+                }
+            }
+            if view.is_active
+                && !matches!(
+                    view.stream.last(),
+                    Some(StreamItem::Message(m)) if m.streaming
+                )
+            {
+                msgs = msgs.push(self.loading_dots());
+            }
+        } else {
+            msgs = msgs.push(
+                text("Start a session — type below or pick one from the sidebar.")
+                    .size(13)
+                    .color(theme::TEXT_DIM),
+            );
         }
 
         let stream = scrollable(msgs)
@@ -130,17 +162,8 @@ impl App {
             .height(Length::Fill);
         col = col.push(stream);
 
-        // Steps strip — only in-flight steps (running / awaiting confirm).
-        if view
-            .active_steps
-            .iter()
-            .any(|s| matches!(s.state, StepState::Running | StepState::AwaitingConfirm))
-        {
-            col = col.push(self.steps_strip(view));
-        }
-
-        col = col.push(self.input_capsule(view.is_active));
-        col = col.push(self.status_bar(view));
+        col = col.push(self.input_capsule(is_active));
+        col = col.push(self.status_bar());
 
         col.into()
     }
@@ -175,7 +198,9 @@ impl App {
                 let mut c = Column::new().spacing(4).width(Length::Fill);
                 if !m.reasoning.is_empty() {
                     let marker = if m.reasoning_open { "▾" } else { "▸" };
-                    let head = text(format!("{marker} Thinking…"))
+                    // Live phase → "Thinking…"; done → a quiet "Thought".
+                    let label = if m.thinking_done { "Thought" } else { "Thinking…" };
+                    let head = text(format!("{marker} {label}"))
                         .size(11)
                         .color(theme::TEXT_MUTED)
                         .font(theme::MONO);
@@ -197,50 +222,32 @@ impl App {
                         );
                     }
                 }
-                let body = if m.streaming {
-                    format!("{}▮", m.text)
-                } else {
-                    m.text.clone()
-                };
-                c = c.push(
-                    text(body)
-                        .size(14)
-                        .color(theme::TEXT_SECONDARY)
-                        .font(theme::SANS),
-                );
+                // Markdown-render the agent body (items kept in sync with
+                // `text` on each append). Streaming appends a caret to the
+                // raw text — the caret lands inside the last paragraph.
+                let md = iced::widget::markdown::view(
+                    &m.items,
+                    iced::widget::markdown::Settings::with_text_size(14, md_style()),
+                )
+                .map(Message::LinkClicked);
+                c = c.push(md);
+                if m.streaming {
+                    c = c.push(text("▮").size(14).color(theme::ACCENT));
+                }
                 c.into()
             }
         }
     }
 
-    fn steps_strip<'a>(&'a self, view: &'a super::state::SessionView) -> Element<'a, Message> {
-        let mut strip = Column::new().spacing(4).padding(8).width(Length::Fill);
-        for (i, s) in view.active_steps.iter().enumerate() {
-            if !matches!(s.state, StepState::Running | StepState::AwaitingConfirm) {
-                continue;
-            }
-            strip = strip.push(self.step_capsule(view, i, s));
-        }
-        container(scrollable(strip).height(Length::Shrink))
-            .width(Length::Fill)
-            .max_height(116.0)
-            .style(|_t| container::Style {
-                background: Some(theme::BG_WORKSPACE.into()),
-                border: Border {
-                    width: 1.0,
-                    color: theme::BORDER_HAIRLINE,
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .into()
-    }
-
-    fn step_capsule<'a>(
+    /// A tool call rendered INLINE in the stream — compact capsule showing
+    /// `● name detail`, expanding to the pending diff, with allow/deny when
+    /// it awaits confirmation. The chain stays in the message flow so the
+    /// reader sees what the agent did, in order.
+    fn tool_inline<'a>(
         &'a self,
-        view: &'a super::state::SessionView,
         i: usize,
         s: &'a super::state::StepRow,
+        view: &'a super::state::SessionView,
     ) -> Element<'a, Message> {
         let (glyph, glyph_color) = match s.state {
             StepState::Running => ("●", theme::STATUS_RUNNING),
@@ -251,7 +258,7 @@ impl App {
         };
 
         let mut row_el = row![
-            text(glyph).size(12).color(glyph_color).width(Length::Fixed(18.0)),
+            text(glyph).size(11).color(glyph_color).width(Length::Fixed(16.0)),
             text(&s.name).size(12).color(theme::TEXT_WHITE).font(theme::MONO),
             text(&s.detail).size(11).color(theme::TEXT_MUTED).font(theme::MONO),
         ]
@@ -330,7 +337,7 @@ impl App {
 
         let capsule = container(row_el)
             .width(Length::Fill)
-            .padding([4.0, 8.0])
+            .padding([3.0, 8.0])
             .style(move |_t| container::Style {
                 background: Some(theme::BG_CARD.into()),
                 border: Border {
@@ -406,7 +413,7 @@ impl App {
         .into()
     }
 
-    fn status_bar<'a>(&'a self, _view: &'a super::state::SessionView) -> Element<'a, Message> {
+    fn status_bar<'a>(&'a self) -> Element<'a, Message> {
         let tok = format!(
             "{} / {} tok",
             self.stats.tokens_used, self.stats.context_window

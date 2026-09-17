@@ -11,7 +11,7 @@ use iced::Task;
 use super::message::Message;
 use super::state::{
     App, ApprovalRow, DiffKind, DiffLine, MessageRow, Role, SessionView, StepRow,
-    StepState,
+    StepState, StreamItem,
 };
 
 impl App {
@@ -60,20 +60,25 @@ impl App {
                 }
                 Task::none()
             }
+            // `i` is a stream index — toggle only lands on the right kind.
             Message::ToggleReasoning(i) => {
-                if let Some(m) = self.view_mut().messages.get_mut(i) {
+                if let Some(StreamItem::Message(m)) = self.view_mut().stream.get_mut(i) {
                     m.reasoning_open = !m.reasoning_open;
                 }
                 Task::none()
             }
             Message::ToggleStep(i) => {
-                if let Some(s) = self.view_mut().active_steps.get_mut(i) {
+                if let Some(StreamItem::Tool(s)) = self.view_mut().stream.get_mut(i) {
                     s.expanded = !s.expanded;
                 }
                 Task::none()
             }
             Message::Scrolled(vp) => {
                 self.user_scrolled = vp.relative_offset().y < 0.98;
+                Task::none()
+            }
+            Message::LinkClicked(uri) => {
+                let _ = open::that_detached(uri.as_str());
                 Task::none()
             }
             Message::Tick => {
@@ -177,10 +182,12 @@ impl App {
     fn resolve_pending(&mut self, _step_id: usize, final_state: StepState) {
         let v = self.view_mut();
         v.pending = None;
-        for s in v.active_steps.iter_mut().rev() {
-            if s.state == StepState::AwaitingConfirm {
-                s.state = final_state;
-                break;
+        for item in v.stream.iter_mut().rev() {
+            if let StreamItem::Tool(s) = item {
+                if s.state == StepState::AwaitingConfirm {
+                    s.state = final_state;
+                    break;
+                }
             }
         }
     }
@@ -193,30 +200,31 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
             v.is_active = s.is_active();
         }
         UiEvent::UserPrompt(text) => {
-            v.messages.push(MessageRow {
-                id: v.messages.len(),
-                role: Role::User,
-                text: text.clone(),
-                reasoning: String::new(),
-                reasoning_open: false,
-                streaming: false,
-            });
+            v.stream.push(StreamItem::Message(MessageRow::new(
+                v.stream.len(),
+                Role::User,
+                text.clone(),
+            )));
         }
         UiEvent::TextDelta(t) => append_last(v, t, false),
         UiEvent::ReasoningDelta(t) => append_last(v, t, true),
         UiEvent::AssistantMessage(_) => {
-            if let Some(last) = v.messages.last_mut() {
-                last.streaming = false;
+            if let Some(StreamItem::Message(m)) = v.stream.last_mut() {
+                m.streaming = false;
+                m.thinking_done = true;
+                m.reasoning_open = false;
             }
         }
+        // A tool call lands INLINE at this point in the stream — the chain
+        // shows what ran, where, in order (Codex-style), not a bottom strip.
         UiEvent::ToolCallStarted { name } => {
-            v.active_steps.push(StepRow {
-                id: v.active_steps.len(),
+            v.stream.push(StreamItem::Tool(StepRow {
+                id: v.stream.len(),
                 name: name.clone(),
                 state: StepState::Running,
                 detail: String::new(),
                 expanded: false,
-            });
+            }));
         }
         UiEvent::ToolCallFinished { name, ok, content, .. } => {
             if let Some(p) = &v.pending {
@@ -224,25 +232,31 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                     v.pending = None;
                 }
             }
-            for s in v.active_steps.iter_mut().rev() {
-                if s.name == *name
-                    && matches!(s.state, StepState::Running | StepState::AwaitingConfirm)
-                {
-                    s.state = if *ok { StepState::Success } else { StepState::Error };
-                    s.detail = content.chars().take(60).collect();
-                    break;
+            for item in v.stream.iter_mut().rev() {
+                if let StreamItem::Tool(s) = item {
+                    if s.name == *name
+                        && matches!(s.state, StepState::Running | StepState::AwaitingConfirm)
+                    {
+                        s.state = if *ok { StepState::Success } else { StepState::Error };
+                        s.detail = content.chars().take(60).collect();
+                        break;
+                    }
                 }
             }
         }
         UiEvent::ApprovalRequested { tool_name, diff, fuzzy } => {
-            for s in v.active_steps.iter_mut().rev() {
-                if s.state == StepState::Running {
-                    s.state = StepState::AwaitingConfirm;
-                    break;
+            let mut sid = v.stream.len().saturating_sub(1);
+            for (i, item) in v.stream.iter_mut().enumerate().rev() {
+                if let StreamItem::Tool(s) = item {
+                    if s.state == StepState::Running {
+                        s.state = StepState::AwaitingConfirm;
+                        sid = i;
+                        break;
+                    }
                 }
             }
             v.pending = Some(ApprovalRow {
-                step_id: v.active_steps.len().saturating_sub(1),
+                step_id: sid,
                 tool_name: tool_name.clone(),
                 title: format!("Approve {tool_name}"),
                 diff_text: diff.clone(),
@@ -253,46 +267,38 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
         }
         UiEvent::Usage { .. } => {} // surfaced on the active session's stats
         UiEvent::SystemMessage(msg) | UiEvent::Error(msg) => {
-            v.messages.push(MessageRow {
-                id: v.messages.len(),
-                role: Role::System,
-                text: msg.clone(),
-                reasoning: String::new(),
-                reasoning_open: false,
-                streaming: false,
-            });
+            v.stream.push(StreamItem::Message(MessageRow::new(
+                v.stream.len(),
+                Role::System,
+                msg.clone(),
+            )));
         }
     }
 }
 
-/// Append a delta to the streaming agent row of a view.
+/// Append a delta to the streaming agent row — the LAST stream item if it's
+/// a streaming agent message, else a fresh message appended after any tool
+/// capsules (so post-tool text starts a new bubble, not merged into the
+/// pre-tool one).
 fn append_last(v: &mut SessionView, delta: &str, reasoning: bool) {
-    let target = v
-        .messages
-        .last()
-        .filter(|m| m.role == Role::Agent && m.streaming)
-        .map(|_| v.messages.len() - 1);
-    let i = match target {
-        Some(i) => i,
-        None => {
-            v.messages.push(MessageRow {
-                id: v.messages.len(),
-                role: Role::Agent,
-                text: String::new(),
-                reasoning: String::new(),
-                reasoning_open: false,
-                streaming: true,
-            });
-            v.messages.len() - 1
-        }
-    };
-    let row = &mut v.messages[i];
-    if reasoning {
-        row.reasoning.push_str(delta);
-    } else {
-        row.text.push_str(delta);
+    let last_is_streaming = matches!(
+        v.stream.last(),
+        Some(StreamItem::Message(m)) if m.role == Role::Agent && m.streaming
+    );
+    if !last_is_streaming {
+        let mut m = MessageRow::new(v.stream.len(), Role::Agent, String::new());
+        m.streaming = true;
+        v.stream.push(StreamItem::Message(m));
     }
-    row.streaming = true;
+    if let Some(StreamItem::Message(row)) = v.stream.last_mut() {
+        if reasoning {
+            row.reasoning.push_str(delta);
+        } else {
+            row.text.push_str(delta);
+            row.reparse(); // keep markdown items in sync for the next frame
+        }
+        row.streaming = true;
+    }
 }
 
 /// Split a unified diff into `DiffLine` rows.
