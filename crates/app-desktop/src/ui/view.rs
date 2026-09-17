@@ -1,5 +1,6 @@
 //! `App::view` — derives the widget tree each frame. Elm architecture:
-//! `view(&self) -> Element`. Sidebar 220px + stream + steps strip + input.
+//! `view(&self) -> Element`. Sidebar 220px + stream + steps strip + input +
+//! status bar. Renders the ACTIVE session's `SessionView` only.
 
 use iced::widget::{
     button, column, container, row, scrollable, text, text_input, Column, Space,
@@ -7,7 +8,7 @@ use iced::widget::{
 use iced::{Alignment, Border, Element, Length};
 
 use super::message::Message;
-use super::state::{App, Role, StepState};
+use super::state::{App, DiffKind, Role, SessionRow, StepState};
 use super::theme;
 
 impl App {
@@ -40,25 +41,7 @@ impl App {
         list = list.push(Space::new().height(Length::Fixed(8.0)));
 
         for s in &self.sessions {
-            let bg = if s.active { theme::BG_ACTIVE } else { theme::BG_PANEL };
-            list = list.push(
-                button(
-                    column![
-                        text(&s.title).size(12).color(theme::TEXT_SECONDARY),
-                        text(&s.preview).size(10).color(theme::TEXT_MUTED),
-                    ]
-                    .spacing(2),
-                )
-                .on_press(Message::SelectSession(s.id))
-                .width(Length::Fill)
-                .padding(8)
-                .style(move |_t, _st| button::Style {
-                    background: Some(bg.into()),
-                    border: Border::default().rounded(4.0),
-                    text_color: theme::TEXT_SECONDARY,
-                    ..Default::default()
-                }),
-            );
+            list = list.push(self.session_row(s));
         }
 
         list = list.push(Space::new().height(Length::Fixed(12.0)));
@@ -89,19 +72,55 @@ impl App {
             .into()
     }
 
+    fn session_row<'a>(&'a self, s: &'a SessionRow) -> Element<'a, Message> {
+        let bg = if s.active { theme::BG_ACTIVE } else { theme::BG_PANEL };
+        // A background session mid-turn shows a running marker.
+        let preview = if s.running {
+            format!("⟳ {}", s.preview)
+        } else {
+            s.preview.clone()
+        };
+        button(
+            column![
+                row![
+                    text(&s.title).size(12).color(theme::TEXT_SECONDARY),
+                    Space::new().width(Length::Fill),
+                    if s.running {
+                        text("●").size(9).color(theme::STATUS_RUNNING)
+                    } else {
+                        text("").size(9)
+                    },
+                ],
+                text(preview).size(10).color(theme::TEXT_MUTED),
+            ]
+            .spacing(2),
+        )
+        .on_press(Message::SelectSession(s.id))
+        .width(Length::Fill)
+        .padding(8)
+        .style(move |_t, _st| button::Style {
+            background: Some(bg.into()),
+            border: Border::default().rounded(4.0),
+            text_color: theme::TEXT_SECONDARY,
+            ..Default::default()
+        })
+        .into()
+    }
+
     // ------------------------------------------------------------------
-    // Stream column — messages + steps strip + input capsule.
+    // Stream column — messages + steps strip + input capsule + status bar.
     // ------------------------------------------------------------------
     fn stream_column(&self) -> Element<'_, Message> {
+        let view = self.active_view();
         let mut col = Column::new().height(Length::Fill).width(Length::Fill);
 
-        // Message stream — scrollable, pinned to bottom unless user scrolled.
         let mut msgs = Column::new().spacing(12).padding(16).width(Length::Fill);
-        for (i, m) in self.messages.iter().enumerate() {
+        for (i, m) in view.messages.iter().enumerate() {
             msgs = msgs.push(self.message_row(i, m));
         }
-        // Loading dots while the agent is mid-turn and no streaming row yet.
-        if self.is_active && !self.messages.last().map(|m| m.streaming).unwrap_or(false) {
+        if view.is_active
+            && !view.messages.last().map(|m| m.streaming).unwrap_or(false)
+        {
             msgs = msgs.push(self.loading_dots());
         }
 
@@ -112,63 +131,27 @@ impl App {
         col = col.push(stream);
 
         // Steps strip — only in-flight steps (running / awaiting confirm).
-        // Finished tools free the space; the stream stays the focus.
-        if self.active_steps.iter().any(|s| matches!(s.state, StepState::Running | StepState::AwaitingConfirm)) {
-            col = col.push(self.steps_strip());
+        if view
+            .active_steps
+            .iter()
+            .any(|s| matches!(s.state, StepState::Running | StepState::AwaitingConfirm))
+        {
+            col = col.push(self.steps_strip(view));
         }
 
-        // Input capsule.
-        col = col.push(self.input_capsule());
-
-        // Status bar — tokens / model / mode / sandbox.
-        col = col.push(self.status_bar());
+        col = col.push(self.input_capsule(view.is_active));
+        col = col.push(self.status_bar(view));
 
         col.into()
     }
 
-    fn status_bar(&self) -> Element<'_, Message> {
-        let tok = format!(
-            "{} / {} tok",
-            self.stats.tokens_used, self.stats.context_window
-        );
-        let model = format!("{} · {}", self.stats.active_provider, self.stats.active_model);
-        let sandbox = if self.sandbox_unsafe { "UNSANDBOXED" } else { "sandbox" };
-        let sandbox_color = if self.sandbox_unsafe { theme::WARN } else { theme::TEXT_MUTED };
-        let state = self.stats.agent_state.clone();
-        let mode = self.stats.permission_mode.clone();
-        let files = format!("{} files", self.stats.files_changed);
-
-        container(
-            row![
-                text(state).size(10).color(theme::STATUS_RUNNING).font(theme::MONO),
-                text(mode).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
-                text(sandbox).size(10).color(sandbox_color).font(theme::MONO),
-                Space::new().width(Length::Fill),
-                text(files).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
-                text(tok).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
-                text(model).size(10).color(theme::TEXT_SECONDARY).font(theme::MONO),
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .padding([6.0, 12.0])
-        .style(|_t| container::Style {
-            background: Some(theme::BG_PANEL.into()),
-            border: Border {
-                width: 1.0,
-                color: theme::BORDER_HAIRLINE,
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-    }
-
-    fn message_row<'a>(&'a self, i: usize, m: &'a super::state::MessageRow) -> Element<'a, Message> {
+    fn message_row<'a>(
+        &'a self,
+        i: usize,
+        m: &'a super::state::MessageRow,
+    ) -> Element<'a, Message> {
         match m.role {
             Role::User => {
-                // Right-aligned plain text — no bubble.
                 container(
                     text(&m.text)
                         .size(14)
@@ -190,7 +173,6 @@ impl App {
             .into(),
             Role::Agent => {
                 let mut c = Column::new().spacing(4).width(Length::Fill);
-                // Collapsed reasoning fold.
                 if !m.reasoning.is_empty() {
                     let marker = if m.reasoning_open { "▾" } else { "▸" };
                     let head = text(format!("{marker} Thinking…"))
@@ -215,7 +197,6 @@ impl App {
                         );
                     }
                 }
-                // Body text + streaming caret.
                 let body = if m.streaming {
                     format!("{}▮", m.text)
                 } else {
@@ -232,13 +213,13 @@ impl App {
         }
     }
 
-    fn steps_strip(&self) -> Element<'_, Message> {
+    fn steps_strip<'a>(&'a self, view: &'a super::state::SessionView) -> Element<'a, Message> {
         let mut strip = Column::new().spacing(4).padding(8).width(Length::Fill);
-        for (i, s) in self.active_steps.iter().enumerate() {
+        for (i, s) in view.active_steps.iter().enumerate() {
             if !matches!(s.state, StepState::Running | StepState::AwaitingConfirm) {
                 continue;
             }
-            strip = strip.push(self.step_capsule(i, s));
+            strip = strip.push(self.step_capsule(view, i, s));
         }
         container(scrollable(strip).height(Length::Shrink))
             .width(Length::Fill)
@@ -255,7 +236,12 @@ impl App {
             .into()
     }
 
-    fn step_capsule<'a>(&'a self, i: usize, s: &'a super::state::StepRow) -> Element<'a, Message> {
+    fn step_capsule<'a>(
+        &'a self,
+        view: &'a super::state::SessionView,
+        i: usize,
+        s: &'a super::state::StepRow,
+    ) -> Element<'a, Message> {
         let (glyph, glyph_color) = match s.state {
             StepState::Running => ("●", theme::STATUS_RUNNING),
             StepState::AwaitingConfirm => ("◌", theme::ACCENT),
@@ -272,7 +258,6 @@ impl App {
         .spacing(8)
         .align_y(Alignment::Center);
 
-        // Inline approve/deny on an awaiting capsule.
         if s.state == StepState::AwaitingConfirm {
             row_el = row_el.push(Space::new().width(Length::Fill));
             row_el = row_el.push(
@@ -303,13 +288,13 @@ impl App {
         }
 
         // Expanded: show the pending diff inline under the capsule.
-        let expanded_diff: Option<Element<_>> = if s.expanded && !self.pending_diff.is_empty() {
+        let expanded_diff: Option<Element<_>> = if s.expanded && !view.pending_diff.is_empty() {
             let mut dcol = Column::new().spacing(0).width(Length::Fill);
-            for d in self.pending_diff.iter().take(50) {
+            for d in view.pending_diff.iter().take(50) {
                 let (gutter, fg, bg) = match d.kind {
-                    super::state::DiffKind::Add => ("+", theme::DIFF_ADD, theme::DIFF_ADD_SURFACE),
-                    super::state::DiffKind::Delete => ("-", theme::DIFF_DEL, theme::DIFF_DEL_SURFACE),
-                    super::state::DiffKind::Context => (" ", theme::TEXT_MUTED, theme::BG_CARD),
+                    DiffKind::Add => ("+", theme::DIFF_ADD, theme::DIFF_ADD_SURFACE),
+                    DiffKind::Delete => ("-", theme::DIFF_DEL, theme::DIFF_DEL_SURFACE),
+                    DiffKind::Context => (" ", theme::TEXT_MUTED, theme::BG_CARD),
                 };
                 dcol = dcol.push(
                     container(
@@ -360,7 +345,6 @@ impl App {
                 .rounded(4.0),
                 ..Default::default()
             });
-        // Wrap in a button so the capsule is tappable → expand/collapse.
         let capsule_btn = button(capsule)
             .on_press(Message::ToggleStep(i))
             .padding(0)
@@ -369,7 +353,6 @@ impl App {
                 background: None,
                 ..Default::default()
             });
-        // Capsule + optional expanded diff body stacked vertically.
         let mut wrap = Column::new().spacing(0).width(Length::Fill).push(capsule_btn);
         if let Some(d) = expanded_diff {
             wrap = wrap.push(d);
@@ -377,8 +360,8 @@ impl App {
         wrap.into()
     }
 
-    fn input_capsule(&self) -> Element<'_, Message> {
-        let placeholder = if self.is_active {
+    fn input_capsule(&self, is_active: bool) -> Element<'_, Message> {
+        let placeholder = if is_active {
             "Steer the agent…"
         } else {
             "Ask the agent…"
@@ -386,7 +369,7 @@ impl App {
 
         let input = text_input(placeholder, &self.input)
             .on_input(Message::InputChanged)
-            .on_submit(if self.is_active { Message::Steer } else { Message::Submit })
+            .on_submit(if is_active { Message::Steer } else { Message::Submit })
             .padding(10)
             .size(14)
             .style(|_t, _st| text_input::Style {
@@ -407,7 +390,7 @@ impl App {
             row![
                 input,
                 button(text("→").size(16).color(theme::BG_WORKSPACE))
-                    .on_press(if self.is_active { Message::Steer } else { Message::Submit })
+                    .on_press(if is_active { Message::Steer } else { Message::Submit })
                     .padding([8.0, 16.0])
                     .style(|_t, _st| button::Style {
                         background: Some(theme::ACCENT.into()),
@@ -423,8 +406,48 @@ impl App {
         .into()
     }
 
+    fn status_bar<'a>(&'a self, _view: &'a super::state::SessionView) -> Element<'a, Message> {
+        let tok = format!(
+            "{} / {} tok",
+            self.stats.tokens_used, self.stats.context_window
+        );
+        let model = format!("{} · {}", self.stats.active_provider, self.stats.active_model);
+        let sandbox = if self.sandbox_unsafe { "UNSANDBOXED" } else { "sandbox" };
+        let sandbox_color = if self.sandbox_unsafe { theme::WARN } else { theme::TEXT_MUTED };
+        let state = self.stats.agent_state.clone();
+        let mode = self.stats.permission_mode.clone();
+        let files = format!("{} files", self.stats.files_changed);
+        let sid = format!("session #{}", self.active_id);
+
+        container(
+            row![
+                text(state).size(10).color(theme::STATUS_RUNNING).font(theme::MONO),
+                text(mode).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
+                text(sandbox).size(10).color(sandbox_color).font(theme::MONO),
+                text(sid).size(10).color(theme::TEXT_DIM).font(theme::MONO),
+                Space::new().width(Length::Fill),
+                text(files).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
+                text(tok).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
+                text(model).size(10).color(theme::TEXT_SECONDARY).font(theme::MONO),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([6.0, 12.0])
+        .style(|_t| container::Style {
+            background: Some(theme::BG_PANEL.into()),
+            border: Border {
+                width: 1.0,
+                color: theme::BORDER_HAIRLINE,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+    }
+
     fn loading_dots(&self) -> Element<'_, Message> {
-        // Three staggered dots pulsing via the tick counter.
         let phase = (self.tick % 60) as f32 / 60.0;
         let dots: Vec<Element<_>> = (0..3)
             .map(|i| {

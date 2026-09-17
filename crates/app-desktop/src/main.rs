@@ -35,22 +35,16 @@ fn title(_app: &App) -> String {
     "agent-rs".into()
 }
 
-/// iced boot — runs once, returns `(App, Task)`. We capture `--mock` via a
-/// static flag (boot is a plain fn, can't capture args).
+/// iced boot — runs once, returns `(App, Task)`. `--mock` seeds demo state;
+/// otherwise boots the SessionManager (resumes the most recent session or
+/// starts fresh).
 fn boot() -> (App, Task<Message>) {
     let mock = std::env::args().any(|a| a == "--mock");
     let app = if mock {
         App::demo()
     } else {
-        let h = bridge::spawn_kernel();
-        App::boot(
-            h.cmd_tx,
-            h.decision,
-            h.steer_tx,
-            h.event_rx,
-            h.stats,
-            h.sandbox_unsafe,
-        )
+        let (_b, loud) = agent_sandbox::detect_backend();
+        App::boot(bridge::SessionManager::spawn(), loud)
     };
     (app, Task::none())
 }

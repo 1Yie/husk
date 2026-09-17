@@ -61,12 +61,44 @@ pub struct SessionActor {
     /// Stage 10: memory store + post-turn distiller (background task).
     memory: Option<Arc<MemoryStore>>,
     distiller: Option<Arc<TurnDistiller>>,
+    /// Stable session identity — sidebar ordering + persistence file name.
+    session_id: i64,
+    /// Per-workspace session store — snapshots history at turn boundaries.
+    store: Option<Arc<crate::session_store::SessionStore>>,
 }
 
 impl SessionActor {
     /// Boot a session: scan workspace + git snapshot → render system prompt →
     /// return the actor plus the UI channel endpoints.
     pub fn spawn(cfg: SessionConfig) -> (Self, super::channels::UiChannels) {
+        Self::spawn_inner(cfg, None, 0)
+    }
+
+    /// Fresh session with a caller-assigned id (the SessionManager allocates
+    /// ids via `SessionStore::next_id` so persistence + sidebar agree).
+    pub fn spawn_with_id(cfg: SessionConfig, session_id: i64) -> (Self, super::channels::UiChannels) {
+        Self::spawn_inner(cfg, None, session_id)
+    }
+
+    /// Resume a persisted session — `history` is the prior `Vec<ChatMessage>`
+    /// snapshot; the LLM context is exactly what the session left behind.
+    /// `session_id` reuses the persisted id so the store/app keep tracking it.
+    pub fn resume(
+        cfg: SessionConfig,
+        session_id: i64,
+        history: Vec<ChatMessage>,
+    ) -> (Self, super::channels::UiChannels) {
+        Self::spawn_inner(cfg, Some(history), session_id)
+    }
+
+    /// Shared spawn path — `prior_history` replaces the fresh system-prompt
+    /// history when resuming; `session_id` is 0 for a fresh session (the
+    /// caller assigns a real id via the store).
+    fn spawn_inner(
+        cfg: SessionConfig,
+        prior_history: Option<Vec<ChatMessage>>,
+        session_id: i64,
+    ) -> (Self, super::channels::UiChannels) {
         let mut channels = ui_channels();
 
         // ---- Stage 1 scan: workspace skeleton + git snapshot ----
@@ -107,7 +139,17 @@ impl SessionActor {
         let system_prompt = system_prompt
             .replace("{{MEMORY_BLOCK}}", &initial_memory_block);
 
-        let history = vec![ChatMessage::system(system_prompt)];
+        // Fresh session → just the rendered system prompt; resume → the
+        // persisted history (its system prompt was rendered at that session's
+        // spawn — memory/workspace baked in for that turn).
+        let history = prior_history.unwrap_or_else(|| vec![ChatMessage::system(system_prompt)]);
+
+        // Session persistence — per-workspace store; the actor snapshots
+        // `history` at turn boundaries so a crashed/killed app resumes mid-
+        // conversation from the last completed turn.
+        let store = crate::session_store::SessionStore::open(&cfg.workspace_root)
+            .ok()
+            .map(Arc::new);
 
         let registry = Arc::new(ToolRegistry::with_builtins());
         let ctx = Arc::new(ToolCtx::new(&cfg.workspace_root));
@@ -172,6 +214,8 @@ impl SessionActor {
                 hooks: HookChain::new(),
                 memory,
                 distiller,
+                session_id,
+                store,
             },
             channels,
         )
@@ -255,7 +299,7 @@ impl SessionActor {
                 self.state = AgentState::Finished;
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
                 self.queue_distill(TurnRecord {
-                    task: outcome_text,
+                    task: outcome_text.clone(),
                     outcome: "success".into(),
                     files: self.hunks.files_in_turn(turn).iter()
                         .map(|p| p.to_string_lossy().into_owned()).collect(),
@@ -267,7 +311,7 @@ impl SessionActor {
                 self.state = AgentState::Failed(e.clone());
                 warn!("turn failed: {e}");
                 self.queue_distill(TurnRecord {
-                    task: outcome_text,
+                    task: outcome_text.clone(),
                     outcome: "failed".into(),
                     files: self.hunks.files_in_turn(turn).iter()
                         .map(|p| p.to_string_lossy().into_owned()).collect(),
@@ -276,6 +320,56 @@ impl SessionActor {
                 });
             }
         }
+        // Persist at the turn boundary — the store's last JSONL line is the
+        // resumable state; sidebar meta updates so the session list reflects
+        // the latest preview even if this session isn't the visible one.
+        self.persist_turn(&outcome_text);
+    }
+
+    /// Snapshot `history` to the session store + update sidebar metadata.
+    /// `title` derives from the first user prompt; `preview` from the last
+    /// agent reply (or "running…" when mid-turn, per product spec).
+    fn persist_turn(&mut self, last_task: &str) {
+        let Some(store) = &self.store else { return };
+        let id = self.session_id;
+        let _ = store.snapshot(id, &self.history);
+
+        // Title = first user prompt (truncated); preview = last agent text.
+        let title = self.history.iter()
+            .find(|m| m.role == agent_llm::types::Role::User)
+            .and_then(|m| m.content.clone())
+            .map(|c| c.chars().take(40).collect())
+            .unwrap_or_else(|| last_task.chars().take(40).collect());
+        let running = self.state.is_active();
+        let preview = if running {
+            "⟳ running…".to_string()
+        } else {
+            self.history.iter().rev()
+                .find(|m| m.role == agent_llm::types::Role::Assistant)
+                .and_then(|m| m.content.clone())
+                .map(|c| c.chars().take(60).collect())
+                .unwrap_or_else(|| "(no reply)".into())
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = store.upsert_meta(crate::session_store::SessionMeta {
+            id,
+            title,
+            preview,
+            updated_at: now,
+        });
+    }
+
+    /// Session identity — the sidebar/store key.
+    pub fn session_id(&self) -> i64 {
+        self.session_id
+    }
+
+    /// Read-only history snapshot (persistence + multi-session handoff).
+    pub fn history(&self) -> &[ChatMessage] {
+        &self.history
     }
 
     /// Stage 10: hand the turn's record to the background distiller — never

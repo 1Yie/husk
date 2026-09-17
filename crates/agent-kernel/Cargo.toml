@@ -2,7 +2,7 @@
 name = "agent-kernel"
 version = "0.1.0"
 edition = "2021"
-description = "Pure async orchestration engine: tool registry, ReAct loop, permissions, compaction — no Slint, no reqwest"
+description = "Pure async orchestration engine: tool registry, ReAct loop, permissions, compaction — no iced, no reqwest"
 license = "MIT"
 
 [dependencies]

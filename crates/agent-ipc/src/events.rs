@@ -1,7 +1,7 @@
 //! The two event enums that cross the kernel↔frontend channel.
 //!
 //! Serialization is for the *wire* (app-cli/headless, future mesh); in-process
-//! Slint usage moves the same enums over `tokio::mpsc` — one contract, both
+//! iced usage moves the same enums over `tokio::mpsc` — one contract, both
 //! transports.
 //!
 //! `AgentEvent` (sampler→session internal feedback) is deliberately NOT here:

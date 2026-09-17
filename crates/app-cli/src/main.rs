@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     }
 
-    // Headless = same kernel, stdout event pump instead of Slint. Provider
+    // Headless = same kernel, stdout event pump instead of iced. Provider
     // resolves from `config.toml` — same path as the desktop `--live`.
     let app_cfg = AppConfig::load(None).unwrap_or_default();
     let (provider, model) = resolve_provider(&app_cfg);

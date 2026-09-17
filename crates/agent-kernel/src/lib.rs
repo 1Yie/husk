@@ -1,6 +1,6 @@
 //! agent-kernel — pure async orchestration engine.
 //!
-//! Dependency law (workspace-layout.md): no Slint, no reqwest. Kernel sees
+//! Dependency law (workspace-layout.md): no iced, no reqwest. Kernel sees
 //! only normalized `StreamChunk` from agent-llm and typed events to/from
 //! agent-ipc (Stage 4).
 //!
@@ -15,5 +15,6 @@ pub mod engine;
 pub mod hooks;
 pub mod permissions;
 pub mod session;
+pub mod session_store;
 pub mod steering;
 pub mod tools;

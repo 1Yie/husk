@@ -1,14 +1,18 @@
 //! `App::update` — the Elm reducer. Every state change goes through here:
-//! UI intents send kernel commands, `KernelEvent` mutates the flat row vecs.
+//! UI intents route to the active session's actor; tagged kernel events
+//! mutate that session's `SessionView` (background sessions only touch
+//! sidebar preview/running state — a switched-away turn still progresses).
 
 use agent_ipc::{UiCommand, UiEvent};
 use iced::widget::{operation, scrollable};
-#[allow(unused_imports)]
-use scrollable as _scrollable_unused;
+#[allow(unused_imports)] use scrollable as _scrollable;
 use iced::Task;
 
 use super::message::Message;
-use super::state::{App, ApprovalRow, DiffKind, DiffLine, MessageRow, Role, StepRow, StepState};
+use super::state::{
+    App, ApprovalRow, DiffKind, DiffLine, MessageRow, Role, SessionView, StepRow,
+    StepState,
+};
 
 impl App {
     pub fn update(&mut self, msg: Message) -> Task<Message> {
@@ -20,203 +24,275 @@ impl App {
             Message::Submit => self.submit(false),
             Message::Steer => self.submit(true),
             Message::Approve(id) => {
-                *self.decision.lock().unwrap() = Some(true);
+                if let Some(h) = self.mgr.as_ref().and_then(|m| m.active()) {
+                    *h.decision.lock().unwrap() = Some(true);
+                }
                 self.resolve_pending(id, StepState::Success);
                 Task::none()
             }
             Message::Deny(id) => {
-                *self.decision.lock().unwrap() = Some(false);
+                if let Some(h) = self.mgr.as_ref().and_then(|m| m.active()) {
+                    *h.decision.lock().unwrap() = Some(false);
+                }
                 self.resolve_pending(id, StepState::Denied);
                 Task::none()
             }
-            Message::SelectSession(_id) => Task::none(), // single-session stub
-            Message::NewSession => Task::none(),       // multi-session not wired
+            Message::SelectSession(id) => {
+                if let Some(mgr) = self.mgr.as_mut() {
+                    mgr.open_session(id);
+                    self.active_id = id;
+                    self.user_scrolled = false;
+                    // Rebuild the stream from the persisted history if this
+                    // session's view was never populated (fresh resume).
+                    if !self.views.contains_key(&id) {
+                        if let Some(hist) = mgr.store_history(id) {
+                            self.views.insert(id, super::state::view_from_history(&hist));
+                        }
+                    }
+                }
+                operation::snap_to_end(self.stream_scroll.clone())
+            }
+            Message::NewSession => {
+                if let Some(mgr) = self.mgr.as_mut() {
+                    mgr.new_session();
+                    self.active_id = mgr.active_id;
+                    self.refresh_sidebar();
+                }
+                Task::none()
+            }
             Message::ToggleReasoning(i) => {
-                if let Some(m) = self.messages.get_mut(i) {
+                if let Some(m) = self.view_mut().messages.get_mut(i) {
                     m.reasoning_open = !m.reasoning_open;
                 }
                 Task::none()
             }
             Message::ToggleStep(i) => {
-                if let Some(s) = self.active_steps.get_mut(i) {
+                if let Some(s) = self.view_mut().active_steps.get_mut(i) {
                     s.expanded = !s.expanded;
                 }
                 Task::none()
             }
-            Message::Tick => {
-                self.tick = self.tick.wrapping_add(1);
-                // Drain any kernel events that piled up between frames.
-                if let Some(rx) = &self.event_rx {
-                    let pending: Vec<UiEvent> = rx.lock().unwrap().try_iter().collect();
-                    // Process them inline (recursion-free, one update pass).
-                    for ev in pending {
-                        // Reuse apply_event but it returns Task — collect and
-                        // batch. For simplicity apply directly here.
-                        let _ = self.apply_event(ev);
-                    }
-                }
-                Task::none()
-            }
             Message::Scrolled(vp) => {
-                // If the user scrolled up off the bottom, stop auto-pinning.
                 self.user_scrolled = vp.relative_offset().y < 0.98;
                 Task::none()
+            }
+            Message::Tick => {
+                self.tick = self.tick.wrapping_add(1);
+                // Drain the tagged kernel queue — route each event to its
+                // session's view (active or background).
+                let events: Vec<(i64, UiEvent)> = self
+                    .mgr
+                    .as_ref()
+                    .map(|m| m.event_rx.try_iter().collect())
+                    .unwrap_or_default();
+                let mut tasks = Vec::new();
+                for (sid, ev) in events {
+                    tasks.push(self.apply_session_event(sid, ev));
+                }
+                // Refresh sidebar previews (running markers update live).
+                self.refresh_sidebar();
+                if tasks.is_empty() {
+                    Task::none()
+                } else {
+                    Task::batch(tasks)
+                }
             }
         }
     }
 
-    /// Submit or steer the composer text.
+    /// Rebuild sidebar rows from the manager's persisted + live state.
+    fn refresh_sidebar(&mut self) {
+        let Some(mgr) = &self.mgr else { return };
+        self.sessions = mgr
+            .sidebar_rows()
+            .into_iter()
+            .map(|(id, title, preview, active, running)| super::state::SessionRow {
+                id,
+                title,
+                preview: if running { "⟳ running…".into() } else { preview },
+                active,
+                running,
+                timestamp: String::new(),
+            })
+            .collect();
+    }
+
+    /// Submit or steer the composer text to the ACTIVE session's actor.
     fn submit(&mut self, steer: bool) -> Task<Message> {
         let text = self.input.trim().to_string();
         if text.is_empty() {
             return Task::none();
         }
         self.input.clear();
+        let Some(h) = self.mgr.as_ref().and_then(|m| m.active()) else {
+            return Task::none();
+        };
         if steer {
-            if let Some(tx) = &self.steer_tx {
-                let t = text.clone();
-                if tx.try_send(t).is_err() {
-                    if let Some(cmd) = &self.cmd_tx {
-                        let _ = cmd.try_send(UiCommand::Steer { text });
-                    }
-                }
+            let t = text.clone();
+            if h.steer_tx.try_send(t).is_err() {
+                let _ = h.cmd_tx.try_send(UiCommand::Steer { text });
             }
-        } else if let Some(cmd) = &self.cmd_tx {
-            let _ = cmd.try_send(UiCommand::Prompt { text });
+        } else {
+            let _ = h.cmd_tx.try_send(UiCommand::Prompt { text });
         }
         Task::none()
     }
 
-    /// One `UiEvent` → `App` mutation. The kernel-side `apply_event` logic
-    /// from the Slint bridge, as an `App` method.
-    pub fn apply_event(&mut self, ev: UiEvent) -> Task<Message> {
-        match ev {
-            UiEvent::StateChanged(s) => {
+    /// Route one tagged `UiEvent` to its session's `SessionView`.
+    fn apply_session_event(&mut self, sid: i64, ev: UiEvent) -> Task<Message> {
+        // Update the live handle's running/preview for the sidebar.
+        if let Some(mgr) = self.mgr.as_mut() {
+            if let Some(h) = mgr.handle_mut(sid) {
+                match &ev {
+                    UiEvent::StateChanged(s) => h.running = s.is_active(),
+                    UiEvent::AssistantMessage(t) => {
+                        h.preview = t.chars().take(60).collect()
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Apply to that session's view (create on demand).
+        let view = self.views.entry(sid).or_default();
+        apply_to_view(view, &ev);
+        // Only the visible session drives the stats bar / scroll pin.
+        if sid == self.active_id {
+            if let UiEvent::StateChanged(s) = &ev {
                 self.stats.agent_state = format!("{s:?}");
-                self.is_active = s.is_active();
             }
-            UiEvent::UserPrompt(text) => {
-                self.messages.push(MessageRow {
-                    id: self.messages.len(),
-                    role: Role::User,
-                    text,
-                    reasoning: String::new(),
-                    reasoning_open: false,
-                    streaming: false,
-                });
-            }
-            UiEvent::TextDelta(t) => self.append_last(&t, false),
-            UiEvent::ReasoningDelta(t) => self.append_last(&t, true),
-            UiEvent::AssistantMessage(_) => {
-                if let Some(last) = self.messages.last_mut() {
-                    last.streaming = false;
-                }
-            }
-            UiEvent::ToolCallStarted { name } => {
-                self.active_steps.push(StepRow {
-                    id: self.active_steps.len(),
-                    name,
-                    state: StepState::Running,
-                    detail: String::new(),
-                    expanded: false,
-                });
-            }
-            UiEvent::ToolCallFinished { name, ok, content, .. } => {
-                if let Some(p) = &self.pending {
-                    if p.tool_name == name {
-                        self.pending = None;
-                    }
-                }
-                for s in self.active_steps.iter_mut().rev() {
-                    if s.name == name
-                        && matches!(s.state, StepState::Running | StepState::AwaitingConfirm)
-                    {
-                        s.state = if ok { StepState::Success } else { StepState::Error };
-                        s.detail = content.chars().take(60).collect();
-                        break;
-                    }
-                }
-            }
-            UiEvent::ApprovalRequested { tool_name, diff, fuzzy } => {
-                for s in self.active_steps.iter_mut().rev() {
-                    if s.state == StepState::Running {
-                        s.state = StepState::AwaitingConfirm;
-                        break;
-                    }
-                }
-                self.pending = Some(ApprovalRow {
-                    step_id: self.active_steps.len().saturating_sub(1),
-                    tool_name: tool_name.clone(),
-                    title: format!("Approve {tool_name}"),
-                    diff_text: diff.clone(),
-                    fuzzy,
-                    risk: "normal".into(),
-                });
-                self.pending_diff = parse_unified_diff(&diff);
-            }
-            UiEvent::Usage { prompt_tokens, completion_tokens } => {
+            if let UiEvent::Usage { prompt_tokens, completion_tokens } = &ev {
                 self.stats.tokens_used = prompt_tokens + completion_tokens;
             }
-            UiEvent::SystemMessage(msg) | UiEvent::Error(msg) => {
-                self.messages.push(MessageRow {
-                    id: self.messages.len(),
-                    role: Role::System,
-                    text: msg,
-                    reasoning: String::new(),
-                    reasoning_open: false,
-                    streaming: false,
-                });
+            if self.user_scrolled {
+                Task::none()
+            } else {
+                operation::snap_to_end(self.stream_scroll.clone())
             }
-        }
-        // Pin to bottom unless the user scrolled up.
-        if self.user_scrolled {
+        } else {
             Task::none()
-        } else {
-            operation::snap_to_end(self.stream_scroll.clone())
         }
-    }
-
-    /// Append a delta to the streaming agent row — the last row only if it's
-    /// an agent row still streaming; else push a fresh one.
-    fn append_last(&mut self, delta: &str, reasoning: bool) {
-        let target = self
-            .messages
-            .last()
-            .filter(|m| m.role == Role::Agent && m.streaming)
-            .map(|_| self.messages.len() - 1);
-        let i = match target {
-            Some(i) => i,
-            None => {
-                self.messages.push(MessageRow {
-                    id: self.messages.len(),
-                    role: Role::Agent,
-                    text: String::new(),
-                    reasoning: String::new(),
-                    reasoning_open: false,
-                    streaming: true,
-                });
-                self.messages.len() - 1
-            }
-        };
-        let row = &mut self.messages[i];
-        if reasoning {
-            row.reasoning.push_str(delta);
-        } else {
-            row.text.push_str(delta);
-        }
-        row.streaming = true;
     }
 
     /// Resolve the pending approval + push the awaiting step to a final state.
     fn resolve_pending(&mut self, _step_id: usize, final_state: StepState) {
-        self.pending = None;
-        for s in self.active_steps.iter_mut().rev() {
+        let v = self.view_mut();
+        v.pending = None;
+        for s in v.active_steps.iter_mut().rev() {
             if s.state == StepState::AwaitingConfirm {
                 s.state = final_state;
                 break;
             }
         }
     }
+}
+
+/// Apply a `UiEvent` to one session's view — the shared per-session logic.
+fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
+    match ev {
+        UiEvent::StateChanged(s) => {
+            v.is_active = s.is_active();
+        }
+        UiEvent::UserPrompt(text) => {
+            v.messages.push(MessageRow {
+                id: v.messages.len(),
+                role: Role::User,
+                text: text.clone(),
+                reasoning: String::new(),
+                reasoning_open: false,
+                streaming: false,
+            });
+        }
+        UiEvent::TextDelta(t) => append_last(v, t, false),
+        UiEvent::ReasoningDelta(t) => append_last(v, t, true),
+        UiEvent::AssistantMessage(_) => {
+            if let Some(last) = v.messages.last_mut() {
+                last.streaming = false;
+            }
+        }
+        UiEvent::ToolCallStarted { name } => {
+            v.active_steps.push(StepRow {
+                id: v.active_steps.len(),
+                name: name.clone(),
+                state: StepState::Running,
+                detail: String::new(),
+                expanded: false,
+            });
+        }
+        UiEvent::ToolCallFinished { name, ok, content, .. } => {
+            if let Some(p) = &v.pending {
+                if p.tool_name == *name {
+                    v.pending = None;
+                }
+            }
+            for s in v.active_steps.iter_mut().rev() {
+                if s.name == *name
+                    && matches!(s.state, StepState::Running | StepState::AwaitingConfirm)
+                {
+                    s.state = if *ok { StepState::Success } else { StepState::Error };
+                    s.detail = content.chars().take(60).collect();
+                    break;
+                }
+            }
+        }
+        UiEvent::ApprovalRequested { tool_name, diff, fuzzy } => {
+            for s in v.active_steps.iter_mut().rev() {
+                if s.state == StepState::Running {
+                    s.state = StepState::AwaitingConfirm;
+                    break;
+                }
+            }
+            v.pending = Some(ApprovalRow {
+                step_id: v.active_steps.len().saturating_sub(1),
+                tool_name: tool_name.clone(),
+                title: format!("Approve {tool_name}"),
+                diff_text: diff.clone(),
+                fuzzy: *fuzzy,
+                risk: "normal".into(),
+            });
+            v.pending_diff = parse_unified_diff(diff);
+        }
+        UiEvent::Usage { .. } => {} // surfaced on the active session's stats
+        UiEvent::SystemMessage(msg) | UiEvent::Error(msg) => {
+            v.messages.push(MessageRow {
+                id: v.messages.len(),
+                role: Role::System,
+                text: msg.clone(),
+                reasoning: String::new(),
+                reasoning_open: false,
+                streaming: false,
+            });
+        }
+    }
+}
+
+/// Append a delta to the streaming agent row of a view.
+fn append_last(v: &mut SessionView, delta: &str, reasoning: bool) {
+    let target = v
+        .messages
+        .last()
+        .filter(|m| m.role == Role::Agent && m.streaming)
+        .map(|_| v.messages.len() - 1);
+    let i = match target {
+        Some(i) => i,
+        None => {
+            v.messages.push(MessageRow {
+                id: v.messages.len(),
+                role: Role::Agent,
+                text: String::new(),
+                reasoning: String::new(),
+                reasoning_open: false,
+                streaming: true,
+            });
+            v.messages.len() - 1
+        }
+    };
+    let row = &mut v.messages[i];
+    if reasoning {
+        row.reasoning.push_str(delta);
+    } else {
+        row.text.push_str(delta);
+    }
+    row.streaming = true;
 }
 
 /// Split a unified diff into `DiffLine` rows.
@@ -237,15 +313,13 @@ fn parse_unified_diff(diff: &str) -> Vec<DiffLine> {
         if line.starts_with("---") || line.starts_with("+++") || line.starts_with("diff ") {
             continue;
         }
-        let (kind, o, n) = if let Some(rest) = line.strip_prefix('+') {
+        let (kind, o, n) = if line.starts_with('+') {
             let v = (DiffKind::Add, -1, new_ln);
             new_ln += 1;
-            let _ = rest;
             v
-        } else if let Some(rest) = line.strip_prefix('-') {
+        } else if line.starts_with('-') {
             let v = (DiffKind::Delete, old_ln, -1);
             old_ln += 1;
-            let _ = rest;
             v
         } else {
             let v = (DiffKind::Context, old_ln, new_ln);
