@@ -361,63 +361,86 @@ impl CallStripper {
     }
 
     /// Feed a delta; returns the safe-to-emit text (None = fully held).
-    /// A `[call: …]` line is dropped WITH its surrounding newlines so the
-    /// stripped text doesn't leave blank-line artifacts.
+    /// Byte-index scan over `hold` with two hold-back rules:
+    ///   * `[` near the end that could still become `[call:` → hold it (a
+    ///     `[` split across deltas used to leak the `call:` tail as text).
+    ///   * inside a call, `]` only terminates when followed by `\n` or held
+    ///     at buffer end — `]` inside JSON args (`result[j]`) must NOT end it.
     fn feed(&mut self, delta: &str) -> Option<String> {
         self.hold.push_str(delta);
         let mut out = String::new();
-        let mut chars = self.hold.chars().peekable();
-        let mut consumed = 0usize;
-        while let Some(c) = chars.next() {
+        let mut i = 0usize; // byte cursor into self.hold
+        let bytes = self.hold.as_bytes();
+        while i < bytes.len() {
             if self.in_call {
-                consumed += c.len_utf8();
-                if c == ']' || c == '\n' {
-                    self.in_call = false;
-                    // Parse the accumulated `name(args)` into a ToolCall so a
-                    // text-protocol call actually executes.
-                    if let Some(mut call) = parse_call_line(&self.call_buf) {
-                        call.id = format!("textcall-{}-{}", call.name, self.recovered.len());
-                        self.recovered.push(call);
+                match bytes[i] {
+                    b']' => match bytes.get(i + 1) {
+                        Some(b'\n') | Some(b'\r') => {
+                            // `]` + newline → call line ends. Parse + drop.
+                            if let Some(mut c) = parse_call_line(&self.call_buf) {
+                                c.id = format!("textcall-{}-{}", c.name, self.recovered.len());
+                                self.recovered.push(c);
+                            }
+                            self.call_buf.clear();
+                            self.in_call = false;
+                            i += 2; // skip `]` and the newline
+                            continue;
+                        }
+                        None => break, // `]` at buffer end — wait for next byte
+                        _ => {
+                            // `]` inside args (JSON index/array) — keep going.
+                            self.call_buf.push(']');
+                            i += 1;
+                            continue;
+                        }
+                    },
+                    _ => {
+                        let l = utf8_len(bytes[i]);
+                        self.call_buf.push_str(&self.hold[i..i + l]);
+                        i += l;
+                        continue;
                     }
-                    self.call_buf.clear();
-                    if chars.peek() == Some(&'\n') {
-                        chars.next();
-                        consumed += 1;
-                    }
-                } else {
-                    self.call_buf.push(c);
                 }
-                continue;
             }
-            if c == '[' {
-                let rest: String = chars.clone().take(5).collect();
-                if rest.starts_with("call:") {
+            if bytes[i] == b'[' {
+                let rest = &self.hold[i..];
+                if rest.starts_with("[call:") {
                     self.in_call = true;
-                    consumed += c.len_utf8();
-                    // A `[call:` line usually follows a newline — drop the
-                    // newline we already emitted so no blank line remains.
+                    self.call_buf.clear();
+                    i += "[call:".len();
+                    // The echo usually follows a newline we already emitted —
+                    // pop it so no blank line remains.
                     if out.ends_with('\n') {
                         out.pop();
                     }
                     continue;
                 }
-                // Partial `[call` prefix possibly split across deltas — hold.
-                if "call:".starts_with(&rest) && !rest.is_empty() {
-                    self.hold = self.hold[consumed..].to_string();
-                    return if out.is_empty() { None } else { Some(out) };
+                if "[call:".starts_with(rest) {
+                    break; // `[` / `[ca` / `[call` at buffer end — hold it
                 }
+                out.push('[');
+                i += 1;
+                continue;
             }
-            out.push(c);
-            consumed += c.len_utf8();
+            let l = utf8_len(bytes[i]);
+            out.push_str(&self.hold[i..i + l]);
+            i += l;
         }
-        self.hold = self.hold[consumed..].to_string();
+        self.hold = self.hold[i..].to_string();
         if out.is_empty() { None } else { Some(out) }
     }
 
-    /// Flush any held non-call text (on a real tool call or stream end).
-    /// Returns a marker so the caller can still emit the call chunk.
+    /// Flush on a structured tool-call item or stream end — drops held text,
+    /// and if we were mid-call, tries to parse whatever accumulated.
     fn flush_call_line(&mut self) -> Option<()> {
+        if self.in_call && !self.call_buf.is_empty() {
+            if let Some(mut c) = parse_call_line(&self.call_buf) {
+                c.id = format!("textcall-{}-{}", c.name, self.recovered.len());
+                self.recovered.push(c);
+            }
+        }
         self.hold.clear();
+        self.call_buf.clear();
         self.in_call = false;
         Some(())
     }
@@ -426,6 +449,11 @@ impl CallStripper {
     fn take_recovered(&mut self) -> Vec<crate::types::ToolCall> {
         std::mem::take(&mut self.recovered)
     }
+}
+
+/// UTF-8 length of the char starting at byte `b`.
+fn utf8_len(b: u8) -> usize {
+    if b < 0x80 { 1 } else if b < 0xE0 { 2 } else if b < 0xF0 { 3 } else { 4 }
 }
 
 /// Parse a `[call: name({json})]` body (the text inside the brackets, after
@@ -567,5 +595,30 @@ mod tests {
         let mut s = CallStripper::new();
         let out = s.feed("see [docs] and [more] here");
         assert_eq!(out.as_deref(), Some("see [docs] and [more] here"));
+    }
+
+    #[test]
+    fn call_with_bracket_in_args_terminates_on_close_plus_newline() {
+        // `]` inside JSON args (`result[j]`) must NOT end the call — only
+        // `]` followed by a newline (or held at end) does.
+        let mut s = CallStripper::new();
+        s.feed("pre\n[call: fuzzy_patch({\"s\":\"result[j] = 1\"})]\npost");
+        let calls = s.take_recovered();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "fuzzy_patch");
+        assert!(calls[0].arguments.contains("result[j]"));
+    }
+
+    #[test]
+    fn open_bracket_at_delta_end_is_held() {
+        // `[` at the end of a delta is held — a following `call:` doesn't
+        // leak as text (the old impl dropped the `[` when the 5-char
+        // lookahead came up short).
+        let mut s = CallStripper::new();
+        assert!(s.feed("hi [").unwrap_or_default().starts_with("hi"));
+        s.feed("call: bash({\"c\":1})]\ndone");
+        let calls = s.take_recovered();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
     }
 }
