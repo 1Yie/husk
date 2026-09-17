@@ -88,9 +88,15 @@ impl SessionActor {
         session_id: i64,
         history: Vec<ChatMessage>,
     ) -> (Self, super::channels::UiChannels) {
-        // Sanitize persisted assistant content: a `[call: …]` text-protocol
-        // echo a model once emitted must be stripped on load — otherwise it
-        // replays into the next request and the model parrots it forever.
+        // Sanitize persisted history (a snapshot poisoned by an old bug
+        // replays into every later request and crashes devin's upstream as
+        // `invalid_argument`):
+        //  1. strip `[call: …]` text-protocol echoes from assistant content;
+        //  2. drop assistant rows that are empty AND carry no tool_calls —
+        //     a blank turn replays as a meaningless message;
+        //  3. drop orphan tool rows — a `tool` message whose `tool_call_id`
+        //     never appeared on an assistant's `tool_calls` replays as a
+        //     `function_call_output` with no matching call → invalid_argument.
         let mut history = history;
         for m in &mut history {
             if m.role == agent_llm::types::Role::Assistant {
@@ -102,6 +108,25 @@ impl SessionActor {
                 }
             }
         }
+        let mut known_call_ids = std::collections::HashSet::new();
+        history.retain(|m| {
+            match m.role {
+                agent_llm::types::Role::Assistant => {
+                    for c in m.tool_calls.iter().flatten() {
+                        known_call_ids.insert(c.id.clone());
+                    }
+                    // keep assistant if it has content OR tool_calls
+                    m.content.is_some() || m.tool_calls.is_some()
+                }
+                agent_llm::types::Role::Tool => {
+                    m.tool_call_id
+                        .as_ref()
+                        .map(|id| known_call_ids.contains(id))
+                        .unwrap_or(false)
+                }
+                _ => true,
+            }
+        });
         Self::spawn_inner(cfg, Some(history), session_id)
     }
 

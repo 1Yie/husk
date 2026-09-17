@@ -68,9 +68,18 @@ impl OpenAiResponsesProvider {
 
     /// `ChatMessage` list → Responses `input` array + `instructions`.
     /// System messages become `instructions`; everything else maps to items.
+    ///
+    /// Integrity pass (verified against devin upstream): a `function_call_output`
+    /// whose `call_id` has no matching `function_call` item earlier in the input
+    /// is rejected upstream as `invalid_argument` → `internal_server_error`. We
+    /// track emitted call ids and DROP orphan outputs (a session whose assistant
+    /// tool_calls row was lost to an old persistence bug). Likewise an assistant
+    /// message with empty content AND no tool calls is dropped — it replays as a
+    /// blank turn.
     fn build_input(messages: &[ChatMessage]) -> (Vec<Value>, Option<String>) {
         let mut input = Vec::new();
         let mut instructions = Vec::new();
+        let mut seen_call_ids: std::collections::HashSet<String> = Default::default();
         for m in messages {
             let text = m.content.clone().unwrap_or_default();
             match m.role {
@@ -84,6 +93,7 @@ impl OpenAiResponsesProvider {
                     // function_call items; a plain one is a message.
                     if let Some(calls) = &m.tool_calls {
                         for c in calls {
+                            seen_call_ids.insert(c.id.clone());
                             input.push(json!({
                                 "type": "function_call",
                                 "call_id": c.id,
@@ -100,12 +110,20 @@ impl OpenAiResponsesProvider {
                     }
                 }
                 Role::Tool => {
-                    // Tool results are function_call_output items.
-                    input.push(json!({
-                        "type": "function_call_output",
-                        "call_id": m.tool_call_id.clone().unwrap_or_default(),
-                        "output": text,
-                    }));
+                    // Tool results are function_call_output items — but ONLY
+                    // when a matching function_call was emitted. An orphan
+                    // output (call_id never seen) makes devin's upstream
+                    // reject the whole request as invalid_argument.
+                    let call_id = m.tool_call_id.clone().unwrap_or_default();
+                    if seen_call_ids.contains(&call_id) {
+                        input.push(json!({
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": text,
+                        }));
+                    }
+                    // else: orphan tool output — drop it (and its blank
+                    // assistant row is already absent since tool_calls=None).
                 }
             }
         }
