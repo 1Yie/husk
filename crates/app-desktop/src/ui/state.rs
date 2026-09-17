@@ -146,6 +146,8 @@ pub struct StatsRow {
     pub permission_mode: String,
     pub active_provider: String,
     pub active_model: String,
+    /// Current git branch (session workspace) — status-bar right side.
+    pub git_branch: String,
     /// True while running on a fallback_chain provider (status-bar ⚠).
     #[allow(dead_code)]
     pub degraded: bool,
@@ -219,6 +221,12 @@ impl App {
                 timestamp: String::new(),
             })
             .collect();
+        // Pull provider/model/branch before `mgr` moves into `self.mgr`.
+        let (prov, model, branch) = (
+            mgr.provider_name.clone(),
+            mgr.model_name.clone(),
+            git_branch(&mgr.workspace_root),
+        );
         Self {
             mgr: Some(mgr),
             views: HashMap::new(),
@@ -227,6 +235,10 @@ impl App {
             stats: StatsRow {
                 agent_state: "Idle".into(),
                 permission_mode: "default".into(),
+                context_window: 256_000,
+                active_provider: prov,
+                active_model: model,
+                git_branch: branch,
                 ..Default::default()
             },
             sandbox_unsafe,
@@ -301,6 +313,7 @@ impl App {
                 permission_mode: "default".into(),
                 active_provider: "grok".into(),
                 active_model: "grok-4".into(),
+                git_branch: "main".into(),
                 degraded: false,
             },
             sandbox_unsafe: false,
@@ -311,6 +324,21 @@ impl App {
             window_id: None,
         }
     }
+}
+
+/// Current git branch for the workspace — `git branch --show-current`,
+/// empty when not a repo or git is unavailable.
+fn git_branch(root: &std::path::Path) -> String {
+    std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
 }
 
 /// Rebuild a `SessionView`'s message list from a persisted `ChatMessage`

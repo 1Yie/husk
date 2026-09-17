@@ -45,6 +45,11 @@ pub struct SessionManager {
     pub metas: Vec<SessionMeta>,
     /// The session the stream is showing.
     pub active_id: i64,
+    /// Active provider + model names — surfaced on the status bar.
+    pub provider_name: String,
+    pub model_name: String,
+    /// Workspace root (for git branch / cwd display).
+    pub workspace_root: std::path::PathBuf,
 }
 
 impl SessionManager {
@@ -64,6 +69,7 @@ impl SessionManager {
                 .expect("session store")
         }));
         let (event_tx, event_rx) = std_mpsc::channel();
+        let (_p, model, pname) = resolve_provider(&cfg);
 
         let mut mgr = Self {
             metas: store.list(),
@@ -73,6 +79,9 @@ impl SessionManager {
             event_tx,
             event_rx,
             active_id: 0,
+            provider_name: pname,
+            model_name: model,
+            workspace_root: cwd,
         };
 
         // Resume the most recent session if one exists; else start fresh.

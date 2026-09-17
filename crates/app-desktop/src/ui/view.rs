@@ -560,18 +560,36 @@ impl App {
         .into()
     }
 
+    /// The bottom status bar — agent state + permission mode + sandbox on
+    /// the left; context usage (tokens as `K/K` + a % bar), git branch, and
+    /// `provider · model` on the right.
     fn status_bar<'a>(&'a self) -> Element<'a, Message> {
-        let tok = format!(
-            "{} / {} tok",
-            self.stats.tokens_used, self.stats.context_window
-        );
+        let fmt_k = |n: u32| {
+            if n >= 1000 {
+                format!("{}K", n / 1000)
+            } else {
+                n.to_string()
+            }
+        };
+        let used = self.stats.tokens_used;
+        let window = self.stats.context_window.max(1);
+        let pct = (used as f32 / window as f32 * 100.0).min(999.0) as u32;
+        let ctx = format!("{}/{} · {}%", fmt_k(used), fmt_k(window), pct);
+        // Context-usage color — cool under 50%, warm 50–80%, hot above.
+        let ctx_color = if pct >= 80 { theme::ERROR } else if pct >= 50 { theme::WARN } else { theme::TEXT_MUTED };
+
         let model = format!("{} · {}", self.stats.active_provider, self.stats.active_model);
         let sandbox = if self.sandbox_unsafe { "UNSANDBOXED" } else { "sandbox" };
         let sandbox_color = if self.sandbox_unsafe { theme::WARN } else { theme::TEXT_MUTED };
         let state = self.stats.agent_state.clone();
         let mode = self.stats.permission_mode.clone();
         let files = format!("{} files", self.stats.files_changed);
-        let sid = format!("session #{}", self.active_id);
+        let branch = if self.stats.git_branch.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", self.stats.git_branch)
+        };
+        let sid = format!("#{}", self.active_id);
 
         container(
             row![
@@ -580,15 +598,16 @@ impl App {
                 text(sandbox).size(10).color(sandbox_color).font(theme::MONO),
                 text(sid).size(10).color(theme::TEXT_DIM).font(theme::MONO),
                 Space::new().width(Length::Fill),
+                text(branch).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
                 text(files).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
-                text(tok).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
+                text(ctx).size(10).color(ctx_color).font(theme::MONO),
                 text(model).size(10).color(theme::TEXT_SECONDARY).font(theme::MONO),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
         )
         .width(Length::Fill)
-        .padding([6.0, 12.0])
+        .padding([7.0, 12.0])
         .style(|_t| container::Style {
             background: Some(theme::BG_PANEL.into()),
             border: Border {
