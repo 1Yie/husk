@@ -113,10 +113,28 @@ export component ExecutionStream inherits Rectangle {
         if Bridge.is_active: LoadingDots {}
 
         // ---- active steps strip (running tool capsules) ----
-        for step in Bridge.active_steps: CodexStepCapsule {
-            step: step;
-            approve(id) => { Bridge.approve_tool(id, false); }
-            deny(id) => { Bridge.deny_tool(id, ""); }
+        // Capped height + internal scroll — a long tool run can't squeeze
+        // the conversation down to nothing. Auto-sticks to the bottom.
+        if Bridge.active_steps.length > 0: Rectangle {
+            max-height: 116px; // ~4 capsule rows
+            clip: true;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: CodexTheme.border_hairline;
+            background: CodexTheme.bg_workspace;
+
+            steps_lv := ListView {
+                for step in Bridge.active_steps: CodexStepCapsule {
+                    step: step;
+                    approve(id) => { Bridge.approve_tool(id, false); }
+                    deny(id) => { Bridge.deny_tool(id, ""); }
+                }
+                // New rows grow content-height — pin to the bottom so the
+                // running/pending capsule is always visible.
+                changed content-height => {
+                    self.content-y = min(0px, self.visible-height - self.content-height);
+                }
+            }
         }
 
         // ---- input capsule ----
