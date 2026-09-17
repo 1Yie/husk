@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn plan_splits_prefix_suffix() {
         let mut h = vec![msg(Role::System, "sys")];
-        for i in 0..20 {
+        for _i in 0..20 {
             h.push(msg(Role::User, &"u".repeat(200).repeat(1).to_string()));
             h.push(msg(Role::Assistant, &"a".repeat(200)));
         }

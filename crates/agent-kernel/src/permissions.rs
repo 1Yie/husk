@@ -70,6 +70,10 @@ pub struct PermissionRules {
 const READONLY_SHELL: &[&str] = &[
     "ls", "cat", "head", "tail", "grep", "rg", "find", "pwd", "wc",
     "git status", "git diff", "git log", "git show", "git branch",
+    "file", "stat", "du", "df", "echo", "which", "env", "tree",
+    "uname", "date", "hostname", "id", "whoami",
+    // note: `cargo test`/`cargo build`/`cargo check` write artifacts → NOT
+    // readonly; they ask for confirmation like any mutating command.
 ];
 
 /// Destructive shell verbs that `bypassPermissions` still escalates to `Ask`.
@@ -137,7 +141,18 @@ impl PermissionGate {
         match self.mode {
             PermissionMode::Bypass => Decision::Allow,
             PermissionMode::Default => {
-                if is_readonly { Decision::Allow } else { Decision::Ask { diff_summary: diff_summary.into() } }
+                // readonly tools auto-run; a SHELL call auto-runs too when
+                // its command is a readonly verb (ls/cat/rg/git status…) —
+                // only writes, installs, and destructive ops pause for
+                // confirmation. Matches the spec's intent: approval is for
+                // mutations, not inspection.
+                if is_readonly {
+                    Decision::Allow
+                } else if command.map(is_readonly_shell).unwrap_or(false) {
+                    Decision::Allow
+                } else {
+                    Decision::Ask { diff_summary: diff_summary.into() }
+                }
             }
             PermissionMode::AcceptEdits => {
                 if is_readonly || is_file_edit(tool_name) {
@@ -177,10 +192,22 @@ fn is_file_edit(tool_name: &str) -> bool {
     matches!(tool_name, "fuzzy_patch" | "apply_patch" | "write_file")
 }
 
-/// Command starts with a readonly-shell verb?
+/// Command is a PURE readonly-shell call? Starts with a readonly verb AND
+/// contains no write/chain operator — `cat a > b`, `ls && rm`, `ls | sh`
+/// must not count as readonly (they mutate or smuggle a second command).
 fn is_readonly_shell(cmd: &str) -> bool {
     let c = cmd.trim();
-    READONLY_SHELL.iter().any(|v| c.starts_with(v))
+    let starts_readonly = READONLY_SHELL.iter().any(|v| c.starts_with(v));
+    if !starts_readonly {
+        return false;
+    }
+    // Reject anything that could write or chain a second command.
+    !(c.contains('>')
+        || c.contains('|')
+        || c.contains("&&")
+        || c.contains(';')
+        || c.contains("$(")
+        || c.contains('`'))
 }
 
 /// Command contains a destructive verb?
@@ -211,6 +238,37 @@ mod tests {
     }
 
     #[test]
+    fn default_allows_readonly_shell_but_asks_writes() {
+        let g = gate("default");
+        // readonly shell verbs auto-run — ls/cat/git status/cargo test…
+        assert!(matches!(
+            g.decide("bash", false, Some("ls -la"), ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("git status"), ""),
+            Decision::Allow
+        ));
+        // …but writes, installs, builds, and chains still ask.
+        assert!(matches!(
+            g.decide("bash", false, Some("cargo test"), ""),
+            Decision::Ask { .. }
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("mkdir demo"), ""),
+            Decision::Ask { .. }
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("cat a > b.txt"), ""),
+            Decision::Ask { .. }
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("ls && rm -rf x"), ""),
+            Decision::Ask { .. }
+        ));
+    }
+
+    #[test]
     fn deny_beats_everything() {
         let mut g = gate("bypassPermissions");
         g.merge_rules(PermissionRules {
@@ -236,8 +294,9 @@ mod tests {
     fn accept_edits_skips_patch_asks_shell() {
         let g = gate("acceptEdits");
         assert!(matches!(g.decide("fuzzy_patch", false, None, ""), Decision::Allow));
+        // non-readonly shell (an install) still asks even in acceptEdits.
         assert!(matches!(
-            g.decide("bash", false, Some("cargo test"), ""),
+            g.decide("bash", false, Some("npm install foo"), ""),
             Decision::Ask { .. }
         ));
     }
@@ -249,8 +308,9 @@ mod tests {
             g.decide("bash", false, Some("git status"), ""),
             Decision::Allow
         ));
+        // a build writes artifacts → not readonly → denied in dontAsk.
         assert!(matches!(
-            g.decide("bash", false, Some("cargo build"), ""),
+            g.decide("bash", false, Some("mkdir out"), ""),
             Decision::Deny { .. }
         ));
     }

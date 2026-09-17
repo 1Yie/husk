@@ -50,18 +50,29 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         .min(MAX_TIMEOUT);
 
     // ---- Stage 8: audit before spawn → risk tier on the result ----
-    let verdict = agent_sandbox::audit_command(&parsed.command);
+    // Scoped to the workspace so out-of-scope writes flag ScopeViolation.
+    let verdict = agent_sandbox::audit_command_scoped(
+        &parsed.command,
+        Some(ctx.workspace_root.as_ref()),
+    );
 
-    // Build the sandbox config — audit may force `snapshot: Required`.
-    let mut cfg = agent_sandbox::SandboxConfig {
+    // Policy → SandboxPlan → SandboxConfig. The plan derives network/fs
+    // limits from the audit's capabilities (Network/PackageInstall flips
+    // allow_network; High+ risk forces a CoW snapshot). The L2 backend still
+    // consumes SandboxConfig — the plan is its structured source.
+    let plan = agent_sandbox::plan::SandboxPlan::from_audit(
+        &verdict,
+        ctx.workspace_root.as_ref().to_path_buf(),
+        std::env::temp_dir().join(format!("agent-rs-{:x}", std::process::id())),
+    );
+    let cfg = agent_sandbox::SandboxConfig {
         workspace_dir: ctx.workspace_root.as_ref().to_path_buf(),
-        allow_network: false,
+        allow_network: !matches!(plan.network, agent_sandbox::plan::NetworkPolicy::Deny),
+        max_memory_mb: plan.processes.max_memory_mb,
         timeout_secs: timeout.as_secs(),
+        snapshot: plan.snapshot,
         ..Default::default()
     };
-    if let Some(snap) = verdict.force_snapshot {
-        cfg.snapshot = snap;
-    }
 
     let output = ctx
         .sandbox
@@ -80,7 +91,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let mut content = format!("── exit {} `{}` ──\n", output.status, parsed.command);
     if verdict.level > agent_sandbox::AuditLevel::Normal {
         content.push_str(&format!(
-            "[audit {:?}: {}]\n", verdict.level, verdict.reason));
+            "[audit {:?}: {}]\n", verdict.level, verdict.reasons.join("; ")));
     }
     if output.is_timeout {
         content.push_str(&format!("[timeout {}s — tree killed]\n", timeout.as_secs()));

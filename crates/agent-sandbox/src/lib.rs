@@ -13,7 +13,7 @@ pub mod linux_bwrap;
 pub mod none;
 pub mod traits;
 
-pub use audit::{audit_command, AuditLevel, AuditVerdict};
+pub use audit::{audit_command, audit_command_scoped, AuditLevel, AuditResult, AuditVerdict};
 pub use env_sanitize::{is_denied, sanitize_env};
 pub use linux_bwrap::LinuxBwrap;
 pub use none::NoneBackend;
@@ -51,3 +51,13 @@ fn bwrap_on_path() -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+
+/// Shell AST — structural parse of a command line (parser layer of the
+/// sandbox pipeline; safety decisions live in capability/audit/policy).
+pub mod shell_ast;
+
+/// Capability IR + extractor — `shell_ast` → `Vec<Capability>` + `RiskLevel`.
+pub mod capability;
+
+/// SandboxPlan — the OS-portable restriction set policy hands to a backend.
+pub mod plan;
