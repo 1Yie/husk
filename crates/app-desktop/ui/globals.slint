@@ -90,4 +90,6 @@ export global Bridge {
     in-out property <SessionStats> stats;
     in-out property <bool> sandbox_unsafe;
     in-out property <bool> steered;
+    // True while the kernel is mid-turn — drives the loading bubble.
+    in-out property <bool> is_active;
 }

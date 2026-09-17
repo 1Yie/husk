@@ -7,20 +7,44 @@ import { CodexTheme } from "../codex_theme.slint";
 import { Bridge, SessionMessageData, ActionStepData } from "../globals.slint";
 import { CodexStepCapsule } from "../components/step_capsule.slint";
 
+// User message — right-aligned chat bubble.
 component PromptBlock inherits Rectangle {
     in property <string> text;
-    border-radius: 4px;
-    background: CodexTheme.bg_card;
-    border-width: 1px;
-    border-color: CodexTheme.border_hairline;
-    VerticalLayout { padding: 8px;
-    Text {
-        text: root.text;
-        font-family: CodexTheme.font_sans;
-        font-size: 13px;
-        color: CodexTheme.text_white;
-        wrap: word-wrap;
+    border-radius: 12px;
+    background: CodexTheme.bg_hover;
+    HorizontalLayout {
+        padding: 0px;
+        Rectangle { horizontal-stretch: 2; } // spacer pushes bubble right
+        Rectangle {
+            horizontal-stretch: 8;
+            border-radius: 12px;
+            background: CodexTheme.accent;
+            VerticalLayout { padding: 9px; padding-left: 12px; padding-right: 12px;
+                Text {
+                    text: root.text;
+                    font-family: CodexTheme.font_sans;
+                    font-size: 13px;
+                    color: #ffffff;
+                    wrap: word-wrap;
+                }
+            }
+        }
     }
+}
+
+// Agent loading indicator — three pulsing dots while the kernel works.
+component LoadingDots inherits Rectangle {
+    height: 22px;
+    HorizontalLayout {
+        spacing: 5px;
+        alignment: start;
+        for i in [0, 1, 2]: Rectangle {
+            width: 7px; height: 7px; border-radius: 4px;
+            background: CodexTheme.text_muted;
+            // Staggered pulse — each dot lights on a third of the cycle.
+            opacity: Math.mod(animation-tick() / 1ms + i * 300, 900) < 300 ? 1.0 : 0.3;
+            y: (parent.height - self.height) / 2;
+        }
     }
 }
 
@@ -59,23 +83,13 @@ export component ExecutionStream inherits Rectangle {
         spacing: 12px;
 
         // ---- header ----
-        HorizontalLayout {
-            alignment: space-between;
-            Text {
-                text: "CURRENT SESSION";
-                font-family: CodexTheme.font_mono;
-                font-size: 10px;
-                font-weight: 700;
-                color: CodexTheme.text_muted;
-                letter-spacing: 1px;
-            }
-            Text {
-                text: Bridge.stats.agent_state;
-                font-family: CodexTheme.font_mono;
-                font-size: 10px;
-                color: Bridge.stats.degraded ? CodexTheme.warn
-                     : CodexTheme.diff_add;
-            }
+        Text {
+            text: "CURRENT SESSION";
+            font-family: CodexTheme.font_mono;
+            font-size: 10px;
+            font-weight: 700;
+            color: CodexTheme.text_muted;
+            letter-spacing: 1px;
         }
 
         // ---- timeline ----
@@ -107,6 +121,9 @@ export component ExecutionStream inherits Rectangle {
                 // order via the same ListView pass below.
             }
         }
+
+        // ---- loading bubble while the kernel is mid-turn ----
+        if Bridge.is_active: LoadingDots {}
 
         // ---- active steps strip (running tool capsules) ----
         for step in Bridge.active_steps: CodexStepCapsule { step: step; }

@@ -220,6 +220,7 @@ fn apply_event(weak: &slint::Weak<CodexDesktop>, ev: UiEvent, m: &UiModels) {
             let mut stats = b.get_stats();
             stats.agent_state = format!("{s:?}").into();
             b.set_stats(stats);
+            b.set_is_active(s.is_active());
         }
         UiEvent::UserPrompt(text) => {
             m.messages.push(SessionMessageData {
@@ -293,24 +294,39 @@ fn apply_event(weak: &slint::Weak<CodexDesktop>, ev: UiEvent, m: &UiModels) {
     }
 }
 
-/// Append a delta to the last (streaming) message row — reserves the row if
-/// this is the first chunk (step 1 of the lifecycle).
+/// Append a delta to the *streaming agent row* — the last row only if it's
+/// an agent row still streaming; otherwise push a fresh agent row. This is
+/// what kept a user prompt from getting the reply glued onto it.
 fn append_last(m: &UiModels, delta: &str, reasoning: bool) {
     let n = m.messages.row_count();
-    if n == 0 {
-        m.messages.push(SessionMessageData {
-            id: 0,
-            role: "agent".into(),
-            text: "".into(),
-            reasoning: "".into(),
-            has_diff: false,
-            streaming: true,
-        });
-    }
-    let i = m.messages.row_count() - 1;
+    let target = if n > 0 {
+        let row = m.messages.row_data(n - 1).unwrap();
+        if row.role.as_str() == "agent" && row.streaming {
+            Some(n - 1)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let i = match target {
+        Some(i) => i,
+        None => {
+            m.messages.push(SessionMessageData {
+                id: m.messages.row_count() as i32,
+                role: "agent".into(),
+                text: "".into(),
+                reasoning: "".into(),
+                has_diff: false,
+                streaming: true,
+            });
+            m.messages.row_count() - 1
+        }
+    };
     let mut row = m.messages.row_data(i).unwrap();
     if reasoning {
         row.reasoning = format!("{}{}", row.reasoning, delta).into();
+        row.streaming = true;
     } else {
         row.text = format!("{}{}", row.text, delta).into();
         row.streaming = true;
