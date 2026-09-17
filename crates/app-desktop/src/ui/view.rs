@@ -111,8 +111,9 @@ impl App {
             .height(Length::Fill);
         col = col.push(stream);
 
-        // Steps strip — capped height, internal scroll, pinned to bottom.
-        if !self.active_steps.is_empty() {
+        // Steps strip — only in-flight steps (running / awaiting confirm).
+        // Finished tools free the space; the stream stays the focus.
+        if self.active_steps.iter().any(|s| matches!(s.state, StepState::Running | StepState::AwaitingConfirm)) {
             col = col.push(self.steps_strip());
         }
 
@@ -234,6 +235,9 @@ impl App {
     fn steps_strip(&self) -> Element<'_, Message> {
         let mut strip = Column::new().spacing(4).padding(8).width(Length::Fill);
         for (i, s) in self.active_steps.iter().enumerate() {
+            if !matches!(s.state, StepState::Running | StepState::AwaitingConfirm) {
+                continue;
+            }
             strip = strip.push(self.step_capsule(i, s));
         }
         container(scrollable(strip).height(Length::Shrink))
