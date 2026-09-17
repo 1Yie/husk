@@ -85,13 +85,17 @@ pub fn audit_command_scoped(cmd: &str, workspace: Option<&std::path::Path>) -> A
 
     let risk = risk_of(&caps);
     let reasons = reasons_for(&caps);
-    let needs_network = caps.iter().any(|c| matches!(c, Capability::Network { .. } | Capability::PackageInstall { .. }));
+    // Separate the package-install tier from generic network — a `git push`
+    // or `curl` is Elevated (network), NOT a package-manager mutation.
+    let is_package_install = caps.iter().any(|c| matches!(c, Capability::PackageInstall { .. }));
+    let is_network = caps.iter().any(|c| matches!(c, Capability::Network { .. }));
+    let needs_network = is_network || is_package_install;
     let scope_violation = caps.iter().any(|c| matches!(c, Capability::OutOfScope { .. }));
 
     let level = match risk {
         RiskLevel::Critical => AuditLevel::Critical,
         RiskLevel::High if scope_violation => AuditLevel::ScopeViolation,
-        RiskLevel::High if needs_network => AuditLevel::NetworkMutating,
+        RiskLevel::High if is_package_install => AuditLevel::NetworkMutating,
         RiskLevel::High => AuditLevel::Elevated,
         RiskLevel::Medium | RiskLevel::Low => AuditLevel::Normal,
     };
@@ -126,6 +130,7 @@ fn reasons_for(caps: &[Capability]) -> Vec<String> {
             Capability::PrivilegeEscalation => "escalates privileges (sudo)".to_string(),
             Capability::DeviceAccess { path } => format!("accesses device {}", path.display()),
             Capability::ProcessControl => "controls processes".to_string(),
+            Capability::DestructiveVcs { operation } => format!("rewrites/discards git state ({operation})"),
             Capability::OutOfScope { path } => format!("touches {} (outside the workspace)", path.display()),
             Capability::ReadFile { .. } | Capability::Execute { .. } => continue,
         };
@@ -134,20 +139,33 @@ fn reasons_for(caps: &[Capability]) -> Vec<String> {
     out
 }
 
-/// Is `path` outside `workspace`? Absolute system paths + `$HOME` dot-dirs
-/// are always out of scope; a relative path stays in the workspace.
+/// Is `path` outside `workspace`? Resolves a relative path against the
+/// workspace root and normalizes `.`/`..` components so `../../etc/shadow`
+/// can't sneak through as "relative".
 fn is_out_of_scope(path: &std::path::Path, workspace: &std::path::Path) -> bool {
-    let s = path.to_string_lossy();
-    if !path.is_absolute() {
-        return false; // relative → inside the workspace mount
+    use std::path::{Component, PathBuf};
+    // Resolve relative paths against the workspace, then normalize so a
+    // `..` can't climb above the root.
+    let joined = if path.is_absolute() { path.to_path_buf() } else { workspace.join(path) };
+    let mut normalized = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            Component::ParentDir => { normalized.pop(); }
+            Component::CurDir => {}
+            c => normalized.push(c),
+        }
     }
-    // Absolute system + sensitive dirs are out of scope.
+    let s = normalized.to_string_lossy();
+    // Sensitive system + secret dirs are always out of scope.
     let sensitive = ["/etc", "/usr", "/bin", "/sbin", "/boot", "/sys", "/proc", "/dev", "/root", "/var", "/lib"];
-    if sensitive.iter().any(|d| s.starts_with(d)) || s.starts_with("~/.ssh") || s.starts_with("$HOME/.ssh") {
+    if sensitive.iter().any(|d| s == *d || s.starts_with(&format!("{d}/")))
+        || s.contains("/.ssh") || s.contains("/.gnupg") || s.contains("/.aws")
+    {
         return true;
     }
-    // Any other absolute path outside the workspace root.
-    !s.starts_with(&*workspace.to_string_lossy())
+    // Component-wise prefix check (not string prefix — `/proj_evil` must not
+    // match `/proj`).
+    !normalized.starts_with(workspace)
 }
 
 #[cfg(test)]
@@ -164,10 +182,19 @@ mod tests {
     }
 
     #[test]
-    fn force_push_is_elevated() {
-        // git push → Network capability → High risk → Elevated.
+    fn force_push_is_destructive_vcs_elevated() {
+        // git push --force → DestructiveVcs + Network → High → Elevated
+        // (NOT NetworkMutating — that's the package-install tier).
         let v = audit_command("git push --force origin main");
-        assert_eq!(v.level, AuditLevel::NetworkMutating); // network → NetworkMutating tier
+        assert_eq!(v.level, AuditLevel::Elevated);
+        assert_eq!(v.risk, RiskLevel::High);
+        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::DestructiveVcs { .. })));
+    }
+
+    #[test]
+    fn git_reset_hard_is_destructive() {
+        let v = audit_command("git reset --hard HEAD~3");
+        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::DestructiveVcs { .. })));
         assert_eq!(v.risk, RiskLevel::High);
     }
 
@@ -191,6 +218,40 @@ mod tests {
         let v = audit_command_scoped("cat a > /etc/out", Some(&ws));
         assert_eq!(v.level, AuditLevel::ScopeViolation);
         assert!(v.capabilities.iter().any(|c| matches!(c, Capability::OutOfScope { .. })));
+    }
+
+    #[test]
+    fn relative_traversal_is_out_of_scope() {
+        // ../../etc/shadow escapes the workspace even though it's "relative".
+        let ws = PathBuf::from("/home/u/proj");
+        let v = audit_command_scoped("cat ../../etc/shadow", Some(&ws));
+        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::OutOfScope { .. })),
+            "relative traversal must flag OutOfScope");
+    }
+
+    #[test]
+    fn prefix_sibling_is_out_of_scope() {
+        // /home/u/proj_evil must NOT match workspace /home/u/proj —
+        // Path::starts_with is component-wise, not a string prefix.
+        let ws = PathBuf::from("/home/u/proj");
+        let v = audit_command_scoped("cat /home/u/proj_evil/x", Some(&ws));
+        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::OutOfScope { .. })),
+            "/proj_evil must not match /proj");
+    }
+
+    #[test]
+    fn rm_recursive_flag_variants() {
+        for cmd in ["rm -rf /tmp/x", "rm --recursive /tmp/x", "rm -r /tmp/x", "rm -Rf /tmp/x"] {
+            let v = audit_command(cmd);
+            assert!(v.capabilities.iter().any(|c| matches!(c, Capability::DeleteFile { recursive: true, .. })),
+                "{cmd} should mark recursive");
+        }
+    }
+
+    #[test]
+    fn python_dash_and_bash_s_are_scripts() {
+        assert!(audit_command("python - < x.py").capabilities.iter().any(|c| matches!(c, Capability::ExecuteScript)));
+        assert!(audit_command("bash -s < x.sh").capabilities.iter().any(|c| matches!(c, Capability::ExecuteScript)));
     }
 
     #[test]

@@ -40,6 +40,11 @@ pub enum Capability {
     DeviceAccess { path: PathBuf },
     /// Process control (`kill`, `pkill`, `killall`).
     ProcessControl,
+    /// Destructive version-control action — `git push --force`,
+    /// `git reset --hard`, `git clean -f`, `git checkout --`. Rewrites or
+    /// discards history/files; needs its own flag so the card can say
+    /// "rewrites git history" instead of a generic network/write note.
+    DestructiveVcs { operation: String },
     /// Read a file outside the workspace — scope violation candidate.
     /// (kept separate so policy can deny by scope, not by verb.)
     OutOfScope { path: PathBuf },
@@ -119,13 +124,21 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
     match prog {
         // ---- deletes ----
         "rm" | "unlink" | "rmdir" => {
-            let recursive = cmd.args.iter().any(|a| a.contains('r') && a.starts_with('-'))
-                || prog == "rmdir";
+            // Any flag carrying a recursive delete: `-r`, `-rf`, `-R`,
+            // `--recursive`. GNU long opts match too.
+            let recursive = cmd.args.iter().any(|a| {
+                (a.starts_with('-') && !a.starts_with("--")
+                    && a[1..].chars().any(|c| c == 'r' || c == 'R'))
+                || a == "--recursive"
+            }) || prog == "rmdir";
             for a in &cmd.args {
+                // Skip every flag (incl. `--no-preserve-root`) — only bare
+                // operands are paths.
                 if !a.starts_with('-') {
-                    if let Some(p) = arg_path(cmd.args.iter().position(|x| x == a).unwrap_or(0)) {
-                        caps.push(Capability::DeleteFile { path: p, recursive });
-                    }
+                    caps.push(Capability::DeleteFile {
+                        path: PathBuf::from(a),
+                        recursive,
+                    });
                 }
             }
         }
@@ -209,12 +222,41 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
             if matches!(sub, "install" | "add" | "i" | "remove" | "uninstall" | "update" | "upgrade") {
                 caps.push(Capability::PackageInstall { manager: prog.into() });
                 caps.push(Capability::Network { target: None });
-                caps.push(Capability::WriteFile { path: PathBuf::from("node_modules") });
+                // Which dirs the manager actually writes — npm→node_modules,
+                // cargo→target/+Cargo.toml, pip→site-packages, apt→system.
+                let written = match prog {
+                    "npm" | "yarn" | "pnpm" | "bun" => vec![PathBuf::from("node_modules"), PathBuf::from("package.json")],
+                    "cargo" => vec![PathBuf::from("target"), PathBuf::from("Cargo.toml"), PathBuf::from("Cargo.lock")],
+                    "pip" | "pip3" => vec![PathBuf::from("site-packages")],
+                    "apt" | "apt-get" | "dnf" | "pacman" | "brew" => vec![PathBuf::from("/usr"), PathBuf::from("/var")],
+                    "gem" => vec![PathBuf::from("gems")],
+                    "composer" => vec![PathBuf::from("vendor")],
+                    _ => vec![],
+                };
+                for p in written {
+                    caps.push(Capability::WriteFile { path: p });
+                }
             }
         }
         "git" => {
-            match cmd.args.first().map(|s| s.as_str()) {
-                Some("push") | Some("pull") | Some("fetch") | Some("clone") | Some("submodule") => {
+            let sub = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
+            match sub {
+                // Destructive VCS — history-rewriting or file-discarding.
+                "push" if cmd.args.iter().any(|a| a == "--force" || a == "-f" || a == "--force-with-lease") => {
+                    caps.push(Capability::DestructiveVcs { operation: "git push --force".into() });
+                    caps.push(Capability::Network { target: None });
+                }
+                "reset" if cmd.args.iter().any(|a| a == "--hard") => {
+                    caps.push(Capability::DestructiveVcs { operation: "git reset --hard".into() });
+                }
+                "clean" if cmd.args.iter().any(|a| a.contains('f') && a.starts_with('-')) => {
+                    caps.push(Capability::DestructiveVcs { operation: "git clean -f".into() });
+                }
+                "checkout" | "restore" if cmd.args.iter().any(|a| a == "--" || a.starts_with('-') && a.contains('f')) => {
+                    caps.push(Capability::DestructiveVcs { operation: format!("git {sub} — discards changes") });
+                }
+                // Network-touching VCS ops.
+                "push" | "pull" | "fetch" | "clone" | "submodule" | "remote" => {
                     caps.push(Capability::Network { target: None });
                 }
                 _ => {}
@@ -235,11 +277,15 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         "kill" | "pkill" | "killall" => {
             caps.push(Capability::ProcessControl);
         }
-        // interpreters running a script file / -c — ExecuteScript
-        "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "perl" | "ruby" => {
+        // interpreters running a script file / -c / -s / - — ExecuteScript.
+        // `bash -s`, `python -` read a script from stdin; `-c "cmd"` is a
+        // literal script. Also catch `eval "$(curl …)"` style builtins.
+        "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "perl" | "ruby" | "eval" => {
             let has_script = cmd.args.iter().any(|a| {
-                a == "-c" || a.ends_with(".sh") || a.ends_with(".py")
+                a == "-c" || a == "-s" || a == "-" // stdin script
+                    || a.ends_with(".sh") || a.ends_with(".py")
                     || a.ends_with(".js") || a.ends_with(".pl") || a.ends_with(".rb")
+                    || prog == "eval" // `eval` always executes its arg
             });
             if has_script {
                 caps.push(Capability::ExecuteScript);
@@ -262,6 +308,7 @@ pub fn risk_of(caps: &[Capability]) -> RiskLevel {
         let r = match c {
             Capability::PrivilegeEscalation
             | Capability::DeviceAccess { .. }
+            | Capability::DestructiveVcs { .. }
             | Capability::OutOfScope { .. } => RiskLevel::High,
             Capability::ExecuteScript
             | Capability::PackageInstall { .. }
