@@ -371,7 +371,22 @@ impl SessionActor {
     fn persist_turn(&mut self, last_task: &str) {
         let Some(store) = &self.store else { return };
         let id = self.session_id;
-        let _ = store.snapshot(id, &self.history);
+        // Sanitize before persisting — strip any `[call:…]` text-protocol
+        // echo a provider leaked into assistant content (the streaming
+        // CallStripper catches it live, but this is the last-line defense so
+        // a poisoned snapshot can't re-teach the model on resume).
+        let sanitized: Vec<ChatMessage> = self.history.iter().map(|m| {
+            if m.role == agent_llm::types::Role::Assistant {
+                let mut m = m.clone();
+                if let Some(c) = &m.content {
+                    m.content = Some(strip_call_echo(c));
+                }
+                m
+            } else {
+                m.clone()
+            }
+        }).collect();
+        let _ = store.snapshot(id, &sanitized);
 
         // Title = first user prompt (truncated); preview = last agent text.
         let title = self.history.iter()

@@ -22,7 +22,32 @@ function insertionSort(arr) {
   return a;
 }
 
+/**
+ * 冒泡排序（返回新数组，不改原数组）
+ * @param {number[]} arr 待排序数组
+ * @returns {number[]} 升序排序后的新数组
+ * 复杂度：最好 O(n)（已有序时提前退出），最坏/平均 O(n²)；空间 O(1) 额外（不计返回副本）
+ */
+function bubbleSort(arr) {
+  const a = arr.slice();
+  // 外层循环：每轮把当前最大值"冒泡"到末尾；n-1 轮后整体有序
+  for (let i = 0; i < a.length - 1; i++) {
+    let swapped = false;
+    // 内层循环：相邻元素两两比较，大的往后换；末尾 i 个已就位，无需再比
+    for (let j = 0; j < a.length - 1 - i; j++) {
+      if (a[j] > a[j + 1]) {
+        [a[j], a[j + 1]] = [a[j + 1], a[j]]; // 解构交换
+        swapped = true;
+      }
+    }
+    // 一整轮没有发生交换，说明已经有序，提前结束
+    if (!swapped) break;
+  }
+  return a;
+}
+
 // ── 演示 ──────────────────────────────────────────────
 const input = [5, 2, 9, 1, 3, 7];
-console.log('before:', input.join(' '));                 // 排序前
-console.log('after :', insertionSort(input).join(' '));  // 排序后
+console.log('before :', input.join(' '));                  // 排序前
+console.log('insert :', insertionSort(input).join(' '));   // 插入排序结果
+console.log('bubble :', bubbleSort(input).join(' '));      // 冒泡排序结果

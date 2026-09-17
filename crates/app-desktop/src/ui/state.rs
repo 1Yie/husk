@@ -332,6 +332,26 @@ impl App {
     }
 }
 
+/// Strip `[call: …]` text-protocol echoes from a persisted assistant
+/// message — mirrors the kernel's `strip_call_echo` so a poisoned snapshot
+/// doesn't render raw call syntax as chat text in `view_from_history`.
+fn strip_call_echo_ui(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("[call:") {
+        let before = &rest[..start];
+        out.push_str(before.strip_suffix('\n').unwrap_or(before));
+        let after = &rest[start..];
+        let end = after.find(']').map(|i| i + 1).unwrap_or(after.len());
+        rest = &after[end..];
+        if let Some(s) = rest.strip_prefix('\n') {
+            rest = s;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Current git branch for the workspace — `git branch --show-current`,
 /// empty when not a repo or git is unavailable.
 fn git_branch(root: &std::path::Path) -> String {
@@ -390,7 +410,13 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
             agent_llm::types::Role::Assistant => Role::Agent,
             _ => Role::System,
         };
-        let text = m.content.clone().unwrap_or_default();
+        // Strip any persisted `[call:…]` text-protocol echo so a poisoned
+        // snapshot doesn't render the raw call syntax as chat text.
+        let text = if m.role == agent_llm::types::Role::Assistant {
+            strip_call_echo_ui(&m.content.clone().unwrap_or_default())
+        } else {
+            m.content.clone().unwrap_or_default()
+        };
         if text.trim().is_empty() && m.tool_calls.is_none() {
             continue;
         }

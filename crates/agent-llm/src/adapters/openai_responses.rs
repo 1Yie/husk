@@ -229,7 +229,8 @@ impl LlmProvider for OpenAiResponsesProvider {
                 Err(e) => vec![Err(e)],
                 Ok(d) => {
                     let evs = map_data(&d, &mut usage);
-                    evs.into_iter()
+                    let mut items: Vec<anyhow::Result<StreamChunk>> = evs
+                        .into_iter()
                         .filter_map(|c| match c {
                             StreamChunk::ContentDelta(t) => {
                                 stripper.feed(&t).map(StreamChunk::ContentDelta)
@@ -248,7 +249,24 @@ impl LlmProvider for OpenAiResponsesProvider {
                             other => Some(other),
                         })
                         .map(Ok)
-                        .collect()
+                        .collect();
+                    // `[call: name({json})]` text lines recovered by the
+                    // stripper become real ToolCallDelta so swe-2's
+                    // text-protocol calls actually execute (not just hidden).
+                    // Each recovered text-call gets its own assembler slot —
+                    // index grows per call so two `[call:]` lines don't
+                    // concat into one corrupted slot.
+                    let mut slot = 10_000usize;
+                    for call in stripper.take_recovered() {
+                        items.push(Ok(StreamChunk::ToolCallDelta {
+                            index: slot,
+                            id: Some(call.id),
+                            name: Some(call.name),
+                            args_delta: call.arguments,
+                        }));
+                        slot += 1;
+                    }
+                    items
                 }
             };
             futures::stream::iter(items)
@@ -330,11 +348,16 @@ struct CallStripper {
     hold: String,
     /// True once we've entered a `[call:` line (until `]` or newline).
     in_call: bool,
+    /// The accumulating `[call: …` payload — parsed into a ToolCall on `]`.
+    call_buf: String,
+    /// Tool calls recovered from `[call: name({json})]` text lines — the
+    /// swe-2 text-protocol escape hatch. Drained by the adapter.
+    recovered: Vec<crate::types::ToolCall>,
 }
 
 impl CallStripper {
     fn new() -> Self {
-        Self { hold: String::new(), in_call: false }
+        Self { hold: String::new(), in_call: false, call_buf: String::new(), recovered: Vec::new() }
     }
 
     /// Feed a delta; returns the safe-to-emit text (None = fully held).
@@ -350,11 +373,19 @@ impl CallStripper {
                 consumed += c.len_utf8();
                 if c == ']' || c == '\n' {
                     self.in_call = false;
-                    // Swallow a trailing newline right after the call line.
+                    // Parse the accumulated `name(args)` into a ToolCall so a
+                    // text-protocol call actually executes.
+                    if let Some(mut call) = parse_call_line(&self.call_buf) {
+                        call.id = format!("textcall-{}-{}", call.name, self.recovered.len());
+                        self.recovered.push(call);
+                    }
+                    self.call_buf.clear();
                     if chars.peek() == Some(&'\n') {
                         chars.next();
                         consumed += 1;
                     }
+                } else {
+                    self.call_buf.push(c);
                 }
                 continue;
             }
@@ -386,13 +417,45 @@ impl CallStripper {
     /// Flush any held non-call text (on a real tool call or stream end).
     /// Returns a marker so the caller can still emit the call chunk.
     fn flush_call_line(&mut self) -> Option<()> {
-        // Any held text that wasn't a `[call:` is safe to emit — but at a
-        // tool-call boundary we just clear the buffer (the structured call
-        // carries the intent; a partial text echo is dropped).
         self.hold.clear();
         self.in_call = false;
         Some(())
     }
+
+    /// Drain any `[call: name({json})]` lines recovered into real ToolCalls.
+    fn take_recovered(&mut self) -> Vec<crate::types::ToolCall> {
+        std::mem::take(&mut self.recovered)
+    }
+}
+
+/// Parse a `[call: name({json})]` body (the text inside the brackets, after
+/// `call:`) into a `ToolCall` — `smart_read({"path":"x"})` →
+/// `{id:"textcall-N", name:"smart_read", arguments:{…}}`. `[call: ()]` is
+/// a no-op (returns None). Returns None for a non-call or malformed body.
+fn parse_call_line(body: &str) -> Option<crate::types::ToolCall> {
+    let body = body.trim();
+    if body.is_empty() || body == "()" {
+        return None;
+    }
+    // `name(args)` — split at the first `(`.
+    let open = body.find('(')?;
+    let name = body[..open].trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let mut args = body[open..].trim().to_string();
+    // Strip the outer parens → just the JSON object.
+    if args.starts_with('(') && args.ends_with(')') {
+        args = args[1..args.len() - 1].trim().to_string();
+    }
+    if args.is_empty() || args == "()" {
+        args = "{}".into();
+    }
+    Some(crate::types::ToolCall {
+        id: format!("textcall-{}", name),
+        name,
+        arguments: args,
+    })
 }
 
 /// One `data:` payload → zero-or-more `StreamChunk`s.
