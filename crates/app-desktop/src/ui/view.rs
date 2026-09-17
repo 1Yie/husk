@@ -41,28 +41,17 @@ impl App {
     // Sidebar — session list, 220px.
     // ------------------------------------------------------------------
     fn sidebar(&self) -> Element<'_, Message> {
-        let mut list = Column::new().spacing(2).padding(8);
-
-        list = list.push(
+        // Fixed header — app name + new-session button stay put while the
+        // session list scrolls below.
+        let mut header = Column::new().spacing(0).padding(8);
+        header = header.push(
             text("agent-rs")
                 .size(16)
                 .color(theme::TEXT_WHITE)
                 .font(theme::SANS),
         );
-        list = list.push(Space::new().height(Length::Fixed(12.0)));
-        list = list.push(
-            text("SESSIONS")
-                .size(10)
-                .color(theme::TEXT_MUTED),
-        );
-        list = list.push(Space::new().height(Length::Fixed(8.0)));
-
-        for s in &self.sessions {
-            list = list.push(self.session_row(s));
-        }
-
-        list = list.push(Space::new().height(Length::Fixed(12.0)));
-        list = list.push(
+        header = header.push(Space::new().height(Length::Fixed(10.0)));
+        header = header.push(
             button(text("+ new session").size(11).color(theme::TEXT_SECONDARY))
                 .on_press(Message::NewSession)
                 .width(Length::Fill)
@@ -73,8 +62,24 @@ impl App {
                     ..Default::default()
                 }),
         );
+        header = header.push(Space::new().height(Length::Fixed(8.0)));
+        header = header.push(
+            text("SESSIONS")
+                .size(10)
+                .color(theme::TEXT_MUTED),
+        );
+        header = header.push(Space::new().height(Length::Fixed(4.0)));
 
-        container(list)
+        // Scrollable session list — fills the space under the header.
+        let mut list = Column::new().spacing(2).padding([0, 8]);
+        for s in &self.sessions {
+            list = list.push(self.session_row(s));
+        }
+
+        let body = column![header, scrollable(list).height(Length::Fill)]
+            .height(Length::Fill);
+
+        container(body)
             .width(Length::Fixed(220.0))
             .height(Length::Fill)
             .style(|_t| container::Style {
@@ -328,7 +333,7 @@ impl App {
                 );
             }
             Some(
-                container(scrollable(dcol).height(Length::Fixed(200.0)))
+                container(scrollable(dcol).height(Length::Fixed(200.0)).width(Length::Fill))
                     .width(Length::Fill)
                     .style(|_t| container::Style {
                         border: Border {
@@ -350,7 +355,8 @@ impl App {
                             .color(theme::TEXT_SECONDARY)
                             .font(theme::MONO),
                     )
-                    .height(Length::Fixed(180.0)),
+                    .height(Length::Fixed(180.0))
+                    .width(Length::Fill), // scrollbar hugs the panel edge, not the text
                 )
                 .width(Length::Fill)
                 .padding([6.0, 8.0])
