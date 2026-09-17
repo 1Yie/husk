@@ -10,7 +10,7 @@ use iced::{Alignment, Border, Element, Length};
 
 use super::icons::{icon, Icon};
 use super::message::Message;
-use super::state::{App, DiffKind, Role, SessionRow, StepState, StreamItem};
+use super::state::{App, DiffKind, DiffLine, Role, SessionRow, StepState, StreamItem};
 use super::theme;
 
 /// Codex-flavored markdown styling — inline code on a card chip, monospace
@@ -46,13 +46,15 @@ impl App {
     /// OS-native frame (`decorations: false`).
     fn titlebar(&self) -> Element<'_, Message> {
         use super::message::WinAction;
-        let btn = |ic: Icon, action: WinAction| {
-            button(icon(ic, 14.0, theme::TEXT_SECONDARY))
+        let btn = |ic: Icon, action: WinAction, danger: bool| {
+            let hover_bg = if danger { theme::DIFF_DEL } else { theme::BG_HOVER };
+            let ic_color = theme::TEXT_SECONDARY;
+            button(icon(ic, 16.0, ic_color))
                 .on_press(Message::WindowAction(action))
-                .padding([4.0, 14.0])
-                .style(|_t, st| button::Style {
+                .padding([6.0, 16.0])
+                .style(move |_t, st| button::Style {
                     background: match st {
-                        button::Status::Hovered => Some(theme::BG_HOVER.into()),
+                        button::Status::Hovered => Some(hover_bg.into()),
                         _ => None,
                     },
                     ..Default::default()
@@ -77,9 +79,9 @@ impl App {
         container(
             row![
                 drag_area,
-                btn(Icon::Minus, WinAction::Minimize),
-                btn(Icon::Maximize, WinAction::ToggleMaximize),
-                btn(Icon::X, WinAction::Close),
+                btn(Icon::Minus, WinAction::Minimize, false),
+                btn(Icon::Maximize, WinAction::ToggleMaximize, false),
+                btn(Icon::X, WinAction::Close, true),
             ]
             .align_y(Alignment::Center),
         )
@@ -419,49 +421,17 @@ impl App {
             );
         }
 
-        // Expanded body — the pending diff if one is staged, else the full
-        // tool output (so `smart_read`/`bash` results are readable).
-        let expanded_diff: Option<Element<_>> = if s.expanded && !view.pending_diff.is_empty() && s.state == StepState::AwaitingConfirm {
-            let mut dcol = Column::new().spacing(0).width(Length::Fill);
-            for d in view.pending_diff.iter().take(50) {
-                let (gutter, fg, bg) = match d.kind {
-                    DiffKind::Add => ("+", theme::DIFF_ADD, theme::DIFF_ADD_SURFACE),
-                    DiffKind::Delete => ("-", theme::DIFF_DEL, theme::DIFF_DEL_SURFACE),
-                    DiffKind::Context => (" ", theme::TEXT_MUTED, theme::BG_CARD),
-                };
-                dcol = dcol.push(
-                    container(
-                        text(format!("{gutter} {}", d.content))
-                            .size(11)
-                            .color(fg)
-                            .font(theme::MONO),
-                    )
-                    .width(Length::Fill)
-                    .padding([1.0, 8.0])
-                    .style(move |_t| container::Style {
-                        background: Some(bg.into()),
-                        ..Default::default()
-                    }),
-                );
-            }
-            // Height follows the diff line count (≈16px/line), min 60,
-            // capped at 400 — short diffs don't waste a fixed box, long
-            // diffs scroll.
-            let diff_h = (view.pending_diff.len().min(50) as f32 * 16.0 + 8.0)
-                .clamp(60.0, 400.0);
-            Some(
-                container(scrollable(dcol).height(Length::Fixed(diff_h)).width(Length::Fill))
-                    .width(Length::Fill)
-                    .style(|_t| container::Style {
-                        border: Border {
-                            width: 1.0,
-                            color: theme::BORDER_HAIRLINE,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                    .into(),
-            )
+        // Expanded body — the staged diff if this step has one (kept on
+        // the row so it survives approve/deny), else the full tool output.
+        let diff_src: &[DiffLine] = if !s.diff_lines.is_empty() {
+            &s.diff_lines
+        } else if s.state == StepState::AwaitingConfirm {
+            &view.pending_diff
+        } else {
+            &[]
+        };
+        let expanded_diff: Option<Element<_>> = if s.expanded && !diff_src.is_empty() {
+            Some(Self::diff_view(diff_src))
         } else if s.expanded && !s.output.is_empty() {
             // Full tool output — sized to its line count (≈15px/line), min
             // 60 so a one-line result still looks like a panel, max 400 so a
@@ -528,6 +498,45 @@ impl App {
             wrap = wrap.push(d);
         }
         wrap.into()
+    }
+
+    /// Render a unified diff as colored +/- lines — add green surface,
+    /// delete red surface, context dim. Height follows line count.
+    fn diff_view<'a>(lines: &'a [DiffLine]) -> Element<'a, Message> {
+        let mut dcol = Column::new().spacing(0).width(Length::Fill);
+        for d in lines.iter().take(80) {
+            let (gutter, fg, bg) = match d.kind {
+                DiffKind::Add => ("+", theme::DIFF_ADD, theme::DIFF_ADD_SURFACE),
+                DiffKind::Delete => ("-", theme::DIFF_DEL, theme::DIFF_DEL_SURFACE),
+                DiffKind::Context => (" ", theme::TEXT_MUTED, theme::BG_CARD),
+            };
+            dcol = dcol.push(
+                container(
+                    text(format!("{gutter} {}", d.content))
+                        .size(11)
+                        .color(fg)
+                        .font(theme::MONO),
+                )
+                .width(Length::Fill)
+                .padding([1.0, 8.0])
+                .style(move |_t| container::Style {
+                    background: Some(bg.into()),
+                    ..Default::default()
+                }),
+            );
+        }
+        let h = (lines.len().min(80) as f32 * 16.0 + 8.0).clamp(60.0, 400.0);
+        container(scrollable(dcol).height(Length::Fixed(h)).width(Length::Fill))
+            .width(Length::Fill)
+            .style(|_t| container::Style {
+                border: Border {
+                    width: 1.0,
+                    color: theme::BORDER_HAIRLINE,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
     }
 
     fn input_capsule(&self, is_active: bool) -> Element<'_, Message> {

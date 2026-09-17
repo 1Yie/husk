@@ -274,6 +274,7 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                 state: StepState::Running,
                 detail: args_preview.clone(),
                 output: String::new(),
+                diff_lines: vec![],
                 expanded: false,
             }));
         }
@@ -318,6 +319,7 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                     }
                 }
             }
+            let diff_lines = parse_unified_diff(diff);
             v.pending = Some(ApprovalRow {
                 step_id: sid,
                 tool_name: tool_name.clone(),
@@ -326,7 +328,12 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                 fuzzy: *fuzzy,
                 risk: "normal".into(),
             });
-            v.pending_diff = parse_unified_diff(diff);
+            // Stash the parsed diff on the awaiting step's row so the
+            // expanded body still renders it after approve/deny resolves.
+            if let Some(StreamItem::Tool(s)) = v.stream.get_mut(sid) {
+                s.diff_lines = diff_lines.clone();
+            }
+            v.pending_diff = diff_lines;
         }
         UiEvent::Usage { .. } => {} // surfaced on the active session's stats
         UiEvent::SystemMessage(msg) | UiEvent::Error(msg) => {

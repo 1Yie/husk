@@ -93,6 +93,10 @@ pub struct StepRow {
     pub detail: String,
     /// Full tool output — only rendered when the capsule is expanded.
     pub output: String,
+    /// The staged diff for a write/patch step — kept on the row so the
+    /// expanded body still shows colored +/- lines after approval resolves
+    /// (the view-level `pending_diff` clears on resolve).
+    pub diff_lines: Vec<DiffLine>,
     pub expanded: bool,
 }
 
@@ -280,8 +284,8 @@ impl App {
                     m.thinking_done = true;
                     m
                 }),
-                StreamItem::Tool(StepRow { id: 0, name: "smart_read".into(), state: StepState::Success, detail: "src/engine.rs · 48 lines".into(), expanded: false, output: String::new() }),
-                StreamItem::Tool(StepRow { id: 1, name: "fuzzy_patch".into(), state: StepState::AwaitingConfirm, detail: "src/engine.rs · +14 −3".into(), expanded: false, output: String::new() }),
+                StreamItem::Tool(StepRow { id: 0, name: "smart_read".into(), state: StepState::Success, detail: "src/engine.rs · 48 lines".into(), expanded: false, output: String::new(), diff_lines: vec![] }),
+                StreamItem::Tool(StepRow { id: 1, name: "fuzzy_patch".into(), state: StepState::AwaitingConfirm, detail: "src/engine.rs · +14 −3".into(), expanded: false, output: String::new(), diff_lines: vec![] }),
             ],
             pending: Some(ApprovalRow {
                 step_id: 1,
@@ -377,6 +381,7 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
                 detail: content.lines().next().unwrap_or("").chars().take(60).collect(),
                 expanded: false,
                 output: content,
+                    diff_lines: vec![],
             }));
             continue;
         }
@@ -413,6 +418,7 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
                     detail,
                     expanded: false,
                     output: String::new(),
+                    diff_lines: vec![],
                 }));
             }
         }
