@@ -296,7 +296,7 @@ With this matrix the harness consumes **all three MCP primitives** (tools + reso
 - **New state**: `AwaitingPluginConsent { plugin_id: String, capability: String }` — parallel to `AwaitingToolConfirmation`, same suspend/resume plumbing.
 - **Hunk tracker**: plugin-triggered file writes still record via `RecordAgentWrite` with `origin: plugin_id` for attribution and undo.
 
-## UI contract additions (see slint-ui-contract.md)
+## UI contract additions (see iced-ui-contract.md)
 
 - `PluginInfo` struct + `Bridge.plugins` list → settings panel (enable toggle, permission list, kind badge, reload).
 - `Bridge.approve_plugin_capability(plugin_id, capability, always)` callback.

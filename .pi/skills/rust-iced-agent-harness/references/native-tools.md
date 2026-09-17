@@ -123,7 +123,7 @@ smart_read(range 135..190) → exact lines + content_hash
 fuzzy_patch(search, replace, expected_hash)
     → PatchResult.unified_diff
     → CoW snapshot apply (if snapshot on)
-    → UiEvent::AwaitingApproval(diff) → Slint DiffViewer
+    → UiEvent::AwaitingApproval(diff) → iced diff view
     → approve → write + RecordAgentWrite(hunks, origin:agent)
     → verify: cargo check / targeted test → observe → done
 ```

@@ -156,7 +156,7 @@ Audit is **pre-spawn string analysis** — it complements, never replaces, the O
 - WASM plugins: already L1 by construction.
 - `fuzzy_patch`/`apply_patch`/`smart_read`: in-process, governed by tool-layer path checks, not process sandbox. **Path check = `std::fs::canonicalize` first, then workspace-prefix compare** — a `ln -s ~/.ssh/id_rsa $WORKSPACE/x` inside the workspace must resolve to its real path and be rejected; string-prefix checks alone are a symlink-escape hole.
 
-## UI contract hooks (see slint-ui-contract.md)
+## UI contract hooks (see iced-ui-contract.md)
 
 - `PendingApprovalData.risk`: `"normal" | "elevated" | "critical" | "network"` + `audit_reason` shows the matched pattern. Critical renders the red banner variant.
 - `SandboxTelemetry` per running step: `elapsed_ms`, `peak_memory_mb`, `sandboxed` (backend id or "none"), `snapshot` mode — live-updating card while `ExecutingTool`.

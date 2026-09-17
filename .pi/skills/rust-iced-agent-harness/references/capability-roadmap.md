@@ -1,6 +1,6 @@
 # Capability Roadmap — the five deep-water gaps
 
-The skeleton (Rust+Slint, state-machine ReAct, pluggable providers, dual-track plugins, layered sandbox) solves **fast, light, safe**. This document specs what makes it **indispensable**: long-lived project cognition (Memory), steerable execution (Steering), system sight (Sensing), exploratory planning (MCTS), and remote muscle (Mesh). Each section: contract → state-machine deltas → UI deltas → testable acceptance.
+The skeleton (Rust+iced, state-machine ReAct, pluggable providers, dual-track plugins, layered sandbox) solves **fast, light, safe**. This document specs what makes it **indispensable**: long-lived project cognition (Memory), steerable execution (Steering), system sight (Sensing), exploratory planning (MCTS), and remote muscle (Mesh). Each section: contract → state-machine deltas → UI deltas → testable acceptance.
 
 Ordering legend: **P1** = ship in v1.x (high leverage, contained scope) · **P2** = v2 (new surface area) · **P3** = exploratory (architecture must not preclude).
 
@@ -90,7 +90,7 @@ ambiguous/refactor decision point
 
 ## 5. Mesh — remote headless workers (P3)
 
-- Split kernel into **Commander** (local Slint app) ↔ **Worker** (`<app> --headless` on a remote host): same `SandboxBackend`, `ToolRegistry`, `HunkTracker` run remotely; the LLM loop can run on either side (config: `loop_location: local|remote`).
+- Split kernel into **Commander** (local iced app) ↔ **Worker** (`<app> --headless` on a remote host): same `SandboxBackend`, `ToolRegistry`, `HunkTracker` run remotely; the LLM loop can run on either side (config: `loop_location: local|remote`).
 - Transport: mTLS gRPC or QUIC; auth via Tailscale/WireGuard identity — never raw internet exposure.
 - Streaming contract is already clean: `StreamChunk` and `UiUpdate` are serializable enums — mesh mode just changes their transport, not their shape. **This is why the actor/mpsc design pays off.**
 - v1.x groundwork only: keep `SessionActor` behind a trait boundary so a `RemoteSessionActor` can slot in later without UI changes.

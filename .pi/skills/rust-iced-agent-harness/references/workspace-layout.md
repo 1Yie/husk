@@ -1,6 +1,6 @@
 # Workspace Layout Spec — factory-grade crate topology
 
-Design goal: **strict one-way dependency flow, headless-testable kernel, UI as a replaceable adapter.** The kernel must never import Slint; the GUI is one consumer of the kernel's typed event stream.
+Design goal: **strict one-way dependency flow, headless-testable kernel, UI as a replaceable adapter.** The kernel must never import iced; the GUI is one consumer of the kernel's typed event stream.
 
 ## Crate topology
 
@@ -9,18 +9,23 @@ desktop-agent/
 ├── Cargo.toml                     # workspace root: members, shared deps, release profile
 ├── Cargo.lock
 └── crates/
-    ├── app-desktop/               # [presentation/distribution] Slint GUI shell — the ONLY Slint-dependent crate
-    │   ├── build.rs               # slint-build compiles ui/
-    │   ├── ui/                    # declarative .slint (see slint-ui-contract.md)
+    ├── app-desktop/               # [presentation/distribution] iced GUI shell — the ONLY iced-dependent crate
     │   └── src/
-    │       ├── main.rs            # boot: single-instance lock, tray, global hotkey
-    │       ├── bridge.rs          # UiCommand ⇄ UiEvent channel wiring, invoke_from_event_loop
-    │       └── throttler.rs       # 33 ms frame-aligned token coalescer
+    │       ├── main.rs            # boot: iced::application(...).run(), single-instance lock
+    │       ├── bridge.rs          # UiEvent → UiState mutations on main thread; UiCommand tx
+    │       ├── throttler.rs       # 33 ms frame-aligned token coalescer
+    │       ├── ui/
+    │       │   ├── mod.rs         # RootView — the Render impl, layout skeleton
+    │       │   ├── theme.rs       # CodexTheme → iced::Color consts
+    │       │   ├── sidebar.rs     # session list
+    │       │   ├── stream.rs      # message list + step capsules + input
+    │       │   └── components.rs  # capsule / diff rows / loading dots
+    │       └── (see iced-ui-contract.md)
     │
     ├── app-cli/                   # [distribution] headless binary — same kernel, `--headless` / remote worker
     │   └── src/main.rs
     │
-    ├── agent-kernel/              # [orchestration] NO Slint, NO reqwest — pure async engine
+    ├── agent-kernel/              # [orchestration] NO iced, NO reqwest — pure async engine
     │   └── src/
     │       ├── engine.rs          # AgentState machine, ReAct loop
     │       ├── session.rs         # SessionActor, history, persistence
@@ -139,7 +144,7 @@ debug = "line-tables-only"   # keep symbols for crash reports without full debug
 2. **Type-driven edges** — `serde_json::Value` may exist at wire boundaries only; it must deserialize into a concrete struct before crossing a crate boundary.
 3. **Headless testability** — `agent-kernel` ships `tests/` driving the full ReAct loop through `MockProvider` + in-memory sandbox; CI runs `cargo test -p agent-kernel` with no display server.
 4. **Kernel CLI exists** — `app-cli` is a real binary crate from day one (`--headless` mode, future remote worker); it shares `agent-ipc` events with `app-desktop` so both frontends are thin adapters over the same kernel.
-5. **UI is an adapter** — everything in `app-desktop` is translation: `UiEvent` → Slint models, Slint callbacks → `UiCommand`. Zero business logic above the channel.
+5. **UI is an adapter** — everything in `app-desktop` is translation: `UiEvent` → `UiState` mutations, view callbacks → `UiCommand`. Zero business logic above the channel.
 6. **One binary ships** — `cargo build --release -p app-desktop` produces the single static artifact; other crates are libraries (except `app-cli`, the future `--headless` worker binary).
 7. **Feature hygiene** — optional heavy deps gate behind cargo features: `memory` (libsql+fastembed), `vision` (xcap+candle), `mesh` (tonic). `app-desktop` enables `memory` by default; `app-cli` can ship `default-features = false` for a minimal remote worker. Keeps the core lean when capability flags are off.
 8. **Circular-dep guard** — `cargo metadata`-based CI lint asserts the DAG above; a PR that adds `agent-llm → agent-kernel` or `agent-context → agent-kernel` fails the lint, not the reviewer.
@@ -153,7 +158,7 @@ debug = "line-tables-only"   # keep symbols for crash reports without full debug
 | 2 | `agent-llm` | provider abstraction + `MockProvider` headless driver |
 | 3 | `agent-kernel` (tools) | registry dispatch, truncation budgets |
 | 4 | `agent-kernel` (engine) + `agent-ipc` | ReAct loop emits `UiEvent` — headless `cargo test -p agent-kernel` |
-| 5 | `app-desktop` | first Slint render of a real stream |
+| 5 | `app-desktop` | first iced render of a real stream |
 | 6 | `agent-kernel` (permissions) + `agent-context` (hunks) | consent flow + undo |
 | 7 | `agent-kernel` (compaction) | two-pass summarize |
 | 8 | `agent-sandbox` | L2 isolation on one platform first |
@@ -166,4 +171,4 @@ debug = "line-tables-only"   # keep symbols for crash reports without full debug
 
 ## Migration note
 
-Earlier references assumed a flat `src/` single crate. This layout supersedes it: `src/kernel/*` → `crates/agent-kernel/src/*`, `src/llm/*` → `crates/agent-llm/src/*`, `src/sandbox/*` → `crates/agent-sandbox/src/*`, `src/bridge/*` → `crates/app-desktop/src/{bridge,throttler}.rs`, `ui/` → `crates/app-desktop/ui/`. Build-table stage numbers are unchanged; `events.rs` moved to `crates/agent-ipc/src/events.rs` (shared UI contract).
+Earlier references assumed a flat `src/` single crate. This layout supersedes it: `src/kernel/*` → `crates/agent-kernel/src/*`, `src/llm/*` → `crates/agent-llm/src/*`, `src/sandbox/*` → `crates/agent-sandbox/src/*`, `src/bridge/*` → `crates/app-desktop/src/{bridge,throttler}.rs`, `ui/` → `crates/app-desktop/src/ui/` (iced views are Rust, not a markup DSL). Build-table stage numbers are unchanged; `events.rs` moved to `crates/agent-ipc/src/events.rs` (shared UI contract).

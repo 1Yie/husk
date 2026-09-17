@@ -74,9 +74,9 @@ The architecture covers fast/light/safe. This document covers **surviving real u
 
 **Mechanism**:
 
-- **Embedded fallback fonts**: `include_bytes!` a permissively-licensed CJK-capable font subset (e.g. MiSans/JetBrains Mono w/ fallback slice) → register via Slint's font API as last-resort fallback. Keep it subsetted — full CJK fonts are 5–15 MB; use a coverage-reduced slice or accept a larger binary consciously (it's the one binary-size exception worth making).
-- **DPI changes**: Slint handles scale-factor changes on Wayland/Windows correctly when using the Skia/default hardware backend — pin the backend explicitly (`SLINT_BACKEND=winit-skia` or winit-femtovg as fallback), don't let it autodetect into a software path. Test the drag-across-monitors case manually before each release.
-- **Text metrics**: all UI text sizes in `px` scale with DPI automatically in Slint — the contract's fixed 20px diff rows remain correct; do not hardcode pixel assumptions in Rust-side measurement code.
+- **Embedded fallback fonts**: `include_bytes!` a permissively-licensed CJK-capable font subset (e.g. MiSans/JetBrains Mono w/ fallback slice) → iced `Font` + `load_font` at startup as last-resort fallback. Keep it subsetted — full CJK fonts are 5–15 MB; use a coverage-reduced slice or accept a larger binary consciously (the one binary-size exception worth making).
+- **DPI changes**: iced/wgpu handles scale-factor changes on Wayland/X11 correctly — GPU-rendered, no software-path env to pin. Test drag-across-monitors manually before each release.
+- **Text metrics**: iced `px` units scale with DPI automatically (wgpu + cosmic-text shaping) — fixed 20px diff rows stay correct; do not hardcode pixel assumptions in measurement code.
 
 **Acceptance**: fresh VM with no dev fonts → UI renders CJK + mono correctly; 4K↔1080p drag → no tearing, no offset clicks.
 

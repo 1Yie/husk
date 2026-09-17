@@ -6,7 +6,7 @@ Module-by-module contract for the kernel crate. Crate topology and dependency la
 
 ```
 ┌────────────┐  commands   ┌───────────────┐  SamplingRequest  ┌───────────────┐
-│ Slint UI   │────────────▶│ SessionActor  │─────────────────▶│ SamplerActor  │
+│ iced UI    │────────────▶│ SessionActor  │─────────────────▶│ SamplerActor  │
 │ (main loop)│◀────────────│ (engine.rs)   │◀─────────────────│ (llm/)        │
 └────────────┘  UiUpdate   └──────┬────────┘   SamplingEvent   └───────────────┘
                                   │ RecordAgentWrite / HandleFileChange
@@ -123,7 +123,7 @@ Two-pass: split history into prefix/suffix → summarize prefix to `NOTE₁` →
 
 ## Bridge throttling (crates/app-desktop/src/throttler.rs)
 
-- `StreamThrottler`: 33 ms `tokio::interval`, drain `Mutex<String>` buffer → `slint::invoke_from_event_loop(move |ui| append_delta(text))`. Never call `invoke_from_event_loop` per SSE chunk.
+- `StreamThrottler`: 33 ms `tokio::interval`, drain `Mutex<String>` buffer → push a `UiEvent::TextDelta` onto the std-mpsc an iced `Subscription` polls, reducing it in `App::update`. iced is single-threaded Elm-style — all state mutation happens in `update()`, never off it; never emit a `Message` per SSE chunk (throttle first).
 - Tool status and diff payloads are data, not text: send through a separate `UiUpdate::ToolCall` / `UiUpdate::DiffReady` variant on the same UI channel.
 
 ## Hunk tracking (kernel/hunks.rs)
@@ -136,7 +136,7 @@ Two-pass: split history into prefix/suffix → summarize prefix to `NOTE₁` →
 
 | Need | Crate |
 |------|-------|
-| UI | `slint` (native backend, not winit+skia software) |
+| UI | `iced` (pure-Rust Elm-style UI on wgpu — GPU-rendered, zero `*-sys` deps; `wgpu`+`winit`+`cosmic-text` all Rust) |
 | Async | `tokio` (multi-thread, fs + net features) |
 | HTTP/SSE | `reqwest` (rustls, stream, `tcp_nodelay`) + `eventsource-stream` |
 | Async trait/stream | `async-trait`, `futures` (BoxStream) |

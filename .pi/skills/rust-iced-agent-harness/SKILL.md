@@ -1,25 +1,25 @@
 ---
-name: rust-slint-agent-harness
-description: Build a Codex/Grok-Build-style desktop coding agent with Rust + Slint + a native agent kernel. Use when scaffolding, extending, or reviewing this project's workspace scanner, tool registry, permission/diff-review flow, streaming bridge, context budgeting, compaction, or Slint UI wiring. Contains the kernel system prompt and UI/Kernel contracts.
+name: rust-iced-agent-harness
+description: Build a Codex/Grok-Build-style desktop coding agent with Rust + iced (Elm-style, wgpu GPU-rendered, pure-Rust) + a native agent kernel. Use when scaffolding, extending, or reviewing this project's workspace scanner, tool registry, permission/diff-review flow, streaming bridge, context budgeting, compaction, or iced UI wiring. Contains the kernel system prompt and UI/Kernel contracts.
 ---
 
-# Rust + Slint Desktop Agent Harness
+# Rust + iced Desktop Agent Harness
 
-This skill turns the assistant into the lead engineer for this repository: a **single-binary desktop agent harness** (Rust + Slint UI + native async kernel) that borrows Grok Build CLI's core loop — workspace awareness, diff review, command execution, strict token budgets — inside a native shell that cold-starts in milliseconds and idles at 15–30 MB.
+This skill turns the assistant into the lead engineer for this repository: a **single-static-binary desktop agent harness** (Rust + iced UI + native async kernel) that borrows Grok Build CLI's core loop — workspace awareness, diff review, command execution, strict token budgets — inside a native shell that cold-starts in milliseconds, idles at 15–30 MB, and scrolls butter-smooth (iced renders on wgpu — GPU-accelerated, but pure Rust).
 
 ## Activation
 
-Apply this skill whenever the task involves `Cargo.toml`, `build.rs`, `crates/**`, `ui/**.slint`, or `src/**` in this repository, or when the user asks to design, implement, debug, or review any part of the agent (kernel loop, tools, permissions, diff viewer, streaming, context, compaction).
+Apply this skill whenever the task involves `Cargo.toml`, `crates/**`, `src/**`, or iced view code in this repository, or when the user asks to design, implement, debug, or review any part of the agent (kernel loop, tools, permissions, diff viewer, streaming, context, compaction).
 
 ## Operating Principles
 
 These are invariants. Violating any of them breaks the product thesis.
 
-1. **Single static binary.** No Node, Python, or external runtime deps. Ripgrep-style speed via `ignore` + `grep-searcher` crates, not shelling out unless the design says so.
+1. **Single static binary.** No Node, Python, or external runtime deps — **zero `*-sys` C build-deps in the whole tree** (iced's wgpu/winit stack is pure Rust, rustls-only). Ripgrep-style speed via `ignore` + `grep-searcher` crates, not shelling out unless the design says so.
 2. **Tool calls are structured.** Models emit `search_replace` / `fuzzy_patch` blocks — never full-file rewrites, never line-number diffs. `smart_read` provides outline/range/search modes (tree-sitter skeletons, numbered windows, content_hash). Edits apply locally via `similar`-verified patches with exact→whitespace→fuzzy match tiers, tracked by the hunk tracker.
 3. **Everything destructive requires review.** File writes, patches, and non-readonly shell commands pause in `AwaitingToolConfirmation` and render a `DiffViewer` in the UI until the user approves (unless the permission mode says otherwise).
 4. **Token budgets are hard limits.** Tool output: ~40 KB default (~20 KB for shell). Context window: auto-compact near 80%. Never stream raw unbounded output into the model.
-5. **The UI never blocks.** LLM SSE deltas funnel through `StreamThrottler` (~30 fps flush). Slint's event loop is touched only via `slint::invoke_from_event_loop`. Visually the app is a Codex-Desktop workbench — slim sidebar, execution stream with tool capsules, right-hand diff review stage (codex-desktop-design.md), not a chat stream.
+5. **The UI never blocks.** LLM SSE deltas funnel through `StreamThrottler` (~30 fps flush). iced is **Elm-architecture**: one `update()` reducer mutates `App` state, `view()` re-derives the whole frame — kernel `UiEvent`s arrive over `std::sync::mpsc` polled by an iced `Subscription`/`Task`, never touched off the main thread. Visually the app is a Codex-Desktop workbench — slim sidebar, execution stream with tool capsules, inline approval at the tool call (codex-desktop-design.md).
 6. **Actor-model kernel.** `SessionActor` (orchestrator), `SamplerActor` (LLM streaming + retries), `HunkTrackerActor` (file-change attribution) communicate over `tokio::mpsc`. No shared mutable state outside actors.
 7. **Providers are pluggable.** All LLM access goes through `Arc<dyn LlmProvider>` emitting normalized `StreamChunk`s. Kernel/UI contain zero vendor-specific fields. A `GenericOpenAiProvider` covers OpenAI/xAI/DeepSeek/Ollama/vLLM; Anthropic gets its own adapter. Providers hot-swap via config without restart.
 8. **Plugins are sandboxed, dual-track, four-dimensional.** WASM (Wasmtime, capability-gated WASI) for trusted/high-perf extensions; MCP stdio for ecosystem breadth. One `Plugin` trait covers four extension points: tools, context providers, slash commands, lifecycle hooks (WASM-only — MCP can't intercept). Manifest permissions are exhaustive maximums — anything undeclared is physically denied. Plugin output obeys the same truncation budgets as built-ins.
@@ -37,7 +37,7 @@ Crate topology is a Cargo workspace — see `references/workspace-layout.md`. Im
 | 2 | LLM provider layer | `crates/agent-llm/src/*` | `LlmProvider` trait + normalized `StreamChunk`; `openai_compat` adapter parses text + reasoning + `tool_call` deltas; idle timeout 300 s; retry w/ doom-loop guard; `config.toml` loads ≥2 providers and hot-swaps; `MockProvider` replays scripted chunks |
 | 3 | Tools + registry | `crates/agent-kernel/src/tools/*` | phase-1 trio live: `smart_read` (outline/range/search), `fuzzy_patch` (match tiers + hash guard), `smart_test_runner` (≤300 tok failure distill) + `list_dir`/`smart_grep`/`bash`; dispatch by name with JSON schemas; output truncated per budget table |
 | 4 | Agent loop | `crates/agent-kernel/src/engine.rs`, `session.rs`, `channels.rs` + `crates/agent-ipc/src/events.rs` | `AgentState` machine runs prompt → stream → tool → inject → re-sample **headless via MockProvider in `cargo test -p agent-kernel`**; budgets enforced |
-| 5 | Bridge + UI | `crates/app-desktop/src/{bridge,throttler}.rs`, `crates/app-desktop/ui/**` | streamed text appears at 30 fps; tool calls show status cards; diffs render in `DiffViewer`; approval round-trip works |
+| 5 | Bridge + UI | `crates/app-desktop/src/{bridge,throttler}.rs`, `crates/app-desktop/src/ui/**` (iced views) | streamed text appears at 30 fps; tool calls show status capsules; diffs render inline; approval round-trip works |
 | 6 | Permissions + hunk tracking | `crates/agent-kernel/src/permissions.rs`, `crates/agent-context/src/hunks.rs` | permission modes gate tools; every agent write recorded as hunks; Undo/Rewind possible |
 | 7 | Compaction | `crates/agent-kernel/src/compaction.rs` | two-pass summarize near 80% window; prefire optional |
 | 8 | Execution sandbox | `crates/agent-sandbox/src/*` | `SandboxBackend` trait + platform backends; env sanitization + resource limits verified; audit gate escalates dangerous commands; CoW snapshot/merge works |
@@ -57,8 +57,8 @@ Load these on demand — do not re-derive their contents from memory:
 - **`references/sandbox-model.md`** — layered execution isolation: L1 WASM / L2 native process (bwrap, Landlock, sandbox-exec, Job Objects) / L3 microVM; `SandboxBackend` trait, four control dimensions (fs/net/resources/env), audit levels, CoW snapshot merge-back, degradation policy.
 - **`references/production-hardening.md`** — six delivery-grade blind spots: process-tree lifecycle (pdeathsig/pgid/Job Object, ChildRegistry, ordered shutdown), keyring secrets + egress masker, SQLite WAL + single-writer actor, mid-stream salvage + offline degrade, refinery migrations + self-update, embedded CJK fonts + HiDPI. Includes crate landing map and boot order.
 - **`references/capability-roadmap.md`** — the five deep-water upgrades with priorities: P1 layered memory (LibSQL+FastEmbed, distiller, per-workspace scoping) + mid-turn steering + ambient probes; P2 visual grounding (screenshot tool, local VLM) + branch-and-verify planning over CoW forks; P3 remote headless workers via gRPC mesh. Includes `AgentState` deltas and anti-goals.
-- **`references/slint-ui-contract.md`** — the Slint-side data contract: every `struct`, `global`, callback, and component property the bridge must implement (wire-level; theme tokens superseded by the design file).
-- **`references/codex-desktop-design.md`** — the visual language: three-zone workbench (slim sidebar / execution stream / diff stage), `CodexTheme` cold-grey tokens, `CodexStepCapsule` + terminal caret micro-components, mapping onto the data contract.
+- **`references/iced-ui-contract.md`** — the iced-side data contract: the `App` state + `Message` enum the Elm loop reduces, the kernel→UI event subscription, theme tokens, and component responsibilities (wire-level; theme tokens superseded by the design file).
+- **`references/codex-desktop-design.md`** — the visual language: sidebar session list + execution stream (user right-aligned text, agent left) + inline tool capsules with in-line approve/deny; `CodexTheme` cold-grey tokens mapped onto iced `Color` consts.
 - **`references/workspace-layout.md`** — Cargo workspace factory layout: six crates, one-way dependency law (`app-desktop → agent-kernel → {context, sandbox, plugin, llm}`), root `Cargo.toml` + release profile, headless-testability rules, `UiCommand`/`UiEvent` channel contract.
 - **`references/kernel-architecture.md`** — module-by-module spec of the Rust kernel: `AgentState` machine, actor topology, permission modes, hunk tracking, truncation table, compaction, crate choices, and acceptance checklist.
 
