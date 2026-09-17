@@ -70,6 +70,8 @@ pub enum UiCommand {
 pub enum UiEvent {
     /// A state-machine transition.
     StateChanged(AgentState),
+    /// The user prompt echoed back — the stream renders it as a user block.
+    UserPrompt(String),
     /// A token delta (already throttled by the bridge — NOT per SSE chunk).
     TextDelta(String),
     /// Reasoning-trace delta (separate visual stream).

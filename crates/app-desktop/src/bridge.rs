@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use agent_ipc::{UiCommand, UiEvent};
 use agent_kernel::session::{SessionActor, SessionConfig};
-use agent_llm::adapters::MockProvider;
+use agent_llm::{AppConfig, ProviderFactory};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::{
@@ -28,8 +28,45 @@ struct UiModels {
     changed_files: Rc<VecModel<slint::SharedString>>,
 }
 
-/// Attach the kernel behind `--live`. Until config loading lands (Stage 5.5),
-/// the session runs on `MockProvider` so the full event path is exercised.
+/// Resolve the active provider from `config.toml` → `(provider, model,
+/// label)`. Order: `active_provider` → first `available` provider → `Mock`.
+fn resolve_provider(
+    cfg: &AppConfig,
+) -> (Arc<dyn agent_llm::LlmProvider>, String, String) {
+    // Try the configured active provider first.
+    if let Some(name) = &cfg.active_provider {
+        if let Some(pcfg) = cfg.providers.get(name) {
+            if let Ok(p) = ProviderFactory::build(pcfg) {
+                let model = cfg
+                    .active_model
+                    .clone()
+                    .or_else(|| pcfg.default_model.clone())
+                    .unwrap_or_else(|| "default".into());
+                return (p, model, name.clone());
+            }
+        }
+    }
+    // Then any available provider in declaration order.
+    for (name, pcfg) in &cfg.providers {
+        if let Ok(p) = ProviderFactory::build(pcfg) {
+            let model = cfg
+                .active_model
+                .clone()
+                .or_else(|| pcfg.default_model.clone())
+                .unwrap_or_else(|| "default".into());
+            return (p, model, name.clone());
+        }
+    }
+    // Nothing configured/available → Mock so the UI still works.
+    (
+        Arc::new(agent_llm::adapters::MockProvider::new()),
+        "mock".into(),
+        "mock (no provider configured)".into(),
+    )
+}
+
+/// Attach the kernel behind `--live`. Provider comes from `config.toml`
+/// (`env:`/`keyring:` resolved); Mock is the no-config fallback.
 pub fn wire_kernel(app: &CodexDesktop) {
     let app_weak = app.as_weak();
     let bridge = app.global::<Bridge>();
@@ -52,11 +89,26 @@ pub fn wire_kernel(app: &CodexDesktop) {
         bridge.set_sandbox_unsafe(loud);
     }
 
-    let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
+    // ---- Stage 5.5: real provider from config.toml ----
+    // `~/.config/agent-rs/config.toml` resolves `env:`/`keyring:` indirection
+    // into a live provider; a missing/unsolvable key falls back to the first
+    // `available` provider, and none → `Mock` so the app still boots.
+    let cfg = AppConfig::load(None).unwrap_or_default();
+    let (provider, model, provider_label) = resolve_provider(&cfg);
+
+    // Surface the resolved provider + model on the stats bar.
+    {
+        let mut s = bridge.get_stats();
+        s.active_provider = provider_label.clone().into();
+        s.active_model = model.clone().into();
+        bridge.set_stats(s);
+    }
+
+    let (mut actor, channels) = SessionActor::spawn(SessionConfig {
         workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
-        provider: Arc::new(MockProvider::new()),
-        model: "mock".into(),
-        temperature: 0.0,
+        provider,
+        model,
+        temperature: 1.0,
         permission_mode: "default".into(),
         track_dirty: true,
     });
@@ -102,19 +154,59 @@ pub fn wire_kernel(app: &CodexDesktop) {
     }
 
     // ---- actor run() pump on a background task ----
-    tokio::spawn(async move {
-        actor.run().await;
-    });
+    // `wire_kernel` runs on the Slint UI thread — no tokio reactor here, so
+    // spawn the actor on a dedicated runtime thread. Slint's `spawn_local`
+    // (below) drives the UI-side event pump without needing tokio.
+    std::thread::Builder::new()
+        .name("kernel-rt".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            rt.block_on(async move {
+                actor.run().await;
+            });
+        })
+        .expect("spawn kernel runtime thread");
 
     // ---- kernel → UI pump ----
-    let weak = app_weak.clone();
-    let models = std::cell::RefCell::new(models);
-    slint::spawn_local(async move {
-        while let Some(ev) = channels.event_rx.recv().await {
-            let m = models.borrow();
-            apply_event(&weak, ev, &m);
-        }
-    }).expect("spawn_local event pump");
+    // `event_rx` is a tokio mpsc — it must be `.await`ed inside the tokio
+    // reactor (the kernel-rt thread above), not Slint's executor. Forward
+    // each event over a plain `std::sync::mpsc` and drain it on the UI
+    // thread with a repeating timer — the documented Slint pump pattern.
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiEvent>();
+    {
+        let mut rx = channels.event_rx;
+        // Reuse the kernel-rt runtime handle for the forwarder.
+        std::thread::Builder::new()
+            .name("ui-forward".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("tokio rt");
+                rt.block_on(async move {
+                    while let Some(ev) = rx.recv().await {
+                        if ui_tx.send(ev).is_err() {
+                            break; // UI gone
+                        }
+                    }
+                });
+            })
+            .expect("spawn ui-forward");
+    }
+    // Drain on the UI thread at ~60 Hz — cheap and keeps `models` Rc-bound.
+    {
+        let weak = app_weak.clone();
+        let models = std::rc::Rc::new(models);
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(16),
+            move || {
+                while let Ok(ev) = ui_rx.try_recv() {
+                    apply_event(&weak, ev, &models);
+                }
+            },
+        );
+        // Keep the timer alive for the window's lifetime.
+        std::mem::forget(timer);
+    }
 }
 
 /// Map one `UiEvent` onto Slint — runs on the UI thread via `spawn_local`,
@@ -128,6 +220,16 @@ fn apply_event(weak: &slint::Weak<CodexDesktop>, ev: UiEvent, m: &UiModels) {
             let mut stats = b.get_stats();
             stats.agent_state = format!("{s:?}").into();
             b.set_stats(stats);
+        }
+        UiEvent::UserPrompt(text) => {
+            m.messages.push(SessionMessageData {
+                id: m.messages.row_count() as i32,
+                role: "user".into(),
+                text: text.into(),
+                reasoning: "".into(),
+                has_diff: false,
+                streaming: false,
+            });
         }
         UiEvent::TextDelta(t) => append_last(m, &t, false),
         UiEvent::ReasoningDelta(t) => append_last(m, &t, true),

@@ -23,10 +23,12 @@ fn main() -> Result<(), slint::PlatformError> {
     // here — kept as a comment until the licensed font slice is vendored
     // (it's a 5–15 MB binary-size decision, not a code decision).
 
-    if std::env::args().any(|a| a == "--live") {
-        bridge::wire_kernel(&app);
-    } else {
+    // Default is the live kernel — `--mock` keeps the static seed data for
+    // visual debugging without a provider.
+    if std::env::args().any(|a| a == "--mock") {
         seed_mock(&app);
+    } else {
+        bridge::wire_kernel(&app);
     }
 
     app.run()

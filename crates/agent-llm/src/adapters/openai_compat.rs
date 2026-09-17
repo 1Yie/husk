@@ -219,15 +219,23 @@ impl LlmProvider for GenericOpenAiProvider {
         tools: Option<serde_json::Value>,
         temperature: f32,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        // `temperature` is optional — some OpenAI-compat backends reject
+        // extreme values (verified: devin upstream-errors on temperature=0).
+        // Only include it when the caller picked a non-default value; the
+        // provider's own default (usually 1.0) applies when omitted.
         let mut body = json!({
             "model": model,
             "messages": messages,
-            "temperature": temperature,
             "stream": true,
-            // Ask for usage in the final chunk (OpenAI/xAI/DeepSeek honor it;
-            // Ollama/vLLM ignore unknown fields).
-            "stream_options": { "include_usage": true },
         });
+        if temperature > 0.0 {
+            body["temperature"] = json!(temperature);
+        }
+        // `stream_options.include_usage` is OpenAI/xAI-specific — some
+        // OpenAI-compatible backends (devin, certain proxies) reject the
+        // field outright instead of ignoring it, so we don't send it. Usage
+        // still arrives on the final chunk when the backend provides it.
+        // (Verified: nyanya/devin returns `invalid_argument` for it.)
         if let Some(t) = tools {
             body["tools"] = t;
         }

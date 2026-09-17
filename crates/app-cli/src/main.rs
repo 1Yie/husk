@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use agent_ipc::{UiCommand, UiEvent};
 use agent_kernel::session::{SessionActor, SessionConfig};
-use agent_llm::adapters::mock::MockProvider;
+use agent_llm::{AppConfig, ProviderFactory};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -34,13 +34,16 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     }
 
-    // Headless = same kernel, stdout event pump instead of Slint.
-    let provider = Arc::new(MockProvider::default());
+    // Headless = same kernel, stdout event pump instead of Slint. Provider
+    // resolves from `config.toml` — same path as the desktop `--live`.
+    let app_cfg = AppConfig::load(None).unwrap_or_default();
+    let (provider, model) = resolve_provider(&app_cfg);
+    eprintln!("[cli] provider model={model}");
     let cfg = SessionConfig {
         workspace_root: workspace,
         provider,
-        model: "mock".into(),
-        temperature: 0.0,
+        model,
+        temperature: 1.0,
         permission_mode: "auto".into(),
         track_dirty: false,
     };
@@ -54,9 +57,9 @@ async fn main() -> anyhow::Result<()> {
         while let Some(ev) = ev_rx.recv().await {
             match &ev {
                 UiEvent::TextDelta(t) => print!("{t}"),
-                UiEvent::ReasoningDelta(_) => {}
+                UiEvent::ReasoningDelta(t) => eprint!("\x1b[2m{t}\x1b[0m"),
                 UiEvent::StateChanged(s) => eprintln!("\n[state] {s:?}"),
-                UiEvent::SystemMessage(m) => eprintln!("[sys] {m}"),
+                UiEvent::SystemMessage(m) => eprintln!("\n[sys] {m}"),
                 UiEvent::Error(e) => eprintln!("[err] {e}"),
                 UiEvent::AssistantMessage(m) => println!("\n{m}"),
                 UiEvent::ToolCallStarted { name } => eprintln!("[tool →] {name}"),
@@ -82,4 +85,28 @@ async fn main() -> anyhow::Result<()> {
     run.abort();
     pump.abort();
     Ok(())
+}
+
+/// `config.toml` → provider + model — same resolution order as the desktop
+/// (`active_provider` → first available → mock).
+fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String) {
+    if let Some(name) = &cfg.active_provider {
+        if let Some(pcfg) = cfg.providers.get(name) {
+            if let Ok(p) = ProviderFactory::build(pcfg) {
+                let model = cfg.active_model.clone()
+                    .or_else(|| pcfg.default_model.clone())
+                    .unwrap_or_else(|| "default".into());
+                return (p, model);
+            }
+        }
+    }
+    for (_name, pcfg) in &cfg.providers {
+        if let Ok(p) = ProviderFactory::build(pcfg) {
+            let model = cfg.active_model.clone()
+                .or_else(|| pcfg.default_model.clone())
+                .unwrap_or_else(|| "default".into());
+            return (p, model);
+        }
+    }
+    (Arc::new(agent_llm::adapters::MockProvider::new()), "mock".into())
 }

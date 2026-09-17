@@ -229,6 +229,8 @@ impl SessionActor {
     async fn run_prompt(&mut self, text: String) {
         info!("user prompt ({} chars)", text.len());
         self.state = AgentState::ScanningWorkspace;
+        // Echo the prompt so the UI stream renders a user block.
+        let _ = self.io.ui_tx.try_send(UiEvent::UserPrompt(text.clone()));
         let turn = self.hunks.begin_turn();
 
         // Stage 10: refresh the `<memory>` block before the turn — recall
