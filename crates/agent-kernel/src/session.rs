@@ -88,6 +88,20 @@ impl SessionActor {
         session_id: i64,
         history: Vec<ChatMessage>,
     ) -> (Self, super::channels::UiChannels) {
+        // Sanitize persisted assistant content: a `[call: …]` text-protocol
+        // echo a model once emitted must be stripped on load — otherwise it
+        // replays into the next request and the model parrots it forever.
+        let mut history = history;
+        for m in &mut history {
+            if m.role == agent_llm::types::Role::Assistant {
+                if let Some(text) = &mut m.content {
+                    *text = strip_call_echo(text);
+                    if text.trim().is_empty() {
+                        m.content = None;
+                    }
+                }
+            }
+        }
         Self::spawn_inner(cfg, Some(history), session_id)
     }
 
@@ -566,4 +580,29 @@ fn chrono_lite_date() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Remove `[call: name(args)]` / `[call: ()]` text-protocol tool-call echoes
+/// from a whole assistant message (the non-streaming form of the adapter's
+/// CallStripper — applied to persisted history on resume so a poisoned
+/// snapshot can't re-teach the model). Drops each `[call:…]` run plus one
+/// leading/trailing newline so no blank-line artifact remains.
+fn strip_call_echo(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("[call:") {
+        // Emit text before the call, trimming a directly-preceding newline.
+        let before = &rest[..start];
+        out.push_str(before.strip_suffix('\n').unwrap_or(before));
+        // Skip the `[call:…]` run — to the closing `]` (or end of input).
+        let after = &rest[start..];
+        let end = after.find(']').map(|i| i + 1).unwrap_or(after.len());
+        rest = &after[end..];
+        // Swallow one newline right after the call line.
+        if let Some(stripped) = rest.strip_prefix('\n') {
+            rest = stripped;
+        }
+    }
+    out.push_str(rest);
+    out
 }
