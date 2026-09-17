@@ -1,5 +1,7 @@
-// CodexDesktop — the three-zone workbench root.
-// Spec: codex-desktop-design.md §4.
+// CodexDesktop — session browser + chat stream workbench.
+// Left: session list (sidebar). Middle: the conversation stream (fills
+// remaining width). Diff stage slides in from the right only when a
+// pending approval exists.
 
 import { CodexTheme } from "codex_theme.slint";
 import {
@@ -8,10 +10,11 @@ import {
     DiffLineData,
     ModelOption,
     PendingApprovalData,
+    SessionData,
     SessionMessageData,
     SessionStats,
 } from "globals.slint";
-import { SlimSidebar } from "views/sidebar.slint";
+import { SessionSidebar } from "views/sidebar.slint";
 import { ExecutionStream } from "views/execution_stream.slint";
 import { DiffStage } from "components/diff_stage.slint";
 
@@ -19,26 +22,34 @@ import { DiffStage } from "components/diff_stage.slint";
 // them as the public API surface of this component file.
 export { Bridge, CodexTheme }
 export { ActionStepData, DiffLineData, ModelOption, PendingApprovalData,
-         SessionMessageData, SessionStats }
+         SessionData, SessionMessageData, SessionStats }
 
 export component CodexDesktop inherits Window {
     title: "agent-rs";
-    min-width: 1080px;
-    min-height: 720px;
+    min-width: 960px;
+    min-height: 640px;
     background: CodexTheme.bg_workspace;
 
     HorizontalLayout {
         spacing: 0px;
 
-        SlimSidebar {}
+        SessionSidebar {}
         Rectangle { width: 1px; background: CodexTheme.border_hairline; }
 
+        // Chat stream fills all remaining width.
         ExecutionStream {
-            width: 420px;
+            horizontal-stretch: 1;
         }
-        Rectangle { width: 1px; background: CodexTheme.border_hairline; }
 
-        DiffStage {
+        // Diff stage — a right-side drawer that only exists while a
+        // tool approval is pending (zero-width otherwise so the chat
+        // keeps the full width).
+        if Bridge.pending.tool_name != "": Rectangle {
+            width: 1px;
+            background: CodexTheme.border_hairline;
+        }
+        if Bridge.pending.tool_name != "": DiffStage {
+            width: 360px;
             pending: Bridge.pending;
             diff_lines: Bridge.pending_diff;
             changed_files: Bridge.changed_files;

@@ -57,6 +57,14 @@ export struct ModelOption {
     available: bool,
 }
 
+export struct SessionData {
+    id: int,
+    title: string,
+    preview: string,        // last message snippet
+    active: bool,
+    timestamp: string,
+}
+
 // ---- Bridge: Rust implements callbacks + pushes property updates ----
 
 export global Bridge {
@@ -68,8 +76,11 @@ export global Bridge {
     callback cancel_turn();
     callback undo_turn(int /*turn*/);
     callback set_model(string /*provider_id*/, string /*model*/);
+    callback new_session();
+    callback select_session(int /*id*/);
 
     // kernel → UI (Rust sets these; Slint reads)
+    in-out property <[SessionData]> sessions;
     in-out property <[SessionMessageData]> messages;
     in-out property <[ActionStepData]> active_steps;
     in-out property <PendingApprovalData> pending;   // .tool_name == "" → none

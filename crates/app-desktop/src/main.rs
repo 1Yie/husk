@@ -134,4 +134,30 @@ fn seed_mock(app: &CodexDesktop) {
             available: true,
         },
     ])).into());
+
+    // Session list — mock entries; `--live` swaps these for real history.
+    let sessions: Vec<SessionData> = vec![
+        SessionData {
+            id: 0, title: "fix borrow error".into(),
+            preview: "Reading the engine module…".into(),
+            active: true, timestamp: "2m".into(),
+        },
+        SessionData {
+            id: 1, title: "add streaming test".into(),
+            preview: "fuzzy_patch applied — 3 files".into(),
+            active: false, timestamp: "1h".into(),
+        },
+        SessionData {
+            id: 2, title: "refactor config".into(),
+            preview: "done — no diff staged".into(),
+            active: false, timestamp: "3h".into(),
+        },
+    ];
+    bridge.set_sessions(std::rc::Rc::new(VecModel::from(sessions)).into());
+
+    // Mock callbacks — log to stderr; --live wires them to the kernel.
+    bridge.on_new_session(|| eprintln!("[mock] new_session"));
+    bridge.on_select_session(|id| eprintln!("[mock] select_session {id}"));
+    bridge.on_submit_prompt(|t| eprintln!("[mock] submit: {t}"));
+    bridge.on_steer(|t| eprintln!("[mock] steer: {t}"));
 }
