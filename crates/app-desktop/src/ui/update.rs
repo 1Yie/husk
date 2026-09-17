@@ -217,12 +217,13 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
         }
         // A tool call lands INLINE at this point in the stream — the chain
         // shows what ran, where, in order (Codex-style), not a bottom strip.
-        UiEvent::ToolCallStarted { name } => {
+        UiEvent::ToolCallStarted { name, args_preview } => {
             v.stream.push(StreamItem::Tool(StepRow {
                 id: v.stream.len(),
                 name: name.clone(),
                 state: StepState::Running,
-                detail: String::new(),
+                detail: args_preview.clone(),
+                output: String::new(),
                 expanded: false,
             }));
         }
@@ -238,7 +239,19 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                         && matches!(s.state, StepState::Running | StepState::AwaitingConfirm)
                     {
                         s.state = if *ok { StepState::Success } else { StepState::Error };
-                        s.detail = content.chars().take(60).collect();
+                        // Full output → expandable body, not the one-liner.
+                        s.output = content.clone();
+                        // No args preview? fall back to a flat one-line
+                        // output summary (newlines collapsed, no wrapping).
+                        if s.detail.is_empty() {
+                            s.detail = content
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .chars()
+                                .take(60)
+                                .collect();
+                        }
                         break;
                     }
                 }

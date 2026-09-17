@@ -73,7 +73,7 @@ async fn headless_react_loop_drives_tool_then_answers() {
     assert!(matches!(states.last(), Some(AgentState::Finished)));
 
     // The tool ran and its result went back to the model.
-    let tool_started = events.iter().any(|e| matches!(e, UiEvent::ToolCallStarted { name } if name == "list_dir"));
+    let tool_started = events.iter().any(|e| matches!(e, UiEvent::ToolCallStarted { name, .. } if name == "list_dir"));
     let tool_done = events.iter().any(|e| matches!(e, UiEvent::ToolCallFinished { name, ok: true, .. } if name == "list_dir"));
     assert!(tool_started && tool_done);
 

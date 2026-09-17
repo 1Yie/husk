@@ -75,7 +75,10 @@ pub struct StepRow {
     pub id: usize,
     pub name: String,
     pub state: StepState,
+    /// One-line target summary on the capsule (path/command/pattern).
     pub detail: String,
+    /// Full tool output — only rendered when the capsule is expanded.
+    pub output: String,
     pub expanded: bool,
 }
 
@@ -245,8 +248,8 @@ impl App {
                     m.thinking_done = true;
                     m
                 }),
-                StreamItem::Tool(StepRow { id: 0, name: "smart_read".into(), state: StepState::Success, detail: "src/engine.rs · 48 lines".into(), expanded: false }),
-                StreamItem::Tool(StepRow { id: 1, name: "fuzzy_patch".into(), state: StepState::AwaitingConfirm, detail: "src/engine.rs · +14 −3".into(), expanded: false }),
+                StreamItem::Tool(StepRow { id: 0, name: "smart_read".into(), state: StepState::Success, detail: "src/engine.rs · 48 lines".into(), expanded: false, output: String::new() }),
+                StreamItem::Tool(StepRow { id: 1, name: "fuzzy_patch".into(), state: StepState::AwaitingConfirm, detail: "src/engine.rs · +14 −3".into(), expanded: false, output: String::new() }),
             ],
             pending: Some(ApprovalRow {
                 step_id: 1,
@@ -306,6 +309,7 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
                 state: StepState::Success,
                 detail: m.content.clone().unwrap_or_default().chars().take(60).collect(),
                 expanded: false,
+                output: String::new(),
             }));
             continue;
         }
@@ -328,6 +332,7 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
                     state: StepState::Success,
                     detail: String::new(),
                     expanded: false,
+                output: String::new(),
                 }));
             }
         }

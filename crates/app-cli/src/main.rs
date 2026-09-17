@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
                 UiEvent::SystemMessage(m) => eprintln!("\n[sys] {m}"),
                 UiEvent::Error(e) => eprintln!("[err] {e}"),
                 UiEvent::AssistantMessage(m) => println!("\n{m}"),
-                UiEvent::ToolCallStarted { name } => eprintln!("[tool →] {name}"),
+                UiEvent::ToolCallStarted { name, .. } => eprintln!("[tool →] {name}"),
                 UiEvent::ToolCallFinished { name, ok, .. } => {
                     eprintln!("[tool ✓] {name} ok={ok}")
                 }

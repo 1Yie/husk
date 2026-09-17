@@ -76,8 +76,10 @@ pub enum UiEvent {
     TextDelta(String),
     /// Reasoning-trace delta (separate visual stream).
     ReasoningDelta(String),
-    /// A tool began executing.
-    ToolCallStarted { name: String },
+    /// A tool began executing. `args_preview` is a single-line summary of
+    /// the call's target (a path / command / pattern) shown on the capsule —
+    /// the full output only appears when the capsule is expanded.
+    ToolCallStarted { name: String, args_preview: String },
     /// A tool finished (or failed); `content` is the truncated model-facing
     /// text, `ui_type` is the optional typed card hint (`diff`/`table`/…).
     ToolCallFinished { name: String, ok: bool, content: String, ui_type: Option<String> },

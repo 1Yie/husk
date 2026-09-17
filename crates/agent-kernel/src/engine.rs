@@ -329,17 +329,30 @@ impl Engine {
                     continue;
                 }
                 tool_calls_run += 1;
-                let _ = io.ui_tx.try_send(UiEvent::ToolCallStarted {
-                    name: call.name.clone(),
-                });
-                self.set_state(io, AgentState::ExecutingTool {
-                    tool_name: call.name.clone(),
-                });
 
                 let args: serde_json::Value =
                     serde_json::from_str(&call.arguments).unwrap_or_else(|_| {
                         serde_json::json!({ "_malformed": call.arguments })
                     });
+
+                // One-line target summary for the capsule — the tool's
+                // primary locator (path/command/pattern), never its output.
+                let args_preview = args
+                    .get("path")
+                    .or_else(|| args.get("command"))
+                    .or_else(|| args.get("pattern"))
+                    .or_else(|| args.get("query"))
+                    .or_else(|| args.get("file"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().take(80).collect())
+                    .unwrap_or_default();
+                let _ = io.ui_tx.try_send(UiEvent::ToolCallStarted {
+                    name: call.name.clone(),
+                    args_preview,
+                });
+                self.set_state(io, AgentState::ExecutingTool {
+                    tool_name: call.name.clone(),
+                });
 
                 // ---- Stage 9: before_tool hooks (veto/mutate, pre-gate) ----
                 let mut call_mut = call.clone();

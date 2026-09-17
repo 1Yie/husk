@@ -257,13 +257,21 @@ impl App {
             StepState::Denied => ("⊘", theme::TEXT_MUTED),
         };
 
+        // The capsule is ONE line: glyph + name + a single-line target
+        // summary (detail is already flat — args preview, or the first line
+        // of output). Full output lives in the expandable body below.
+        let detail_flat: String = s.detail.lines().next().unwrap_or("").to_string();
         let mut row_el = row![
             text(glyph).size(11).color(glyph_color).width(Length::Fixed(16.0)),
             text(&s.name).size(12).color(theme::TEXT_WHITE).font(theme::MONO),
-            text(&s.detail).size(11).color(theme::TEXT_MUTED).font(theme::MONO),
+            text(detail_flat)
+                .size(11)
+                .color(theme::TEXT_MUTED)
+                .font(theme::MONO),
         ]
         .spacing(8)
-        .align_y(Alignment::Center);
+        .align_y(Alignment::Center)
+        .height(Length::Fixed(22.0));
 
         if s.state == StepState::AwaitingConfirm {
             row_el = row_el.push(Space::new().width(Length::Fill));
@@ -294,8 +302,9 @@ impl App {
             );
         }
 
-        // Expanded: show the pending diff inline under the capsule.
-        let expanded_diff: Option<Element<_>> = if s.expanded && !view.pending_diff.is_empty() {
+        // Expanded body — the pending diff if one is staged, else the full
+        // tool output (so `smart_read`/`bash` results are readable).
+        let expanded_diff: Option<Element<_>> = if s.expanded && !view.pending_diff.is_empty() && s.state == StepState::AwaitingConfirm {
             let mut dcol = Column::new().spacing(0).width(Length::Fill);
             for d in view.pending_diff.iter().take(50) {
                 let (gutter, fg, bg) = match d.kind {
@@ -330,6 +339,31 @@ impl App {
                         ..Default::default()
                     })
                     .into(),
+            )
+        } else if s.expanded && !s.output.is_empty() {
+            // Full tool output — the whole result, scrollable, not truncated.
+            Some(
+                container(
+                    scrollable(
+                        text(&s.output)
+                            .size(11)
+                            .color(theme::TEXT_SECONDARY)
+                            .font(theme::MONO),
+                    )
+                    .height(Length::Fixed(180.0)),
+                )
+                .width(Length::Fill)
+                .padding([6.0, 8.0])
+                .style(|_t| container::Style {
+                    background: Some(theme::BG_WORKSPACE.into()),
+                    border: Border {
+                        width: 1.0,
+                        color: theme::BORDER_HAIRLINE,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .into(),
             )
         } else {
             None
