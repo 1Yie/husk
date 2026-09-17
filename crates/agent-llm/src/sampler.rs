@@ -215,6 +215,16 @@ impl Sampler {
                 }
             }
 
+            // A provider-level error INSIDE the stream (devin emits
+            // `response.failed`/`error` events → `StreamChunk::Error`, e.g.
+            // "internal_server_error … upstream error") is a real failure —
+            // escalate to Err so the retry loop sees it. Forward the chunk
+            // first so the UI still shows the message.
+            if let StreamChunk::Error(msg) = &chunk {
+                on_chunk(&chunk);
+                return Err(classify_transport_error(msg));
+            }
+
             on_chunk(&chunk);
         }
 
@@ -263,7 +273,15 @@ fn classify_transport_error(msg: &str) -> SampleError {
         || lower.contains("connection")
         || lower.contains("transport")
         || lower.contains("eof")
-        || lower.contains("reset");
+        || lower.contains("reset")
+        // Gateway-style 5xx bodies that don't carry the numeric code —
+        // devin reports `internal_server_error … upstream error`.
+        || lower.contains("internal_server_error")
+        || lower.contains("internal server error")
+        || lower.contains("upstream error")
+        || lower.contains("bad gateway")
+        || lower.contains("service unavailable")
+        || lower.contains("rate limit");
     if retryable {
         SampleError::Stream(format!("retryable: {msg}"))
     } else {

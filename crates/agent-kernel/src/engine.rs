@@ -200,6 +200,12 @@ impl Engine {
             let mut assembler = ToolCallAssembler::new();
             let mut round_text = String::new();
             let mut saw_done = false;
+            // A provider-level `StreamChunk::Error` (e.g. devin's
+            // `internal_server_error … upstream error`) arrives inside the
+            // stream, not as a transport `Err` — without this flag the turn
+            // would fall through to the no-calls branch and persist an EMPTY
+            // assistant message into history, corrupting every later request.
+            let mut stream_error: Option<String> = None;
 
             let req = SampleRequest {
                 model: &self.model,
@@ -235,6 +241,7 @@ impl Engine {
                                 }
                             }
                             StreamChunk::Error(e) => {
+                                stream_error = Some(e.clone());
                                 let _ = io.ui_tx.try_send(UiEvent::SystemMessage(e.clone()));
                             }
                         }
@@ -265,6 +272,15 @@ impl Engine {
                 self.set_state(io, AgentState::Failed(e.to_string()));
                 let _ = io.ui_tx.try_send(UiEvent::Error(e.to_string()));
                 return Err(e.to_string());
+            }
+            // Provider surfaced an in-stream error (upstream 5xx, rate limit,
+            // model refusal, …) — treat the turn as failed. Do NOT persist an
+            // assistant message: an empty content would replay into the next
+            // request as a blank turn and poison the context.
+            if let Some(e) = stream_error {
+                self.set_state(io, AgentState::Failed(e.clone()));
+                let _ = io.ui_tx.try_send(UiEvent::Error(e.clone()));
+                return Err(e);
             }
             debug_assert!(saw_done, "sampler guarantees Done exactly once");
 

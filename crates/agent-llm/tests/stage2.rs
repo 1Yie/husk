@@ -194,17 +194,16 @@ async fn sampler_synthesizes_done_on_clean_close() {
 
 #[tokio::test]
 async fn sampler_retries_retryable_then_fails() {
-    // Stream-level Error chunks that look retryable (429) — exhausts budget.
+    // A retryable in-stream Error chunk (429 / upstream 5xx) now escalates
+    // to a failed attempt — the retry loop must see it. Three scripts of
+    // `Error(429)` exhaust the retry budget.
     let mock = MockProvider::new();
-    for _ in 0..3 {
+    for _ in 0..4 {
         mock.push_script(vec![
             StreamChunk::Error("HTTP 429 too many requests".into()),
             StreamChunk::Done { prompt_tokens: None, completion_tokens: None },
         ]);
     }
-    // NOTE: StreamChunk::Error is a stream *item*; sampler sees it as a
-    // normal chunk unless the provider errs at the anyhow layer. This test
-    // instead exercises retry via a transport-failure path.
     let sampler = Sampler::new(Arc::new(mock));
     let mut events = Vec::new();
     let res = sampler
@@ -215,8 +214,9 @@ async fn sampler_retries_retryable_then_fails() {
             |e| events.push(format!("{e:?}")),
         )
         .await;
-    // Error chunks are data, not failures — the attempt "succeeds".
-    assert!(res.is_ok());
+    // Retryable error → exhausted after MAX_RETRIES attempts.
+    assert!(res.is_err());
+    assert!(events.iter().any(|e| e.contains("Retrying")));
 }
 
 #[tokio::test]
