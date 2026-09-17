@@ -46,10 +46,10 @@ impl App {
     /// OS-native frame (`decorations: false`).
     fn titlebar(&self) -> Element<'_, Message> {
         use super::message::WinAction;
-        let btn = |label: &'static str, action: WinAction| {
-            button(text(label).size(15).color(theme::TEXT_SECONDARY))
+        let btn = |ic: Icon, action: WinAction| {
+            button(icon(ic, 14.0, theme::TEXT_SECONDARY))
                 .on_press(Message::WindowAction(action))
-                .padding([2.0, 12.0])
+                .padding([4.0, 14.0])
                 .style(|_t, st| button::Style {
                     background: match st {
                         button::Status::Hovered => Some(theme::BG_HOVER.into()),
@@ -77,9 +77,9 @@ impl App {
         container(
             row![
                 drag_area,
-                btn("—", WinAction::Minimize),
-                btn("▢", WinAction::ToggleMaximize),
-                btn("✕", WinAction::Close),
+                btn(Icon::Minus, WinAction::Minimize),
+                btn(Icon::Maximize, WinAction::ToggleMaximize),
+                btn(Icon::X, WinAction::Close),
             ]
             .align_y(Alignment::Center),
         )
@@ -378,17 +378,17 @@ impl App {
         // of output). Full output lives in the expandable body below.
         let detail_flat: String = s.detail.lines().next().unwrap_or("").to_string();
         let mut row_el = row![
-            icon(ic, 14.0, glyph_color),
-            icon(tool_ic, 14.0, theme::TEXT_SECONDARY),
-            text(&s.name).size(14).color(theme::TEXT_WHITE).font(theme::MONO),
+            icon(ic, 12.0, glyph_color),
+            icon(tool_ic, 12.0, theme::TEXT_SECONDARY),
+            text(&s.name).size(12).color(theme::TEXT_WHITE).font(theme::MONO),
             text(detail_flat)
-                .size(13)
+                .size(11)
                 .color(theme::TEXT_MUTED)
                 .font(theme::MONO),
         ]
-        .spacing(8)
+        .spacing(7)
         .align_y(Alignment::Center)
-        .height(Length::Fixed(24.0));
+        .height(Length::Fixed(20.0));
 
         if s.state == StepState::AwaitingConfirm {
             row_el = row_el.push(Space::new().width(Length::Fill));
@@ -432,7 +432,7 @@ impl App {
                 dcol = dcol.push(
                     container(
                         text(format!("{gutter} {}", d.content))
-                            .size(15)
+                            .size(11)
                             .color(fg)
                             .font(theme::MONO),
                     )
@@ -474,7 +474,7 @@ impl App {
                 container(
                     scrollable(
                         text(&s.output)
-                            .size(15)
+                            .size(11)
                             .color(theme::TEXT_SECONDARY)
                             .font(theme::MONO),
                     )
@@ -594,34 +594,35 @@ impl App {
         // Context-usage color — cool under 50%, warm 50–80%, hot above.
         let ctx_color = if pct >= 80 { theme::ERROR } else if pct >= 50 { theme::WARN } else { theme::TEXT_MUTED };
 
-        let model = format!("{} · {}", self.stats.active_provider, self.stats.active_model);
-        let sandbox = if self.sandbox_unsafe { "UNSANDBOXED" } else { "sandbox" };
-        let sandbox_color = if self.sandbox_unsafe { theme::WARN } else { theme::TEXT_MUTED };
-        let state = self.stats.agent_state.clone();
+        let model = self.stats.active_model.clone();
         let mode = self.stats.permission_mode.clone();
+        // Sandbox unsafe → warn badge on the mode; otherwise the mode label.
+        let (mode_label, mode_color) = if self.sandbox_unsafe {
+            ("⚠ unsandboxed".to_string(), theme::WARN)
+        } else {
+            (mode, theme::TEXT_MUTED)
+        };
         let files = format!("{} files", self.stats.files_changed);
         let branch = self.stats.git_branch.clone();
-        let sid = format!("#{}", self.active_id);
+        let state = self.stats.agent_state.clone();
 
         container(
             row![
-                text(state).size(11).color(theme::STATUS_RUNNING).font(theme::MONO),
-                text(mode).size(11).color(theme::TEXT_MUTED).font(theme::MONO),
-                text(sandbox).size(11).color(sandbox_color).font(theme::MONO),
-                text(sid).size(11).color(theme::TEXT_DIM).font(theme::MONO),
+                icon(Icon::Cpu, 13.0, theme::TEXT_SECONDARY),
+                text(model).size(12).color(theme::TEXT_SECONDARY).font(theme::MONO),
+                text(mode_label).size(11).color(mode_color).font(theme::MONO),
                 Space::new().width(Length::Fill),
+                text(state).size(11).color(theme::STATUS_RUNNING).font(theme::MONO),
                 icon(Icon::GitBranch, 12.0, theme::TEXT_MUTED),
                 text(branch).size(11).color(theme::TEXT_MUTED).font(theme::MONO),
                 text(files).size(11).color(theme::TEXT_MUTED).font(theme::MONO),
-                icon(Icon::Cpu, 12.0, theme::TEXT_MUTED),
                 text(ctx).size(11).color(ctx_color).font(theme::MONO),
-                text(model).size(11).color(theme::TEXT_SECONDARY).font(theme::MONO),
             ]
             .spacing(10)
             .align_y(Alignment::Center),
         )
         .width(Length::Fill)
-        .padding([7.0, 12.0])
+        .padding([9.0, 14.0])
         .style(|_t| container::Style {
             background: Some(theme::BG_PANEL.into()),
             border: Border {

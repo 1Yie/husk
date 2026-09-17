@@ -35,6 +35,8 @@ pub enum Icon {
     GitCommit,   // commit
     ChevronDown, // expanded
     ChevronRight,// collapsed
+    Minus,       // window minimize
+    Maximize,    // window maximize
 }
 
 /// The vendored SVG bytes — `include_bytes!` bakes them into the binary.
@@ -63,6 +65,8 @@ fn svg_bytes(i: Icon) -> &'static [u8] {
         Icon::GitCommit => include_bytes!("../../assets/icons/git-commit-horizontal.svg"),
         Icon::ChevronDown => include_bytes!("../../assets/icons/chevron-down.svg"),
         Icon::ChevronRight => include_bytes!("../../assets/icons/chevron-right.svg"),
+        Icon::Minus => include_bytes!("../../assets/icons/minus.svg"),
+        Icon::Maximize => include_bytes!("../../assets/icons/maximize.svg"),
     }
 }
 

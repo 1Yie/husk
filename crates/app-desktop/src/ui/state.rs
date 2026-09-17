@@ -144,6 +144,8 @@ pub struct StatsRow {
     pub files_changed: u32,
     pub agent_state: String,
     pub permission_mode: String,
+    /// Active provider name — reserved for a provider-switcher surface.
+    #[allow(dead_code)]
     pub active_provider: String,
     pub active_model: String,
     /// Current git branch (session workspace) — status-bar right side.
