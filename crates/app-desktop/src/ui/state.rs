@@ -39,24 +39,38 @@ pub struct MessageRow {
     /// Reasoning phase ended (the agent's answer started / turn finished) —
     /// flips the "Thinking…" header to a collapsed "Thought" label.
     pub thinking_done: bool,
+    /// Selectable-text mode — the markdown body swaps to a read-only
+    /// `text_editor::Content` so the user can drag-select + Ctrl+C. iced's
+    /// markdown widget isn't selectable; this is the escape hatch.
+    pub selectable: bool,
+    /// The read-only editor content for selectable mode — kept in sync with
+    /// `text` (rebuilt on toggle + on append while selectable).
+    pub editor: iced::widget::text_editor::Content,
 }
 
 impl MessageRow {
     /// Construct a row, parsing `text` into markdown items.
     pub fn new(id: usize, role: Role, text: String) -> Self {
         let items = iced::widget::markdown::parse(&text).collect();
+        let editor = iced::widget::text_editor::Content::with_text(&text);
         Self {
             id, role, text, items,
             reasoning: String::new(),
             reasoning_open: false,
             streaming: false,
             thinking_done: false,
+            selectable: false,
+            editor,
         }
     }
 
-    /// Re-parse `text` → `items` after a streaming append.
+    /// Re-parse `text` → `items` after a streaming append; if selectable
+    /// mode is on, refresh the editor content too so it tracks the stream.
     pub fn reparse(&mut self) {
         self.items = iced::widget::markdown::parse(&self.text).collect();
+        if self.selectable {
+            self.editor = iced::widget::text_editor::Content::with_text(&self.text);
+        }
     }
 }
 

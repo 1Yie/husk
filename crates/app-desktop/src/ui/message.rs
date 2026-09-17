@@ -17,6 +17,11 @@ pub enum Message {
     ToggleStep(usize),
     /// Copy a message's full text to the clipboard.
     CopyMessage(usize),
+    /// Toggle a message into selectable-text mode (read-only editor).
+    ToggleSelect(usize),
+    /// A `text_editor` action on a selectable message — `Edit` is filtered
+    /// out so the editor is read-only but still drag-selectable.
+    SelectAction(usize, iced::widget::text_editor::Action),
 
     // ---- frame ----
     /// ~60Hz pump — drains the kernel `std::sync::mpsc` + animates dots.

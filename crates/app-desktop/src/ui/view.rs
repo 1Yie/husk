@@ -227,29 +227,58 @@ impl App {
                         );
                     }
                 }
-                // Markdown-render the agent body (items kept in sync with
-                // `text` on each append). Streaming appends a caret to the
-                // raw text — the caret lands inside the last paragraph.
-                let md = iced::widget::markdown::view(
-                    &m.items,
-                    iced::widget::markdown::Settings::with_text_size(14, md_style()),
-                )
-                .map(Message::LinkClicked);
-                c = c.push(md);
+                // Body: markdown view normally; a read-only text_editor when
+                // the user toggles "select" so they can drag-select + Ctrl+C.
+                if m.selectable {
+                    let ed = iced::widget::text_editor::TextEditor::new(&m.editor)
+                        .font(theme::MONO)
+                        .size(13)
+                        .on_action(move |a| Message::SelectAction(i, a))
+                        .style(|_t, _st| iced::widget::text_editor::Style {
+                            background: iced::Background::Color(theme::BG_CARD),
+                            border: iced::Border {
+                                color: theme::BORDER_HAIRLINE,
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            placeholder: theme::TEXT_MUTED,
+                            value: theme::TEXT_WHITE,
+                            selection: iced::Color::from_rgba8(0xe4, 0xe4, 0xe7, 0.3),
+                        });
+                    c = c.push(ed);
+                } else {
+                    let md = iced::widget::markdown::view(
+                        &m.items,
+                        iced::widget::markdown::Settings::with_text_size(14, md_style()),
+                    )
+                    .map(Message::LinkClicked);
+                    c = c.push(md);
+                }
                 if m.streaming {
                     c = c.push(text("▮").size(14).color(theme::ACCENT));
                 } else {
-                    // Copy affordance — markdown isn't selectable in iced, so
-                    // a quiet "⧉ copy" under the answer lets the user grab the
-                    // full text (raw markdown source) to the clipboard.
+                    // Affordances: ⧉ copy (whole answer) + ⿻ select (toggle
+                    // into a selectable-text view for drag-select + Ctrl+C).
+                    let select_label = if m.selectable { "⿻ back" } else { "⿻ select" };
                     c = c.push(
-                        button(text("⧉ copy").size(10).color(theme::TEXT_MUTED))
-                            .on_press(Message::CopyMessage(i))
-                            .padding([2, 0])
-                            .style(|_t, _st| button::Style {
-                                background: None,
-                                ..Default::default()
-                            }),
+                        row![
+                            button(text("⧉ copy").size(10).color(theme::TEXT_MUTED))
+                                .on_press(Message::CopyMessage(i))
+                                .padding([2, 0])
+                                .style(|_t, _st| button::Style {
+                                    background: None,
+                                    ..Default::default()
+                                }),
+                            Space::new().width(Length::Fixed(12.0)),
+                            button(text(select_label).size(10).color(theme::TEXT_MUTED))
+                                .on_press(Message::ToggleSelect(i))
+                                .padding([2, 0])
+                                .style(|_t, _st| button::Style {
+                                    background: None,
+                                    ..Default::default()
+                                }),
+                        ]
+                        .spacing(0),
                     );
                 }
                 c.into()

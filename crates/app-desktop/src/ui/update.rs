@@ -96,6 +96,27 @@ impl App {
                     iced::clipboard::write(text)
                 }
             }
+            Message::ToggleSelect(i) => {
+                if let Some(StreamItem::Message(m)) = self.view_mut().stream.get_mut(i) {
+                    m.selectable = !m.selectable;
+                    if m.selectable {
+                        // Refresh the editor so it shows the latest text.
+                        m.editor = iced::widget::text_editor::Content::with_text(&m.text);
+                    }
+                }
+                Task::none()
+            }
+            Message::SelectAction(i, action) => {
+                // Read-only editor — swallow Edit actions so the text can't
+                // change, keep Select/Move/Click/Drag/Copy for selection.
+                if action.is_edit() {
+                    return Task::none();
+                }
+                if let Some(StreamItem::Message(m)) = self.view_mut().stream.get_mut(i) {
+                    m.editor.perform(action);
+                }
+                Task::none()
+            }
             Message::Tick => {
                 self.tick = self.tick.wrapping_add(1);
                 // Drain the tagged kernel queue — route each event to its
