@@ -274,9 +274,18 @@ fn apply_event(weak: &slint::Weak<CodexDesktop>, ev: UiEvent, m: &UiModels) {
             });
         }
         UiEvent::ToolCallFinished { name, ok, content, .. } => {
+            // Clear any pending approval now that the tool resolved.
+            let mut p = b.get_pending();
+            if p.tool_name.as_str() == name.as_str() {
+                p.tool_name = "".into();
+                b.set_pending(p);
+            }
             for i in (0..m.steps.row_count()).rev() {
                 let mut row = m.steps.row_data(i).unwrap();
-                if row.name.as_str() == name.as_str() && row.state == "running" {
+                let st = row.state.as_str();
+                if row.name.as_str() == name.as_str()
+                    && (st == "running" || st == "awaiting_confirm")
+                {
                     row.state = if ok { "success".into() } else { "error".into() };
                     row.detail = content.chars().take(60).collect::<String>().into();
                     m.steps.set_row_data(i, row);
@@ -285,6 +294,16 @@ fn apply_event(weak: &slint::Weak<CodexDesktop>, ev: UiEvent, m: &UiModels) {
             }
         }
         UiEvent::ApprovalRequested { tool_name, diff, fuzzy } => {
+            // Mark the running step as awaiting confirmation — the inline
+            // approve/deny row renders on that capsule.
+            for i in (0..m.steps.row_count()).rev() {
+                let mut row = m.steps.row_data(i).unwrap();
+                if row.state == "running" {
+                    row.state = "awaiting_confirm".into();
+                    m.steps.set_row_data(i, row);
+                    break;
+                }
+            }
             b.set_pending(PendingApprovalData {
                 step_id: 0,
                 tool_name: tool_name.clone().into(),

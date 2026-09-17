@@ -16,7 +16,6 @@ import {
 } from "globals.slint";
 import { SessionSidebar } from "views/sidebar.slint";
 import { ExecutionStream } from "views/execution_stream.slint";
-import { DiffStage } from "components/diff_stage.slint";
 
 // Re-export the globals + structs so Rust's `slint::include_modules!` sees
 // them as the public API surface of this component file.
@@ -36,23 +35,10 @@ export component CodexDesktop inherits Window {
         SessionSidebar {}
         Rectangle { width: 1px; background: CodexTheme.border_hairline; }
 
-        // Chat stream fills all remaining width.
+        // Chat stream fills all remaining width — approvals render inline
+        // at the tool call, not as a side panel.
         ExecutionStream {
             horizontal-stretch: 1;
-        }
-
-        // Diff stage — a right-side drawer that only exists while a
-        // tool approval is pending (zero-width otherwise so the chat
-        // keeps the full width).
-        if Bridge.pending.tool_name != "": Rectangle {
-            width: 1px;
-            background: CodexTheme.border_hairline;
-        }
-        if Bridge.pending.tool_name != "": DiffStage {
-            width: 360px;
-            pending: Bridge.pending;
-            diff_lines: Bridge.pending_diff;
-            changed_files: Bridge.changed_files;
         }
     }
 }

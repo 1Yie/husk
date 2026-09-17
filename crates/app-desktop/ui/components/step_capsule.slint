@@ -6,8 +6,11 @@ import { ActionStepData } from "../globals.slint";
 
 export component CodexStepCapsule inherits Rectangle {
     in property <ActionStepData> step;
+    callback approve(int);
+    callback deny(int);
 
-    height: 28px;
+    // Grows when a pending approval shows the inline review row.
+    height: step.state == "awaiting_confirm" ? 56px : 28px;
     border-radius: 4px;
     border-width: 1px;
     border-color: step.state == "awaiting_confirm"
@@ -53,6 +56,35 @@ export component CodexStepCapsule inherits Rectangle {
             color: CodexTheme.text_muted;
             vertical-alignment: center;
             overflow: elide;
+        }
+
+        // Inline approve/deny — sits on the tool line, not a side panel.
+        if step.state == "awaiting_confirm": HorizontalLayout {
+            spacing: 6px;
+            alignment: end;
+            Rectangle {
+                width: 56px; height: 20px; border-radius: 4px;
+                background: CodexTheme.diff_add;
+                Text {
+                    text: "allow";
+                    font-family: CodexTheme.font_sans; font-size: 10px; font-weight: 600;
+                    color: CodexTheme.bg_workspace;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                TouchArea { clicked => { root.approve(step.id); } }
+            }
+            Rectangle {
+                width: 56px; height: 20px; border-radius: 4px;
+                border-width: 1px; border-color: CodexTheme.border_hairline;
+                background: CodexTheme.bg_card;
+                Text {
+                    text: "deny";
+                    font-family: CodexTheme.font_sans; font-size: 10px;
+                    color: CodexTheme.text_secondary;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                TouchArea { clicked => { root.deny(step.id); } }
+            }
         }
     }
 }

@@ -113,7 +113,11 @@ export component ExecutionStream inherits Rectangle {
         if Bridge.is_active: LoadingDots {}
 
         // ---- active steps strip (running tool capsules) ----
-        for step in Bridge.active_steps: CodexStepCapsule { step: step; }
+        for step in Bridge.active_steps: CodexStepCapsule {
+            step: step;
+            approve(id) => { Bridge.approve_tool(id, false); }
+            deny(id) => { Bridge.deny_tool(id, ""); }
+        }
 
         // ---- input capsule ----
         Rectangle {

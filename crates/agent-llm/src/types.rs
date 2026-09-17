@@ -145,10 +145,18 @@ impl ToolCallAssembler {
             }
             let slot = &mut self.slots[*index];
             if let Some(id) = id {
-                slot.id.push_str(id);
+                // id arrives once — assign, never append (Responses repeats
+                // call_id on argument deltas; appending corrupts it).
+                if slot.id.is_empty() {
+                    slot.id = id.clone();
+                }
             }
             if let Some(name) = name {
-                slot.name.push_str(name);
+                // name likewise arrives once — assign; appending produced
+                // `smart_readsmart_read…` when the args delta re-sent it.
+                if slot.name.is_empty() {
+                    slot.name = name.clone();
+                }
             }
             slot.arguments.push_str(args_delta);
             true

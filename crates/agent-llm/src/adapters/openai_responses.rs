@@ -242,6 +242,13 @@ struct RespEvent {
     delta: Option<String>,
     #[serde(default)]
     item: Option<RespItem>,
+    /// `output_index` groups output items (reasoning=0, first call=1, …) —
+    /// the assembler keys on it, NOT a hardcoded 0.
+    #[serde(default)]
+    output_index: Option<usize>,
+    /// `item_id` on argument deltas references the call's item id.
+    #[serde(default)]
+    item_id: Option<String>,
     #[serde(default)]
     call_id: Option<String>,
     #[serde(default)]
@@ -304,8 +311,10 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32)>) -> Vec<StreamChunk> {
         "response.output_item.added" => {
             if let Some(item) = ev.item {
                 if item.kind == "function_call" {
+                    // call_id like `list_dir:0#hash` — the *name* is the
+                    // tool, call_id is the correlation id.
                     out.push(StreamChunk::ToolCallDelta {
-                        index: 0,
+                        index: ev.output_index.unwrap_or(0),
                         id: item.call_id,
                         name: item.name,
                         args_delta: String::new(),
@@ -315,9 +324,11 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32)>) -> Vec<StreamChunk> {
         }
         "response.function_call_arguments.delta" => {
             if let Some(d) = ev.delta {
+                // item_id correlates the args shard to its call — send it as
+                // the id so the assembler merges by output_index slot.
                 out.push(StreamChunk::ToolCallDelta {
-                    index: 0,
-                    id: ev.call_id,
+                    index: ev.output_index.unwrap_or(0),
+                    id: ev.item_id.clone().or(ev.call_id),
                     name: ev.name,
                     args_delta: d,
                 });
