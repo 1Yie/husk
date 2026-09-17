@@ -13,7 +13,7 @@ agent-sandbox = { path = "../agent-sandbox" }
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-iced = { version = "0.14", features = ["wgpu", "tokio", "markdown"] }
+iced = { version = "0.14", features = ["wgpu", "tokio", "markdown", "svg"] }
 # Open markdown links in the system browser (link click → open::that).
 open = "5"
 serde_json.workspace = true

@@ -2,6 +2,7 @@
 //! The kernel's `UiEvent` stream arrives via `std::sync::mpsc` and is polled
 //! by a `Subscription` each tick — iced's Elm loop stays on the main thread.
 
+pub mod icons;
 pub mod message;
 pub mod state;
 pub mod theme;

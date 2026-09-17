@@ -8,6 +8,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Border, Element, Length};
 
+use super::icons::{icon, Icon};
 use super::message::Message;
 use super::state::{App, DiffKind, Role, SessionRow, StepState, StreamItem};
 use super::theme;
@@ -46,7 +47,7 @@ impl App {
     fn titlebar(&self) -> Element<'_, Message> {
         use super::message::WinAction;
         let btn = |label: &'static str, action: WinAction| {
-            button(text(label).size(13).color(theme::TEXT_SECONDARY))
+            button(text(label).size(15).color(theme::TEXT_SECONDARY))
                 .on_press(Message::WindowAction(action))
                 .padding([2.0, 12.0])
                 .style(|_t, st| button::Style {
@@ -57,21 +58,25 @@ impl App {
                     ..Default::default()
                 })
         };
+        // The whole middle band drags — label + a Fill spacer inside the
+        // mouse_area so the strip between the title and the buttons is also
+        // draggable (a Space outside the area would swallow the drag).
         let drag_area = mouse_area(
-            container(
+            row![
                 text("agent-rs")
-                    .size(12)
+                    .size(15)
                     .color(theme::TEXT_MUTED)
                     .font(theme::SANS),
-            )
-            .padding([6.0, 12.0])
-            .width(Length::Fill),
+                Space::new().width(Length::Fill),
+            ]
+            .width(Length::Fill)
+            .padding([7.0, 12.0])
+            .align_y(Alignment::Center),
         )
         .on_press(Message::WindowAction(WinAction::Drag));
         container(
             row![
                 drag_area,
-                Space::new().width(Length::Fill),
                 btn("—", WinAction::Minimize),
                 btn("▢", WinAction::ToggleMaximize),
                 btn("✕", WinAction::Close),
@@ -100,13 +105,13 @@ impl App {
         let mut header = Column::new().spacing(0).padding(8);
         header = header.push(
             text("agent-rs")
-                .size(16)
+                .size(15)
                 .color(theme::TEXT_WHITE)
                 .font(theme::SANS),
         );
         header = header.push(Space::new().height(Length::Fixed(10.0)));
         header = header.push(
-            button(text("+ new session").size(11).color(theme::TEXT_SECONDARY))
+            button(row![icon(Icon::Plus, 13.0, theme::TEXT_SECONDARY), text(" new session").size(12).color(theme::TEXT_SECONDARY)].spacing(4).align_y(Alignment::Center))
                 .on_press(Message::NewSession)
                 .width(Length::Fill)
                 .padding(8)
@@ -119,7 +124,7 @@ impl App {
         header = header.push(Space::new().height(Length::Fixed(8.0)));
         header = header.push(
             text("SESSIONS")
-                .size(10)
+                .size(15)
                 .color(theme::TEXT_MUTED),
         );
         header = header.push(Space::new().height(Length::Fixed(4.0)));
@@ -159,15 +164,15 @@ impl App {
         button(
             column![
                 row![
-                    text(&s.title).size(12).color(theme::TEXT_SECONDARY),
+                    text(&s.title).size(13).color(theme::TEXT_SECONDARY),
                     Space::new().width(Length::Fill),
                     if s.running {
-                        text("●").size(9).color(theme::STATUS_RUNNING)
+                        icon(Icon::Loader, 12.0, theme::STATUS_RUNNING)
                     } else {
-                        text("").size(9)
+                        Space::new().width(Length::Fixed(12.0)).into()
                     },
                 ],
-                text(preview).size(10).color(theme::TEXT_MUTED),
+                text(preview).size(11).color(theme::TEXT_MUTED),
             ]
             .spacing(2),
         )
@@ -210,7 +215,7 @@ impl App {
         } else {
             msgs = msgs.push(
                 text("Start a session — type below or pick one from the sidebar.")
-                    .size(13)
+                    .size(15)
                     .color(theme::TEXT_DIM),
             );
         }
@@ -236,7 +241,7 @@ impl App {
             Role::User => {
                 container(
                     text(&m.text)
-                        .size(14)
+                        .size(15)
                         .color(theme::TEXT_WHITE)
                         .font(theme::SANS),
                 )
@@ -247,7 +252,7 @@ impl App {
             }
             Role::System => container(
                 text(&m.text)
-                    .size(12)
+                    .size(15)
                     .color(theme::WARN)
                     .font(theme::MONO),
             )
@@ -260,7 +265,7 @@ impl App {
                     // Live phase → "Thinking…"; done → a quiet "Thought".
                     let label = if m.thinking_done { "Thought" } else { "Thinking…" };
                     let head = text(format!("{marker} {label}"))
-                        .size(11)
+                        .size(15)
                         .color(theme::TEXT_MUTED)
                         .font(theme::MONO);
                     c = c.push(
@@ -275,7 +280,7 @@ impl App {
                     if m.reasoning_open {
                         c = c.push(
                             text(&m.reasoning)
-                                .size(11)
+                                .size(15)
                                 .color(theme::TEXT_DIM)
                                 .font(theme::MONO),
                         );
@@ -286,7 +291,7 @@ impl App {
                 if m.selectable {
                     let ed = iced::widget::text_editor::TextEditor::new(&m.editor)
                         .font(theme::MONO)
-                        .size(13)
+                        .size(15)
                         .on_action(move |a| Message::SelectAction(i, a))
                         .style(|_t, _st| iced::widget::text_editor::Style {
                             background: iced::Background::Color(theme::BG_CARD),
@@ -309,14 +314,14 @@ impl App {
                     c = c.push(md);
                 }
                 if m.streaming {
-                    c = c.push(text("▮").size(14).color(theme::ACCENT));
+                    c = c.push(text("▮").size(15).color(theme::ACCENT));
                 } else {
                     // Affordances: ⧉ copy (whole answer) + ⿻ select (toggle
                     // into a selectable-text view for drag-select + Ctrl+C).
                     let select_label = if m.selectable { "⿻ back" } else { "⿻ select" };
                     c = c.push(
                         row![
-                            button(text("⧉ copy").size(10).color(theme::TEXT_MUTED))
+                            button(row![icon(Icon::Copy, 13.0, theme::TEXT_MUTED), text(" copy").size(11).color(theme::TEXT_MUTED)].spacing(3).align_y(Alignment::Center))
                                 .on_press(Message::CopyMessage(i))
                                 .padding([2, 0])
                                 .style(|_t, _st| button::Style {
@@ -324,7 +329,7 @@ impl App {
                                     ..Default::default()
                                 }),
                             Space::new().width(Length::Fixed(12.0)),
-                            button(text(select_label).size(10).color(theme::TEXT_MUTED))
+                            button(row![icon(Icon::SquarePen, 13.0, theme::TEXT_MUTED), text(select_label).size(11).color(theme::TEXT_MUTED)].spacing(3).align_y(Alignment::Center))
                                 .on_press(Message::ToggleSelect(i))
                                 .padding([2, 0])
                                 .style(|_t, _st| button::Style {
@@ -350,12 +355,22 @@ impl App {
         s: &'a super::state::StepRow,
         view: &'a super::state::SessionView,
     ) -> Element<'a, Message> {
-        let (glyph, glyph_color) = match s.state {
-            StepState::Running => ("●", theme::STATUS_RUNNING),
-            StepState::AwaitingConfirm => ("◌", theme::ACCENT),
-            StepState::Success => ("✓", theme::DIFF_ADD),
-            StepState::Error => ("✗", theme::DIFF_DEL),
-            StepState::Denied => ("⊘", theme::TEXT_MUTED),
+        // State glyph → a Keyline icon colored by the run state.
+        let (ic, glyph_color) = match s.state {
+            StepState::Running => (Icon::Loader, theme::STATUS_RUNNING),
+            StepState::AwaitingConfirm => (Icon::Zap, theme::ACCENT),
+            StepState::Success => (Icon::Check, theme::DIFF_ADD),
+            StepState::Error => (Icon::X, theme::DIFF_DEL),
+            StepState::Denied => (Icon::X, theme::TEXT_MUTED),
+        };
+        // Tool-type icon for the name (read/bash/edit/search…).
+        let tool_ic = match s.name.as_str() {
+            "smart_read" | "read_file" => Icon::FileText,
+            "bash" | "shell" => Icon::Terminal,
+            "fuzzy_patch" | "edit_file" | "write_file" => Icon::SquarePen,
+            "codebase_search" | "grep" => Icon::Search,
+            "git" => Icon::GitCommit,
+            _ => Icon::Wrench,
         };
 
         // The capsule is ONE line: glyph + name + a single-line target
@@ -363,21 +378,22 @@ impl App {
         // of output). Full output lives in the expandable body below.
         let detail_flat: String = s.detail.lines().next().unwrap_or("").to_string();
         let mut row_el = row![
-            text(glyph).size(11).color(glyph_color).width(Length::Fixed(16.0)),
-            text(&s.name).size(12).color(theme::TEXT_WHITE).font(theme::MONO),
+            icon(ic, 14.0, glyph_color),
+            icon(tool_ic, 14.0, theme::TEXT_SECONDARY),
+            text(&s.name).size(14).color(theme::TEXT_WHITE).font(theme::MONO),
             text(detail_flat)
-                .size(11)
+                .size(13)
                 .color(theme::TEXT_MUTED)
                 .font(theme::MONO),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
-        .height(Length::Fixed(22.0));
+        .height(Length::Fixed(24.0));
 
         if s.state == StepState::AwaitingConfirm {
             row_el = row_el.push(Space::new().width(Length::Fill));
             row_el = row_el.push(
-                button(text("allow").size(10).color(theme::BG_WORKSPACE))
+                button(row![icon(Icon::Check, 13.0, theme::BG_WORKSPACE), text(" allow").size(12).color(theme::BG_WORKSPACE)].spacing(3).align_y(Alignment::Center))
                     .on_press(Message::Approve(i))
                     .padding([2.0, 10.0])
                     .style(|_t, _st| button::Style {
@@ -387,7 +403,7 @@ impl App {
                     }),
             );
             row_el = row_el.push(
-                button(text("deny").size(10).color(theme::TEXT_SECONDARY))
+                button(row![icon(Icon::X, 13.0, theme::TEXT_SECONDARY), text(" deny").size(12).color(theme::TEXT_SECONDARY)].spacing(3).align_y(Alignment::Center))
                     .on_press(Message::Deny(i))
                     .padding([2.0, 10.0])
                     .style(|_t, _st| button::Style {
@@ -416,7 +432,7 @@ impl App {
                 dcol = dcol.push(
                     container(
                         text(format!("{gutter} {}", d.content))
-                            .size(11)
+                            .size(15)
                             .color(fg)
                             .font(theme::MONO),
                     )
@@ -458,7 +474,7 @@ impl App {
                 container(
                     scrollable(
                         text(&s.output)
-                            .size(11)
+                            .size(15)
                             .color(theme::TEXT_SECONDARY)
                             .font(theme::MONO),
                     )
@@ -525,7 +541,7 @@ impl App {
             .on_input(Message::InputChanged)
             .on_submit(if is_active { Message::Steer } else { Message::Submit })
             .padding(10)
-            .size(14)
+            .size(15)
             .style(|_t, _st| text_input::Style {
                 background: theme::BG_CARD.into(),
                 border: Border {
@@ -543,7 +559,7 @@ impl App {
         container(
             row![
                 input,
-                button(text("→").size(16).color(theme::BG_WORKSPACE))
+                button(icon(Icon::Send, 18.0, theme::BG_WORKSPACE))
                     .on_press(if is_active { Message::Steer } else { Message::Submit })
                     .padding([8.0, 16.0])
                     .style(|_t, _st| button::Style {
@@ -584,26 +600,24 @@ impl App {
         let state = self.stats.agent_state.clone();
         let mode = self.stats.permission_mode.clone();
         let files = format!("{} files", self.stats.files_changed);
-        let branch = if self.stats.git_branch.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", self.stats.git_branch)
-        };
+        let branch = self.stats.git_branch.clone();
         let sid = format!("#{}", self.active_id);
 
         container(
             row![
-                text(state).size(10).color(theme::STATUS_RUNNING).font(theme::MONO),
-                text(mode).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
-                text(sandbox).size(10).color(sandbox_color).font(theme::MONO),
-                text(sid).size(10).color(theme::TEXT_DIM).font(theme::MONO),
+                text(state).size(11).color(theme::STATUS_RUNNING).font(theme::MONO),
+                text(mode).size(11).color(theme::TEXT_MUTED).font(theme::MONO),
+                text(sandbox).size(11).color(sandbox_color).font(theme::MONO),
+                text(sid).size(11).color(theme::TEXT_DIM).font(theme::MONO),
                 Space::new().width(Length::Fill),
-                text(branch).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
-                text(files).size(10).color(theme::TEXT_MUTED).font(theme::MONO),
-                text(ctx).size(10).color(ctx_color).font(theme::MONO),
-                text(model).size(10).color(theme::TEXT_SECONDARY).font(theme::MONO),
+                icon(Icon::GitBranch, 12.0, theme::TEXT_MUTED),
+                text(branch).size(11).color(theme::TEXT_MUTED).font(theme::MONO),
+                text(files).size(11).color(theme::TEXT_MUTED).font(theme::MONO),
+                icon(Icon::Cpu, 12.0, theme::TEXT_MUTED),
+                text(ctx).size(11).color(ctx_color).font(theme::MONO),
+                text(model).size(11).color(theme::TEXT_SECONDARY).font(theme::MONO),
             ]
-            .spacing(12)
+            .spacing(10)
             .align_y(Alignment::Center),
         )
         .width(Length::Fill)
@@ -627,7 +641,7 @@ impl App {
                 let p = (phase + i as f32 * 0.33) % 1.0;
                 let on = p < 0.5;
                 text("●")
-                    .size(10)
+                    .size(15)
                     .color(if on { theme::TEXT_SECONDARY } else { theme::TEXT_DIM })
                     .into()
             })
