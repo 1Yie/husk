@@ -314,16 +314,34 @@ impl App {
 /// persisted so it collapses empty.
 pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionView {
     let mut v = SessionView::default();
+    // call_id → tool name: a `Tool` result message only carries the call_id
+    // (`call_abc…`), not the name — resolve it from the preceding assistant
+    // message's `tool_calls` so the capsule shows the real name.
+    let mut id_to_name: HashMap<String, String> = HashMap::new();
+    for m in history {
+        if let Some(calls) = &m.tool_calls {
+            for c in calls {
+                id_to_name.insert(c.id.clone(), c.name.clone());
+            }
+        }
+    }
     for (i, m) in history.iter().enumerate() {
+        // System prompt — internal context, never rendered in the stream.
+        if m.role == agent_llm::types::Role::System {
+            continue;
+        }
         // Tool result messages → a finished tool capsule in the chain.
         if m.role == agent_llm::types::Role::Tool {
+            let call_id = m.tool_call_id.clone().unwrap_or_default();
+            let name = id_to_name.get(&call_id).cloned().unwrap_or_else(|| "tool".into());
+            let content = m.content.clone().unwrap_or_default();
             v.stream.push(StreamItem::Tool(StepRow {
                 id: i,
-                name: m.tool_call_id.clone().unwrap_or_else(|| "tool".into()),
+                name,
                 state: StepState::Success,
-                detail: m.content.clone().unwrap_or_default().chars().take(60).collect(),
+                detail: content.lines().next().unwrap_or("").chars().take(60).collect(),
                 expanded: false,
-                output: String::new(),
+                output: content,
             }));
             continue;
         }
@@ -340,13 +358,26 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
         // call so the chain shows what was invoked, in order.
         if let Some(calls) = &m.tool_calls {
             for c in calls {
+                // Detail = the tool's target arg (path/command/pattern) so a
+                // replayed capsule shows *what* it ran, like the live one.
+                let detail = serde_json::from_str::<serde_json::Value>(&c.arguments)
+                    .ok()
+                    .and_then(|v| {
+                        ["path", "command", "pattern", "query", "file", "filename"]
+                            .iter()
+                            .find_map(|k| v.get(k).and_then(|x| x.as_str()).map(|s| s.to_string()))
+                    })
+                    .unwrap_or_default()
+                    .chars()
+                    .take(60)
+                    .collect();
                 v.stream.push(StreamItem::Tool(StepRow {
                     id: i,
                     name: c.name.clone(),
                     state: StepState::Success,
-                    detail: String::new(),
+                    detail,
                     expanded: false,
-                output: String::new(),
+                    output: String::new(),
                 }));
             }
         }

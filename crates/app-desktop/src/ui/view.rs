@@ -374,8 +374,13 @@ impl App {
                     }),
                 );
             }
+            // Height follows the diff line count (≈16px/line), min 60,
+            // capped at 400 — short diffs don't waste a fixed box, long
+            // diffs scroll.
+            let diff_h = (view.pending_diff.len().min(50) as f32 * 16.0 + 8.0)
+                .clamp(60.0, 400.0);
             Some(
-                container(scrollable(dcol).height(Length::Fixed(200.0)).width(Length::Fill))
+                container(scrollable(dcol).height(Length::Fixed(diff_h)).width(Length::Fill))
                     .width(Length::Fill)
                     .style(|_t| container::Style {
                         border: Border {
@@ -388,7 +393,13 @@ impl App {
                     .into(),
             )
         } else if s.expanded && !s.output.is_empty() {
-            // Full tool output — the whole result, scrollable, not truncated.
+            // Full tool output — sized to its line count (≈15px/line), min
+            // 60 so a one-line result still looks like a panel, max 400 so a
+            // huge dump scrolls instead of eating the stream. Any tool whose
+            // result returns content expands this way (smart_read, bash,
+            // codebase_search…).
+            let lines = s.output.lines().count().max(1) as f32;
+            let out_h = (lines * 15.0 + 16.0).clamp(60.0, 400.0);
             Some(
                 container(
                     scrollable(
@@ -397,7 +408,7 @@ impl App {
                             .color(theme::TEXT_SECONDARY)
                             .font(theme::MONO),
                     )
-                    .height(Length::Fixed(180.0))
+                    .height(Length::Fixed(out_h))
                     .width(Length::Fill), // scrollbar hugs the panel edge, not the text
                 )
                 .width(Length::Fill)

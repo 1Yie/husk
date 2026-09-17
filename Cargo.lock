@@ -235,6 +235,7 @@ dependencies = [
  "anyhow",
  "iced",
  "open",
+ "serde_json",
  "tokio",
  "tracing",
 ]

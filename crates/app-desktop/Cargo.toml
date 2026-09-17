@@ -16,3 +16,4 @@ anyhow.workspace = true
 iced = { version = "0.14", features = ["wgpu", "tokio", "markdown"] }
 # Open markdown links in the system browser (link click → open::that).
 open = "5"
+serde_json.workspace = true
