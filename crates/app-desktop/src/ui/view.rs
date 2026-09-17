@@ -3,7 +3,8 @@
 //! status bar. Renders the ACTIVE session's `SessionView` only.
 
 use iced::widget::{
-    button, column, container, row, scrollable, text, text_input, Column, Space,
+    button, column, container, mouse_area, row, scrollable, text, text_input,
+    Column, Space,
 };
 use iced::{Alignment, Border, Element, Length};
 
@@ -30,10 +31,63 @@ fn md_style() -> iced::widget::markdown::Style {
 
 impl App {
     pub fn view(&self) -> Element<'_, Message> {
-        row![
-            self.sidebar(),
-            self.stream_column(),
+        column![
+            self.titlebar(),
+            row![
+                self.sidebar(),
+                self.stream_column(),
+            ],
         ]
+        .into()
+    }
+
+    /// Custom titlebar — drag area + app name + min/max/close. Replaces the
+    /// OS-native frame (`decorations: false`).
+    fn titlebar(&self) -> Element<'_, Message> {
+        use super::message::WinAction;
+        let btn = |label: &'static str, action: WinAction| {
+            button(text(label).size(13).color(theme::TEXT_SECONDARY))
+                .on_press(Message::WindowAction(action))
+                .padding([2.0, 12.0])
+                .style(|_t, st| button::Style {
+                    background: match st {
+                        button::Status::Hovered => Some(theme::BG_HOVER.into()),
+                        _ => None,
+                    },
+                    ..Default::default()
+                })
+        };
+        let drag_area = mouse_area(
+            container(
+                text("agent-rs")
+                    .size(12)
+                    .color(theme::TEXT_MUTED)
+                    .font(theme::SANS),
+            )
+            .padding([6.0, 12.0])
+            .width(Length::Fill),
+        )
+        .on_press(Message::WindowAction(WinAction::Drag));
+        container(
+            row![
+                drag_area,
+                Space::new().width(Length::Fill),
+                btn("—", WinAction::Minimize),
+                btn("▢", WinAction::ToggleMaximize),
+                btn("✕", WinAction::Close),
+            ]
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .style(|_t| container::Style {
+            background: Some(theme::BG_PANEL.into()),
+            border: Border {
+                width: 1.0,
+                color: theme::BORDER_HAIRLINE,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .into()
     }
 

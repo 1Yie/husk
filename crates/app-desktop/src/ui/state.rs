@@ -198,6 +198,9 @@ pub struct App {
     pub stream_scroll: iced::widget::Id,
     /// Whether the user has scrolled away from the bottom (stop auto-pin).
     pub user_scrolled: bool,
+    /// The OS window id — set on `WindowReady`, drives the custom titlebar's
+    /// drag/min/max/close.
+    pub window_id: Option<iced::window::Id>,
 }
 
 impl App {
@@ -231,6 +234,7 @@ impl App {
             tick: 0,
             stream_scroll: iced::widget::Id::unique(),
             user_scrolled: false,
+            window_id: None,
         }
     }
 
@@ -304,6 +308,7 @@ impl App {
             tick: 0,
             stream_scroll: iced::widget::Id::unique(),
             user_scrolled: false,
+            window_id: None,
         }
     }
 }

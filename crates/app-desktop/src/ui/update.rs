@@ -81,6 +81,20 @@ impl App {
                 let _ = open::that_detached(uri.as_str());
                 Task::none()
             }
+            Message::WindowReady(id) => {
+                self.window_id = id;
+                Task::none()
+            }
+            Message::WindowAction(action) => {
+                let Some(id) = self.window_id else { return Task::none() };
+                use super::message::WinAction;
+                match action {
+                    WinAction::Drag => iced::window::drag(id),
+                    WinAction::Minimize => iced::window::minimize(id, true),
+                    WinAction::ToggleMaximize => iced::window::toggle_maximize(id),
+                    WinAction::Close => iced::window::close(id),
+                }
+            }
             Message::CopyMessage(i) => {
                 // Copy the message's raw markdown source to the clipboard.
                 let text = self

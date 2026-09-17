@@ -3,6 +3,15 @@
 
 use iced::widget::scrollable;
 
+/// Custom-titlebar window control.
+#[derive(Debug, Clone, Copy)]
+pub enum WinAction {
+    Drag,
+    Minimize,
+    ToggleMaximize,
+    Close,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     // ---- UI → kernel intents ----
@@ -22,6 +31,10 @@ pub enum Message {
     /// A `text_editor` action on a selectable message — `Edit` is filtered
     /// out so the editor is read-only but still drag-selectable.
     SelectAction(usize, iced::widget::text_editor::Action),
+    /// The OS window became ready — carries its `Id` for titlebar actions.
+    WindowReady(Option<iced::window::Id>),
+    /// Titlebar button — drag on press / minimize / toggle-maximize / close.
+    WindowAction(WinAction),
 
     // ---- frame ----
     /// ~60Hz pump — drains the kernel `std::sync::mpsc` + animates dots.

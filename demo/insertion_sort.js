@@ -1,5 +1,6 @@
 function insertionSort(arr) {
   const a = arr.slice();
+  // 外层循环：从第 2 个元素开始，依次把每个元素插入左侧已排序区间
   for (let i = 1; i < a.length; i++) {
     const key = a[i];
     let j = i - 1;

@@ -21,6 +21,7 @@ fn main() -> iced::Result {
         .window(iced::window::Settings {
             size: iced::Size::new(1080.0, 720.0),
             min_size: Some(iced::Size::new(720.0, 480.0)),
+            decorations: false, // custom titlebar replaces the native frame
             ..Default::default()
         })
         .title(title)
@@ -46,7 +47,8 @@ fn boot() -> (App, Task<Message>) {
         let (_b, loud) = agent_sandbox::detect_backend();
         App::boot(bridge::SessionManager::spawn(), loud)
     };
-    (app, Task::none())
+    // Grab the window Id for the custom titlebar's drag/min/max/close.
+    (app, iced::window::latest().map(Message::WindowReady))
 }
 
 fn tracing_subscriber_init() {
