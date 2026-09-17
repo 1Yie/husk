@@ -198,6 +198,13 @@ impl LlmProvider for OpenAiResponsesProvider {
         let data = sse::data_lines(resp.bytes_stream());
         let mut usage: Option<(u32, u32)> = None;
         let mut done_emitted = false;
+        // devin/swe-2 emits a text-protocol `[call: name(args)]` line inside
+        // `output_text.delta` IN ADDITION TO the structured `function_call`
+        // item — a duplicate that must not reach history (the model parrots
+        // it next turn and the kernel dispatches a bogus empty-name call).
+        // The stripper buffers deltas so a `[call:` split across frames is
+        // still caught.
+        let mut stripper = CallStripper::new();
 
         let stream = data.flat_map(move |res| {
             let items: Vec<anyhow::Result<StreamChunk>> = match res {
@@ -205,12 +212,24 @@ impl LlmProvider for OpenAiResponsesProvider {
                 Ok(d) => {
                     let evs = map_data(&d, &mut usage);
                     evs.into_iter()
-                        .map(|c| {
-                            if matches!(c, StreamChunk::Done { .. }) {
-                                done_emitted = true;
+                        .filter_map(|c| match c {
+                            StreamChunk::ContentDelta(t) => {
+                                stripper.feed(&t).map(StreamChunk::ContentDelta)
                             }
-                            Ok(c)
+                            // A real tool-call item flushes any held text
+                            // (a partial `[call:` echo is dropped — the
+                            // structured call carries the intent).
+                            StreamChunk::ToolCallDelta { .. } => {
+                                stripper.flush_call_line();
+                                Some(c)
+                            }
+                            StreamChunk::Done { .. } => {
+                                done_emitted = true;
+                                Some(c)
+                            }
+                            other => Some(other),
                         })
+                        .map(Ok)
                         .collect()
                 }
             };
@@ -281,6 +300,81 @@ struct RespUsage {
     input_tokens: Option<u32>,
     #[serde(default)]
     output_tokens: Option<u32>,
+}
+
+/// Incremental `[call: …]` stripper — buffers text deltas and removes any
+/// `[call: name(args)]` / `[call: ()]` fragments (a text-protocol tool-call
+/// echo some backends emit alongside the real structured call). Handles a
+/// `[call:` token split across delta boundaries by holding the tail.
+struct CallStripper {
+    /// Text held back because it might be a partial `[call:` prefix or
+    /// inside an unterminated `[call: …` line.
+    hold: String,
+    /// True once we've entered a `[call:` line (until `]` or newline).
+    in_call: bool,
+}
+
+impl CallStripper {
+    fn new() -> Self {
+        Self { hold: String::new(), in_call: false }
+    }
+
+    /// Feed a delta; returns the safe-to-emit text (None = fully held).
+    /// A `[call: …]` line is dropped WITH its surrounding newlines so the
+    /// stripped text doesn't leave blank-line artifacts.
+    fn feed(&mut self, delta: &str) -> Option<String> {
+        self.hold.push_str(delta);
+        let mut out = String::new();
+        let mut chars = self.hold.chars().peekable();
+        let mut consumed = 0usize;
+        while let Some(c) = chars.next() {
+            if self.in_call {
+                consumed += c.len_utf8();
+                if c == ']' || c == '\n' {
+                    self.in_call = false;
+                    // Swallow a trailing newline right after the call line.
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                        consumed += 1;
+                    }
+                }
+                continue;
+            }
+            if c == '[' {
+                let rest: String = chars.clone().take(5).collect();
+                if rest.starts_with("call:") {
+                    self.in_call = true;
+                    consumed += c.len_utf8();
+                    // A `[call:` line usually follows a newline — drop the
+                    // newline we already emitted so no blank line remains.
+                    if out.ends_with('\n') {
+                        out.pop();
+                    }
+                    continue;
+                }
+                // Partial `[call` prefix possibly split across deltas — hold.
+                if "call:".starts_with(&rest) && !rest.is_empty() {
+                    self.hold = self.hold[consumed..].to_string();
+                    return if out.is_empty() { None } else { Some(out) };
+                }
+            }
+            out.push(c);
+            consumed += c.len_utf8();
+        }
+        self.hold = self.hold[consumed..].to_string();
+        if out.is_empty() { None } else { Some(out) }
+    }
+
+    /// Flush any held non-call text (on a real tool call or stream end).
+    /// Returns a marker so the caller can still emit the call chunk.
+    fn flush_call_line(&mut self) -> Option<()> {
+        // Any held text that wasn't a `[call:` is safe to emit — but at a
+        // tool-call boundary we just clear the buffer (the structured call
+        // carries the intent; a partial text echo is dropped).
+        self.hold.clear();
+        self.in_call = false;
+        Some(())
+    }
 }
 
 /// One `data:` payload → zero-or-more `StreamChunk`s.
@@ -358,4 +452,39 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32)>) -> Vec<StreamChunk> {
         _ => {} // output_item.done, content_part.*, created — display-irrelevant
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CallStripper;
+
+    #[test]
+    fn strips_call_lines() {
+        let mut s = CallStripper::new();
+        // A `[call: ()]` + `[call: bash({...})]` echo mixed into text.
+        let out: Vec<String> = [
+            "已创建 ", "\n[call: ()]\n", "[call: bash({\"command\": \"x\"})]\n", "done.",
+        ]
+        .iter()
+        .filter_map(|d| s.feed(d))
+        .collect();
+        assert_eq!(out.concat(), "已创建 done.");
+    }
+
+    #[test]
+    fn strips_call_split_across_deltas() {
+        let mut s = CallStripper::new();
+        // `[call:` split mid-token across two deltas.
+        let a = s.feed("hello [ca");
+        let b = s.feed("ll: foo}]\nworld");
+        assert_eq!(a.unwrap_or_default(), "hello ");
+        assert_eq!(b.unwrap_or_default(), "world");
+    }
+
+    #[test]
+    fn keeps_bracket_text_that_isnt_call() {
+        let mut s = CallStripper::new();
+        let out = s.feed("see [docs] and [more] here");
+        assert_eq!(out.as_deref(), Some("see [docs] and [more] here"));
+    }
 }

@@ -303,6 +303,15 @@ impl Engine {
             }
 
             for call in calls {
+                // Skip degenerate calls — a text-protocol echo can produce an
+                // empty-name or empty-args call that must never dispatch
+                // (it'd surface as `unknown tool ''` and poison history).
+                if call.name.trim().is_empty() {
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(
+                        "skipped a malformed empty tool call".into(),
+                    ));
+                    continue;
+                }
                 tool_calls_run += 1;
                 let _ = io.ui_tx.try_send(UiEvent::ToolCallStarted {
                     name: call.name.clone(),
