@@ -37,6 +37,7 @@ pub struct OpenAiResponsesProvider {
     base_url: String,
     api_key: String,
     extra_headers: Vec<(String, String)>,
+    compat: Option<crate::config::ProviderCompat>,
 }
 
 impl OpenAiResponsesProvider {
@@ -54,7 +55,13 @@ impl OpenAiResponsesProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
             extra_headers: Vec::new(),
+            compat: None,
         })
+    }
+
+    pub fn with_compat(mut self, compat: crate::config::ProviderCompat) -> Self {
+        self.compat = Some(compat);
+        self
     }
 
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -171,6 +178,7 @@ impl LlmProvider for OpenAiResponsesProvider {
         messages: &[ChatMessage],
         tools: Option<serde_json::Value>,
         temperature: f32,
+        reasoning_effort: Option<&str>,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         let (input, instructions) = Self::build_input(messages);
         let mut body = json!({
@@ -183,6 +191,21 @@ impl LlmProvider for OpenAiResponsesProvider {
         }
         if temperature > 0.0 {
             body["temperature"] = json!(temperature);
+        }
+        if let Some(compat) = &self.compat {
+            if let Some(store) = compat.supports_store {
+                body["store"] = json!(store);
+            }
+        }
+        if let Some(effort) = reasoning_effort {
+            let allowed = self
+                .compat
+                .as_ref()
+                .and_then(|c| c.supports_reasoning_effort)
+                .unwrap_or(true);
+            if allowed {
+                body["reasoning"] = json!({ "effort": effort });
+            }
         }
         if let Some(t) = Self::build_tools(tools) {
             body["tools"] = t;
@@ -515,11 +538,27 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32)>) -> Vec<StreamChunk> {
             if let Some(item) = ev.item {
                 if item.kind == "function_call" {
                     // call_id like `list_dir:0#hash` — the *name* is the
-                    // tool, call_id is the correlation id.
+                    // tool, call_id is the correlation id. Some providers
+                    // (devin/swe-2) only send the name inside call_id, so
+                    // fall back to extracting it when `item.name` is absent
+                    // — otherwise the assembler finishes a name="" call and
+                    // the engine reports "malformed empty tool call".
+                    let name = item.name.or_else(|| {
+                        item.call_id
+                            .as_deref()
+                            .and_then(|cid| {
+                                // `name:0#hash` → `name`. A plain `call_…`
+                                // id has no `:` and yields nothing, so we
+                                // don't invent a bogus name from it.
+                                cid.split(':').next().filter(|_| cid.contains(':'))
+                            })
+                            .map(|s| s.to_string())
+                            .filter(|s| !s.is_empty())
+                    });
                     out.push(StreamChunk::ToolCallDelta {
                         index: ev.output_index.unwrap_or(0),
                         id: item.call_id,
-                        name: item.name,
+                        name,
                         args_delta: String::new(),
                     });
                 }
@@ -529,10 +568,19 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32)>) -> Vec<StreamChunk> {
             if let Some(d) = ev.delta {
                 // item_id correlates the args shard to its call — send it as
                 // the id so the assembler merges by output_index slot.
+                // Same name fallback: providers that only name the call via
+                // `name:0#hash` item_id/call_id get it extracted here too.
+                let id = ev.item_id.clone().or(ev.call_id);
+                let name = ev.name.or_else(|| {
+                    id.as_deref()
+                        .and_then(|cid| cid.split(':').next().filter(|_| cid.contains(':')))
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                });
                 out.push(StreamChunk::ToolCallDelta {
                     index: ev.output_index.unwrap_or(0),
-                    id: ev.item_id.clone().or(ev.call_id),
-                    name: ev.name,
+                    id,
+                    name,
                     args_delta: d,
                 });
             }

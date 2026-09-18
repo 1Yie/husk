@@ -20,7 +20,7 @@ async fn mock_replays_script_and_records_calls() {
     mock.script_text("hello world");
 
     let mut stream = mock
-        .chat_stream("test-model", &[ChatMessage::user("hi")], None, 0.5)
+        .chat_stream("test-model", &[ChatMessage::user("hi")], None, 0.5, None)
         .await
         .unwrap();
 
@@ -44,7 +44,7 @@ async fn mock_replays_script_and_records_calls() {
 #[tokio::test]
 async fn mock_without_script_errors() {
     let mock = MockProvider::new();
-    let res = mock.chat_stream("m", &[], None, 0.0).await;
+    let res = mock.chat_stream("m", &[], None, 0.0, None).await;
     assert!(res.is_err());
 }
 
@@ -130,6 +130,7 @@ fn missing_env_marks_unavailable_not_panic() {
         api_key: "env:DEFINITELY_MISSING_VAR_XYZ".into(),
         headers: Default::default(),
         default_model: None,
+        ..Default::default()
     };
     assert!(matches!(
         AppConfig::resolve_secret(&cfg),
@@ -147,6 +148,7 @@ fn factory_builds_openai_compat_and_mock() {
         api_key: "env:STAGE2_FACTORY_KEY".into(),
         headers: Default::default(),
         default_model: None,
+        ..Default::default()
     };
     let p = ProviderFactory::build(&cfg).unwrap();
     assert_eq!(p.id(), "openai_compat");
@@ -157,6 +159,7 @@ fn factory_builds_openai_compat_and_mock() {
         api_key: "".into(),
         headers: Default::default(),
         default_model: None,
+        ..Default::default()
     };
     assert_eq!(ProviderFactory::build(&mock_cfg).unwrap().id(), "mock");
 
@@ -167,6 +170,7 @@ fn factory_builds_openai_compat_and_mock() {
         api_key: "x".into(),
         headers: Default::default(),
         default_model: None,
+        ..Default::default()
     };
     assert!(ProviderFactory::build(&anthro).is_err());
 }
@@ -182,7 +186,7 @@ async fn sampler_synthesizes_done_on_clean_close() {
     let mut chunks = Vec::new();
     sampler
         .sample(
-            SampleRequest { model: "m", temperature: 0.0, tools: None },
+            SampleRequest { model: "m", temperature: 0.0, tools: None, reasoning_effort: None },
             &[ChatMessage::user("x")],
             |c| chunks.push(c.clone()),
             |_| {},
@@ -208,7 +212,7 @@ async fn sampler_retries_retryable_then_fails() {
     let mut events = Vec::new();
     let res = sampler
         .sample(
-            SampleRequest { model: "m", temperature: 0.0, tools: None },
+            SampleRequest { model: "m", temperature: 0.0, tools: None, reasoning_effort: None },
             &[],
             |_| {},
             |e| events.push(format!("{e:?}")),
@@ -232,7 +236,7 @@ async fn sampler_detects_doom_loop() {
     let sampler = Sampler::new(Arc::new(mock));
     let res = sampler
         .sample(
-            SampleRequest { model: "m", temperature: 0.0, tools: None },
+            SampleRequest { model: "m", temperature: 0.0, tools: None, reasoning_effort: None },
             &[],
             |_| {},
             |_| {},

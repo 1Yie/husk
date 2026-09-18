@@ -37,6 +37,7 @@ impl LlmProvider for AnthropicProvider {
         _messages: &[ChatMessage],
         _tools: Option<serde_json::Value>,
         _temperature: f32,
+        _reasoning_effort: Option<&str>,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         Err(Self::unimplemented())
     }

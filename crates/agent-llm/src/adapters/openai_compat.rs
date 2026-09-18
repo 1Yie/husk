@@ -31,6 +31,7 @@ pub struct GenericOpenAiProvider {
     api_key: String,
     /// Extra static headers some backends require (e.g. `HTTP-Referer`).
     extra_headers: Vec<(String, String)>,
+    compat: Option<crate::config::ProviderCompat>,
 }
 
 impl GenericOpenAiProvider {
@@ -48,7 +49,13 @@ impl GenericOpenAiProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
             extra_headers: Vec::new(),
+            compat: None,
         })
+    }
+
+    pub fn with_compat(mut self, compat: crate::config::ProviderCompat) -> Self {
+        self.compat = Some(compat);
+        self
     }
 
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -109,7 +116,7 @@ struct WireFunction {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, serde::Serialize)]
-struct WireUsage {
+pub(crate) struct WireUsage {
     #[serde(default)]
     prompt_tokens: Option<u32>,
     #[serde(default)]
@@ -180,6 +187,7 @@ fn map_data(data: &str, pending_usage: &mut Option<WireUsage>) -> Vec<StreamChun
 
 /// Test-only handle on the wire→normalized mapper (unit-tested without HTTP).
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn map_data_for_test(
     data: &str,
     pending_usage: &mut Option<WireUsage>,
@@ -218,6 +226,7 @@ impl LlmProvider for GenericOpenAiProvider {
         messages: &[ChatMessage],
         tools: Option<serde_json::Value>,
         temperature: f32,
+        reasoning_effort: Option<&str>,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         // `temperature` is optional — some OpenAI-compat backends reject
         // extreme values (verified: devin upstream-errors on temperature=0).
@@ -230,6 +239,21 @@ impl LlmProvider for GenericOpenAiProvider {
         });
         if temperature > 0.0 {
             body["temperature"] = json!(temperature);
+        }
+        if let Some(compat) = &self.compat {
+            if let Some(store) = compat.supports_store {
+                body["store"] = json!(store);
+            }
+        }
+        if let Some(effort) = reasoning_effort {
+            let allowed = self
+                .compat
+                .as_ref()
+                .and_then(|c| c.supports_reasoning_effort)
+                .unwrap_or(true);
+            if allowed {
+                body["reasoning_effort"] = json!(effort);
+            }
         }
         // `stream_options.include_usage` is OpenAI/xAI-specific — some
         // OpenAI-compatible backends (devin, certain proxies) reject the

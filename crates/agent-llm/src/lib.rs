@@ -17,7 +17,9 @@ pub mod sampler;
 pub mod sse;
 pub mod types;
 
-pub use config::{AppConfig, ProviderConfig, ProviderKind};
+pub use config::{
+    AppConfig, ModelConfig, ModelCost, ModelEntry, ProviderCompat, ProviderConfig, ProviderKind,
+};
 pub use factory::ProviderFactory;
 pub use masking::EgressMasker;
 pub use provider::{BoxStream, LlmProvider};

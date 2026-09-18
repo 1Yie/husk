@@ -81,6 +81,7 @@ impl LlmProvider for MockProvider {
         messages: &[ChatMessage],
         tools: Option<serde_json::Value>,
         _temperature: f32,
+        _reasoning_effort: Option<&str>,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         self.calls.lock().unwrap().push((
             model.to_string(),

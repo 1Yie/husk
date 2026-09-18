@@ -54,6 +54,9 @@ impl ProviderFactory {
                 for (k, v) in &cfg.headers {
                     p = p.with_header(k.clone(), v.clone());
                 }
+                if let Some(compat) = &cfg.compat {
+                    p = p.with_compat(compat.clone());
+                }
                 Ok(Arc::new(p))
             }
             ProviderKind::OpenaiResponses => {
@@ -61,6 +64,9 @@ impl ProviderFactory {
                     .map_err(FactoryError::Build)?;
                 for (k, v) in &cfg.headers {
                     p = p.with_header(k.clone(), v.clone());
+                }
+                if let Some(compat) = &cfg.compat {
+                    p = p.with_compat(compat.clone());
                 }
                 Ok(Arc::new(p))
             }

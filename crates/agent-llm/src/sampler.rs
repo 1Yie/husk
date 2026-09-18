@@ -70,6 +70,7 @@ pub struct SampleRequest<'a> {
     pub model: &'a str,
     pub temperature: f32,
     pub tools: Option<&'a serde_json::Value>,
+    pub reasoning_effort: Option<&'a str>,
 }
 
 impl Sampler {
@@ -157,6 +158,10 @@ impl Sampler {
     {
         // Egress mask: scrub secrets from outbound messages (defense in
         // depth — sandbox env sanitize is the first wall, this is second).
+        // Scrub BOTH `content` and `tool_calls[].arguments` — a tool that
+        // read a secret (`.env`, `cat ~/.aws/credentials`) puts it into the
+        // assistant's arguments on the NEXT request, which is the most
+        // common exfiltration path and was previously unmasked.
         let masked: Vec<ChatMessage> = messages
             .iter()
             .map(|m| {
@@ -164,6 +169,12 @@ impl Sampler {
                 if let Some(c) = &m.content {
                     let (s, _) = self.masker.scrub(c);
                     m.content = Some(s);
+                }
+                if let Some(calls) = &mut m.tool_calls {
+                    for call in calls.iter_mut() {
+                        let (s, _) = self.masker.scrub(&call.arguments);
+                        call.arguments = s;
+                    }
                 }
                 m
             })
@@ -176,6 +187,7 @@ impl Sampler {
                 &masked,
                 req.tools.cloned(),
                 req.temperature,
+                req.reasoning_effort,
             )
             .await
             .map_err(|e| classify_transport_error(&e.to_string()))?;
@@ -247,13 +259,27 @@ fn doom_detected(recent: &VecDeque<String>) -> bool {
     let joined: String = recent.iter().cloned().collect();
     let b = joined.as_bytes();
     let n = b.len();
-    // Try periods from small to large; a period p is a doom loop iff
-    // the whole window is periodic with p and repeats ≥3 times.
+    // Three equal tail slices alone isn't a doom loop — markdown lists,
+    // repeated `className=` props, and `- ` bullets legitimately produce
+    // identical 3× tails in a 64-char window on NORMAL output. A real doom
+    // loop is the whole window being ~periodic: ≥85% of positions satisfy
+    // b[i] == b[i-p] AND the tail shows ≥3 clean repeats. The 85% slack
+    // tolerates the window boundary landing mid-repetition.
     for p in 4..=(n / 3) {
-        if n % p != 0 && (n - 1) % p != 0 {
-            // near-periodic tail is fine too; check by sliding compare below
+        // Tail must show ≥3 verbatim repeats first — the cheap check.
+        if b[n - p..] != b[n - 2 * p..n - p]
+            || b[n - 2 * p..n - p] != b[n - 3 * p..n - 2 * p]
+        {
+            continue;
         }
-        if b[n - p..] == b[n - 2 * p..n - p] && b[n - 2 * p..n - p] == b[n - 3 * p..n - 2 * p] {
+        let mut matches = 0usize;
+        for i in p..n {
+            if b[i] == b[i - p] {
+                matches += 1;
+            }
+        }
+        // matches/(n-p) ≥ 85% → the window is periodic with p.
+        if matches * 20 >= (n - p) * 17 {
             return true;
         }
     }
