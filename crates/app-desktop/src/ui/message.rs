@@ -1,6 +1,7 @@
 //! The `Message` enum — the only way `App` state changes. UI intents +
 //! wrapped kernel events + the animation tick.
 
+
 use iced::widget::scrollable;
 
 /// Custom-titlebar window control.
@@ -18,9 +19,16 @@ pub enum Message {
     InputChanged(String),
     Submit,
     Steer,
+    /// Abort the in-flight turn (Esc / ✕ button) — writes the session's
+    /// cancel flag directly so it isn't queued behind `run_turn`.
+    Cancel,
     Approve(usize),
     Deny(usize),
     SelectSession(i64),
+    /// Async history rebuild for `SelectSession` finished — carries the
+    /// freshly-built `SessionView` (boxed: it's a big struct) + the scroll
+    /// anchor to snap after install.
+    SessionLoaded(i64, Box<crate::ui::state::SessionView>),
     NewSession,
     ToggleReasoning(usize),
     ToggleStep(usize),
@@ -35,6 +43,16 @@ pub enum Message {
     WindowReady(Option<iced::window::Id>),
     /// Titlebar button — drag on press / minimize / toggle-maximize / close.
     WindowAction(WinAction),
+
+    // ---- workspace intents ----
+    /// Open system directory picker dialog.
+    OpenWorkspace,
+    /// Folder selected from dialog.
+    WorkspaceSelected(std::path::PathBuf),
+    /// Switch directly to a workspace path (e.g. from recent list).
+    SwitchWorkspace(std::path::PathBuf),
+    /// No-operation (e.g. dialog cancelled).
+    Noop,
 
     // ---- frame ----
     /// ~60Hz pump — drains the kernel `std::sync::mpsc` + animates dots.

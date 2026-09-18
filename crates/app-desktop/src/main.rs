@@ -6,7 +6,6 @@
 //! 60Hz `Subscription` tick. `--mock` boots with static demo state.
 
 mod bridge;
-mod throttler;
 mod ui;
 
 use iced::Task;
@@ -32,20 +31,28 @@ fn theme(_app: &App) -> iced::Theme {
     iced::Theme::Dark
 }
 
-fn title(_app: &App) -> String {
-    "agent-rs".into()
+fn title(app: &App) -> String {
+    if app.workspace_name.is_empty() {
+        "agent-rs".into()
+    } else {
+        format!("agent-rs — {}", app.workspace_name)
+    }
 }
 
 /// iced boot — runs once, returns `(App, Task)`. `--mock` seeds demo state;
 /// otherwise boots the SessionManager (resumes the most recent session or
-/// starts fresh).
+/// starts fresh in the target workspace).
 fn boot() -> (App, Task<Message>) {
     let mock = std::env::args().any(|a| a == "--mock");
+    let cli_dir = std::env::args()
+        .skip(1)
+        .find(|a| !a.starts_with('-'))
+        .map(std::path::PathBuf::from);
     let app = if mock {
         App::demo()
     } else {
         let (_b, loud) = agent_sandbox::detect_backend();
-        App::boot(bridge::SessionManager::spawn(), loud)
+        App::boot(bridge::SessionManager::spawn_at(cli_dir), loud)
     };
     // Grab the window Id for the custom titlebar's drag/min/max/close.
     (app, iced::window::latest().map(Message::WindowReady))

@@ -13,7 +13,11 @@ agent-sandbox = { path = "../agent-sandbox" }
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-iced = { version = "0.14", features = ["wgpu", "tokio", "markdown", "svg", "highlighter"] }
+iced = { version = "0.14", features = ["wgpu", "tokio", "markdown", "svg", "highlighter", "advanced"] }
+# Spring/easing animations for UI state — replaces hand-rolled tick-driven
+# animations; every Animated<T> is advanced by the shared 60Hz Message::Tick.
+iced_anim = "0.3"
 # Open markdown links in the system browser (link click → open::that).
 open = "5"
 serde_json.workspace = true
+rfd = "0.15"

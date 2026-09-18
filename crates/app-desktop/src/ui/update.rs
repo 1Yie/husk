@@ -4,14 +4,12 @@
 //! sidebar preview/running state — a switched-away turn still progresses).
 
 use agent_ipc::{UiCommand, UiEvent};
-use iced::widget::{operation, scrollable};
-#[allow(unused_imports)] use scrollable as _scrollable;
 use iced::Task;
 
+use super::animation;
 use super::message::Message;
 use super::state::{
-    App, ApprovalRow, DiffKind, DiffLine, MessageRow, Role, SessionView, StepRow,
-    StepState, StreamItem,
+    App, ApprovalRow, MessageRow, Role, SessionView, StepRow, StepState, StreamItem,
 };
 
 impl App {
@@ -23,16 +21,37 @@ impl App {
             }
             Message::Submit => self.submit(false),
             Message::Steer => self.submit(true),
+            Message::Cancel => {
+                // Write the session's cancel flag directly — bypasses the
+                // command pump so a Cancel isn't queued behind `run_turn`.
+                if let Some(mgr) = self.mgr.as_mut() {
+                    if let Some(h) = mgr.handle_mut(mgr.active_id) {
+                        h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        h.running = false;
+                    }
+                }
+                Task::none()
+            }
             Message::Approve(id) => {
+                // Echo the pending request_id so the kernel only consumes a
+                // verdict meant for THIS approval (P1-a).
+                let rid = self.active_view()
+                    .and_then(|v| v.pending.as_ref())
+                    .map(|p| p.request_id)
+                    .unwrap_or(0);
                 if let Some(h) = self.mgr.as_ref().and_then(|m| m.active()) {
-                    *h.decision.lock().unwrap() = Some(true);
+                    *h.decision.lock().unwrap() = Some((rid, true));
                 }
                 self.resolve_pending(id, StepState::Success);
                 Task::none()
             }
             Message::Deny(id) => {
+                let rid = self.active_view()
+                    .and_then(|v| v.pending.as_ref())
+                    .map(|p| p.request_id)
+                    .unwrap_or(0);
                 if let Some(h) = self.mgr.as_ref().and_then(|m| m.active()) {
-                    *h.decision.lock().unwrap() = Some(false);
+                    *h.decision.lock().unwrap() = Some((rid, false));
                 }
                 self.resolve_pending(id, StepState::Denied);
                 Task::none()
@@ -41,16 +60,31 @@ impl App {
                 if let Some(mgr) = self.mgr.as_mut() {
                     mgr.open_session(id);
                     self.active_id = id;
-                    self.user_scrolled = false;
-                    // Rebuild the stream from the persisted history if this
-                    // session's view was never populated (fresh resume).
+                    self.scroll.reset();
+                    // Rebuild the stream from persisted history off-thread —
+                    // `view_from_history` markdown-parses every message, which
+                    // is an O(history) main-thread stall on big sessions.
+                    // Show a loading surface until `SessionLoaded` lands.
                     if !self.views.contains_key(&id) {
                         if let Some(hist) = mgr.store_history(id) {
-                            self.views.insert(id, super::state::view_from_history(&hist));
+                            self.loading_session = Some(id);
+                            return Task::perform(
+                                async move { super::state::view_from_history(&hist) },
+                                move |view| Message::SessionLoaded(id, Box::new(view)),
+                            );
                         }
                     }
                 }
-                operation::snap_to_end(self.stream_scroll.clone())
+                Task::none()
+            }
+            // The async history rebuild finished — install the view and
+            // scroll to the latest message.
+            Message::SessionLoaded(id, view) => {
+                if self.loading_session == Some(id) {
+                    self.loading_session = None;
+                }
+                self.views.insert(id, *view);
+                self.scroll.snap_to_bottom()
             }
             Message::NewSession => {
                 if let Some(mgr) = self.mgr.as_mut() {
@@ -60,6 +94,57 @@ impl App {
                 }
                 Task::none()
             }
+            Message::OpenWorkspace => {
+                Task::perform(
+                    async {
+                        let handle = rfd::AsyncFileDialog::new()
+                            .set_title("Open Workspace Directory")
+                            .pick_folder()
+                            .await;
+                        handle.map(|h| h.path().to_path_buf())
+                    },
+                    |res| match res {
+                        Some(path) => Message::WorkspaceSelected(path),
+                        None => Message::Noop,
+                    },
+                )
+            }
+            Message::WorkspaceSelected(path) | Message::SwitchWorkspace(path) => {
+                let hist_to_load = if let Some(mgr) = self.mgr.as_mut() {
+                    if let Ok(()) = mgr.switch_workspace(path) {
+                        self.workspace_root = mgr.workspace_root.clone();
+                        self.workspace_name = self.workspace_root
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| self.workspace_root.to_string_lossy().to_string());
+                        self.recent_workspaces = mgr.recent_workspaces();
+                        self.active_id = mgr.active_id;
+                        self.views.clear();
+                        let aid = self.active_id;
+                        mgr.store_history(aid)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                self.refresh_sidebar();
+                self.stats.git_branch = super::state::git_branch(&self.workspace_root);
+                self.scroll.reset();
+
+                if let Some(hist) = hist_to_load {
+                    let aid = self.active_id;
+                    self.loading_session = Some(aid);
+                    return Task::perform(
+                        async move { super::state::view_from_history(&hist) },
+                        move |view| Message::SessionLoaded(aid, Box::new(view)),
+                    );
+                }
+                Task::none()
+            }
+            Message::Noop => Task::none(),
             // `i` is a stream index — toggle only lands on the right kind.
             Message::ToggleReasoning(i) => {
                 if let Some(StreamItem::Message(m)) = self.view_mut().stream.get_mut(i) {
@@ -74,7 +159,7 @@ impl App {
                 Task::none()
             }
             Message::Scrolled(vp) => {
-                self.user_scrolled = vp.relative_offset().y < 0.98;
+                self.scroll.on_scroll(vp);
                 Task::none()
             }
             Message::LinkClicked(uri) => {
@@ -132,17 +217,44 @@ impl App {
                 Task::none()
             }
             Message::Tick => {
-                self.tick = self.tick.wrapping_add(1);
+                self.tick_count = self.tick_count.wrapping_add(1);
+                let now = std::time::Instant::now();
+                // Advance every looping pulse (loading dots + streaming
+                // carets) — iced_anim `Animated` values tick forward and
+                // flip targets to breathe forever.
+                for view in self.views.values_mut() {
+                    for p in view.dot_pulses.iter_mut() {
+                        animation::pulse_tick(p, now);
+                    }
+                    for item in view.stream.iter_mut() {
+                        if let StreamItem::Message(m) = item {
+                            animation::pulse_tick(&mut m.caret, now);
+                        }
+                    }
+                }
                 // Drain the tagged kernel queue — route each event to its
                 // session's view (active or background).
                 let events: Vec<(i64, UiEvent)> = self
-                    .mgr
+                    .event_rx
                     .as_ref()
-                    .map(|m| m.event_rx.try_iter().collect())
+                    .map(|rx| rx.try_iter().collect())
                     .unwrap_or_default();
                 let mut tasks = Vec::new();
                 for (sid, ev) in events {
                     tasks.push(self.apply_session_event(sid, ev));
+                }
+                // Flush the SSE delta buffers ONCE for the frame — deltas
+                // accumulated all tick now reparse + land together. Active
+                // session snaps to the new bottom; background sessions just
+                // keep their view in sync for the next switch.
+                let mut landed_active = false;
+                for (sid, view) in self.views.iter_mut() {
+                    if flush_deltas(view) && *sid == self.active_id {
+                        landed_active = true;
+                    }
+                }
+                if landed_active {
+                    tasks.push(self.scroll.snap_if_following());
                 }
                 // Refresh sidebar previews (running markers update live).
                 self.refresh_sidebar();
@@ -161,10 +273,9 @@ impl App {
         self.sessions = mgr
             .sidebar_rows()
             .into_iter()
-            .map(|(id, title, preview, active, running)| super::state::SessionRow {
+            .map(|(id, title, _preview, active, running)| super::state::SessionRow {
                 id,
                 title,
-                preview: if running { "⟳ running…".into() } else { preview },
                 active,
                 running,
                 timestamp: String::new(),
@@ -213,16 +324,14 @@ impl App {
         // Only the visible session drives the stats bar / scroll pin.
         if sid == self.active_id {
             if let UiEvent::StateChanged(s) = &ev {
-                self.stats.agent_state = format!("{s:?}");
+                // `label()` not `{:?}` — Debug would dump the whole
+                // `diff_summary` into the status bar on approvals.
+                self.stats.agent_state = s.label();
             }
             if let UiEvent::Usage { prompt_tokens, completion_tokens } = &ev {
                 self.stats.tokens_used = prompt_tokens + completion_tokens;
             }
-            if self.user_scrolled {
-                Task::none()
-            } else {
-                operation::snap_to_end(self.stream_scroll.clone())
-            }
+            Task::none()
         } else {
             Task::none()
         }
@@ -245,6 +354,22 @@ impl App {
 
 /// Apply a `UiEvent` to one session's view — the shared per-session logic.
 fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
+    // SSE↔frame decoupling: streaming deltas ACCUMULATE into the buffer and
+    // flush once per `Tick`; every structural event flushes first so item
+    // order stays true (a tool capsule never lands ahead of its prose).
+    match ev {
+        UiEvent::TextDelta(t) => {
+            v.pending_text.push_str(t);
+            return;
+        }
+        UiEvent::ReasoningDelta(t) => {
+            v.pending_reasoning.push_str(t);
+            return;
+        }
+        _ => {
+            flush_deltas(v);
+        }
+    }
     match ev {
         UiEvent::StateChanged(s) => {
             v.is_active = s.is_active();
@@ -256,8 +381,7 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                 text.clone(),
             )));
         }
-        UiEvent::TextDelta(t) => append_last(v, t, false),
-        UiEvent::ReasoningDelta(t) => append_last(v, t, true),
+        UiEvent::TextDelta(_) | UiEvent::ReasoningDelta(_) => unreachable!(),
         UiEvent::AssistantMessage(_) => {
             if let Some(StreamItem::Message(m)) = v.stream.last_mut() {
                 m.streaming = false;
@@ -292,6 +416,36 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                         s.state = if *ok { StepState::Success } else { StepState::Error };
                         // Full output → expandable body, not the one-liner.
                         s.output = content.clone();
+                        // If the tool produced a unified diff (fuzzy_patch /
+                        // write tools) and the Ask path never stashed one on
+                        // the row (e.g. auto-allowed, or approval resolved
+                        // before expand), parse it now so the expanded body
+                        // shows colored +/- lines instead of raw text.
+                        if s.diff_lines.is_empty()
+                            && (content.contains("@@") || content.contains("+++"))
+                        {
+                            // The result text prefixes the diff with a
+                            // "patched <path> …" header line — start parsing
+                            // at the first real diff marker so that header
+                            // isn't rendered as a bogus context row.
+                            let body_start = content
+                                .lines()
+                                .position(|l| {
+                                    l.starts_with("@@")
+                                        || l.starts_with("--- ")
+                                        || l.starts_with("diff ")
+                                })
+                                .unwrap_or(0);
+                            let body: String = content
+                                .lines()
+                                .skip(body_start)
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let parsed = parse_unified_diff(&body);
+                            if !parsed.is_empty() {
+                                s.diff_lines = parsed;
+                            }
+                        }
                         // No args preview? fall back to a flat one-line
                         // output summary (newlines collapsed, no wrapping).
                         if s.detail.is_empty() {
@@ -308,7 +462,7 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                 }
             }
         }
-        UiEvent::ApprovalRequested { tool_name, diff, fuzzy } => {
+        UiEvent::ApprovalRequested { request_id, tool_name, diff, fuzzy } => {
             let mut sid = v.stream.len().saturating_sub(1);
             for (i, item) in v.stream.iter_mut().enumerate().rev() {
                 if let StreamItem::Tool(s) = item {
@@ -322,6 +476,7 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
             let diff_lines = parse_unified_diff(diff);
             v.pending = Some(ApprovalRow {
                 step_id: sid,
+                request_id: *request_id,
                 tool_name: tool_name.clone(),
                 title: format!("Approve {tool_name}"),
                 diff_text: diff.clone(),
@@ -344,6 +499,25 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
             )));
         }
     }
+}
+
+/// Flush the SSE delta buffers into the stream — runs once per `Tick`
+/// (and before every structural event) so markdown re-parses O(1/frame)
+/// instead of O(1/token). Returns true when content actually landed — the
+/// caller uses it to fire exactly one `snap_to_end` per frame.
+fn flush_deltas(v: &mut SessionView) -> bool {
+    let mut landed = false;
+    if !v.pending_reasoning.is_empty() {
+        let d = std::mem::take(&mut v.pending_reasoning);
+        append_last(v, &d, true);
+        landed = true;
+    }
+    if !v.pending_text.is_empty() {
+        let d = std::mem::take(&mut v.pending_text);
+        append_last(v, &d, false);
+        landed = true;
+    }
+    landed
 }
 
 /// Append a delta to the streaming agent row — the LAST stream item if it's
@@ -371,44 +545,7 @@ fn append_last(v: &mut SessionView, delta: &str, reasoning: bool) {
     }
 }
 
-/// Split a unified diff into `DiffLine` rows.
-fn parse_unified_diff(diff: &str) -> Vec<DiffLine> {
-    let mut out = Vec::new();
-    let (mut old_ln, mut new_ln) = (0i32, 0i32);
-    for line in diff.lines() {
-        if line.starts_with("@@") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                old_ln = parts[1].trim_start_matches('-').split(',').next()
-                    .and_then(|s| s.parse().ok()).unwrap_or(0);
-                new_ln = parts[2].trim_start_matches('+').split(',').next()
-                    .and_then(|s| s.parse().ok()).unwrap_or(0);
-            }
-            continue;
-        }
-        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("diff ") {
-            continue;
-        }
-        let (kind, o, n) = if line.starts_with('+') {
-            let v = (DiffKind::Add, -1, new_ln);
-            new_ln += 1;
-            v
-        } else if line.starts_with('-') {
-            let v = (DiffKind::Delete, old_ln, -1);
-            old_ln += 1;
-            v
-        } else {
-            let v = (DiffKind::Context, old_ln, new_ln);
-            old_ln += 1;
-            new_ln += 1;
-            v
-        };
-        out.push(DiffLine {
-            kind,
-            content: line.chars().skip(1).collect(),
-            old_lineno: o,
-            new_lineno: n,
-        });
-    }
-    out
-}
+// `parse_unified_diff` lives in `state.rs` — shared by the live
+// `ToolCallFinished`/`ApprovalRequested` path and `view_from_history`'s
+// persisted-result replay.
+use super::state::parse_unified_diff;

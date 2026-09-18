@@ -7,13 +7,13 @@
 use std::collections::HashMap;
 
 use crate::bridge::SessionManager;
+use crate::ui::animation::{self, Pulse};
 
 /// One sidebar session entry.
 #[derive(Debug, Clone)]
 pub struct SessionRow {
     pub id: i64,
     pub title: String,
-    pub preview: String,
     pub active: bool,
     pub running: bool,
     /// Relative time label — reserved for the session-browser detail pass.
@@ -46,6 +46,10 @@ pub struct MessageRow {
     /// The read-only editor content for selectable mode — kept in sync with
     /// `text` (rebuilt on toggle + on append while selectable).
     pub editor: iced::widget::text_editor::Content,
+    /// Streaming-caret pulse — an `iced_anim` looping `Animated<f32>` that
+    /// breathes the `▮` glyph's alpha while `streaming` is true. Advanced by
+    /// the shared `Message::Tick` pump.
+    pub caret: Pulse,
 }
 
 impl MessageRow {
@@ -61,6 +65,7 @@ impl MessageRow {
             thinking_done: false,
             selectable: false,
             editor,
+            caret: animation::pulse(500),
         }
     }
 
@@ -133,6 +138,9 @@ pub enum DiffKind {
 #[allow(dead_code)]
 pub struct ApprovalRow {
     pub step_id: usize,
+    /// Correlation id from `UiEvent::ApprovalRequested` — echoed back in
+    /// `ToolDecision` so a stale click can't approve a different tool (P1-a).
+    pub request_id: u64,
     pub tool_name: String,
     pub title: String,
     pub diff_text: String,
@@ -162,15 +170,18 @@ pub struct StatsRow {
 /// One entry in the rendered stream — an interleaved sequence of chat
 /// messages and tool-call capsules, so the tool chain shows WHERE each call
 /// happened in the turn (Codex-style) instead of a detached bottom strip.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StreamItem {
     Message(MessageRow),
     Tool(StepRow),
 }
 
 /// One session's rendered state — the stream, steps, and pending approval
-/// the UI shows when this session is active.
-#[derive(Debug, Default)]
+/// the UI shows when this session is active. `Clone` so it can ride inside
+/// `Message::SessionLoaded` (Message must be Clone for widget callbacks);
+/// `Send` for the off-thread `view_from_history` rebuild, though it stays
+/// `!Sync` via `markdown::Item`'s interior mutability.
+#[derive(Debug, Clone)]
 pub struct SessionView {
     /// Ordered stream: user/agent/system messages + tool capsules interleaved.
     pub stream: Vec<StreamItem>,
@@ -182,16 +193,57 @@ pub struct SessionView {
     #[allow(dead_code)]
     pub changed_files: Vec<String>,
     pub is_active: bool,
+    /// Loading-dot pulses — three `iced_anim` looping `Animated<f32>`s,
+    /// phase-offset so the dots wave. Advanced by `Message::Tick`.
+    pub dot_pulses: Vec<Pulse>,
+    /// SSE batching buffer — `TextDelta`/`ReasoningDelta` accumulate here
+    /// and flush into the stream ONCE per `Tick` instead of re-parsing
+    /// markdown per token. Decouples the SSE clock from the frame clock.
+    pub pending_text: String,
+    pub pending_reasoning: String,
+}
+
+impl Default for SessionView {
+    fn default() -> Self {
+        // Three dots, each a looping pulse phase-offset by a third of the
+        // cycle so they read as a traveling wave rather than a sync blink.
+        let dot_pulses = (0..3)
+            .map(|i| {
+                let mut p = animation::pulse(600);
+                p.settle_at(i as f32 * 0.33);
+                p
+            })
+            .collect();
+        Self {
+            stream: Vec::new(),
+            pending: None,
+            pending_diff: Vec::new(),
+            changed_files: Vec::new(),
+            is_active: false,
+            dot_pulses,
+            pending_text: String::new(),
+            pending_reasoning: String::new(),
+        }
+    }
 }
 
 /// The root application state.
 pub struct App {
     /// Multi-session kernel — actors, persistence, the tagged event queue.
     pub mgr: Option<SessionManager>,
+    /// The `(session_id, UiEvent)` event tap — split out of `spawn()` so
+    /// the Tick drain owns it (and `app-tauri` can move its own copy into a
+    /// forwarder thread). `Option` only for the `--mock` demo path.
+    pub event_rx: Option<std::sync::mpsc::Receiver<(i64, agent_ipc::UiEvent)>>,
     /// Per-session rendered state — switching just points `active_id` here.
     pub views: HashMap<i64, SessionView>,
     /// The session currently shown in the stream.
     pub active_id: i64,
+    /// Session whose history is being rebuilt off-thread — the stream shows
+    /// a loading surface until `SessionLoaded` installs it.
+    pub loading_session: Option<i64>,
+    /// Tick counter — drives the braille spinner (`spinner_at`).
+    pub tick_count: u64,
     /// Sidebar rows (refreshed from `mgr.sidebar_rows()` on tick).
     pub sessions: Vec<SessionRow>,
     /// Stats bar — global to the window (active provider + active session's tokens).
@@ -200,28 +252,33 @@ pub struct App {
     pub sandbox_unsafe: bool,
     /// Composer text.
     pub input: String,
-    /// Tick counter driving the loading-dots / caret animation.
-    pub tick: u64,
-    /// Scroll anchor for the stream's pin-to-bottom.
-    pub stream_scroll: iced::widget::Id,
-    /// Whether the user has scrolled away from the bottom (stop auto-pin).
-    pub user_scrolled: bool,
+    /// Current workspace root directory.
+    pub workspace_root: std::path::PathBuf,
+    /// Human-friendly workspace name (folder name).
+    pub workspace_name: String,
+    /// Recently opened workspaces.
+    pub recent_workspaces: Vec<crate::bridge::RecentWorkspace>,
+    /// The stream's scroll controller — follow/detach + snap decisions.
+    pub scroll: super::chat::scroll::ScrollController,
     /// The OS window id — set on `WindowReady`, drives the custom titlebar's
     /// drag/min/max/close.
     pub window_id: Option<iced::window::Id>,
 }
 
 impl App {
-    /// Boot the live multi-session kernel.
-    pub fn boot(mgr: SessionManager, sandbox_unsafe: bool) -> Self {
+    /// Boot the live multi-session kernel — takes the manager + its event
+    /// receiver (the pair `SessionManager::spawn()` returns).
+    pub fn boot(
+        (mgr, event_rx): (SessionManager, std::sync::mpsc::Receiver<(i64, agent_ipc::UiEvent)>),
+        sandbox_unsafe: bool,
+    ) -> Self {
         let active_id = mgr.active_id;
         let sessions = mgr
             .sidebar_rows()
             .into_iter()
-            .map(|(id, title, preview, active, running)| SessionRow {
+            .map(|(id, title, _preview, active, running)| SessionRow {
                 id,
                 title,
-                preview,
                 active,
                 running,
                 timestamp: String::new(),
@@ -233,11 +290,24 @@ impl App {
             mgr.model_name.clone(),
             git_branch(&mgr.workspace_root),
         );
+        let workspace_root = mgr.workspace_root.clone();
+        let workspace_name = workspace_root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| workspace_root.to_string_lossy().to_string());
+        let recent_workspaces = mgr.recent_workspaces();
         Self {
             mgr: Some(mgr),
+            event_rx: Some(event_rx),
             views: HashMap::new(),
             active_id,
+            loading_session: None,
+            tick_count: 0,
             sessions,
+            workspace_root,
+            workspace_name,
+            recent_workspaces,
             stats: StatsRow {
                 agent_state: "Idle".into(),
                 permission_mode: "default".into(),
@@ -249,9 +319,7 @@ impl App {
             },
             sandbox_unsafe,
             input: String::new(),
-            tick: 0,
-            stream_scroll: iced::widget::Id::unique(),
-            user_scrolled: false,
+            scroll: super::chat::scroll::ScrollController::default(),
             window_id: None,
         }
     }
@@ -289,6 +357,7 @@ impl App {
             ],
             pending: Some(ApprovalRow {
                 step_id: 1,
+                request_id: 1,
                 tool_name: "fuzzy_patch".into(),
                 title: "Edit crates/agent-kernel/src/engine.rs".into(),
                 diff_text: String::new(),
@@ -302,14 +371,18 @@ impl App {
             ],
             changed_files: vec!["crates/agent-kernel/src/engine.rs".into()],
             is_active: false,
+            ..Default::default()
         });
         Self {
             mgr: None,
+            event_rx: None,
             views,
             active_id: 0,
+            loading_session: None,
+            tick_count: 0,
             sessions: vec![
-                SessionRow { id: 0, title: "fix borrow error".into(), preview: "Reading engine.rs…".into(), active: true, running: false, timestamp: "2m".into() },
-                SessionRow { id: 1, title: "add streaming test".into(), preview: "fuzzy_patch applied".into(), active: false, running: false, timestamp: "1h".into() },
+                SessionRow { id: 0, title: "fix borrow error".into(), active: true, running: false, timestamp: "2m".into() },
+                SessionRow { id: 1, title: "add streaming test".into(), active: false, running: false, timestamp: "1h".into() },
             ],
             stats: StatsRow {
                 tokens_used: 12_400,
@@ -324,9 +397,16 @@ impl App {
             },
             sandbox_unsafe: false,
             input: String::new(),
-            tick: 0,
-            stream_scroll: iced::widget::Id::unique(),
-            user_scrolled: false,
+            workspace_root: std::path::PathBuf::from("/home/ichiyo/Workspace/agent-rs"),
+            workspace_name: "agent-rs".into(),
+            recent_workspaces: vec![
+                crate::bridge::RecentWorkspace {
+                    path: std::path::PathBuf::from("/home/ichiyo/Workspace/agent-rs"),
+                    name: "agent-rs".into(),
+                    last_opened: 0,
+                },
+            ],
+            scroll: super::chat::scroll::ScrollController::default(),
             window_id: None,
         }
     }
@@ -354,7 +434,7 @@ fn strip_call_echo_ui(text: &str) -> String {
 
 /// Current git branch for the workspace — `git branch --show-current`,
 /// empty when not a repo or git is unavailable.
-fn git_branch(root: &std::path::Path) -> String {
+pub(crate) fn git_branch(root: &std::path::Path) -> String {
     std::process::Command::new("git")
         .args(["branch", "--show-current"])
         .current_dir(root)
@@ -394,6 +474,20 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
             let call_id = m.tool_call_id.clone().unwrap_or_default();
             let name = id_to_name.get(&call_id).cloned().unwrap_or_else(|| "tool".into());
             let content = m.content.clone().unwrap_or_default();
+            // Replay a unified diff the same way the live path does — a
+            // persisted patch result still contains `@@`/`+`/`-` lines, so
+            // parse them into `diff_lines` for the colored +/- view (the
+            // capsule falls back to raw output when empty).
+            let diff_lines = if content.contains("@@") || content.contains("+++") {
+                let body_start = content
+                    .lines()
+                    .position(|l| l.starts_with("@@") || l.starts_with("--- ") || l.starts_with("diff "))
+                    .unwrap_or(0);
+                let body: String = content.lines().skip(body_start).collect::<Vec<_>>().join("\n");
+                parse_unified_diff(&body)
+            } else {
+                Vec::new()
+            };
             v.stream.push(StreamItem::Tool(StepRow {
                 id: i,
                 name,
@@ -401,7 +495,7 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
                 detail: content.lines().next().unwrap_or("").chars().take(60).collect(),
                 expanded: false,
                 output: content,
-                    diff_lines: vec![],
+                diff_lines,
             }));
             continue;
         }
@@ -420,34 +514,12 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
         if text.trim().is_empty() && m.tool_calls.is_none() {
             continue;
         }
-        // An assistant message carrying tool_calls contributes a capsule per
-        // call so the chain shows what was invoked, in order.
-        if let Some(calls) = &m.tool_calls {
-            for c in calls {
-                // Detail = the tool's target arg (path/command/pattern) so a
-                // replayed capsule shows *what* it ran, like the live one.
-                let detail = serde_json::from_str::<serde_json::Value>(&c.arguments)
-                    .ok()
-                    .and_then(|v| {
-                        ["path", "command", "pattern", "query", "file", "filename"]
-                            .iter()
-                            .find_map(|k| v.get(k).and_then(|x| x.as_str()).map(|s| s.to_string()))
-                    })
-                    .unwrap_or_default()
-                    .chars()
-                    .take(60)
-                    .collect();
-                v.stream.push(StreamItem::Tool(StepRow {
-                    id: i,
-                    name: c.name.clone(),
-                    state: StepState::Success,
-                    detail,
-                    expanded: false,
-                    output: String::new(),
-                    diff_lines: vec![],
-                }));
-            }
-        }
+        // NOTE: assistant `tool_calls` do NOT get their own capsule here —
+        // the matching `Role::Tool` result message (rendered above) already
+        // produces the finished capsule with the real output. Emitting one
+        // per tool_call too would double-render every call: an empty
+        // name-only capsule (no output) followed by the real result capsule.
+        // `tool_calls` are only read during the id→name pre-scan.
         if text.trim().is_empty() {
             continue;
         }
@@ -456,4 +528,49 @@ pub fn view_from_history(history: &[agent_llm::types::ChatMessage]) -> SessionVi
         v.stream.push(StreamItem::Message(row));
     }
     v
+}
+
+/// Split a unified diff into `DiffLine` rows — shared by the live
+/// `ToolCallFinished`/`ApprovalRequested` path (update.rs) and
+/// `view_from_history`'s persisted-result replay so both render the same
+/// colored +/- view.
+pub fn parse_unified_diff(diff: &str) -> Vec<DiffLine> {
+    let mut out = Vec::new();
+    let (mut old_ln, mut new_ln) = (0i32, 0i32);
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                old_ln = parts[1].trim_start_matches('-').split(',').next()
+                    .and_then(|s| s.parse().ok()).unwrap_or(0);
+                new_ln = parts[2].trim_start_matches('+').split(',').next()
+                    .and_then(|s| s.parse().ok()).unwrap_or(0);
+            }
+            continue;
+        }
+        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("diff ") {
+            continue;
+        }
+        let (kind, o, n) = if line.starts_with('+') {
+            let v = (DiffKind::Add, -1, new_ln);
+            new_ln += 1;
+            v
+        } else if line.starts_with('-') {
+            let v = (DiffKind::Delete, old_ln, -1);
+            old_ln += 1;
+            v
+        } else {
+            let v = (DiffKind::Context, old_ln, new_ln);
+            old_ln += 1;
+            new_ln += 1;
+            v
+        };
+        out.push(DiffLine {
+            kind,
+            content: line.chars().skip(1).collect(),
+            old_lineno: o,
+            new_lineno: n,
+        });
+    }
+    out
 }

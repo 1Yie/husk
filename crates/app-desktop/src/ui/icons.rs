@@ -10,7 +10,10 @@ use iced::widget::svg;
 use iced::{Color, Element, Length};
 
 /// The icon names we ship — one per vendored file in `assets/icons/`.
+/// The full set is vendored up-front; unused variants are reserved for
+/// surfaces not yet built, so this stays a stable icon vocabulary.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum Icon {
     Message,     // session / chat
     Wrench,      // tool call
