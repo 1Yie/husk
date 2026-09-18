@@ -38,7 +38,14 @@ async fn main() -> anyhow::Result<()> {
     // resolves from `config.toml` — same path as the desktop `--live`.
     let app_cfg = AppConfig::load(None).unwrap_or_default();
     let (provider, model) = resolve_provider(&app_cfg);
-    eprintln!("[cli] provider model={model}");
+    let mentry = app_cfg
+        .active_provider
+        .as_ref()
+        .and_then(|p| app_cfg.providers.get(p))
+        .and_then(|p| p.find_model(&model));
+    let thinking_level_map = mentry
+        .and_then(|m| m.detailed())
+        .and_then(|d| d.thinking_level_map.clone());
     let cfg = SessionConfig {
         workspace_root: workspace,
         provider,
@@ -46,6 +53,8 @@ async fn main() -> anyhow::Result<()> {
         temperature: 1.0,
         permission_mode: "auto".into(),
         track_dirty: false,
+        thinking_level: None,
+        thinking_level_map,
     };
     let (mut actor, channels) = SessionActor::spawn(cfg);
     let cmd_tx = actor.command_sender();
