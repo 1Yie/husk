@@ -1,0 +1,23 @@
+[package]
+name = "app-tauri"
+version = "0.1.0"
+edition = "2021"
+description = "Tauri desktop shell — React + Tailwind frontend over the shared kernel wiring"
+build = "build.rs"
+
+[[bin]]
+name = "app-tauri"
+path = "backend/main.rs"
+
+[dependencies]
+agent-kernel = { path = "../agent-kernel" }
+agent-ipc = { path = "../agent-ipc" }
+agent-llm = { path = "../agent-llm" }
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+rfd = "0.15"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
