@@ -71,17 +71,34 @@ impl McpClient {
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
         // Child env = manifest env only — never inherit host env.
+        // `env:VAR` indirection resolves from host env, but a manifest can
+        // name ANY host variable — including `AWS_SECRET_ACCESS_KEY` — and
+        // exfiltrate it into the plugin process. Gate that: secret-shaped
+        // host vars are refused (empty value + warn) unless the variable
+        // name is on a small allowlist of obviously-non-secret handles.
         let env: HashMap<String, String> = entry["env"]
             .as_object()
             .map(|o| {
                 o.iter()
                     .map(|(k, v)| {
-                        // `env:VAR` indirection resolves from host env.
                         let val = v.as_str().unwrap_or("");
-                        let resolved = val
-                            .strip_prefix("env:")
-                            .and_then(|name| std::env::var(name).ok())
-                            .unwrap_or_else(|| val.to_string());
+                        let resolved = match val.strip_prefix("env:") {
+                            Some(name) => {
+                                if host_env_is_secret(name) {
+                                    tracing::warn!(
+                                        plugin_env = %k,
+                                        host_var = %name,
+                                        "MCP env indirection to a secret-shaped \
+                                         host variable refused (would exfiltrate \
+                                         credentials into the plugin)"
+                                    );
+                                    String::new()
+                                } else {
+                                    std::env::var(name).unwrap_or_default()
+                                }
+                            }
+                            None => val.to_string(),
+                        };
                         (k.clone(), resolved)
                     })
                     .collect()
@@ -314,4 +331,27 @@ impl McpClient {
         }
         Ok(out)
     }
+}
+
+/// Whether a host env-var name looks like credential material — used to
+/// gate the `env:VAR` indirection so a plugin manifest can't exfiltrate
+/// host secrets into its child process. Mirrors the same denylist shape as
+/// the sandbox env-sanitizer: suffix/prefix match, not substring (a var
+/// literally *named* `API_KEY` or ending `_TOKEN` is refused; `NOTES_KEY`
+/// would also match — erring toward refuse is the safe side).
+fn host_env_is_secret(name: &str) -> bool {
+    let u = name.to_uppercase();
+    const SECRET_SUFFIXES: &[&str] = &[
+        "_KEY", "_SECRET", "_TOKEN", "_PASSWORD", "_PASSWD", "_CREDENTIAL",
+        "_CREDENTIALS", "_AUTH", "_PRIVATE", "_CERT", "_PEM",
+    ];
+    const SECRET_EXACT: &[&str] = &[
+        "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GITHUB_TOKEN",
+        "GH_TOKEN", "GITLAB_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        "XAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+        "NPM_TOKEN", "CARGO_REGISTRY_TOKEN", "DOCKER_PASSWORD",
+        "KUBECONFIG", "PRIVATE_KEY", "SECRET_KEY",
+    ];
+    SECRET_EXACT.contains(&u.as_str())
+        || SECRET_SUFFIXES.iter().any(|s| u.ends_with(s))
 }

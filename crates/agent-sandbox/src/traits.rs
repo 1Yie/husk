@@ -38,6 +38,9 @@ pub struct SandboxConfig {
     pub allow_network: bool,
     /// Max resident memory (MB) — 2048 default.
     pub max_memory_mb: u64,
+    /// Max spawned processes (fork-bomb guard) — backends that can enforce
+    /// it do (bwrap: `--unshare-pid` + `ulimit -u`); 0 = no explicit cap.
+    pub max_processes: u32,
     /// Wall-clock timeout (s) — caller may raise to ≤ 600.
     pub timeout_secs: u64,
     /// Extra env vars to inject *after* sanitization (e.g. PATH overrides).
@@ -52,6 +55,7 @@ impl Default for SandboxConfig {
             workspace_dir: PathBuf::from("."),
             allow_network: false,
             max_memory_mb: 2048,
+            max_processes: 256,
             timeout_secs: 60,
             env_vars: Vec::new(),
             snapshot: SnapshotMode::Off,

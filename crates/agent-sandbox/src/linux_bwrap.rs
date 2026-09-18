@@ -160,6 +160,12 @@ impl SandboxBackend for LinuxBwrap {
             argv.push("--unshare-net".into());
         }
 
+        // ---- PID namespace: fork-bomb containment (P2) ----
+        // A private PID ns means a runaway fork tree dies with the sandbox's
+        // init (bwrap's child) — it can't spread to host PIDs, and `--die-
+        // with-parent` + timeout already reaps the whole namespace.
+        argv.push("--unshare-pid".into());
+
         // ---- env: clearenv + sanitized set ----
         argv.push("--clearenv".into());
         let mut extra = cfg.env_vars.clone();
@@ -175,9 +181,24 @@ impl SandboxBackend for LinuxBwrap {
         argv.push(ws.to_string_lossy().into_owned());
         argv.push("--die-with-parent".into());
         argv.push("--".into());
-        argv.push("sh".into());
+        // Absolute path — `--clearenv` may leave PATH unset inside the
+        // namespace, so a bare `sh` can fail to execvp even though /bin/sh
+        // exists (it does: we ro-bind /bin).
+        argv.push("/bin/sh".into());
         argv.push("-c".into());
-        argv.push(cmd.to_string());
+        // Prepend resource limits to the command (P2 — plan.rs's
+        // ProcessPolicy was a dead field before). `ulimit -v` caps address
+        // space (KB), `-u` caps processes for the UID in this ns. These run
+        // inside the sandbox before the user command.
+        let mut inner = String::new();
+        if cfg.max_memory_mb > 0 {
+            inner.push_str(&format!("ulimit -v {}; ", cfg.max_memory_mb * 1024));
+        }
+        if cfg.max_processes > 0 {
+            inner.push_str(&format!("ulimit -u {}; ", cfg.max_processes));
+        }
+        inner.push_str(cmd);
+        argv.push(inner);
 
         // ---- spawn with timeout + tree kill ----
         let timeout = std::time::Duration::from_secs(cfg.timeout_secs.min(600));

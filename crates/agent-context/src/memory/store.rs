@@ -108,10 +108,27 @@ impl MemoryStore {
             w.commit().map_err(|e| e.to_string())?;
         }
         let workspace_id = workspace_id(workspace_root);
+        // P0-C1: seed `next_id` above the max id already persisted — redb has
+        // no auto-increment, and restarting at 1 would silently overwrite
+        // existing facts/episodes via `insert`. Scan both tables once.
+        let next_id = {
+            let r = db.begin_read().map_err(|e| e.to_string())?;
+            let mut max_id = 0u64;
+            for def in [FACTS, EPISODES] {
+                let t = r.open_table(def).map_err(|e| e.to_string())?;
+                for item in t.iter().map_err(|e| e.to_string())? {
+                    let (k, _) = item.map_err(|e| e.to_string())?;
+                    if k.value() > max_id {
+                        max_id = k.value();
+                    }
+                }
+            }
+            max_id + 1
+        };
         Ok(Self {
             db,
             workspace_id,
-            next_id: Mutex::new(1),
+            next_id: Mutex::new(next_id),
             embed_dim: 256,
         })
     }
@@ -273,7 +290,10 @@ impl MemoryStore {
     // ---------------- internals ----------------
 
     fn alloc_id(&self) -> Result<u64, String> {
-        let mut g = self.next_id.lock().unwrap();
+        // Poison-safe: a panicked writer must not take every later alloc down
+        // with it (release profile is panic=abort anyway, but a poisoned
+        // mutex here is a recoverable-by-design path).
+        let mut g = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
         let id = *g;
         *g += 1;
         Ok(id)
@@ -324,9 +344,14 @@ impl MemoryStore {
                 out.push_str(&format!("{}: {}\n", p.key, p.value));
             }
         }
-        // 2 KB cap.
+        // 2 KB cap — UTF-8-safe: a byte cut inside a multi-byte char would
+        // panic (P2). Round down to the nearest char boundary.
         if out.len() > 2048 {
-            out.truncate(2048);
+            let mut n = 2048;
+            while n > 0 && !out.is_char_boundary(n) {
+                n -= 1;
+            }
+            out.truncate(n);
         }
         Ok(out)
     }
