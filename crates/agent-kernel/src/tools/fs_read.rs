@@ -50,7 +50,7 @@ pub fn spec() -> ToolSpec {
              lines with numbers. Prefer outline→range over dumping whole files.",
         ),
         readonly: true,
-        exec: |args, ctx| exec(args, ctx).boxed(),
+        exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 

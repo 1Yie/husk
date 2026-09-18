@@ -39,7 +39,7 @@ pub fn spec() -> ToolSpec {
              `cargo test`, `pytest`, `vitest`/`jest`, `go test`.",
         ),
         readonly: false, // test runs can write caches/artifacts; gate via permissions
-        exec: |args, ctx| exec(args, ctx).boxed(),
+        exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
@@ -139,7 +139,8 @@ fn distill(raw: &str, focus: Option<&str>) -> String {
     let mut out = kept.join("\n");
     out.push('\n');
     if out.len() > MAX_DIAGNOSTIC_CHARS {
-        out.truncate(MAX_DIAGNOSTIC_CHARS);
+        // UTF-8-safe truncate — a byte cut mid-char would panic (P2).
+        crate::tools::util::truncate(&mut out, MAX_DIAGNOSTIC_CHARS);
     }
     out
 }

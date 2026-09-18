@@ -27,7 +27,11 @@ pub enum AgentEvent {
 
 /// Bounded channel capacities — the engine applies backpressure rather than
 /// letting a fast provider outrun a slow UI.
-pub const UI_CHANNEL_CAP: usize = 256;
+/// 8192: delta events are coalesced (~120 chars/event) but a fast provider
+/// on a slow webview can still briefly outpace the forwarder — a deep
+/// queue keeps control events (StateChanged/ApprovalRequested/Finished)
+/// from being silently dropped by `try_send` behind a delta burst.
+pub const UI_CHANNEL_CAP: usize = 8192;
 pub const CMD_CHANNEL_CAP: usize = 32;
 pub const AGENT_CHANNEL_CAP: usize = 1024;
 

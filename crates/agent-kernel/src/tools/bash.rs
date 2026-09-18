@@ -32,11 +32,13 @@ pub fn spec() -> ToolSpec {
         schema: schema_for::<BashArgs>(
             "Run a shell command in the workspace. Output is truncated to \
              20 KB (head 30% + tail 70%). Prefer dedicated tools \
-             (smart_read/smart_grep/fuzzy_patch) for file IO — bash is for \
-             builds, tests, and commands those don't cover.",
+             (smart_read/smart_grep/fuzzy_patch/apply_patch) for file IO —
+             never `cat`/`echo`/`sed` to create or edit files; use apply_patch
+             to create new files/folders, fuzzy_patch for in-place edits.
+             bash is for builds, tests, and commands those don't cover.",
         ),
         readonly: false,
-        exec: |args, ctx| exec(args, ctx).boxed(),
+        exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
@@ -69,6 +71,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         workspace_dir: ctx.workspace_root.as_ref().to_path_buf(),
         allow_network: !matches!(plan.network, agent_sandbox::plan::NetworkPolicy::Deny),
         max_memory_mb: plan.processes.max_memory_mb,
+        max_processes: plan.processes.max_processes,
         timeout_secs: timeout.as_secs(),
         snapshot: plan.snapshot,
         ..Default::default()
@@ -109,8 +112,10 @@ fn fold_output(raw: &str) -> String {
     let tail = MAX_OUTPUT_CHARS - head;
     let omitted = raw.len() - head - tail;
     let mut out = String::with_capacity(MAX_OUTPUT_CHARS + 80);
-    out.push_str(&raw[..head]);
+    // UTF-8-safe: byte-level head/tail clamps to char boundaries so CJK or
+    // emoji in command output can't panic on a non-boundary index (P2).
+    out.push_str(crate::tools::util::head(raw, head));
     out.push_str(&format!("\n… [truncated {omitted} bytes] …\n"));
-    out.push_str(&raw[raw.len() - tail..]);
+    out.push_str(crate::tools::util::tail(raw, tail));
     out
 }

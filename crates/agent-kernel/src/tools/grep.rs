@@ -48,7 +48,7 @@ pub fn spec() -> ToolSpec {
              .gitignore. Prefer this over list_dir for locating code.",
         ),
         readonly: true,
-        exec: |args, ctx| exec(args, ctx).boxed(),
+        exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 

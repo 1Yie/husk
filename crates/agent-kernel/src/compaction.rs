@@ -55,28 +55,39 @@ pub fn should_prefire(tokens: usize, window: usize) -> bool {
 /// Sanitize + budget-fit the history in place — runs before every sample.
 ///
 /// Steps (kernel-architecture.md):
-/// 1. Flatten tool calls into the message text (providers that don't accept
-///    `tool_calls` arrays still see the action).
+/// 1. Flatten tool calls into the message text — **only** when the provider
+///    doesn't accept structured `tool_calls` (`native_tool_calls == false`).
+///    For a native provider, flattening would orphan every `Role::Tool`
+///    result (its `tool_call_id` no longer has a matching `function_call`)
+///    so the model loses all tool output (P1-b).
 /// 2. Strip reasoning blocks — `reasoning` deltas are transient, never sent.
 /// 3. Replace image-bearing messages with a text placeholder (vision lands
 ///    in Stage 11; until then an image is a context bomb).
 /// 4. `fit_conversation_to_budget` — drop oldest non-system messages until
 ///    the estimate fits `budget_tokens`.
-pub fn sanitize_for_sample(history: &mut Vec<ChatMessage>, budget_tokens: usize) {
-    // (1) flatten tool calls → appended as `[call: name(args)]` text.
-    for m in history.iter_mut() {
-        if let Some(calls) = m.tool_calls.take() {
-            let flat: String = calls
-                .iter()
-                .map(|c| format!("\n[call: {}({})]", c.name, abbreviate(&c.arguments, 200)))
-                .collect();
-            let mut c = m.content.take().unwrap_or_default();
-            c.push_str(&flat);
-            m.content = Some(c);
+pub fn sanitize_for_sample(
+    history: &mut Vec<ChatMessage>,
+    budget_tokens: usize,
+    native_tool_calls: bool,
+) {
+    // (1) flatten tool calls → appended as `[call: name(args)]` text, but
+    // ONLY for text-protocol providers. A native provider needs the
+    // structured `tool_calls` array intact for its `function_call` items.
+    if !native_tool_calls {
+        for m in history.iter_mut() {
+            if let Some(calls) = m.tool_calls.take() {
+                let flat: String = calls
+                    .iter()
+                    .map(|c| format!("\n[call: {}({})]", c.name, abbreviate(&c.arguments, 200)))
+                    .collect();
+                let mut c = m.content.take().unwrap_or_default();
+                c.push_str(&flat);
+                m.content = Some(c);
+            }
         }
-        // (2) reasoning never persisted into ChatMessage — nothing to strip.
-        // (Reasoning deltas are a separate stream; they never enter history.)
     }
+    // (2) reasoning never persisted into ChatMessage — nothing to strip.
+    // (Reasoning deltas are a separate stream; they never enter history.)
 
     // (3) image placeholder — `content` may carry a data URI from a future
     // vision path; replace anything that smells like one.
@@ -262,9 +273,25 @@ mod tests {
                 tool_call_id: None,
             },
         ];
-        sanitize_for_sample(&mut h, 100_000);
+        // text-protocol provider → tool_calls flattened into message text.
+        sanitize_for_sample(&mut h, 100_000, /*native_tool_calls*/ false);
         assert!(h[1].tool_calls.is_none());
         assert!(h[1].content.as_deref().unwrap().contains("[call: list_dir"));
+
+        // native provider → tool_calls stay structured (NOT flattened),
+        // else the matching Role::Tool result would orphan (P1-b).
+        let mut h2 = vec![msg(Role::System, "sys"), ChatMessage {
+            role: Role::Assistant,
+            content: Some("ok".into()),
+            tool_calls: Some(vec![agent_llm::types::ToolCall {
+                id: "1".into(), name: "list_dir".into(),
+                arguments: "{\"path\":\".\"}".into(),
+            }]),
+            tool_call_id: None,
+        }];
+        sanitize_for_sample(&mut h2, 100_000, /*native_tool_calls*/ true);
+        assert!(h2[1].tool_calls.is_some(), "native tool_calls must not flatten");
+        assert!(!h2[1].content.as_deref().unwrap().contains("[call:"));
     }
 
     #[test]
@@ -276,7 +303,7 @@ mod tests {
             msg(Role::Assistant, "a"),
         ];
         // Budget so only ~system + last two survive.
-        sanitize_for_sample(&mut h, 200);
+        sanitize_for_sample(&mut h, 200, true);
         assert!(h.iter().all(|m| m.role != Role::Tool));
         assert!(h[0].role == Role::System); // system never dropped
     }

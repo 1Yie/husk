@@ -35,6 +35,10 @@ pub struct EngineIo {
     /// Mid-turn steering texts — SessionActor forwards `UiCommand::Steer`
     /// into this channel; the engine drains it between tool calls.
     pub steer_rx: mpsc::Receiver<String>,
+    /// Cooperative cancel flag — the UI/actor sets it (bypassing the command
+    /// pump so it lands mid-turn); the engine checks it between chunks and
+    /// before each tool dispatch. `Arc` shared with `SessionActor::cancel`.
+    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Per-turn outcome handed back to `SessionActor`.
@@ -60,8 +64,14 @@ pub struct Engine {
     permissions: PermissionGate,
     /// Decision slot shared with SessionActor — the engine can't hold a
     /// receiver `&mut self`-locked across `run_turn`, so the actor writes
-    /// `Some(approved)` here and the engine polls it between polls.
-    decision: Arc<std::sync::Mutex<Option<bool>>>,
+    /// `Some((request_id, approved))` here and the engine polls it between
+    /// polls. The `request_id` correlates the verdict to a specific
+    /// `ApprovalRequested` — a stale click whose id doesn't match the
+    /// pending request is ignored instead of approving a different tool
+    /// (P1-a).
+    decision: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
+    /// Monotone id source for `ApprovalRequested` correlation.
+    next_request_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Context window for the active model — compaction triggers at 80%.
     context_window: usize,
     /// Stage 7: compaction retry-storm suppression.
@@ -70,6 +80,10 @@ pub struct Engine {
     hooks: crate::hooks::HookChain,
     /// Plugin tool router — built-in names win; plugins fill the rest.
     plugin_router: Option<Arc<agent_plugin::PluginManager>>,
+    /// Thinking / reasoning intensity level (e.g. "off", "low", "medium", "high", "max").
+    thinking_level: Option<String>,
+    /// Model-specific thinking level mapping from pi-agent config schema.
+    thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
 }
 
 impl Engine {
@@ -89,10 +103,53 @@ impl Engine {
             steer_queue: VecDeque::new(),
             permissions: PermissionGate::from_mode_str("default"),
             decision: Arc::new(std::sync::Mutex::new(None)),
+            next_request_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             context_window: 256_000,
             compaction_suppressor: CompactionSuppressor::default(),
             hooks: crate::hooks::HookChain::new(),
             plugin_router: None,
+            thinking_level: None,
+            thinking_level_map: None,
+        }
+    }
+
+    /// Set thinking / reasoning intensity level.
+    pub fn set_thinking_level(&mut self, level: Option<String>) {
+        self.thinking_level = level;
+    }
+
+    /// Current thinking level if set.
+    pub fn thinking_level(&self) -> Option<&str> {
+        self.thinking_level.as_deref()
+    }
+
+    /// Set model-specific thinking level mapping.
+    pub fn set_thinking_level_map(
+        &mut self,
+        map: Option<std::collections::HashMap<String, Option<String>>>,
+    ) {
+        self.thinking_level_map = map;
+    }
+
+    /// Resolves the effective wire reasoning effort ("low", "medium", "high", "max" or None).
+    pub fn resolve_reasoning_effort(&self) -> Option<String> {
+        let level = self.thinking_level.as_deref()?;
+        if level == "off" {
+            return None;
+        }
+        if let Some(map) = &self.thinking_level_map {
+            if let Some(val) = map.get(level) {
+                return val.clone();
+            }
+        }
+        match level {
+            "minimal" => Some("minimal".into()),
+            "low" => Some("low".into()),
+            "medium" => Some("medium".into()),
+            "high" => Some("high".into()),
+            "xhigh" => Some("xhigh".into()),
+            "max" => Some("max".into()),
+            other => Some(other.to_string()),
         }
     }
 
@@ -117,8 +174,9 @@ impl Engine {
     }
 
     /// The shared decision slot — SessionActor clones it to deliver
-    /// `ToolDecision` while the engine is mid-`run_turn`.
-    pub fn decision_slot(&self) -> Arc<std::sync::Mutex<Option<bool>>> {
+    /// `ToolDecision { request_id, approved }` while the engine is
+    /// mid-`run_turn`.
+    pub fn decision_slot(&self) -> Arc<std::sync::Mutex<Option<(u64, bool)>>> {
         self.decision.clone()
     }
 
@@ -163,7 +221,15 @@ impl Engine {
         // ---- Stage 7: sanitize + compaction check before sampling ----
         // Sanitize runs every turn (flatten tool calls, strip reasoning,
         // budget-fit); compaction only when estimate crosses 80% of window.
-        compaction::sanitize_for_sample(history, self.context_window.saturating_mul(9) / 10);
+        // P1-b: only flatten tool_calls into text when the provider uses a
+        // text protocol — a native function-calling provider needs the
+        // structured array intact or every Role::Tool result orphans.
+        let native_tc = self.sampler.provider().native_tool_calls();
+        compaction::sanitize_for_sample(
+            history,
+            self.context_window.saturating_mul(9) / 10,
+            native_tc,
+        );
         let est = compaction::estimate_tokens(history);
         if compaction::should_compact(est, self.context_window)
             && self.compaction_suppressor.check()
@@ -189,8 +255,18 @@ impl Engine {
         let mut tool_calls_run = 0usize;
         let mut tool_rounds = 0usize;
         const MAX_TOOL_ROUNDS: usize = 16; // guard against infinite tool loops
+        const CANCEL_ERR: &str = "turn cancelled by user";
 
         loop {
+            // P0-C4: cooperative cancel — checked at the top of every
+            // sample/tool round so a Cancel lands between model calls even
+            // if no chunk is flowing.
+            if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
+                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_ERR.into()));
+                return Err(CANCEL_ERR.into());
+            }
+
             // Inject any mid-turn steering as a user message before sampling.
             self.drain_steering(io);
             while let Some(steer) = self.steer_queue.pop_front() {
@@ -200,6 +276,13 @@ impl Engine {
             let mut assembler = ToolCallAssembler::new();
             let mut round_text = String::new();
             let mut saw_done = false;
+            // Delta coalescing — the UI doesn't need one event per SSE
+            // chunk (often 1-5 chars). Buffer text/reasoning deltas and
+            // flush at ~120 chars or on any non-delta chunk so the
+            // bounded UI channel never sees a per-token burst large
+            // enough to push out control events via try_send.
+            let mut pending_text_delta = String::new();
+            let mut pending_reasoning_delta = String::new();
             // A provider-level `StreamChunk::Error` (e.g. devin's
             // `internal_server_error … upstream error`) arrives inside the
             // stream, not as a transport `Err` — without this flag the turn
@@ -207,31 +290,70 @@ impl Engine {
             // assistant message into history, corrupting every later request.
             let mut stream_error: Option<String> = None;
 
+            let effort = self.resolve_reasoning_effort();
             let req = SampleRequest {
                 model: &self.model,
                 temperature: self.temperature,
                 tools: Some(&self.registry.request_schema()),
+                reasoning_effort: effort.as_deref(),
             };
 
-            let res = self
-                .sampler
-                .sample(
+            // Race the sample against the cancel flag — a Cancel mid-stream
+            // drops the in-flight request instead of waiting for the next
+            // chunk or the 300 s idle timeout. The flag is cloned out so the
+            // watcher doesn't borrow `io` while the chunk closure does.
+            let cancel_flag = io.cancel.clone();
+            let cancel_watch = async move {
+                while !cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            };
+
+            let res = tokio::select! {
+                biased;
+                _ = cancel_watch => {
+                    Err(agent_llm::sampler::SampleError::Stream(CANCEL_ERR.into()))
+                }
+                r = self.sampler.sample(
                     req,
                     history,
                     |chunk| {
                         match chunk {
                             StreamChunk::ReasoningDelta(t) => {
-                                let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(t.clone()));
+                                pending_reasoning_delta.push_str(t);
+                                if pending_reasoning_delta.len() >= 120 {
+                                    let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(
+                                        std::mem::take(&mut pending_reasoning_delta),
+                                    ));
+                                }
                             }
                             StreamChunk::ContentDelta(t) => {
                                 round_text.push_str(t);
-                                let _ = io.ui_tx.try_send(UiEvent::TextDelta(t.clone()));
+                                pending_text_delta.push_str(t);
+                                if pending_text_delta.len() >= 120 {
+                                    let _ = io.ui_tx.try_send(UiEvent::TextDelta(
+                                        std::mem::take(&mut pending_text_delta),
+                                    ));
+                                }
                             }
                             StreamChunk::ToolCallDelta { .. } => {
                                 assembler.feed(chunk);
                             }
                             StreamChunk::Done { prompt_tokens, completion_tokens } => {
                                 saw_done = true;
+                                // Flush any coalesced deltas BEFORE the
+                                // terminal event lands so the UI never
+                                // renders trailing text after Finished.
+                                if !pending_text_delta.is_empty() {
+                                    let _ = io.ui_tx.try_send(UiEvent::TextDelta(
+                                        std::mem::take(&mut pending_text_delta),
+                                    ));
+                                }
+                                if !pending_reasoning_delta.is_empty() {
+                                    let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(
+                                        std::mem::take(&mut pending_reasoning_delta),
+                                    ));
+                                }
                                 if let (Some(p), Some(c)) = (prompt_tokens, completion_tokens) {
                                     usage = Some((*p, *c));
                                     let _ = io.ui_tx.try_send(UiEvent::Usage {
@@ -242,6 +364,16 @@ impl Engine {
                             }
                             StreamChunk::Error(e) => {
                                 stream_error = Some(e.clone());
+                                if !pending_text_delta.is_empty() {
+                                    let _ = io.ui_tx.try_send(UiEvent::TextDelta(
+                                        std::mem::take(&mut pending_text_delta),
+                                    ));
+                                }
+                                if !pending_reasoning_delta.is_empty() {
+                                    let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(
+                                        std::mem::take(&mut pending_reasoning_delta),
+                                    ));
+                                }
                                 let _ = io.ui_tx.try_send(UiEvent::SystemMessage(e.clone()));
                             }
                         }
@@ -251,8 +383,39 @@ impl Engine {
                             .ui_tx
                             .try_send(UiEvent::SystemMessage(format!("{ev:?}")));
                     },
-                )
-                .await;
+                ) => r,
+            };
+
+            // Flush any sub-threshold deltas left after the sample
+            // returned — a stream that ended cleanly before hitting 120
+            // chars would otherwise strand its tail in the buffer.
+            if !pending_text_delta.is_empty() {
+                let _ = io.ui_tx.try_send(UiEvent::TextDelta(
+                    std::mem::take(&mut pending_text_delta),
+                ));
+            }
+            if !pending_reasoning_delta.is_empty() {
+                let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(
+                    std::mem::take(&mut pending_reasoning_delta),
+                ));
+            }
+
+            // A cancel mid-sample unwinds here — salvage the partial text so
+            // the UI keeps what already streamed, then report the turn as
+            // cancelled rather than failed.
+            if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                if !round_text.is_empty() {
+                    history.push(ChatMessage {
+                        role: agent_llm::Role::Assistant,
+                        content: Some(format!("{round_text}\n\n*[cancelled by user]*")),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
+                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_ERR.into()));
+                return Err(CANCEL_ERR.into());
+            }
 
             if let Err(e) = res {
                 // ---- Stream salvage (hardening §4) ----
@@ -319,6 +482,13 @@ impl Engine {
             }
 
             for call in calls {
+                // P0-C4: cancel between tool dispatches — a destructive tool
+                // must not fire after the user already hit Cancel.
+                if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_ERR.into()));
+                    return Err(CANCEL_ERR.into());
+                }
                 // Skip degenerate calls — a text-protocol echo can produce an
                 // empty-name or empty-args call that must never dispatch
                 // (it'd surface as `unknown tool ''` and poison history).
@@ -343,9 +513,23 @@ impl Engine {
                     .or_else(|| args.get("pattern"))
                     .or_else(|| args.get("query"))
                     .or_else(|| args.get("file"))
+                    .or_else(|| args.get("action"))
+                    .or_else(|| args.get("url"))
+                    .or_else(|| args.get("target"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.chars().take(80).collect())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| {
+                        if let Some(obj) = args.as_object() {
+                            for v in obj.values() {
+                                if let Some(s) = v.as_str() {
+                                    if !s.trim().is_empty() {
+                                        return s.chars().take(80).collect();
+                                    }
+                                }
+                            }
+                        }
+                        String::new()
+                    });
                 let _ = io.ui_tx.try_send(UiEvent::ToolCallStarted {
                     name: call.name.clone(),
                     args_preview,
@@ -373,6 +557,40 @@ impl Engine {
                 let diff_summary = args.get("path").and_then(|v| v.as_str())
                     .map(|p| format!("{p}")).unwrap_or_else(|| call.name.clone());
 
+                // P1-c: write tools (fuzzy_patch/apply_patch/write_file) are
+                // dispatched EARLY — they return a `PendingWrite` instead of
+                // writing inside the tool, so we can show the REAL diff +
+                // fuzzy flag on the approval card and only commit the write
+                // after the user approves. Read-only/bash tools keep the
+                // classic gate→dispatch flow (they have side effects we
+                // can't dry-run).
+                let is_write = matches!(call.name.as_str(),
+                    "fuzzy_patch" | "apply_patch" | "write_file");
+
+                // Dry-run a write tool to harvest diff/fuzzy/pending_write.
+                // `dispatch` on these tools is side-effect-free (returns
+                // PendingWrite), so it's safe to run pre-approval.
+                let staged: Option<crate::tools::registry::ToolResult> = if is_write {
+                    match self.registry.dispatch(&call.name, args.clone(), self.ctx.clone()).await {
+                        Ok(res) => Some(res),
+                        Err(e) => {
+                            let msg = e.to_string();
+                            let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                                name: call.name.clone(), ok: false,
+                                content: msg.clone(), ui_type: None,
+                            });
+                            history.push(ChatMessage::tool_result(call.id.clone(), msg));
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let real_diff = staged.as_ref()
+                    .map(|r| r.content.clone())
+                    .unwrap_or_else(|| args.get("replace").and_then(|v| v.as_str()).unwrap_or("").to_string());
+                let real_fuzzy = staged.as_ref().map(|r| r.fuzzy).unwrap_or(false);
+
                 match self.permissions.decide(&call.name, is_readonly, shell_cmd, diff_summary) {
                     Decision::Deny { reason } => {
                         let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
@@ -386,17 +604,25 @@ impl Engine {
                         // Pause in AwaitingToolConfirmation; the UI's
                         // ToolDecision resolves it. Wait on the shared slot
                         // (SessionActor writes it via decision_slot()).
+                        // P1-a: a fresh request_id correlates this specific
+                        // pending approval to its verdict — a stale decision
+                        // from an earlier card can't approve this tool.
+                        let request_id = self.next_request_id
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         self.set_state(io, AgentState::AwaitingToolConfirmation {
                             tool_name: call.name.clone(),
                             diff_summary: diff_summary.clone(),
                         });
+                        // P1-c: show the REAL unified diff + fuzzy flag the
+                        // staged run produced — the card no longer lies
+                        // about what will be written.
                         let _ = io.ui_tx.try_send(UiEvent::ApprovalRequested {
+                            request_id,
                             tool_name: call.name.clone(),
-                            diff: args.get("replace").and_then(|v| v.as_str())
-                                .unwrap_or("").to_string(),
-                            fuzzy: false,
+                            diff: real_diff.clone(),
+                            fuzzy: real_fuzzy,
                         });
-                        let approved = self.wait_for_decision().await;
+                        let approved = self.wait_for_decision(request_id, &io.cancel).await;
                         self.set_state(io, AgentState::ExecutingTool {
                             tool_name: call.name.clone(),
                         });
@@ -413,53 +639,81 @@ impl Engine {
                     Decision::Allow => {}
                 }
 
-                // Stage 6: capture pre-write content for hunk recording
-                // (only for write tools — read-only tools never touch disk).
-                let write_path = args.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let is_write = matches!(call.name.as_str(),
-                    "fuzzy_patch" | "apply_patch" | "write_file");
-                let old_content = if is_write {
-                    write_path.as_deref().and_then(|p| {
-                        self.ctx.resolve(p).ok()
-                            .and_then(|abs| std::fs::read_to_string(abs).ok())
-                    })
-                } else {
-                    None
-                };
 
-                let (mut content, ui_type, ok) = match self
-                    .registry
-                    .dispatch(&call.name, args.clone(), self.ctx.clone())
-                    .await
-                {
-                    Ok(res) => (res.content, res.ui_type.map(|s| s.to_string()), true),
-                    Err(e) => {
-                        // Built-in miss → try the plugin router (built-in
-                        // names are reserved and can't be shadowed).
-                        if let Some(mgr) = &self.plugin_router {
-                            match mgr.dispatch_tool_call(&call.name, args).await {
-                                Ok(out) => (out, None, true),
-                                Err(_) => (e.to_string(), None, false),
+
+                // Resolve the tool result. For a staged write tool we already
+                // have it; otherwise dispatch now (read-only/bash).
+                let (mut content, ui_type, mut ok, pending_write) = if let Some(res) = staged {
+                    let ui_type = res.ui_type.map(|s| s.to_string());
+                    (res.content, ui_type, true, res.pending_write)
+                } else {
+                    match self
+                        .registry
+                        .dispatch(&call.name, args.clone(), self.ctx.clone())
+                        .await
+                    {
+                        Ok(res) => (
+                            res.content,
+                            res.ui_type.map(|s| s.to_string()),
+                            true,
+                            res.pending_write,
+                        ),
+                        Err(e) => {
+                            // Built-in miss → try the plugin router (built-in
+                            // names are reserved and can't be shadowed).
+                            // Plugins never stage deferred writes → empty vec.
+                            if let Some(mgr) = &self.plugin_router {
+                                match mgr.dispatch_tool_call(&call.name, args).await {
+                                    Ok(out) => (out, None, true, Vec::new()),
+                                    Err(_) => (e.to_string(), None, false, Vec::new()),
+                                }
+                            } else {
+                                (e.to_string(), None, false, Vec::new())
                             }
-                        } else {
-                            (e.to_string(), None, false)
                         }
                     }
                 };
 
-                // ---- Stage 9: after_tool hooks (may mutate output) ----
-                self.hooks.run_after_tool(&call, &mut content).await;
-
-                // Record the write post-dispatch so Undo sees every mutation.
-                if is_write && ok {
-                    if let Some(p) = write_path.as_deref() {
-                        if let Ok(abs) = self.ctx.resolve(p) {
-                            if let Ok(new_content) = std::fs::read_to_string(&abs) {
-                                hunks.record_write(abs, old_content, new_content, "agent");
+                // P1-c: commit the deferred writes the tool staged — the
+                // engine owns the side effect so it lands only after the
+                // permission decision. A multi-file tool (`apply_patch`)
+                // stages one `PendingWrite` per file op; each op captures
+                // its own pre-image for the hunk record (binary-safe).
+                for pw in pending_write {
+                    let old_content = std::fs::read(&pw.path).ok();
+                    match pw.op {
+                        crate::tools::registry::WriteOp::Delete => {
+                            match tokio::fs::remove_file(&pw.path).await {
+                                Ok(()) => {
+                                    hunks.record_write(pw.path.clone(), old_content, Vec::new(), "agent");
+                                }
+                                Err(e) => {
+                                    ok = false;
+                                    content = format!("delete failed for {}: {e}", pw.path.display());
+                                }
+                            }
+                        }
+                        crate::tools::registry::WriteOp::Write => {
+                            if pw.auto_mkdir {
+                                if let Some(parent) = pw.path.parent() {
+                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                }
+                            }
+                            match tokio::fs::write(&pw.path, &pw.content).await {
+                                Ok(()) => {
+                                    hunks.record_write(pw.path.clone(), old_content, pw.content, "agent");
+                                }
+                                Err(e) => {
+                                    ok = false;
+                                    content = format!("write failed for {}: {e}", pw.path.display());
+                                }
                             }
                         }
                     }
                 }
+
+                // ---- Stage 9: after_tool hooks (may mutate output) ----
+                self.hooks.run_after_tool(&call, &mut content).await;
 
                 let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
                     name: call.name.clone(),
@@ -508,6 +762,7 @@ impl Engine {
             model: &self.model,
             temperature: 0.0,
             tools: None,
+            reasoning_effort: None,
         };
         self.sampler
             .sample(
@@ -531,13 +786,50 @@ impl Engine {
     }
 
     /// Poll the shared decision slot until SessionActor writes a verdict
-    /// or the safety timeout fires (fail-closed: deny on timeout).
-    async fn wait_for_decision(&self) -> bool {
+    /// for THIS `request_id`, or the safety timeout fires (fail-closed:
+    /// deny on timeout).
+    ///
+    /// The verdict slot holds `Option<(request_id, approved)>`. A verdict
+    /// whose id doesn't match is a stale click on an already-resolved card —
+    /// it is cleared and ignored rather than allowed to approve this tool
+    /// (P1-a). Also returns `false` early if the user cancels while the
+    /// approval is pending — a Cancel must not wait out the 300 s timeout.
+    async fn wait_for_decision(
+        &self,
+        request_id: u64,
+        cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> bool {
         const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
         let deadline = std::time::Instant::now() + TIMEOUT;
         loop {
-            if let Some(v) = self.decision.lock().unwrap().take() {
-                return v;
+            // Poison-safe: a panicked writer must not deadlock the engine.
+            // Take the verdict out of the slot in a short scope so the
+            // MutexGuard is never held across `.await` (not `Send`).
+            let verdict = {
+                let mut slot = self
+                    .decision
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                match *slot {
+                    // This request's verdict — consume and return it.
+                    Some((id, approved)) if id == request_id => {
+                        *slot = None;
+                        Some(approved)
+                    }
+                    // A stale verdict (different request id) — drop it so it
+                    // can't accumulate, then keep waiting for OUR verdict.
+                    Some(_) => {
+                        *slot = None;
+                        None
+                    }
+                    None => None,
+                }
+            };
+            if let Some(approved) = verdict {
+                return approved;
+            }
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return false; // cancelled while awaiting approval → deny
             }
             if std::time::Instant::now() > deadline {
                 return false; // fail-closed
@@ -548,5 +840,58 @@ impl Engine {
 
     fn set_state(&self, io: &EngineIo, state: AgentState) {
         let _ = io.ui_tx.try_send(UiEvent::StateChanged(state));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_thinking_level_resolution() {
+        let mut engine = Engine::new(
+            Arc::new(agent_llm::adapters::MockProvider::new()),
+            Arc::new(ToolRegistry::with_builtins()),
+            Arc::new(ToolCtx::new(Path::new("."))),
+            "devin/swe-2",
+            1.0,
+        );
+
+        // Without level set
+        assert_eq!(engine.resolve_reasoning_effort(), None);
+
+        // Off returns None
+        engine.set_thinking_level(Some("off".into()));
+        assert_eq!(engine.resolve_reasoning_effort(), None);
+
+        // With default mapping (no map installed)
+        engine.set_thinking_level(Some("medium".into()));
+        assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("medium"));
+
+        // With custom thinking level map installed (like Devin SWE-2)
+        let mut map = std::collections::HashMap::new();
+        map.insert("off".into(), None);
+        map.insert("minimal".into(), None);
+        map.insert("low".into(), None);
+        map.insert("medium".into(), Some("medium".into()));
+        map.insert("high".into(), Some("high".into()));
+        map.insert("max".into(), Some("max".into()));
+        engine.set_thinking_level_map(Some(map));
+
+        engine.set_thinking_level(Some("medium".into()));
+        assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("medium"));
+
+        engine.set_thinking_level(Some("high".into()));
+        assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("high"));
+
+        engine.set_thinking_level(Some("max".into()));
+        assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("max"));
+
+        engine.set_thinking_level(Some("low".into()));
+        assert_eq!(engine.resolve_reasoning_effort(), None);
+
+        engine.set_thinking_level(Some("off".into()));
+        assert_eq!(engine.resolve_reasoning_effort(), None);
     }
 }

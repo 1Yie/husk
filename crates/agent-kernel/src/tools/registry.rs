@@ -82,6 +82,38 @@ impl ToolCtx {
     }
 }
 
+/// A deferred write a tool wants the engine to commit — returned instead
+/// of writing inside the tool so the engine can apply the change *after*
+/// the permission decision and record it in the HunkTracker in one step
+/// (P1-c). The tool produces `content`; the engine owns the side effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOp {
+    /// Create or overwrite `path` with `content`.
+    Write,
+    /// Remove `path` (`*** Delete File`).
+    Delete,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingWrite {
+    /// Canonical workspace path to write.
+    pub path: std::path::PathBuf,
+    /// The full new file content to write (ignored for `Delete`).
+    pub content: Vec<u8>,
+    /// What the engine should do with `path`.
+    pub op: WriteOp,
+    /// Create parent directories before writing (`*** Add File` to a
+    /// nested path). Ignored for `Delete`.
+    pub auto_mkdir: bool,
+}
+
+impl PendingWrite {
+    /// Convenience constructor for the common overwrite case.
+    pub fn write(path: std::path::PathBuf, content: Vec<u8>) -> Self {
+        Self { path, content, op: WriteOp::Write, auto_mkdir: false }
+    }
+}
+
 /// Tool execution result — `content` is model-facing text (already folded
 /// under the truncation budget), `ui` is an optional typed card for the
 /// DiffViewer/status strip.
@@ -93,11 +125,20 @@ pub struct ToolResult {
     pub ui_type: Option<&'static str>,
     /// True when the patch matched approximately — approval card must say so.
     pub fuzzy: bool,
+    /// Deferred writes the engine commits post-approval — empty for
+    /// read-only tools and tools that manage their own side effects. A
+    /// multi-file tool (`apply_patch`) stages one entry per file op.
+    pub pending_write: Vec<PendingWrite>,
 }
 
 impl ToolResult {
     pub fn text(content: impl Into<String>) -> Self {
-        Self { content: content.into(), ui_type: None, fuzzy: false }
+        Self {
+            content: content.into(),
+            ui_type: None,
+            fuzzy: false,
+            pending_write: Vec::new(),
+        }
     }
 }
 
@@ -118,6 +159,15 @@ pub enum ToolError {
     Failed(String),
 }
 
+/// A tool's exec — `Arc<dyn Fn>` so a bridged tool (e.g. a Serena MCP
+/// passthrough) can capture its bridge + remote name in a closure, while
+/// plain builtins still wrap a free fn.
+pub type ExecFn = Arc<
+    dyn Fn(Args, Arc<ToolCtx>) -> BoxFuture<'static, Result<ToolResult, ToolError>>
+        + Send
+        + Sync,
+>;
+
 /// One tool: name, schema for the LLM, readonly flag, exec fn.
 pub struct ToolSpec {
     pub name: &'static str,
@@ -125,7 +175,7 @@ pub struct ToolSpec {
     pub schema: serde_json::Value,
     /// Read-only tools auto-run in `default` permission mode.
     pub readonly: bool,
-    pub exec: fn(Args, Arc<ToolCtx>) -> BoxFuture<'static, Result<ToolResult, ToolError>>,
+    pub exec: ExecFn,
 }
 
 /// Name → spec map. `BTreeMap` keeps the `tools` array deterministic
@@ -145,10 +195,15 @@ impl ToolRegistry {
         let mut r = Self::new();
         r.register(crate::tools::fs_read::spec());
         r.register(crate::tools::fs_patch::spec());
+        r.register(crate::tools::apply_patch::spec());
         r.register(crate::tools::list_dir::spec());
         r.register(crate::tools::grep::spec());
         r.register(crate::tools::test_runner::spec());
         r.register(crate::tools::bash::spec());
+        r.register(crate::tools::todo::spec());
+        r.register(crate::tools::serena::spec());
+        r.register(crate::tools::web_fetch::spec());
+        r.register(crate::tools::web_fetch::spec_alias());
         r
     }
 

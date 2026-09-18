@@ -126,8 +126,63 @@ fn workspace_key(root: &Path) -> String {
     format!("{h:016x}")
 }
 
-fn dirs_data() -> Option<PathBuf> {
+pub fn dirs_data() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+}
+
+/// Recently opened workspace entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentWorkspace {
+    pub path: PathBuf,
+    pub name: String,
+    pub last_opened: u64,
+}
+
+pub fn recent_workspaces_path() -> Option<PathBuf> {
+    dirs_data().map(|d| d.join("agent-rs").join("recent_workspaces.json"))
+}
+
+pub fn load_recent_workspaces() -> Vec<RecentWorkspace> {
+    let Some(path) = recent_workspaces_path() else { return Vec::new(); };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let mut list: Vec<RecentWorkspace> = serde_json::from_str(&text).unwrap_or_default();
+    list.retain(|w| w.path.is_dir());
+    list.sort_by(|a, b| b.last_opened.cmp(&a.last_opened));
+    list
+}
+
+pub fn record_recent_workspace(workspace_root: &Path) {
+    let Some(path) = recent_workspaces_path() else { return; };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let canon = workspace_root.canonicalize().unwrap_or_else(|_| workspace_root.to_path_buf());
+    let name = canon
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| canon.to_string_lossy().to_string());
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut list = load_recent_workspaces();
+    list.retain(|w| w.path != canon);
+    list.insert(0, RecentWorkspace {
+        path: canon,
+        name,
+        last_opened: now,
+    });
+    list.truncate(15);
+
+    if let Ok(json) = serde_json::to_string_pretty(&list) {
+        let _ = std::fs::write(path, json);
+    }
 }

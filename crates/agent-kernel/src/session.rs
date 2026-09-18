@@ -37,6 +37,10 @@ pub struct SessionConfig {
     pub permission_mode: String,
     /// Whether to seed the tracker with git-dirty files (`AllDirty` mode).
     pub track_dirty: bool,
+    /// Initial thinking / reasoning effort level.
+    pub thinking_level: Option<String>,
+    /// Model-specific thinking level mapping.
+    pub thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
 }
 
 /// One live session: owns history + engine, consumes commands, emits events.
@@ -49,9 +53,13 @@ pub struct SessionActor {
     /// Stage 6: write tracking for undo/rewind + files-changed list.
     hunks: HunkTracker,
     /// Engine's decision slot — `ToolDecision` writes here mid-turn.
-    decision_slot: Arc<std::sync::Mutex<Option<bool>>>,
+    decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
     /// Forwards `UiCommand::Steer` texts into the engine's steer channel.
     steer_tx: mpsc::Sender<String>,
+    /// Cooperative cancel flag shared with the engine — `UiCommand::Cancel`
+    /// and `cancel_writer()` set it; the engine polls it between chunks and
+    /// before each tool dispatch.
+    cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Actor-owned command receiver — `run()` drains it.
     cmd_rx: mpsc::Receiver<UiCommand>,
     /// Workspace root (undo writes resolve against it).
@@ -202,6 +210,8 @@ impl SessionActor {
         engine.set_permissions(crate::permissions::PermissionGate::from_mode_str(
             &cfg.permission_mode,
         ));
+        engine.set_thinking_level(cfg.thinking_level.clone());
+        engine.set_thinking_level_map(cfg.thinking_level_map.clone());
         let decision_slot = engine.decision_slot();
 
         // Actor keeps the real cmd_rx — `run()` drains it into `handle()`.
@@ -214,9 +224,15 @@ impl SessionActor {
         // `UiCommand::Steer` texts into it mid-turn (engine drains between
         // tool calls). Between turns a Steer is a Prompt.
         let (steer_tx, steer_rx) = mpsc::channel::<String>(32);
+        // P0-C4: cooperative cancel flag shared with the engine — the UI
+        // writes it via `cancel_writer()` (bypassing the command pump so a
+        // Cancel lands mid-turn); the engine checks it between chunks and
+        // before each tool dispatch.
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let io = EngineIo {
             ui_tx: channels.event_tx.clone(),
             steer_rx,
+            cancel: cancel.clone(),
         };
 
         // Stage 6: hunk tracker — `AllDirty` seeds with git-dirty files so a
@@ -248,6 +264,7 @@ impl SessionActor {
                 hunks,
                 decision_slot,
                 steer_tx,
+                cancel,
                 cmd_rx,
                 workspace_root: cfg.workspace_root,
                 hooks: HookChain::new(),
@@ -286,7 +303,7 @@ impl SessionActor {
     /// The shared tool-decision slot — the bridge writes `ToolDecision`
     /// **here directly**, bypassing the command channel so a mid-turn
     /// approval isn't queued behind the running `run_turn`.
-    pub fn decision_writer(&self) -> Arc<std::sync::Mutex<Option<bool>>> {
+    pub fn decision_writer(&self) -> Arc<std::sync::Mutex<Option<(u64, bool)>>> {
         self.decision_slot.clone()
     }
 
@@ -295,6 +312,14 @@ impl SessionActor {
     /// turns a Steer is a Prompt — the bridge checks `state().is_active()`.
     pub fn steer_writer(&self) -> mpsc::Sender<String> {
         self.steer_tx.clone()
+    }
+
+    /// The shared cancel flag — the UI writes `true` here **directly** to
+    /// abort the in-flight turn, bypassing the command pump (a `UiCommand::
+    /// Cancel` queued behind `run_turn` would never be seen in time).
+    /// `run_prompt` clears it at turn start.
+    pub fn cancel_writer(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.cancel.clone()
     }
 
     /// Current state-machine position.
@@ -311,6 +336,9 @@ impl SessionActor {
     /// need a recursive `handle` call (async recursion requires boxing).
     async fn run_prompt(&mut self, text: String) {
         info!("user prompt ({} chars)", text.len());
+        // Clear the cancel flag so a stale Cancel from a previous turn can't
+        // abort this one before it starts.
+        self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
         self.state = AgentState::ScanningWorkspace;
         // Echo the prompt so the UI stream renders a user block.
         let _ = self.io.ui_tx.try_send(UiEvent::UserPrompt(text.clone()));
@@ -438,15 +466,31 @@ impl SessionActor {
     /// each touched file to its pre-turn state (or deletes it if created).
     async fn undo_last_turn(&mut self) {
         let last = self.hunks.current_turn();
-        let plan = self.hunks.undo_plan(last);
-        if plan.is_empty() {
+        // P0-C2: undo_plan now refuses when a target file was modified
+        // externally after the agent's last write — undoing would silently
+        // clobber the user's own edits. Fall back to partial undo so the
+        // rest still reverts, and surface which files were skipped.
+        let (ops, skipped) = match self.hunks.undo_plan(last) {
+            Ok(ops) => (ops, Vec::new()),
+            Err(_) => self.hunks.undo_plan_partial(last),
+        };
+        if ops.is_empty() && skipped.is_empty() {
             let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
                 "nothing to undo".into(),
             ));
             return;
         }
+        for path in &skipped {
+            let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
+                format!(
+                    "skipped `{}` — modified outside the agent after the \
+                     last write (would clobber your edit)",
+                    path.display()
+                ),
+            ));
+        }
         let mut reverted = 0usize;
-        for op in plan {
+        for op in ops {
             // Safety: never undo outside the workspace — the tracker records
             // resolved paths, but guard here so a bad origin can't delete
             // arbitrary files.
@@ -496,6 +540,22 @@ impl SessionActor {
             ControlOp::UndoLastTurn => self.undo_last_turn().await,
             ControlOp::SetModel { provider, model } => {
                 info!(%provider, %model, "slash hot-swap");
+                if let Ok(cfg) = agent_llm::AppConfig::load(None) {
+                    if let Some(pcfg) = cfg.providers.get(&provider) {
+                        if let Ok(p) = agent_llm::ProviderFactory::build(pcfg) {
+                            self.engine.set_provider(p);
+                        }
+                        if let Some(mentry) = pcfg.find_model(&model) {
+                            if let Some(d) = mentry.detailed() {
+                                self.engine.set_thinking_level_map(d.thinking_level_map.clone());
+                            } else {
+                                self.engine.set_thinking_level_map(None);
+                            }
+                        } else {
+                            self.engine.set_thinking_level_map(None);
+                        }
+                    }
+                }
                 self.engine.set_model(model.clone());
                 let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
                     format!("model → {provider}/{model} (next turn)")));
@@ -565,27 +625,62 @@ impl SessionActor {
             }
             UiCommand::SetModel { provider, model } => {
                 info!(%provider, %model, "hot-swap requested");
-                self.engine.set_model(model);
-                // provider swap lands via a rebuilt provider Arc — the caller
-                // passes the new Arc through SessionConfig on rebuild; Stage 5
-                // wires the UI dropdown to reconstruct the session.
+                if let Ok(cfg) = agent_llm::AppConfig::load(None) {
+                    if let Some(pcfg) = cfg.providers.get(&provider) {
+                        if let Ok(p) = agent_llm::ProviderFactory::build(pcfg) {
+                            self.engine.set_provider(p);
+                        }
+                        if let Some(mentry) = pcfg.find_model(&model) {
+                            if let Some(d) = mentry.detailed() {
+                                self.engine.set_thinking_level_map(d.thinking_level_map.clone());
+                            } else {
+                                self.engine.set_thinking_level_map(None);
+                            }
+                        } else {
+                            self.engine.set_thinking_level_map(None);
+                        }
+                    }
+                }
+                self.engine.set_model(model.clone());
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
+                    format!("已切换模型至: {model} ({provider})")));
+            }
+            UiCommand::SetThinkingLevel { level } => {
+                info!(%level, "thinking level change requested");
+                self.engine.set_thinking_level(if level.is_empty() { None } else { Some(level.clone()) });
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
+                    format!("已设置思考推理强度: {level}")));
+            }
+            UiCommand::SetPermissionMode { mode } => {
+                info!(%mode, "permission mode switch");
+                self.engine.set_permissions(
+                    crate::permissions::PermissionGate::from_mode_str(&mode),
+                );
+                let _ = self
+                    .io
+                    .ui_tx
+                    .try_send(UiEvent::SystemMessage(format!("permission mode → {mode}")));
             }
             UiCommand::Cancel => {
-                // Cooperative cancel: in-flight streams finish their current
-                // chunk then the turn unwinds. Full cancellation lands with
-                // the steering stage; for now mark Finished and emit notice.
+                // P0-C4: real cooperative cancel — set the shared flag the
+                // engine polls between chunks and before each tool dispatch.
+                // The command-pump path covers the between-turns case; the
+                // mid-turn path is the `cancel_writer()` the bridge writes
+                // directly so it isn't queued behind `run_turn`.
+                self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 self.state = AgentState::Finished;
                 let _ = self
                     .io
                     .ui_tx
                     .try_send(UiEvent::SystemMessage("turn cancelled".into()));
             }
-            UiCommand::ToolDecision { approved } => {
+            UiCommand::ToolDecision { request_id, approved } => {
                 // Direct write to the engine's shared decision slot — this
                 // reaches the wait even when handle() is invoked mid-turn
                 // via run()'s serial pump (the turn future polls the slot,
-                // not this channel).
-                *self.decision_slot.lock().unwrap() = Some(approved);
+                // not this channel). The request_id correlates the verdict
+                // to a specific ApprovalRequested (P1-a).
+                *self.decision_slot.lock().unwrap() = Some((request_id, approved));
             }
             UiCommand::UndoLastTurn => {
                 self.undo_last_turn().await;

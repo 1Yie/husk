@@ -54,7 +54,7 @@ pub fn spec() -> ToolSpec {
              `expected_hash` from smart_read to guard against file drift.",
         ),
         readonly: false,
-        exec: |args, ctx| exec(args, ctx).boxed(),
+        exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
@@ -76,13 +76,11 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 
     let res = apply(&source, &parsed.search, &parsed.replace)?;
 
-    // Stage 3 contract: write happens through the permission/CoW flow — the
-    // engine (Stage 4) routes `patched_content` through `AwaitingToolConfirmation`.
-    // The tool itself returns the diff for the approval card and writes only
-    // when invoked in a context that already approved (permission layer,
-    // Stage 6). For now we write directly — the engine will gate the call.
-    tokio::fs::write(&path, &res.patched_content).await?;
-
+    // P1-c: the tool no longer writes — it returns `patched_content` as a
+    // `PendingWrite` and the ENGINE commits it after the permission decision.
+    // This makes the side effect explicit, keeps the fuzzy flag honest on
+    // the approval card, and lets the engine record the hunk in one step
+    // (no read-after-write to reconstruct what changed).
     let mut content = String::new();
     content.push_str(&format!("patched {} (line {})", parsed.path, res.match_line));
     if res.matched_fuzzily {
@@ -95,6 +93,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         content,
         ui_type: Some("diff"),
         fuzzy: res.matched_fuzzily,
+        pending_write: vec![crate::tools::registry::PendingWrite::write(
+            path,
+            res.patched_content.into_bytes(),
+        )],
     })
 }
 

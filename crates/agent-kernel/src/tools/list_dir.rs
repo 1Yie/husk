@@ -29,7 +29,7 @@ pub fn spec() -> ToolSpec {
              targeted lookups instead of deep listings.",
         ),
         readonly: true,
-        exec: |args, ctx| exec(args, ctx).boxed(),
+        exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 

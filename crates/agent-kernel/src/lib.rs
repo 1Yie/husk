@@ -16,5 +16,6 @@ pub mod hooks;
 pub mod permissions;
 pub mod session;
 pub mod session_store;
+pub mod session_manager;
 pub mod steering;
 pub mod tools;

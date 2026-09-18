@@ -14,9 +14,9 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 }
 
 #[tokio::test]
-async fn registry_lists_six_builtins() {
+async fn registry_lists_builtins() {
     let r = registry();
-    assert_eq!(r.len(), 6);
+    assert_eq!(r.len(), 11);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -24,13 +24,27 @@ async fn registry_lists_six_builtins() {
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap())
         .collect();
-    for expected in ["smart_read", "fuzzy_patch", "smart_test_runner", "list_dir", "smart_grep", "bash"] {
+    for expected in [
+        "smart_read",
+        "fuzzy_patch",
+        "apply_patch",
+        "smart_test_runner",
+        "list_dir",
+        "smart_grep",
+        "bash",
+        "todo",
+        "serena",
+        "web_fetch",
+        "webfetch",
+    ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
     // readonly flags per permission contract
     assert!(r.is_readonly("smart_read"));
     assert!(r.is_readonly("smart_grep"));
     assert!(r.is_readonly("list_dir"));
+    assert!(r.is_readonly("web_fetch"));
+    assert!(r.is_readonly("webfetch"));
     assert!(!r.is_readonly("fuzzy_patch"));
     assert!(!r.is_readonly("bash"));
 }
@@ -113,6 +127,12 @@ async fn fuzzy_patch_full_roundtrip() {
     assert_eq!(res.ui_type, Some("diff"));
     assert!(res.content.contains("patched lib.rs"));
     assert!(res.content.contains("step_two"));
+
+    // P1-c: the tool now returns a `PendingWrite` instead of writing — the
+    // ENGINE commits it post-approval. Emulate that commit here.
+    let pw = res.pending_write.into_iter().next()
+        .expect("fuzzy_patch returns a PendingWrite");
+    std::fs::write(&pw.path, &pw.content).unwrap();
 
     let after = std::fs::read_to_string(&file).unwrap();
     assert!(after.contains("step_two();\n    step_one();"));
