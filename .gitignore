@@ -1,18 +1,57 @@
-# Rust
-/target/
+# Rust & Cargo
+target/
+**/target/
 **/*.rs.bk
 Cargo.lock~
 
-# IDE / OS
+# Node / Frontend (Vite, React, Web)
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+dist-ssr/
+**/dist-ssr/
+.vite/
+**/.vite/
+# Tauri generated schemas & build artifacts
+gen/
+**/gen/
+*.tsbuildinfo
+
+# Logs & Diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Agent runtime state & local databases
+.agent/
+.serena/
+.pi/tasks/
+.pi/sessions/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Local configuration & environment secrets
+.env
+.env.*
+!.env.example
+*.local.toml
+*.local.json
+config.local.toml
+config.local.json
+
+# IDE / Editors / OS
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
 .DS_Store
-
-# Pi agent harness runtime state
-.pi/tasks/
-.pi/sessions/
-
-# Local secrets / config overrides
-*.local.toml
-.env
+Thumbs.db
+Desktop.ini
