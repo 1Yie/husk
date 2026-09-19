@@ -118,6 +118,25 @@ impl SessionStore {
             + 1
     }
 
+    /// Remove a session entirely — index entry, history file, and any
+    /// `<id>.*` sibling state files (todos, scratch).
+    pub fn remove(&self, id: i64) -> std::io::Result<()> {
+        let mut idx = self.read_index();
+        idx.sessions.retain(|s| s.id != id);
+        let json = serde_json::to_string_pretty(&idx)?;
+        std::fs::write(self.index_path(), json)?;
+        let _ = std::fs::remove_file(self.history_path(id));
+        let prefix = format!("{id}.");
+        if let Ok(rd) = std::fs::read_dir(&self.dir) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with(&prefix) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn read_index(&self) -> SessionIndex {
         std::fs::read_to_string(self.index_path())
             .ok()

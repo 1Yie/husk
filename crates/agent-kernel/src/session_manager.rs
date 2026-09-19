@@ -328,6 +328,53 @@ impl SessionManager {
         self.active_id = id;
     }
 
+    /// Delete a session — abort its turn, drop the actor handle (closing
+    /// the command channel ends its loop), and remove the store data.
+    /// If it was active, switch to the most recent remaining session, or
+    /// open a fresh one when none are left.
+    pub fn delete_session(&mut self, id: i64) {
+        if let Some(h) = self.handles.remove(&id) {
+            h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let _ = self.store.remove(id);
+        self.metas = self.store.list();
+        if self.active_id == id {
+            match self.metas.first().map(|m| m.id) {
+                Some(next) => self.open_session(next),
+                None => self.new_session(),
+            }
+        }
+    }
+
+    /// Fork — copy the latest persisted snapshot into a fresh session and
+    /// activate it. Returns the new id; `None` when the source session has
+    /// no history to copy yet.
+    pub fn fork_session(&mut self, id: i64) -> Option<i64> {
+        let hist = self.store.load_history(id)?;
+        let new_id = self.store.next_id();
+        // Snapshot first — spawn_actor() resumes from the store, so the
+        // new actor must already see the forked history when it starts.
+        self.store.snapshot(new_id, &hist).ok()?;
+        let src = self.metas.iter().find(|m| m.id == id).cloned();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = self.store.upsert_meta(SessionMeta {
+            id: new_id,
+            title: src
+                .as_ref()
+                .map(|m| format!("{} · 副本", m.title))
+                .unwrap_or_else(|| "新会话".into()),
+            preview: src.map(|m| m.preview).unwrap_or_default(),
+            updated_at: now,
+        });
+        self.metas = self.store.list();
+        self.spawn_actor(new_id);
+        self.active_id = new_id;
+        Some(new_id)
+    }
+
     /// The active session's handles (for UI commands).
     pub fn active(&self) -> Option<&SessionHandle> {
         self.handles.get(&self.active_id)
