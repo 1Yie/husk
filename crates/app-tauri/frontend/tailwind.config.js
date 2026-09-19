@@ -4,7 +4,6 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Codex Desktop light theme tokens matching screenshot.
         workspace: "#ffffff",
         panel: "#f3f3f5",
         card: "#ffffff",
