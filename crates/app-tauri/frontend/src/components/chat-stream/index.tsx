@@ -191,11 +191,16 @@ export function ChatStream({ view }: Props) {
   const showReplyWait = view.streaming && !hasActiveItem;
 
   return (
-    <div
-      className="stream-scroll bg-white flex-1 overflow-y-auto w-full select-text"
-      ref={scrollRef}
-      onScroll={onScroll}
-    >
+    // Static root — never scrolls. `pr-2` gives the scrollbar 8px of air
+    // from the window edge; padding only offsets a scrollbar when the
+    // scrollbar belongs to an inner scroller, which is why the scroll
+    // region lives on the nested `.stream-scroll` instead of the root.
+    <div className="bg-white flex-1 min-h-0 w-full flex flex-col select-text pr-2">
+      <div
+        className="stream-scroll"
+        ref={scrollRef}
+        onScroll={onScroll}
+      >
       <div className="max-w-3xl w-full mx-auto px-4 pt-6 pb-32 flex flex-col gap-6 min-h-full">
         {view.items.length === 0 && !view.streaming && (
           <div className="my-auto text-neutral-400 text-sm text-center select-none py-16">
@@ -294,6 +299,7 @@ export function ChatStream({ view }: Props) {
          * shouldn't sit flush against the floating input card. */}
         <div className="h-8 flex-none" />
         <div ref={endRef} />
+      </div>
       </div>
     </div>
   );

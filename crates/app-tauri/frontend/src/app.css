@@ -33,7 +33,16 @@ body {
     @apply flex-1 min-w-0 flex flex-col bg-workspace;
   }
   .stream-scroll {
-    @apply flex-1 overflow-y-auto px-6 py-4 flex flex-col items-center;
+    /* `overflow-y-scroll` keeps the scrollbar gutter reserved — under
+       `auto` the thumb appearing as a reply outgrows the viewport shifts
+       the centered column ~6px, which read as a jitter next to the
+       sidebar's always-present gutter. `transform-gpu` composites the
+       scroller: on WebKitGTK an uncomposited scroller paints the custom
+       scrollbar in the content layer, so streamed repaints flash the
+       thumb; composited scrollers get a separate scrollbar layer. Same
+       treatment as the session sidebar. `min-h-0` lets it shrink inside
+       the static root wrapper instead of overflowing it. */
+    @apply flex-1 min-h-0 overflow-y-scroll transform-gpu px-6 py-4 flex flex-col items-center;
   }
   .stream-empty {
     @apply text-text-dim text-sm py-12 text-center select-none;
