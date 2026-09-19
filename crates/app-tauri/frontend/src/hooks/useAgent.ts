@@ -356,7 +356,25 @@ export function useAgentEvents() {
   }, []);
 
   const active = views.get(activeId) ?? emptyView();
-  return { views, activeId, active, setActiveId, loadView };
+
+  // Sidebar running flags — derived live from each session's last
+  // `StateChanged`, so the orb reacts on the event itself instead of
+  // waiting for the next `listSessions` refresh. Mirrors
+  // `AgentState::is_active`: everything except Idle/Finished/Failed.
+  const runningIds = new Set<number>();
+  for (const [id, v] of views) {
+    const s = v.state;
+    if (
+      s !== null &&
+      s !== "Idle" &&
+      s !== "Finished" &&
+      !(typeof s === "object" && "Failed" in s)
+    ) {
+      runningIds.add(id);
+    }
+  }
+
+  return { views, activeId, active, setActiveId, loadView, runningIds };
 }
 
 export function useAgentSession() {

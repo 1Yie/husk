@@ -4,12 +4,14 @@
 //! in a `Mutex` here. Session actors keep their own threads — this state
 //! only touches the command / steer / decision / cancel handles.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use agent_kernel::session_manager::SessionManager;
 
 /// The shared kernel state — one `SessionManager` for the app lifetime.
-pub struct KernelState(pub Mutex<SessionManager>);
+/// `Arc` so the event forwarder can share it: it needs `handle_mut` to
+/// keep sidebar `running`/`preview` truthful as events stream past.
+pub struct KernelState(pub Arc<Mutex<SessionManager>>);
 
 impl KernelState {
     /// Boot the manager (resumes the latest session or creates one) and
@@ -17,6 +19,6 @@ impl KernelState {
     /// to the forwarder, the manager itself stays behind the mutex.
     pub fn spawn() -> (Self, std::sync::mpsc::Receiver<(i64, agent_ipc::UiEvent)>) {
         let (mgr, rx) = SessionManager::spawn();
-        (Self(Mutex::new(mgr)), rx)
+        (Self(Arc::new(Mutex::new(mgr))), rx)
     }
 }

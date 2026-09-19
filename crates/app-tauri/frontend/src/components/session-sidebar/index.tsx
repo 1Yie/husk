@@ -1,10 +1,17 @@
-import { SquarePen, Search, Clock, Plug, Folder, Settings } from "@keyline-icons/react";
+import { SquarePen, Search, Clock, Plug, Folder, Settings, MoreHorizontal, GitFork, Bin } from "@keyline-icons/react";
+import { useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { SessionRow } from "../../types";
 import { Orb } from "../agent-orb";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 const win = getCurrentWindow();
@@ -20,6 +27,8 @@ interface Props {
   onPickWorkspace?: () => void;
   onSwitchWorkspace?: (path: string) => void;
   onOpenSettings?: () => void;
+  onFork?: (id: number) => void;
+  onDelete?: (id: number) => void;
 }
 
 export function SessionSidebar({
@@ -33,6 +42,8 @@ export function SessionSidebar({
   onPickWorkspace,
   onSwitchWorkspace,
   onOpenSettings,
+  onFork,
+  onDelete,
 }: Props) {
   const otherRecents = recentWorkspaces.filter((w) => w.path !== workspaceRoot);
 
@@ -110,9 +121,20 @@ export function SessionSidebar({
         </span>
       </div>
 
-      {/* Sessions list */}
-      <ScrollArea className="flex-1 px-2">
-        <div className="flex flex-col gap-0.5 pb-2">
+      {/* Sessions list — native scroller (no ScrollArea). `min-h-0` lets
+          the flex child shrink and scroll instead of growing past the
+          aside's height; the native scrollbar takes real layout space so
+          nothing sits under it. */}
+      {/* `overflow-y-scroll` keeps the gutter reserved permanently, so the
+          scrollbar appearing/disappearing never shifts row content.
+          `transform-gpu` (translateZ(0)) promotes the scroller to a
+          composited layer — under WebKitGTK an uncomposited scroller paints
+          the custom scrollbar in the same layer as its contents, so any
+          row repaint (e.g. a hover background) repaints the thumb too and
+          it visibly flashes. Composited scrollers get their own scrollbar
+          layers, so content repaints can't touch it. */}
+      <div className="flex-1 min-h-0 overflow-y-scroll transform-gpu">
+        <div className="flex flex-col gap-0.5 px-2 pb-2">
           {sessions.length === 0 ? (
             <div className="px-2.5 py-1.5 text-[13px] text-neutral-400">暂无会话</div>
           ) : (
@@ -122,11 +144,13 @@ export function SessionSidebar({
                 row={s}
                 isActive={activeId ? s.id === activeId : s.active}
                 onOpen={onOpen}
+                onFork={onFork}
+                onDelete={onDelete}
               />
             ))
           )}
         </div>
-      </ScrollArea>
+      </div>
 
       {/* Recent workspaces footer */}
       {otherRecents.length > 0 && onSwitchWorkspace && (
@@ -192,35 +216,91 @@ function SessionItem({
   row,
   isActive,
   onOpen,
+  onFork,
+  onDelete,
 }: {
   row: SessionRow;
   isActive: boolean;
   onOpen: (id: number) => void;
+  onFork?: (id: number) => void;
+  onDelete?: (id: number) => void;
 }) {
   const displayTitle =
     row.title === "new session" ? "新会话" : (row.title || `对话 ${row.id}`);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
-    <Button
-      variant={isActive ? "secondary" : "ghost"}
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onOpen(row.id)}
+      onKeyDown={(e) => { if (e.key === "Enter") onOpen(row.id); }}
       className={cn(
-        "w-full justify-start gap-2 px-2.5 h-8 text-[13px]",
+        "group flex w-full items-center gap-2 rounded-md px-2.5 h-8 text-[13px] cursor-pointer select-none",
         isActive
-          ? "bg-white text-neutral-900 font-medium shadow-sm border border-neutral-200/80 hover:bg-white"
+          ? "bg-white text-neutral-900 font-medium shadow-sm border border-neutral-200/80"
           : "text-neutral-600 hover:bg-neutral-200/50 font-normal"
       )}
     >
       <span className="flex-1 min-w-0 truncate text-left">
         {displayTitle}
       </span>
-      {row.running && (
-        <Orb
-          variant="C3"
-          size={14}
-          className="text-neutral-800 flex-none"
-        />
-      )}
-    </Button>
+      {/* Trailing cell — the running orb and the ⋯ trigger share one 20px
+          slot: the orb shows at rest and swaps to the trigger on row
+          hover/focus, so "running" never costs a second cell of title
+          width. While the menu is open the orb is unmounted entirely —
+          `group-hover` alone would let it peek back out once the pointer
+          leaves the row for the (portaled) menu. */}
+      <div className="relative flex-none h-5 w-5">
+        {row.running && !menuOpen && (
+          <Orb
+            variant="C3"
+            size={14}
+            className="absolute inset-0 flex items-center justify-center text-neutral-800 group-hover:invisible group-focus-within:invisible"
+          />
+        )}
+        {/* modal={false} — a modal menu makes Radix scroll-lock the <body>
+            (strips the scrollbar + adds padding compensation), which is the
+            weird scrollbar vanish/reappear + layout shift on open/close. */}
+        {/* Trigger uses `invisible`/`visible`, not an opacity fade: an
+            opacity transition promotes the button to a composited layer for
+            the fade and demotes it after, and each promotion repaints the
+            scroller — that repaint is what flashed the native scrollbar on
+            every row hover. `visibility` never touches the compositor, and
+            the hidden button also stops being hit-testable (an opacity-0
+            button still swallowed clicks on the row's right edge).
+            `group-focus-within` keeps it keyboard-reachable. */}
+        <DropdownMenu modal={false} onOpenChange={setMenuOpen}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="会话操作"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+              className="absolute inset-0 rounded flex items-center justify-center text-neutral-400 invisible group-hover:visible group-focus-within:visible data-[state=open]:visible hover:bg-neutral-300/60 hover:text-neutral-700"
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" sideOffset={4} className="min-w-[140px]">
+          <DropdownMenuItem
+            className="gap-2 text-xs cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); onFork?.(row.id); }}
+          >
+            <GitFork className="h-3.5 w-3.5" />
+            Fork 会话
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="gap-2 text-xs cursor-pointer text-red-600 focus:text-red-600 focus:bg-red-50 dark:focus:bg-red-950/40"
+            onClick={(e) => { e.stopPropagation(); onDelete?.(row.id); }}
+          >
+            <Bin className="h-3.5 w-3.5" />
+            删除会话
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      </div>
+    </div>
   );
 }

@@ -29,6 +29,27 @@ pub fn agent_session(
             let history = mgr.store_history(id).unwrap_or_default();
             Ok(serde_json::json!({"active": mgr.active_id, "history": history}))
         }
+        // `delete` mirrors `open` in returning the new active id + its
+        // history so the webview can rebuild the stream when the deleted
+        // session was the one on screen.
+        "delete" => {
+            let id = id.ok_or("delete needs id")?;
+            mgr.delete_session(id);
+            let history = mgr.store_history(mgr.active_id).unwrap_or_default();
+            Ok(serde_json::json!({"active": mgr.active_id, "history": history}))
+        }
+        // `fork` copies the source session's latest snapshot into a new
+        // session and activates it — same return shape as `open`.
+        "fork" => {
+            let id = id.ok_or("fork needs id")?;
+            match mgr.fork_session(id) {
+                Some(new_id) => {
+                    let history = mgr.store_history(new_id).unwrap_or_default();
+                    Ok(serde_json::json!({"active": mgr.active_id, "id": new_id, "history": history}))
+                }
+                None => Err("session has no history to fork yet".into()),
+            }
+        }
         "workspace_info" => {
             let name = mgr.workspace_root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             Ok(serde_json::json!({

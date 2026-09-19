@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useAgentEvents, useAgentSession, viewFromHistory } from "./hooks/useAgent";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, openSettingsWindow, type WorkspaceInfo } from "./invoke/agent";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, openSettingsWindow, forkSession, deleteSession, type WorkspaceInfo } from "./invoke/agent";
 import { TitleBar } from "./components/title-bar";
 import { SessionSidebar } from "./components/session-sidebar";
 import { ChatStream } from "./components/chat-stream";
 import { ComposerBar } from "./components/composer-bar";
 
 export function App() {
-  const { active, activeId, setActiveId, loadView } = useAgentEvents();
-  const { sessions, newSession, openSession } = useAgentSession();
+  const { active, activeId, setActiveId, loadView, runningIds } = useAgentEvents();
+  const { sessions, refresh, newSession, openSession } = useAgentSession();
   const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: "", name: "", recents: [] });
 
   useEffect(() => {
@@ -78,7 +78,13 @@ export function App() {
   return (
     <div className="flex h-full w-full bg-white overflow-hidden select-none">
       <SessionSidebar
-        sessions={sessions}
+        // `runningIds` (live, from StateChanged events) overlays the polled
+        // `row.running` — the orb appears the moment a turn starts rather
+        // than up to 2s later, and survives a refresh racing the flag.
+        sessions={sessions.map((s) => ({
+          ...s,
+          running: s.running || runningIds.has(s.id),
+        }))}
         activeId={activeId}
         workspaceName={workspace.name}
         workspaceRoot={workspace.root}
@@ -89,6 +95,25 @@ export function App() {
             if (r && r.history.length > 0) loadView(id, viewFromHistory(r.history));
           });
           setActiveId(id);
+        }}
+        onFork={(id) => {
+          // Backend activates the fork — mirror it locally + rebuild the
+          // stream view from the copied history.
+          void forkSession(id).then((r) => {
+            if (!r) return;
+            void refresh();
+            setActiveId(r.id);
+            if (r.history.length > 0) loadView(r.id, viewFromHistory(r.history));
+          }).catch(() => {});
+        }}
+        onDelete={(id) => {
+          void deleteSession(id).then((r) => {
+            void refresh();
+            // If the deleted session was on screen, the backend already
+            // switched to another — follow it and rebuild its view.
+            setActiveId(r.active);
+            if (r.history.length > 0) loadView(r.active, viewFromHistory(r.history));
+          }).catch(() => {});
         }}
         onPickWorkspace={handlePickWorkspace}
         onSwitchWorkspace={handleSwitchWorkspace}

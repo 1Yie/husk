@@ -23,6 +23,24 @@ export async function openSession(id: number) {
   return r;
 }
 
+/** Duplicate a session's history into a fresh session (which becomes the
+ * active one) — returns the new id + the copied history. */
+export async function forkSession(id: number) {
+  return invoke<{ active: number; id: number; history: ChatMessage[] }>(
+    "agent_session",
+    { op: "fork", id },
+  );
+}
+
+/** Delete a session entirely. Returns the new active id + its history —
+ * the backend auto-switches when the deleted session was on screen. */
+export async function deleteSession(id: number) {
+  return invoke<{ active: number; history: ChatMessage[] }>(
+    "agent_session",
+    { op: "delete", id },
+  );
+}
+
 export interface WorkspaceInfo {
   root: string;
   name: string;

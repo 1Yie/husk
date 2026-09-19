@@ -20,8 +20,9 @@ fn main() {
             // forward it to the webview. `event_rx` is `std::sync::mpsc`
             // so it's moved, not cloned — the manager lives in `KernelState`.
             let (state, rx) = KernelState::spawn();
+            let mgr = state.0.clone();
             app.manage(state);
-            ipc::forwarder::spawn(app.handle().clone(), rx);
+            ipc::forwarder::spawn(app.handle().clone(), rx, mgr);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
