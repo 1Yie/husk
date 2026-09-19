@@ -1,8 +1,6 @@
-// AssistantStatus — ported from gensei web, rebuilt on Collapsible + Button.
-
 import { useState } from "react";
 import { Orb } from "../agent-orb";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";

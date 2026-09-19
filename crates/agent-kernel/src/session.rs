@@ -54,6 +54,11 @@ pub struct SessionActor {
     hunks: HunkTracker,
     /// Engine's decision slot — `ToolDecision` writes here mid-turn.
     decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
+    /// Engine's permissions slot — permission mode updates apply immediately mid-turn.
+    permissions_slot: Arc<std::sync::RwLock<crate::permissions::PermissionGate>>,
+    /// Engine's thinking-level slot — read by the manager to report the
+    /// session's live level (defaults may differ once prefs change).
+    thinking_slot: Arc<std::sync::RwLock<Option<String>>>,
     /// Forwards `UiCommand::Steer` texts into the engine's steer channel.
     steer_tx: mpsc::Sender<String>,
     /// Cooperative cancel flag shared with the engine — `UiCommand::Cancel`
@@ -199,7 +204,9 @@ impl SessionActor {
             .map(Arc::new);
 
         let registry = Arc::new(ToolRegistry::with_builtins());
-        let ctx = Arc::new(ToolCtx::new(&cfg.workspace_root));
+        let ctx = Arc::new(
+            ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone()),
+        );
         let mut engine = Engine::new(
             cfg.provider.clone(),
             registry,
@@ -213,6 +220,8 @@ impl SessionActor {
         engine.set_thinking_level(cfg.thinking_level.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
         let decision_slot = engine.decision_slot();
+        let permissions_slot = engine.permissions_writer();
+        let thinking_slot = engine.thinking_level_shared();
 
         // Actor keeps the real cmd_rx — `run()` drains it into `handle()`.
         // The `channels.cmd_rx` left for the caller is a dead end; the
@@ -263,6 +272,8 @@ impl SessionActor {
                 cmd_tx,
                 hunks,
                 decision_slot,
+                permissions_slot,
+                thinking_slot,
                 steer_tx,
                 cancel,
                 cmd_rx,
@@ -305,6 +316,17 @@ impl SessionActor {
     /// approval isn't queued behind the running `run_turn`.
     pub fn decision_writer(&self) -> Arc<std::sync::Mutex<Option<(u64, bool)>>> {
         self.decision_slot.clone()
+    }
+
+    /// The shared permission gate slot — updates apply immediately mid-turn.
+    pub fn permissions_writer(&self) -> Arc<std::sync::RwLock<crate::permissions::PermissionGate>> {
+        self.permissions_slot.clone()
+    }
+
+    /// The shared thinking-level slot — read-only mirror of the engine's
+    /// level so the manager can report the session's actual value.
+    pub fn thinking_writer(&self) -> Arc<std::sync::RwLock<Option<String>>> {
+        self.thinking_slot.clone()
     }
 
     /// The mid-turn steering sender — `Steer` texts go here when a turn is
@@ -364,6 +386,7 @@ impl SessionActor {
         match self.engine.run_turn(&mut self.io, &mut self.history, text, &mut self.hunks).await {
             Ok(outcome) => {
                 self.state = AgentState::Finished;
+                let _ = self.io.ui_tx.try_send(UiEvent::StateChanged(AgentState::Finished));
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
@@ -377,6 +400,8 @@ impl SessionActor {
             Err(e) => {
                 self.state = AgentState::Failed(e.clone());
                 warn!("turn failed: {e}");
+                let _ = self.io.ui_tx.try_send(UiEvent::Error(e.clone()));
+                let _ = self.io.ui_tx.try_send(UiEvent::StateChanged(AgentState::Failed(e.clone())));
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
                     outcome: "failed".into(),

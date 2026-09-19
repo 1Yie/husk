@@ -47,6 +47,10 @@ pub struct SandboxConfig {
     pub env_vars: Vec<(String, String)>,
     /// CoW snapshot behavior.
     pub snapshot: SnapshotMode,
+    /// Extra read-only mounts inside the sandbox.
+    pub extra_ro_mounts: Vec<PathBuf>,
+    /// Extra read-write mounts inside the sandbox.
+    pub extra_rw_mounts: Vec<PathBuf>,
 }
 
 impl Default for SandboxConfig {
@@ -59,6 +63,8 @@ impl Default for SandboxConfig {
             timeout_secs: 60,
             env_vars: Vec::new(),
             snapshot: SnapshotMode::Off,
+            extra_ro_mounts: Vec::new(),
+            extra_rw_mounts: Vec::new(),
         }
     }
 }

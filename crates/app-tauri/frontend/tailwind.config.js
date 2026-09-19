@@ -40,7 +40,21 @@ export default {
       boxShadow: {
         "sidebar-active": "0 1px 2px 0 rgba(0, 0, 0, 0.05)",
         "composer": "0 4px 20px 0 rgba(0, 0, 0, 0.06)",
-      }
+      },
+      keyframes: {
+        "collapsible-down": {
+          from: { height: "0", opacity: "0" },
+          to: { height: "var(--radix-collapsible-content-height)", opacity: "1" },
+        },
+        "collapsible-up": {
+          from: { height: "var(--radix-collapsible-content-height)", opacity: "1" },
+          to: { height: "0", opacity: "0" },
+        },
+      },
+      animation: {
+        "collapsible-down": "collapsible-down 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
+        "collapsible-up": "collapsible-up 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+      },
     },
   },
   plugins: [require("tailwindcss-animate")],

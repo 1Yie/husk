@@ -1,13 +1,14 @@
-// Codex-style Markdown Components for Streamdown
-
 import React from "react";
+import { ChevronDown } from "@keyline-icons/react";
 
 export const codexMarkdownComponents = {
   table: ({ children, ...props }: React.ComponentPropsWithoutRef<"table">) => (
-    <div className="my-4 w-full overflow-x-auto rounded-lg border border-neutral-200/90 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-xs">
-      <table className="min-w-full text-left text-[13px] border-collapse" {...props}>
-        {children}
-      </table>
+    <div className="my-4 w-full rounded-lg border border-neutral-200/90 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-xs overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-[13px] border-collapse" {...props}>
+          {children}
+        </table>
+      </div>
     </div>
   ),
   thead: ({ children, ...props }: React.ComponentPropsWithoutRef<"thead">) => (
@@ -147,5 +148,23 @@ export const codexMarkdownComponents = {
   ),
   hr: (props: React.ComponentPropsWithoutRef<"hr">) => (
     <hr className="my-6 border-0 border-t border-neutral-200/80 dark:border-neutral-800" {...props} />
+  ),
+
+  details: ({ children, ...props }: React.ComponentPropsWithoutRef<"details">) => (
+    <details
+      className="group my-2 rounded-xl border border-neutral-200/90 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-900/40 p-2.5 transition-all text-sm leading-relaxed"
+      {...props}
+    >
+      {children}
+    </details>
+  ),
+  summary: ({ children, ...props }: React.ComponentPropsWithoutRef<"summary">) => (
+    <summary
+      className="flex cursor-pointer items-center gap-2 font-medium text-neutral-800 dark:text-neutral-200 select-none list-none [&::-webkit-details-marker]:hidden"
+      {...props}
+    >
+      <ChevronDown className="h-3.5 w-3.5 text-neutral-400 transition-transform duration-250 ease-out group-open:rotate-0 -rotate-90 shrink-0" />
+      <span>{children}</span>
+    </summary>
   ),
 };

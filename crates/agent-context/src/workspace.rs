@@ -17,6 +17,11 @@ use thiserror::Error;
 /// into a single fold marker so the LLM prompt stays inside budget.
 pub const MAX_TREE_ENTRIES: usize = 2_000;
 
+/// Hard cap on the flat file index used by the `@` completion picker.
+/// Larger than [`MAX_TREE_ENTRIES`] — the picker needs deep paths the
+/// prompt tree folds away — but still bounded for huge monorepos.
+pub const MAX_INDEX_ENTRIES: usize = 20_000;
+
 /// Default directory depth for the skeleton tree handed to the model.
 pub const DEFAULT_MAX_DEPTH: usize = 3;
 
@@ -137,6 +142,58 @@ impl WorkspaceScanner {
     pub fn build_skeleton(root: impl AsRef<Path>) -> Result<WorkspaceTree, WorkspaceError> {
         Self::build_file_tree(root, DEFAULT_MAX_DEPTH)
     }
+
+    /// Flat index of every non-ignored FILE in the workspace — `/`-separated
+    /// relative paths, no depth cap, sorted by file name. Feeds the `@`
+    /// mention picker (directories are omitted — it completes files, and
+    /// the kernel inlines content on submit). `cap` bounds the result so a
+    /// monorepo can't stall the composer; `0` means [`MAX_INDEX_ENTRIES`].
+    pub fn build_file_index(
+        root: impl AsRef<Path>,
+        cap: usize,
+    ) -> Result<Vec<String>, WorkspaceError> {
+        let root = root.as_ref();
+        if !root.is_dir() {
+            return Err(WorkspaceError::InvalidRoot(root.to_path_buf()));
+        }
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let cap = if cap == 0 { MAX_INDEX_ENTRIES } else { cap };
+
+        let mut builder = WalkBuilder::new(&root);
+        builder
+            .hidden(true)
+            .git_ignore(true)
+            .git_exclude(true)
+            .require_git(false)
+            .sort_by_file_name(|a, b| a.cmp(b))
+            .follow_links(false);
+
+        let mut out = Vec::new();
+        for result in builder.build() {
+            let entry = match result {
+                Ok(e) => e,
+                Err(err) => {
+                    tracing::warn!(%err, "workspace walk entry error, skipping");
+                    continue;
+                }
+            };
+            if entry.depth() == 0 || entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                continue;
+            }
+            let Ok(rel) = entry.path().strip_prefix(&root) else {
+                continue;
+            };
+            let s = rel.to_string_lossy().replace('\\', "/");
+            if s.is_empty() {
+                continue;
+            }
+            out.push(s);
+            if out.len() >= cap {
+                break;
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -203,5 +260,37 @@ mod tests {
         assert_eq!(tree.entries.len(), MAX_TREE_ENTRIES);
         assert!(tree.truncated);
         assert!(tree.to_prompt_block().ends_with("... [truncated]\n"));
+    }
+
+    #[test]
+    fn file_index_lists_deep_files_and_skips_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("a/b/c/d")).unwrap();
+        fs::write(root.join("a/b/c/d/deep.txt"), "x").unwrap();
+        fs::write(root.join("top.rs"), "fn main() {}").unwrap();
+        fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+        fs::create_dir_all(root.join("ignored")).unwrap();
+        fs::write(root.join("ignored/x.txt"), "x").unwrap();
+
+        // No depth cap — the picker must reach deep paths the prompt tree
+        // folds away.
+        let idx = WorkspaceScanner::build_file_index(root, 0).unwrap();
+        assert!(idx.iter().any(|e| e == "a/b/c/d/deep.txt"));
+        assert!(idx.iter().any(|e| e == "top.rs"));
+        // Files only — no directory rows, no gitignored paths.
+        assert!(!idx.iter().any(|e| e.ends_with('/')));
+        assert!(!idx.iter().any(|e| e.contains("ignored")));
+    }
+
+    #[test]
+    fn file_index_respects_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for i in 0..10 {
+            fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        let idx = WorkspaceScanner::build_file_index(root, 4).unwrap();
+        assert_eq!(idx.len(), 4);
     }
 }

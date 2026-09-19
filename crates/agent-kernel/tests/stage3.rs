@@ -45,6 +45,7 @@ async fn registry_lists_builtins() {
     assert!(r.is_readonly("list_dir"));
     assert!(r.is_readonly("web_fetch"));
     assert!(r.is_readonly("webfetch"));
+    assert!(r.is_readonly("todo"));
     assert!(!r.is_readonly("fuzzy_patch"));
     assert!(!r.is_readonly("bash"));
 }

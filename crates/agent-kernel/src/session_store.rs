@@ -58,6 +58,13 @@ impl SessionStore {
         self.dir.join(format!("{id}.jsonl"))
     }
 
+    /// Path to a per-session scratch file (e.g. `<id>.todos.json`) — a
+    /// sibling of the history file inside the app state dir, never inside
+    /// the user's repository.
+    pub fn state_file(&self, id: i64, name: &str) -> PathBuf {
+        self.dir.join(format!("{id}.{name}"))
+    }
+
     fn index_path(&self) -> PathBuf {
         self.dir.join("index.json")
     }
@@ -154,6 +161,103 @@ pub fn load_recent_workspaces() -> Vec<RecentWorkspace> {
     list.retain(|w| w.path.is_dir());
     list.sort_by(|a, b| b.last_opened.cmp(&a.last_opened));
     list
+}
+
+// ---------------------------------------------------------------------------
+// Workspace preferences — per-workspace UI prefs (model / thinking / permission)
+// persisted next to `index.json`. Loaded at `SessionManager` boot and fed into
+// `SessionConfig`; written whenever the UI changes one of the three selectors.
+// ---------------------------------------------------------------------------
+
+/// Per-workspace composer preferences.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspacePrefs {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub thinking_level: Option<String>,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+}
+
+/// Global user default preferences for fresh/new sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultPreferences {
+    #[serde(default = "default_pref_permission_mode")]
+    pub permission_mode: String,
+    #[serde(default = "default_pref_thinking_level")]
+    pub thinking_level: Option<String>,
+}
+
+fn default_pref_permission_mode() -> String {
+    "auto".into()
+}
+
+fn default_pref_thinking_level() -> Option<String> {
+    Some("medium".into())
+}
+
+impl Default for DefaultPreferences {
+    fn default() -> Self {
+        Self {
+            permission_mode: default_pref_permission_mode(),
+            thinking_level: default_pref_thinking_level(),
+        }
+    }
+}
+
+pub fn default_preferences_path() -> Option<PathBuf> {
+    dirs_data().map(|d| d.join("agent-rs").join("default_preferences.json"))
+}
+
+pub fn load_default_preferences() -> DefaultPreferences {
+    let Some(path) = default_preferences_path() else { return DefaultPreferences::default(); };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Load the global default preferences only when the file actually exists —
+/// `None` when absent or corrupt. Used as a *fallback* layer below
+/// per-workspace prefs so an untouched install keeps the built-in defaults.
+pub fn try_load_default_preferences() -> Option<DefaultPreferences> {
+    let path = default_preferences_path()?;
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+}
+
+pub fn save_default_preferences(prefs: &DefaultPreferences) -> std::io::Result<()> {
+    let Some(path) = default_preferences_path() else { return Ok(()); };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::to_string_pretty(prefs)?;
+    std::fs::write(path, json)
+}
+
+impl SessionStore {
+    /// Path to this workspace's prefs file.
+    fn prefs_path(&self) -> PathBuf {
+        self.dir.join("prefs.json")
+    }
+
+    /// Load persisted prefs (empty if absent/corrupt).
+    pub fn load_prefs(&self) -> WorkspacePrefs {
+        std::fs::read_to_string(self.prefs_path())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    /// Persist prefs (pretty JSON, overwrite).
+    pub fn save_prefs(&self, prefs: &WorkspacePrefs) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(prefs)?;
+        std::fs::write(self.prefs_path(), json)
+    }
 }
 
 pub fn record_recent_workspace(workspace_root: &Path) {

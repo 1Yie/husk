@@ -2,7 +2,7 @@
 // Parses `todo` tool output and renders an interactive-looking, progress-tracked checklist.
 
 import { useMemo } from "react";
-import { Check, Circle, ListTodo } from "lucide-react";
+import { Check, Circle, ListCheck } from "@keyline-icons/react";
 
 interface Props {
   content: string;
@@ -78,7 +78,7 @@ export function TodoView({ content }: Props) {
       {/* Top status bar */}
       <div className="flex items-center justify-between gap-3 pb-2.5 mb-2.5 border-b border-neutral-200/70 dark:border-neutral-800/80 select-none">
         <div className="flex items-center gap-2">
-          <ListTodo className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          <ListCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
           <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200">
             任务清单
           </span>

@@ -2,15 +2,43 @@
 //!
 //! Contract (plugin-system.md §Commands): input starting with `/` is
 //! intercepted **before** the ReAct loop — zero tokens spent. Built-ins ship
-//! first; MCP `prompts/*` and WASM `command_execute` register under
-//! `plugin_id:name` when those runtimes land.
+//! first; workspace skills (`.agents/skills/<name>/SKILL.md`) resolve to a
+//! `FeedToAgent` with the skill body inlined — the model follows the skill
+//! text as instructions, matching Claude-Code's `/{skill}` convention.
+//! MCP `prompts/*` and WASM `command_execute` register under `plugin_id:name`
+//! when those runtimes land.
 //!
 //! Dispatch order: `CommandRegistry::try_run` returns `Some(result)` when a
 //! `/x` matched a command — the session turns `ControlAction` into state
 //! changes and `Reply`/`FeedToAgent` into messages without touching the LLM.
+//!
+//! `@path` mentions are expanded here too (`expand_mentions`) — the composer
+//! leaves the literal `@src/main.rs` in the text; the kernel inlines the
+//! file's fenced content before the prompt reaches history, so the model
+//! sees real code instead of a bare path.
+
+use std::path::{Path, PathBuf};
 
 use agent_ipc::UiEvent;
 use agent_llm::types::ChatMessage;
+
+/// Workspace-relative directories scanned for skill manifests, in priority
+/// order — first hit wins when a name is duplicated. `.agents/skills` is
+/// the canonical root (agentskills convention); `.claude/skills` and
+/// `.pi/skills` are the Claude-Code / pi aliases so existing skill trees
+/// register natively.
+const WORKSPACE_SKILL_DIRS: [&str; 5] =
+    [".agents/skills", ".agent/skills", ".skills", ".claude/skills", ".pi/skills"];
+
+/// User-level skill roots (under `dirs::home_dir()`) — scanned after the
+/// workspace dirs, so a project skill always shadows a global one with the
+/// same name. Matches the per-user dirs pi/Claude populate.
+const GLOBAL_SKILL_DIRS: [&str; 3] =
+    [".agents/skills", ".claude/skills", ".pi/agent/skills"];
+
+/// Cap on a single `@`-inlined file — keeps a pasted log / lockfile from
+/// eating the whole context window in one turn.
+const MAX_MENTION_BYTES: usize = 32 * 1024;
 
 /// What a command produced — the session maps it to side effects.
 #[derive(Debug)]
@@ -51,32 +79,77 @@ pub struct CommandCtx<'a> {
 pub struct CommandRegistry;
 
 impl CommandRegistry {
-    /// Intercept a `/x` input. Returns `Some(result)` when it was a command,
-    /// `None` when the text should fall through to the LLM (unknown `/x`
-    /// gets a hint but still feeds through as a prompt — the contract).
+    /// Intercept a `/x` or `$x` input. Returns `Some(result)` when it was a
+    /// command, `None` when the text should fall through to the LLM
+    /// (unknown `/x`/`$x` gets a hint but still feeds through as a prompt —
+    /// the contract). `$` is a skill-only trigger: `$name` never matches
+    /// built-ins, so `$clear` can't wipe history.
     pub async fn try_run(
         text: &str,
         ctx: &mut CommandCtx<'_>,
     ) -> Option<CommandResult> {
         let t = text.trim();
-        if !t.starts_with('/') {
-            return None;
-        }
         let (name, args) = t.split_once(' ').map(|(n, a)| (n, a.trim()))
             .unwrap_or((t, ""));
-        let name = name.trim_start_matches('/');
+        if let Some(cmd) = name.strip_prefix('/') {
+            return Some(Self::dispatch(cmd, args, ctx));
+        }
+        // `$skill` — dollar trigger resolves ONLY against the skill dirs.
+        if let Some(skill_name) = name.strip_prefix('$') {
+            if let Some(skill) = find_skill(ctx.workspace_root, skill_name) {
+                return Some(CommandResult::FeedToAgent(
+                    skill_prompt(&format!("${skill_name}"), &skill, args),
+                ));
+            }
+            let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(format!(
+                "`${skill_name}` not a skill — sent as prompt"
+            )));
+            return Some(CommandResult::FeedToAgent(
+                expand_mentions(t, ctx.workspace_root),
+            ));
+        }
+        // Plain prompt — still expand `@path` mentions so the model sees
+        // file contents, not bare paths.
+        let expanded = expand_mentions(t, ctx.workspace_root);
+        if expanded != t {
+            return Some(CommandResult::FeedToAgent(expanded));
+        }
+        None
+    }
 
-        Some(match name {
+    /// `/x` dispatch — built-ins first, then workspace-skill fallback.
+    fn dispatch(name: &str, args: &str, ctx: &mut CommandCtx<'_>) -> CommandResult {
+        match name {
             "clear" => CommandResult::Control(ControlOp::ClearHistory),
             "compact" => CommandResult::Control(ControlOp::Compact),
             "undo" => CommandResult::Control(ControlOp::UndoLastTurn),
+            "skills" => {
+                let skills = scan_all_skills(ctx.workspace_root);
+                if skills.is_empty() {
+                    CommandResult::Reply(
+                        "no skills found — add `.agents/skills/<name>/SKILL.md` to the workspace".into(),
+                    )
+                } else {
+                    let mut out = String::from("workspace skills:\n");
+                    for s in skills {
+                        let scope = if s.global { " (user)" } else { "" };
+                        let hint = if s.description.is_empty() {
+                            s.path.to_string_lossy().into_owned()
+                        } else {
+                            s.description.clone()
+                        };
+                        out.push_str(&format!("  /{}{} — {}\n", s.name, scope, hint));
+                    }
+                    CommandResult::Reply(out)
+                }
+            }
             "model" => {
                 // `/model provider/model` or bare `/model provider model`
                 let parts: Vec<&str> = args.splitn(2, |c| c == '/' || c == ' ').collect();
                 let (provider, model) = match parts.as_slice() {
                     [p, m] => ((*p).to_string(), (*m).to_string()),
                     [m] => ("".to_string(), (*m).to_string()),
-                    _ => return Some(CommandResult::Reply("usage: /model <provider>/<model>".into())),
+                    _ => return CommandResult::Reply("usage: /model <provider>/<model>".into()),
                 };
                 CommandResult::Control(ControlOp::SetModel { provider, model })
             }
@@ -90,12 +163,436 @@ impl CommandRegistry {
                 )
             }
             _ => {
-                // Unknown /x → hint + fall through as a normal prompt.
-                let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(format!(
-                    "`/{name}` not a command — sent as prompt"
-                )));
-                return None;
+                // Skill fallback — `/{name}` resolves against the workspace +
+                // user skill dirs; the skill body is inlined into the turn
+                // so the model follows it as instructions.
+                if let Some(skill) = find_skill(ctx.workspace_root, name) {
+                    CommandResult::FeedToAgent(skill_prompt(&format!("/{name}"), &skill, args))
+                } else {
+                    // Unknown /x → hint + fall through as a normal prompt.
+                    let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(format!(
+                        "`/{name}` not a command or skill — sent as prompt"
+                    )));
+                    CommandResult::FeedToAgent(expand_mentions(&t_fallback(name, args), ctx.workspace_root))
+                }
             }
-        })
+        }
+    }
+}
+
+/// The prompt a skill invocation feeds to the agent — `trigger` is the
+/// literal the user typed (`/name` or `$name`) so the echo stays truthful.
+fn skill_prompt(trigger: &str, skill: &Skill, args: &str) -> String {
+    let mut prompt = format!(
+        "The user invoked the `{trigger}` skill. Follow its \
+         instructions exactly.\n\n---\n{}\n---",
+        skill.body
+    );
+    if !args.is_empty() {
+        prompt.push_str(&format!("\n\nSkill arguments: {args}"));
+    }
+    prompt
+}
+
+/// Reassemble the original `/x args` text for the unknown-command fallthrough.
+fn t_fallback<'a>(name: &'a str, args: &'a str) -> String {
+    if args.is_empty() { format!("/{name}") } else { format!("/{name} {args}") }
+}
+
+/// A discovered skill — name, description, and the SKILL.md body with the
+/// front-matter stripped (the body is what gets inlined as instructions).
+#[derive(Debug)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub path: PathBuf,
+    pub body: String,
+    /// `true` when found under a user-level (home) dir rather than the
+    /// workspace — informational; workspace entries always win on dedup.
+    pub global: bool,
+}
+
+/// Workspace skills only — [`WORKSPACE_SKILL_DIRS`], deduped by name.
+/// Hermetic (no `$HOME` reads) so tests stay reproducible; callers wanting
+/// the full picker surface use [`scan_all_skills`].
+pub fn scan_skills(root: &Path) -> Vec<Skill> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let dirs: Vec<PathBuf> = WORKSPACE_SKILL_DIRS.iter().map(|d| root.join(d)).collect();
+    scan_skill_dirs(&dirs, false, &mut seen, &mut out);
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Workspace + user-level skills — workspace dirs first (they win dedup),
+/// then [`GLOBAL_SKILL_DIRS`] under the home dir flagged `global: true`.
+/// This is the surface `/skills`, `/{name}`/`${name}` dispatch, and the
+/// composer pickers all share.
+pub fn scan_all_skills(root: &Path) -> Vec<Skill> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let ws_dirs: Vec<PathBuf> = WORKSPACE_SKILL_DIRS.iter().map(|d| root.join(d)).collect();
+    scan_skill_dirs(&ws_dirs, false, &mut seen, &mut out);
+    if let Some(home) = dirs::home_dir() {
+        let global_dirs: Vec<PathBuf> =
+            GLOBAL_SKILL_DIRS.iter().map(|d| home.join(d)).collect();
+        scan_skill_dirs(&global_dirs, true, &mut seen, &mut out);
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// One-level scan of `dirs` for `<name>/SKILL.md` or bare `<name>.md`
+/// manifests, appending to `out`/`seen` (dedup across batches — earlier
+/// dirs win).
+fn scan_skill_dirs(
+    dirs: &[PathBuf],
+    global: bool,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<Skill>,
+) {
+    for base in dirs {
+        let Ok(rd) = std::fs::read_dir(&base) else { continue };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let manifest = if p.is_dir() {
+                let m = p.join("SKILL.md");
+                if m.is_file() { m } else { continue }
+            } else if p.extension().is_some_and(|e| e == "md") {
+                p.clone()
+            } else {
+                continue;
+            };
+            let content = std::fs::read_to_string(&manifest).unwrap_or_default();
+            let (fm_name, fm_desc, body) = split_skill(&content);
+            let name = fm_name.unwrap_or_else(|| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .or_else(|| manifest.file_stem().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_default()
+            });
+            if name.is_empty() || !seen.insert(name.clone()) {
+                continue;
+            }
+            out.push(Skill {
+                name,
+                description: fm_desc.unwrap_or_default(),
+                path: manifest,
+                body,
+                global,
+            });
+        }
+    }
+}
+
+/// Look up a single skill by name (the `/{name}` / `${name}` dispatch
+/// path) — searches workspace AND user-level dirs.
+pub fn find_skill(root: &Path, name: &str) -> Option<Skill> {
+    let want = name.to_lowercase();
+    scan_all_skills(root).into_iter().find(|s| s.name.to_lowercase() == want)
+}
+
+/// Parse a SKILL.md into `(name, description, body)` — front-matter is a
+/// `---\n…\n---` YAML-ish block; only `name:`/`description:` are read, the
+/// rest is passed through verbatim as the instruction body.
+fn split_skill(content: &str) -> (Option<String>, Option<String>, String) {
+    let trimmed = content.trim_start();
+    let Some(fm) = trimmed.strip_prefix("---") else {
+        return (None, None, content.to_string());
+    };
+    let Some(end) = fm.find("\n---") else {
+        return (None, None, content.to_string());
+    };
+    let mut name = None;
+    let mut desc = None;
+    for line in fm[..end].lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("name:") {
+            name = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
+        } else if let Some(v) = line.strip_prefix("description:") {
+            desc = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
+        }
+    }
+    (name, desc, fm[end + 4..].trim().to_string())
+}
+
+/// Inline `@path` mentions — each `@rel/path` token is replaced by a fenced
+/// content block so the model reads the file, not just its name. Missing /
+/// binary / oversized files degrade to a bracketed note rather than
+/// silently dropping the mention.
+fn expand_mentions(text: &str, root: &Path) -> String {
+    if !text.contains('@') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('@') {
+        // `@` must start a token — preceded by whitespace or string start —
+        // or it's an email/mention literal we leave alone.
+        let boundary = at == 0 || rest.as_bytes()[at - 1].is_ascii_whitespace();
+        if !boundary {
+            out.push_str(&rest[..at + 1]);
+            rest = &rest[at + 1..];
+            continue;
+        }
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        // Path token = up to the next whitespace; reject empties and pure `@`.
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        let token = &after[..end];
+        if token.is_empty() || token.starts_with('@') {
+            out.push('@');
+            rest = after;
+            continue;
+        }
+        // Resolve inside the workspace — refuse escapes (`@../x`, absolute).
+        // Normalize `..`/`.` lexically first so a non-existent escape target
+        // is still caught (canonicalize fails on missing files).
+        let rel = Path::new(token);
+        let mut norm = PathBuf::new();
+        let mut escapes = rel.is_absolute();
+        for comp in rel.components() {
+            use std::path::Component::*;
+            match comp {
+                ParentDir => { if !norm.pop() { escapes = true; } }
+                CurDir => {}
+                Normal(c) => norm.push(c),
+                RootDir | Prefix(_) => escapes = true,
+            }
+        }
+        let joined = root.join(&norm);
+        let canon = joined.canonicalize().unwrap_or_else(|_| joined.clone());
+        let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        if escapes || !canon.starts_with(&root_canon) {
+            out.push_str(&format!("`@{token}` (outside workspace — not inlined)"));
+            rest = &after[end..];
+            continue;
+        }
+        match std::fs::read(&canon) {
+            Ok(bytes) if !bytes.contains(&0) => {
+                let capped = if bytes.len() > MAX_MENTION_BYTES {
+                    &bytes[..MAX_MENTION_BYTES]
+                } else {
+                    &bytes[..]
+                };
+                let body = String::from_utf8_lossy(capped);
+                let trunc = if bytes.len() > MAX_MENTION_BYTES {
+                    format!("\n… ({} bytes truncated)", bytes.len() - MAX_MENTION_BYTES)
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "\n\n`<workspace-file path=\"{token}\">`\n```\n{body}{trunc}\n```\n"
+                ));
+            }
+            Ok(_) => {
+                out.push_str(&format!("`@{token}` (binary file — not inlined)"));
+            }
+            Err(_) => {
+                out.push_str(&format!("`@{token}` (not found — left as literal)"));
+            }
+        }
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write a `.agents/skills/<name>/SKILL.md` into a tempdir workspace.
+    fn skill_ws() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".agents/skills/review")).unwrap();
+        std::fs::write(
+            root.join(".agents/skills/review/SKILL.md"),
+            "---\nname: review\ndescription: review code carefully\n---\n\nLook for bugs.\n",
+        )
+        .unwrap();
+        // A no-front-matter skill — name falls back to the directory.
+        std::fs::create_dir_all(root.join(".agents/skills/deploy")).unwrap();
+        std::fs::write(root.join(".agents/skills/deploy/SKILL.md"), "ship it\n").unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        (dir, root)
+    }
+
+    #[test]
+    fn scan_finds_skills_with_and_without_front_matter() {
+        let (_d, root) = skill_ws();
+        let skills = scan_skills(&root);
+        assert_eq!(skills.len(), 2);
+        let review = skills.iter().find(|s| s.name == "review").unwrap();
+        assert_eq!(review.description, "review code carefully");
+        assert!(review.body.contains("Look for bugs."));
+        // front-matter is stripped from the inlined body
+        assert!(!review.body.contains("name:"));
+        let deploy = skills.iter().find(|s| s.name == "deploy").unwrap();
+        assert!(deploy.body.contains("ship it"));
+    }
+
+    #[tokio::test]
+    async fn slash_skill_feeds_agent_with_body() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            ui_tx: &tx,
+        };
+        let res = CommandRegistry::try_run("/review", &mut ctx).await.unwrap();
+        match res {
+            CommandResult::FeedToAgent(p) => {
+                assert!(p.contains("`/review` skill"));
+                assert!(p.contains("Look for bugs."));
+            }
+            _ => panic!("expected FeedToAgent, got {res:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn slash_skill_passes_args() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            ui_tx: &tx,
+        };
+        let res = CommandRegistry::try_run("/review src/", &mut ctx).await.unwrap();
+        match res {
+            CommandResult::FeedToAgent(p) => assert!(p.contains("Skill arguments: src/")),
+            _ => panic!("expected FeedToAgent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_slash_falls_back_to_prompt() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            ui_tx: &tx,
+        };
+        let res = CommandRegistry::try_run("/nonexistent", &mut ctx).await.unwrap();
+        match res {
+            CommandResult::FeedToAgent(p) => assert_eq!(p, "/nonexistent"),
+            _ => panic!("expected FeedToAgent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn at_mention_inlines_file_content() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            ui_tx: &tx,
+        };
+        let res = CommandRegistry::try_run("check @main.rs please", &mut ctx).await.unwrap();
+        match res {
+            CommandResult::FeedToAgent(p) => {
+                assert!(p.contains("fn main() {}"), "inlined body missing: {p}");
+                assert!(p.contains("path=\"main.rs\""));
+            }
+            _ => panic!("expected FeedToAgent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn at_mention_escapes_are_blocked() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            ui_tx: &tx,
+        };
+        let res = CommandRegistry::try_run("read @../outside.txt", &mut ctx).await.unwrap();
+        match res {
+            CommandResult::FeedToAgent(p) => {
+                assert!(p.contains("outside workspace"), "escape not blocked: {p}");
+            }
+            _ => panic!("expected FeedToAgent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn email_like_at_is_left_alone() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            ui_tx: &tx,
+        };
+        // `a@b` — the `@` isn't at a token boundary, so no expansion and the
+        // text falls through unchanged (None → normal prompt path).
+        assert!(CommandRegistry::try_run("mail a@b.com", &mut ctx).await.is_none());
+    }
+
+    #[test]
+    fn scan_finds_claude_and_pi_skill_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude/skills/review")).unwrap();
+        std::fs::write(
+            root.join(".claude/skills/review/SKILL.md"),
+            "---\nname: claude-review\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".pi/skills/harness")).unwrap();
+        std::fs::write(root.join(".pi/skills/harness/SKILL.md"), "pi body\n").unwrap();
+
+        let skills = scan_skills(&root);
+        assert!(skills.iter().any(|s| s.name == "claude-review"));
+        // No front-matter → falls back to the directory name.
+        assert!(skills.iter().any(|s| s.name == "harness"));
+        assert!(!skills.iter().any(|s| s.global));
+    }
+
+    #[tokio::test]
+    async fn dollar_trigger_dispatches_skill_only() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            ui_tx: &tx,
+        };
+        // `$review` resolves the workspace skill…
+        let res = CommandRegistry::try_run("$review src/", &mut ctx).await.unwrap();
+        match res {
+            CommandResult::FeedToAgent(p) => {
+                assert!(p.contains("`$review` skill"));
+                assert!(p.contains("Look for bugs."));
+                assert!(p.contains("Skill arguments: src/"));
+            }
+            _ => panic!("expected FeedToAgent, got {res:?}"),
+        }
+        // …but never a built-in — `$clear` is NOT `/clear`.
+        let res = CommandRegistry::try_run("$clear", &mut ctx).await.unwrap();
+        match res {
+            CommandResult::FeedToAgent(p) => assert_eq!(p, "$clear"),
+            _ => panic!("$clear must not dispatch the /clear built-in"),
+        }
     }
 }

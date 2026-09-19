@@ -61,7 +61,7 @@ pub struct Engine {
     /// Pending mid-turn steering text drained from `cmd_rx`.
     steer_queue: VecDeque<String>,
     /// Stage 6: the permission gate consulted before every tool dispatch.
-    permissions: PermissionGate,
+    permissions: Arc<std::sync::RwLock<PermissionGate>>,
     /// Decision slot shared with SessionActor — the engine can't hold a
     /// receiver `&mut self`-locked across `run_turn`, so the actor writes
     /// `Some((request_id, approved))` here and the engine polls it between
@@ -80,8 +80,10 @@ pub struct Engine {
     hooks: crate::hooks::HookChain,
     /// Plugin tool router — built-in names win; plugins fill the rest.
     plugin_router: Option<Arc<agent_plugin::PluginManager>>,
-    /// Thinking / reasoning intensity level (e.g. "off", "low", "medium", "high", "max").
-    thinking_level: Option<String>,
+    /// Thinking / reasoning intensity level (e.g. "off", "low", "medium",
+    /// "high", "max"). Shared slot like `permissions` — the bridge reads it
+    /// to report a session's live level back to the UI.
+    thinking_level: Arc<std::sync::RwLock<Option<String>>>,
     /// Model-specific thinking level mapping from pi-agent config schema.
     thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
 }
@@ -101,26 +103,34 @@ impl Engine {
             model: model.into(),
             temperature,
             steer_queue: VecDeque::new(),
-            permissions: PermissionGate::from_mode_str("default"),
+            permissions: Arc::new(std::sync::RwLock::new(PermissionGate::from_mode_str("default"))),
             decision: Arc::new(std::sync::Mutex::new(None)),
             next_request_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             context_window: 256_000,
             compaction_suppressor: CompactionSuppressor::default(),
             hooks: crate::hooks::HookChain::new(),
             plugin_router: None,
-            thinking_level: None,
+            thinking_level: Arc::new(std::sync::RwLock::new(None)),
             thinking_level_map: None,
         }
     }
 
     /// Set thinking / reasoning intensity level.
     pub fn set_thinking_level(&mut self, level: Option<String>) {
-        self.thinking_level = level;
+        if let Ok(mut w) = self.thinking_level.write() {
+            *w = level;
+        }
     }
 
     /// Current thinking level if set.
-    pub fn thinking_level(&self) -> Option<&str> {
-        self.thinking_level.as_deref()
+    pub fn thinking_level(&self) -> Option<String> {
+        self.thinking_level.read().ok().and_then(|l| l.clone())
+    }
+
+    /// Access the shared thinking-level slot — SessionManager keeps a clone
+    /// on the session handle so `model_info` can report the live value.
+    pub fn thinking_level_shared(&self) -> Arc<std::sync::RwLock<Option<String>>> {
+        self.thinking_level.clone()
     }
 
     /// Set model-specific thinking level mapping.
@@ -133,7 +143,8 @@ impl Engine {
 
     /// Resolves the effective wire reasoning effort ("low", "medium", "high", "max" or None).
     pub fn resolve_reasoning_effort(&self) -> Option<String> {
-        let level = self.thinking_level.as_deref()?;
+        let guard = self.thinking_level.read().ok()?;
+        let level = guard.as_deref()?;
         if level == "off" {
             return None;
         }
@@ -170,7 +181,14 @@ impl Engine {
 
     /// SessionActor installs the permission gate (mode + repo rules).
     pub fn set_permissions(&mut self, gate: PermissionGate) {
-        self.permissions = gate;
+        if let Ok(mut w) = self.permissions.write() {
+            *w = gate;
+        }
+    }
+
+    /// Access the shared permission gate handle for direct mid-turn updates.
+    pub fn permissions_writer(&self) -> Arc<std::sync::RwLock<PermissionGate>> {
+        self.permissions.clone()
     }
 
     /// The shared decision slot — SessionActor clones it to deliver
@@ -254,7 +272,8 @@ impl Engine {
         let mut usage = None;
         let mut tool_calls_run = 0usize;
         let mut tool_rounds = 0usize;
-        const MAX_TOOL_ROUNDS: usize = 16; // guard against infinite tool loops
+        let mut force_no_tools = false;
+        const MAX_TOOL_ROUNDS: usize = 128; // guard against runaway tool loops
         const CANCEL_ERR: &str = "turn cancelled by user";
 
         loop {
@@ -272,6 +291,14 @@ impl Engine {
             while let Some(steer) = self.steer_queue.pop_front() {
                 history.push(ChatMessage::user(format!("The user interrupted: {steer}")));
             }
+
+            // Budget check + sanitize before each sample pass
+            let native_tc = self.sampler.provider().native_tool_calls();
+            compaction::sanitize_for_sample(
+                history,
+                self.context_window.saturating_mul(9) / 10,
+                native_tc,
+            );
 
             let mut assembler = ToolCallAssembler::new();
             let mut round_text = String::new();
@@ -291,10 +318,16 @@ impl Engine {
             let mut stream_error: Option<String> = None;
 
             let effort = self.resolve_reasoning_effort();
+            let schema = self.registry.request_schema();
+            let tools_opt = if force_no_tools {
+                None
+            } else {
+                Some(&schema)
+            };
             let req = SampleRequest {
                 model: &self.model,
                 temperature: self.temperature,
-                tools: Some(&self.registry.request_schema()),
+                tools: tools_opt,
                 reasoning_effort: effort.as_deref(),
             };
 
@@ -451,16 +484,31 @@ impl Engine {
             let calls = assembler.finish();
 
             if calls.is_empty() {
-                // No tool calls → turn complete. Persist the final assistant
-                // message so the next turn sees it in history.
+                // No tool calls → turn complete.
+                // If round_text is empty, check if we accumulated text from earlier rounds
+                let final_text = if round_text.trim().is_empty() && !text.trim().is_empty() {
+                    text.clone()
+                } else {
+                    round_text
+                };
+
+                // If final_text is still empty after calling tools, ask the model to produce its final answer
+                if final_text.trim().is_empty() && tool_calls_run > 0 && !force_no_tools {
+                    force_no_tools = true;
+                    history.push(ChatMessage::user(
+                        "Please provide your final answer and summary to the user based on the tool results above.",
+                    ));
+                    continue;
+                }
+
                 history.push(ChatMessage {
                     role: agent_llm::Role::Assistant,
-                    content: if round_text.is_empty() { None } else { Some(round_text.clone()) },
+                    content: if final_text.is_empty() { None } else { Some(final_text.clone()) },
                     tool_calls: None,
                     tool_call_id: None,
                 });
                 self.set_state(io, AgentState::Finished);
-                let _ = io.ui_tx.try_send(UiEvent::AssistantMessage(round_text));
+                let _ = io.ui_tx.try_send(UiEvent::AssistantMessage(final_text));
                 return Ok(TurnOutcome { text, usage, tool_calls_run });
             }
 
@@ -474,12 +522,6 @@ impl Engine {
 
             // Execute each tool call.
             tool_rounds += 1;
-            if tool_rounds > MAX_TOOL_ROUNDS {
-                self.set_state(io, AgentState::Failed("tool loop guard".into()));
-                return Err(format!(
-                    "exceeded {MAX_TOOL_ROUNDS} tool rounds — likely a stuck model"
-                ));
-            }
 
             for call in calls {
                 // P0-C4: cancel between tool dispatches — a destructive tool
@@ -591,7 +633,13 @@ impl Engine {
                     .unwrap_or_else(|| args.get("replace").and_then(|v| v.as_str()).unwrap_or("").to_string());
                 let real_fuzzy = staged.as_ref().map(|r| r.fuzzy).unwrap_or(false);
 
-                match self.permissions.decide(&call.name, is_readonly, shell_cmd, diff_summary) {
+                let decision = self
+                    .permissions
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .decide(&call.name, is_readonly, shell_cmd, diff_summary);
+
+                match decision {
                     Decision::Deny { reason } => {
                         let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
                             name: call.name.clone(), ok: false,
@@ -723,6 +771,16 @@ impl Engine {
                 });
 
                 history.push(ChatMessage::tool_result(call.id.clone(), content));
+            }
+
+            // If we have reached or exceeded the tool limit, force the next round to be a synthesis round without tools
+            if tool_rounds >= MAX_TOOL_ROUNDS && !force_no_tools {
+                let msg = format!("已达单轮工具调用上限 ({MAX_TOOL_ROUNDS} 轮)，正在汇总已收集的信息生成最终回答...");
+                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(msg));
+                history.push(ChatMessage::user(
+                    "You have reached the tool execution limit for this turn. Do NOT request any more tool calls. Please synthesize all your findings and provide your complete, detailed response/answer to the user now.",
+                ));
+                force_no_tools = true;
             }
 
             // Tools done → back to sampling for the model's next move.

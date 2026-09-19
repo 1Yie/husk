@@ -7,7 +7,7 @@ import {
   ChevronDown,
   PanelRight,
   SquarePen,
-} from "lucide-react";
+} from "@keyline-icons/react";
 import type { SessionRow } from "../../types";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";

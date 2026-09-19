@@ -32,6 +32,11 @@ pub struct ToolCtx {
     /// The sandbox backend for process tools (`bash`, `test_runner`, pty).
     /// `id() == "none"` means loud-unsandboxed: every `bash` must confirm.
     pub sandbox: Arc<dyn agent_sandbox::SandboxBackend>,
+    /// Owning session's id + its per-workspace store. Tools that keep
+    /// per-session scratch state (`todo`) write next to the session's
+    /// history file in the app state dir — never into the user's repo.
+    /// `None` for unattached contexts (tests, headless spawns).
+    pub session: Option<(i64, Arc<crate::session_store::SessionStore>)>,
 }
 
 impl ToolCtx {
@@ -42,6 +47,7 @@ impl ToolCtx {
         Self {
             workspace_root: Arc::from(root.as_path()),
             sandbox: Arc::from(sandbox),
+            session: None,
         }
     }
 
@@ -49,7 +55,18 @@ impl ToolCtx {
     pub fn with_sandbox(root: impl Into<PathBuf>, sandbox: Arc<dyn agent_sandbox::SandboxBackend>) -> Self {
         let root = root.into();
         let root = root.canonicalize().unwrap_or(root);
-        Self { workspace_root: Arc::from(root.as_path()), sandbox }
+        Self { workspace_root: Arc::from(root.as_path()), sandbox, session: None }
+    }
+
+    /// Attach the owning session — gives tools access to per-session
+    /// scratch files in the app state dir.
+    pub fn with_session(
+        mut self,
+        id: i64,
+        store: Option<Arc<crate::session_store::SessionStore>>,
+    ) -> Self {
+        self.session = store.map(|s| (id, s));
+        self
     }
 
     /// Resolve a model-supplied path against the workspace root and prove it

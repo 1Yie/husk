@@ -11,6 +11,13 @@ const ALLOWLIST: &[&str] = &[
     // toolchain vars the workspace needs
     "CARGO_HOME", "GOPATH", "GOCACHE", "NVM_DIR", "NODE_ENV",
     "PYTHONPATH", "VIRTUAL_ENV", "RUSTUP_HOME", "JAVA_HOME",
+    // Node / JS / Bun / Deno runtimes
+    "VOLTA_HOME", "BUN_INSTALL", "FNM_DIR", "PNPM_HOME", "DENO_INSTALL",
+    // Python / Version managers
+    "PYENV_ROOT", "ASDF_DIR", "ASDF_DATA_DIR", "MISE_DATA_DIR",
+    // JVM / Mobile / Toolchain SDKs
+    "SDKMAN_DIR", "GRADLE_USER_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT",
+    "FLUTTER_ROOT", "GOROOT", "CARGO_TARGET_DIR",
 ];
 
 /// Prefixes kept (e.g. `LC_*` locale vars).
@@ -86,5 +93,15 @@ mod tests {
         std::env::set_var("TEST_AGENT_CARGO_HOME_X", "v");
         let out = sanitize_env(&[("FORCED".into(), "1".into())]);
         assert!(out.iter().any(|(n, _)| n == "FORCED"));
+    }
+
+    #[test]
+    fn keeps_bun_and_volta_toolchain_vars() {
+        std::env::set_var("VOLTA_HOME", "/home/user/.volta");
+        std::env::set_var("BUN_INSTALL", "/home/user/.bun");
+        let out = sanitize_env(&[]);
+        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"VOLTA_HOME"));
+        assert!(names.contains(&"BUN_INSTALL"));
     }
 }

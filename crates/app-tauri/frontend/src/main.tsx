@@ -1,13 +1,15 @@
-// Entry — mounts the App and the global chrome stylesheet. Kept minimal:
-// all state lives in the `useAgent*` hooks; components are pure views.
-
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./app";
+import { SettingsWindow } from "./components/settings/settings-window";
 import "./app.css";
+
+const isSettings =
+  window.location.search.includes("window=settings") ||
+  window.location.hash.includes("settings");
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    {isSettings ? <SettingsWindow /> : <App />}
   </React.StrictMode>,
 );

@@ -13,29 +13,44 @@ use crate::kernel::KernelState;
 #[tauri::command]
 pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), String> {
     let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
-    let Some(handle) = mgr.active() else {
-        return Err("no active session".into());
+    let (cancel, steer_tx, decision, permissions, cmd_tx) = {
+        let Some(handle) = mgr.active() else {
+            return Err("no active session".into());
+        };
+        (
+            handle.cancel.clone(),
+            handle.steer_tx.clone(),
+            handle.decision.clone(),
+            handle.permissions.clone(),
+            handle.cmd_tx.clone(),
+        )
     };
+
     // `Cancel` bypasses the command pump (direct flag) so it isn't queued
     // behind a running `run_turn`.
     if matches!(cmd, UiCommand::Cancel) {
-        handle.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         return Ok(());
     }
     if let UiCommand::Steer { text } = &cmd {
-        handle.steer_tx.try_send(text.clone()).map_err(|e| e.to_string())?;
+        steer_tx.try_send(text.clone()).map_err(|e| e.to_string())?;
         return Ok(());
     }
     if let UiCommand::ToolDecision { request_id, approved } = &cmd {
-        *handle.decision.lock().map_err(|e| e.to_string())? = Some((*request_id, *approved));
+        *decision.lock().map_err(|e| e.to_string())? = Some((*request_id, *approved));
         return Ok(());
     }
-    let cmd_tx = handle.cmd_tx.clone();
     if let UiCommand::SetModel { provider, model } = &cmd {
         mgr.set_model(provider.clone(), model.clone());
     }
     if let UiCommand::SetThinkingLevel { level } = &cmd {
         mgr.set_thinking_level(level.clone());
+    }
+    if let UiCommand::SetPermissionMode { mode } = &cmd {
+        mgr.set_permission_mode(mode.clone());
+        if let Ok(mut gate) = permissions.write() {
+            *gate = agent_kernel::permissions::PermissionGate::from_mode_str(mode);
+        }
     }
     cmd_tx.try_send(cmd).map_err(|e| e.to_string())
 }

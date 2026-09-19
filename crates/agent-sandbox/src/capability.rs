@@ -75,7 +75,7 @@ pub fn extract(node: &Node) -> Vec<Capability> {
     // script execution — mark it (the `| sh` / `| bash` / `| python` idiom).
     if let Node::Pipe(cmds) = node {
         if let Some(Node::Simple(last)) = cmds.last() {
-            if matches!(last.program.as_str(), "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "perl" | "ruby")
+            if matches!(last.program.as_str(), "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "bun" | "deno" | "perl" | "ruby")
                 && cmds.len() > 1
             {
                 caps.push(Capability::ExecuteScript);
@@ -236,6 +236,15 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
                 for p in written {
                     caps.push(Capability::WriteFile { path: p });
                 }
+            } else if prog == "bun" {
+                let has_script = cmd.args.iter().any(|a| {
+                    a == "-e" || a == "-c" || a == "run"
+                        || a.ends_with(".js") || a.ends_with(".ts")
+                        || a.ends_with(".mjs") || a.ends_with(".cjs")
+                });
+                if has_script {
+                    caps.push(Capability::ExecuteScript);
+                }
             }
         }
         "git" => {
@@ -280,11 +289,13 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         // interpreters running a script file / -c / -s / - — ExecuteScript.
         // `bash -s`, `python -` read a script from stdin; `-c "cmd"` is a
         // literal script. Also catch `eval "$(curl …)"` style builtins.
-        "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "perl" | "ruby" | "eval" => {
+        "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "deno" | "perl" | "ruby" | "eval" => {
             let has_script = cmd.args.iter().any(|a| {
-                a == "-c" || a == "-s" || a == "-" // stdin script
+                a == "-c" || a == "-s" || a == "-" || a == "-e" // stdin / inline script
                     || a.ends_with(".sh") || a.ends_with(".py")
-                    || a.ends_with(".js") || a.ends_with(".pl") || a.ends_with(".rb")
+                    || a.ends_with(".js") || a.ends_with(".ts")
+                    || a.ends_with(".mjs") || a.ends_with(".cjs")
+                    || a.ends_with(".pl") || a.ends_with(".rb")
                     || prog == "eval" // `eval` always executes its arg
             });
             if has_script {

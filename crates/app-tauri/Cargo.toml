@@ -6,18 +6,25 @@ description = "Tauri desktop shell — React + Tailwind frontend over the shared
 build = "build.rs"
 
 [[bin]]
-name = "app-tauri"
+name = "agent-rs"
 path = "backend/main.rs"
 
 [dependencies]
+agent-context = { path = "../agent-context" }
 agent-kernel = { path = "../agent-kernel" }
 agent-ipc = { path = "../agent-ipc" }
 agent-llm = { path = "../agent-llm" }
-tauri = { version = "2", features = [] }
+agent-sandbox = { path = "../agent-sandbox" }
+dirs.workspace = true
+tauri = { version = "2", features = ["custom-protocol"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 rfd = "0.15"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

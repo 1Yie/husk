@@ -7,7 +7,36 @@ import { Streamdown } from "streamdown";
 import type { SessionView, StreamItem } from "../../hooks/useAgent";
 import { AssistantStatus } from "../assistant-status";
 import { ToolChips, type ToolChipRow } from "../tool-chips";
+import { Check, Copy } from "@keyline-icons/react";
 import { codexMarkdownComponents } from "./markdown-components";
+import { prismCodePlugin } from "../../lib/syntax-highlight";
+
+const streamdownIcons = {
+  CheckIcon: Check,
+  CopyIcon: Copy,
+};
+
+/** The kernel expands `@path` mentions into `` `<workspace-file …>` `` +
+ * fenced-content blocks, and `/skill`/`$skill` into a skill-prompt
+ * preamble — that text is for the model. The user bubble shows only the
+ * compact `@path` / `/name` chip. */
+const WORKSPACE_FILE_BLOCK =
+  /\s*`<workspace-file path="([^"]+)">`\s*```\n[\s\S]*?```\s*/g;
+const SKILL_PROMPT_RE =
+  /^The user invoked the `([/$][^\s`]+)` skill\. Follow its instructions exactly\.\n\n---\n[\s\S]*$/;
+
+function collapsePromptArtifacts(md: string): string {
+  const skill = SKILL_PROMPT_RE.exec(md);
+  if (skill) {
+    const args = /Skill arguments: ([\s\S]+)$/.exec(md)?.[1]?.trim();
+    return `\`${skill[1]}${args ? ` ${args}` : ""}\``;
+  }
+  return md
+    .replace(WORKSPACE_FILE_BLOCK, (_m, p) => `\`@${p}\` `)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 
 interface Props {
   view: SessionView;
@@ -180,11 +209,12 @@ export function ChatStream({ view }: Props) {
               <div className="bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 ms-auto flex w-fit max-w-[80%] flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]">
                 <div className="min-w-0 text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text">
                   <Streamdown
-                    plugins={{ cjk }}
+                    plugins={{ cjk, code: prismCodePlugin as any }}
                     shikiTheme={["github-dark", "github-dark"]}
                     components={codexMarkdownComponents}
+                    icons={streamdownIcons}
                   >
-                    {turn.userText}
+                    {collapsePromptArtifacts(turn.userText)}
                   </Streamdown>
                 </div>
               </div>
@@ -217,9 +247,10 @@ export function ChatStream({ view }: Props) {
                       >
                         <Streamdown
                           isAnimating={isAnimating}
-                          plugins={{ cjk }}
+                          plugins={{ cjk, code: prismCodePlugin as any }}
                           shikiTheme={["github-dark", "github-dark"]}
                           components={codexMarkdownComponents}
+                          icons={streamdownIcons}
                         >
                           {step.text}
                         </Streamdown>

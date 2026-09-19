@@ -19,3 +19,8 @@ pub mod session_store;
 pub mod session_manager;
 pub mod steering;
 pub mod tools;
+
+pub use session_store::{
+    load_default_preferences, save_default_preferences, try_load_default_preferences,
+    DefaultPreferences,
+};

@@ -25,6 +25,7 @@ similar.workspace = true
 strsim.workspace = true
 xxhash-rust.workspace = true
 ignore.workspace = true
+dirs.workspace = true
 grep-searcher.workspace = true
 grep-regex.workspace = true
 grep-matcher.workspace = true

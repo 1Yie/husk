@@ -72,6 +72,7 @@ dependencies = [
  "agent-sandbox",
  "anyhow",
  "async-trait",
+ "dirs",
  "futures",
  "grep-matcher",
  "grep-regex",
@@ -269,9 +270,12 @@ dependencies = [
 name = "app-tauri"
 version = "0.1.0"
 dependencies = [
+ "agent-context",
  "agent-ipc",
  "agent-kernel",
  "agent-llm",
+ "agent-sandbox",
+ "dirs",
  "rfd",
  "serde",
  "serde_json",

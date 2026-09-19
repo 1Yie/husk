@@ -41,6 +41,18 @@ impl PermissionMode {
             _ => Self::Default,
         }
     }
+
+    /// Canonical wire label — the inverse of `from_str`, used to report a
+    /// live gate's mode back to the UI (`model_info`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::AcceptEdits => "acceptEdits",
+            Self::Auto => "auto",
+            Self::DontAsk => "dontAsk",
+            Self::Bypass => "bypassPermissions",
+        }
+    }
 }
 
 /// What the gate returns for one tool call.
@@ -76,10 +88,16 @@ const READONLY_SHELL: &[&str] = &[
     // readonly; they ask for confirmation like any mutating command.
 ];
 
-/// Destructive shell verbs that `bypassPermissions` still escalates to `Ask`.
-const DESTRUCTIVE_SHELL: &[&str] = &[
+/// Destructive shell patterns that escalate to `Ask` even in `auto` and `bypass`.
+const DESTRUCTIVE_PHRASES: &[&str] = &[
+    "git reset --hard",
+    "git clean -f",
+    "git checkout --",
+];
+
+/// Destructive shell binary names that escalate to `Ask`.
+const DESTRUCTIVE_BINARIES: &[&str] = &[
     "rm", "mv", "dd", "mkfs", "shutdown", "reboot", "kill", "pkill",
-    "git reset --hard", "git clean -f", "git checkout --",
 ];
 
 pub struct PermissionGate {
@@ -155,19 +173,19 @@ impl PermissionGate {
                 }
             }
             PermissionMode::AcceptEdits => {
+                // Auto-approve readonly tools + readonly shell + file edits; mutating shell asks.
                 if is_readonly || is_file_edit(tool_name) {
+                    Decision::Allow
+                } else if command.map(is_readonly_shell).unwrap_or(false) {
                     Decision::Allow
                 } else {
                     Decision::Ask { diff_summary: diff_summary.into() }
                 }
             }
             PermissionMode::Auto => {
-                // auto-approve readonly + file edits; escalate shell/unknown.
-                if is_readonly || is_file_edit(tool_name) {
-                    Decision::Allow
-                } else {
-                    Decision::Ask { diff_summary: diff_summary.into() }
-                }
+                // Full autonomous execution: readonly tools, file edits, and safe shell commands auto-run.
+                // Destructive commands were already caught by is_destructive and escalated to Ask.
+                Decision::Allow
             }
             PermissionMode::DontAsk => {
                 if is_readonly || self.rules.allow.contains(tool_name) {
@@ -189,7 +207,7 @@ impl PermissionGate {
 
 /// File-edit tools — `acceptEdits`/`auto` approve these without asking.
 fn is_file_edit(tool_name: &str) -> bool {
-    matches!(tool_name, "fuzzy_patch" | "apply_patch" | "write_file")
+    matches!(tool_name, "fuzzy_patch" | "apply_patch" | "write_file" | "fs_patch")
 }
 
 /// Command is a PURE readonly-shell call? Starts with a readonly verb AND
@@ -197,7 +215,12 @@ fn is_file_edit(tool_name: &str) -> bool {
 /// must not count as readonly (they mutate or smuggle a second command).
 fn is_readonly_shell(cmd: &str) -> bool {
     let c = cmd.trim();
-    let starts_readonly = READONLY_SHELL.iter().any(|v| c.starts_with(v));
+    if c.is_empty() {
+        return false;
+    }
+    let starts_readonly = READONLY_SHELL.iter().any(|v| {
+        c == *v || c.starts_with(&format!("{v} "))
+    });
     if !starts_readonly {
         return false;
     }
@@ -210,10 +233,58 @@ fn is_readonly_shell(cmd: &str) -> bool {
         || c.contains('`'))
 }
 
-/// Command contains a destructive verb?
+/// Command contains a destructive verb or pattern?
+/// Accurately tokenizes command segments to avoid substring false positives (e.g. `git add` matching `dd`).
 fn is_destructive(cmd: &str) -> bool {
     let c = cmd.trim();
-    DESTRUCTIVE_SHELL.iter().any(|v| c.contains(v))
+    if c.is_empty() {
+        return false;
+    }
+
+    // 1. Multi-word destructive phrases
+    for phrase in DESTRUCTIVE_PHRASES {
+        if c.contains(phrase) {
+            return true;
+        }
+    }
+
+    // 2. Tokenize compound command / pipeline segments
+    for segment in c.split([';', '&', '|']) {
+        let seg = segment.trim();
+        if seg.is_empty() {
+            continue;
+        }
+
+        let words: Vec<&str> = seg.split_whitespace().collect();
+        if words.is_empty() {
+            continue;
+        }
+
+        let mut idx = 0;
+        while idx < words.len() {
+            let w = words[idx];
+            // Skip wrappers
+            if w == "sudo" || w == "env" || w == "nohup" || w == "xargs" {
+                idx += 1;
+                continue;
+            }
+            if w.starts_with('-') {
+                idx += 1;
+                continue;
+            }
+            let bin = std::path::Path::new(w)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(w);
+
+            if DESTRUCTIVE_BINARIES.contains(&bin) {
+                return true;
+            }
+            break;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -269,6 +340,12 @@ mod tests {
     }
 
     #[test]
+    fn default_allows_todo_without_asking() {
+        let g = gate("default");
+        assert!(matches!(g.decide("todo", true, None, ""), Decision::Allow));
+    }
+
+    #[test]
     fn deny_beats_everything() {
         let mut g = gate("bypassPermissions");
         g.merge_rules(PermissionRules {
@@ -312,6 +389,84 @@ mod tests {
         assert!(matches!(
             g.decide("bash", false, Some("mkdir out"), ""),
             Decision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn auto_allows_safe_shell_and_edits_asks_destructive() {
+        let g = gate("auto");
+        // file edits auto-run in auto
+        assert!(matches!(g.decide("fuzzy_patch", false, None, ""), Decision::Allow));
+        assert!(matches!(g.decide("apply_patch", false, None, ""), Decision::Allow));
+        assert!(matches!(g.decide("write_file", false, None, ""), Decision::Allow));
+
+        // safe non-readonly shell commands auto-run in auto
+        assert!(matches!(
+            g.decide("bash", false, Some("cargo test"), ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("git add ."), ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("npm run build"), ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("mkdir demo"), ""),
+            Decision::Allow
+        ));
+
+        // destructive shell commands escalate to Ask even in auto
+        assert!(matches!(
+            g.decide("bash", false, Some("rm -rf target"), ""),
+            Decision::Ask { .. }
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("git reset --hard HEAD~1"), ""),
+            Decision::Ask { .. }
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("sudo rm -f secret.txt"), ""),
+            Decision::Ask { .. }
+        ));
+    }
+
+    #[test]
+    fn destructive_command_no_false_positives() {
+        assert!(!is_destructive("git add ."));
+        assert!(!is_destructive("git add src/main.rs"));
+        assert!(!is_destructive("cargo test --format json"));
+        assert!(!is_destructive("npm run format"));
+        assert!(!is_destructive("echo middle"));
+        assert!(!is_destructive("cat address.txt"));
+
+        assert!(is_destructive("rm file.txt"));
+        assert!(is_destructive("rm -rf node_modules"));
+        assert!(is_destructive("/bin/rm -f test"));
+        assert!(is_destructive("sudo rm -rf /"));
+        assert!(is_destructive("kill -9 1234"));
+        assert!(is_destructive("pkill firefox"));
+        assert!(is_destructive("git reset --hard"));
+        assert!(is_destructive("git clean -f"));
+        assert!(is_destructive("echo hi && rm -rf bad"));
+    }
+
+    #[test]
+    fn accept_edits_allows_readonly_shell() {
+        let g = gate("acceptEdits");
+        assert!(matches!(
+            g.decide("bash", false, Some("ls -la"), ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("git status"), ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("bash", false, Some("cat file.txt"), ""),
+            Decision::Allow
         ));
     }
 }

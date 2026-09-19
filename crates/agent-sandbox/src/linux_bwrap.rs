@@ -1,28 +1,19 @@
 //! `linux_bwrap.rs` — bubblewrap backend (primary on Linux).
 //!
-//! The proven argument set (sandbox-model.md §Platform backends):
-//!
-//! ```text
-//! bwrap
-//!   --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /bin /bin
-//!   [--ro-bind /etc/resolv.conf /etc/resolv.conf]   # only when allow_network
-//!   --proc /proc --dev /dev
-//!   --ro-bind $CARGO_HOME/registry …                # toolchain caches: ro, BEFORE ws
-//!   --bind  $RUN_DIR $RUN_DIR                        # per-run tmp
-//!   --bind  $EFFECTIVE_WS $WORKSPACE                 # rw: real ws or CoW snapshot
-//!   [--unshare-net]                                  # when !allow_network
-//!   --clearenv --setenv K V ...
-//!   --setenv CARGO_TARGET_DIR $WORKSPACE/target
-//!   --setenv TMPDIR $RUN_DIR
-//!   --chdir $WORKSPACE
-//!   --die-with-parent
-//!   -- sh -c "<cmd>"
-//! ```
-//!
-//! **Mount ordering is load-bearing**: read-only toolchain caches mount
-//! *before* the workspace bind so a hostile repo can't shadow them; the
-//! per-run tmp must never be shadowed by a later mount (it lives at
-//! `/run/user/$UID/agent-run-*`, bound as itself — no blanket `--tmpfs /tmp`).
+//! Sandboxing model:
+//! 1. Base system libraries and binaries (/usr, /lib, /bin, /lib64, /opt, /snap) are mounted read-only.
+//! 2. Essential system configuration (/etc/ssl, /etc/pki, /etc/hosts, /etc/passwd, /etc/ld.so.cache,
+//!    /etc/alternatives, etc.) is mounted read-only so that dynamic linking, TLS/HTTPS, DNS resolution,
+//!    and system alternatives work seamlessly.
+//! 3. Process-isolated /tmp (tmpfs) is mounted read-write, with /var/tmp symlinked, enabling temporary
+//!    file creation by runtimes (bun, node, python, gcc, etc.).
+//! 4. System and user development environments (bun, volta, cargo, rustup, nvm, fnm, deno, pnpm,
+//!    python/pyenv, conda, go, sdkman, and tools from PATH) are discovered and mounted read-only.
+//! 5. Sensitive credentials and secrets (.ssh, .gnupg, .aws, .cargo/credentials*, .npmrc, etc.)
+//!    are masked with /dev/null or omitted entirely.
+//! 6. Toolchain cache environment variables (BUN_INSTALL_CACHE_DIR, npm_config_cache, etc.) are
+//!    redirected to /tmp to prevent EROFS errors while keeping host caches immutable.
+//! 7. The workspace is mounted read-write last, ensuring workspace access takes precedence.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -34,29 +25,256 @@ use crate::traits::{CommandOutput, SandboxBackend, SandboxConfig, SandboxTier};
 
 pub struct LinuxBwrap;
 
-/// Sensitive dirs denied outright — bwrap ro-binds the system but these must
-/// not be readable even read-only inside the sandbox.
-const SENSITIVE_DIRS: &[&str] = &[
-    ".ssh", ".gnupg", ".aws", ".azure", ".kube",
-    ".bash_history", ".zsh_history",
+/// Base system roots mounted read-only (if they exist on the host).
+const SYSTEM_RO_DIRS: &[&str] = &[
+    "/usr",
+    "/lib",
+    "/bin",
+    "/lib64",
+    "/opt",
+    "/snap",
+    "/var/lib/snapd/snap",
 ];
 
-/// Toolchain cache dirs mounted read-only before the workspace.
-fn toolchain_caches() -> Vec<PathBuf> {
+/// Essential system configuration files/dirs mounted read-only (if they exist).
+const SYSTEM_CONFIG_PATHS: &[&str] = &[
+    // SSL / TLS certificates & PKI (crucial for curl, git, bun, npm, pip, cargo)
+    "/etc/ssl",
+    "/etc/pki",
+    "/etc/ca-certificates",
+    "/etc/crypto-policies",
+    // Name resolution & user/group databases
+    "/etc/hosts",
+    "/etc/passwd",
+    "/etc/group",
+    "/etc/nsswitch.conf",
+    // Dynamic linker configuration and alternatives
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/etc/alternatives",
+    // Timezone and system profiles
+    "/etc/localtime",
+    "/etc/zoneinfo",
+    "/etc/profile",
+    "/etc/profile.d",
+    "/etc/environment",
+    "/etc/mime.types",
+    // System git config
+    "/etc/gitconfig",
+];
+
+/// Sensitive dirs and files denied outright — masked with /dev/null or never mounted.
+const SENSITIVE_NAMES: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".bash_history",
+    ".zsh_history",
+    ".history",
+    ".config/agent-rs",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".npmrc",
+    ".netrc",
+];
+
+/// Common developer toolchain and runtime directories relative to HOME.
+const HOME_DEV_DIRS: &[&str] = &[
+    // Rust
+    ".cargo",
+    ".rustup",
+    // Node / JS / Bun / Deno runtimes & tools
+    ".volta",
+    ".bun",
+    ".nvm",
+    ".fnm",
+    ".deno",
+    ".pnpm",
+    ".yarn",
+    ".config/yarn",
+    ".npm",
+    ".cache",
+    // Python / Conda / Package managers
+    ".pyenv",
+    "miniconda3",
+    "anaconda3",
+    ".conda",
+    ".rye",
+    ".local/share/uv",
+    ".local/pipx",
+    // Go
+    "go",
+    ".config/go",
+    // JVM / Mobile / Toolchains
+    ".sdkman",
+    ".gradle",
+    ".m2",
+    // Version managers
+    ".asdf",
+    ".mise",
+    ".local/share/mise",
+    ".config/mise",
+    // Common user binaries and libraries
+    ".local/bin",
+    ".local/lib",
+    ".local/share/pnpm",
+    ".local/share/fnm",
+];
+
+/// Toolchain root environment variables to check for custom installation paths.
+const ENV_TOOLCHAIN_VARS: &[&str] = &[
+    "VOLTA_HOME",
+    "BUN_INSTALL",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "NVM_DIR",
+    "FNM_DIR",
+    "PNPM_HOME",
+    "DENO_INSTALL",
+    "PYENV_ROOT",
+    "GOROOT",
+    "GOPATH",
+    "JAVA_HOME",
+    "ANDROID_HOME",
+    "ANDROID_SDK_ROOT",
+    "FLUTTER_ROOT",
+];
+
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Check if a candidate path is sensitive or contains sensitive data.
+fn is_sensitive(path: &Path, home: Option<&Path>) -> bool {
+    let s = path.to_string_lossy();
+    for name in SENSITIVE_NAMES {
+        if s.ends_with(name) || s.contains(&format!("/{name}/")) || s.contains(&format!("/{name}")) {
+            return true;
+        }
+    }
+    if let Some(h) = home {
+        if let Ok(rel) = path.strip_prefix(h) {
+            let rel_str = rel.to_string_lossy();
+            for name in SENSITIVE_NAMES {
+                if rel_str == *name || rel_str.starts_with(&format!("{name}/")) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a path is within the base system mounts (already mounted).
+fn is_in_base_system(p: &Path) -> bool {
+    SYSTEM_RO_DIRS.iter().any(|sys| p.starts_with(sys))
+}
+
+/// Deduplicate mount paths so that parent mounts supersede child mounts,
+/// and HOME itself is never mounted wholesale.
+fn deduplicate_mount_paths(paths: Vec<PathBuf>, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut sorted = paths;
+    sorted.sort_by_key(|p| p.as_os_str().len());
+    sorted.dedup();
+
+    let mut clean: Vec<PathBuf> = Vec::new();
+    for p in sorted {
+        if let Some(h) = home {
+            if &p == h {
+                continue; // Never mount entire HOME
+            }
+        }
+        let already_covered = clean.iter().any(|existing| p.starts_with(existing));
+        if !already_covered {
+            clean.push(p);
+        }
+    }
+    clean
+}
+
+/// Discover host development environments, toolchains, and runtimes.
+fn dev_environment_binds() -> Vec<PathBuf> {
+    let mut mounts = Vec::new();
+    let home = dirs_home();
+
+    // 1. Check well-known toolchain directories in HOME
+    if let Some(ref h) = home {
+        for rel in HOME_DEV_DIRS {
+            let p = h.join(rel);
+            if p.exists() && !is_sensitive(&p, home.as_deref()) {
+                mounts.push(p);
+            }
+        }
+        // Also mount ~/.gitconfig if present so git operations know author identity
+        let gitconfig = h.join(".gitconfig");
+        if gitconfig.is_file() {
+            mounts.push(gitconfig);
+        }
+    }
+
+    // 2. Check explicit toolchain environment variables
+    for var in ENV_TOOLCHAIN_VARS {
+        if let Some(val) = std::env::var_os(var) {
+            let p = PathBuf::from(val);
+            if p.exists() && !is_sensitive(&p, home.as_deref()) {
+                if let Some(ref h) = home {
+                    if &p == h {
+                        continue;
+                    }
+                }
+                mounts.push(p);
+            }
+        }
+    }
+
+    // 3. Check directories in host PATH
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for entry in std::env::split_paths(&path_var) {
+            if entry.is_dir() && !is_sensitive(&entry, home.as_deref()) {
+                if let Some(ref h) = home {
+                    if &entry == h {
+                        continue;
+                    }
+                }
+                if is_in_base_system(&entry) {
+                    continue;
+                }
+                // If entry is `<parent>/bin`, mount the `<parent>` toolchain root (e.g. Flutter SDK)
+                if entry.file_name().map_or(false, |n| n == "bin") {
+                    if let Some(parent) = entry.parent() {
+                        if Some(parent) != home.as_deref() && parent.is_dir() {
+                            mounts.push(parent.to_path_buf());
+                            continue;
+                        }
+                    }
+                }
+                mounts.push(entry);
+            }
+        }
+    }
+
+    deduplicate_mount_paths(mounts, home.as_deref())
+}
+
+/// Collect sensitive files/directories that exist on host and must be masked.
+fn sensitive_masks() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(home) = dirs_home() {
-        for rel in [".cargo/registry", ".cargo/git", ".cache", ".rustup", "go/pkg", ".npm", ".local/share/pnpm"] {
-            let p = home.join(rel);
-            if p.is_dir() {
+        for name in SENSITIVE_NAMES {
+            let p = home.join(name);
+            if p.exists() {
                 out.push(p);
             }
         }
     }
+    let etc_ssh = PathBuf::from("/etc/ssh");
+    if etc_ssh.exists() {
+        out.push(etc_ssh);
+    }
     out
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 /// Per-run tmp dir — `/run/user/$UID/agent-run-<pid>` (tmpfs-scoped,
@@ -102,75 +320,133 @@ impl SandboxBackend for LinuxBwrap {
     ) -> Result<CommandOutput> {
         let started = Instant::now();
         let run_dir = run_dir();
-        let ws = cfg.workspace_dir.canonicalize()
+        let ws = cfg
+            .workspace_dir
+            .canonicalize()
             .unwrap_or_else(|_| cfg.workspace_dir.clone());
 
-        let mut argv: Vec<String> = Vec::with_capacity(64);
+        let mut argv: Vec<String> = Vec::with_capacity(128);
 
-        // ---- ro system binds ----
-        for (src, dst) in [("/usr", "/usr"), ("/lib", "/lib"), ("/bin", "/bin"), ("/lib64", "/lib64")] {
-            if Path::new(src).exists() {
+        // ---- 1. ro base system binds ----
+        for sys in SYSTEM_RO_DIRS {
+            if Path::new(sys).exists() {
                 argv.push("--ro-bind".into());
-                argv.push(src.into());
-                argv.push(dst.into());
+                argv.push((*sys).into());
+                argv.push((*sys).into());
             }
         }
-        // resolv.conf only when network is on.
+
+        // ---- 2. ro system configuration (/etc/ssl, /etc/pki, /etc/hosts, /etc/alternatives, etc.) ----
+        for conf in SYSTEM_CONFIG_PATHS {
+            if Path::new(conf).exists() {
+                argv.push("--ro-bind".into());
+                argv.push((*conf).into());
+                argv.push((*conf).into());
+            }
+        }
+
+        // resolv.conf: only when network is allowed
         if cfg.allow_network && Path::new("/etc/resolv.conf").exists() {
             argv.push("--ro-bind".into());
             argv.push("/etc/resolv.conf".into());
             argv.push("/etc/resolv.conf".into());
         }
+
+        // ---- 3. special filesystems ----
         argv.push("--proc".into());
         argv.push("/proc".into());
         argv.push("--dev".into());
         argv.push("/dev".into());
 
-        // ---- sensitive dirs: shadowed by empty ro binds so they can't be read ----
-        if let Some(home) = dirs_home() {
-            for rel in SENSITIVE_DIRS {
-                let p = home.join(rel);
-                if p.exists() {
-                    argv.push("--ro-bind".into());
-                    argv.push("/dev/null".into());
-                    argv.push(p.to_string_lossy().into_owned());
-                }
+        // ---- 4. process-isolated /tmp (tmpfs) and /var/tmp symlink ----
+        argv.push("--tmpfs".into());
+        argv.push("/tmp".into());
+        if Path::new("/var").exists() {
+            argv.push("--dir".into());
+            argv.push("/var".into());
+            argv.push("--symlink".into());
+            argv.push("/tmp".into());
+            argv.push("/var/tmp".into());
+        }
+
+        // Bind run_dir at its host path for XDG_RUNTIME_DIR compatibility
+        argv.push("--bind".into());
+        argv.push(run_dir.to_string_lossy().into_owned());
+        argv.push(run_dir.to_string_lossy().into_owned());
+
+        // ---- 5. developer environments & toolchains (bun, volta, cargo, rustup, python, etc.) ----
+        for dev_dir in dev_environment_binds() {
+            if dev_dir.exists() {
+                argv.push("--ro-bind".into());
+                argv.push(dev_dir.to_string_lossy().into_owned());
+                argv.push(dev_dir.to_string_lossy().into_owned());
             }
         }
 
-        // ---- toolchain caches: ro, BEFORE the workspace bind (mount order) ----
-        for cache in toolchain_caches() {
-            argv.push("--ro-bind".into());
-            argv.push(cache.to_string_lossy().into_owned());
-            argv.push(cache.to_string_lossy().into_owned());
+        // ---- 6. caller-specified extra ro mounts ----
+        for extra_ro in &cfg.extra_ro_mounts {
+            if extra_ro.exists() {
+                argv.push("--ro-bind".into());
+                argv.push(extra_ro.to_string_lossy().into_owned());
+                argv.push(extra_ro.to_string_lossy().into_owned());
+            }
         }
 
-        // ---- per-run tmp ----
-        argv.push("--bind".into());
-        argv.push(run_dir.to_string_lossy().into_owned());
-        argv.push(run_dir.to_string_lossy().into_owned());
+        // ---- 7. sensitive dirs & files masked with /dev/null ----
+        for mask in sensitive_masks() {
+            argv.push("--ro-bind".into());
+            argv.push("/dev/null".into());
+            argv.push(mask.to_string_lossy().into_owned());
+        }
 
-        // ---- workspace bind LAST (rw; CoW snapshot mounts at same path) ----
+        // ---- 8. caller-specified extra rw mounts ----
+        for extra_rw in &cfg.extra_rw_mounts {
+            if extra_rw.exists() {
+                argv.push("--bind".into());
+                argv.push(extra_rw.to_string_lossy().into_owned());
+                argv.push(extra_rw.to_string_lossy().into_owned());
+            }
+        }
+
+        // ---- 9. workspace bind LAST (rw; CoW snapshot mounts at same path) ----
         argv.push("--bind".into());
         argv.push(ws.to_string_lossy().into_owned());
         argv.push(ws.to_string_lossy().into_owned());
 
-        // ---- network ----
+        // ---- 10. network isolation ----
         if !cfg.allow_network {
             argv.push("--unshare-net".into());
         }
 
-        // ---- PID namespace: fork-bomb containment (P2) ----
-        // A private PID ns means a runaway fork tree dies with the sandbox's
-        // init (bwrap's child) — it can't spread to host PIDs, and `--die-
-        // with-parent` + timeout already reaps the whole namespace.
+        // ---- 11. PID namespace: fork-bomb containment ----
         argv.push("--unshare-pid".into());
 
-        // ---- env: clearenv + sanitized set ----
+        // ---- 12. env: clearenv + sanitized set + toolchain cache redirects ----
         argv.push("--clearenv".into());
         let mut extra = cfg.env_vars.clone();
-        extra.push(("CARGO_TARGET_DIR".into(), ws.join("target").to_string_lossy().into_owned()));
-        extra.push(("TMPDIR".into(), run_dir.to_string_lossy().into_owned()));
+        if !extra.iter().any(|(k, _)| k == "TMPDIR") {
+            extra.push(("TMPDIR".into(), "/tmp".into()));
+        }
+        if !extra.iter().any(|(k, _)| k == "TEMP") {
+            extra.push(("TEMP".into(), "/tmp".into()));
+        }
+        if !extra.iter().any(|(k, _)| k == "TMP") {
+            extra.push(("TMP".into(), "/tmp".into()));
+        }
+        if !extra.iter().any(|(k, _)| k == "CARGO_TARGET_DIR") {
+            extra.push(("CARGO_TARGET_DIR".into(), ws.join("target").to_string_lossy().into_owned()));
+        }
+        // Redirect package manager caches to writable /tmp so installs don't fail with EROFS
+        if !extra.iter().any(|(k, _)| k == "BUN_INSTALL_CACHE_DIR") {
+            extra.push(("BUN_INSTALL_CACHE_DIR".into(), "/tmp/bun-cache".into()));
+        }
+        if !extra.iter().any(|(k, _)| k == "npm_config_cache") {
+            extra.push(("npm_config_cache".into(), "/tmp/npm-cache".into()));
+        }
+        if !extra.iter().any(|(k, _)| k == "YARN_CACHE_FOLDER") {
+            extra.push(("YARN_CACHE_FOLDER".into(), "/tmp/yarn-cache".into()));
+        }
+
         for (k, v) in sanitize_env(&extra) {
             argv.push("--setenv".into());
             argv.push(k);
@@ -181,15 +457,11 @@ impl SandboxBackend for LinuxBwrap {
         argv.push(ws.to_string_lossy().into_owned());
         argv.push("--die-with-parent".into());
         argv.push("--".into());
-        // Absolute path — `--clearenv` may leave PATH unset inside the
-        // namespace, so a bare `sh` can fail to execvp even though /bin/sh
-        // exists (it does: we ro-bind /bin).
+        // Absolute path to sh
         argv.push("/bin/sh".into());
         argv.push("-c".into());
-        // Prepend resource limits to the command (P2 — plan.rs's
-        // ProcessPolicy was a dead field before). `ulimit -v` caps address
-        // space (KB), `-u` caps processes for the UID in this ns. These run
-        // inside the sandbox before the user command.
+
+        // Prepend resource limits to the command
         let mut inner = String::new();
         if cfg.max_memory_mb > 0 {
             inner.push_str(&format!("ulimit -v {}; ", cfg.max_memory_mb * 1024));
@@ -210,8 +482,6 @@ impl SandboxBackend for LinuxBwrap {
             .spawn()
             .context("spawn bwrap")?;
 
-        // `wait_with_output` collects piped stdout/stderr — `child.wait()`
-        // returns before the pipes drain, so reads after it see empty pipes.
         let status = tokio::time::timeout(timeout, child.wait_with_output()).await;
         let elapsed = started.elapsed().as_millis() as u64;
 
@@ -237,7 +507,7 @@ impl SandboxBackend for LinuxBwrap {
             stdout: out,
             stderr: err,
             is_timeout,
-            peak_memory_mb: None, // bwrap doesn't expose rusage; Stage 11 wires it
+            peak_memory_mb: None,
             elapsed_ms: elapsed,
         })
     }

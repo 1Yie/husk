@@ -1,15 +1,17 @@
 //! `todo` — a persistent task list the agent manages while it works.
 //!
-//! Mirrors the pi-todo extension's model (list/add/toggle/clear) but stores
-//! state in `{workspace}/.agent/todos.json` instead of tool-result snapshots
-//! — agent-rs has no session-branch `details` mechanism, and a workspace
-//! file keeps the list stable across sessions and restarts, which matches
-//! how a human would expect a project todo list to behave.
+//! Mirrors the pi-todo extension's model (list/add/toggle/clear) — and the
+//! mainstream convention (Claude Code's TodoWrite, pi's todo, Codex plan):
+//! the list is **session-scoped agent state**, not project data. It lives
+//! next to the session's history in the app state dir
+//! (`~/.local/share/agent-rs/sessions/<ws>/<id>.todos.json`) — a new session
+//! starts clean, a resumed session keeps its list, and the user's repo is
+//! never polluted with agent scratch files.
 //!
-//! `readonly: false` — it mutates state — but it is NOT a write tool in the
-//! `PendingWrite` sense: it touches `.agent/` metadata, never source files,
-//! so it bypasses the diff/approval flow and commits its own side effect
-//! inside `exec` (same as `bash`'s managed side effects).
+//! `readonly: true` — it manages internal agent state without touching
+//! project workspace files. It is not a code write tool and should execute
+//! autonomously based on the model's judgment without pausing for user
+//! confirmation or approval.
 
 use std::sync::Arc;
 
@@ -26,7 +28,7 @@ pub struct TodoItem {
     pub done: bool,
 }
 
-/// On-disk store — `{workspace}/.agent/todos.json`.
+/// On-disk store — `<session store>/<session_id>.todos.json`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct TodoStore {
     next_id: usize,
@@ -48,18 +50,26 @@ pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "todo",
         schema: schema_for::<TodoArgs>(
-            "Manage a persistent project todo list (stored in `.agent/todos.json`).\n\
+            "Manage this session's task list (persisted with the session).\n\
              Actions: `add` a task (`text`), `list` all tasks, `done`/`undone`\n\
              (`id`), `remove` (`id`), `clear` (wipe the list). Use it to track\n\
              multi-step work the user can see — plan, subtasks, follow-ups.",
         ),
-        readonly: false,
+        readonly: true,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
 fn store_path(ctx: &ToolCtx) -> std::path::PathBuf {
-    ctx.workspace_root.join(".agent").join("todos.json")
+    if let Some((id, store)) = &ctx.session {
+        return store.state_file(*id, "todos.json");
+    }
+    // Unattached context (tests/headless): derive the workspace's session
+    // store anyway so state still lives in the app data dir; temp dir is the
+    // last resort when no data dir exists at all.
+    crate::session_store::SessionStore::open(&ctx.workspace_root)
+        .map(|s| s.state_file(0, "todos.json"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("agent-rs-todos.json"))
 }
 
 async fn load(ctx: &ToolCtx) -> Result<TodoStore, ToolError> {
@@ -67,10 +77,24 @@ async fn load(ctx: &ToolCtx) -> Result<TodoStore, ToolError> {
     match tokio::fs::read_to_string(&path).await {
         Ok(s) => serde_json::from_str(&s)
             .map_err(|e| ToolError::Failed(format!("corrupt {}: {e}", path.display()))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TodoStore {
-            next_id: 1,
-            items: Vec::new(),
-        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // One-time migration: a legacy `{workspace}/.agent/todos.json`
+            // becomes this session's list, then the repo file is removed so
+            // the workspace stays clean.
+            let legacy = ctx.workspace_root.join(".agent").join("todos.json");
+            match tokio::fs::read_to_string(&legacy).await {
+                Ok(s) => {
+                    let store: TodoStore = serde_json::from_str(&s).unwrap_or_default();
+                    let _ = tokio::fs::remove_file(&legacy).await;
+                    let _ = save(ctx, &store).await;
+                    Ok(store)
+                }
+                Err(_) => Ok(TodoStore {
+                    next_id: 1,
+                    items: Vec::new(),
+                }),
+            }
+        }
         Err(e) => Err(ToolError::Io(e)),
     }
 }
@@ -177,7 +201,7 @@ mod tests {
 
     fn ctx() -> Arc<ToolCtx> {
         // Unique dir per test — sharing one path across parallel tests
-        // cross-pollutes `.agent/todos.json` and flakes the roundtrip.
+        // cross-pollutes the per-session store file and flakes the roundtrip.
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "todo-test-{}-{}",

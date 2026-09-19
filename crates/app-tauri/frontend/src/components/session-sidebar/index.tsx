@@ -1,13 +1,13 @@
-// Session sidebar — Codex Desktop style sidebar.
-
-import { SquarePen, Search, Clock, Plug, Folder } from "lucide-react";
+import { SquarePen, Search, Clock, Plug, Folder, Settings } from "@keyline-icons/react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { SessionRow } from "../../types";
 import { Orb } from "../agent-orb";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+
+const win = getCurrentWindow();
 
 interface Props {
   sessions: SessionRow[];
@@ -19,6 +19,7 @@ interface Props {
   onOpen: (id: number) => void;
   onPickWorkspace?: () => void;
   onSwitchWorkspace?: (path: string) => void;
+  onOpenSettings?: () => void;
 }
 
 export function SessionSidebar({
@@ -31,11 +32,40 @@ export function SessionSidebar({
   onOpen,
   onPickWorkspace,
   onSwitchWorkspace,
+  onOpenSettings,
 }: Props) {
   const otherRecents = recentWorkspaces.filter((w) => w.path !== workspaceRoot);
 
+  const drag = (e: React.MouseEvent) => {
+    const el = e.target as HTMLElement;
+    if (e.button === 0 && el.closest("[data-drag]") && !el.closest("[data-nodrag]")) {
+      void win.startDragging();
+    }
+  };
+
+  const doubleClick = (e: React.MouseEvent) => {
+    const el = e.target as HTMLElement;
+    if (el.closest("[data-drag]") && !el.closest("[data-nodrag]")) {
+      void win.toggleMaximize();
+    }
+  };
+
   return (
-    <aside className="w-[230px] flex-none flex flex-col bg-neutral-100/70 border-r border-neutral-200 select-none">
+    <aside className="w-[230px] flex-none flex flex-col bg-neutral-100/70 border-r border-neutral-200 select-none h-full">
+      {/* Top draggable header aligning with main content topbar */}
+      <div
+        onMouseDown={drag}
+        onDoubleClick={doubleClick}
+        data-drag
+        data-tauri-drag-region
+        className="h-9 flex-none flex items-center px-3 gap-2 border-b border-neutral-200/80 bg-neutral-100/80 select-none cursor-default"
+      >
+        <span className="w-2.5 h-2.5 rounded-full bg-neutral-400 inline-block shrink-0" />
+        <span className="text-[12px] font-semibold text-neutral-700 tracking-tight">
+          agent-rs
+        </span>
+      </div>
+
       {/* Active Workspace Card */}
       <div className="p-2 pb-1">
         <div className="p-2 rounded-md bg-white border border-neutral-200/80 shadow-xs flex flex-col gap-1.5">
@@ -121,23 +151,15 @@ export function SessionSidebar({
         </div>
       )}
 
-      <Separator className="mx-2 w-auto" />
-
-      {/* User / Settings footer */}
-      <div className="p-2">
+      {/* Settings footer - seamless border-t without side gaps */}
+      <div className="p-2 border-t border-neutral-200/80">
         <Button
           variant="ghost"
-          className="w-full justify-start gap-2 h-auto py-2 px-2 hover:bg-neutral-200/60"
+          onClick={onOpenSettings}
+          className="w-full justify-start gap-2.5 px-2.5 h-8 text-[13px] font-normal text-neutral-700 hover:bg-neutral-200/60"
         >
-          <Avatar className="h-6 w-6">
-            <AvatarFallback className="bg-neutral-300 text-neutral-700 text-[11px] font-medium">
-              设
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex flex-col items-start leading-tight">
-            <span className="text-[13px] font-medium text-neutral-800">设置</span>
-            <span className="text-[11px] text-neutral-400">帐户</span>
-          </div>
+          <Settings className="h-4 w-4 text-neutral-500" />
+          设置
         </Button>
       </div>
     </aside>

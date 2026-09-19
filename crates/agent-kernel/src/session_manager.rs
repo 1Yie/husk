@@ -41,6 +41,8 @@ pub struct SessionModelInfo {
     pub active_model: String,
     #[serde(default)]
     pub active_thinking_level: Option<String>,
+    #[serde(default)]
+    pub active_permission_mode: Option<String>,
     pub config_path: Option<String>,
     pub models: Vec<ModelDetails>,
 }
@@ -52,6 +54,11 @@ pub struct SessionHandle {
     pub id: i64,
     pub cmd_tx: tokio::sync::mpsc::Sender<agent_ipc::UiCommand>,
     pub decision: Arc<Mutex<Option<(u64, bool)>>>,
+    pub permissions: Arc<std::sync::RwLock<crate::permissions::PermissionGate>>,
+    /// The session's live thinking level — the engine's shared slot. Read by
+    /// `model_info` so the UI shows the session's actual value, which may
+    /// differ from the stored default after a prefs change.
+    pub thinking_level: Arc<std::sync::RwLock<Option<String>>>,
     pub steer_tx: tokio::sync::mpsc::Sender<String>,
     /// Direct cancel flag — set `true` to abort the in-flight turn. Bypasses
     /// the command pump so a Cancel isn't queued behind `run_turn`.
@@ -80,6 +87,8 @@ pub struct SessionManager {
     pub model_name: String,
     /// Active thinking intensity level across sessions (e.g. "medium", "high").
     pub active_thinking_level: Option<String>,
+    /// Active permission mode across sessions (e.g. "default", "acceptEdits", "auto").
+    pub permission_mode: String,
     /// Workspace root (for git branch / cwd display).
     pub workspace_root: std::path::PathBuf,
 }
@@ -114,9 +123,25 @@ impl SessionManager {
                 .expect("session store")
         }));
         let (event_tx, event_rx) = std_mpsc::channel();
-        let (_p, model, pname) = resolve_provider(&cfg);
+        let (_p, default_model, default_pname) = resolve_provider(&cfg);
 
         crate::session_store::record_recent_workspace(&canon);
+
+        let prefs = store.load_prefs();
+        // Global user defaults — the settings window's stored preference —
+        // fill any gap the workspace prefs leave. Absent file → built-ins.
+        let defaults = crate::session_store::try_load_default_preferences();
+        let (provider_name, model_name) = match (&prefs.provider, &prefs.model) {
+            (Some(p), Some(m)) if cfg.providers.contains_key(p) => (p.clone(), m.clone()),
+            _ => (default_pname, default_model),
+        };
+        let permission_mode = prefs
+            .permission_mode
+            .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
+            .unwrap_or_else(|| "default".into());
+        let active_thinking_level = prefs
+            .thinking_level
+            .or_else(|| defaults.and_then(|d| d.thinking_level));
 
         let mut mgr = Self {
             metas: store.list(),
@@ -125,9 +150,10 @@ impl SessionManager {
             handles: HashMap::new(),
             event_tx,
             active_id: 0,
-            provider_name: pname,
-            model_name: model,
-            active_thinking_level: None,
+            provider_name,
+            model_name,
+            active_thinking_level,
+            permission_mode,
             workspace_root: canon,
         };
 
@@ -145,6 +171,23 @@ impl SessionManager {
     pub fn switch_workspace(&mut self, new_root: std::path::PathBuf) -> std::io::Result<()> {
         let canon = new_root.canonicalize().unwrap_or_else(|_| new_root.clone());
         let store = Arc::new(SessionStore::open(&canon)?);
+        let prefs = store.load_prefs();
+        let defaults = crate::session_store::try_load_default_preferences();
+        let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
+        let (provider_name, model_name) = match (&prefs.provider, &prefs.model) {
+            (Some(p), Some(m)) if self.provider_cfg.providers.contains_key(p) => (p.clone(), m.clone()),
+            _ => (default_pname, default_model),
+        };
+        self.permission_mode = prefs
+            .permission_mode
+            .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
+            .unwrap_or_else(|| "default".into());
+        self.active_thinking_level = prefs
+            .thinking_level
+            .or_else(|| defaults.and_then(|d| d.thinking_level));
+        self.provider_name = provider_name;
+        self.model_name = model_name;
+
         self.workspace_root = canon;
         self.store = store;
         self.metas = self.store.list();
@@ -166,7 +209,16 @@ impl SessionManager {
 
     /// Spawn an actor for `id` (resume from store if a snapshot exists).
     fn spawn_actor(&mut self, id: i64) {
-        let (provider, model, _label) = resolve_provider(&self.provider_cfg);
+        let provider = self
+            .provider_cfg
+            .providers
+            .get(&self.provider_name)
+            .and_then(|pcfg| ProviderFactory::build(pcfg).ok())
+            .unwrap_or_else(|| {
+                let (p, _, _) = resolve_provider(&self.provider_cfg);
+                p
+            });
+        let model = self.model_name.clone();
         let mentry = self
             .provider_cfg
             .providers
@@ -181,7 +233,7 @@ impl SessionManager {
             provider,
             model,
             temperature: 1.0,
-            permission_mode: "default".into(),
+            permission_mode: self.permission_mode.clone(),
             track_dirty: true,
             thinking_level: self.active_thinking_level.clone(),
             thinking_level_map,
@@ -195,6 +247,8 @@ impl SessionManager {
 
         let cmd_tx = actor.command_sender();
         let decision = actor.decision_writer();
+        let permissions = actor.permissions_writer();
+        let thinking_level = actor.thinking_writer();
         let steer_tx = actor.steer_writer();
         let cancel = actor.cancel_writer();
 
@@ -237,6 +291,8 @@ impl SessionManager {
             id,
             cmd_tx,
             decision,
+            permissions,
+            thinking_level,
             steer_tx,
             cancel,
             preview,
@@ -384,25 +440,89 @@ impl SessionManager {
             }
         }
 
+        // Report the ACTIVE session's live values — the composer mirrors the
+        // session's actual gate/level, which may differ from the stored
+        // defaults once the settings popup changes them (prefs only apply to
+        // sessions spawned afterwards).
+        let (live_mode, live_level) = self
+            .active()
+            .map(|h| {
+                let m = h
+                    .permissions
+                    .read()
+                    .ok()
+                    .map(|g| g.mode().as_str().to_string());
+                let t = h.thinking_level.read().ok().and_then(|l| l.clone());
+                (m, t)
+            })
+            .unwrap_or((None, None));
+
         let path = AppConfig::default_path().map(|p| p.to_string_lossy().to_string());
         SessionModelInfo {
             active_provider: self.provider_name.clone(),
             active_model: self.model_name.clone(),
-            active_thinking_level: self.active_thinking_level.clone(),
+            active_thinking_level: live_level.or_else(|| self.active_thinking_level.clone()),
+            active_permission_mode: live_mode.or_else(|| Some(self.permission_mode.clone())),
             config_path: path,
             models,
         }
     }
 
-    /// Update active model & provider in manager metadata.
+    /// The stored default preferences — what NEW sessions spawn with.
+    /// The settings popup reads/writes these; already-running sessions keep
+    /// whatever they were spawned (or later switched) with.
+    pub fn default_prefs(&self) -> (String, Option<String>) {
+        (self.permission_mode.clone(), self.active_thinking_level.clone())
+    }
+
+    /// Update the stored default preferences — applies to sessions spawned
+    /// AFTER this call; live sessions are untouched (no gate write, no
+    /// UiCommand, no SystemMessage in their stream).
+    pub fn set_default_prefs(&mut self, permission_mode: Option<String>, thinking_level: Option<String>) {
+        if let Some(m) = permission_mode {
+            self.permission_mode = m;
+        }
+        if let Some(l) = thinking_level {
+            self.active_thinking_level = if l.is_empty() { None } else { Some(l) };
+        }
+        self.persist_prefs();
+        // Also persist the global defaults so fresh workspaces inherit them.
+        let _ = crate::session_store::save_default_preferences(
+            &crate::session_store::DefaultPreferences {
+                permission_mode: self.permission_mode.clone(),
+                thinking_level: self.active_thinking_level.clone(),
+            },
+        );
+    }
+
+    /// Persist current workspace composer preferences (model, thinking level, permission mode).
+    pub fn persist_prefs(&self) {
+        let prefs = crate::session_store::WorkspacePrefs {
+            provider: Some(self.provider_name.clone()),
+            model: Some(self.model_name.clone()),
+            thinking_level: self.active_thinking_level.clone(),
+            permission_mode: Some(self.permission_mode.clone()),
+        };
+        let _ = self.store.save_prefs(&prefs);
+    }
+
+    /// Update active model & provider in manager metadata and persist to workspace prefs.
     pub fn set_model(&mut self, provider: String, model: String) {
         self.provider_name = provider;
         self.model_name = model;
+        self.persist_prefs();
     }
 
-    /// Update active thinking level in manager metadata.
+    /// Update active thinking level in manager metadata and persist to workspace prefs.
     pub fn set_thinking_level(&mut self, level: String) {
         self.active_thinking_level = if level.is_empty() { None } else { Some(level) };
+        self.persist_prefs();
+    }
+
+    /// Update active permission mode in manager metadata and persist to workspace prefs.
+    pub fn set_permission_mode(&mut self, mode: String) {
+        self.permission_mode = mode;
+        self.persist_prefs();
     }
 }
 
@@ -450,6 +570,7 @@ mod tests {
         assert_eq!(info.active_provider, "devin");
         assert_eq!(info.active_model, "devin/swe-2");
         assert_eq!(info.active_thinking_level.as_deref(), Some("medium"));
+        assert_eq!(info.active_permission_mode.as_deref(), Some("default"));
         let swe2 = info
             .models
             .iter()
@@ -457,5 +578,26 @@ mod tests {
             .expect("swe-2 model found");
         assert!(swe2.reasoning);
         assert_eq!(swe2.available_levels, vec!["off", "medium", "high", "max"]);
+    }
+
+    #[test]
+    fn test_workspace_prefs_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        {
+            let (mut mgr, _rx) = SessionManager::spawn_at(Some(path.clone()));
+            mgr.set_model("devin".into(), "devin/swe-2".into());
+            mgr.set_thinking_level("high".into());
+            mgr.set_permission_mode("acceptEdits".into());
+        }
+        // Spawn a fresh manager on the same directory — should restore preferences from prefs.json
+        let (mut mgr2, _rx) = SessionManager::spawn_at(Some(path));
+        assert_eq!(mgr2.provider_name, "devin");
+        assert_eq!(mgr2.model_name, "devin/swe-2");
+        assert_eq!(mgr2.active_thinking_level.as_deref(), Some("high"));
+        assert_eq!(mgr2.permission_mode, "acceptEdits");
+        let info = mgr2.model_info();
+        assert_eq!(info.active_permission_mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(info.active_thinking_level.as_deref(), Some("high"));
     }
 }
