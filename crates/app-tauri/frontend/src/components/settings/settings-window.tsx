@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Sliders,
-  Minus,
-  X,
   Settings as SettingsIcon,
   ShieldAlert,
   Zap,
@@ -13,11 +11,11 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { WindowControls } from "@/components/window-controls";
 import { isMac } from "@/lib/platform";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -143,27 +141,7 @@ export function SettingsWindow() {
 
         <div data-drag data-tauri-drag-region className="flex-1 h-full" />
 
-        {/* Window controls — hidden on macOS (native traffic lights) */}
-        {!isMac && (
-          <div data-nodrag className="flex items-center gap-0.5 shrink-0">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => void win.minimize()}
-              className="text-neutral-500 hover:bg-neutral-200/70 hover:text-neutral-900"
-            >
-              <Minus className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => void win.close()}
-              className="text-neutral-500 hover:bg-red-500 hover:text-white"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        )}
+        <WindowControls maximize={false} />
       </div>
 
       {/* Main Dual-Column Body: Left Options, Right Settings */}
@@ -187,8 +165,8 @@ export function SettingsWindow() {
           </div>
         </aside>
 
-        {/* Right Column: Personalized Settings Content with shadcn ScrollArea */}
-        <ScrollArea className="flex-1 h-full bg-white">
+        {/* Right Column: Personalized Settings Content — plain scroller */}
+        <div className="flex-1 min-h-0 overflow-y-auto bg-white">
           <div className="p-8 flex flex-col justify-between min-h-[calc(100vh-36px)]">
             <div className="flex flex-col gap-6 max-w-3xl">
               <div>
@@ -293,7 +271,7 @@ export function SettingsWindow() {
               </div>
             </div>
           </div>
-        </ScrollArea>
+        </div>
       </div>
     </div>
   );
