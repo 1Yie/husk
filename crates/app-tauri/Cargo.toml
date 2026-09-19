@@ -16,14 +16,18 @@ agent-ipc = { path = "../agent-ipc" }
 agent-llm = { path = "../agent-llm" }
 agent-sandbox = { path = "../agent-sandbox" }
 dirs.workspace = true
-tauri = { version = "2", features = ["custom-protocol"] }
+tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 rfd = "0.15"
 
 [features]
-default = ["custom-protocol"]
+default = []
+# Enabled automatically by `tauri build` for production bundles.
+# MUST NOT be a default feature — it makes the app serve `frontendDist`
+# via tauri://localhost and ignores `build.devUrl`, which kills the dev
+# server + HMR flow under `cargo tauri dev`.
 custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
