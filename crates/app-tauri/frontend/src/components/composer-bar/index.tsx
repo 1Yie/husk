@@ -31,6 +31,7 @@ import * as agent from "../../invoke/agent";
 import type { Attachment, FileItem, SkillItem } from "../../invoke/agent";
 import type { SessionView } from "../../hooks/stream-view";
 import { pendingApprovalOf } from "../../hooks/stream-view";
+import { onQuoteRequest } from "../../lib/selection-bus";
 
 export function extractLatestTodos(view: SessionView): {
   items: TodoItem[];
@@ -128,6 +129,22 @@ export function ComposerBar({
   const [activeProvider, setActiveProvider] = useState<string>("");
   const [models, setModels] = useState<agent.ModelItem[]>([]);
   const [activeThinkingLevel, setActiveThinkingLevel] = useState<string>("off");
+
+  // Right-click in the chat stream ("就选中内容提问" / "粘贴到输入框")
+  // lands here via the selection bus. A passage arrives as a quoted
+  // blockquote so the model reads it as referenced context, then the
+  // textarea takes focus so the question can be typed underneath.
+  useEffect(() => {
+    return onQuoteRequest((text) => {
+      const quote = `> ${text.trim().replace(/\n/g, "\n> ")}\n\n`;
+      setText((prev) => (prev ? `${quote}${prev}` : quote));
+      requestAnimationFrame(() => {
+        const el = document.querySelector<HTMLTextAreaElement>("textarea[data-composer]");
+        el?.focus();
+        el?.setSelectionRange(el.value.length, el.value.length);
+      });
+    });
+  }, []);
 
   const fetchModels = async () => {
     try {

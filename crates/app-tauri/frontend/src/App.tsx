@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Toaster } from "@/components/ui/sonner";
 import { useAgentEvents } from "./hooks/use-agent-events";
 import { useAgentSession } from "./hooks/use-agent-session";
 import { viewFromHistory } from "./hooks/view-from-history";
@@ -17,7 +18,59 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+/** Whether `e.target` is a native-editing surface that keeps its browser
+ * context menu (cut/copy/paste/select-all). Text areas and inputs rely on
+ * it — Radix menus can't replicate IME/spellcheck entries there. */
+function isEditableTarget(e: Event): boolean {
+  const el = e.target as HTMLElement | null;
+  if (!el || typeof el.closest !== "function") return false;
+  return Boolean(el.closest("input, textarea, [contenteditable=true], [contenteditable='']"));
+}
+
+/** Global chrome policy for the packaged shell:
+ *  - right-click belongs to app menus (sidebar rows, chat stream); the
+ *    native webview menu is suppressed everywhere except editable fields
+ *  - devtools shortcuts are dead keys in production builds.
+ * Dev (`vite dev`) keeps both for debugging. */
+function useAppChromeGuards() {
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      // Radix ContextMenuTrigger calls preventDefault itself; letting the
+      // event through to a trigger is what opens our custom menu.
+      if (isEditableTarget(e)) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.("[data-allow-contextmenu]")) return;
+      // Radix context-menu triggers are inside our own menu surfaces —
+      // the trigger fires the React handler, then this capture-phase
+      // listener would still see the event. Distinguish by what the
+      // trigger rendered: a `data-state` attribute exists on the trigger
+      // element once Radix wires it, but simplest reliable check is our
+      // own opt-in marker applied by ContextMenuTrigger's wrapper.
+      e.preventDefault();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (import.meta.env.DEV) return;
+      const k = e.key;
+      const mod = e.ctrlKey || e.metaKey;
+      // F12 · Ctrl/Cmd+Shift+I/J/C/K · Cmd/Ctrl+Alt+I/J/C (mac) · Ctrl+U.
+      const devtools =
+        k === "F12" ||
+        (mod && e.shiftKey && ["i", "I", "j", "J", "c", "C", "k", "K"].includes(k)) ||
+        (mod && e.altKey && ["i", "I", "j", "J", "c", "C"].includes(k)) ||
+        (e.ctrlKey && (k === "u" || k === "U"));
+      if (devtools) e.preventDefault();
+    };
+    document.addEventListener("contextmenu", onContextMenu, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("contextmenu", onContextMenu, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
+}
+
 export function App() {
+  useAppChromeGuards();
   const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: "", name: "", recents: [] });
   const {
     active,
@@ -181,6 +234,7 @@ export function App() {
 
   return (
     <>
+      <Toaster />
       <MainLayout
         sidebar={
         <SessionSidebar

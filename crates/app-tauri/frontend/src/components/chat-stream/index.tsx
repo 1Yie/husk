@@ -22,12 +22,23 @@ import {
   FileCode,
   Terminal,
   Sparkles,
+  TextQuote,
+  FileArrowRight,
   type IconProps,
 } from "@keyline-icons/react";
 import { codexMarkdownComponents } from "./markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { prismCodePlugin } from "../../lib/syntax-highlight";
 import { ChatTurnRail, type RailMark } from "./chat-turn-rail";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { toast } from "sonner";
+import { requestQuote, selectionWithin } from "../../lib/selection-bus";
 import { cn } from "@/lib/utils";
 import { readAttachment } from "../../invoke/agent/sessions";
 
@@ -804,8 +815,71 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     }
   };
 
+  // ---- Right-click menu -------------------------------------------------
+  // The native context menu is suppressed app-wide; the stream gets its own
+  // so a selected passage can be copied or handed to the composer as a
+  // quote. `selRef` mirrors the selection captured at menu-open time —
+  // reading `window.getSelection()` inside the item callback can race the
+  // browser clearing it.
+  const selRef = useRef("");
+  const [hasSelection, setHasSelection] = useState(false);
+  const streamRootRef = useRef<HTMLDivElement>(null);
+
+  const syncSelection = () => {
+    const text = selectionWithin(streamRootRef.current);
+    selRef.current = text;
+    setHasSelection(text.length > 0);
+  };
+
+  const copySelection = async () => {
+    const text = selRef.current;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // WebKit fallback when the async clipboard API is unavailable.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        toast.error("复制失败");
+      }
+      document.body.removeChild(ta);
+    }
+  };
+
+  const askAboutSelection = () => {
+    const text = selRef.current.trim();
+    if (!text) return;
+    requestQuote(text);
+    // Collapse the highlight once the quote is handed off — the composer
+    // echo is now the canonical view of it.
+    window.getSelection()?.removeAllRanges();
+    setHasSelection(false);
+  };
+
+  const pasteToComposer = async () => {
+    try {
+      const clip = await navigator.clipboard.readText();
+      if (clip) requestQuote(clip);
+    } catch {
+      toast.error("无法读取剪贴板");
+    }
+  };
+
   return (
-    <div className="bg-white dark:bg-[#141416] flex-1 min-h-0 w-full flex flex-col select-text relative">
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          ref={streamRootRef}
+          onContextMenu={syncSelection}
+          className="bg-white dark:bg-neutral-950 flex-1 min-h-0 w-full flex flex-col select-text relative"
+        >
       <ChatTurnRail
         marks={marks}
         activeId={activeMarkId}
@@ -963,6 +1037,34 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           </button>
         </TooltipSimple>
       </div>
-    </div>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="min-w-[160px]">
+        <ContextMenuItem
+          className="gap-2 text-xs cursor-pointer"
+          disabled={!hasSelection}
+          onClick={() => void copySelection()}
+        >
+          <Copy className="h-3.5 w-3.5" />
+          复制
+        </ContextMenuItem>
+        <ContextMenuItem
+          className="gap-2 text-xs cursor-pointer"
+          disabled={!hasSelection}
+          onClick={askAboutSelection}
+        >
+          <TextQuote className="h-3.5 w-3.5" />
+          就选中内容提问
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          className="gap-2 text-xs cursor-pointer"
+          onClick={() => void pasteToComposer()}
+        >
+          <FileArrowRight className="h-3.5 w-3.5" />
+          粘贴到输入框
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
