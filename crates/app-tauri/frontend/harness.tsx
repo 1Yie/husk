@@ -65,7 +65,7 @@ function Page() {
 
       <div className="absolute left-300 top-110" style={{ left: 300, top: 110 }}>
         <SettingSelect
-          value="codex"
+          value="husk"
           onChange={() => {}}
           placeholder="选择主题"
           prefix={
@@ -74,7 +74,7 @@ function Page() {
             </span>
           }
           options={[
-            { value: "codex", label: "Codex" },
+            { value: "husk", label: "Husk" },
             { value: "light", label: "浅色" },
             { value: "dark", label: "深色" },
           ]}
