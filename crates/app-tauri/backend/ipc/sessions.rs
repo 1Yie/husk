@@ -285,44 +285,41 @@ pub fn agent_session(
                     .collect::<Vec<_>>()
             ))
         }
-        // Read one picked file for the attachment chips. Text is inlined
-        // into the prompt as a fenced block (32KB cap — same bound the
-        // kernel's `@` expansion uses); images/binaries come back as
-        // path-only entries the model can reference but not read.
+        // Read one picked file for the attachment chips. Picked paths may
+        // live outside the workspace — the sandbox's rw mounts are the
+        // workspace + a per-run tmp dir, so an outside path is invisible
+        // to `read`/`bash`. `stage_attachment` copies it into
+        // `.husk/attachments/` (inside the rw mount, durable for replay)
+        // and the staged path is what reaches the model.
         "read_attachment" => {
             let p = payload
                 .as_ref()
                 .and_then(|p| p.get("path"))
                 .and_then(|v| v.as_str())
                 .ok_or("read_attachment needs path")?;
-            let path = std::path::PathBuf::from(p);
-            let name = path
+            let source = std::path::PathBuf::from(p);
+            let name = source
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| p.to_string());
-            let is_image = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| {
-                    ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]
-                        .contains(&e.to_lowercase().as_str())
-                })
-                .unwrap_or(false);
-            const MAX_BYTES: usize = 32 * 1024;
-            if is_image {
+            let path = stage_attachment(&source, &mgr.workspace_root);
+            let staged = path.to_string_lossy().to_string();
+            if let Some(img) = agent_llm::types::ImageRef::for_path(path.clone()) {
                 return Ok(serde_json::json!({
-                    "path": p, "name": name, "kind": "image",
+                    "path": staged, "name": name, "kind": "image",
+                    "data_url": img.data_url(),
                 }));
             }
+            const MAX_BYTES: usize = 32 * 1024;
             match std::fs::read(&path) {
                 Ok(bytes) if bytes.contains(&0) => Ok(serde_json::json!({
-                    "path": p, "name": name, "kind": "binary",
+                    "path": staged, "name": name, "kind": "binary",
                 })),
                 Ok(bytes) => {
                     let truncated = bytes.len() > MAX_BYTES;
                     let capped = if truncated { &bytes[..MAX_BYTES] } else { &bytes[..] };
                     Ok(serde_json::json!({
-                        "path": p,
+                        "path": staged,
                         "name": name,
                         "kind": "text",
                         "content": String::from_utf8_lossy(capped),
@@ -386,4 +383,44 @@ fn scan_skills(root: &std::path::Path) -> Vec<serde_json::Value> {
             })
         })
         .collect()
+}
+
+/// Stage a user-picked attachment into `<workspace>/.husk/attachments/` —
+/// the sandbox's rw mounts are the workspace + a per-run tmp dir, so a
+/// path outside the workspace is invisible to `read`/`bash`. The staged
+/// copy lands inside the mount AND survives restart (session replay and
+/// later turns can still resolve it). In-workspace files pass through
+/// unchanged. The dir carries its own `.gitignore` so uploads never
+/// pollute `git status`.
+fn stage_attachment(
+    source: &std::path::Path,
+    workspace_root: &std::path::Path,
+) -> std::path::PathBuf {
+    if source.starts_with(workspace_root) {
+        return source.to_path_buf();
+    }
+    let dir = workspace_root.join(".husk").join("attachments");
+    let gitignore = workspace_root.join(".husk").join(".gitignore");
+    if std::fs::create_dir_all(&dir).is_ok() && !gitignore.exists() {
+        let _ = std::fs::write(&gitignore, "*\n");
+    }
+    // Content-hash name — re-picking the same file is idempotent, and two
+    // different files sharing a filename never collide.
+    let Ok(bytes) = std::fs::read(source) else {
+        return source.to_path_buf();
+    };
+    let hash = xxhash_rust::xxh3::xxh3_64(&bytes);
+    let stem = source
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    let ext = source
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let staged = dir.join(format!("{stem}-{hash:016x}{ext}"));
+    if !staged.exists() && std::fs::write(&staged, &bytes).is_err() {
+        return source.to_path_buf();
+    }
+    staged
 }

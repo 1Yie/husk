@@ -9,6 +9,58 @@
 //!   retry vs. propagate.
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// A user-attached image on a `Role::User` message. Persisted as a path
+/// reference — the file is staged inside the workspace (`.husk/attachments/`),
+/// so it is visible to sandboxed tools AND durable for session replay.
+/// Adapters materialize the bytes into a `data:` URL at wire-build time;
+/// never inline the payload into the message itself (the session snapshot
+/// would balloon to megabytes per image).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageRef {
+    /// Absolute path — the staged copy inside the workspace.
+    pub path: PathBuf,
+    /// MIME type (`image/png`, `image/jpeg`, …) — sniffed from the
+    /// extension, good enough for `data:` URL framing.
+    pub media_type: String,
+}
+
+impl ImageRef {
+    /// Build a ref for `path` — `None` when the extension isn't an image
+    /// type we can frame.
+    pub fn for_path(path: PathBuf) -> Option<Self> {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())?;
+        let media_type = match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            _ => return None,
+        };
+        Some(Self { path, media_type: media_type.into() })
+    }
+
+    /// Read the file and frame it as `data:<mime>;base64,<bytes>` — the
+    /// shape every vision-capable wire protocol accepts. `None` when the
+    /// file is gone or over the provider-size bound (20MB is the widest
+    /// common cap — Anthropic 5MB is tighter but rare).
+    pub fn data_url(&self) -> Option<String> {
+        const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+        let meta = std::fs::metadata(&self.path).ok()?;
+        if meta.len() > MAX_IMAGE_BYTES {
+            return None;
+        }
+        let bytes = std::fs::read(&self.path).ok()?;
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        Some(format!("data:{};base64,{}", self.media_type, b64))
+    }
+}
 
 /// How a persisted message replays in the UI. On `Role::System` entries,
 /// `Some` marks a line the live stream actually showed (`SystemMessage` /

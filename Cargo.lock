@@ -97,6 +97,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "dirs",
  "eventsource-stream",
@@ -3557,6 +3558,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tokio",
+ "xxhash-rust",
 ]
 
 [[package]]
