@@ -43,7 +43,7 @@ export const chatMarkdownComponents = {
   ),
   tr: ({ children, ...props }: React.ComponentPropsWithoutRef<"tr">) => (
     <tr
-      className="hover:bg-neutral-50/70 transition-colors"
+      className="hover:bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] transition-colors"
       {...props}
     >
       {children}
@@ -63,7 +63,7 @@ export const chatMarkdownComponents = {
       <img
         src={src}
         alt={alt}
-        className="max-w-full h-auto rounded-xl border border-neutral-200/90 shadow-xs object-contain transition-all hover:shadow-md cursor-zoom-in"
+        className="max-w-full h-auto rounded-xl border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-xs object-contain transition-all hover:shadow-md cursor-zoom-in"
         loading="lazy"
         onClick={() => {
           if (src) window.open(src, "_blank");
@@ -80,7 +80,7 @@ export const chatMarkdownComponents = {
 
   blockquote: ({ children, ...props }: React.ComponentPropsWithoutRef<"blockquote">) => (
     <blockquote
-      className="my-3 border-l-2 border-neutral-300 bg-neutral-50/70 rounded-r-lg px-4 py-2 text-neutral-600 text-[14px] italic leading-relaxed"
+      className="my-3 border-l-2 border-neutral-300 bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] rounded-r-lg px-4 py-2 text-neutral-600 text-[14px] italic leading-relaxed"
       {...props}
     >
       {renderWithTwemoji(children)}
@@ -89,7 +89,7 @@ export const chatMarkdownComponents = {
 
   inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => (
     <code
-      className="bg-black/[0.05] text-neutral-800 px-1.5 py-[1px] rounded-[4px] text-[12px] font-mono border border-black/[0.07] font-normal mx-0.5 inline-block leading-snug align-baseline"
+      className="bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] text-neutral-800 px-1.5 py-[1px] rounded-[4px] text-[12px] font-mono border border-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] font-normal mx-0.5 inline-block leading-snug align-baseline"
       {...props}
     >
       {children}
@@ -144,7 +144,7 @@ export const chatMarkdownComponents = {
 
   h1: ({ children, ...props }: React.ComponentPropsWithoutRef<"h1">) => (
     <h1
-      className="text-xl font-bold text-neutral-900 mt-6 mb-3 tracking-tight border-b border-neutral-200/70 pb-2 leading-tight"
+      className="text-xl font-bold text-neutral-900 mt-6 mb-3 tracking-tight border-b border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] pb-2 leading-tight"
       {...props}
     >
       {renderWithTwemoji(children)}
@@ -152,7 +152,7 @@ export const chatMarkdownComponents = {
   ),
   h2: ({ children, ...props }: React.ComponentPropsWithoutRef<"h2">) => (
     <h2
-      className="text-lg font-bold text-neutral-900 mt-5 mb-2.5 tracking-tight border-b border-neutral-200/50 pb-1.5 leading-snug"
+      className="text-lg font-bold text-neutral-900 mt-5 mb-2.5 tracking-tight border-b border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] pb-1.5 leading-snug"
       {...props}
     >
       {renderWithTwemoji(children)}
@@ -184,14 +184,14 @@ export const chatMarkdownComponents = {
   ),
   hr: (props: React.ComponentPropsWithoutRef<"hr">) => (
     <hr
-      className="my-6 border-0 border-t border-neutral-200/80"
+      className="my-6 border-0 border-t border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]"
       {...props}
     />
   ),
 
   details: ({ children, ...props }: React.ComponentPropsWithoutRef<"details">) => (
     <details
-      className="group my-2 rounded-xl border border-neutral-200/90 bg-neutral-50/60 p-2.5 transition-all text-sm leading-relaxed"
+      className="group my-2 rounded-xl border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] bg-[color-mix(in_srgb,var(--husk-n50)_60%,transparent)] p-2.5 transition-all text-sm leading-relaxed"
       {...props}
     >
       {renderWithTwemoji(children)}

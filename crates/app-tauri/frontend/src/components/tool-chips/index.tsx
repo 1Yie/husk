@@ -105,7 +105,7 @@ function renderHighlightedLines(detailText: string, label: string, chip: string)
       const code = numMatch[2];
       const highlighted = highlightCodeToHtml(code, lang);
       return (
-        <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-neutral-200/40 px-1 -mx-1 rounded-xs transition-colors">
+        <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-[color-mix(in_srgb,var(--husk-n200)_40%,transparent)] px-1 -mx-1 rounded-xs transition-colors">
           <span className="text-neutral-400 select-none mr-2 inline-block min-w-[2.5rem] text-right font-mono">{prefix}</span>
           <span dangerouslySetInnerHTML={{ __html: highlighted }} />
         </div>
@@ -124,7 +124,7 @@ function renderHighlightedLines(detailText: string, label: string, chip: string)
     // 4. Regular code / text line
     const highlighted = highlightCodeToHtml(line, lang);
     return (
-      <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-neutral-200/40 px-1 -mx-1 rounded-xs transition-colors">
+      <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-[color-mix(in_srgb,var(--husk-n200)_40%,transparent)] px-1 -mx-1 rounded-xs transition-colors">
         <span dangerouslySetInnerHTML={{ __html: highlighted }} />
       </div>
     );
@@ -363,7 +363,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                         }
                         side="top"
                         sideOffset={6}
-                        className="max-w-xl bg-neutral-900/95 backdrop-blur-sm border border-neutral-700/60 p-2.5 shadow-xl select-text"
+                        className="max-w-xl bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] backdrop-blur-sm border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)] p-2.5 shadow-xl select-text"
                       >
                         <span
                           className="bg-neutral-100 text-neutral-600 inline-flex h-5 max-w-[280px] sm:max-w-[360px] md:max-w-[420px] items-center rounded-md px-1.5 font-mono text-[11px] shrink min-w-0 cursor-pointer"

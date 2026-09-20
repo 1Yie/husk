@@ -182,7 +182,7 @@ function bgClass(k: LineKind) {
     case "del":
       return "bg-rose-500/10 dark:bg-rose-500/15";
     case "meta":
-      return "bg-neutral-100/50";
+      return "bg-[color-mix(in_srgb,var(--husk-n100)_50%,transparent)]";
     default:
       return "";
   }

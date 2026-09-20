@@ -153,7 +153,7 @@ export function SessionSidebar({
                   data-tauri-drag-region="false"
                   onClick={onNew}
                   aria-label="新建会话"
-                  className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200/60 transition-colors"
+                  className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </button>
@@ -224,7 +224,7 @@ export function SessionSidebar({
                 data-nodrag
                 data-tauri-drag-region="false"
                 onClick={onPickWorkspace}
-                className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[13px] text-neutral-600 hover:text-neutral-900 hover:bg-black/[0.04] transition-colors"
+                className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[13px] text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] transition-colors"
               >
                 <FolderOpen className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
                 <span>打开其他工作区...</span>
@@ -241,7 +241,7 @@ export function SessionSidebar({
                   type="button"
                   onClick={onOpenSettings}
                   aria-label="设置"
-                  className="text-neutral-500 hover:text-neutral-800 transition-colors p-1 rounded hover:bg-black/[0.04]"
+                  className="text-neutral-500 hover:text-neutral-800 transition-colors p-1 rounded hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
                 >
                   <Settings className="h-4 w-4" />
                 </button>
@@ -258,7 +258,7 @@ export function SessionSidebar({
                     <button
                       type="button"
                       aria-label="通知"
-                      className="text-neutral-500 hover:text-neutral-800 transition-colors p-1 rounded hover:bg-black/[0.04]"
+                      className="text-neutral-500 hover:text-neutral-800 transition-colors p-1 rounded hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
                     >
                       <Bell className="h-4 w-4" />
                     </button>
@@ -364,8 +364,8 @@ function SessionItem({
       className={cn(
         "group flex-none shrink-0 flex w-full items-center gap-1.5 rounded-md pl-7 pr-2 h-8 min-h-8 text-[13px] cursor-pointer select-none transition-colors",
         isActive
-          ? "bg-black/[0.06] text-neutral-900 font-medium"
-          : "text-neutral-600 hover:bg-black/[0.04] hover:text-neutral-900 font-normal",
+          ? "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900 font-medium"
+          : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] hover:text-neutral-900 font-normal",
       )}
     >
       <span className="flex-1 min-w-0 truncate text-left">{displayTitle}</span>
@@ -396,7 +396,7 @@ function SessionItem({
                 aria-label="会话操作"
                 onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => e.stopPropagation()}
-                className="absolute inset-0 rounded flex items-center justify-center text-neutral-400 invisible group-hover:visible group-focus-within:visible data-[state=open]:visible hover:bg-neutral-300/60 hover:text-neutral-700"
+                className="absolute inset-0 rounded flex items-center justify-center text-neutral-400 invisible group-hover:visible group-focus-within:visible data-[state=open]:visible hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
               >
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </button>
@@ -474,7 +474,7 @@ function ProjectItem({
                 onToggle();
               }
             }}
-            className="group w-full flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] text-neutral-800 transition-colors text-left cursor-pointer hover:bg-black/[0.04]"
+            className="group w-full flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] text-neutral-800 transition-colors text-left cursor-pointer hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
           >
             <span className="text-neutral-400 shrink-0">
               {open ? (
@@ -498,7 +498,7 @@ function ProjectItem({
                   onSwitchWorkspace(project.root);
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
-                className="flex-none rounded p-0.5 text-neutral-400 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-neutral-200/60"
+                className="flex-none rounded p-0.5 text-neutral-400 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
               >
                 <FolderOpen className="h-3.5 w-3.5" />
               </button>

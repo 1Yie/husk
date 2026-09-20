@@ -97,8 +97,8 @@ export function ChatTurnRail({
         className={cn(
           "relative flex flex-col items-center py-2 px-1.5 rounded-full transition-colors touch-none cursor-pointer max-h-[calc(100vh-220px)] overflow-y-auto no-scrollbar",
           isDragging
-            ? "bg-neutral-200/50"
-            : "hover:bg-neutral-100/50"
+            ? "bg-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)]"
+            : "hover:bg-[color-mix(in_srgb,var(--husk-n100)_50%,transparent)]"
         )}
       >
         <div className="flex flex-col items-center">
@@ -165,7 +165,7 @@ export function ChatTurnRail({
                 )}
 
                 {isHovered && (
-                  <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-neutral-900/95 dark:bg-[#232329]/95 text-white text-[11px] px-2.5 py-1.5 rounded-lg shadow-popup border border-neutral-700/60 backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
+                  <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] dark:bg-[#232329]/95 text-white text-[11px] px-2.5 py-1.5 rounded-lg shadow-popup border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)] backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
                     <div className="flex items-center gap-1.5 text-[10px] font-medium text-neutral-400">
                       <span>{mark.previewTitle}</span>
                       <span className="text-neutral-500">•</span>

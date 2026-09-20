@@ -7,7 +7,7 @@ export function StatePill({ state }: { state: AgentState | null }) {
   const label = stateLabel(state);
   return (
     <div className="py-1">
-      <span className="inline-flex items-center gap-1.5 h-[30px] pl-2 pr-3.5 rounded-full bg-white border border-neutral-200/90 text-neutral-700 text-xs shadow-sm">
+      <span className="inline-flex items-center gap-1.5 h-[30px] pl-2 pr-3.5 rounded-full bg-white border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] text-neutral-700 text-xs shadow-sm">
         <Orb variant="S1" size={16} className="text-purple-600 dark:text-purple-400" />
         <span className="font-medium">{label}</span>
       </span>

@@ -127,7 +127,7 @@ export function SettingsWindow() {
       <div className="flex flex-1 overflow-hidden h-[calc(100vh-36px)]">
         <aside
           data-tauri-drag-region="deep"
-          className="w-56 flex-none bg-neutral-100/60 border-r border-neutral-200/80 flex flex-col p-3 select-none justify-between"
+          className="w-56 flex-none bg-[color-mix(in_srgb,var(--husk-n100)_60%,transparent)] border-r border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] flex flex-col p-3 select-none justify-between"
         >
           {/* Nav items are h-10, but the Button base radius (rounded-lg = 14px)
               is sized for h-9 controls: at h-10 it lands at 70% of half-height
@@ -141,8 +141,8 @@ export function SettingsWindow() {
               className={cn(
                 "w-full justify-start gap-2.5 h-10 rounded-xl px-3 text-[13px] transition-all",
                 activeTab === "appearance"
-                  ? "bg-white text-neutral-900 font-semibold shadow-xs border border-neutral-200/80"
-                  : "text-neutral-600 hover:text-neutral-900 hover:bg-neutral-200/50 font-medium"
+                  ? "bg-white text-neutral-900 font-semibold shadow-xs border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]"
+                  : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] font-medium"
               )}
             >
               <Palette className="h-4 w-4 text-neutral-900 shrink-0" />
@@ -155,8 +155,8 @@ export function SettingsWindow() {
               className={cn(
                 "w-full justify-start gap-2.5 h-10 rounded-xl px-3 text-[13px] transition-all",
                 activeTab === "preferences"
-                  ? "bg-white text-neutral-900 font-semibold shadow-xs border border-neutral-200/80"
-                  : "text-neutral-600 hover:text-neutral-900 hover:bg-neutral-200/50 font-medium"
+                  ? "bg-white text-neutral-900 font-semibold shadow-xs border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]"
+                  : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] font-medium"
               )}
             >
               <SlidersHorizontal className="h-4 w-4 text-neutral-900 shrink-0" />

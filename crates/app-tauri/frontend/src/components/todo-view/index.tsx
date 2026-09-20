@@ -76,7 +76,7 @@ export function TodoView({ content }: Props) {
 
   return (
     <div className="w-full rounded-xl border border-neutral-200 bg-neutral-50 p-3 shadow-2xs select-text">
-      <div className="flex items-center justify-between gap-3 pb-2.5 mb-2 border-b border-neutral-200/70 select-none">
+      <div className="flex items-center justify-between gap-3 pb-2.5 mb-2 border-b border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] select-none">
         <div className="flex items-center gap-2 min-w-0">
           <ListCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
           <span className="text-xs font-semibold text-neutral-800 shrink-0">
@@ -109,7 +109,7 @@ export function TodoView({ content }: Props) {
               "group flex items-start gap-2.5 py-1 px-1.5 rounded-lg transition-colors",
               item.done
                 ? "text-neutral-400"
-                : "text-neutral-800 hover:bg-neutral-100/60"
+                : "text-neutral-800 hover:bg-[color-mix(in_srgb,var(--husk-n100)_60%,transparent)]"
             )}
           >
             <span className="flex h-5 w-4 items-center justify-center shrink-0">

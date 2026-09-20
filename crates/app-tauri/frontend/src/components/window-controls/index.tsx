@@ -61,7 +61,7 @@ function WinButton({
       onClick={onClick}
       className={cn(
         "text-neutral-500",
-        danger ? "hover:bg-red-500 hover:text-white dark:hover:text-[#fafafa]" : "hover:bg-neutral-200/80 hover:text-neutral-900"
+        danger ? "hover:bg-red-500 hover:text-white dark:hover:text-[#fafafa]" : "hover:bg-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] hover:text-neutral-900"
       )}
     >
       {children}

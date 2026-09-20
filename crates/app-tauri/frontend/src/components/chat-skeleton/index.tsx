@@ -4,7 +4,7 @@
 // assistant text lines, a tool chip — so the swap reads as "content
 // resolving", not a spinner.
 export function ChatSkeleton() {
-  const bar = "rounded-md bg-neutral-200/70";
+  const bar = "rounded-md bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]";
   return (
     <div
       className="flex w-full flex-col gap-6 animate-pulse"

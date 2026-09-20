@@ -13,7 +13,7 @@ export const KvList = React.forwardRef<HTMLDivElement, KvListProps>(
       <div
         ref={ref}
         className={cn(
-          "rounded-2xl border border-neutral-200/90 bg-white shadow-2xs overflow-hidden",
+          "rounded-2xl border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] bg-white shadow-2xs overflow-hidden",
           className
         )}
         {...props}
@@ -89,7 +89,7 @@ export const KvRow = React.forwardRef<HTMLDivElement, KvRowProps>(
       <div
         ref={ref}
         className={cn(
-          "px-5 py-3.5 flex items-center justify-between hover:bg-neutral-50/40 transition-colors text-sm",
+          "px-5 py-3.5 flex items-center justify-between hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] transition-colors text-sm",
           className
         )}
         {...props}
@@ -160,7 +160,7 @@ export function ColorPill({
           disabled={disabled}
           style={{ backgroundColor: light ? "#FFFFFF" : value }}
           className={cn(
-            "h-8 px-4 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-2xs transition-colors select-none border-neutral-200/90",
+            "h-8 px-4 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-2xs transition-colors select-none border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)]",
             light
               ? "text-neutral-800 hover:bg-neutral-50"
               : "text-white hover:opacity-90 hover:text-white border-transparent",
@@ -174,7 +174,7 @@ export function ColorPill({
               "w-3 h-3 rounded-full shrink-0",
               light
                 ? "border border-neutral-300"
-                : "border border-white/50 bg-white/20"
+                : "border border-[color-mix(in_srgb,var(--husk-white)_50%,transparent)] bg-[color-mix(in_srgb,var(--husk-white)_20%,transparent)]"
             )}
           />
           <span className="font-mono">{value}</span>
@@ -206,7 +206,7 @@ export function ColorPill({
                   style={{ backgroundColor: c }}
                   className={cn(
                     "w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer relative p-0",
-                    isPresetLight ? "border border-neutral-200" : "border border-black/10",
+                    isPresetLight ? "border border-neutral-200" : "border border-[color-mix(in_srgb,var(--husk-black)_10%,transparent)]",
                     isSelected && "ring-2 ring-blue-500 dark:ring-blue-400 ring-offset-1"
                   )}
                 >

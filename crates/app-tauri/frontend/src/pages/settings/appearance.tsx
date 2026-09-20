@@ -167,7 +167,7 @@ export function AppearanceSettings() {
               "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex items-end justify-center",
               themeMode === "system"
                 ? "border-2 border-[#339CFF] ring-2 ring-[#339CFF]/25 shadow-xs"
-                : "border border-neutral-200/90 hover:border-neutral-300"
+                : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300"
             )}
           >
             <div className="absolute inset-0 flex">
@@ -216,7 +216,7 @@ export function AppearanceSettings() {
               "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex flex-col justify-between items-center pt-3.5 bg-[#f2f4f6]",
               themeMode === "light"
                 ? "border-2 border-[#339CFF] ring-2 ring-[#339CFF]/25 shadow-xs"
-                : "border border-neutral-200/90 hover:border-neutral-300"
+                : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300"
             )}
           >
             <div className="h-1.5 w-24 bg-[#d4d4d8]/80 rounded-full" />
@@ -248,7 +248,7 @@ export function AppearanceSettings() {
               "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex flex-col justify-between items-center pt-3.5 bg-[#43474d]",
               themeMode === "dark"
                 ? "border-2 border-[#339CFF] ring-2 ring-[#339CFF]/25 shadow-xs"
-                : "border border-neutral-200/90 hover:border-neutral-300"
+                : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300"
             )}
           >
             <div className="h-1.5 w-24 bg-[#71717a]/80 rounded-full" />
@@ -270,8 +270,8 @@ export function AppearanceSettings() {
         </Button>
       </div>
 
-      <div className="border border-neutral-200/90 rounded-2xl bg-white shadow-2xs overflow-hidden text-[13px] font-mono leading-relaxed select-text">
-        <div className="grid grid-cols-2 divide-x divide-neutral-200/80">
+      <div className="border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] rounded-2xl bg-white shadow-2xs overflow-hidden text-[13px] font-mono leading-relaxed select-text">
+        <div className="grid grid-cols-2 divide-x divide-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]">
           <div className="py-2.5 flex flex-col">
             <div className="flex items-center px-3 py-0.5">
               <span className="w-6 text-right text-neutral-400 text-xs pr-3 select-none">1</span>
@@ -393,12 +393,12 @@ export function AppearanceSettings() {
           </div>
         </div>
 
-        <div className="h-5 bg-neutral-50/70 border-t border-neutral-200/60 grid grid-cols-2 divide-x divide-neutral-200/60 items-center select-none">
+        <div className="h-5 bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] border-t border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] grid grid-cols-2 divide-x divide-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] items-center select-none">
           <div className="flex items-center justify-between px-1">
             <Button
               variant="ghost"
               size="icon"
-              className="h-3.5 w-3.5 p-0 hover:bg-neutral-200/60 text-neutral-400 hover:text-neutral-700 rounded"
+              className="h-3.5 w-3.5 p-0 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] text-neutral-400 hover:text-neutral-700 rounded"
             >
               <ChevronLeft className="w-3 h-3" />
             </Button>
@@ -406,7 +406,7 @@ export function AppearanceSettings() {
             <Button
               variant="ghost"
               size="icon"
-              className="h-3.5 w-3.5 p-0 hover:bg-neutral-200/60 text-neutral-400 hover:text-neutral-700 rounded"
+              className="h-3.5 w-3.5 p-0 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] text-neutral-400 hover:text-neutral-700 rounded"
             >
               <ChevronRight className="w-3 h-3" />
             </Button>
@@ -415,7 +415,7 @@ export function AppearanceSettings() {
             <Button
               variant="ghost"
               size="icon"
-              className="h-3.5 w-3.5 p-0 hover:bg-neutral-200/60 text-neutral-400 hover:text-neutral-700 rounded"
+              className="h-3.5 w-3.5 p-0 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] text-neutral-400 hover:text-neutral-700 rounded"
             >
               <ChevronLeft className="w-3 h-3" />
             </Button>
@@ -423,7 +423,7 @@ export function AppearanceSettings() {
             <Button
               variant="ghost"
               size="icon"
-              className="h-3.5 w-3.5 p-0 hover:bg-neutral-200/60 text-neutral-400 hover:text-neutral-700 rounded"
+              className="h-3.5 w-3.5 p-0 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] text-neutral-400 hover:text-neutral-700 rounded"
             >
               <ChevronRight className="w-3 h-3" />
             </Button>

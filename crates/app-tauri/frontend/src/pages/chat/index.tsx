@@ -56,7 +56,7 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
       {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
       <div
         style={{ height: composerH + 16 }}
-        className="absolute inset-x-0 bottom-0 pointer-events-none z-10 bg-gradient-to-t from-white/75 via-white/35 to-transparent dark:from-[#16161a]/75 dark:via-[#16161a]/35 dark:to-transparent"
+        className="absolute inset-x-0 bottom-0 pointer-events-none z-10 bg-gradient-to-t from-[color-mix(in_srgb,var(--husk-white)_75%,transparent)] via-[color-mix(in_srgb,var(--husk-white)_35%,transparent)] to-transparent dark:from-[#16161a]/75 dark:via-[#16161a]/35 dark:to-transparent"
         aria-hidden="true"
       />
 

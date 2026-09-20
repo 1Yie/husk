@@ -23,13 +23,13 @@ export function PopupWindow({ title, maximize = true, className, children }: Pop
   return (
     <div
       className={cn(
-        "flex flex-col h-screen w-screen bg-neutral-100/50 select-none overflow-hidden font-sans",
+        "flex flex-col h-screen w-screen bg-[color-mix(in_srgb,var(--husk-n100)_50%,transparent)] select-none overflow-hidden font-sans",
         className
       )}
     >
       <div
         data-tauri-drag-region="deep"
-        className="flex items-center h-9 flex-none bg-white border-b border-neutral-200/80 select-none px-3 justify-between cursor-default"
+        className="flex items-center h-9 flex-none bg-white border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] select-none px-3 justify-between cursor-default"
       >
         {isMac && <div className="w-[78px] shrink-0" />}
 

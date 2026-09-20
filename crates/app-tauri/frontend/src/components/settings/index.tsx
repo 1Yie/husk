@@ -256,8 +256,8 @@ function CardsSection({
               className={cn(
                 "p-3.5 cursor-pointer transition-all duration-150 shadow-none",
                 isSelected
-                  ? "border-neutral-900 bg-neutral-50/80 ring-1 ring-neutral-900"
-                  : "border-neutral-200/90 bg-white hover:border-neutral-300 hover:bg-neutral-50/40"
+                  ? "border-neutral-900 bg-[color-mix(in_srgb,var(--husk-n50)_80%,transparent)] ring-1 ring-neutral-900"
+                  : "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] bg-white hover:border-neutral-300 hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)]"
               )}
             >
               <div className="flex items-start gap-3.5">

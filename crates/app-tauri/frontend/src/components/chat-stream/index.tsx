@@ -102,7 +102,7 @@ function AttachedImagePreview({ path }: { path: string }) {
     <img
       src={src}
       alt={path.split("/").pop()}
-      className="max-h-40 max-w-[280px] w-auto rounded-md border border-neutral-700/50 object-contain bg-neutral-950/40"
+      className="max-h-40 max-w-[280px] w-auto rounded-md border border-[color-mix(in_srgb,var(--husk-n700)_50%,transparent)] object-contain bg-[color-mix(in_srgb,var(--husk-n950)_40%,transparent)]"
     />
   );
 }
@@ -124,7 +124,7 @@ function UserTokenChip({ token }: { token: string }) {
               <FileCode className="h-3.5 w-3.5 text-blue-400 dark:text-blue-600 shrink-0" />
               <span className="font-semibold text-neutral-100">{fileName}</span>
             </div>
-            <div className="font-mono text-[11px] text-neutral-300 bg-neutral-950/70 rounded px-1.5 py-0.5 border border-neutral-700/60">
+            <div className="font-mono text-[11px] text-neutral-300 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
               {fullPath}
             </div>
           </div>
@@ -154,7 +154,7 @@ function UserTokenChip({ token }: { token: string }) {
             </div>
             {desc && <span className="text-[11.5px] text-neutral-300">{desc}</span>}
             {args && (
-              <div className="font-mono text-[11px] text-neutral-400 bg-neutral-950/70 rounded px-1.5 py-0.5 border border-neutral-700/60">
+              <div className="font-mono text-[11px] text-neutral-400 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
                 参数: {args}
               </div>
             )}
@@ -183,7 +183,7 @@ function UserTokenChip({ token }: { token: string }) {
               <span className="font-semibold text-neutral-100">技能 ${skillName}</span>
             </div>
             {args && (
-              <div className="font-mono text-[11px] text-neutral-400 bg-neutral-950/70 rounded px-1.5 py-0.5 border border-neutral-700/60">
+              <div className="font-mono text-[11px] text-neutral-400 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
                 参数: {args}
               </div>
             )}
@@ -216,7 +216,7 @@ const userMarkdownComponents = {
     }
     return (
       <code
-        className="bg-black/[0.05] text-neutral-800 px-1.5 py-[1px] rounded-[4px] text-[12px] font-mono border border-black/[0.07] font-normal mx-0.5 inline-block leading-snug align-baseline"
+        className="bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] text-neutral-800 px-1.5 py-[1px] rounded-[4px] text-[12px] font-mono border border-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] font-normal mx-0.5 inline-block leading-snug align-baseline"
         {...props}
       >
         {children}
@@ -918,11 +918,11 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                   aria-hidden="true"
                   data-tooltip={formatFullTime(turn.ts)}
                 >
-                  <div className="h-px flex-1 bg-neutral-200/70" />
+                  <div className="h-px flex-1 bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]" />
                   <span className="text-[11px] font-medium text-neutral-400 tracking-wide">
                     {formatTurnTime(turn.ts)}
                   </span>
-                  <div className="h-px flex-1 bg-neutral-200/70" />
+                  <div className="h-px flex-1 bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]" />
                 </div>
               )}
               {turn.userText && (
@@ -1031,7 +1031,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             type="button"
             onClick={scrollToBottom}
             aria-label="回到底部"
-            className="w-8 h-8 rounded-full bg-white dark:bg-[#26262c] hover:bg-neutral-50 dark:hover:bg-[#2e2e36] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-neutral-200/90 shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+            className="w-8 h-8 rounded-full bg-white dark:bg-[#26262c] hover:bg-neutral-50 dark:hover:bg-[#2e2e36] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
           >
             <ArrowDown className="h-4 w-4" />
           </button>

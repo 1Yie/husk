@@ -35,7 +35,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   return (
     <div
       data-tauri-drag-region="deep"
-      className="flex items-center h-9 flex-none bg-white border-b border-neutral-200/80 select-none px-3 justify-between"
+      className="flex items-center h-9 flex-none bg-white border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] select-none px-3 justify-between"
     >
       {isMac && <div className="w-[78px] shrink-0" />}
 
