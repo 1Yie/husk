@@ -370,7 +370,8 @@ impl SandboxBackend for LinuxBwrap {
         argv.push(run_dir.to_string_lossy().into_owned());
 
         // ---- 5. developer environments & toolchains (bun, volta, cargo, rustup, python, etc.) ----
-        for dev_dir in dev_environment_binds() {
+        let dev_binds = dev_environment_binds();
+        for dev_dir in &dev_binds {
             if dev_dir.exists() {
                 argv.push("--ro-bind".into());
                 argv.push(dev_dir.to_string_lossy().into_owned());
@@ -442,7 +443,27 @@ impl SandboxBackend for LinuxBwrap {
             extra.push(("YARN_CACHE_FOLDER".into(), "/tmp/yarn-cache".into()));
         }
 
-        for (k, v) in sanitize_env(&extra) {
+        let mut envs = sanitize_env(&extra);
+        // PATH coherence: keep only entries the namespace can resolve —
+        // an inherited entry under an unmounted dir is dead weight inside
+        // and only widens the executable-hijack surface. Allowed roots =
+        // the same dirs just bound (system + dev); workspace and the
+        // sandbox tmpfs are denied outright (agent-writable).
+        let mut path_roots: Vec<PathBuf> =
+            SYSTEM_RO_DIRS.iter().map(PathBuf::from).collect();
+        path_roots.extend(dev_binds.iter().cloned());
+        let path_denied = vec![
+            ws.clone(),
+            PathBuf::from("/tmp"),
+            run_dir.clone(),
+        ];
+        crate::env_sanitize::apply_environment_policy(
+            &mut envs,
+            &cfg.environment,
+            Some(&path_roots),
+            &path_denied,
+        );
+        for (k, v) in envs {
             argv.push("--setenv".into());
             argv.push(k);
             argv.push(v);

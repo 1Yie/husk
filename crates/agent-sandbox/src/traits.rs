@@ -45,6 +45,10 @@ pub struct SandboxConfig {
     pub timeout_secs: u64,
     /// Extra env vars to inject *after* sanitization (e.g. PATH overrides).
     pub env_vars: Vec<(String, String)>,
+    /// Environment surface — the plan's decision on vars + PATH
+    /// (`Minimal` vs `DevToolchain`). Backends pass it to
+    /// `env_sanitize::apply_environment_policy` with their mount roots.
+    pub environment: crate::plan::EnvironmentPolicy,
     /// CoW snapshot behavior.
     pub snapshot: SnapshotMode,
     /// Extra read-only mounts inside the sandbox.
@@ -62,6 +66,7 @@ impl Default for SandboxConfig {
             max_processes: 256,
             timeout_secs: 60,
             env_vars: Vec::new(),
+            environment: crate::plan::EnvironmentPolicy::DevToolchain,
             snapshot: SnapshotMode::Off,
             extra_ro_mounts: Vec::new(),
             extra_rw_mounts: Vec::new(),

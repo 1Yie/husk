@@ -60,6 +60,26 @@ pub enum SyscallPolicy {
     Networked,
 }
 
+/// Environment surface the sandbox exposes — derived from the command's
+/// `Runtime` capabilities (the agent asks for "a node runtime", never
+/// for raw env names; the policy derives which bins/vars that means).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentPolicy {
+    /// Baseline env — sanitized allowlist vars + system PATH only. No dev
+    /// bins, no toolchain vars. For commands with no runtime needs.
+    Minimal,
+    /// Full dev toolchain — every discovered dev bin on PATH + toolchain
+    /// vars (`VOLTA_HOME`, `CARGO_HOME`, …). The default while the sandbox
+    /// is dev-friendly: a `Runtime` capability confirms the need, but
+    /// plain commands keep it too (a `make` can invoke `cargo` internally
+    /// — detection can't see inside build scripts).
+    DevToolchain,
+    /// Only the named toolchains — strict mode for future callers that
+    /// trust their capability detection end-to-end. `Vec` of lowercase
+    /// toolchain names (`"node"`, `"bun"`, `"rust"`).
+    Select(Vec<String>),
+}
+
 /// The full plan a policy hands to a backend.
 #[derive(Debug, Clone)]
 pub struct SandboxPlan {
@@ -68,6 +88,8 @@ pub struct SandboxPlan {
     pub processes: ProcessPolicy,
     pub devices: DevicePolicy,
     pub syscalls: SyscallPolicy,
+    /// Environment surface — vars + PATH the spawn receives.
+    pub environment: EnvironmentPolicy,
     /// CoW snapshot — critical-risk commands force `Required`.
     pub snapshot: crate::traits::SnapshotMode,
 }
@@ -136,6 +158,12 @@ impl SandboxPlan {
                 None => DevicePolicy::Standard,
             },
             syscalls: if needs_network { SyscallPolicy::Networked } else { SyscallPolicy::Baseline },
+            // Dev toolchain by default — a `Runtime` cap is confirmatory
+            // signal, not a gate: detection can't see inside build scripts
+            // (`make` can run `cargo`), so default-open is the correct
+            // mode for a dev agent. `Minimal`/`Select` exist for future
+            // strict callers that trust detection end-to-end.
+            environment: EnvironmentPolicy::DevToolchain,
             snapshot: audit
                 .force_snapshot
                 .unwrap_or(if audit.risk >= RiskLevel::High {

@@ -74,6 +74,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         max_processes: plan.processes.max_processes,
         timeout_secs: timeout.as_secs(),
         snapshot: plan.snapshot,
+        environment: plan.environment.clone(),
         ..Default::default()
     };
 

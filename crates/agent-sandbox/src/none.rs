@@ -35,8 +35,17 @@ impl SandboxBackend for NoneBackend {
         let timeout = std::time::Duration::from_secs(cfg.timeout_secs.min(600));
 
         // Even on `none`, env sanitization applies — containment may fail but
-        // leakage never gets a pass.
-        let envs = sanitize_env(&cfg.env_vars);
+        // leakage never gets a pass. PATH pruning keeps every absolute entry
+        // except ones under the workspace: an agent can plant binaries there,
+        // and on this backend they'd execute unsandboxed.
+        let mut envs = sanitize_env(&cfg.env_vars);
+        let denied = vec![cfg.workspace_dir.clone()];
+        crate::env_sanitize::apply_environment_policy(
+            &mut envs,
+            &cfg.environment,
+            None,
+            &denied,
+        );
 
         let mut command = tokio::process::Command::new("sh");
         command

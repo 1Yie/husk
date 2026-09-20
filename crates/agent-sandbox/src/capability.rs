@@ -36,6 +36,11 @@ pub enum Capability {
     PackageInstall { manager: String },
     /// Privilege escalation (`sudo`, `doas`, `setuid`).
     PrivilegeEscalation,
+    /// Needs a managed dev runtime — the command names a toolchain binary
+    /// (`npm`, `bun`, `cargo`, `python`, …). Drives the plan's
+    /// `EnvironmentPolicy`: the agent asks for "a node runtime", never
+    /// for raw env names — the policy derives which bins/vars that means.
+    Runtime { toolchain: ToolchainKind },
     /// Device access (`/dev/*`, `dd of=/dev/…`).
     DeviceAccess { path: PathBuf },
     /// Process control (`kill`, `pkill`, `killall`).
@@ -48,6 +53,50 @@ pub enum Capability {
     /// Read a file outside the workspace — scope violation candidate.
     /// (kept separate so policy can deny by scope, not by verb.)
     OutOfScope { path: PathBuf },
+}
+
+/// Which managed toolchain a [`Capability::Runtime`] needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolchainKind {
+    /// node / npm / npx / yarn / pnpm / tsc / tsx / vite … (nvm, volta, fnm)
+    Node,
+    /// bun / bunx
+    Bun,
+    /// deno
+    Deno,
+    /// python / pip / uv / pytest (pyenv, rye, conda, venv)
+    Python,
+    /// cargo / rustc / rustup
+    Rust,
+    /// go / gofmt
+    Go,
+    /// java / javac / mvn / gradle / sdk (sdkman, system JDK)
+    Java,
+    /// ruby / gem / bundler
+    Ruby,
+    /// dotnet / csc
+    Dotnet,
+}
+
+/// Program name → toolchain it needs. Detected off `Execute` caps — the
+/// agent never names env vars; the capability IS the request.
+fn runtime_of(prog: &str) -> Option<ToolchainKind> {
+    use ToolchainKind as T;
+    Some(match prog {
+        "node" | "npm" | "npx" | "yarn" | "pnpm" | "tsc" | "tsx" | "vite"
+        | "eslint" | "esbuild" | "webpack" | "jest" | "vitest" | "next"
+        | "nuxt" | "turbo" | "corepack" | "nodemon" | "pm2" => T::Node,
+        "bun" | "bunx" => T::Bun,
+        "deno" => T::Deno,
+        "python" | "python3" | "pip" | "pip3" | "uv" | "uvx" | "pytest"
+        | "ruff" | "mypy" | "ipython" | "poetry" | "conda" | "pipx" => T::Python,
+        "cargo" | "rustc" | "rustup" | "rustfmt" | "clippy-driver" => T::Rust,
+        "go" | "gofmt" | "golint" | "delve" => T::Go,
+        "java" | "javac" | "mvn" | "gradle" | "sdk" | "kotlinc" | "scala" => T::Java,
+        "ruby" | "gem" | "bundler" | "rake" | "rails" | "irb" => T::Ruby,
+        "dotnet" | "csc" | "msbuild" | "nuget" => T::Dotnet,
+        _ => return None,
+    })
 }
 
 /// Risk level — how dangerous the capability set is, independent of the
@@ -107,6 +156,9 @@ fn walk(node: &Node, caps: &mut Vec<Capability>) {
 fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
     let prog = cmd.program.as_str();
     caps.push(Capability::Execute { program: prog.into() });
+    if let Some(toolchain) = runtime_of(prog) {
+        caps.push(Capability::Runtime { toolchain });
+    }
 
     // Redirections → file caps.
     for r in &cmd.redirects {
@@ -345,7 +397,8 @@ pub fn risk_of(caps: &[Capability]) -> RiskLevel {
                     RiskLevel::Medium
                 }
             }
-            Capability::ReadFile { .. } | Capability::Execute { .. } => RiskLevel::Low,
+            Capability::ReadFile { .. } | Capability::Execute { .. }
+            | Capability::Runtime { .. } => RiskLevel::Low,
         };
         if r > risk {
             risk = r;

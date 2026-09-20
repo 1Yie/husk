@@ -132,6 +132,7 @@ fn reasons_for(caps: &[Capability]) -> Vec<String> {
             Capability::ProcessControl => "controls processes".to_string(),
             Capability::DestructiveVcs { operation } => format!("rewrites/discards git state ({operation})"),
             Capability::OutOfScope { path } => format!("touches {} (outside the workspace)", path.display()),
+            Capability::Runtime { toolchain } => format!("needs the {toolchain:?} toolchain"),
             Capability::ReadFile { .. } | Capability::Execute { .. } => continue,
         };
         out.push(r);
