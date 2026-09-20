@@ -1046,7 +1046,7 @@ function ComposerToolbar({
               variant="ghost"
               size="icon-sm"
               aria-label="添加附件"
-              className="w-7 h-7 rounded-full text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100"
+              className="w-7 h-7 rounded-full text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 dark:text-[#9a9aa4] dark:hover:bg-[#2b2b32]"
             >
               <Plus className="h-4 w-4" />
             </Button>
@@ -1224,7 +1224,7 @@ function ComposerToolbar({
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="group relative w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 border border-neutral-200/80 flex items-center justify-center cursor-pointer transition-all shadow-xs"
+                className="group relative w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 border border-neutral-200/80 dark:bg-[#2b2b32] dark:hover:bg-[#34343d] dark:border-[#3f3f49] flex items-center justify-center cursor-pointer transition-all shadow-xs"
                 onClick={() => void cancel()}
                 aria-label="中断回复"
               >
@@ -1256,7 +1256,7 @@ function ComposerToolbar({
           <button
             type="button"
             disabled
-            className="w-8 h-8 rounded-full bg-neutral-100 text-neutral-300 flex items-center justify-center cursor-not-allowed border border-neutral-200/50 transition-all select-none"
+            className="w-8 h-8 rounded-full bg-neutral-100 text-neutral-300 flex items-center justify-center cursor-not-allowed border border-neutral-200/50 dark:bg-[#26262d] dark:text-[#5b5b66] dark:border-[#3a3a44] transition-all select-none"
             aria-label="无法发送 (请输入内容)"
           >
             <ArrowUp className="h-4 w-4" />
