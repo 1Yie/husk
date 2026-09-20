@@ -39,17 +39,19 @@ export function TooltipSimple({
   children,
   side = "top",
   sideOffset = 6,
+  className,
 }: {
   content: React.ReactNode;
   children: React.ReactNode;
   side?: "top" | "bottom" | "left" | "right";
   sideOffset?: number;
+  className?: string;
 }) {
   if (!content) return <>{children}</>;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side={side} sideOffset={sideOffset}>
+      <TooltipContent side={side} sideOffset={sideOffset} className={className}>
         {content}
       </TooltipContent>
     </Tooltip>

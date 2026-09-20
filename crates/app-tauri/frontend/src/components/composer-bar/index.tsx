@@ -459,9 +459,22 @@ export function ComposerBar({
                   <span className="shrink-0 text-neutral-800 dark:text-neutral-200 font-medium">
                     允许执行
                   </span>
-                  <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-300 truncate min-w-0 flex-1 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] px-2 py-0.5 rounded">
-                    {pending.args || pending.toolName}
-                  </span>
+                  <TooltipSimple
+                    content={
+                      <div className="max-w-xl max-h-64 overflow-y-auto font-mono text-xs break-all whitespace-pre-wrap select-text leading-relaxed">
+                        {pending.args || pending.toolName}
+                      </div>
+                    }
+                    side="top"
+                    sideOffset={8}
+                    className="max-w-xl bg-neutral-900/95 dark:bg-neutral-800/95 backdrop-blur-sm border border-neutral-700/60 p-2.5 shadow-xl select-text"
+                  >
+                    <span
+                      className="font-mono text-[11px] text-neutral-600 dark:text-neutral-300 truncate min-w-0 flex-1 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] px-2 py-0.5 rounded cursor-pointer hover:bg-black/[0.07] dark:hover:bg-white/[0.09] transition-colors"
+                    >
+                      {pending.args || pending.toolName}
+                    </span>
+                  </TooltipSimple>
                   <Button
                     size="sm"
                     className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"

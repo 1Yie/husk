@@ -592,8 +592,9 @@ impl Engine {
                         serde_json::json!({ "_malformed": call.arguments })
                     });
 
-                // One-line target summary for the capsule — the tool's
-                // primary locator (path/command/pattern), never its output.
+                // Primary locator (path/command/pattern) for the tool call —
+                // preserved in full so audit/confirmation tooltips can display
+                // the complete command or path without losing critical arguments.
                 let args_preview = args
                     .get("path")
                     .or_else(|| args.get("command"))
@@ -604,13 +605,29 @@ impl Engine {
                     .or_else(|| args.get("url"))
                     .or_else(|| args.get("target"))
                     .and_then(|v| v.as_str())
-                    .map(|s| s.chars().take(80).collect())
+                    .map(|s| {
+                        let s = s.trim();
+                        if s.chars().count() > 4096 {
+                            let mut chars = s.chars();
+                            let prefix: String = chars.by_ref().take(4096).collect();
+                            format!("{prefix}...")
+                        } else {
+                            s.to_string()
+                        }
+                    })
                     .unwrap_or_else(|| {
                         if let Some(obj) = args.as_object() {
                             for v in obj.values() {
                                 if let Some(s) = v.as_str() {
-                                    if !s.trim().is_empty() {
-                                        return s.chars().take(80).collect();
+                                    let s = s.trim();
+                                    if !s.is_empty() {
+                                        if s.chars().count() > 4096 {
+                                            let mut chars = s.chars();
+                                            let prefix: String = chars.by_ref().take(4096).collect();
+                                            return format!("{prefix}...");
+                                        } else {
+                                            return s.to_string();
+                                        }
                                     }
                                 }
                             }

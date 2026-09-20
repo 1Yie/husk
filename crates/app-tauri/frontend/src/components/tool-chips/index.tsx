@@ -4,6 +4,7 @@ import { DiffView } from "../diff-view";
 import { TodoView } from "../todo-view";
 import { highlightCodeToHtml } from "../../lib/syntax-highlight";
 import { cn } from "@/lib/utils";
+import { TooltipSimple } from "@/components/ui/tooltip";
 
 function detectLanguageFromPath(path: string): string {
   const clean = path.toLowerCase().trim();
@@ -141,6 +142,7 @@ function asChipText(value: unknown): string {
 
 function formatChipArgs(label: string, chip: string): string {
   if (!chip) return "";
+  let text = chip;
   if (label === "apply_patch") {
     const files: string[] = [];
     const re = /(?:\*\*\*\s*(?:Add|Update|Delete)\s*File:\s*|^(?:added|updated|deleted)\s+)([^\s\n\r]+)/gim;
@@ -153,8 +155,7 @@ function formatChipArgs(label: string, chip: string): string {
     if (files.length > 0) {
       return files.join(", ");
     }
-  }
-  if (label === "todo") {
+  } else if (label === "todo") {
     try {
       const parsed = JSON.parse(chip);
       if (parsed.action) {
@@ -165,8 +166,52 @@ function formatChipArgs(label: string, chip: string): string {
     } catch {
       return chip;
     }
+  } else {
+    try {
+      const parsed = JSON.parse(chip);
+      if (typeof parsed === "string") {
+        text = parsed;
+      } else if (typeof parsed === "object" && parsed !== null) {
+        const candidate =
+          parsed.path ||
+          parsed.file ||
+          parsed.file_path ||
+          parsed.command ||
+          parsed.cmd ||
+          parsed.pattern ||
+          parsed.query ||
+          parsed.action ||
+          parsed.target ||
+          parsed.url;
+        if (typeof candidate === "string") {
+          text = candidate;
+        } else if (typeof candidate === "number") {
+          text = String(candidate);
+        } else {
+          for (const val of Object.values(parsed)) {
+            if (typeof val === "string" && val.trim()) {
+              text = val;
+              break;
+            }
+          }
+        }
+      }
+    } catch {
+      // not JSON, keep as is
+    }
   }
-  return chip;
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function truncateArgText(text: string, maxLen = 60): string {
+  if (!text) return "";
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= maxLen) return clean;
+  const sliced = clean.slice(0, maxLen).trimEnd();
+  if (sliced.endsWith("...") || sliced.endsWith("…")) {
+    return sliced;
+  }
+  return `${sliced}...`;
 }
 
 function isDiffText(text: string): boolean {
@@ -290,7 +335,8 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                 /\[[ xX]\]\s*#?\d+/i.test(detailText);
 
               const hasDetail = Boolean(diffContent) || detailText.length > 0;
-              const chipText = formatChipArgs(row.label, row.chip);
+              const fullChipText = asChipText(formatChipArgs(row.label, row.chip));
+              const displayChipText = truncateArgText(fullChipText, 60);
 
               return (
                 <div key={row.id} className="w-full">
@@ -308,10 +354,23 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                     <span className="text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300 shrink-0 text-xs font-medium transition-colors">
                       {asChipText(row.label)}
                     </span>
-                    {chipText ? (
-                      <span className="bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 inline-flex h-5 items-center rounded-md px-1.5 font-mono text-[11px] truncate max-w-[400px]">
-                        {asChipText(chipText)}
-                      </span>
+                    {displayChipText ? (
+                      <TooltipSimple
+                        content={
+                          <div className="max-w-xl max-h-60 overflow-y-auto font-mono text-xs break-all whitespace-pre-wrap select-text leading-relaxed">
+                            {fullChipText}
+                          </div>
+                        }
+                        side="top"
+                        sideOffset={6}
+                        className="max-w-xl bg-neutral-900/95 dark:bg-neutral-800/95 backdrop-blur-sm border border-neutral-700/60 p-2.5 shadow-xl select-text"
+                      >
+                        <span
+                          className="bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 inline-flex h-5 max-w-[280px] sm:max-w-[360px] md:max-w-[420px] items-center rounded-md px-1.5 font-mono text-[11px] shrink min-w-0 cursor-pointer"
+                        >
+                          <span className="truncate">{displayChipText}</span>
+                        </span>
+                      </TooltipSimple>
                     ) : null}
                     <span className="text-neutral-400 shrink-0 text-[11px]">
                       {statusText}
