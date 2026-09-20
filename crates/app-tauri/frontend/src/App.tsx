@@ -89,6 +89,9 @@ export function App() {
   // snapshot taken at click time so the dialog still shows the right title
   // even if the session list refreshes in between.
   const [pendingDelete, setPendingDelete] = useState<SessionRow | null>(null);
+  // Same pattern for the fork confirmation — duplicating a session's
+  // history is additive but irreversible, so it confirms first.
+  const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
 
   useEffect(() => {
     void getWorkspaceInfo().then((ws) => {
@@ -214,9 +217,31 @@ export function App() {
     : pendingDelete.title === "new session" || !pendingDelete.title
       ? "新会话"
       : pendingDelete.title;
+  const pendingForkTitle = !pendingFork
+    ? ""
+    : pendingFork.title === "new session" || !pendingFork.title
+      ? "新会话"
+      : pendingFork.title;
 
   const handlePinSession = (id: number, pinned: boolean) => {
     void pinSession(id, pinned).then(() => void refresh()).catch(() => {});
+  };
+
+  const doFork = (id: number) => {
+    // Backend activates the fork — mirror it locally + rebuild the
+    // stream view from the copied history.
+    setViewLoading(true);
+    void forkSession(id).then((r) => {
+      if (!r) {
+        setViewLoading(false);
+        return;
+      }
+      void refresh();
+      setActiveId(r.id);
+      if (r.history.length > 0)
+        loadView(workspace.root, r.id, viewFromHistory(r.history, r.usage));
+      setViewLoading(false);
+    }).catch(() => setViewLoading(false));
   };
 
   // The backend reports `running` from live handles (including parked
@@ -243,20 +268,10 @@ export function App() {
           onNew={handleNewSession}
           onOpenSession={handleOpenSession}
           onFork={(id) => {
-            // Backend activates the fork — mirror it locally + rebuild the
-            // stream view from the copied history.
-            setViewLoading(true);
-            void forkSession(id).then((r) => {
-              if (!r) {
-                setViewLoading(false);
-                return;
-              }
-              void refresh();
-              setActiveId(r.id);
-              if (r.history.length > 0)
-                loadView(workspace.root, r.id, viewFromHistory(r.history, r.usage));
-              setViewLoading(false);
-            }).catch(() => setViewLoading(false));
+            // Fork duplicates history — confirm before touching the store,
+            // same pattern as the delete dialog below.
+            const row = sessions.find((s) => s.id === id);
+            if (row) setPendingFork(row);
           }}
           onPin={handlePinSession}
           onDelete={(id) => {
@@ -281,6 +296,42 @@ export function App() {
           sessionKey={`${workspace.root}:${activeId}`}
         />
       </MainLayout>
+
+      {/* Fork confirmation — creates a copy of the session's history. */}
+      <Dialog
+        open={pendingFork !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingFork(null);
+        }}
+      >
+        <DialogContent className="max-w-sm gap-3 p-4">
+          <DialogHeader>
+            <DialogTitle className="text-base">Fork 会话</DialogTitle>
+            <DialogDescription>
+              确定要复制会话「{pendingForkTitle}」的完整对话记录，创建一个新会话吗？
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingFork(null)}
+            >
+              取消
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                if (!pendingFork) return;
+                doFork(pendingFork.id);
+                setPendingFork(null);
+              }}
+            >
+              Fork
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={pendingDelete !== null}
