@@ -1,6 +1,11 @@
 // useAgentEvents — kernel event stream → per-session `SessionView` map.
 // Owns the ~60fps event batching, the active-session pointer, and the
 // header git/model chips that refresh on session/turn edges.
+//
+// Views are keyed `${workspaceRoot}:${sessionId}` — session ids are
+// per-workspace, and a parked workspace's actors keep streaming after a
+// switch ("switching never kills the turn"), so the root in each event
+// envelope is what routes it to the right buffer.
 
 import { useCallback, useEffect, useState } from "react";
 import * as agent from "../invoke/agent";
@@ -8,8 +13,11 @@ import type { AgentEventEnvelope } from "../types";
 import { applyEvent } from "./apply-event";
 import { emptyView, type SessionView } from "./stream-view";
 
-export function useAgentEvents() {
-  const [views, setViews] = useState<Map<number, SessionView>>(new Map());
+/** Composite view key — workspace root + per-workspace session id. */
+export const viewKey = (root: string, id: number) => `${root}:${id}`;
+
+export function useAgentEvents(workspaceRoot: string) {
+  const [views, setViews] = useState<Map<string, SessionView>>(new Map());
   const [activeId, setActiveId] = useState(0);
   const [gitInfo, setGitInfo] = useState<agent.GitInfo | null>(null);
   // Context-window size of the active model — lets the header meter show
@@ -19,20 +27,15 @@ export function useAgentEvents() {
   /** Install a rebuilt view for `id` — used by `openSession` when the
    * session has no live event buffer. Never overwrites an existing view:
    * a live buffer is newer than the last persisted snapshot. */
-  const loadView = useCallback((id: number, view: SessionView) => {
+  const loadView = useCallback((root: string, id: number, view: SessionView) => {
     setViews((m) => {
-      if (m.has(id)) return m;
+      const k = viewKey(root, id);
+      if (m.has(k)) return m;
       const next = new Map(m);
-      next.set(id, view);
+      next.set(k, view);
       return next;
     });
   }, []);
-
-  /** Drop every cached stream view — called whenever the active workspace
-   * changes. Session ids are per-workspace, so keeping the map would let an
-   * id that merely collides in the new workspace keep showing the previous
-   * project's conversation (`loadView` never overwrites an existing key). */
-  const clearViews = useCallback(() => setViews(new Map()), []);
 
   useEffect(() => {
     // Coalesce the kernel event stream into ~60fps batches — the engine
@@ -47,12 +50,20 @@ export function useAgentEvents() {
       const batch = queue.splice(0, queue.length);
       setViews((m) => {
         const next = new Map(m);
-        for (const { session, event } of batch) {
-          next.set(session, applyEvent(next.get(session) ?? emptyView(), event));
+        for (const { session, event, root } of batch) {
+          const k = viewKey(root ?? "", session);
+          next.set(k, applyEvent(next.get(k) ?? emptyView(), event));
         }
         return next;
       });
-      setActiveId(batch[batch.length - 1].session);
+      // NOTE: `activeId` is deliberately NOT driven by events. The old
+      // `setActiveId(batch.last.session)` let any background session's
+      // traffic yank the visible session — switching away from a running
+      // turn snapped the view straight back, and worse, the frontend's
+      // pointer diverged from the backend's `active_id`, so a prompt
+      // typed into one session's stream was routed to a different actor.
+      // The visible session only changes through user ops (open/new/
+      // delete/fork/workspace switch), which keep both sides in sync.
     };
     const un = agent.onAgentEvent((env) => {
       queue.push(env);
@@ -64,7 +75,7 @@ export function useAgentEvents() {
     };
   }, []);
 
-  const active = views.get(activeId) ?? emptyView();
+  const active = views.get(viewKey(workspaceRoot, activeId)) ?? emptyView();
 
   // Git chip in the header — refreshed on session switch and at every
   // streaming edge, since a turn is the main thing that dirties the tree.
@@ -99,8 +110,10 @@ export function useAgentEvents() {
   // `StateChanged`, so the orb reacts on the event itself instead of
   // waiting for the next `listSessions` refresh. Mirrors
   // `AgentState::is_active`: everything except Idle/Finished/Failed.
-  const runningIds = new Set<number>();
-  for (const [id, v] of views) {
+  // Keys are `root:id` — a parked workspace's turn counts too, so its
+  // sidebar row keeps the orb while it streams in the background.
+  const runningKeys = new Set<string>();
+  for (const [k, v] of views) {
     const s = v.state;
     if (
       s !== null &&
@@ -108,7 +121,7 @@ export function useAgentEvents() {
       s !== "Finished" &&
       !(typeof s === "object" && "Failed" in s)
     ) {
-      runningIds.add(id);
+      runningKeys.add(k);
     }
   }
 
@@ -118,8 +131,7 @@ export function useAgentEvents() {
     active,
     setActiveId,
     loadView,
-    clearViews,
-    runningIds,
+    runningKeys,
     gitInfo,
     ctxWindow,
   };

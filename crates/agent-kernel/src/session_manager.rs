@@ -117,8 +117,18 @@ pub struct SessionManager {
     store: Arc<SessionStore>,
     provider_cfg: AppConfig,
     handles: HashMap<i64, SessionHandle>,
+    /// Live actors of workspaces the user switched AWAY from — parked by
+    /// canonical root so a background turn keeps running (and keeps its
+    /// command/approval endpoints) until the user returns. Restored into
+    /// `handles` on the next `switch_workspace` back. Product rule:
+    /// switching never kills the turn — not even across workspaces.
+    parked: HashMap<String, HashMap<i64, SessionHandle>>,
     /// The globally-tagged event queue every session's forwarder feeds.
-    event_tx: std_mpsc::Sender<(i64, UiEvent)>,
+    /// Each envelope is `(workspace_root, session_id, event)` — session
+    /// ids are per-workspace, so the root is what keeps a background
+    /// workspace's events from colliding with a same-numbered session in
+    /// the active one.
+    event_tx: std_mpsc::Sender<(String, i64, UiEvent)>,
     /// Sidebar metadata (persisted index + live preview overrides).
     pub metas: Vec<SessionMeta>,
     /// The session the stream is showing.
@@ -135,9 +145,22 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    /// Mutable access to a session's live handle (sidebar running/preview).
+    /// Mutable access to a session's live handle in the ACTIVE workspace
+    /// (sidebar running/preview).
     pub fn handle_mut(&mut self, id: i64) -> Option<&mut SessionHandle> {
         self.handles.get_mut(&id)
+    }
+
+    /// Mutable access to a session's live handle wherever it lives — the
+    /// event forwarder uses this since a background workspace's actor
+    /// keeps emitting after a switch (its handle sits in `parked`).
+    /// `root` is the canonical workspace root the event was tagged with.
+    pub fn handle_mut_at(&mut self, root: &str, id: i64) -> Option<&mut SessionHandle> {
+        if self.workspace_root.to_string_lossy() == root {
+            self.handles.get_mut(&id)
+        } else {
+            self.parked.get_mut(root)?.get_mut(&id)
+        }
     }
 
     /// Boot: open the store, resume-or-create the first session, spawn its
@@ -148,12 +171,12 @@ impl SessionManager {
     /// on `Tick`, the Tauri shell forwards it into `app.emit`. It's split
     /// out (rather than held on `self`) so the frontend can move it into a
     /// forwarder thread without partially moving the manager.
-    pub fn spawn() -> (Self, std_mpsc::Receiver<(i64, UiEvent)>) {
+    pub fn spawn() -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
         Self::spawn_at(None)
     }
 
     /// Boot the manager at a specific workspace root (or current directory / most recent).
-    pub fn spawn_at(root: Option<std::path::PathBuf>) -> (Self, std_mpsc::Receiver<(i64, UiEvent)>) {
+    pub fn spawn_at(root: Option<std::path::PathBuf>) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
         let cwd = root
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
         let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
@@ -189,6 +212,7 @@ impl SessionManager {
             store,
             provider_cfg: cfg,
             handles: HashMap::new(),
+            parked: HashMap::new(),
             event_tx,
             active_id: 0,
             provider_name,
@@ -229,10 +253,25 @@ impl SessionManager {
         self.provider_name = provider_name;
         self.model_name = model_name;
 
-        self.workspace_root = canon;
+        // Park the outgoing workspace's handles keyed by its canonical
+        // root — its actors keep running their turns (events stay tagged
+        // with that root) and their command/approval endpoints stay live,
+        // so switching back reconnects the still-running session instead
+        // of respawning from the last snapshot. `handles.clear()` here
+        // used to orphan every actor mid-turn: the stream kept flowing
+        // but cancel/steer/approve became unreachable forever.
+        let old_root = std::mem::replace(&mut self.workspace_root, canon);
+        let old_handles = std::mem::take(&mut self.handles);
+        if !old_handles.is_empty() {
+            self.parked
+                .insert(old_root.to_string_lossy().into_owned(), old_handles);
+        }
+        self.handles = self
+            .parked
+            .remove(&self.workspace_root.to_string_lossy().into_owned())
+            .unwrap_or_default();
         self.store = store;
         self.metas = self.store.list();
-        self.handles.clear();
         crate::session_store::record_recent_workspace(&self.workspace_root);
 
         let first = self.metas.first().map(|m| m.id);
@@ -279,18 +318,29 @@ impl SessionManager {
                 out[0].last_opened = w.last_opened;
                 continue;
             }
+            // Parked handles = this workspace's actors are still live —
+            // overlay their real running/preview so the sidebar orb stays
+            // on a turn the user switched away from mid-flight.
+            let parked_handles = self
+                .parked
+                .get(&w_canon.to_string_lossy().into_owned());
             let sessions = SessionStore::open_existing(&w_canon)
                 .map(|store| {
                     store
                         .list()
                         .into_iter()
-                        .map(|m| ProjectSessionRow {
-                            id: m.id,
-                            title: m.title,
-                            preview: m.preview,
-                            updated_at: m.updated_at,
-                            active: false,
-                            running: false,
+                        .map(|m| {
+                            let live = parked_handles.and_then(|h| h.get(&m.id));
+                            ProjectSessionRow {
+                                id: m.id,
+                                title: m.title,
+                                preview: live
+                                    .map(|h| h.preview.clone())
+                                    .unwrap_or_else(|| m.preview.clone()),
+                                updated_at: m.updated_at,
+                                active: false,
+                                running: live.map(|h| h.running).unwrap_or(false),
+                            }
                         })
                         .collect()
                 })
@@ -387,16 +437,22 @@ impl SessionManager {
             .expect("spawn session rt");
 
         // Forward this session's events into the tagged global queue.
+        // The workspace root is captured AT SPAWN — the actor belongs to
+        // this workspace forever, even after the manager switches away
+        // and parks its handle. Without the tag, a background session's
+        // events would land in the active workspace's id space and
+        // corrupt a different session's view.
         {
             let mut rx = channels.event_rx;
             let tx = self.event_tx.clone();
+            let root = self.workspace_root.to_string_lossy().into_owned();
             std::thread::Builder::new()
                 .name(format!("session-{id}-fwd"))
                 .spawn(move || {
                     let rt = tokio::runtime::Runtime::new().expect("tokio rt");
                     rt.block_on(async move {
                         while let Some(ev) = rx.recv().await {
-                            if tx.send((id, ev)).is_err() {
+                            if tx.send((root.clone(), id, ev)).is_err() {
                                 break;
                             }
                         }

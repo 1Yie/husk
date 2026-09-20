@@ -17,7 +17,10 @@ impl KernelState {
     /// Boot the manager (resumes the latest session or creates one) and
     /// return it together with its `event_rx` — the receiver is moved out
     /// to the forwarder, the manager itself stays behind the mutex.
-    pub fn spawn() -> (Self, std::sync::mpsc::Receiver<(i64, agent_ipc::UiEvent)>) {
+    /// Each event is tagged `(workspace_root, session_id)` — session ids
+    /// are per-workspace, the root keeps a parked workspace's still-running
+    /// actors from colliding with the active one's.
+    pub fn spawn() -> (Self, std::sync::mpsc::Receiver<(String, i64, agent_ipc::UiEvent)>) {
         let (mgr, rx) = SessionManager::spawn();
         (Self(Arc::new(Mutex::new(mgr))), rx)
     }

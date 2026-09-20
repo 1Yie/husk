@@ -234,14 +234,14 @@ impl App {
                 }
                 // Drain the tagged kernel queue — route each event to its
                 // session's view (active or background).
-                let events: Vec<(i64, UiEvent)> = self
+                let events: Vec<(String, i64, UiEvent)> = self
                     .event_rx
                     .as_ref()
                     .map(|rx| rx.try_iter().collect())
                     .unwrap_or_default();
                 let mut tasks = Vec::new();
-                for (sid, ev) in events {
-                    tasks.push(self.apply_session_event(sid, ev));
+                for (root, sid, ev) in events {
+                    tasks.push(self.apply_session_event(root, sid, ev));
                 }
                 // Flush the SSE delta buffers ONCE for the frame — deltas
                 // accumulated all tick now reparse + land together. Active
@@ -305,9 +305,12 @@ impl App {
     }
 
     /// Route one tagged `UiEvent` to its session's `SessionView`.
-    fn apply_session_event(&mut self, sid: i64, ev: UiEvent) -> Task<Message> {
+    fn apply_session_event(&mut self, root: String, sid: i64, ev: UiEvent) -> Task<Message> {
         if let Some(mgr) = self.mgr.as_mut() {
-            if let Some(h) = mgr.handle_mut(sid) {
+            // `handle_mut_at` finds the handle in whichever workspace owns
+            // it — a parked workspace's actor keeps streaming after a
+            // switch, and its sidebar flags must still update.
+            if let Some(h) = mgr.handle_mut_at(&root, sid) {
                 match &ev {
                     UiEvent::StateChanged(s) => h.running = s.is_active(),
                     UiEvent::AssistantMessage(t) => {
@@ -316,6 +319,14 @@ impl App {
                     _ => {}
                 }
             }
+        }
+        // A parked workspace's events never land in a view: this shell
+        // keys `views` by bare session id, so a foreign event would
+        // corrupt a same-numbered session here. Its turn still runs and
+        // still updates its sidebar flags (above) — it just can't render
+        // until the workspace is switched back and history reloads.
+        if root.as_str() != self.workspace_root.to_string_lossy().as_ref() {
+            return Task::none();
         }
         // Apply to that session's view (create on demand).
         let view = self.views.entry(sid).or_default();

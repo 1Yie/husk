@@ -231,10 +231,12 @@ impl Default for SessionView {
 pub struct App {
     /// Multi-session kernel — actors, persistence, the tagged event queue.
     pub mgr: Option<SessionManager>,
-    /// The `(session_id, UiEvent)` event tap — split out of `spawn()` so
-    /// the Tick drain owns it (and `husk` can move its own copy into a
-    /// forwarder thread). `Option` only for the `--mock` demo path.
-    pub event_rx: Option<std::sync::mpsc::Receiver<(i64, agent_ipc::UiEvent)>>,
+    /// The `(workspace_root, session_id, UiEvent)` event tap — split out
+    /// of `spawn()` so the Tick drain owns it (and `husk` can move its
+    /// own copy into a forwarder thread). The root tag identifies which
+    /// workspace a parked actor belongs to — session ids collide across
+    /// workspaces. `Option` only for the `--mock` demo path.
+    pub event_rx: Option<std::sync::mpsc::Receiver<(String, i64, agent_ipc::UiEvent)>>,
     /// Per-session rendered state — switching just points `active_id` here.
     pub views: HashMap<i64, SessionView>,
     /// The session currently shown in the stream.
@@ -269,7 +271,7 @@ impl App {
     /// Boot the live multi-session kernel — takes the manager + its event
     /// receiver (the pair `SessionManager::spawn()` returns).
     pub fn boot(
-        (mgr, event_rx): (SessionManager, std::sync::mpsc::Receiver<(i64, agent_ipc::UiEvent)>),
+        (mgr, event_rx): (SessionManager, std::sync::mpsc::Receiver<(String, i64, agent_ipc::UiEvent)>),
         sandbox_unsafe: bool,
     ) -> Self {
         let active_id = mgr.active_id;

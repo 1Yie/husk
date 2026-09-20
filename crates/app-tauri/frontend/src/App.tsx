@@ -18,18 +18,20 @@ import {
 } from "@/components/ui/dialog";
 
 export function App() {
+  const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: "", name: "", recents: [] });
   const {
     active,
     activeId,
     setActiveId,
     loadView,
-    clearViews,
-    runningIds,
+    runningKeys,
     gitInfo,
     ctxWindow,
-  } = useAgentEvents();
+  } = useAgentEvents(workspace.root);
   const { projects, sessions, refresh, newSession, openSession } = useAgentSession();
-  const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: "", name: "", recents: [] });
+  // True while a session/workspace switch is fetching history + rebuilding
+  // the view — the stream renders a skeleton instead of a stale/empty pane.
+  const [viewLoading, setViewLoading] = useState(false);
   // Non-null while the delete confirmation dialog is open — holds the row
   // snapshot taken at click time so the dialog still shows the right title
   // even if the session list refreshes in between.
@@ -42,50 +44,56 @@ export function App() {
   }, []);
 
   const handlePickWorkspace = async () => {
+    setViewLoading(true);
     const res = await pickWorkspace();
     if (res) {
       setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
-      // Session ids are per-workspace — drop cached streams before the new
-      // workspace's history lands, or a colliding id keeps showing the old
-      // project's conversation.
-      clearViews();
+      // Views are keyed `root:id` — the outgoing workspace's buffers stay
+      // cached (and keep streaming while a turn is live there), so
+      // switching back restores the live stream, not a store snapshot.
       setActiveId(res.active);
       if (res.history.length > 0) {
-        loadView(res.active, viewFromHistory(res.history, res.usage));
+        loadView(res.root, res.active, viewFromHistory(res.history, res.usage));
       }
       void refresh();
       void getWorkspaceInfo().then((ws) => {
         if (ws) setWorkspace(ws);
       });
     }
+    setViewLoading(false);
   };
 
   const handleSwitchWorkspace = async (path: string) => {
     if (!path || path === workspace.root) return;
+    setViewLoading(true);
     const res = await switchWorkspace(path);
     if (res) {
       setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
-      clearViews();
       setActiveId(res.active);
       if (res.history.length > 0) {
-        loadView(res.active, viewFromHistory(res.history, res.usage));
+        loadView(res.root, res.active, viewFromHistory(res.history, res.usage));
       }
       void refresh();
       void getWorkspaceInfo().then((ws) => {
         if (ws) setWorkspace(ws);
       });
     }
+    setViewLoading(false);
   };
 
   // Open a conversation from anywhere in the sidebar tree. Ids are
   // per-workspace, so a row belonging to another project switches the
-  // active workspace first (the kernel only ever has actors for one).
+  // active workspace first — its actors get parked (kept alive), not
+  // killed, so a running turn survives the switch.
   const handleOpenSession = async (root: string, id: number) => {
+    setViewLoading(true);
     if (root && root !== workspace.root) {
       const res = await switchWorkspace(root);
-      if (!res) return;
+      if (!res) {
+        setViewLoading(false);
+        return;
+      }
       setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
-      clearViews();
       void getWorkspaceInfo().then((ws) => {
         if (ws) setWorkspace(ws);
       });
@@ -93,8 +101,12 @@ export function App() {
     const r = await openSession(id);
     if (r) {
       setActiveId(id);
-      if (r.history.length > 0) loadView(id, viewFromHistory(r.history, r.usage));
+      // `root` (the clicked row's project) is the canonical workspace
+      // after any switch above — key the rebuilt view under it.
+      if (r.history.length > 0)
+        loadView(root || workspace.root, id, viewFromHistory(r.history, r.usage));
     }
+    setViewLoading(false);
   };
 
   const handleNewSession = async () => {
@@ -105,13 +117,15 @@ export function App() {
   };
 
   const handleDeleteSession = (id: number) => {
+    setViewLoading(true);
     void deleteSession(id).then((r) => {
       void refresh();
       // If the deleted session was on screen, the backend already
       // switched to another — follow it and rebuild its view.
       setActiveId(r.active);
-      if (r.history.length > 0) loadView(r.active, viewFromHistory(r.history, r.usage));
-    }).catch(() => {});
+      if (r.history.length > 0) loadView(workspace.root, r.active, viewFromHistory(r.history, r.usage));
+      setViewLoading(false);
+    }).catch(() => setViewLoading(false));
   };
 
   // First-load: the kernel resumed the most recent session at boot, but
@@ -123,8 +137,14 @@ export function App() {
     if (bootLoaded.current || sessions.length === 0) return;
     bootLoaded.current = true;
     const current = sessions.find((s) => s.active) ?? sessions[0];
+    // The canonical root from the project tree — `workspace.root` state
+    // may still be empty this early in the boot sequence.
+    const currentRoot = projects.find((p) => p.current)?.root ?? "";
+    setViewLoading(true);
     void openSession(current.id).then((r) => {
-      if (r && r.history.length > 0) loadView(current.id, viewFromHistory(r.history, r.usage));
+      if (r && r.history.length > 0)
+        loadView(currentRoot, current.id, viewFromHistory(r.history, r.usage));
+      setViewLoading(false);
     });
     setActiveId(current.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,21 +162,18 @@ export function App() {
       ? "新会话"
       : pendingDelete.title;
 
-  // The backend reports `running` from live handles; overlaying `runningIds`
-  // (fresh off `StateChanged` events) makes the orb appear the moment a turn
-  // starts instead of up to 2s later. Only the current project has live ids —
-  // another project's row may collide on id, so it keeps the polled value.
-  const sidebarProjects = projects.map((p) =>
-    p.current
-      ? {
-          ...p,
-          sessions: p.sessions.map((s) => ({
-            ...s,
-            running: s.running || runningIds.has(s.id),
-          })),
-        }
-      : p
-  );
+  // The backend reports `running` from live handles (including parked
+  // workspaces); overlaying `runningKeys` (fresh off `StateChanged`
+  // events) makes the orb appear the moment a turn starts instead of up
+  // to 2s later. Keys are `root:id` — no collision across projects, so a
+  // background workspace's running turn keeps its orb too.
+  const sidebarProjects = projects.map((p) => ({
+    ...p,
+    sessions: p.sessions.map((s) => ({
+      ...s,
+      running: s.running || runningKeys.has(`${p.root}:${s.id}`),
+    })),
+  }));
 
   return (
     <>
@@ -170,12 +187,18 @@ export function App() {
           onFork={(id) => {
             // Backend activates the fork — mirror it locally + rebuild the
             // stream view from the copied history.
+            setViewLoading(true);
             void forkSession(id).then((r) => {
-              if (!r) return;
+              if (!r) {
+                setViewLoading(false);
+                return;
+              }
               void refresh();
               setActiveId(r.id);
-              if (r.history.length > 0) loadView(r.id, viewFromHistory(r.history, r.usage));
-            }).catch(() => {});
+              if (r.history.length > 0)
+                loadView(workspace.root, r.id, viewFromHistory(r.history, r.usage));
+              setViewLoading(false);
+            }).catch(() => setViewLoading(false));
           }}
           onDelete={(id) => {
             // Deletion is destructive — park the row and let the dialog
@@ -195,6 +218,8 @@ export function App() {
           workspaceRoot={workspace.root}
           gitInfo={gitInfo}
           contextWindowHint={ctxWindow}
+          loading={viewLoading}
+          sessionKey={`${workspace.root}:${activeId}`}
         />
       </MainLayout>
 

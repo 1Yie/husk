@@ -56,8 +56,15 @@ export type UiCommand =
   | { SetThinkingLevel: { level: string } }
   | "UndoLastTurn";
 
-/** The `agent://event` envelope — session id + the event payload. */
+/** The `agent://event` envelope — owning workspace root + session id +
+ * the event payload. Session ids are per-workspace; `root` keeps a
+ * parked workspace's still-running actors from colliding with a
+ * same-numbered session in the active one. */
 export interface AgentEventEnvelope {
+  /** Canonical root of the workspace that spawned the actor — captured
+   * at spawn, so a background workspace's events keep their identity
+   * after a workspace switch. */
+  root?: string;
   session: number;
   event: UiEvent;
 }
