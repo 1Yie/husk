@@ -40,15 +40,19 @@ export function applyEvent(
 
   if ("StateChanged" in ev) {
     const s = ev.StateChanged;
+    // Mirror the kernel's `AgentState::is_active()` — the reply-wait pill
+    // and the steer composer must stay lit through EVERY mid-turn state
+    // (Compacting, AwaitingConsent, Branching, ScanningWorkspace), not
+    // just the four that produce deltas. The old narrow set made
+    // "正在回复" vanish for seconds during mid-turn auto-compaction.
     const streaming =
-      s === "StreamingToken" ||
-      s === "Reasoning" ||
-      (typeof s === "object" &&
-        ("ExecutingTool" in s || "AwaitingToolConfirmation" in s));
+      s !== "Idle" &&
+      s !== "Finished" &&
+      !(typeof s === "object" && "Failed" in s);
     return { ...v, state: s, streaming };
   }
   if ("UserPrompt" in ev) {
-    items.push({ kind: "user", text: ev.UserPrompt });
+    items.push({ kind: "user", text: ev.UserPrompt, ts: Date.now() });
     return {
       ...v,
       items,
