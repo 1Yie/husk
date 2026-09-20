@@ -2,12 +2,12 @@ import React from "react";
 import { ChevronDown } from "@keyline-icons/react";
 import { renderWithTwemoji } from "@/lib/twemoji";
 
-export const codexMarkdownComponents = {
+export const chatMarkdownComponents = {
   // Same scroll contract as the tool-output card: card shell + plain
   // overflow-x/y-auto inner + the global 6px scrollbar — no bespoke
   // scrollbar class, no wheel remapping.
   table: ({ children, ...props }: React.ComponentPropsWithoutRef<"table">) => (
-    <div className="my-4 w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-[#fafafa] dark:bg-[#121214] overflow-hidden shadow-2xs">
+    <div className="my-4 w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 overflow-hidden shadow-2xs">
       <div className="w-full overflow-x-auto overflow-y-auto max-h-[400px] select-text">
         {/* `w-full` only — cells wrap, so the table fits the card and only
             overflows (→ inner x-scroll) when a single unbreakable token is

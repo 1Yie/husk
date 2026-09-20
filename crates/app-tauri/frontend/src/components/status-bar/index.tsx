@@ -29,7 +29,7 @@ export function StatusBar({ view }: { view: SessionView }) {
         <span
           className={cn(
             "w-1.5 h-1.5 rounded-full",
-            view.streaming ? "bg-emerald-400 animate-pulse" : "bg-neutral-400"
+            view.streaming ? "bg-emerald-400 dark:bg-emerald-500 animate-pulse" : "bg-neutral-400"
           )}
         />
         {label}

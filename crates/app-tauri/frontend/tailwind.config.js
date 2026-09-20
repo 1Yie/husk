@@ -1,22 +1,25 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  darkMode: "class",
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        workspace: "#ffffff",
-        panel: "#f3f3f5",
-        card: "#ffffff",
-        hover: "#e8e8ed",
-        active: "#ffffff",
-        hairline: "#e4e4e7",
-        focus: "#a1a1aa",
-        "text-primary": "#18181b",
-        "text-secondary": "#52525b",
-        "text-muted": "#71717a",
-        "text-dim": "#a1a1aa",
-        "bubble-user": "#e3e3e8",
-        accent: "#18181b",
+        // Theme-driven tokens — CSS vars live in index.css (`:root` light,
+        // `.dark` dark). `appearance.json` can override them at runtime.
+        workspace: "var(--husk-bg)",
+        panel: "var(--husk-panel)",
+        card: "var(--husk-card)",
+        hover: "var(--husk-hover)",
+        active: "var(--husk-active)",
+        hairline: "var(--husk-border)",
+        focus: "var(--husk-focus)",
+        "text-primary": "var(--husk-fg)",
+        "text-secondary": "var(--husk-fg-secondary)",
+        "text-muted": "var(--husk-fg-muted)",
+        "text-dim": "var(--husk-fg-dim)",
+        "bubble-user": "var(--husk-bubble-user)",
+        accent: "var(--husk-accent)",
         "diff-add": "#16a34a",
         "diff-add-surface": "#f0fdf4",
         "diff-del": "#dc2626",
@@ -24,6 +27,27 @@ export default {
         running: "#9333ea",
         warn: "#d97706",
         error: "#dc2626",
+        // Literal white/black — used for text on colored surfaces and for
+        // card backgrounds. In dark mode they invert so `bg-white` (a card
+        // in light) becomes the dark card tone and `text-white` stays
+        // readable on dark backgrounds.
+        white: "var(--husk-white)",
+        black: "var(--husk-black)",
+        // Neutral scale → CSS vars so `bg-neutral-100`/`text-neutral-600` etc.
+        // follow the theme instead of pinning literal zinc values.
+        neutral: {
+          50: "var(--husk-n50)",
+          100: "var(--husk-n100)",
+          200: "var(--husk-n200)",
+          300: "var(--husk-n300)",
+          400: "var(--husk-n400)",
+          500: "var(--husk-n500)",
+          600: "var(--husk-n600)",
+          700: "var(--husk-n700)",
+          800: "var(--husk-n800)",
+          900: "var(--husk-n900)",
+          950: "var(--husk-n950)",
+        },
       },
       borderRadius: {
         sm: "6px",

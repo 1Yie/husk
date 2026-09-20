@@ -181,6 +181,32 @@ export function getGitInfo() {
   return invoke<GitInfo>("agent_session", { op: "git_info" });
 }
 
+/** Appearance settings — persisted at the app-data root as
+ * `appearance.json`. The frontend applies it at boot (dark class + CSS
+ * vars) so the shell paints with the user's choices from the first frame. */
+export interface AppearanceConfig {
+  theme_mode: "system" | "light" | "dark";
+  theme_id?: string | null;
+  accent: string;
+  background: string;
+  foreground: string;
+  ui_font: string;
+  code_font: string;
+  contrast: number;
+}
+
+export function getAppearance() {
+  return invoke<AppearanceConfig>("agent_session", { op: "get_appearance" });
+}
+
+/** Partial update — only the keys sent are merged into the stored file. */
+export function setAppearance(patch: Partial<AppearanceConfig>) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "set_appearance",
+    payload: patch,
+  });
+}
+
 /** A workspace file entry for the `@` mention picker. */
 export interface FileItem {
   path: string;

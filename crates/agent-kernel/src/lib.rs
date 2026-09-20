@@ -21,6 +21,7 @@ pub mod steering;
 pub mod tools;
 
 pub use session_store::{
-    load_default_preferences, save_default_preferences, try_load_default_preferences,
+    load_appearance_settings, load_default_preferences, save_appearance_settings,
+    save_default_preferences, try_load_default_preferences, AppearanceSettings,
     DefaultPreferences,
 };

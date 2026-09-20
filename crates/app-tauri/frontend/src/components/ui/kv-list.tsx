@@ -207,7 +207,7 @@ export function ColorPill({
                   className={cn(
                     "w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer relative p-0",
                     isPresetLight ? "border border-neutral-200" : "border border-black/10",
-                    isSelected && "ring-2 ring-blue-500 ring-offset-1"
+                    isSelected && "ring-2 ring-blue-500 dark:ring-blue-400 ring-offset-1"
                   )}
                 >
                   {isSelected && (

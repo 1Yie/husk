@@ -400,7 +400,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                           ) : isTodo ? (
                             <TodoView content={detailText} />
                           ) : (
-                            <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-[#fafafa] dark:bg-[#121214] overflow-hidden shadow-2xs">
+                            <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 overflow-hidden shadow-2xs">
                               <div className="p-3 font-mono text-[11.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed overflow-x-auto max-h-[400px] overflow-y-auto select-text">
                                 {renderHighlightedLines(detailText, row.label, row.chip)}
                               </div>

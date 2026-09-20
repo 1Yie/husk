@@ -33,7 +33,7 @@ const PERMISSION_OPTIONS: SettingsCardOption[] = [
       </Badge>
     ),
     description: "自动执行文件修改与常规命令，仅在遇到高危指令（如删除、外网访问）时弹窗确认。",
-    icon: <Zap className="h-4 w-4 text-amber-500 shrink-0" />,
+    icon: <Zap className="h-4 w-4 text-amber-500 dark:text-amber-400 shrink-0" />,
   },
   {
     value: "bypassPermissions",
@@ -41,19 +41,19 @@ const PERMISSION_OPTIONS: SettingsCardOption[] = [
     badge: (
       <Badge
         variant="default"
-        className="text-[10px] px-1.5 py-0 font-medium h-4 bg-emerald-600 hover:bg-emerald-600 text-white"
+        className="text-[10px] px-1.5 py-0 font-medium h-4 bg-emerald-600 hover:bg-emerald-600 text-white dark:text-[#fafafa]"
       >
         完全信任
       </Badge>
     ),
     description: "全自动自主执行，跳过所有修改和命令的确认弹窗，实现最高执行效率。",
-    icon: <TriangleAlert className="h-4 w-4 text-emerald-500 shrink-0" />,
+    icon: <TriangleAlert className="h-4 w-4 text-emerald-500 dark:text-emerald-400 shrink-0" />,
   },
   {
     value: "acceptEdits",
     label: "仅接受编辑",
     description: "自动允许代码与文件修改，但在执行终端命令前仍需手动批准。",
-    icon: <SquarePen className="h-4 w-4 text-blue-500 shrink-0" />,
+    icon: <SquarePen className="h-4 w-4 text-blue-500 dark:text-blue-400 shrink-0" />,
   },
   {
     value: "default",

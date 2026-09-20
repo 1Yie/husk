@@ -314,6 +314,80 @@ pub fn save_default_preferences(prefs: &DefaultPreferences) -> std::io::Result<(
     std::fs::write(path, json)
 }
 
+// ---------------------------------------------------------------------------
+// Appearance settings — the settings window's theme/accent/font choices,
+// persisted at the app-data root next to `default_preferences.json`.
+// The frontend reads it at boot and applies `dark` class + CSS vars.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppearanceSettings {
+    /// "system" | "light" | "dark" — `system` follows the OS via
+    /// `prefers-color-scheme`, the others pin the class directly.
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
+    /// Active light/dark theme id (reserved — theme packs land later).
+    #[serde(default)]
+    pub theme_id: Option<String>,
+    #[serde(default = "default_accent")]
+    pub accent: String,
+    #[serde(default = "default_bg")]
+    pub background: String,
+    #[serde(default = "default_fg")]
+    pub foreground: String,
+    #[serde(default = "default_ui_font")]
+    pub ui_font: String,
+    #[serde(default = "default_code_font")]
+    pub code_font: String,
+    /// 0–100 contrast slider value (UI hint, maps to a subtle text boost).
+    #[serde(default = "default_contrast")]
+    pub contrast: u32,
+}
+
+fn default_theme_mode() -> String { "system".into() }
+fn default_accent() -> String { "#339CFF".into() }
+fn default_bg() -> String { "#FFFFFF".into() }
+fn default_fg() -> String { "#1A1C1F".into() }
+fn default_ui_font() -> String { "-apple-system, BlinkMacSystemFont, \"Segoe UI\"".into() }
+fn default_code_font() -> String { "ui-monospace, \"SFMono-Regular\", monospace".into() }
+fn default_contrast() -> u32 { 45 }
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self {
+            theme_mode: default_theme_mode(),
+            theme_id: None,
+            accent: default_accent(),
+            background: default_bg(),
+            foreground: default_fg(),
+            ui_font: default_ui_font(),
+            code_font: default_code_font(),
+            contrast: default_contrast(),
+        }
+    }
+}
+
+pub fn appearance_settings_path() -> Option<PathBuf> {
+    app_data_dir().map(|d| d.join("appearance.json"))
+}
+
+pub fn load_appearance_settings() -> AppearanceSettings {
+    let Some(path) = appearance_settings_path() else { return AppearanceSettings::default(); };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_appearance_settings(s: &AppearanceSettings) -> std::io::Result<()> {
+    let Some(path) = appearance_settings_path() else { return Ok(()); };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::to_string_pretty(s)?;
+    std::fs::write(path, json)
+}
+
 impl SessionStore {
     /// Path to this workspace's prefs file.
     fn prefs_path(&self) -> PathBuf {

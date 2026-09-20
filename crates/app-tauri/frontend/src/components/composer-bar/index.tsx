@@ -470,7 +470,7 @@ export function ComposerBar({
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
           {pending || hasActiveTodos ? (
             /* Outer container with attached banner: Approval (Priority 1) or Active Todo (Priority 2) */
-            <div className="w-full bg-[#f4f4f6] dark:bg-neutral-900 rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
+            <div className="w-full bg-panel dark:bg-neutral-900 rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
               {pending ? (
                 /* Priority 1: Permission approval strip */
                 <div className="flex items-center gap-2 px-3 pt-0.5 text-xs text-neutral-600 dark:text-neutral-400 font-medium select-none">
@@ -498,7 +498,7 @@ export function ComposerBar({
                   </TooltipSimple>
                   <Button
                     size="sm"
-                    className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                    className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white dark:text-[#fafafa] cursor-pointer"
                     onClick={() => void decide(true)}
                   >
                     允许
@@ -594,7 +594,7 @@ export function ComposerBar({
                 </div>
               )}
 
-              <div className="bg-white dark:bg-neutral-950 border border-[#e4e4e7] dark:border-neutral-800 rounded-[18px] p-3 flex flex-col gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.02)]">
+              <div className="bg-white dark:bg-neutral-950 border border-hairline dark:border-neutral-800 rounded-[18px] p-3 flex flex-col gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.02)]">
                 <AttachmentChips
                   items={attachments}
                   onRemove={(path) =>
@@ -639,7 +639,7 @@ export function ComposerBar({
             </div>
           ) : (
             /* Normal — single white card when no approval and no active todos. */
-            <div className="w-full bg-white dark:bg-neutral-950 border border-[#e4e4e7] dark:border-neutral-800 rounded-[22px] shadow-[0_2px_12px_rgba(0,0,0,0.025)] hover:border-neutral-300 dark:hover:border-neutral-700 transition-all p-3 flex flex-col gap-2">
+            <div className="w-full bg-white dark:bg-neutral-950 border border-hairline dark:border-neutral-800 rounded-[22px] shadow-[0_2px_12px_rgba(0,0,0,0.025)] hover:border-neutral-300 dark:hover:border-neutral-700 transition-all p-3 flex flex-col gap-2">
               <AttachmentChips
                 items={attachments}
                 onRemove={(path) =>
@@ -1105,7 +1105,7 @@ function ComposerToolbar({
                       <span className="font-medium text-xs text-neutral-800 dark:text-neutral-200">
                         {m.label}
                       </span>
-                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
+                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
                     </div>
                     <span className="text-[11px] text-neutral-400 dark:text-neutral-500 leading-tight">
                       {m.desc}
@@ -1208,7 +1208,7 @@ function ComposerToolbar({
                         </span>
                         <span className="text-[10px] text-neutral-400">{item.provider}</span>
                       </div>
-                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
+                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
                     </DropdownMenuItem>
                   );
                 })}
@@ -1243,7 +1243,7 @@ function ComposerToolbar({
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="w-8 h-8 rounded-full bg-[#18181b] hover:bg-black text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
+                className="w-8 h-8 rounded-full bg-neutral-900 hover:bg-black text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
                 onClick={() => void submit()}
                 aria-label="发送"
               >

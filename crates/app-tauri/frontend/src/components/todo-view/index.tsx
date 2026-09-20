@@ -66,7 +66,7 @@ export function TodoView({ content }: Props) {
 
   if (items.length === 0) {
     return (
-      <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-[#fafafa] dark:bg-[#121214] p-3 text-xs text-neutral-500 font-mono">
+      <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 p-3 text-xs text-neutral-500 font-mono">
         {content || "暂无任务项"}
       </div>
     );
@@ -75,7 +75,7 @@ export function TodoView({ content }: Props) {
   const percentage = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
   return (
-    <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-[#fafafa] dark:bg-[#141416] p-3 shadow-2xs select-text">
+    <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 p-3 shadow-2xs select-text">
       <div className="flex items-center justify-between gap-3 pb-2.5 mb-2 border-b border-neutral-200/70 dark:border-neutral-800/80 select-none">
         <div className="flex items-center gap-2 min-w-0">
           <ListCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />

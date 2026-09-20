@@ -30,7 +30,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   const pct = Math.round((prompt / ctxWin) * 100);
   const toks = view?.toksPerSec ?? 0;
   const ctxColor =
-    pct >= 80 ? "text-red-500" : pct >= 50 ? "text-amber-500" : undefined;
+    pct >= 80 ? "text-red-500 dark:text-red-400" : pct >= 50 ? "text-amber-500 dark:text-amber-400" : undefined;
 
   return (
     <div
@@ -63,7 +63,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
               <GitBranch className="h-3 w-3" />
               {gitInfo.branch}
               {gitInfo.dirty > 0 && (
-                <span className="text-amber-500">·{gitInfo.dirty}</span>
+                <span className="text-amber-500 dark:text-amber-400">·{gitInfo.dirty}</span>
               )}
             </span>
           </TooltipSimple>

@@ -166,6 +166,34 @@ pub fn agent_session(
             mgr.set_default_prefs(permission_mode, thinking_level);
             Ok(serde_json::json!({ "success": true }))
         }
+        // Appearance — the settings window's theme/accent/font choices,
+        // persisted next to `default_preferences.json`. Both windows read
+        // this at boot; a write from the settings window lands on the next
+        // main-window load.
+        "get_appearance" => {
+            let s = agent_kernel::load_appearance_settings();
+            Ok(serde_json::to_value(&s).map_err(|e| e.to_string())?)
+        }
+        "set_appearance" => {
+            let p = payload.ok_or("set_appearance needs payload")?;
+            let cur = agent_kernel::load_appearance_settings();
+            let merged = serde_json::to_value(&cur).unwrap_or_else(|_| serde_json::json!({}));
+            let mut obj = match merged {
+                serde_json::Value::Object(m) => m,
+                _ => serde_json::Map::new(),
+            };
+            // Merge only the keys the caller sent — partial updates keep
+            // the rest of the file intact.
+            for k in ["theme_mode","theme_id","accent","background","foreground","ui_font","code_font","contrast"] {
+                if let Some(v) = p.get(k) {
+                    obj.insert(k.into(), v.clone());
+                }
+            }
+            let s: agent_kernel::AppearanceSettings =
+                serde_json::from_value(serde_json::Value::Object(obj)).map_err(|e| e.to_string())?;
+            agent_kernel::save_appearance_settings(&s).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "success": true }))
+        }
         "open_config" => {
             if let Some(path) = agent_llm::AppConfig::default_path() {
                 #[cfg(target_os = "macos")]

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -9,31 +9,91 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SettingsRenderer, SettingSelect } from "@/components/settings";
-
-interface ThemeOption {
-  id: string;
-  name: string;
-}
-
-const THEME_LIST: ThemeOption[] = [
-  { id: "codex", name: "Codex" },
-  { id: "one-light", name: "One Light" },
-  { id: "github-light", name: "GitHub Light" },
-  { id: "solarized-light", name: "Solarized Light" },
-];
+import { getAppearance, setAppearance, type AppearanceConfig } from "../../invoke/agent/sessions";
+import { applyAppearance, broadcastAppearance, isDarkMode } from "../../lib/appearance";
+import { THEME_PRESETS, withPreset } from "../../lib/themes";
 
 export function AppearanceSettings() {
-  const [themeMode, setThemeMode] = useState<"system" | "light" | "dark">("system");
-  const [selectedTheme, setSelectedTheme] = useState("codex");
+  const [themeMode, setThemeModeState] = useState<"system" | "light" | "dark">("system");
+  const [selectedTheme, setSelectedThemeState] = useState("husk");
 
-  const [accentColor, setAccentColor] = useState("#339CFF");
-  const [bgColor, setBgColor] = useState("#FFFFFF");
-  const [fgColor, setFgColor] = useState("#1A1C1F");
-  const [uiFont, setUiFont] = useState('-apple-system, BlinkMacSystemFont, "Segoe UI"');
-  const [codeFont, setCodeFont] = useState('ui-monospace, "SFMono-Regular", monospace');
-  const [contrast, setContrast] = useState(45);
+  const [accentColor, setAccentColorState] = useState("#339CFF");
+  const [bgColor, setBgColorState] = useState("#FFFFFF");
+  const [fgColor, setFgColorState] = useState("#1A1C1F");
+  const [uiFont, setUiFontState] = useState('-apple-system, BlinkMacSystemFont, "Segoe UI"');
+  const [codeFont, setCodeFontState] = useState('ui-monospace, "SFMono-Regular", monospace');
+  const [contrast, setContrastState] = useState(45);
 
   const [copied, setCopied] = useState(false);
+  // First-load flag: applying the fetched config must not echo back a
+  // `set_appearance` write (harmless but wasteful).
+  const hydrated = useRef(false);
+
+  // Load the persisted config once, then apply it so the settings window
+  // itself renders in the user's theme (it's a separate webview — no
+  // shared state with the main window).
+  useEffect(() => {
+    void getAppearance()
+      .then((cfg) => {
+        setThemeModeState(cfg.theme_mode);
+        if (cfg.theme_id) setSelectedThemeState(cfg.theme_id);
+        setAccentColorState(cfg.accent);
+        setBgColorState(cfg.background);
+        setFgColorState(cfg.foreground);
+        setUiFontState(cfg.ui_font);
+        setCodeFontState(cfg.code_font);
+        setContrastState(cfg.contrast);
+        applyAppearance(cfg);
+        hydrated.current = true;
+      })
+      .catch(() => {});
+  }, []);
+
+  /** One setter per field — updates local state, re-applies the theme for
+   *  live preview, and persists the merged config. */
+  const update = (patch: Partial<AppearanceConfig>) => {
+    const cfg: AppearanceConfig = {
+      theme_mode: themeMode,
+      theme_id: selectedTheme,
+      accent: accentColor,
+      background: bgColor,
+      foreground: fgColor,
+      ui_font: uiFont,
+      code_font: codeFont,
+      contrast,
+      ...patch,
+    };
+    applyAppearance(cfg);
+    if (hydrated.current) {
+      void setAppearance(patch)
+        .then(() => broadcastAppearance())
+        .catch((e) => console.error("save appearance:", e));
+    }
+  };
+
+  const setThemeMode = (v: "system" | "light" | "dark") => { setThemeModeState(v); update({ theme_mode: v }); };
+  // Picking a preset theme writes its colors into accent/background/
+  // foreground — a later manual tweak keeps the id but overrides the token,
+  // so "custom" is just the live state of the three color fields.
+  const setSelectedTheme = (v: string) => {
+    setSelectedThemeState(v);
+    const cur: AppearanceConfig = {
+      theme_mode: themeMode, theme_id: selectedTheme, accent: accentColor,
+      background: bgColor, foreground: fgColor, ui_font: uiFont,
+      code_font: codeFont, contrast,
+    };
+    const next = withPreset(cur, v, isDarkMode(cur));
+    setAccentColorState(next.accent);
+    setBgColorState(next.background);
+    setFgColorState(next.foreground);
+    update({ theme_id: v, accent: next.accent, background: next.background, foreground: next.foreground });
+  };
+  const setAccentColor = (v: string) => { setAccentColorState(v); update({ accent: v }); };
+  const setBgColor = (v: string) => { setBgColorState(v); update({ background: v }); };
+  const setFgColor = (v: string) => { setFgColorState(v); update({ foreground: v }); };
+  const setUiFont = (v: string) => { setUiFontState(v); update({ ui_font: v }); };
+  const setCodeFont = (v: string) => { setCodeFontState(v); update({ code_font: v }); };
+  const setContrast = (v: number) => { setContrastState(v); update({ contrast: v }); };
 
   const handleCopyTheme = () => {
     const config = {
@@ -61,12 +121,25 @@ export function AppearanceSettings() {
       try {
         const text = await file.text();
         const json = JSON.parse(text);
-        if (json.accent) setAccentColor(json.accent);
-        if (json.background) setBgColor(json.background);
-        if (json.foreground) setFgColor(json.foreground);
-        if (json.contrast !== undefined) setContrast(Number(json.contrast));
-        if (json.uiFont) setUiFont(json.uiFont);
-        if (json.codeFont) setCodeFont(json.codeFont);
+        const patch: Partial<AppearanceConfig> = {};
+        if (json.accent) patch.accent = json.accent;
+        if (json.background) patch.background = json.background;
+        if (json.foreground) patch.foreground = json.foreground;
+        if (json.contrast !== undefined) patch.contrast = Number(json.contrast);
+        if (json.uiFont) patch.ui_font = json.uiFont;
+        if (json.codeFont) patch.code_font = json.codeFont;
+        if (json.mode) patch.theme_mode = json.mode;
+        if (json.name) patch.theme_id = json.name;
+        // Update local state to match, then persist the merged patch.
+        if (patch.accent) setAccentColorState(patch.accent);
+        if (patch.background) setBgColorState(patch.background);
+        if (patch.foreground) setFgColorState(patch.foreground);
+        if (patch.contrast !== undefined) setContrastState(patch.contrast);
+        if (patch.ui_font) setUiFontState(patch.ui_font);
+        if (patch.code_font) setCodeFontState(patch.code_font);
+        if (patch.theme_mode) setThemeModeState(patch.theme_mode);
+        if (patch.theme_id) setSelectedThemeState(patch.theme_id);
+        update(patch);
       } catch (err) {
         console.error("Failed to import theme JSON:", err);
       }
@@ -102,22 +175,22 @@ export function AppearanceSettings() {
               <div className="w-1/2 h-full bg-[#272a2e]" />
             </div>
 
-            <div className="relative w-[86%] h-[82px] rounded-t-xl overflow-hidden flex shadow-md border-t border-x border-black/15">
-              <div className="w-1/2 h-full bg-white p-3 flex flex-col gap-2">
-                <div className="h-1.5 w-10 bg-neutral-300 rounded-full" />
+            <div className="relative w-[86%] h-[82px] rounded-t-xl overflow-hidden flex shadow-md border-t border-x border-[#09090b]/15">
+              <div className="w-1/2 h-full bg-[#ffffff] p-3 flex flex-col gap-2">
+                <div className="h-1.5 w-10 bg-[#d4d4d8] rounded-full" />
                 <div className="flex flex-col gap-1.5 mt-0.5">
-                  <div className="h-1.5 w-12 bg-neutral-200 rounded-full" />
-                  <div className="h-1.5 w-16 bg-neutral-200 rounded-full" />
-                  <div className="h-1.5 w-10 bg-neutral-200 rounded-full" />
+                  <div className="h-1.5 w-12 bg-[#e4e4e7] rounded-full" />
+                  <div className="h-1.5 w-16 bg-[#e4e4e7] rounded-full" />
+                  <div className="h-1.5 w-10 bg-[#e4e4e7] rounded-full" />
                 </div>
               </div>
 
-              <div className="w-1/2 h-full bg-[#2f3338] p-3 flex flex-col gap-2 border-l border-neutral-700/60">
-                <div className="h-1.5 w-10 bg-neutral-600 rounded-full" />
+              <div className="w-1/2 h-full bg-[#2f3338] p-3 flex flex-col gap-2 border-l border-[#3f3f46]/60">
+                <div className="h-1.5 w-10 bg-[#52525b] rounded-full" />
                 <div className="flex flex-col gap-1.5 mt-0.5">
-                  <div className="h-1.5 w-12 bg-neutral-600 rounded-full" />
-                  <div className="h-1.5 w-16 bg-neutral-600 rounded-full" />
-                  <div className="h-1.5 w-10 bg-neutral-600 rounded-full" />
+                  <div className="h-1.5 w-12 bg-[#52525b] rounded-full" />
+                  <div className="h-1.5 w-16 bg-[#52525b] rounded-full" />
+                  <div className="h-1.5 w-10 bg-[#52525b] rounded-full" />
                 </div>
               </div>
             </div>
@@ -146,12 +219,12 @@ export function AppearanceSettings() {
                 : "border border-neutral-200/90 hover:border-neutral-300"
             )}
           >
-            <div className="h-1.5 w-24 bg-neutral-300/80 rounded-full" />
+            <div className="h-1.5 w-24 bg-[#d4d4d8]/80 rounded-full" />
 
-            <div className="w-[86%] h-[82px] rounded-t-xl bg-white border-t border-x border-neutral-200/80 p-3 flex flex-col gap-1.5 shadow-sm">
-              <div className="h-1.5 w-14 bg-neutral-200 rounded-full" />
-              <div className="h-1.5 w-20 bg-neutral-200 rounded-full" />
-              <div className="h-1.5 w-12 bg-neutral-200 rounded-full" />
+            <div className="w-[86%] h-[82px] rounded-t-xl bg-[#ffffff] border-t border-x border-[#e4e4e7]/80 p-3 flex flex-col gap-1.5 shadow-sm">
+              <div className="h-1.5 w-14 bg-[#e4e4e7] rounded-full" />
+              <div className="h-1.5 w-20 bg-[#e4e4e7] rounded-full" />
+              <div className="h-1.5 w-12 bg-[#e4e4e7] rounded-full" />
             </div>
           </div>
           <span
@@ -178,12 +251,12 @@ export function AppearanceSettings() {
                 : "border border-neutral-200/90 hover:border-neutral-300"
             )}
           >
-            <div className="h-1.5 w-24 bg-neutral-500/80 rounded-full" />
+            <div className="h-1.5 w-24 bg-[#71717a]/80 rounded-full" />
 
-            <div className="w-[86%] h-[82px] rounded-t-xl bg-white border-t border-x border-neutral-300/80 p-3 flex flex-col gap-1.5 shadow-sm">
-              <div className="h-1.5 w-14 bg-neutral-200 rounded-full" />
-              <div className="h-1.5 w-20 bg-neutral-200 rounded-full" />
-              <div className="h-1.5 w-12 bg-neutral-200 rounded-full" />
+            <div className="w-[86%] h-[82px] rounded-t-xl bg-[#1c1c1f] border-t border-x border-[#3f3f46]/80 p-3 flex flex-col gap-1.5 shadow-sm">
+              <div className="h-1.5 w-14 bg-[#3f3f46] rounded-full" />
+              <div className="h-1.5 w-20 bg-[#3f3f46] rounded-full" />
+              <div className="h-1.5 w-12 bg-[#3f3f46] rounded-full" />
             </div>
           </div>
           <span
@@ -384,8 +457,8 @@ export function AppearanceSettings() {
                 >
                   {copied ? (
                     <>
-                      <Check className="w-3.5 h-3.5 text-emerald-600" />
-                      <span className="text-emerald-600 font-semibold">已复制</span>
+                      <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span className="text-emerald-600 dark:text-emerald-400 font-semibold">已复制</span>
                     </>
                   ) : (
                     <>
@@ -404,7 +477,7 @@ export function AppearanceSettings() {
                       Aa
                     </span>
                   }
-                  options={THEME_LIST.map((t) => ({ value: t.id, label: t.name }))}
+                  options={THEME_PRESETS.map((t) => ({ value: t.id, label: t.name }))}
                 />
               </>
             ),

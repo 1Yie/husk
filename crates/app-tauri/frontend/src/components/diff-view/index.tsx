@@ -22,7 +22,7 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
   if (!diff || lines.length === 0) return null;
 
   return (
-    <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-[#fafafa] dark:bg-[#121214] overflow-hidden shadow-2xs font-mono text-[12px] leading-relaxed select-text">
+    <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 overflow-hidden shadow-2xs font-mono text-[12px] leading-relaxed select-text">
       <div
         className="w-full overflow-x-auto overflow-y-auto"
         style={{ maxHeight }}
@@ -46,7 +46,7 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
               return (
                 <div
                   key={i}
-                  className="px-3 py-0.5 my-0.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[11px] font-medium select-none"
+                  className="px-3 py-0.5 my-0.5 bg-blue-500/10 dark:bg-blue-400/10 text-blue-600 dark:text-blue-400 text-[11px] font-medium select-none"
                 >
                   <span>{l.text}</span>
                 </div>

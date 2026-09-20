@@ -26,7 +26,7 @@ import {
   FileArrowRight,
   type IconProps,
 } from "@keyline-icons/react";
-import { codexMarkdownComponents } from "./markdown-components";
+import { chatMarkdownComponents } from "./markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { prismCodePlugin } from "../../lib/syntax-highlight";
 import { ChatTurnRail, type RailMark } from "./chat-turn-rail";
@@ -63,7 +63,7 @@ const MemoStreamdown = memo(function MemoStreamdown({
       isAnimating={animating}
       plugins={{ cjk, code: prismCodePlugin as any }}
       shikiTheme={["github-dark", "github-dark"]}
-      components={codexMarkdownComponents}
+      components={chatMarkdownComponents}
       icons={streamdownIcons}
     >
       {text}
@@ -121,7 +121,7 @@ function UserTokenChip({ token }: { token: string }) {
           <div className="flex flex-col gap-1 text-left max-w-xs break-all py-0.5">
             {isImage && <AttachedImagePreview path={fullPath} />}
             <div className="flex items-center gap-1.5">
-              <FileCode className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+              <FileCode className="h-3.5 w-3.5 text-blue-400 dark:text-blue-600 shrink-0" />
               <span className="font-semibold text-neutral-100">{fileName}</span>
             </div>
             <div className="font-mono text-[11px] text-neutral-300 bg-neutral-950/70 rounded px-1.5 py-0.5 border border-neutral-700/60">
@@ -149,7 +149,7 @@ function UserTokenChip({ token }: { token: string }) {
         content={
           <div className="flex flex-col gap-1 text-left max-w-xs py-0.5">
             <div className="flex items-center gap-1.5">
-              <Terminal className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+              <Terminal className="h-3.5 w-3.5 text-violet-400 dark:text-violet-600 shrink-0" />
               <span className="font-semibold text-neutral-100">指令 /{cmdName}</span>
             </div>
             {desc && <span className="text-[11.5px] text-neutral-300">{desc}</span>}
@@ -179,7 +179,7 @@ function UserTokenChip({ token }: { token: string }) {
         content={
           <div className="flex flex-col gap-1 text-left max-w-xs py-0.5">
             <div className="flex items-center gap-1.5">
-              <Sparkles className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+              <Sparkles className="h-3.5 w-3.5 text-amber-400 dark:text-amber-600 shrink-0" />
               <span className="font-semibold text-neutral-100">技能 ${skillName}</span>
             </div>
             {args && (
@@ -203,7 +203,7 @@ function UserTokenChip({ token }: { token: string }) {
 }
 
 const userMarkdownComponents = {
-  ...codexMarkdownComponents,
+  ...chatMarkdownComponents,
   inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => {
     const text =
       typeof children === "string"
