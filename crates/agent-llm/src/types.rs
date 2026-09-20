@@ -121,6 +121,12 @@ pub struct ChatMessage {
     /// on old snapshots → no divider for those messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ts: Option<i64>,
+    /// User-attached images — staged path references, materialized into
+    /// `data:` URLs by each adapter at wire-build time. Only ever set on
+    /// `Role::User` messages and only when the active model declares
+    /// `"image"` in its `input` modalities; empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageRef>,
 }
 
 /// Wall-clock epoch millis — stamps every message at construction.
@@ -140,37 +146,43 @@ fn content_as_string<S: serde::Serializer>(
 
 impl ChatMessage {
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()) }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new() }
     }
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()) }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new() }
+    }
+    /// Attach staged image refs — only call this when the active model
+    /// declares `"image"` in its `input` modalities.
+    pub fn with_images(mut self, images: Vec<ImageRef>) -> Self {
+        self.images = images;
+        self
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()) }
+        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new() }
     }
     /// A user-facing system line the live stream emitted via
     /// `UiEvent::SystemMessage` — persisted so a reloaded view replays
     /// it exactly (vs `system()`, which is invisible internal context).
     pub fn notice(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System), ts: Some(now_ms()) }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System), ts: Some(now_ms()), images: Vec::new() }
     }
     /// Same, for a `UiEvent::Error` line — replays with the `⚠` prefix.
     pub fn notice_error(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error), ts: Some(now_ms()) }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error), ts: Some(now_ms()), images: Vec::new() }
     }
     /// A `Role::User` instruction the UI never showed (injected by the
     /// engine, e.g. the synthesis nudge) — kept for the provider,
     /// skipped on replay.
     pub fn user_hidden(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()) }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()), images: Vec::new() }
     }
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()) }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new() }
     }
     /// Failed tool result — same wire shape, plus the persisted `is_error`
     /// flag the UI replays into the red capsule state.
     pub fn tool_result_err(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None, ts: Some(now_ms()) }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None, ts: Some(now_ms()), images: Vec::new() }
     }
 }
 

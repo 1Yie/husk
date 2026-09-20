@@ -47,7 +47,8 @@ async fn main() -> anyhow::Result<()> {
     let thinking_level_map = detailed
         .as_ref()
         .and_then(|d| d.thinking_level_map.clone());
-    let context_window = detailed.and_then(|d| d.context_window);
+    let context_window = detailed.as_ref().and_then(|d| d.context_window);
+    let model_input = detailed.map(|d| d.input.clone()).unwrap_or_default();
     let cfg = SessionConfig {
         workspace_root: workspace,
         provider,
@@ -58,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
         thinking_level: None,
         thinking_level_map,
         context_window,
+        model_input,
     };
     let (mut actor, channels) = SessionActor::spawn(cfg);
     let cmd_tx = actor.command_sender();

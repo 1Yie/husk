@@ -74,6 +74,10 @@ pub struct Engine {
     next_request_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Context window for the active model — compaction triggers at 80%.
     context_window: usize,
+    /// The active model's declared input modalities (`ModelConfig.input`,
+    /// e.g. `["text", "image"]`). `"image"` gates whether user-attached
+    /// images ride the wire as real parts or degrade to path references.
+    model_input: Vec<String>,
     /// Stage 7: compaction retry-storm suppression.
     compaction_suppressor: CompactionSuppressor,
     /// Stage 9: ordered hook chain (veto/mutate before+after tools).
@@ -107,6 +111,7 @@ impl Engine {
             decision: Arc::new(std::sync::Mutex::new(None)),
             next_request_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             context_window: 256_000,
+            model_input: Vec::new(),
             compaction_suppressor: CompactionSuppressor::default(),
             hooks: crate::hooks::HookChain::new(),
             plugin_router: None,
@@ -213,6 +218,19 @@ impl Engine {
         self.model = model.into();
     }
 
+    /// Hot-swap the active model's declared input modalities
+    /// (`ModelConfig.input`) — SetModel passes the fresh list through.
+    pub fn set_model_input(&mut self, input: Vec<String>) {
+        self.model_input = input;
+    }
+
+    /// Does the active model accept image input? `"image"` in `input` —
+    /// a missing/empty list means text-only (the honest default; config
+    /// authors mark vision explicitly).
+    fn supports_images(&self) -> bool {
+        self.model_input.iter().any(|i| i.eq_ignore_ascii_case("image"))
+    }
+
     /// Drain any pending steering texts between tool calls — marks the
     /// turn `steered` for UI provenance.
     fn drain_steering(&mut self, io: &mut EngineIo, history: &mut Vec<ChatMessage>) {
@@ -240,7 +258,26 @@ impl Engine {
         user_text: String,
         hunks: &mut agent_context::HunkTracker,
     ) -> Result<TurnOutcome, String> {
-        history.push(ChatMessage::user(user_text));
+        // `<attached-image>` markers carry the composer's staged uploads —
+        // they ride the wire as real image parts when the model declares
+        // vision, else degrade to path references plus a notice so the
+        // user knows the attachment was dropped.
+        let images = extract_attached_images(&user_text);
+        let mut user_msg = ChatMessage::user(user_text);
+        if !images.is_empty() {
+            if self.supports_images() {
+                user_msg = user_msg.with_images(images);
+            } else {
+                let line = format!(
+                    "模型 {} 不支持图像输入 — 已忽略 {} 张图片",
+                    self.model,
+                    images.len()
+                );
+                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                history.push(ChatMessage::notice(line));
+            }
+        }
+        history.push(user_msg);
         self.set_state(io, AgentState::Reasoning);
 
         // ---- Stage 7: sanitize + compaction check before sampling ----
@@ -254,6 +291,7 @@ impl Engine {
             history,
             self.context_window.saturating_mul(9) / 10,
             native_tc,
+            self.supports_images(),
         );
         let est = compaction::estimate_tokens(history);
         if compaction::should_compact(est, self.context_window)
@@ -309,7 +347,16 @@ impl Engine {
                 // showed it otherwise (the composer doesn't echo), while a
                 // reloaded view rebuilt it from history. One render path.
                 let _ = io.ui_tx.try_send(UiEvent::UserPrompt(steer.clone()));
-                history.push(ChatMessage::user(format!("The user interrupted: {steer}")));
+                // Steering can carry `<attached-image>` markers too — same
+                // extraction as the turn-start path; a text-only model
+                // just keeps the path reference (no mid-turn notice spam).
+                let steer_images = extract_attached_images(&steer);
+                let mut steer_msg =
+                    ChatMessage::user(format!("The user interrupted: {steer}"));
+                if !steer_images.is_empty() && self.supports_images() {
+                    steer_msg = steer_msg.with_images(steer_images);
+                }
+                history.push(steer_msg);
             }
 
             // Budget check + sanitize before each sample pass
@@ -318,6 +365,7 @@ impl Engine {
                 history,
                 self.context_window.saturating_mul(9) / 10,
                 native_tc,
+                self.supports_images(),
             );
 
             let mut assembler = ToolCallAssembler::new();
@@ -537,6 +585,7 @@ impl Engine {
                     is_error: None,
                         notice: None,
                     ts: Some(agent_llm::types::now_ms()),
+                    images: Vec::new(),
                 });
                 self.set_state(io, AgentState::Finished);
                 let _ = io.ui_tx.try_send(UiEvent::AssistantMessage(final_text));
@@ -552,6 +601,7 @@ impl Engine {
                 is_error: None,
                         notice: None,
                 ts: Some(agent_llm::types::now_ms()),
+                images: Vec::new(),
             });
 
             // Execute each tool call.
@@ -970,6 +1020,29 @@ impl Engine {
     }
 }
 
+
+/// Pull `<attached-image path="…"/>` markers out of a prompt — the
+/// composer's image-attachment channel, mirroring `<attached-file>`.
+/// The marker itself stays in `content` (path provenance the model can
+/// act on with `read`/`bash`); the returned refs become real wire parts
+/// when the model declares `"image"` input.
+fn extract_attached_images(text: &str) -> Vec<agent_llm::types::ImageRef> {
+    const TAG: &str = "<attached-image path=\"";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(TAG) {
+        let after = &rest[start + TAG.len()..];
+        let Some(end) = after.find('"') else { break };
+        if let Some(img) =
+            agent_llm::types::ImageRef::for_path(std::path::PathBuf::from(&after[..end]))
+        {
+            out.push(img);
+        }
+        rest = &after[end..];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1020,5 +1093,15 @@ mod tests {
 
         engine.set_thinking_level(Some("off".into()));
         assert_eq!(engine.resolve_reasoning_effort(), None);
+    }
+
+    #[test]
+    fn extracts_attached_image_markers() {
+        let text = "看看这张图\n\n<attached-image path=\"/ws/.husk/attachments/cat-a1b2.png\" name=\"cat.png\"/>\n\n<attached-image path=\"/ws/.husk/attachments/doc-c3d4.txt\"/>";
+        let imgs = extract_attached_images(text);
+        assert_eq!(imgs.len(), 1); // .txt isn't an image type
+        assert_eq!(imgs[0].media_type, "image/png");
+        assert!(imgs[0].path.ends_with("cat-a1b2.png"));
+        assert!(extract_attached_images("plain text").is_empty());
     }
 }

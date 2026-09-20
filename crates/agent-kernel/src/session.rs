@@ -44,6 +44,9 @@ pub struct SessionConfig {
     /// Model's context window from config — `None` falls back to the
     /// engine's 256_000 default (compaction + usage % share the bound).
     pub context_window: Option<u64>,
+    /// Declared input modalities (`ModelConfig.input`, e.g.
+    /// `["text", "image"]`) — `"image"` gates real image parts on the wire.
+    pub model_input: Vec<String>,
 }
 
 /// One live session: owns history + engine, consumes commands, emits events.
@@ -227,6 +230,7 @@ impl SessionActor {
         engine.set_thinking_level(cfg.thinking_level.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
         engine.set_context_window(cfg.context_window.unwrap_or(256_000) as usize);
+        engine.set_model_input(cfg.model_input.clone());
         let decision_slot = engine.decision_slot();
         let permissions_slot = engine.permissions_writer();
         let thinking_slot = engine.thinking_level_shared();
@@ -610,13 +614,16 @@ impl SessionActor {
                                 self.engine.set_context_window(
                                     d.context_window.unwrap_or(256_000) as usize,
                                 );
+                                self.engine.set_model_input(d.input.clone());
                             } else {
                                 self.engine.set_thinking_level_map(None);
                                 self.engine.set_context_window(256_000);
+                                self.engine.set_model_input(Vec::new());
                             }
                         } else {
                             self.engine.set_thinking_level_map(None);
                             self.engine.set_context_window(256_000);
+                            self.engine.set_model_input(Vec::new());
                         }
                     }
                 }
@@ -703,13 +710,16 @@ impl SessionActor {
                                 self.engine.set_context_window(
                                     d.context_window.unwrap_or(256_000) as usize,
                                 );
+                                self.engine.set_model_input(d.input.clone());
                             } else {
                                 self.engine.set_thinking_level_map(None);
                                 self.engine.set_context_window(256_000);
+                                self.engine.set_model_input(Vec::new());
                             }
                         } else {
                             self.engine.set_thinking_level_map(None);
                             self.engine.set_context_window(256_000);
+                            self.engine.set_model_input(Vec::new());
                         }
                     }
                 }

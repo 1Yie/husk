@@ -399,6 +399,10 @@ impl SessionManager {
         let thinking_level_map = detailed
             .as_ref()
             .and_then(|d| d.thinking_level_map.clone());
+        let model_input = detailed
+            .as_ref()
+            .map(|d| d.input.clone())
+            .unwrap_or_default();
         let context_window = detailed.and_then(|d| d.context_window);
 
         let cfg = SessionConfig {
@@ -411,6 +415,7 @@ impl SessionManager {
             thinking_level: self.active_thinking_level.clone(),
             thinking_level_map,
             context_window,
+            model_input,
         };
 
         let (mut actor, channels) = match self.store.load_history(id) {

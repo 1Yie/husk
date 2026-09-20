@@ -199,13 +199,17 @@ export function listSkills() {
 
 /** One attached file for the composer chips — `kind` decides how the
  * prompt payload inlines it: `text` carries `content` (32KB-capped),
- * `image`/`binary` are path-only references the model can't read. */
+ * `image` rides the wire as a real image part when the model declares
+ * vision, `binary` stays a path reference. `path` is the staged copy
+ * inside `.husk/attachments/` — sandbox-visible; `data_url` is the
+ * image's inline preview (chips + user bubble). */
 export interface Attachment {
   path: string;
   name: string;
   kind: "text" | "image" | "binary";
   content?: string;
   truncated?: boolean;
+  data_url?: string;
 }
 
 /** Native multi-select file picker for the `+` attach button —

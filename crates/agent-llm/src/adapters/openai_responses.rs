@@ -91,10 +91,28 @@ impl OpenAiResponsesProvider {
             let text = m.content.clone().unwrap_or_default();
             match m.role {
                 Role::System => instructions.push(text),
-                Role::User => input.push(json!({
-                    "role": "user",
-                    "content": [{ "type": "input_text", "text": text }],
-                })),
+                Role::User => {
+                    // Vision: image refs become `input_image` parts after
+                    // the text part — materialized `data:` URLs, degrading
+                    // to a text note when the staged file is gone.
+                    let mut parts = vec![json!({ "type": "input_text", "text": text })];
+                    for img in &m.images {
+                        match img.data_url() {
+                            Some(url) => parts.push(json!({
+                                "type": "input_image",
+                                "image_url": url,
+                            })),
+                            None => parts.push(json!({
+                                "type": "input_text",
+                                "text": format!("(image unavailable: {})", img.path.display()),
+                            })),
+                        }
+                    }
+                    input.push(json!({
+                        "role": "user",
+                        "content": parts,
+                    }));
+                }
                 Role::Assistant => {
                     // An assistant message with tool_calls replays as
                     // function_call items; a plain one is a message.

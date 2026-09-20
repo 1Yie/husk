@@ -9,8 +9,8 @@
 //!   the prefix into `NOTE₁` (a dense context note) → condense `NOTE₁` +
 //!   suffix so the total fits the window again.
 //! - Sanitize pipeline runs *before* every sample (not just at compaction):
-//!   flatten tool calls, strip reasoning blocks, replace images with
-//!   placeholders, `fit_conversation_to_budget`.
+//!   flatten tool calls, gate image refs on model
+//!   modality, `fit_conversation_to_budget`.
 //! - Sticky suppression (`SUPPRESS_STICKY`, `SUPPRESS_UNTIL_SUCCESS`)
 //!   prevents compaction retry storms — after a failed compaction we don't
 //!   re-attempt on every turn.
@@ -36,7 +36,7 @@ pub fn estimate_tokens(msgs: &[ChatMessage]) -> usize {
                 .as_ref()
                 .map(|v| v.iter().map(|t| t.name.len() + t.arguments.len()).sum::<usize>())
                 .unwrap_or(0);
-            (c + tc) / 4 + 4 // +4 per-message role/formatting overhead
+            (c + tc) / 4 + 4 + m.images.len() * 1100 // +4 msg overhead; ~1100/image
         })
         .sum()
 }
@@ -61,14 +61,16 @@ pub fn should_prefire(tokens: usize, window: usize) -> bool {
 ///    result (its `tool_call_id` no longer has a matching `function_call`)
 ///    so the model loses all tool output (P1-b).
 /// 2. Strip reasoning blocks — `reasoning` deltas are transient, never sent.
-/// 3. Replace image-bearing messages with a text placeholder (vision lands
-///    in Stage 11; until then an image is a context bomb).
+/// 3. Image refs: kept verbatim when the active model declares `"image"`
+///    input; stripped when it's text-only (e.g. a mid-session downgrade) —
+///    the marker text stays as provenance.
 /// 4. `fit_conversation_to_budget` — drop oldest non-system messages until
 ///    the estimate fits `budget_tokens`.
 pub fn sanitize_for_sample(
     history: &mut Vec<ChatMessage>,
     budget_tokens: usize,
     native_tool_calls: bool,
+    keep_images: bool,
 ) {
     // (1) flatten tool calls → appended as `[call: name(args)]` text, but
     // ONLY for text-protocol providers. A native provider needs the
@@ -89,13 +91,12 @@ pub fn sanitize_for_sample(
     // (2) reasoning never persisted into ChatMessage — nothing to strip.
     // (Reasoning deltas are a separate stream; they never enter history.)
 
-    // (3) image placeholder — `content` may carry a data URI from a future
-    // vision path; replace anything that smells like one.
-    for m in history.iter_mut() {
-        if let Some(c) = &m.content {
-            if c.contains("data:image/") {
-                m.content = Some("[image attached — vision not in this build]".into());
-            }
+    // (3) images ride the `images` field now — real parts for a vision
+    // model, dropped for a text-only one (the `<attached-image>` marker
+    // in `content` keeps the path reference either way).
+    if !keep_images {
+        for m in history.iter_mut() {
+            m.images.clear();
         }
     }
 
@@ -176,6 +177,7 @@ pub fn apply(history: &mut Vec<ChatMessage>, plan: &CompactionPlan, note_text: S
         is_error: None,
                         notice: None,
         ts: None,
+            images: Vec::new(),
     };
     history.splice(0..plan.prefix_end, std::iter::once(note));
 }
@@ -240,7 +242,7 @@ mod tests {
     use super::*;
 
     fn msg(role: Role, text: &str) -> ChatMessage {
-        ChatMessage { role, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: None }
+        ChatMessage { role, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: None, images: Vec::new() }
     }
 
     #[test]
@@ -277,10 +279,11 @@ mod tests {
                 is_error: None,
                         notice: None,
                 ts: None,
+            images: Vec::new(),
             },
         ];
         // text-protocol provider → tool_calls flattened into message text.
-        sanitize_for_sample(&mut h, 100_000, /*native_tool_calls*/ false);
+        sanitize_for_sample(&mut h, 100_000, /*native_tool_calls*/ false, true);
         assert!(h[1].tool_calls.is_none());
         assert!(h[1].content.as_deref().unwrap().contains("[call: list_dir"));
 
@@ -297,8 +300,9 @@ mod tests {
             is_error: None,
                         notice: None,
             ts: None,
+            images: Vec::new(),
         }];
-        sanitize_for_sample(&mut h2, 100_000, /*native_tool_calls*/ true);
+        sanitize_for_sample(&mut h2, 100_000, /*native_tool_calls*/ true, true);
         assert!(h2[1].tool_calls.is_some(), "native tool_calls must not flatten");
         assert!(!h2[1].content.as_deref().unwrap().contains("[call:"));
     }
@@ -312,7 +316,7 @@ mod tests {
             msg(Role::Assistant, "a"),
         ];
         // Budget so only ~system + last two survive.
-        sanitize_for_sample(&mut h, 200, true);
+        sanitize_for_sample(&mut h, 200, true, true);
         assert!(h.iter().all(|m| m.role != Role::Tool));
         assert!(h[0].role == Role::System); // system never dropped
     }

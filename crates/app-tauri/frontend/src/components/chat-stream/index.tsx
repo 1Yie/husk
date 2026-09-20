@@ -29,6 +29,7 @@ import { TooltipSimple } from "@/components/ui/tooltip";
 import { prismCodePlugin } from "../../lib/syntax-highlight";
 import { ChatTurnRail, type RailMark } from "./chat-turn-rail";
 import { cn } from "@/lib/utils";
+import { readAttachment } from "../../invoke/agent/sessions";
 
 const streamdownIcons = {
   CheckIcon: Check,
@@ -209,8 +210,22 @@ const UserMemoStreamdown = memo(function UserMemoStreamdown({
 const WORKSPACE_FILE_BLOCK = /\s*`<workspace-file path="([^"]+)">`\s*```\n[\s\S]*?```\s*/g;
 const ATTACHED_FILE_BLOCK = /\s*<attached-file path="([^"]+)">\s*```[\s\S]*?```\s*/g;
 const ATTACHED_REF_BLOCK = /\s*\[attached (?:image|text|any): ([^\]]+?)(?: — [^\]]+)?\]\s*/g;
+const ATTACHED_IMAGE_RE = /\s*<attached-image path="([^"]+)"(?:\s+name="([^"]*)")?\s*\/>\s*/g;
 const SKILL_PROMPT_RE =
   /^The user invoked the `([/$][^\s`]+)` skill\. Follow its instructions exactly\.\n\n---\n[\s\S]*$/;
+
+/** `<attached-image>` markers in a user bubble → {path, name} pairs for
+ * the thumbnail row (the marker itself collapses to a `@name` chip). */
+function extractAttachedImages(text: string): { path: string; name: string }[] {
+  const out: { path: string; name: string }[] = [];
+  const re = new RegExp(ATTACHED_IMAGE_RE.source, "g");
+  for (const m of text.matchAll(re)) {
+    const path = m[1];
+    const name = m[2] || path.split("/").pop() || path;
+    out.push({ path, name });
+  }
+  return out;
+}
 
 function collapsePromptArtifacts(md: string): string {
   const skill = SKILL_PROMPT_RE.exec(md);
@@ -222,6 +237,7 @@ function collapsePromptArtifacts(md: string): string {
     .replace(WORKSPACE_FILE_BLOCK, (_m, p) => `\`@${p}\` `)
     .replace(ATTACHED_FILE_BLOCK, (_m, p) => `\`@${p}\` `)
     .replace(ATTACHED_REF_BLOCK, (_m, p) => `\`@${p}\` `)
+    .replace(ATTACHED_IMAGE_RE, (_m, p, n) => `\`@${n || p.split("/").pop()}\` `)
     .replace(/`(@[^`]+)` \((?:outside workspace|not found|binary file) — [^)]+\)/g, "`$1`")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -285,6 +301,51 @@ function EmptyGreeting() {
 function getUserPreview(userText?: string): string {
   if (!userText) return "用户提问";
   return collapsePromptArtifacts(userText).replace(/[`]/g, "").replace(/\s+/g, " ").trim();
+}
+
+/** Thumbnail row for `<attached-image>` markers in a user bubble — the
+ * staged path resolves via `read_attachment` into a `data:` preview,
+ * falling back to a plain name chip when the file can't be read. */
+function AttachedImages({ text }: { text: string }) {
+  const images = useMemo(() => extractAttachedImages(text), [text]);
+  if (images.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {images.map((img) => (
+        <AttachedImage key={img.path} path={img.path} name={img.name} />
+      ))}
+    </div>
+  );
+}
+
+function AttachedImage({ path, name }: { path: string; name: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    readAttachment(path)
+      .then((a) => {
+        if (alive && a.data_url) setSrc(a.data_url);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [path]);
+  if (!src) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-neutral-200/70 dark:bg-neutral-700/60 text-[11.5px] text-neutral-600 dark:text-neutral-300">
+        {name}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={name}
+      title={name}
+      className="max-h-56 max-w-full rounded-lg border border-neutral-200/60 dark:border-neutral-700/60 object-cover"
+    />
+  );
 }
 
 function getAssistantPreview(steps: AssistantStep[]): string {
@@ -824,6 +885,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                   id={`chat-turn-${turn.id}-user`}
                   className="bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 ms-auto flex w-fit max-w-[80%] flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]"
                 >
+                  <AttachedImages text={turn.userText} />
                   <div className="min-w-0 text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text">
                     <UserMemoStreamdown text={collapsePromptArtifacts(turn.userText)} />
                   </div>

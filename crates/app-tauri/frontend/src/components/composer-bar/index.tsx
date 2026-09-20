@@ -373,13 +373,17 @@ export function ComposerBar({
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
     // Inline attachments into the prompt — text files as fenced blocks
-    // (mirrors the kernel's `@` mention expansion), images/binaries as
-    // path references (the model can locate them, vision isn't in build).
+    // (mirrors the kernel's `@` mention expansion); images emit an
+    // `<attached-image>` marker the kernel turns into real image parts
+    // when the model declares vision (path is the staged workspace copy,
+    // so sandboxed tools can see it too); binaries stay path references.
     const blocks = attachments
       .map((a) =>
         a.kind === "text" && a.content != null
           ? `\n\n<attached-file path="${a.path}">\n\`\`\`\n${a.content}${a.truncated ? "\n… (truncated)" : ""}\n\`\`\``
-          : `\n\n[attached ${a.kind}: ${a.path}${a.kind === "image" ? " — image, not inlined" : " — binary file, not inlined"}]`,
+          : a.kind === "image"
+            ? `\n\n<attached-image path="${a.path}" name="${a.name.replace(/"/g, "")}"/>`
+            : `\n\n[attached binary: ${a.path} — binary file, not inlined]`,
       )
       .join("");
     const payload = `${trimmed}${blocks}`;
@@ -822,7 +826,13 @@ function AttachmentChips({
           className="inline-flex items-center gap-1.5 max-w-[240px] pl-1.5 pr-1 py-1 rounded-md bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200/60 dark:border-neutral-700/60 text-[11.5px] text-neutral-700 dark:text-neutral-300"
         >
           <span className="shrink-0 text-neutral-400">
-            {a.kind === "image" ? (
+            {a.kind === "image" && a.data_url ? (
+              <img
+                src={a.data_url}
+                alt={a.name}
+                className="h-4 w-4 rounded-sm object-cover"
+              />
+            ) : a.kind === "image" ? (
               <Image className="h-3.5 w-3.5" />
             ) : a.kind === "text" ? (
               <FileText className="h-3.5 w-3.5" />

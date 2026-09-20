@@ -21,7 +21,7 @@ use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider};
 use crate::sse;
-use crate::types::{ChatMessage, StreamChunk};
+use crate::types::{ChatMessage, Role, StreamChunk};
 
 /// One provider for every OpenAI-shaped backend. `api_key` is the *resolved*
 /// secret — config's `env:`/`keyring:` indirection happens in `factory`.
@@ -243,6 +243,32 @@ impl LlmProvider for GenericOpenAiProvider {
                 });
                 if let Some(obj) = v.as_object_mut() {
                     obj.remove("is_error"); obj.remove("notice"); obj.remove("ts");
+                    // Vision: a user message carrying ImageRefs becomes a
+                    // content-parts array — text part first, then one
+                    // `image_url` part per resolved file. Unresolvable refs
+                    // degrade to a text note so the model knows what was
+                    // meant to be there. `images` itself is stripped like
+                    // the other replay-only fields.
+                    if !m.images.is_empty() && matches!(m.role, Role::User) {
+                        let mut parts = vec![json!({
+                            "type": "text",
+                            "text": m.content.clone().unwrap_or_default(),
+                        })];
+                        for img in &m.images {
+                            match img.data_url() {
+                                Some(url) => parts.push(json!({
+                                    "type": "image_url",
+                                    "image_url": { "url": url },
+                                })),
+                                None => parts.push(json!({
+                                    "type": "text",
+                                    "text": format!("(image unavailable: {})", img.path.display()),
+                                })),
+                            }
+                        }
+                        obj.insert("content".into(), json!(parts));
+                    }
+                    obj.remove("images");
                 }
                 v
             }).collect::<Vec<_>>(),
