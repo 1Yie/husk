@@ -1,6 +1,6 @@
 //! `session_store` — per-workspace session persistence.
 //!
-//! Each workspace gets `~/.local/share/agent-rs/sessions/<ws_hash>/`:
+//! Each workspace gets `~/.local/share/husk/sessions/<ws_hash>/`:
 //!   - `index.json`            — session metadata (title/preview/updated_at)
 //!   - `<id>.jsonl`            — history snapshots, one `Vec<ChatMessage>` per line
 //!                             (last line = latest state; crash-safe append)
@@ -28,6 +28,19 @@ pub struct SessionMeta {
     pub preview: String,
     /// Unix seconds of the last activity.
     pub updated_at: u64,
+    /// Usage of the last completed turn — persisted so reopening a session
+    /// seeds the header meter with real numbers before the next `Usage`
+    /// event arrives (history alone can't reconstruct token counts).
+    #[serde(default)]
+    pub usage: Option<SessionUsage>,
+}
+
+/// A session's last-known token usage, persisted inside `SessionMeta`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SessionUsage {
+    pub prompt: u32,
+    pub completion: u32,
+    pub context_window: u32,
 }
 
 /// The on-disk session index for one workspace.
@@ -44,13 +57,24 @@ pub struct SessionStore {
 impl SessionStore {
     /// Open (creating) the store for a workspace root.
     pub fn open(workspace_root: &Path) -> std::io::Result<Self> {
-        let base = dirs_data()
+        let base = app_data_dir()
             .ok_or_else(|| std::io::Error::other("no data dir"))?
-            .join("agent-rs")
             .join("sessions")
             .join(workspace_key(workspace_root));
         std::fs::create_dir_all(&base)?;
         Ok(Self { dir: base })
+    }
+
+    /// Open an *existing* store without creating the directory — `None`
+    /// when this workspace has never persisted a session. Read-only
+    /// listings (the sidebar's project tree) use this so enumerating
+    /// projects doesn't materialize a store dir for every workspace the
+    /// user merely opened.
+    pub fn open_existing(workspace_root: &Path) -> Option<Self> {
+        let base = app_data_dir()?
+            .join("sessions")
+            .join(workspace_key(workspace_root));
+        base.is_dir().then_some(Self { dir: base })
     }
 
     /// Path to a session's history file.
@@ -158,6 +182,20 @@ pub fn dirs_data() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
 }
 
+/// The app's data root: `~/.local/share/husk` — renamed from `agent-rs`
+/// when the product got its name. A one-time `fs::rename` moves the whole
+/// legacy tree (sessions/memory.db/prefs) over when the new dir is absent,
+/// so existing installs keep their data.
+pub fn app_data_dir() -> Option<PathBuf> {
+    let base = dirs_data()?;
+    let dir = base.join("husk");
+    let legacy = base.join("agent-rs");
+    if !dir.exists() && legacy.is_dir() {
+        let _ = std::fs::rename(&legacy, &dir);
+    }
+    Some(dir)
+}
+
 /// Recently opened workspace entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentWorkspace {
@@ -167,7 +205,7 @@ pub struct RecentWorkspace {
 }
 
 pub fn recent_workspaces_path() -> Option<PathBuf> {
-    dirs_data().map(|d| d.join("agent-rs").join("recent_workspaces.json"))
+    app_data_dir().map(|d| d.join("recent_workspaces.json"))
 }
 
 pub fn load_recent_workspaces() -> Vec<RecentWorkspace> {
@@ -228,7 +266,7 @@ impl Default for DefaultPreferences {
 }
 
 pub fn default_preferences_path() -> Option<PathBuf> {
-    dirs_data().map(|d| d.join("agent-rs").join("default_preferences.json"))
+    app_data_dir().map(|d| d.join("default_preferences.json"))
 }
 
 pub fn load_default_preferences() -> DefaultPreferences {

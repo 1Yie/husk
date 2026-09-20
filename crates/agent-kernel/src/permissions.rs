@@ -263,7 +263,6 @@ fn is_destructive(cmd: &str) -> bool {
         let mut idx = 0;
         while idx < words.len() {
             let w = words[idx];
-            // Skip wrappers
             if w == "sudo" || w == "env" || w == "nohup" || w == "xargs" {
                 idx += 1;
                 continue;

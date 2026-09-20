@@ -14,7 +14,6 @@ use crate::ui::theme;
 pub fn view(app: &App) -> Element<'_, Message> {
     let mut header = Column::new().spacing(0).padding(8);
 
-    // App brand
     header = header.push(
         row![
             text("agent-rs")

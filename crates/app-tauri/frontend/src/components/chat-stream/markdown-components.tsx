@@ -1,18 +1,30 @@
 import React from "react";
 import { ChevronDown } from "@keyline-icons/react";
+import { renderWithTwemoji } from "@/lib/twemoji";
 
 export const codexMarkdownComponents = {
+  // Same scroll contract as the tool-output card: card shell + plain
+  // overflow-x/y-auto inner + the global 6px scrollbar — no bespoke
+  // scrollbar class, no wheel remapping.
   table: ({ children, ...props }: React.ComponentPropsWithoutRef<"table">) => (
-    <div className="my-4 w-full rounded-lg border border-neutral-200/90 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-xs overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-left text-[13px] border-collapse" {...props}>
+    <div className="my-4 w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-[#fafafa] dark:bg-[#121214] overflow-hidden shadow-2xs">
+      <div className="w-full overflow-x-auto overflow-y-auto max-h-[400px] select-text">
+        {/* `w-full` only — cells wrap, so the table fits the card and only
+            overflows (→ inner x-scroll) when a single unbreakable token is
+            wider than a column. `min-w-max` here would force every table to
+            its fully-unwrapped width, guaranteeing overflow on any chat-
+            width table. */}
+        <table className="w-full text-left text-[13px] border-collapse" {...props}>
           {children}
         </table>
       </div>
     </div>
   ),
   thead: ({ children, ...props }: React.ComponentPropsWithoutRef<"thead">) => (
-    <thead className="bg-neutral-50/90 dark:bg-neutral-800/60 border-b border-neutral-200 dark:border-neutral-700 select-none" {...props}>
+    <thead
+      className="sticky top-0 z-10 bg-neutral-50 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700 select-none"
+      {...props}
+    >
       {children}
     </thead>
   ),
@@ -21,7 +33,7 @@ export const codexMarkdownComponents = {
       className="px-4 py-2.5 text-left font-semibold text-neutral-800 dark:text-neutral-200 text-xs tracking-wider uppercase whitespace-nowrap"
       {...props}
     >
-      {children}
+      {renderWithTwemoji(children)}
     </th>
   ),
   tbody: ({ children, ...props }: React.ComponentPropsWithoutRef<"tbody">) => (
@@ -30,16 +42,19 @@ export const codexMarkdownComponents = {
     </tbody>
   ),
   tr: ({ children, ...props }: React.ComponentPropsWithoutRef<"tr">) => (
-    <tr className="hover:bg-neutral-50/70 dark:hover:bg-neutral-800/40 transition-colors" {...props}>
+    <tr
+      className="hover:bg-neutral-50/70 dark:hover:bg-neutral-800/40 transition-colors"
+      {...props}
+    >
       {children}
     </tr>
   ),
   td: ({ children, ...props }: React.ComponentPropsWithoutRef<"td">) => (
     <td
-      className="px-4 py-2.5 text-neutral-700 dark:text-neutral-300 leading-relaxed border-b border-neutral-100 dark:border-neutral-800 last:border-b-0 align-top"
+      className="px-4 py-2.5 text-neutral-700 dark:text-neutral-300 leading-relaxed border-b border-neutral-100 dark:border-neutral-800 last:border-b-0 align-top break-words"
       {...props}
     >
-      {children}
+      {renderWithTwemoji(children)}
     </td>
   ),
 
@@ -57,7 +72,7 @@ export const codexMarkdownComponents = {
       />
       {alt && (
         <figcaption className="mt-2 text-xs text-neutral-500 font-sans text-center">
-          {alt}
+          {renderWithTwemoji(alt)}
         </figcaption>
       )}
     </figure>
@@ -68,13 +83,13 @@ export const codexMarkdownComponents = {
       className="my-3 border-l-2 border-neutral-300 dark:border-neutral-600 bg-neutral-50/70 dark:bg-neutral-900/50 rounded-r-lg px-4 py-2 text-neutral-600 dark:text-neutral-400 text-[14px] italic leading-relaxed"
       {...props}
     >
-      {children}
+      {renderWithTwemoji(children)}
     </blockquote>
   ),
 
   inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => (
     <code
-      className="bg-black/[0.06] dark:bg-white/[0.1] text-neutral-800 dark:text-neutral-200 px-1.5 py-0.5 rounded text-[12.5px] font-mono border border-black/[0.08] dark:border-white/[0.1] font-medium mx-0.5 inline align-baseline"
+      className="bg-black/[0.05] dark:bg-white/[0.08] text-neutral-800 dark:text-neutral-200 px-1.5 py-[1px] rounded-[4px] text-[12px] font-mono border border-black/[0.07] dark:border-white/[0.08] font-normal mx-0.5 inline-block leading-snug align-baseline"
       {...props}
     >
       {children}
@@ -101,53 +116,77 @@ export const codexMarkdownComponents = {
       className="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 underline underline-offset-2 font-medium transition-colors cursor-pointer"
       {...props}
     >
-      {children}
+      {renderWithTwemoji(children)}
     </a>
   ),
 
   ul: ({ children, ...props }: React.ComponentPropsWithoutRef<"ul">) => (
-    <ul className="my-2 pl-5 list-disc space-y-1 text-neutral-800 dark:text-neutral-200 text-[14px] leading-relaxed" {...props}>
+    <ul
+      className="my-2 pl-5 list-disc space-y-1 text-neutral-800 dark:text-neutral-200 text-[14px] leading-relaxed"
+      {...props}
+    >
       {children}
     </ul>
   ),
   ol: ({ children, ...props }: React.ComponentPropsWithoutRef<"ol">) => (
-    <ol className="my-2 pl-5 list-decimal space-y-1 text-neutral-800 dark:text-neutral-200 text-[14px] leading-relaxed" {...props}>
+    <ol
+      className="my-2 pl-5 list-decimal space-y-1 text-neutral-800 dark:text-neutral-200 text-[14px] leading-relaxed"
+      {...props}
+    >
       {children}
     </ol>
   ),
   li: ({ children, ...props }: React.ComponentPropsWithoutRef<"li">) => (
     <li className="leading-relaxed" {...props}>
-      {children}
+      {renderWithTwemoji(children)}
     </li>
   ),
 
   h1: ({ children, ...props }: React.ComponentPropsWithoutRef<"h1">) => (
-    <h1 className="text-xl font-bold text-neutral-900 dark:text-neutral-100 mt-6 mb-3 tracking-tight border-b border-neutral-200/70 dark:border-neutral-800 pb-2 leading-tight" {...props}>
-      {children}
+    <h1
+      className="text-xl font-bold text-neutral-900 dark:text-neutral-100 mt-6 mb-3 tracking-tight border-b border-neutral-200/70 dark:border-neutral-800 pb-2 leading-tight"
+      {...props}
+    >
+      {renderWithTwemoji(children)}
     </h1>
   ),
   h2: ({ children, ...props }: React.ComponentPropsWithoutRef<"h2">) => (
-    <h2 className="text-lg font-bold text-neutral-900 dark:text-neutral-100 mt-5 mb-2.5 tracking-tight border-b border-neutral-200/50 dark:border-neutral-800 pb-1.5 leading-snug" {...props}>
-      {children}
+    <h2
+      className="text-lg font-bold text-neutral-900 dark:text-neutral-100 mt-5 mb-2.5 tracking-tight border-b border-neutral-200/50 dark:border-neutral-800 pb-1.5 leading-snug"
+      {...props}
+    >
+      {renderWithTwemoji(children)}
     </h2>
   ),
   h3: ({ children, ...props }: React.ComponentPropsWithoutRef<"h3">) => (
-    <h3 className="text-base font-semibold text-neutral-800 dark:text-neutral-200 mt-4 mb-2 tracking-tight leading-snug" {...props}>
-      {children}
+    <h3
+      className="text-base font-semibold text-neutral-800 dark:text-neutral-200 mt-4 mb-2 tracking-tight leading-snug"
+      {...props}
+    >
+      {renderWithTwemoji(children)}
     </h3>
   ),
   h4: ({ children, ...props }: React.ComponentPropsWithoutRef<"h4">) => (
-    <h4 className="text-[14px] font-semibold text-neutral-800 dark:text-neutral-200 mt-3 mb-1 tracking-tight" {...props}>
-      {children}
+    <h4
+      className="text-[14px] font-semibold text-neutral-800 dark:text-neutral-200 mt-3 mb-1 tracking-tight"
+      {...props}
+    >
+      {renderWithTwemoji(children)}
     </h4>
   ),
   p: ({ children, ...props }: React.ComponentPropsWithoutRef<"p">) => (
-    <p className="my-2 leading-relaxed text-[14px] text-neutral-800 dark:text-neutral-200" {...props}>
-      {children}
+    <p
+      className="my-2 leading-relaxed text-[14px] text-neutral-800 dark:text-neutral-200"
+      {...props}
+    >
+      {renderWithTwemoji(children)}
     </p>
   ),
   hr: (props: React.ComponentPropsWithoutRef<"hr">) => (
-    <hr className="my-6 border-0 border-t border-neutral-200/80 dark:border-neutral-800" {...props} />
+    <hr
+      className="my-6 border-0 border-t border-neutral-200/80 dark:border-neutral-800"
+      {...props}
+    />
   ),
 
   details: ({ children, ...props }: React.ComponentPropsWithoutRef<"details">) => (
@@ -155,7 +194,7 @@ export const codexMarkdownComponents = {
       className="group my-2 rounded-xl border border-neutral-200/90 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-900/40 p-2.5 transition-all text-sm leading-relaxed"
       {...props}
     >
-      {children}
+      {renderWithTwemoji(children)}
     </details>
   ),
   summary: ({ children, ...props }: React.ComponentPropsWithoutRef<"summary">) => (
@@ -164,7 +203,7 @@ export const codexMarkdownComponents = {
       {...props}
     >
       <ChevronDown className="h-3.5 w-3.5 text-neutral-400 transition-transform duration-250 ease-out group-open:rotate-0 -rotate-90 shrink-0" />
-      <span>{children}</span>
+      <span>{renderWithTwemoji(children)}</span>
     </summary>
   ),
 };

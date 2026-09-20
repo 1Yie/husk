@@ -1,9 +1,10 @@
 // Composer — floating input bar with config.toml-based model selection & Orb-driven send button.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
   ChevronDown,
+  ChevronsUpDown,
   ArrowUp,
   Square,
   FileText,
@@ -19,13 +20,17 @@ import {
   Sparkles,
   Slash,
   FileCode,
+  Image,
+  File,
+  Paperclip,
+  X,
 } from "@keyline-icons/react";
 import { Orb } from "../agent-orb";
 import { parseTodos, type TodoItem } from "../todo-view";
 import * as agent from "../../invoke/agent";
-import type { FileItem, SkillItem } from "../../invoke/agent";
-import type { SessionView } from "../../hooks/useAgent";
-import { pendingApprovalOf } from "../../hooks/useAgent";
+import type { Attachment, FileItem, SkillItem } from "../../invoke/agent";
+import type { SessionView } from "../../hooks/stream-view";
+import { pendingApprovalOf } from "../../hooks/stream-view";
 
 export function extractLatestTodos(view: SessionView): {
   items: TodoItem[];
@@ -70,42 +75,37 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, TooltipSimple } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 const PERMISSION_MODES = [
-  { value: "default",            label: "默认",     desc: "编辑与命令均需手动确认" },
-  { value: "acceptEdits",        label: "接受编辑", desc: "自动允许文件修改，终端命令仍需确认" },
-  { value: "auto",               label: "自动",     desc: "自动执行修改与常规命令，仅高危指令确认" },
-  { value: "dontAsk",            label: "不询问",   desc: "仅允许只读操作，拒绝所有修改与命令" },
-  { value: "bypassPermissions",  label: "跳过权限", desc: "完全信任，自动跳过所有确认" },
+  { value: "default", label: "默认", desc: "编辑与命令均需手动确认" },
+  { value: "acceptEdits", label: "接受编辑", desc: "自动允许文件修改，终端命令仍需确认" },
+  { value: "auto", label: "自动", desc: "自动执行修改与常规命令，仅高危指令确认" },
+  { value: "dontAsk", label: "不询问", desc: "仅允许只读操作，拒绝所有修改与命令" },
+  { value: "bypassPermissions", label: "跳过权限", desc: "完全信任，自动跳过所有确认" },
 ] as const;
 
 const THINKING_LEVELS = [
-  { value: "off",     label: "关闭思考", desc: "不使用推理计算" },
+  { value: "off", label: "关闭思考", desc: "不使用推理计算" },
   { value: "minimal", label: "极低强度", desc: "最小推理深度" },
-  { value: "low",     label: "低强度",   desc: "轻度思考分析" },
-  { value: "medium",  label: "中等思考", desc: "标准平衡思考" },
-  { value: "high",    label: "高强度",   desc: "深度推演与设计" },
-  { value: "xhigh",   label: "超高强度", desc: "超深层推演" },
-  { value: "max",     label: "最大思考", desc: "最大算力深度推演" },
+  { value: "low", label: "低强度", desc: "轻度思考分析" },
+  { value: "medium", label: "中等思考", desc: "标准平衡思考" },
+  { value: "high", label: "高强度", desc: "深度推演与设计" },
+  { value: "xhigh", label: "超高强度", desc: "超深层推演" },
+  { value: "max", label: "最大思考", desc: "最大算力深度推演" },
 ] as const;
 
 /** Tool name → icon for the approval strip. */
 function toolIcon(name: string) {
   const cls = "h-3.5 w-3.5";
-  if (name === "bash" || name === "pty" || name === "shell")
-    return <Terminal className={cls} />;
-  if (name === "fuzzy_patch" || name === "apply_patch")
-    return <GitCompare className={cls} />;
-  if (name === "write_file" || name === "fs_patch")
-    return <FileText className={cls} />;
-  if (name === "list_dir" || name === "read_dir")
-    return <FolderOpen className={cls} />;
+  if (name === "bash" || name === "pty" || name === "shell") return <Terminal className={cls} />;
+  if (name === "fuzzy_patch" || name === "apply_patch") return <GitCompare className={cls} />;
+  if (name === "write_file" || name === "fs_patch") return <FileText className={cls} />;
+  if (name === "list_dir" || name === "read_dir") return <FolderOpen className={cls} />;
   if (name === "grep" || name === "smart_read" || name === "fs_read")
     return <Search className={cls} />;
-  if (name === "todo")
-    return <ListCheck className={cls} />;
+  if (name === "todo") return <ListCheck className={cls} />;
   return <Wrench className={cls} />;
 }
 
@@ -119,13 +119,16 @@ export function ComposerBar({
   const [text, setText] = useState("");
   const [mode, setMode] = useState<string>("default");
   const [todoCollapsed, setTodoCollapsed] = useState(false);
+  // Files attached via the `+` button — chips above the textarea; their
+  // content rides inside the prompt text as fenced blocks (same channel
+  // `@` mention expansion uses, so the kernel needs no new IPC).
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
 
   const [activeModel, setActiveModel] = useState<string>("");
   const [activeProvider, setActiveProvider] = useState<string>("");
   const [models, setModels] = useState<agent.ModelItem[]>([]);
   const [activeThinkingLevel, setActiveThinkingLevel] = useState<string>("off");
 
-  // Load models and persisted preferences via kernel IPC
   const fetchModels = async () => {
     try {
       const info = await agent.getModelInfo();
@@ -153,18 +156,18 @@ export function ComposerBar({
 
   const hasReasoning = Boolean(
     currentModelObj?.reasoning ||
-      (currentModelObj?.available_levels && currentModelObj.available_levels.length > 0)
+    (currentModelObj?.available_levels && currentModelObj.available_levels.length > 0),
   );
 
   const availableLevelValues =
     currentModelObj?.available_levels && currentModelObj.available_levels.length > 0
       ? currentModelObj.available_levels
       : hasReasoning
-      ? ["off", "low", "medium", "high", "max"]
-      : [];
+        ? ["off", "low", "medium", "high", "max"]
+        : [];
 
   const effectiveThinkingLevels = THINKING_LEVELS.filter((lvl) =>
-    availableLevelValues.includes(lvl.value)
+    availableLevelValues.includes(lvl.value),
   );
 
   const currentThinkingObj = THINKING_LEVELS.find((l) => l.value === activeThinkingLevel);
@@ -223,8 +226,10 @@ export function ComposerBar({
     const trigger = m[1] as Mention["trigger"];
     const query = m[2];
     const start = caret - query.length - 1;
-    // `/` only opens the command picker at the very start of the input
-    // (mid-sentence `/` is a path separator, not a command).
+    // `@` and `$` open their pickers anywhere in the text — the kernel
+    // inlines them mid-prompt (`expand_user_tokens`). `/` only opens at
+    // the very start: mid-sentence it's a path separator, and the kernel
+    // dispatches only a *leading* `/x`.
     if (trigger === "/" && start !== 0) return null;
     return { trigger, query, start };
   };
@@ -234,41 +239,59 @@ export function ComposerBar({
     setMentionIndex(0);
   };
 
-  // Fetch candidates whenever the mention query changes.
   const mentionQuery = mention?.query;
   const mentionTrigger = mention?.trigger;
   useEffect(() => {
     if (mentionTrigger === undefined) return;
     let dead = false;
     if (mentionTrigger === "@") {
-      agent.listFiles(mentionQuery)
-        .then((r) => { if (!dead) setFiles(r); })
-        .catch(() => { if (!dead) setFiles([]); });
+      agent
+        .listFiles(mentionQuery)
+        .then((r) => {
+          if (!dead) setFiles(r);
+        })
+        .catch(() => {
+          if (!dead) setFiles([]);
+        });
     } else {
       // `/` and `$` both surface the skill list; `/` prepends built-ins.
-      agent.listSkills()
-        .then((r) => { if (!dead) setSkills(r); })
-        .catch(() => { if (!dead) setSkills([]); });
+      agent
+        .listSkills()
+        .then((r) => {
+          if (!dead) setSkills(r);
+        })
+        .catch(() => {
+          if (!dead) setSkills([]);
+        });
     }
-    return () => { dead = true; };
+    return () => {
+      dead = true;
+    };
   }, [mentionTrigger, mentionQuery]);
 
   // Static slash commands — dispatched by the kernel's CommandRegistry.
   const BUILTIN_COMMANDS = useMemo(
     () => [
-      { name: "clear",   desc: "清空会话历史" },
+      { name: "clear", desc: "清空会话历史" },
       { name: "compact", desc: "压缩上下文以释放 token" },
-      { name: "undo",    desc: "回滚上一轮的文件修改" },
-      { name: "model",   desc: "切换模型 /model <provider>/<model>" },
-      { name: "diff",    desc: "查看本轮改动的文件" },
-      { name: "skills",  desc: "列出工作区可用 skills" },
+      { name: "undo", desc: "回滚上一轮的文件修改" },
+      { name: "model", desc: "切换模型 /model <provider>/<model>" },
+      { name: "diff", desc: "查看本轮改动的文件" },
+      { name: "skills", desc: "列出工作区可用 skills" },
     ],
-    []
+    [],
   );
 
   // The rendered rows — what arrow keys + Enter act on.
   const mentionRows = useMemo(() => {
-    if (!mention) return [] as { key: string; label: string; hint: string; icon: "file" | "cmd" | "skill"; insert: string }[];
+    if (!mention)
+      return [] as {
+        key: string;
+        label: string;
+        hint: string;
+        icon: "file" | "cmd" | "skill";
+        insert: string;
+      }[];
     const q = mention.query.toLowerCase();
     if (mention.trigger === "@") {
       return files.map((f) => ({
@@ -279,16 +302,37 @@ export function ComposerBar({
         insert: `@${f.path}`,
       }));
     }
-    const rows: { key: string; label: string; hint: string; icon: "cmd" | "skill"; insert: string }[] = [];
+    const rows: {
+      key: string;
+      label: string;
+      hint: string;
+      icon: "cmd" | "skill";
+      insert: string;
+    }[] = [];
     if (mention.trigger === "/") {
       for (const c of BUILTIN_COMMANDS) {
         if (q && !c.name.startsWith(q)) continue;
-        rows.push({ key: `/${c.name}`, label: `/${c.name}`, hint: c.desc, icon: "cmd", insert: `/${c.name}` });
+        rows.push({
+          key: `/${c.name}`,
+          label: `/${c.name}`,
+          hint: c.desc,
+          icon: "cmd",
+          insert: `/${c.name}`,
+        });
       }
     }
     for (const s of skills) {
       if (q && !s.name.toLowerCase().includes(q)) continue;
-      rows.push({ key: `$${s.name}`, label: `$${s.name}`, hint: s.description || s.path, icon: "skill", insert: `/${s.name}` });
+      rows.push({
+        key: `$${s.name}`,
+        label: `$${s.name}`,
+        hint: s.description || s.path,
+        icon: "skill",
+        // `$`-triggered picks must insert the `$` token — a `/name` typed
+        // mid-text is just a literal (the kernel only dispatches a
+        // *leading* `/x`), while `$name` expands anywhere.
+        insert: mention.trigger === "$" ? `$${s.name}` : `/${s.name}`,
+      });
     }
     return rows;
   }, [mention, files, skills, BUILTIN_COMMANDS]);
@@ -300,7 +344,6 @@ export function ComposerBar({
     const next = text.slice(0, mention.start) + row.insert + " " + text.slice(caret);
     setText(next);
     setMention(null);
-    // Restore focus + move caret to just past the inserted token.
     requestAnimationFrame(() => {
       el?.focus();
       const pos = mention.start + row.insert.length + 1;
@@ -310,13 +353,41 @@ export function ComposerBar({
 
   const streaming = view.streaming;
 
+  const pick = async (kind: "image" | "text" | "any") => {
+    try {
+      const paths = await agent.pickAttachments(kind);
+      for (const p of paths) {
+        const a = await agent.readAttachment(p).catch(() => null);
+        if (a) {
+          setAttachments((prev) =>
+            prev.some((x) => x.path === a.path) ? prev : [...prev, a],
+          );
+        }
+      }
+    } catch (e) {
+      console.error("pick attachment failed:", e);
+    }
+  };
+
   const submit = async () => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && attachments.length === 0) return;
+    // Inline attachments into the prompt — text files as fenced blocks
+    // (mirrors the kernel's `@` mention expansion), images/binaries as
+    // path references (the model can locate them, vision isn't in build).
+    const blocks = attachments
+      .map((a) =>
+        a.kind === "text" && a.content != null
+          ? `\n\n<attached-file path="${a.path}">\n\`\`\`\n${a.content}${a.truncated ? "\n… (truncated)" : ""}\n\`\`\``
+          : `\n\n[attached ${a.kind}: ${a.path}${a.kind === "image" ? " — image, not inlined" : " — binary file, not inlined"}]`,
+      )
+      .join("");
+    const payload = `${trimmed}${blocks}`;
     setText("");
+    setAttachments([]);
     try {
-      if (streaming) await agent.steer(trimmed);
-      else await agent.sendPrompt(trimmed);
+      if (streaming) await agent.steer(payload);
+      else await agent.sendPrompt(payload);
     } catch (e) {
       console.error("agent_cmd failed:", e);
       setText(trimmed);
@@ -358,11 +429,7 @@ export function ComposerBar({
           pending.toolName === "apply_patch" ||
           pending.toolName === "write_file" ||
           pending.toolName === "fs_patch";
-        if (
-          m === "bypassPermissions" ||
-          m === "auto" ||
-          (m === "acceptEdits" && isFileTool)
-        ) {
+        if (m === "bypassPermissions" || m === "auto" || (m === "acceptEdits" && isFileTool)) {
           await decide(true);
         }
       }
@@ -371,124 +438,180 @@ export function ComposerBar({
     }
   };
 
-  const modeLabel =
-    PERMISSION_MODES.find((m) => m.value === mode)?.label ?? "默认";
+  const modeLabel = PERMISSION_MODES.find((m) => m.value === mode)?.label ?? "默认";
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="w-full flex justify-center px-4 pb-6 select-none">
-        {pending || hasActiveTodos ? (
-          /* Outer container with attached banner: Approval (Priority 1) or Active Todo (Priority 2) */
-          <div className="max-w-3xl w-full bg-[#f4f4f6] dark:bg-neutral-900 rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_4px_20px_rgba(0,0,0,0.04)]">
-            {pending ? (
-              /* Priority 1: Permission approval strip */
-              <div className="flex items-center gap-2 px-3 pt-0.5 text-xs text-neutral-600 dark:text-neutral-400 font-medium select-none">
-                <span className="text-neutral-500 shrink-0 flex items-center">
-                  {toolIcon(pending.toolName)}
-                </span>
-                <span className="shrink-0 text-neutral-800 dark:text-neutral-200 font-medium">
-                  允许执行
-                </span>
-                <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-300 truncate min-w-0 flex-1 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] px-2 py-0.5 rounded">
-                  {pending.args || pending.toolName}
-                </span>
-                <Button
-                  size="sm"
-                  className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
-                  onClick={() => void decide(true)}
-                >
-                  允许
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="shrink-0 h-6 px-2.5 text-[11px] border-neutral-300 text-neutral-600 hover:bg-neutral-200 cursor-pointer"
-                  onClick={() => void decide(false)}
-                >
-                  拒绝
-                </Button>
-              </div>
-            ) : (
-              /* Attached Todo List Strip */
-              <div className="flex flex-col gap-1.5 px-3 pt-0.5">
-                <div className="flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400 font-medium select-none">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <ListCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                    <span className="shrink-0 text-neutral-800 dark:text-neutral-200 font-medium text-xs">
-                      任务清单
-                    </span>
-                    <div className="w-16 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden shrink-0">
-                      <div
-                        className="h-full bg-emerald-500 transition-all duration-300 rounded-full"
-                        style={{
-                          width: `${Math.round((latestTodos!.doneCount / latestTodos!.totalCount) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                    <span className="text-[11px] font-mono text-neutral-500 dark:text-neutral-400 shrink-0">
-                      {latestTodos!.doneCount}/{latestTodos!.totalCount} (
-                      {Math.round((latestTodos!.doneCount / latestTodos!.totalCount) * 100)}%)
-                    </span>
-                  </div>
-
+      {/* Since the native right-side scrollbar was removed, we use symmetric
+          padding so the floating composer card is perfectly horizontally centered
+          with the conversation stream. */}
+      <div className="w-full px-4 pb-6 select-none pointer-events-none">
+        <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
+          {pending || hasActiveTodos ? (
+            /* Outer container with attached banner: Approval (Priority 1) or Active Todo (Priority 2) */
+            <div className="w-full bg-[#f4f4f6] dark:bg-neutral-900 rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
+              {pending ? (
+                /* Priority 1: Permission approval strip */
+                <div className="flex items-center gap-2 px-3 pt-0.5 text-xs text-neutral-600 dark:text-neutral-400 font-medium select-none">
+                  <span className="text-neutral-500 shrink-0 flex items-center">
+                    {toolIcon(pending.toolName)}
+                  </span>
+                  <span className="shrink-0 text-neutral-800 dark:text-neutral-200 font-medium">
+                    允许执行
+                  </span>
+                  <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-300 truncate min-w-0 flex-1 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] px-2 py-0.5 rounded">
+                    {pending.args || pending.toolName}
+                  </span>
                   <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => setTodoCollapsed((prev) => !prev)}
-                    className="h-6 w-6 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
-                    title={todoCollapsed ? "展开任务列表" : "折叠任务列表"}
+                    size="sm"
+                    className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                    onClick={() => void decide(true)}
                   >
-                    <ChevronDown
-                      className={cn(
-                        "h-3.5 w-3.5 transition-transform duration-250 ease-out",
-                        todoCollapsed ? "-rotate-90" : "rotate-0"
-                      )}
-                    />
+                    允许
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 h-6 px-2.5 text-[11px] border-neutral-300 text-neutral-600 hover:bg-neutral-200 cursor-pointer"
+                    onClick={() => void decide(false)}
+                  >
+                    拒绝
                   </Button>
                 </div>
-
-                <div
-                  className="grid transition-[grid-template-rows,opacity] duration-250 ease-out w-full"
-                  style={{
-                    gridTemplateRows: todoCollapsed ? "0fr" : "1fr",
-                    opacity: todoCollapsed ? 0 : 1,
-                  }}
-                >
-                  <div className="min-h-0 overflow-hidden w-full">
-                    <div className="max-h-[140px] overflow-y-auto flex flex-col gap-1 pt-1 pb-1">
-                      {latestTodos!.items.map((item) => (
+              ) : (
+                /* Attached Todo List Strip */
+                <div className="flex flex-col gap-1.5 px-3 pt-0.5">
+                  <div className="flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400 font-medium select-none">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <ListCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span className="shrink-0 text-neutral-800 dark:text-neutral-200 font-medium text-xs">
+                        任务清单
+                      </span>
+                      <div className="w-16 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden shrink-0">
                         <div
-                          key={item.id}
+                          className="h-full bg-emerald-500 transition-all duration-300 rounded-full"
+                          style={{
+                            width: `${Math.round((latestTodos!.doneCount / latestTodos!.totalCount) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <span className="text-[11px] font-mono text-neutral-500 dark:text-neutral-400 shrink-0">
+                        {latestTodos!.doneCount}/{latestTodos!.totalCount} (
+                        {Math.round((latestTodos!.doneCount / latestTodos!.totalCount) * 100)}%)
+                      </span>
+                    </div>
+
+                    <TooltipSimple content={todoCollapsed ? "展开任务列表" : "折叠任务列表"} side="top">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => setTodoCollapsed((prev) => !prev)}
+                        className="h-6 w-6 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
+                      >
+                        <ChevronDown
                           className={cn(
-                            "flex items-start gap-2 text-xs py-0.5 px-1 rounded",
-                            item.done
-                              ? "text-neutral-400 dark:text-neutral-500 line-through"
-                              : "text-neutral-700 dark:text-neutral-300"
+                            "h-3.5 w-3.5 transition-transform duration-250 ease-out",
+                            todoCollapsed ? "-rotate-90" : "rotate-0",
                           )}
-                        >
-                          <span className="shrink-0 mt-0.5">
-                            {item.done ? (
-                              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
-                                <Check className="h-2 w-2 stroke-[3]" />
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 dark:border-neutral-600" />
+                        />
+                      </Button>
+                    </TooltipSimple>
+                  </div>
+
+                  <div
+                    className="grid transition-[grid-template-rows,opacity] duration-250 ease-out w-full"
+                    style={{
+                      gridTemplateRows: todoCollapsed ? "0fr" : "1fr",
+                      opacity: todoCollapsed ? 0 : 1,
+                    }}
+                  >
+                    <div className="min-h-0 overflow-hidden w-full">
+                      <div className="max-h-[140px] overflow-y-auto flex flex-col gap-1 pt-1 pb-1">
+                        {latestTodos!.items.map((item) => (
+                          <div
+                            key={item.id}
+                            className={cn(
+                              "group flex items-center gap-2 text-xs py-0.5 px-1 rounded transition-colors",
+                              item.done
+                                ? "text-neutral-400 dark:text-neutral-500"
+                                : "text-neutral-700 dark:text-neutral-300 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]",
                             )}
-                          </span>
-                          <span className="font-mono text-[10.5px] text-neutral-400 shrink-0">
-                            #{item.id}
-                          </span>
-                          <span className="truncate flex-1 min-w-0">{item.text}</span>
-                        </div>
-                      ))}
+                          >
+                            <span className="flex h-4 w-3.5 items-center justify-center shrink-0">
+                              {item.done ? (
+                                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                                  <Check className="h-2 w-2 stroke-[3]" />
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 dark:border-neutral-600 group-hover:border-neutral-400 dark:group-hover:border-neutral-500 transition-colors" />
+                              )}
+                            </span>
+                            <span className="font-mono text-[10.5px] text-neutral-400 dark:text-neutral-500 shrink-0 select-none">
+                              #{item.id}
+                            </span>
+                            <span className={cn("truncate flex-1 min-w-0", item.done && "line-through opacity-75")}>
+                              {item.text}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Inner white input card */}
-            <div className="bg-white dark:bg-neutral-950 border border-[#e4e4e7] dark:border-neutral-800 rounded-[18px] p-3 flex flex-col gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.02)]">
+              <div className="bg-white dark:bg-neutral-950 border border-[#e4e4e7] dark:border-neutral-800 rounded-[18px] p-3 flex flex-col gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.02)]">
+                <AttachmentChips
+                  items={attachments}
+                  onRemove={(path) =>
+                    setAttachments((prev) => prev.filter((a) => a.path !== path))
+                  }
+                />
+                <ComposerTextarea
+                  value={text}
+                  onChange={setText}
+                  onSubmit={() => void submit()}
+                  streaming={streaming}
+                  mention={mention}
+                  mentionIndex={mentionIndex}
+                  setMentionIndex={setMentionIndex}
+                  mentionRows={mentionRows}
+                  onRefreshMention={refreshMention}
+                  onAcceptMention={acceptMention}
+                  onDismissMention={() => setMention(null)}
+                />
+
+                <ComposerToolbar
+                  modeLabel={modeLabel}
+                  mode={mode}
+                  switchMode={switchMode}
+                  activeModel={activeModel}
+                  activeProvider={activeProvider}
+                  models={models}
+                  onSelectModel={handleSelectModel}
+                  hasReasoning={hasReasoning}
+                  activeThinkingLevel={activeThinkingLevel}
+                  currentThinkingLabel={currentThinkingLabel}
+                  effectiveThinkingLevels={effectiveThinkingLevels}
+                  onSelectThinkingLevel={handleSelectThinkingLevel}
+                  streaming={streaming}
+                  text={text}
+                  hasAttachments={attachments.length > 0}
+                  onPick={(kind) => void pick(kind)}
+                  submit={submit}
+                  cancel={cancel}
+                />
+              </div>
+            </div>
+          ) : (
+            /* Normal — single white card when no approval and no active todos. */
+            <div className="w-full bg-white dark:bg-neutral-950 border border-[#e4e4e7] dark:border-neutral-800 rounded-[22px] shadow-[0_2px_12px_rgba(0,0,0,0.025)] hover:border-neutral-300 dark:hover:border-neutral-700 transition-all p-3 flex flex-col gap-2">
+              <AttachmentChips
+                items={attachments}
+                onRemove={(path) =>
+                  setAttachments((prev) => prev.filter((a) => a.path !== path))
+                }
+              />
               <ComposerTextarea
                 value={text}
                 onChange={setText}
@@ -518,48 +641,14 @@ export function ComposerBar({
                 onSelectThinkingLevel={handleSelectThinkingLevel}
                 streaming={streaming}
                 text={text}
+                hasAttachments={attachments.length > 0}
+                onPick={(kind) => void pick(kind)}
                 submit={submit}
                 cancel={cancel}
               />
             </div>
-          </div>
-        ) : (
-          /* Normal — single white card when no approval and no active todos. */
-          <div className="max-w-3xl w-full bg-white dark:bg-neutral-950 border border-[#e4e4e7] dark:border-neutral-800 rounded-[22px] shadow-[0_4px_20px_rgba(0,0,0,0.04)] hover:border-neutral-300 dark:hover:border-neutral-700 transition-all p-3 flex flex-col gap-2">
-            <ComposerTextarea
-              value={text}
-              onChange={setText}
-              onSubmit={() => void submit()}
-              streaming={streaming}
-              mention={mention}
-              mentionIndex={mentionIndex}
-              setMentionIndex={setMentionIndex}
-              mentionRows={mentionRows}
-              onRefreshMention={refreshMention}
-              onAcceptMention={acceptMention}
-              onDismissMention={() => setMention(null)}
-            />
-
-            <ComposerToolbar
-              modeLabel={modeLabel}
-              mode={mode}
-              switchMode={switchMode}
-              activeModel={activeModel}
-              activeProvider={activeProvider}
-              models={models}
-              onSelectModel={handleSelectModel}
-              hasReasoning={hasReasoning}
-              activeThinkingLevel={activeThinkingLevel}
-              currentThinkingLabel={currentThinkingLabel}
-              effectiveThinkingLevels={effectiveThinkingLevels}
-              onSelectThinkingLevel={handleSelectThinkingLevel}
-              streaming={streaming}
-              text={text}
-              submit={submit}
-              cancel={cancel}
-            />
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </TooltipProvider>
   );
@@ -573,7 +662,13 @@ function MentionPopup({
   active,
   onPick,
 }: {
-  rows: { key: string; label: string; hint: string; icon: "file" | "cmd" | "skill"; insert: string }[];
+  rows: {
+    key: string;
+    label: string;
+    hint: string;
+    icon: "file" | "cmd" | "skill";
+    insert: string;
+  }[];
   active: number;
   onPick: (row: { insert: string }) => void;
 }) {
@@ -593,43 +688,50 @@ function MentionPopup({
 
   if (rows.length === 0) {
     return (
-      <div className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 bg-white dark:bg-neutral-900 shadow-[0_8px_30px_rgba(0,0,0,0.10)] px-3 py-2.5 text-xs text-neutral-400">
+      <div className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 bg-white dark:bg-neutral-900 shadow-popup px-3 py-2.5 text-xs text-neutral-400">
         无匹配项
       </div>
     );
   }
   return (
     <div
-      className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 bg-white dark:bg-neutral-900 shadow-[0_8px_30px_rgba(0,0,0,0.10)] overflow-hidden"
+      className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 bg-white dark:bg-neutral-900 shadow-popup overflow-hidden"
       role="listbox"
     >
       <div ref={listRef} className="max-h-64 overflow-y-auto">
         {rows.map((r, i) => (
-        <button
-          key={r.key}
-          type="button"
-          role="option"
-          aria-selected={i === active}
-          onMouseDown={(e) => { e.preventDefault(); onPick(r); }}
-          className={cn(
-            "w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12.5px] transition-colors",
-            i === active
-              ? "bg-neutral-100 dark:bg-neutral-800"
-              : "hover:bg-neutral-50 dark:hover:bg-neutral-800/60"
-          )}
-        >
-          <span className="shrink-0 text-neutral-400">
-            {r.icon === "file" ? <FileCode className="h-3.5 w-3.5" />
-             : r.icon === "skill" ? <Sparkles className="h-3.5 w-3.5" />
-             : <Slash className="h-3.5 w-3.5" />}
-          </span>
-          <span className="font-mono font-medium text-neutral-800 dark:text-neutral-200 shrink-0">
-            {r.label}
-          </span>
-          <span className="truncate text-[11px] text-neutral-400 dark:text-neutral-500">
-            {r.hint}
-          </span>
-        </button>
+          <button
+            key={r.key}
+            type="button"
+            role="option"
+            aria-selected={i === active}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onPick(r);
+            }}
+            className={cn(
+              "w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12.5px] transition-colors",
+              i === active
+                ? "bg-neutral-100 dark:bg-neutral-800"
+                : "hover:bg-neutral-50 dark:hover:bg-neutral-800/60",
+            )}
+          >
+            <span className="shrink-0 text-neutral-400">
+              {r.icon === "file" ? (
+                <FileCode className="h-3.5 w-3.5" />
+              ) : r.icon === "skill" ? (
+                <Sparkles className="h-3.5 w-3.5" />
+              ) : (
+                <Terminal className="h-3.5 w-3.5" />
+              )}
+            </span>
+            <span className="font-mono font-medium text-neutral-800 dark:text-neutral-200 shrink-0">
+              {r.label}
+            </span>
+            <span className="truncate text-[11px] text-neutral-400 dark:text-neutral-500">
+              {r.hint}
+            </span>
+          </button>
         ))}
       </div>
     </div>
@@ -646,8 +748,9 @@ const TOKEN_CHIP_CLS = {
 } as const;
 
 /** Render composer text with `@file`/`/cmd`/`$skill` tokens as chips.
- * Mirrors the kernel dispatch rules: `@` tokens anywhere (whitespace/start
- * bounded), `/` and `$` only at position 0 — mid-text they stay literal. */
+ * Mirrors the kernel's `expand_user_tokens` rules: `@` and `$` tokens
+ * anywhere (whitespace/start bounded — mid-text `$name` inlines the
+ * skill body), `/` only at position 0 where it's a real command. */
 function highlightComposerTokens(text: string) {
   const nodes: (string | JSX.Element)[] = [];
   // `\S+` tokens — the kernel's `@`/`/`/`$` tokens run to the next
@@ -662,10 +765,13 @@ function highlightComposerTokens(text: string) {
     const token = m[0];
     const ch = token[0];
     const start = m.index;
-    if (ch === "@") {
-      // `a@b.com` stays literal — needs a whitespace/start boundary,
-      // or a preceding `@` (the kernel drops `@@` and re-scans `@x`).
-      if (start > 0 && !/\s/.test(text[start - 1]) && text[start - 1] !== "@") continue;
+    if (ch === "@" || ch === "$") {
+      // `a@b.com` / `x$HOME` stay literal — need a whitespace/start
+      // boundary, or a doubled trigger the kernel re-scans (`@@`, `$$`).
+      if (start > 0 && !/\s/.test(text[start - 1]) && text[start - 1] !== ch)
+        continue;
+      // `$5`/`$(x)` can't be skill names — the kernel skips the lookup.
+      if (ch === "$" && !/^[A-Za-z_]/.test(token.slice(1))) continue;
     } else if (start !== 0) {
       continue;
     }
@@ -675,12 +781,55 @@ function highlightComposerTokens(text: string) {
     nodes.push(
       <span key={key++} className={TOKEN_CHIP_CLS[kind]}>
         {token}
-      </span>
+      </span>,
     );
     last = start + token.length;
   }
   nodes.push(text.slice(last));
   return nodes;
+}
+
+/** Attached-file chips above the textarea — icon by kind, ✕ removes.
+ * Content itself never enters the textarea; it's inlined into the
+ * prompt at submit time. */
+function AttachmentChips({
+  items,
+  onRemove,
+}: {
+  items: Attachment[];
+  onRemove: (path: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 pb-1">
+      {items.map((a) => (
+        <span
+          key={a.path}
+          title={a.path}
+          className="inline-flex items-center gap-1.5 max-w-[240px] pl-1.5 pr-1 py-1 rounded-md bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200/60 dark:border-neutral-700/60 text-[11.5px] text-neutral-700 dark:text-neutral-300"
+        >
+          <span className="shrink-0 text-neutral-400">
+            {a.kind === "image" ? (
+              <Image className="h-3.5 w-3.5" />
+            ) : a.kind === "text" ? (
+              <FileText className="h-3.5 w-3.5" />
+            ) : (
+              <File className="h-3.5 w-3.5" />
+            )}
+          </span>
+          <span className="truncate">{a.name}</span>
+          <button
+            type="button"
+            onClick={() => onRemove(a.path)}
+            className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
+            aria-label={`移除 ${a.name}`}
+          >
+            <X className="h-2.5 w-2.5" />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 /** Textarea + mention popup — owns the `@`/`/`/`$` detection and keyboard
@@ -706,18 +855,40 @@ function ComposerTextarea({
   mention: { trigger: "@" | "/" | "$"; query: string; start: number } | null;
   mentionIndex: number;
   setMentionIndex: (i: number) => void;
-  mentionRows: { key: string; label: string; hint: string; icon: "file" | "cmd" | "skill"; insert: string }[];
+  mentionRows: {
+    key: string;
+    label: string;
+    hint: string;
+    icon: "file" | "cmd" | "skill";
+    insert: string;
+  }[];
   onRefreshMention: (value: string, caret: number) => void;
   onAcceptMention: (row: { insert: string }) => void;
   onDismissMention: () => void;
 }) {
   const mirrorRef = useRef<HTMLDivElement | null>(null);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
   const open = mention !== null;
+
+  // Auto-grow — the textarea starts one line tall and stretches with
+  // content up to 180px, then scrolls. The mirror is `absolute inset-0`
+  // on the same relative wrapper, so it follows the height for free;
+  // scroll sync still rides `onScroll` below.
+  const MAX_HEIGHT = 180;
+  useLayoutEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    const next = Math.min(el.scrollHeight, MAX_HEIGHT);
+    el.style.height = `${Math.max(next, 42)}px`;
+    el.style.overflowY = el.scrollHeight > MAX_HEIGHT ? "auto" : "hidden";
+    // Mirror must track the new top scroll position after the resize.
+    if (mirrorRef.current) mirrorRef.current.scrollTop = el.scrollTop;
+  }, [value]);
+
   return (
     <div className="relative">
-      {open && (
-        <MentionPopup rows={mentionRows} active={mentionIndex} onPick={onAcceptMention} />
-      )}
+      {open && <MentionPopup rows={mentionRows} active={mentionIndex} onPick={onAcceptMention} />}
       {/* Mirror layer — paints the token chips under the transparent-text
           textarea. Its box metrics (padding/font/line-height) must track
           the Textarea's exactly or the chips drift off the glyphs. */}
@@ -730,6 +901,7 @@ function ComposerTextarea({
         {"\u200B"}
       </div>
       <Textarea
+        ref={taRef}
         data-composer
         value={value}
         onChange={(e) => {
@@ -775,9 +947,7 @@ function ComposerTextarea({
           }
         }}
         placeholder={
-          streaming
-            ? "插入指示引导生成 (Steer)…"
-            : "输入消息… @ 引用文件 · / 命令 · $ 技能"
+          streaming ? "插入指示引导生成 (Steer)…" : "输入消息… @ 引用文件 · / 命令 · $ 技能"
         }
         rows={1}
         className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent text-transparent caret-neutral-800 dark:caret-neutral-200 selection:bg-neutral-300/70 dark:selection:bg-neutral-600/70"
@@ -801,6 +971,8 @@ function ComposerToolbar({
   onSelectThinkingLevel,
   streaming,
   text,
+  hasAttachments,
+  onPick,
   submit,
   cancel,
 }: {
@@ -818,29 +990,53 @@ function ComposerToolbar({
   onSelectThinkingLevel: (level: string) => Promise<void>;
   streaming: boolean;
   text: string;
+  hasAttachments: boolean;
+  onPick: (kind: "image" | "text" | "any") => void;
   submit: () => Promise<void>;
   cancel: () => Promise<void>;
 }) {
-  const canSubmit = text.trim().length > 0;
+  const canSubmit = text.trim().length > 0 || hasAttachments;
 
   return (
     <div className="flex items-center justify-between pt-1">
-      {/* Left toolbar: attachment + permission-mode dropdown */}
       <div className="flex items-center gap-1.5">
-        <Tooltip>
-          <TooltipTrigger asChild>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
               size="icon-sm"
+              aria-label="添加附件"
               className="w-7 h-7 rounded-full text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800"
             >
               <Plus className="h-4 w-4" />
             </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">添加附件</TooltipContent>
-        </Tooltip>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" className="w-44">
+            <DropdownMenuItem
+              onClick={() => onPick("image")}
+              className="flex items-center gap-2 text-xs py-2 cursor-pointer"
+            >
+              <Image className="h-3.5 w-3.5 text-neutral-500" />
+              图片
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => onPick("text")}
+              className="flex items-center gap-2 text-xs py-2 cursor-pointer"
+            >
+              <FileText className="h-3.5 w-3.5 text-neutral-500" />
+              文本文件
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => onPick("any")}
+              className="flex items-center gap-2 text-xs py-2 cursor-pointer"
+            >
+              <Paperclip className="h-3.5 w-3.5 text-neutral-500" />
+              其他文件
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
-        <DropdownMenu modal={false}>
+        <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               aria-label="权限模式"
@@ -848,11 +1044,11 @@ function ComposerToolbar({
             >
               <ShieldCheck className="h-3.5 w-3.5 text-neutral-500" />
               <span>{modeLabel}</span>
-              <ChevronDown className="h-3 w-3 text-neutral-400" />
+              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" side="top" className="w-64 p-1.5">
-            <DropdownMenuLabel className="text-[11px] text-neutral-400 font-normal px-2 py-1">
+          <DropdownMenuContent align="start" side="top" className="w-64">
+            <DropdownMenuLabel className="text-xs text-neutral-500 dark:text-neutral-400 font-normal">
               权限模式
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -863,7 +1059,7 @@ function ComposerToolbar({
                   <DropdownMenuItem
                     key={m.value}
                     onClick={() => void switchMode(m.value)}
-                    className="flex flex-col items-start py-2 px-2.5 cursor-pointer rounded-lg gap-0.5"
+                    className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
                   >
                     <div className="flex items-center justify-between w-full">
                       <span className="font-medium text-xs text-neutral-800 dark:text-neutral-200">
@@ -881,9 +1077,8 @@ function ComposerToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {/* Thinking Level Selector (only shown when active model supports reasoning) */}
         {hasReasoning && effectiveThinkingLevels.length > 0 && (
-          <DropdownMenu modal={false}>
+          <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 aria-label={`思考推理强度: ${currentThinkingLabel}`}
@@ -894,17 +1089,17 @@ function ComposerToolbar({
                     "h-3.5 w-3.5 shrink-0",
                     activeThinkingLevel === "off"
                       ? "text-neutral-400 dark:text-neutral-500"
-                      : "text-purple-600 dark:text-purple-400"
+                      : "text-purple-600 dark:text-purple-400",
                   )}
                 />
                 <span className="truncate max-w-[90px]">
                   {activeThinkingLevel === "off" ? "思考关闭" : `思考: ${currentThinkingLabel}`}
                 </span>
-                <ChevronDown className="h-3 w-3 text-neutral-400 shrink-0" />
+                <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="top" className="w-48">
-              <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+              <DropdownMenuLabel className="text-xs text-neutral-500 dark:text-neutral-400 font-normal">
                 思考推理强度
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
@@ -937,30 +1132,26 @@ function ComposerToolbar({
         )}
       </div>
 
-      {/* Right: real model selection from config.toml + Orb send button */}
       <div className="flex items-center gap-2">
-        {/* Real Model Selector Dropdown — STRICTLY from config.toml */}
-        <DropdownMenu modal={false}>
+        <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               aria-label={`当前模型: ${activeModel || "未选择"} (${activeProvider})`}
               className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors select-none cursor-pointer"
             >
-              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block shrink-0" />
               <span className="truncate max-w-[140px] font-mono text-[11.5px]">
                 {activeModel || "选择模型"}
               </span>
-              <ChevronDown className="h-3 w-3 text-neutral-400 shrink-0" />
+              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
             </button>
           </DropdownMenuTrigger>
 
           <DropdownMenuContent align="end" side="top" className="w-56">
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+            <DropdownMenuLabel className="text-xs text-neutral-500 dark:text-neutral-400 font-normal">
               模型
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
 
-            {/* List models strictly defined in config.toml */}
             {models.length > 0 ? (
               <DropdownMenuGroup>
                 {models.map((item) => {
@@ -975,9 +1166,7 @@ function ComposerToolbar({
                         <span className="font-mono font-medium truncate text-neutral-900 dark:text-neutral-100">
                           {item.model}
                         </span>
-                        <span className="text-[10px] text-neutral-400">
-                          {item.provider}
-                        </span>
+                        <span className="text-[10px] text-neutral-400">{item.provider}</span>
                       </div>
                       {active && <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
                     </DropdownMenuItem>
@@ -985,14 +1174,11 @@ function ComposerToolbar({
                 })}
               </DropdownMenuGroup>
             ) : (
-              <div className="px-3 py-3 text-xs text-neutral-400 text-center">
-                未检测到模型
-              </div>
+              <div className="px-3 py-3 text-xs text-neutral-400 text-center">未检测到模型</div>
             )}
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {/* Send / Stop Button with Orb Loading & Disabled Gray State */}
         {streaming ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1007,9 +1193,7 @@ function ComposerToolbar({
                   size={16}
                   className="text-neutral-800 dark:text-neutral-200 group-hover:opacity-0 transition-opacity duration-150"
                 />
-                <Square
-                  className="h-2.5 w-2.5 fill-neutral-800 dark:fill-neutral-200 text-neutral-800 dark:text-neutral-200 absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                />
+                <Square className="h-2.5 w-2.5 fill-neutral-800 dark:fill-neutral-200 text-neutral-800 dark:text-neutral-200 absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="top">中断当前回复</TooltipContent>

@@ -10,6 +10,26 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How a persisted message replays in the UI. On `Role::System` entries,
+/// `Some` marks a line the live stream actually showed (`SystemMessage` /
+/// `Error` events) while `None` is internal context (system prompt,
+/// compaction note, hook injection) — hidden. `Hidden` marks a message
+/// the provider must see but the UI never rendered (injected
+/// instructions) — without it a reloaded view invents a user bubble the
+/// user never typed. Adapters strip this before the wire like
+/// [`ChatMessage::is_error`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    /// Plain system line — e.g. "已被用户中断", a `/` command reply.
+    System,
+    /// `⚠`-prefixed error line — what the `UiEvent::Error` arm renders.
+    Error,
+    /// Persisted for the provider but never drawn — injected
+    /// instructions like the tool-limit nudge.
+    Hidden,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -32,6 +52,18 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Replay-only metadata: this tool result carried a failure (veto,
+    /// deny, dispatch error, write failure, …). Persisted in the session
+    /// snapshot so a reloaded view can re-render the failed capsule —
+    /// without it every tool call replays as `ok`. Adapters that forward
+    /// `ChatMessage` raw (`openai_compat`) must strip it before the wire;
+    /// strict backends reject unknown fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+    /// Display class for replay — see [`NoticeKind`]. `None` renders by
+    /// role (system = internal/hidden, others = their normal item).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<NoticeKind>,
 }
 
 fn content_as_string<S: serde::Serializer>(
@@ -43,16 +75,37 @@ fn content_as_string<S: serde::Serializer>(
 
 impl ChatMessage {
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None }
     }
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None }
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None }
+        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None }
+    }
+    /// A user-facing system line the live stream emitted via
+    /// `UiEvent::SystemMessage` — persisted so a reloaded view replays
+    /// it exactly (vs `system()`, which is invisible internal context).
+    pub fn notice(text: impl Into<String>) -> Self {
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System) }
+    }
+    /// Same, for a `UiEvent::Error` line — replays with the `⚠` prefix.
+    pub fn notice_error(text: impl Into<String>) -> Self {
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error) }
+    }
+    /// A `Role::User` instruction the UI never showed (injected by the
+    /// engine, e.g. the synthesis nudge) — kept for the provider,
+    /// skipped on replay.
+    pub fn user_hidden(text: impl Into<String>) -> Self {
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden) }
     }
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()) }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None }
+    }
+    /// Failed tool result — same wire shape, plus the persisted `is_error`
+    /// flag the UI replays into the red capsule state.
+    pub fn tool_result_err(call_id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None }
     }
 }
 
@@ -168,5 +221,26 @@ impl ToolCallAssembler {
     /// Completed calls in `index` order.
     pub fn finish(self) -> Vec<ToolCall> {
         self.slots
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notice_roundtrips_and_old_snapshots_default() {
+        // New format serializes `notice`; old snapshots lack it → `None`.
+        let m = ChatMessage::notice("已被用户中断");
+        let j = serde_json::to_string(&m).unwrap();
+        let back: ChatMessage = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.notice, Some(NoticeKind::System));
+        let m = ChatMessage::notice_error("upstream error");
+        let j = serde_json::to_string(&m).unwrap();
+        let back: ChatMessage = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.notice, Some(NoticeKind::Error));
+        let old = r#"{"role":"system","content":"a context note"}"#;
+        let back: ChatMessage = serde_json::from_str(old).unwrap();
+        assert_eq!(back.notice, None);
     }
 }

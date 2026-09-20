@@ -195,9 +195,16 @@ pub enum SecretResolution {
 }
 
 impl AppConfig {
-    /// Default config path: `~/.config/agent-rs/config.json` (if exists) or `config.toml`.
+    /// Default config path: `~/.config/husk/config.json` (if exists) or `config.toml`.
     pub fn default_path() -> Option<PathBuf> {
-        let dir = dirs::config_dir()?.join("agent-rs");
+        let base = dirs::config_dir()?;
+        let dir = base.join("husk");
+        // Renamed from `agent-rs` — a one-time `fs::rename` carries config +
+        // plugins over when the new dir is absent.
+        let legacy = base.join("agent-rs");
+        if !dir.exists() && legacy.is_dir() {
+            let _ = std::fs::rename(&legacy, &dir);
+        }
         let json_path = dir.join("config.json");
         if json_path.exists() {
             return Some(json_path);

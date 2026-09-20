@@ -60,7 +60,7 @@ async fn exec(args: Args, _ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 agent-rs/0.1")
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Husk/0.1")
         .build()
         .map_err(|e| ToolError::Failed(format!("Failed to build HTTP client: {e}")))?;
 
@@ -130,7 +130,6 @@ fn html_to_markdown(html: &str, is_markdown: bool) -> String {
     let mut out = s;
 
     if is_markdown {
-        // Headers
         out = replace_tag_with_prefix(&out, "h1", "\n\n# ");
         out = replace_tag_with_prefix(&out, "h2", "\n\n## ");
         out = replace_tag_with_prefix(&out, "h3", "\n\n### ");
@@ -144,7 +143,6 @@ fn html_to_markdown(html: &str, is_markdown: bool) -> String {
         // Inline code: <code>...</code>
         out = replace_inline_code(&out);
 
-        // Lists
         out = replace_tag_with_prefix(&out, "li", "\n- ");
 
         // Links: <a href="url">text</a> -> [text](url)
@@ -411,7 +409,6 @@ fn decode_entities(input: &str) -> String {
         .replace("&ndash;", "–")
         .replace("&hellip;", "…");
 
-    // Handle &#123; and &#x7b; numeric entities
     let mut res = String::with_capacity(out.len());
     let mut remaining = out.as_str();
 

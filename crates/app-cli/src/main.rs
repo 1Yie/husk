@@ -43,9 +43,11 @@ async fn main() -> anyhow::Result<()> {
         .as_ref()
         .and_then(|p| app_cfg.providers.get(p))
         .and_then(|p| p.find_model(&model));
-    let thinking_level_map = mentry
-        .and_then(|m| m.detailed())
+    let detailed = mentry.and_then(|m| m.detailed());
+    let thinking_level_map = detailed
+        .as_ref()
         .and_then(|d| d.thinking_level_map.clone());
+    let context_window = detailed.and_then(|d| d.context_window);
     let cfg = SessionConfig {
         workspace_root: workspace,
         provider,
@@ -55,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         track_dirty: false,
         thinking_level: None,
         thinking_level_map,
+        context_window,
     };
     let (mut actor, channels) = SessionActor::spawn(cfg);
     let cmd_tx = actor.command_sender();

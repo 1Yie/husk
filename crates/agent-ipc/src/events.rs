@@ -129,8 +129,9 @@ pub enum UiEvent {
     AssistantMessage(String),
     /// System/degrade notice (sampler retry, fallback, compaction…).
     SystemMessage(String),
-    /// Token-usage update for the meter.
-    Usage { prompt_tokens: u32, completion_tokens: u32 },
+    /// Token-usage update for the meter. `context_window` rides along so
+    /// the UI can render fill percentage without re-deriving the bound.
+    Usage { prompt_tokens: u32, completion_tokens: u32, context_window: u32 },
     /// Session-fatal error.
     Error(String),
 }

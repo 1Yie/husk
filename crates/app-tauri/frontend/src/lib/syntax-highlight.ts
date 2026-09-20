@@ -1,4 +1,4 @@
-// Syntax Highlighting Engine using PrismJS for agent-rs web frontend
+// Syntax Highlighting Engine using PrismJS for the Husk web frontend
 
 import Prism from "prismjs";
 
@@ -9,7 +9,6 @@ import "prismjs/components/prism-typescript";
 import "prismjs/components/prism-jsx";
 import "prismjs/components/prism-tsx";
 
-// Popular languages for developer tools
 import "prismjs/components/prism-rust";
 import "prismjs/components/prism-python";
 import "prismjs/components/prism-go";
@@ -63,7 +62,6 @@ export interface StreamdownCodePlugin {
   type: "code-highlighter";
 }
 
-// Map various file extensions and aliases to canonical Prism grammar keys
 const LANGUAGE_ALIASES: Record<string, string> = {
   ts: "typescript",
   typescript: "typescript",

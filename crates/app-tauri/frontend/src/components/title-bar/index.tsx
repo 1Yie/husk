@@ -1,48 +1,94 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WindowControls } from "@/components/window-controls";
 import { isMac } from "@/lib/platform";
-
-const win = getCurrentWindow();
+import { GitBranch, ChartPie, Zap } from "@keyline-icons/react";
+import { BrainCircuit } from "lucide-react";
+import { TooltipSimple } from "@/components/ui/tooltip";
+import type { SessionView } from "../../hooks/stream-view";
+import type { GitInfo } from "../../invoke/agent";
 
 interface TitleBarProps {
   title?: string;
+  view?: SessionView;
+  gitInfo?: GitInfo | null;
+  /** Active model's context window — used as the meter denominator before
+   * the first `Usage` event arrives. */
+  contextWindowHint?: number;
 }
 
-export function TitleBar({ title = "新会话" }: TitleBarProps) {
-  const drag = (e: React.MouseEvent) => {
-    const el = e.target as HTMLElement;
-    if (e.button === 0 && el.closest("[data-drag]") && !el.closest("[data-nodrag]")) {
-      void win.startDragging();
-    }
-  };
+function fmtK(n: number) {
+  return n >= 1000 ? `${Math.round(n / 1000)}K` : `${n}`;
+}
 
-  const doubleClick = (e: React.MouseEvent) => {
-    const el = e.target as HTMLElement;
-    if (el.closest("[data-drag]") && !el.closest("[data-nodrag]")) {
-      void win.toggleMaximize();
-    }
-  };
+function fmtRate(n: number) {
+  return n >= 100 ? `${Math.round(n)}` : n.toFixed(1);
+}
+
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint }: TitleBarProps) {
+  const prompt = view?.usage.prompt ?? 0;
+  const completion = view?.usage.completion ?? 0;
+  const ctxWin = view?.usage.contextWindow || contextWindowHint || 256000;
+  const pct = Math.round((prompt / ctxWin) * 100);
+  const toks = view?.toksPerSec ?? 0;
+  const ctxColor =
+    pct >= 80 ? "text-red-500" : pct >= 50 ? "text-amber-500" : undefined;
 
   return (
     <div
-      onMouseDown={drag}
-      onDoubleClick={doubleClick}
-      data-drag
-      data-tauri-drag-region
+      data-tauri-drag-region="deep"
       className="flex items-center h-9 flex-none bg-white border-b border-neutral-200/80 select-none px-3 justify-between"
     >
-      {isMac && <div data-drag data-tauri-drag-region className="w-[78px] shrink-0" />}
+      {isMac && <div className="w-[78px] shrink-0" />}
 
-      <div data-drag data-tauri-drag-region className="flex items-center min-w-0 max-w-[500px]">
-        <span
-          className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 truncate"
-          title={title}
-        >
-          {title}
-        </span>
+      <div className="flex items-center min-w-0 max-w-[500px]">
+        <TooltipSimple content={title} side="bottom">
+          <span
+            className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 truncate cursor-default"
+          >
+            {title}
+          </span>
+        </TooltipSimple>
       </div>
 
-      <div data-drag data-tauri-drag-region className="flex-1 h-full" />
+      <div className="flex-1 h-full" />
+
+      {/* Session stats — always rendered (zeroed before the first turn) so
+       * the meter cluster doesn't pop in mid-conversation. The git chip is
+       * the only conditional one: outside a repo there is no branch to show. */}
+      <div
+        className="flex items-center gap-3 flex-none mr-2 text-[11px] font-mono text-neutral-400 dark:text-neutral-500"
+      >
+        {gitInfo?.branch && (
+          <TooltipSimple content={`Git 分支: ${gitInfo.branch}${gitInfo.dirty > 0 ? ` (${gitInfo.dirty} 处未提交修改)` : ""}`} side="bottom">
+            <span className="flex items-center gap-1 cursor-default">
+              <GitBranch className="h-3 w-3" />
+              {gitInfo.branch}
+              {gitInfo.dirty > 0 && (
+                <span className="text-amber-500">·{gitInfo.dirty}</span>
+              )}
+            </span>
+          </TooltipSimple>
+        )}
+        <TooltipSimple content={`上下文窗口占用: ${fmtK(prompt)}/${fmtK(ctxWin)} (${pct}%)`} side="bottom">
+          <span
+            className={`flex items-center gap-1 cursor-default ${ctxColor ?? ""}`}
+          >
+            <ChartPie className="h-3 w-3" />
+            {fmtK(prompt)}/{fmtK(ctxWin)} · {pct}%
+          </span>
+        </TooltipSimple>
+        <TooltipSimple content={`本轮模型生成 Token: ${fmtK(completion)}`} side="bottom">
+          <span className="flex items-center gap-1 cursor-default">
+            <BrainCircuit className="h-3 w-3" />
+            {fmtK(completion)}
+          </span>
+        </TooltipSimple>
+        <TooltipSimple content={`生成速率: ${fmtRate(toks)} tok/s`} side="bottom">
+          <span className="flex items-center gap-1 cursor-default">
+            <Zap className="h-3 w-3" />
+            {fmtRate(toks)} tok/s
+          </span>
+        </TooltipSimple>
+      </div>
 
       <WindowControls />
     </div>

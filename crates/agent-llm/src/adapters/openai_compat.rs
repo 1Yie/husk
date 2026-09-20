@@ -234,7 +234,18 @@ impl LlmProvider for GenericOpenAiProvider {
         // provider's own default (usually 1.0) applies when omitted.
         let mut body = json!({
             "model": model,
-            "messages": messages,
+            // `is_error` is replay-only metadata persisted in the session
+            // snapshot — strip it from the wire or strict OpenAI-compat
+            // backends reject the unknown field.
+            "messages": messages.iter().map(|m| {
+                let mut v = serde_json::to_value(m).unwrap_or_else(|_| {
+                    json!({ "role": "user", "content": "" })
+                });
+                if let Some(obj) = v.as_object_mut() {
+                    obj.remove("is_error"); obj.remove("notice");
+                }
+                v
+            }).collect::<Vec<_>>(),
             "stream": true,
         });
         if temperature > 0.0 {

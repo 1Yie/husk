@@ -1,8 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App } from "./app";
-import { SettingsWindow } from "./components/settings/settings-window";
-import "./app.css";
+import { App } from "./App";
+import { SettingsWindow } from "./pages/settings";
+import { TooltipProvider, GlobalTooltip } from "@/components/ui/tooltip";
+import "./index.css";
 
 const isSettings =
   window.location.search.includes("window=settings") ||
@@ -10,6 +11,9 @@ const isSettings =
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {isSettings ? <SettingsWindow /> : <App />}
+    <TooltipProvider delayDuration={200}>
+      {isSettings ? <SettingsWindow /> : <App />}
+      <GlobalTooltip />
+    </TooltipProvider>
   </React.StrictMode>,
 );

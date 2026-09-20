@@ -194,12 +194,12 @@ pub struct PluginInfo {
     pub tool_count: usize,
 }
 
-/// Discover plugins: `~/.config/agent-rs/plugins/*/manifest.json` +
+/// Discover plugins: `~/.config/husk/plugins/*/manifest.json` +
 /// `<repo>/.agent/plugins/*/manifest.json`.
 pub fn discover(repo: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join(".config/agent-rs/plugins"));
+        dirs.push(PathBuf::from(home).join(".config/husk/plugins"));
     }
     dirs.push(repo.join(".agent/plugins"));
     let mut manifests = Vec::new();

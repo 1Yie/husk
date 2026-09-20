@@ -44,7 +44,6 @@ function extractFilePath(chip: string): string {
     if (parsed.file) return String(parsed.file);
     if (parsed.filename) return String(parsed.filename);
   } catch {
-    // plain string
   }
   const match = chip.match(/([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)/);
   if (match) return match[1];
@@ -143,7 +142,6 @@ function asChipText(value: unknown): string {
 function formatChipArgs(label: string, chip: string): string {
   if (!chip) return "";
   if (label === "apply_patch") {
-    // Extract file paths from patch header lines
     const files: string[] = [];
     const re = /(?:\*\*\*\s*(?:Add|Update|Delete)\s*File:\s*|^(?:added|updated|deleted)\s+)([^\s\n\r]+)/gim;
     let match: RegExpExecArray | null;
@@ -165,7 +163,6 @@ function formatChipArgs(label: string, chip: string): string {
         return parsed.action;
       }
     } catch {
-      // Plain string
       return chip;
     }
   }
@@ -209,7 +206,6 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
   const isRowOpen = (row: ToolChipRow) => {
     if (closedRows.has(row.id)) return false;
     if (openRows.has(row.id)) return true;
-    // Auto-open if awaiting approval or active todo list
     if (row.approval && !row.approval.resolved) return true;
     if (row.label === "todo" || row.uiType === "todo") return true;
     return false;
@@ -309,21 +305,17 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                     }}
                     type="button"
                   >
-                    {/* 工具名称 */}
                     <span className="text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300 shrink-0 text-xs font-medium transition-colors">
                       {asChipText(row.label)}
                     </span>
-                    {/* args */}
                     {chipText ? (
                       <span className="bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 inline-flex h-5 items-center rounded-md px-1.5 font-mono text-[11px] truncate max-w-[400px]">
                         {asChipText(chipText)}
                       </span>
                     ) : null}
-                    {/* 状态 */}
                     <span className="text-neutral-400 shrink-0 text-[11px]">
                       {statusText}
                     </span>
-                    {/* 展开/折叠指示图标 */}
                     {hasDetail && (
                       <ChevronDown
                         className={cn(

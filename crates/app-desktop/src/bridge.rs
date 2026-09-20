@@ -2,7 +2,7 @@
 //!
 //! The multi-session wiring (actor threads, tagged event queue,
 //! `SessionStore` persistence) lives in `agent_kernel::session_manager` so
-//! both the iced shell (this crate) and the Tauri shell (`app-tauri`)
+//! both the iced shell (this crate) and the Tauri shell (`husk`)
 //! share one implementation. This file is kept only so existing
 //! `crate::bridge::SessionManager` paths don't churn.
 

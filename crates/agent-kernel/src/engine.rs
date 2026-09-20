@@ -179,6 +179,12 @@ impl Engine {
         self.context_window = window;
     }
 
+    /// Current context-window bound — model config value or the 256k
+    /// default (same bound `Usage` events report).
+    pub fn context_window(&self) -> usize {
+        self.context_window
+    }
+
     /// SessionActor installs the permission gate (mode + repo rules).
     pub fn set_permissions(&mut self, gate: PermissionGate) {
         if let Ok(mut w) = self.permissions.write() {
@@ -209,14 +215,15 @@ impl Engine {
 
     /// Drain any pending steering texts between tool calls — marks the
     /// turn `steered` for UI provenance.
-    fn drain_steering(&mut self, io: &mut EngineIo) {
+    fn drain_steering(&mut self, io: &mut EngineIo, history: &mut Vec<ChatMessage>) {
         while let Ok(text) = io.steer_rx.try_recv() {
             self.steer_queue.push_back(text);
         }
         if !self.steer_queue.is_empty() {
             // Notify the UI the turn was steered (provenance marker).
-            let _ = io.ui_tx.try_send(UiEvent::SystemMessage(
-                "[steered] steering input queued".into()));
+            let line = "已插入引导指令".to_string();
+            let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+            history.push(ChatMessage::notice(line));
         }
     }
 
@@ -256,13 +263,15 @@ impl Engine {
             match self.compact_history(io, history).await {
                 Ok(()) => {
                     self.compaction_suppressor.on_success();
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(
-                        format!("compacted history (was ~{est} tokens)")));
+                    let line = format!("已压缩历史上下文（原约 {est} tokens）");
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    history.push(ChatMessage::notice(line));
                 }
                 Err(e) => {
                     self.compaction_suppressor.on_failure();
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(
-                        format!("compaction failed: {e}")));
+                    let line = format!("上下文压缩失败: {e}");
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    history.push(ChatMessage::notice(line));
                 }
             }
             self.set_state(io, AgentState::Reasoning);
@@ -274,7 +283,13 @@ impl Engine {
         let mut tool_rounds = 0usize;
         let mut force_no_tools = false;
         const MAX_TOOL_ROUNDS: usize = 128; // guard against runaway tool loops
+        /// Cancel sentinel — the `Err` value and `Failed` reason (never
+        /// rendered verbatim; the status bar localizes `Failed`). The
+        /// user-facing line is `CANCEL_TEXT`.
         const CANCEL_ERR: &str = "turn cancelled by user";
+        /// The one system line shown for a cancelled turn — a single
+        /// reminder, in the UI's language.
+        const CANCEL_TEXT: &str = "已被用户中断";
 
         loop {
             // P0-C4: cooperative cancel — checked at the top of every
@@ -282,13 +297,18 @@ impl Engine {
             // if no chunk is flowing.
             if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
-                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_ERR.into()));
+                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
+                history.push(ChatMessage::notice(CANCEL_TEXT));
                 return Err(CANCEL_ERR.into());
             }
 
             // Inject any mid-turn steering as a user message before sampling.
-            self.drain_steering(io);
+            self.drain_steering(io, history);
             while let Some(steer) = self.steer_queue.pop_front() {
+                // Echo the steer as a user bubble — the live stream never
+                // showed it otherwise (the composer doesn't echo), while a
+                // reloaded view rebuilt it from history. One render path.
+                let _ = io.ui_tx.try_send(UiEvent::UserPrompt(steer.clone()));
                 history.push(ChatMessage::user(format!("The user interrupted: {steer}")));
             }
 
@@ -316,6 +336,10 @@ impl Engine {
             // would fall through to the no-calls branch and persist an EMPTY
             // assistant message into history, corrupting every later request.
             let mut stream_error: Option<String> = None;
+            // Sampler policy notices (retry / thinking-degrade) shown live —
+            // collected here and persisted after the sample so a reloaded
+            // view replays them too.
+            let mut policy_notes: Vec<String> = Vec::new();
 
             let effort = self.resolve_reasoning_effort();
             let schema = self.registry.request_schema();
@@ -392,6 +416,7 @@ impl Engine {
                                     let _ = io.ui_tx.try_send(UiEvent::Usage {
                                         prompt_tokens: *p,
                                         completion_tokens: *c,
+                                        context_window: self.context_window as u32,
                                     });
                                 }
                             }
@@ -407,14 +432,16 @@ impl Engine {
                                         std::mem::take(&mut pending_reasoning_delta),
                                     ));
                                 }
-                                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(e.clone()));
+                                // The `*[error: e]*` marker + turn-end `Error` event
+                                // report this — no extra SystemMessage (it printed
+                                // the same text a second time live).
                             }
                         }
                     },
                     |ev| {
-                        let _ = io
-                            .ui_tx
-                            .try_send(UiEvent::SystemMessage(format!("{ev:?}")));
+                        let t = format!("{ev:?}");
+                        let _ = io.ui_tx.try_send(UiEvent::SystemMessage(t.clone()));
+                        policy_notes.push(t);
                     },
                 ) => r,
             };
@@ -433,47 +460,50 @@ impl Engine {
                 ));
             }
 
-            // A cancel mid-sample unwinds here — salvage the partial text so
-            // the UI keeps what already streamed, then report the turn as
-            // cancelled rather than failed.
+            // Persist the sampler policy notices — they replayed live,
+            // so the snapshot must carry them (cancel/error paths return
+            // early below; drain before them).
+            for t in policy_notes.drain(..) {
+                history.push(ChatMessage::notice(t));
+            }
+
+            // A cancel mid-sample unwinds here — the partial text and the
+            // cancel line persist separately so a reloaded view replays
+            // exactly what the live stream showed (text, then the notice).
             if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 if !round_text.is_empty() {
-                    history.push(ChatMessage {
-                        role: agent_llm::Role::Assistant,
-                        content: Some(format!("{round_text}\n\n*[cancelled by user]*")),
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
+                    history.push(ChatMessage::assistant(round_text.clone()));
                 }
+                history.push(ChatMessage::notice(CANCEL_TEXT));
                 self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
-                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_ERR.into()));
+                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
                 return Err(CANCEL_ERR.into());
             }
 
             if let Err(e) = res {
                 // ---- Stream salvage (hardening §4) ----
-                // Partial text stays visible; mark it `interrupted` so the
-                // UI renders a cut-off banner instead of discarding.
+                // Partial text + the interrupt line + the error line all
+                // persist — replay matches the live stream line-for-line.
                 if !round_text.is_empty() {
-                    history.push(ChatMessage {
-                        role: agent_llm::Role::Assistant,
-                        content: Some(format!("{round_text}\n\n*[interrupted — transport error]*")),
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(
-                        "stream interrupted — partial response preserved".into(),
-                    ));
+                    history.push(ChatMessage::assistant(round_text.clone()));
+                    let line = "流传输中断 — 已保留部分内容";
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.into()));
+                    history.push(ChatMessage::notice(line));
                 }
                 self.set_state(io, AgentState::Failed(e.to_string()));
                 let _ = io.ui_tx.try_send(UiEvent::Error(e.to_string()));
+                history.push(ChatMessage::notice_error(e.to_string()));
                 return Err(e.to_string());
             }
             // Provider surfaced an in-stream error (upstream 5xx, rate limit,
-            // model refusal, …) — treat the turn as failed. Do NOT persist an
-            // assistant message: an empty content would replay into the next
-            // request as a blank turn and poison the context.
+            // model refusal, …) — treat the turn as failed. Salvage the
+            // partial text and persist the error line (the `⚠` the live
+            // stream drew) so a reloaded view loses nothing.
             if let Some(e) = stream_error {
+                if !round_text.is_empty() {
+                    history.push(ChatMessage::assistant(round_text.clone()));
+                }
+                history.push(ChatMessage::notice_error(e.clone()));
                 self.set_state(io, AgentState::Failed(e.clone()));
                 let _ = io.ui_tx.try_send(UiEvent::Error(e.clone()));
                 return Err(e);
@@ -485,17 +515,15 @@ impl Engine {
 
             if calls.is_empty() {
                 // No tool calls → turn complete.
-                // If round_text is empty, check if we accumulated text from earlier rounds
                 let final_text = if round_text.trim().is_empty() && !text.trim().is_empty() {
                     text.clone()
                 } else {
                     round_text
                 };
 
-                // If final_text is still empty after calling tools, ask the model to produce its final answer
                 if final_text.trim().is_empty() && tool_calls_run > 0 && !force_no_tools {
                     force_no_tools = true;
-                    history.push(ChatMessage::user(
+                    history.push(ChatMessage::user_hidden(
                         "Please provide your final answer and summary to the user based on the tool results above.",
                     ));
                     continue;
@@ -506,6 +534,8 @@ impl Engine {
                     content: if final_text.is_empty() { None } else { Some(final_text.clone()) },
                     tool_calls: None,
                     tool_call_id: None,
+                    is_error: None,
+                        notice: None,
                 });
                 self.set_state(io, AgentState::Finished);
                 let _ = io.ui_tx.try_send(UiEvent::AssistantMessage(final_text));
@@ -518,26 +548,39 @@ impl Engine {
                 content: if round_text.is_empty() { None } else { Some(round_text.clone()) },
                 tool_calls: Some(calls.clone()),
                 tool_call_id: None,
+                is_error: None,
+                        notice: None,
             });
 
             // Execute each tool call.
             tool_rounds += 1;
 
-            for call in calls {
+            for (call_idx, call) in calls.iter().enumerate() {
                 // P0-C4: cancel between tool dispatches — a destructive tool
                 // must not fire after the user already hit Cancel.
                 if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    // Fill the undispatched calls — an assistant row with
+                    // tool_calls but missing tool results orphans the next
+                    // request (strict providers reject it) and makes the
+                    // reloaded view silently drop chips the live view had.
+                    for pending_call in calls.iter().skip(call_idx) {
+                        history.push(ChatMessage::tool_result_err(
+                            pending_call.id.clone(),
+                            "cancelled before dispatch",
+                        ));
+                    }
+                    history.push(ChatMessage::notice(CANCEL_TEXT));
                     self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_ERR.into()));
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
                     return Err(CANCEL_ERR.into());
                 }
                 // Skip degenerate calls — a text-protocol echo can produce an
                 // empty-name or empty-args call that must never dispatch
                 // (it'd surface as `unknown tool ''` and poison history).
                 if call.name.trim().is_empty() {
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(
-                        "skipped a malformed empty tool call".into(),
-                    ));
+                    let line = "已跳过一个格式异常的空工具调用".to_string();
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    history.push(ChatMessage::notice(line));
                     continue;
                 }
                 tool_calls_run += 1;
@@ -588,7 +631,7 @@ impl Engine {
                         name: call.name.clone(), ok: false,
                         content: msg.clone(), ui_type: None,
                     });
-                    history.push(ChatMessage::tool_result(call.id.clone(), msg));
+                    history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                     continue;
                 }
                 let call = &call_mut; // hooks may have rewritten args
@@ -621,7 +664,7 @@ impl Engine {
                                 name: call.name.clone(), ok: false,
                                 content: msg.clone(), ui_type: None,
                             });
-                            history.push(ChatMessage::tool_result(call.id.clone(), msg));
+                            history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                             continue;
                         }
                     }
@@ -645,7 +688,7 @@ impl Engine {
                             name: call.name.clone(), ok: false,
                             content: reason.clone(), ui_type: None,
                         });
-                        history.push(ChatMessage::tool_result(call.id.clone(), reason));
+                        history.push(ChatMessage::tool_result_err(call.id.clone(), reason));
                         continue; // skip dispatch — denied by policy
                     }
                     Decision::Ask { diff_summary } => {
@@ -680,7 +723,7 @@ impl Engine {
                                 name: call.name.clone(), ok: false,
                                 content: msg.clone(), ui_type: None,
                             });
-                            history.push(ChatMessage::tool_result(call.id.clone(), msg));
+                            history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                             continue;
                         }
                     }
@@ -770,14 +813,22 @@ impl Engine {
                     ui_type,
                 });
 
-                history.push(ChatMessage::tool_result(call.id.clone(), content));
+                // `ok` survives into the snapshot via `is_error` so a
+                // reloaded view replays the red capsule instead of a green
+                // one — the live `ToolCallFinished.ok` carried it.
+                history.push(if ok {
+                    ChatMessage::tool_result(call.id.clone(), content)
+                } else {
+                    ChatMessage::tool_result_err(call.id.clone(), content)
+                });
             }
 
             // If we have reached or exceeded the tool limit, force the next round to be a synthesis round without tools
             if tool_rounds >= MAX_TOOL_ROUNDS && !force_no_tools {
                 let msg = format!("已达单轮工具调用上限 ({MAX_TOOL_ROUNDS} 轮)，正在汇总已收集的信息生成最终回答...");
-                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(msg));
-                history.push(ChatMessage::user(
+                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(msg.clone()));
+                history.push(ChatMessage::notice(msg));
+                history.push(ChatMessage::user_hidden(
                     "You have reached the tool execution limit for this turn. Do NOT request any more tool calls. Please synthesize all your findings and provide your complete, detailed response/answer to the user now.",
                 ));
                 force_no_tools = true;
@@ -800,7 +851,6 @@ impl Engine {
         let plan = compaction::plan(history, self.context_window)
             .ok_or("history too small to compact")?;
 
-        // Build the summarize request over the prefix.
         let prefix_text: String = history[..plan.prefix_end]
             .iter()
             .filter_map(|m| m.content.as_deref())

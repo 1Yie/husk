@@ -173,6 +173,8 @@ pub fn apply(history: &mut Vec<ChatMessage>, plan: &CompactionPlan, note_text: S
         )),
         tool_calls: None,
         tool_call_id: None,
+        is_error: None,
+                        notice: None,
     };
     history.splice(0..plan.prefix_end, std::iter::once(note));
 }
@@ -237,7 +239,7 @@ mod tests {
     use super::*;
 
     fn msg(role: Role, text: &str) -> ChatMessage {
-        ChatMessage { role, content: Some(text.into()), tool_calls: None, tool_call_id: None }
+        ChatMessage { role, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None }
     }
 
     #[test]
@@ -271,6 +273,8 @@ mod tests {
                     arguments: "{\"path\":\".\"}".into(),
                 }]),
                 tool_call_id: None,
+                is_error: None,
+                        notice: None,
             },
         ];
         // text-protocol provider → tool_calls flattened into message text.
@@ -288,6 +292,8 @@ mod tests {
                 arguments: "{\"path\":\".\"}".into(),
             }]),
             tool_call_id: None,
+            is_error: None,
+                        notice: None,
         }];
         sanitize_for_sample(&mut h2, 100_000, /*native_tool_calls*/ true);
         assert!(h2[1].tool_calls.is_some(), "native tool_calls must not flatten");

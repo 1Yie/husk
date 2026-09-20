@@ -75,6 +75,7 @@ const SENSITIVE_NAMES: &[&str] = &[
     ".zsh_history",
     ".history",
     ".config/agent-rs",
+    ".config/husk",
     ".cargo/credentials",
     ".cargo/credentials.toml",
     ".npmrc",
@@ -83,10 +84,8 @@ const SENSITIVE_NAMES: &[&str] = &[
 
 /// Common developer toolchain and runtime directories relative to HOME.
 const HOME_DEV_DIRS: &[&str] = &[
-    // Rust
     ".cargo",
     ".rustup",
-    // Node / JS / Bun / Deno runtimes & tools
     ".volta",
     ".bun",
     ".nvm",
@@ -97,7 +96,6 @@ const HOME_DEV_DIRS: &[&str] = &[
     ".config/yarn",
     ".npm",
     ".cache",
-    // Python / Conda / Package managers
     ".pyenv",
     "miniconda3",
     "anaconda3",
@@ -105,14 +103,11 @@ const HOME_DEV_DIRS: &[&str] = &[
     ".rye",
     ".local/share/uv",
     ".local/pipx",
-    // Go
     "go",
     ".config/go",
-    // JVM / Mobile / Toolchains
     ".sdkman",
     ".gradle",
     ".m2",
-    // Version managers
     ".asdf",
     ".mise",
     ".local/share/mise",

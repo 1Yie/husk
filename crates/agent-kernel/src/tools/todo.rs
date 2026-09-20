@@ -4,7 +4,7 @@
 //! mainstream convention (Claude Code's TodoWrite, pi's todo, Codex plan):
 //! the list is **session-scoped agent state**, not project data. It lives
 //! next to the session's history in the app state dir
-//! (`~/.local/share/agent-rs/sessions/<ws>/<id>.todos.json`) — a new session
+//! (`~/.local/share/husk/sessions/<ws>/<id>.todos.json`) — a new session
 //! starts clean, a resumed session keeps its list, and the user's repo is
 //! never polluted with agent scratch files.
 //!
@@ -69,7 +69,7 @@ fn store_path(ctx: &ToolCtx) -> std::path::PathBuf {
     // last resort when no data dir exists at all.
     crate::session_store::SessionStore::open(&ctx.workspace_root)
         .map(|s| s.state_file(0, "todos.json"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("agent-rs-todos.json"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("husk-todos.json"))
 }
 
 async fn load(ctx: &ToolCtx) -> Result<TodoStore, ToolError> {
@@ -216,7 +216,6 @@ mod tests {
     #[tokio::test]
     async fn add_list_done_remove_roundtrip() {
         let ctx = ctx();
-        // add
         let r = exec(
             serde_json::json!({"action":"add","text":"fix the bug"}),
             ctx.clone(),
@@ -225,15 +224,12 @@ mod tests {
         .unwrap();
         assert!(r.content.contains("#1"));
 
-        // list
         let r = exec(serde_json::json!({"action":"list"}), ctx.clone()).await.unwrap();
         assert!(r.content.contains("fix the bug"));
 
-        // done
         let r = exec(serde_json::json!({"action":"done","id":1}), ctx.clone()).await.unwrap();
         assert!(r.content.contains("[x]"));
 
-        // remove
         let r = exec(serde_json::json!({"action":"remove","id":1}), ctx.clone()).await.unwrap();
         assert!(r.content.contains("Removed #1"));
 

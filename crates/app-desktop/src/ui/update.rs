@@ -306,7 +306,6 @@ impl App {
 
     /// Route one tagged `UiEvent` to its session's `SessionView`.
     fn apply_session_event(&mut self, sid: i64, ev: UiEvent) -> Task<Message> {
-        // Update the live handle's running/preview for the sidebar.
         if let Some(mgr) = self.mgr.as_mut() {
             if let Some(h) = mgr.handle_mut(sid) {
                 match &ev {
@@ -328,7 +327,7 @@ impl App {
                 // `diff_summary` into the status bar on approvals.
                 self.stats.agent_state = s.label();
             }
-            if let UiEvent::Usage { prompt_tokens, completion_tokens } = &ev {
+            if let UiEvent::Usage { prompt_tokens, completion_tokens, .. } = &ev {
                 self.stats.tokens_used = prompt_tokens + completion_tokens;
             }
             Task::none()

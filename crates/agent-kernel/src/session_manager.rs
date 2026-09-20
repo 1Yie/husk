@@ -1,7 +1,7 @@
 //! `session_manager` — multi-session kernel wiring, frontend-agnostic.
 //!
 //! Shared by the iced shell (`app-desktop`) and the Tauri shell
-//! (`app-tauri`). Each session owns a `SessionActor` on its own `kernel-rt`
+//! (`husk`). Each session owns a `SessionActor` on its own `kernel-rt`
 //! thread — a background session's turn keeps running when you switch away
 //! (product rule: switching never kills the turn). Every actor's `UiEvent`
 //! stream is forwarded to ONE `std::sync::mpsc` tagged with its
@@ -32,6 +32,10 @@ pub struct ModelDetails {
     pub thinking_level_map: Option<HashMap<String, Option<String>>>,
     #[serde(default)]
     pub available_levels: Vec<String>,
+    /// Context window from the model's config entry — `None` means the
+    /// engine's 256_000 default applies.
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 
 /// Aggregated model information for UI dropdowns.
@@ -45,6 +49,43 @@ pub struct SessionModelInfo {
     pub active_permission_mode: Option<String>,
     pub config_path: Option<String>,
     pub models: Vec<ModelDetails>,
+}
+
+/// One conversation row inside a project (sidebar project tree).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSessionRow {
+    pub id: i64,
+    pub title: String,
+    pub preview: String,
+    /// Unix seconds of last activity — the sidebar's cross-project "recent"
+    /// list merges rows by this key.
+    pub updated_at: u64,
+    /// Only ever true for the active workspace's active session.
+    pub active: bool,
+    /// Live turn flag. Only the active workspace has actors to report it,
+    /// so rows of other projects always read `false`.
+    pub running: bool,
+}
+
+/// One project (workspace) with its full conversation list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectOverview {
+    pub root: String,
+    pub name: String,
+    pub last_opened: u64,
+    /// This is the kernel's active workspace.
+    pub current: bool,
+    /// Every persisted conversation, newest first.
+    pub sessions: Vec<ProjectSessionRow>,
+}
+
+/// Display name for a workspace — its final path component, or the full
+/// path when there is none (filesystem root).
+fn project_name(root: &std::path::Path) -> String {
+    root.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| root.to_string_lossy().into_owned())
 }
 
 /// A session's live handles — the actor runs on its own thread; these are
@@ -207,6 +248,86 @@ impl SessionManager {
         crate::session_store::load_recent_workspaces()
     }
 
+    /// The sidebar's project tree: the active workspace first, then every
+    /// recent workspace, each carrying its full persisted conversation list
+    /// (newest first).
+    ///
+    /// The active workspace is read from the *store* rather than
+    /// `self.metas` — metas only refresh on structural ops and go stale the
+    /// moment an actor persists a turn — and is overlaid with the live
+    /// `running`/`active` flags from the handles. Other workspaces are
+    /// store-only snapshots: only one workspace has live actors at a time.
+    pub fn projects_overview(&self) -> Vec<ProjectOverview> {
+        let canon = self
+            .workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace_root.clone());
+
+        let mut out = vec![ProjectOverview {
+            root: canon.to_string_lossy().into_owned(),
+            name: project_name(&canon),
+            last_opened: 0,
+            current: true,
+            sessions: self.current_workspace_rows(),
+        }];
+
+        for w in self.recent_workspaces() {
+            let w_canon = w.path.canonicalize().unwrap_or_else(|_| w.path.clone());
+            if w_canon == canon {
+                // Already first — borrow its recency stamp instead of
+                // listing the same project twice.
+                out[0].last_opened = w.last_opened;
+                continue;
+            }
+            let sessions = SessionStore::open_existing(&w_canon)
+                .map(|store| {
+                    store
+                        .list()
+                        .into_iter()
+                        .map(|m| ProjectSessionRow {
+                            id: m.id,
+                            title: m.title,
+                            preview: m.preview,
+                            updated_at: m.updated_at,
+                            active: false,
+                            running: false,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.push(ProjectOverview {
+                root: w_canon.to_string_lossy().into_owned(),
+                name: w.name,
+                last_opened: w.last_opened,
+                current: false,
+                sessions,
+            });
+        }
+        out
+    }
+
+    /// The active workspace's rows, newest first — persisted meta overlaid
+    /// with the live preview / running / active flags.
+    fn current_workspace_rows(&self) -> Vec<ProjectSessionRow> {
+        self.store
+            .list()
+            .into_iter()
+            .map(|m| {
+                let live = self.handles.get(&m.id);
+                ProjectSessionRow {
+                    id: m.id,
+                    title: m.title,
+                    preview: live
+                        .map(|h| h.preview.clone())
+                        .unwrap_or_else(|| m.preview.clone()),
+                    updated_at: m.updated_at,
+                    active: m.id == self.active_id,
+                    running: live.map(|h| h.running).unwrap_or(false),
+                }
+            })
+            .collect()
+    }
+
     /// Spawn an actor for `id` (resume from store if a snapshot exists).
     fn spawn_actor(&mut self, id: i64) {
         let provider = self
@@ -224,9 +345,11 @@ impl SessionManager {
             .providers
             .get(&self.provider_name)
             .and_then(|p| p.find_model(&model));
-        let thinking_level_map = mentry
-            .and_then(|m| m.detailed())
+        let detailed = mentry.and_then(|m| m.detailed());
+        let thinking_level_map = detailed
+            .as_ref()
             .and_then(|d| d.thinking_level_map.clone());
+        let context_window = detailed.and_then(|d| d.context_window);
 
         let cfg = SessionConfig {
             workspace_root: self.workspace_root.clone(),
@@ -237,6 +360,7 @@ impl SessionManager {
             track_dirty: true,
             thinking_level: self.active_thinking_level.clone(),
             thinking_level_map,
+            context_window,
         };
 
         let (mut actor, channels) = match self.store.load_history(id) {
@@ -313,6 +437,7 @@ impl SessionManager {
             title: "新会话".into(),
             preview: String::new(),
             updated_at: now,
+            usage: None,
         });
         self.metas = self.store.list();
         self.spawn_actor(id);
@@ -366,8 +491,12 @@ impl SessionManager {
                 .as_ref()
                 .map(|m| format!("{} · 副本", m.title))
                 .unwrap_or_else(|| "新会话".into()),
-            preview: src.map(|m| m.preview).unwrap_or_default(),
+            preview: src.as_ref().map(|m| m.preview.clone()).unwrap_or_default(),
             updated_at: now,
+            // The fork inherits the source's meter — its first prompt
+            // re-samples the same history, so the number is a fair stand-in
+            // until that turn's real `Usage` lands.
+            usage: src.as_ref().and_then(|m| m.usage),
         });
         self.metas = self.store.list();
         self.spawn_actor(new_id);
@@ -383,6 +512,18 @@ impl SessionManager {
     /// Load a session's persisted history (for rebuilding a closed view).
     pub fn store_history(&self, id: i64) -> Option<Vec<agent_llm::types::ChatMessage>> {
         self.store.load_history(id)
+    }
+
+    /// A session's persisted last-turn usage — seeds the header meter when
+    /// the webview rebuilds a closed view (before any new `Usage` event).
+    /// Reads the store fresh: `self.metas` only refreshes on structural ops
+    /// and goes stale the moment an actor persists a turn.
+    pub fn store_usage(&self, id: i64) -> Option<crate::session_store::SessionUsage> {
+        self.store
+            .list()
+            .into_iter()
+            .find(|m| m.id == id)
+            .and_then(|m| m.usage)
     }
 
     /// Sidebar rows — persisted metas overlaid with live running/preview.
@@ -439,6 +580,7 @@ impl SessionManager {
                         reasoning,
                         thinking_level_map,
                         available_levels,
+                        context_window: d.and_then(|x| x.context_window),
                     });
                 }
             } else if let Some(dm) = &pcfg.default_model {
@@ -449,6 +591,7 @@ impl SessionManager {
                     reasoning: false,
                     thinking_level_map: None,
                     available_levels: Vec::new(),
+                    context_window: None,
                 });
             } else {
                 models.push(ModelDetails {
@@ -458,6 +601,7 @@ impl SessionManager {
                     reasoning: false,
                     thinking_level_map: None,
                     available_levels: Vec::new(),
+                    context_window: None,
                 });
             }
         }
@@ -470,6 +614,7 @@ impl SessionManager {
                 reasoning: false,
                 thinking_level_map: None,
                 available_levels: Vec::new(),
+                context_window: None,
             });
         }
 
@@ -637,7 +782,6 @@ mod tests {
             mgr.set_thinking_level("high".into());
             mgr.set_permission_mode("acceptEdits".into());
         }
-        // Spawn a fresh manager on the same directory — should restore preferences from prefs.json
         let (mut mgr2, _rx) = SessionManager::spawn_at(Some(path));
         assert_eq!(mgr2.provider_name, "devin");
         assert_eq!(mgr2.model_name, "devin/swe-2");

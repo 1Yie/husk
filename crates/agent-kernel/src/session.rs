@@ -41,6 +41,9 @@ pub struct SessionConfig {
     pub thinking_level: Option<String>,
     /// Model-specific thinking level mapping.
     pub thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
+    /// Model's context window from config — `None` falls back to the
+    /// engine's 256_000 default (compaction + usage % share the bound).
+    pub context_window: Option<u64>,
 }
 
 /// One live session: owns history + engine, consumes commands, emits events.
@@ -78,6 +81,10 @@ pub struct SessionActor {
     session_id: i64,
     /// Per-workspace session store — snapshots history at turn boundaries.
     store: Option<Arc<crate::session_store::SessionStore>>,
+    /// Last completed turn's `(prompt, completion)` tokens — persisted
+    /// into `SessionMeta` so a reopened session's header meter shows real
+    /// numbers before the next `Usage` event.
+    last_usage: Option<(u32, u32)>,
 }
 
 impl SessionActor {
@@ -169,12 +176,12 @@ impl SessionActor {
             .replace("{{WORKSPACE_TREE}}", &workspace_tree)
             .replace("{{GIT_STATUS}}", &git_status);
 
-        // Stage 10: memory store — `memory.db` at ~/.local/share/agent-rs/,
+        // Stage 10: memory store — `memory.db` at ~/.local/share/husk/,
         // partitioned by `hash(canonical_root)`. The `{{MEMORY_BLOCK}}` is
         // refreshed per-turn (recall happens in `run_prompt`, not once at
         // spawn — the block must track the evolving store).
         let (memory, distiller, initial_memory_block) = {
-            let db_dir = dirs_data().map(|d| d.join("agent-rs"));
+            let db_dir = crate::session_store::app_data_dir();
             let store = db_dir.and_then(|d| {
                 let _ = std::fs::create_dir_all(&d);
                 MemoryStore::open(&d.join("memory.db"), &cfg.workspace_root).ok()
@@ -219,6 +226,7 @@ impl SessionActor {
         ));
         engine.set_thinking_level(cfg.thinking_level.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
+        engine.set_context_window(cfg.context_window.unwrap_or(256_000) as usize);
         let decision_slot = engine.decision_slot();
         let permissions_slot = engine.permissions_writer();
         let thinking_slot = engine.thinking_level_shared();
@@ -283,6 +291,7 @@ impl SessionActor {
                 distiller,
                 session_id,
                 store,
+                last_usage: None,
             },
             channels,
         )
@@ -386,6 +395,7 @@ impl SessionActor {
         match self.engine.run_turn(&mut self.io, &mut self.history, text, &mut self.hunks).await {
             Ok(outcome) => {
                 self.state = AgentState::Finished;
+                self.last_usage = outcome.usage;
                 let _ = self.io.ui_tx.try_send(UiEvent::StateChanged(AgentState::Finished));
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
                 self.queue_distill(TurnRecord {
@@ -400,7 +410,10 @@ impl SessionActor {
             Err(e) => {
                 self.state = AgentState::Failed(e.clone());
                 warn!("turn failed: {e}");
-                let _ = self.io.ui_tx.try_send(UiEvent::Error(e.clone()));
+                // `run_turn` emits its own display line before every Err —
+                // a SystemMessage for cancel, an Error for transport and
+                // in-stream failures. Re-emitting here prints the same
+                // reminder twice (the cancelled-turn double-line bug).
                 let _ = self.io.ui_tx.try_send(UiEvent::StateChanged(AgentState::Failed(e.clone())));
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
@@ -461,11 +474,30 @@ impl SessionActor {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        // Usage rides along in the sidebar meta: fresh value when this turn
+        // produced one, otherwise the previously persisted value survives
+        // (a failed turn must not erase the last good reading; a resumed
+        // actor's `last_usage` starts empty until its first turn lands).
+        let usage = self
+            .last_usage
+            .map(|(prompt, completion)| crate::session_store::SessionUsage {
+                prompt,
+                completion,
+                context_window: self.engine.context_window() as u32,
+            })
+            .or_else(|| {
+                store
+                    .list()
+                    .into_iter()
+                    .find(|m| m.id == id)
+                    .and_then(|m| m.usage)
+            });
         let _ = store.upsert_meta(crate::session_store::SessionMeta {
             id,
             title,
             preview,
             updated_at: now,
+            usage,
         });
     }
 
@@ -500,19 +532,18 @@ impl SessionActor {
             Err(_) => self.hunks.undo_plan_partial(last),
         };
         if ops.is_empty() && skipped.is_empty() {
-            let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-                "nothing to undo".into(),
-            ));
+            let line = "没有可回滚的修改".to_string();
+            let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+            self.history.push(ChatMessage::notice(line));
             return;
         }
         for path in &skipped {
-            let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-                format!(
-                    "skipped `{}` — modified outside the agent after the \
-                     last write (would clobber your edit)",
-                    path.display()
-                ),
-            ));
+            let line = format!(
+                "已跳过 `{}` — 在 agent 写入后被外部修改（回滚会覆盖你的改动）",
+                path.display()
+            );
+            let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+            self.history.push(ChatMessage::notice(line));
         }
         let mut reverted = 0usize;
         for op in ops {
@@ -536,9 +567,9 @@ impl SessionActor {
                 }
             }
         }
-        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-            format!("reverted {reverted} file(s) from turn {last}"),
-        ));
+        let line = format!("已回滚第 {last} 轮修改的 {reverted} 个文件");
+        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+        self.history.push(ChatMessage::notice(line));
     }
 
     /// Execute a `ControlOp` from a slash command — session state changes
@@ -547,19 +578,22 @@ impl SessionActor {
         match op {
             ControlOp::ClearHistory => {
                 self.history.truncate(1); // keep the system prompt
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-                    "history cleared".into()));
+                let line = "会话历史已清空".to_string();
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                self.history.push(ChatMessage::notice(line));
             }
             ControlOp::Compact => {
                 // Force a compaction pass via the engine's path.
                 let est = crate::compaction::estimate_tokens(&self.history);
                 let window = 256_000usize; // engine's context_window is the real bound
                 if crate::compaction::should_compact(est, window) {
-                    let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-                        "compacting…".into()));
+                    let line = "正在压缩历史上下文…".to_string();
+                    let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    self.history.push(ChatMessage::notice(line));
                 } else {
-                    let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-                        format!("history ~{est} tokens — below compact threshold")));
+                    let line = format!("历史约 {est} tokens — 未达压缩阈值");
+                    let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    self.history.push(ChatMessage::notice(line));
                 }
             }
             ControlOp::UndoLastTurn => self.undo_last_turn().await,
@@ -573,17 +607,23 @@ impl SessionActor {
                         if let Some(mentry) = pcfg.find_model(&model) {
                             if let Some(d) = mentry.detailed() {
                                 self.engine.set_thinking_level_map(d.thinking_level_map.clone());
+                                self.engine.set_context_window(
+                                    d.context_window.unwrap_or(256_000) as usize,
+                                );
                             } else {
                                 self.engine.set_thinking_level_map(None);
+                                self.engine.set_context_window(256_000);
                             }
                         } else {
                             self.engine.set_thinking_level_map(None);
+                            self.engine.set_context_window(256_000);
                         }
                     }
                 }
                 self.engine.set_model(model.clone());
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-                    format!("model → {provider}/{model} (next turn)")));
+                let line = format!("已切换模型至: {model} ({provider}) — 下一轮生效");
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                self.history.push(ChatMessage::notice(line));
             }
         }
     }
@@ -608,7 +648,8 @@ impl SessionActor {
                 }; // ctx dropped here — the history/ui_tx borrows end
                 match cmd_result {
                     Some(CommandResult::Reply(r)) => {
-                        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(r));
+                        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(r.clone()));
+                        self.history.push(ChatMessage::notice(r));
                     }
                     Some(CommandResult::Control(op)) => {
                         self.run_control(op).await;
@@ -620,7 +661,8 @@ impl SessionActor {
                         // Hook chain: on_user_input may block/rewrite.
                         match self.hooks.run_on_user_input(&text).await {
                             crate::hooks::HookAction::BlockTurn(reason) => {
-                                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(reason));
+                                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(reason.clone()));
+                                self.history.push(ChatMessage::notice(reason));
                             }
                             crate::hooks::HookAction::InjectSystemNote(note) => {
                                 self.history.push(ChatMessage::system(note));
@@ -658,23 +700,30 @@ impl SessionActor {
                         if let Some(mentry) = pcfg.find_model(&model) {
                             if let Some(d) = mentry.detailed() {
                                 self.engine.set_thinking_level_map(d.thinking_level_map.clone());
+                                self.engine.set_context_window(
+                                    d.context_window.unwrap_or(256_000) as usize,
+                                );
                             } else {
                                 self.engine.set_thinking_level_map(None);
+                                self.engine.set_context_window(256_000);
                             }
                         } else {
                             self.engine.set_thinking_level_map(None);
+                            self.engine.set_context_window(256_000);
                         }
                     }
                 }
                 self.engine.set_model(model.clone());
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-                    format!("已切换模型至: {model} ({provider})")));
+                let line = format!("已切换模型至: {model} ({provider})");
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                self.history.push(ChatMessage::notice(line));
             }
             UiCommand::SetThinkingLevel { level } => {
                 info!(%level, "thinking level change requested");
                 self.engine.set_thinking_level(if level.is_empty() { None } else { Some(level.clone()) });
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(
-                    format!("已设置思考推理强度: {level}")));
+                let line = format!("已设置思考推理强度: {level}");
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                self.history.push(ChatMessage::notice(line));
             }
             UiCommand::SetPermissionMode { mode } => {
                 info!(%mode, "permission mode switch");
@@ -684,7 +733,8 @@ impl SessionActor {
                 let _ = self
                     .io
                     .ui_tx
-                    .try_send(UiEvent::SystemMessage(format!("permission mode → {mode}")));
+                    .try_send(UiEvent::SystemMessage(format!("权限模式已切换为: {mode}")));
+                self.history.push(ChatMessage::notice(format!("权限模式已切换为: {mode}")));
             }
             UiCommand::Cancel => {
                 // P0-C4: real cooperative cancel — set the shared flag the
@@ -697,7 +747,8 @@ impl SessionActor {
                 let _ = self
                     .io
                     .ui_tx
-                    .try_send(UiEvent::SystemMessage("turn cancelled".into()));
+                    .try_send(UiEvent::SystemMessage("已被用户中断".into()));
+                self.history.push(ChatMessage::notice("已被用户中断"));
             }
             UiCommand::ToolDecision { request_id, approved } => {
                 // Direct write to the engine's shared decision slot — this
@@ -712,13 +763,6 @@ impl SessionActor {
             }
         }
     }
-}
-
-/// Data dir for `memory.db` — `~/.local/share` (XDG) or HOME fallback.
-fn dirs_data() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
 }
 
 /// `chrono`-free date stamp for the prompt — good enough for "today" context

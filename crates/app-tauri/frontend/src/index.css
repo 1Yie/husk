@@ -1,5 +1,20 @@
-@import "@fontsource-variable/inter";
 @import "streamdown/styles.css";
+
+@font-face {
+  font-family: "MiSans";
+  src: url("../assets/font/MiSansVF.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../assets/font/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 
 @tailwind base;
 @tailwind components;
@@ -10,19 +25,22 @@ html, body, #root {
   margin: 0;
   background-color: #ffffff;
   color: #18181b;
+  font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 body {
   @apply bg-workspace text-text-primary font-sans text-sm antialiased overflow-hidden select-none;
 }
 
-/* Slim scrollbars — 6px thumb, subtle transparent rail. */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  @apply bg-neutral-300 rounded-full;
+  @apply bg-neutral-300 dark:bg-neutral-700 rounded-full;
 }
-::-webkit-scrollbar-thumb:hover { @apply bg-neutral-400; }
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-neutral-400 dark:bg-neutral-600;
+}
 
 /* Layout shells — used by App/ChatStream. */
 @layer components {
@@ -30,22 +48,35 @@ body {
     @apply flex flex-1 min-h-0 bg-workspace;
   }
   .main-col {
-    @apply flex-1 min-w-0 flex flex-col bg-workspace;
+    /* `relative` lets the composer float above the stream bottom — the
+       card's rounded top corners then reveal scrolled text passing
+       underneath instead of reading as a flat mask. */
+    @apply flex-1 min-w-0 flex flex-col bg-workspace relative;
   }
   .stream-scroll {
-    /* `overflow-y-scroll` keeps the scrollbar gutter reserved — under
-       `auto` the thumb appearing as a reply outgrows the viewport shifts
-       the centered column ~6px, which read as a jitter next to the
-       sidebar's always-present gutter. `transform-gpu` composites the
-       scroller: on WebKitGTK an uncomposited scroller paints the custom
-       scrollbar in the content layer, so streamed repaints flash the
-       thumb; composited scrollers get a separate scrollbar layer. Same
-       treatment as the session sidebar. `min-h-0` lets it shrink inside
-       the static root wrapper instead of overflowing it. */
-    @apply flex-1 min-h-0 overflow-y-scroll transform-gpu px-6 py-4 flex flex-col items-center;
+    /* Native scrolling remains composited and performant, while the conventional
+       right-side scrollbar is hidden in favor of the custom left-side turn rail.
+       Symmetric horizontal padding ensures perfect centering with the bottom composer. */
+    @apply flex-1 min-h-0 overflow-y-scroll transform-gpu px-4 py-4 flex flex-col items-center;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .stream-scroll::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
   }
   .stream-empty {
     @apply text-text-dim text-sm py-12 text-center select-none;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
   }
 }
 
@@ -53,13 +84,43 @@ body {
    Codex-style Markdown & Streamdown Theming
    ========================================================================== */
 
-/* Inline code tags (e.g. `app-tauri`, `node_modules`) */
 code:not(pre code),
 [data-streamdown="inline-code"] {
-  @apply bg-neutral-100 text-neutral-800 px-1.5 py-0.5 rounded text-[12.5px] font-mono border border-neutral-200/80 mx-0.5 inline align-baseline font-medium;
+  display: inline-block !important;
+  padding: 1px 5px !important;
+  margin: 0 2px !important;
+  font-size: 12px !important;
+  font-family: var(--font-mono, "JetBrains Mono", ui-monospace, SFMono-Regular, monospace) !important;
+  font-weight: 450 !important;
+  line-height: 1.35 !important;
+  border-radius: 4px !important;
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  color: #27272a !important;
+  vertical-align: baseline !important;
+  box-decoration-break: clone !important;
+  -webkit-box-decoration-break: clone !important;
 }
 
-/* Code Blocks — Container */
+.dark code:not(pre code),
+.dark [data-streamdown="inline-code"] {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #e4e4e7 !important;
+}
+
+/* Twemoji unified styling */
+img.twemoji,
+img.emoji {
+  display: inline-block !important;
+  height: 1.2em !important;
+  width: 1.2em !important;
+  margin: 0 0.08em !important;
+  vertical-align: -0.2em !important;
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
 [data-streamdown="code-block"] {
   background-color: #141416 !important;
   border: 1px solid #2e2e33 !important;
@@ -74,7 +135,6 @@ code:not(pre code),
   width: 100% !important;
 }
 
-/* Code Block Header — Distinct bar with visible language badge and copy action */
 [data-streamdown="code-block-header"] {
   display: flex !important;
   align-items: center !important;
@@ -84,7 +144,7 @@ code:not(pre code),
   padding: 0 0.875rem !important;
   height: 2.25rem !important;
   min-height: 2.25rem !important;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
   font-size: 12px !important;
   color: #d4d4d8 !important;
   user-select: none !important;
@@ -106,7 +166,6 @@ code:not(pre code),
   color: #a1a1aa !important;
 }
 
-/* Code Block Actions Wrapper — position inside the header bar on the right */
 [data-streamdown="code-block"] > div.pointer-events-none,
 [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]) {
   position: absolute !important;
@@ -123,7 +182,6 @@ code:not(pre code),
   justify-content: flex-end !important;
 }
 
-/* Code Block Action Buttons Container */
 [data-streamdown="code-block-actions"] {
   display: inline-flex !important;
   align-items: center !important;
@@ -134,7 +192,6 @@ code:not(pre code),
   pointer-events: auto !important;
 }
 
-/* Codex Micro Copy Button */
 [data-streamdown="code-block-copy-button"] {
   display: inline-flex !important;
   align-items: center !important;
@@ -168,7 +225,6 @@ code:not(pre code),
   display: none !important;
 }
 
-/* Code Block Body — Monospace Code Viewer */
 [data-streamdown="code-block-body"] {
   background-color: #141416 !important;
   color: #e4e4e7 !important;
@@ -176,7 +232,7 @@ code:not(pre code),
   border-radius: 0 !important;
   padding: 0.875rem 1rem !important;
   font-size: 13px !important;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
   line-height: 1.6 !important;
   overflow-x: auto !important;
 }
@@ -292,7 +348,6 @@ code:not(pre code),
   background-color: rgba(46, 160, 67, 0.15) !important;
 }
 
-/* Line numbers styling */
 [data-streamdown="code-block-body"] [data-line-number] {
   color: #52525b !important;
   user-select: none !important;
@@ -304,7 +359,6 @@ code:not(pre code),
   user-select: none !important;
 }
 
-/* Dark subtle scrollbar for code blocks */
 [data-streamdown="code-block-body"]::-webkit-scrollbar {
   height: 5px;
   width: 5px;
@@ -320,22 +374,14 @@ code:not(pre code),
   background: #52525b;
 }
 
-/* Table styling for Streamdown native tables */
-[data-streamdown="table-wrapper"] {
-  margin: 1rem 0 !important;
-  width: 100% !important;
-  overflow-x: auto !important;
-  border-radius: 0.5rem !important;
-  border: 1px solid #e4e4e7 !important;
-  background-color: #ffffff !important;
-  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
-}
-
+[data-streamdown="table-wrapper"] table,
 [data-streamdown="table"] {
-  width: 100% !important;
+  min-width: 100% !important;
+  width: max-content !important;
   border-collapse: collapse !important;
   text-align: left !important;
   font-size: 13px !important;
+  margin: 0 !important;
 }
 
 [data-streamdown="table-header"] {
@@ -344,8 +390,13 @@ code:not(pre code),
   user-select: none !important;
 }
 
+.dark [data-streamdown="table-header"] {
+  background-color: #202024 !important;
+  border-bottom-color: #2e2e33 !important;
+}
+
 [data-streamdown="table-header-cell"] {
-  padding: 0.625rem 0.875rem !important;
+  padding: 0.625rem 1rem !important;
   font-size: 11.5px !important;
   font-weight: 600 !important;
   text-transform: uppercase !important;
@@ -354,9 +405,17 @@ code:not(pre code),
   white-space: nowrap !important;
 }
 
+.dark [data-streamdown="table-header-cell"] {
+  color: #d4d4d8 !important;
+}
+
 [data-streamdown="table-row"] {
   border-bottom: 1px solid #f1f5f9 !important;
   transition: background-color 0.15s ease !important;
+}
+
+.dark [data-streamdown="table-row"] {
+  border-bottom-color: #27272a !important;
 }
 
 [data-streamdown="table-row"]:last-child {
@@ -367,14 +426,22 @@ code:not(pre code),
   background-color: #f8fafc !important;
 }
 
+.dark [data-streamdown="table-row"]:hover {
+  background-color: #222226 !important;
+}
+
 [data-streamdown="table-cell"] {
-  padding: 0.5rem 0.875rem !important;
+  padding: 0.5rem 1rem !important;
   color: #334155 !important;
   vertical-align: top !important;
   line-height: 1.5 !important;
+  white-space: nowrap !important;
 }
 
-/* Images */
+.dark [data-streamdown="table-cell"] {
+  color: #d4d4d8 !important;
+}
+
 [data-streamdown="image-wrapper"] {
   margin: 1rem 0 !important;
   display: flex !important;
@@ -406,7 +473,6 @@ code:not(pre code),
   font-style: italic !important;
 }
 
-/* Blockquotes */
 [data-streamdown="blockquote"] {
   margin: 0.75rem 0 !important;
   border-left: 3px solid #cbd5e1 !important;
@@ -612,7 +678,6 @@ code:not(pre code),
   animation: collapsible-up 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* Smooth Accordion Grid Transition Helper */
 .accordion-grid {
   display: grid;
   transition: grid-template-rows 250ms cubic-bezier(0.16, 1, 0.3, 1),

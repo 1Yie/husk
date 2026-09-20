@@ -42,7 +42,7 @@ export type UiEvent =
     }
   | { AssistantMessage: string }
   | { SystemMessage: string }
-  | { Usage: { prompt_tokens: number; completion_tokens: number } }
+  | { Usage: { prompt_tokens: number; completion_tokens: number; context_window: number } }
   | { Error: string };
 
 /** UI → kernel commands — mirrors `UiCommand`. */
@@ -71,6 +71,25 @@ export interface SessionRow {
   running: boolean;
 }
 
+/** A session row inside a project — `SessionRow` plus the timestamp the
+ * sidebar's cross-project "recent" list merges on. Ids are per-workspace,
+ * so callers key rows by `root` + `id`. */
+export interface ProjectSessionRow extends SessionRow {
+  updated_at: number;
+}
+
+/** One project (workspace) with its full conversation list — mirrors
+ * `SessionManager::projects_overview`. */
+export interface ProjectOverview {
+  root: string;
+  name: string;
+  last_opened: number;
+  /** This is the kernel's active workspace. */
+  current: boolean;
+  /** Every persisted conversation, newest first. */
+  sessions: ProjectSessionRow[];
+}
+
 /** Persisted message — mirrors `agent_llm::types::ChatMessage` on the wire.
  * `content` serializes as a plain string (None → ""), `tool_calls` uses the
  * OpenAI wire shape `{id, type:"function", function:{name, arguments}}`. */
@@ -83,4 +102,11 @@ export interface ChatMessage {
     function: { name: string; arguments: string };
   }[];
   tool_call_id?: string;
+  /** Replay-only flag persisted on failed tool results — never sent to
+   * the provider (the adapter strips it). */
+  is_error?: boolean;
+  /** Set on `system` entries the live stream showed the user — `system`
+   * renders as a plain line, `error` with a `⚠` prefix. Absent means
+   * internal context (system prompt, compaction note) — stays hidden. */
+  notice?: "system" | "error" | "hidden";
 }

@@ -1,12 +1,12 @@
 [package]
-name = "app-tauri"
+name = "husk"
 version = "0.1.0"
 edition = "2021"
-description = "Tauri desktop shell — React + Tailwind frontend over the shared kernel wiring"
+description = "Husk — Tauri desktop shell: React + Tailwind frontend over the shared kernel wiring"
 build = "build.rs"
 
 [[bin]]
-name = "agent-rs"
+name = "husk"
 path = "backend/main.rs"
 
 [dependencies]

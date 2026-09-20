@@ -97,7 +97,7 @@ impl SandboxPlan {
             PathBuf::from("/etc/ssh"),
             PathBuf::from("/root"),
         ];
-        for sub in [".ssh", ".gnupg", ".aws", ".config/agent-rs"] {
+        for sub in [".ssh", ".gnupg", ".aws", ".config/agent-rs", ".config/husk"] {
             if let Some(p) = shellexpand_home(sub) {
                 deny.push(p);
             }

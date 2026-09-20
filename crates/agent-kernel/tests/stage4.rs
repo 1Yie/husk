@@ -50,6 +50,7 @@ async fn headless_react_loop_drives_tool_then_answers() {
         track_dirty: false,
         thinking_level: None,
         thinking_level_map: None,
+        context_window: None,
     });
 
     // Drive one prompt through the actor.
@@ -105,6 +106,7 @@ async fn system_prompt_is_rendered_with_workspace_and_git() {
         track_dirty: false,
         thinking_level: None,
         thinking_level_map: None,
+        context_window: None,
     });
     actor.handle(UiCommand::Prompt { text: "hi".into() }).await;
     // Spawn rendered the skeleton into the system message — history[0] must
@@ -129,6 +131,7 @@ async fn steer_between_turns_becomes_a_prompt() {
         track_dirty: false,
         thinking_level: None,
         thinking_level_map: None,
+        context_window: None,
     });
 
     actor.handle(UiCommand::Prompt { text: "one".into() }).await;

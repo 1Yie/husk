@@ -1,4 +1,4 @@
-//! `app-tauri` — Tauri 2 desktop shell over the shared kernel wiring.
+//! `husk` — Tauri 2 desktop shell over the shared kernel wiring.
 //!
 //! Rust side is deliberately thin: `KernelState` (agent-kernel's
 //! `SessionManager`) owns the session actors + tagged `UiEvent` queue;
@@ -30,5 +30,5 @@ fn main() {
             ipc::sessions::agent_session,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running agent-rs");
+        .expect("error while running Husk");
 }

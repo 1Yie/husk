@@ -281,7 +281,6 @@ fn apply_hunks(path: &str, old: &str, hunks: &[Hunk]) -> Result<(String, bool), 
     let mut fuzzy = false;
     for (idx, h) in hunks.iter().enumerate() {
         let hunk_desc = || format!("{path} hunk {}/{}", idx + 1, hunks.len());
-        // Build before/after strings from the hunk lines.
         let mut before = String::new();
         let mut after = String::new();
         for l in &h.lines {

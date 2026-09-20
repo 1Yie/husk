@@ -4,6 +4,7 @@ import { ChevronDown } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { renderWithTwemoji } from "@/lib/twemoji";
 
 export function AssistantStatus({
   mode,
@@ -102,7 +103,7 @@ export function AssistantStatus({
       {thinkingText ? (
         <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
           <div className="text-neutral-400 mt-1 w-full min-w-0 whitespace-pre-wrap text-[13px] leading-relaxed select-text font-normal pl-6">
-            {thinkingText}
+            {renderWithTwemoji(thinkingText)}
           </div>
         </CollapsibleContent>
       ) : null}

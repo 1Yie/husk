@@ -232,7 +232,7 @@ pub struct App {
     /// Multi-session kernel — actors, persistence, the tagged event queue.
     pub mgr: Option<SessionManager>,
     /// The `(session_id, UiEvent)` event tap — split out of `spawn()` so
-    /// the Tick drain owns it (and `app-tauri` can move its own copy into a
+    /// the Tick drain owns it (and `husk` can move its own copy into a
     /// forwarder thread). `Option` only for the `--mock` demo path.
     pub event_rx: Option<std::sync::mpsc::Receiver<(i64, agent_ipc::UiEvent)>>,
     /// Per-session rendered state — switching just points `active_id` here.

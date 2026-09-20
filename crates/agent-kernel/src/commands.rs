@@ -12,10 +12,11 @@
 //! `/x` matched a command — the session turns `ControlAction` into state
 //! changes and `Reply`/`FeedToAgent` into messages without touching the LLM.
 //!
-//! `@path` mentions are expanded here too (`expand_mentions`) — the composer
-//! leaves the literal `@src/main.rs` in the text; the kernel inlines the
-//! file's fenced content before the prompt reaches history, so the model
-//! sees real code instead of a bare path.
+//! `@path` and mid-text `$skill` mentions are expanded here too
+//! (`expand_user_tokens`) — the composer leaves the literal `@src/main.rs`
+//! / `$review` in the text; the kernel inlines the file's fenced content /
+//! skill instructions before the prompt reaches history, so the model
+//! sees real context instead of bare tokens.
 
 use std::path::{Path, PathBuf};
 
@@ -101,16 +102,16 @@ impl CommandRegistry {
                     skill_prompt(&format!("${skill_name}"), &skill, args),
                 ));
             }
-            let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(format!(
-                "`${skill_name}` not a skill — sent as prompt"
-            )));
+            let line = format!("`${skill_name}` 不是可用技能 — 已作为普通消息发送");
+            let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+            ctx.history.push(ChatMessage::notice(line));
             return Some(CommandResult::FeedToAgent(
-                expand_mentions(t, ctx.workspace_root),
+                expand_user_tokens(t, ctx.workspace_root),
             ));
         }
-        // Plain prompt — still expand `@path` mentions so the model sees
-        // file contents, not bare paths.
-        let expanded = expand_mentions(t, ctx.workspace_root);
+        // Plain prompt — still expand `@path`/`$skill` mentions so the
+        // model sees file contents / skill instructions, not bare tokens.
+        let expanded = expand_user_tokens(t, ctx.workspace_root);
         if expanded != t {
             return Some(CommandResult::FeedToAgent(expanded));
         }
@@ -170,10 +171,10 @@ impl CommandRegistry {
                     CommandResult::FeedToAgent(skill_prompt(&format!("/{name}"), &skill, args))
                 } else {
                     // Unknown /x → hint + fall through as a normal prompt.
-                    let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(format!(
-                        "`/{name}` not a command or skill — sent as prompt"
-                    )));
-                    CommandResult::FeedToAgent(expand_mentions(&t_fallback(name, args), ctx.workspace_root))
+                    let line = format!("`/{name}` 不是命令或技能 — 已作为普通消息发送");
+                    let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    ctx.history.push(ChatMessage::notice(line));
+                    CommandResult::FeedToAgent(expand_user_tokens(&t_fallback(name, args), ctx.workspace_root))
                 }
             }
         }
@@ -398,6 +399,66 @@ fn expand_mentions(text: &str, root: &Path) -> String {
     out
 }
 
+/// Inline `$skill` mentions mid-text — like [`expand_mentions`] but for
+/// skills: a whitespace/start-bounded `$name` token that resolves via
+/// [`find_skill`] is replaced by the skill's instructions (same wrapper
+/// the dispatch path emits, minus args). Unresolvable tokens stay
+/// literal — `$HOME`, `$5`, `$(cmd)` are shell syntax, not intent.
+fn expand_skill_refs(text: &str, root: &Path) -> String {
+    if !text.contains('$') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        // Same boundary rule as `@` — start-of-string or after whitespace.
+        let boundary = at == 0 || rest.as_bytes()[at - 1].is_ascii_whitespace();
+        if !boundary {
+            out.push_str(&rest[..at + 1]);
+            rest = &rest[at + 1..];
+            continue;
+        }
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        let token = &after[..end];
+        // `$$` drops the first char and re-scans (same convention as
+        // `@@`); empties stay literal.
+        if token.is_empty() || token.starts_with('$') {
+            out.push('$');
+            rest = after;
+            continue;
+        }
+        // A skill name can't start with a digit/paren — `$5`, `$(x)`
+        // skip the filesystem lookup entirely.
+        let looks_like_name = token
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_');
+        let resolved = looks_like_name.then(|| find_skill(root, token)).flatten();
+        if let Some(skill) = resolved {
+            out.push_str(&format!(
+                "\n\n`<skill name=\"{token}\">`\n{}\n",
+                skill_prompt(&format!("${token}"), &skill, "")
+            ));
+            rest = &after[end..];
+        } else {
+            out.push('$');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Expand every inline mention token in user text — `$skill` refs first
+/// (only the user's own text is scanned, no injected content yet), then
+/// `@path` mentions over the result (so `@` tokens inside an injected
+/// skill body still resolve).
+fn expand_user_tokens(text: &str, root: &Path) -> String {
+    expand_mentions(&expand_skill_refs(text, root), root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,6 +570,32 @@ mod tests {
             }
             _ => panic!("expected FeedToAgent"),
         }
+    }
+
+    #[test]
+    fn mid_text_skill_ref_inlines_body() {
+        let (_d, root) = skill_ws();
+        let out = expand_skill_refs("用 $review 检查这段代码", &root);
+        assert!(out.contains("<skill name=\"review\">"), "{out}");
+        assert!(out.contains("Look for bugs."), "{out}");
+        assert!(out.contains("invoked the `$review` skill"), "{out}");
+        // The token is consumed — no stray `$review` remains.
+        assert!(!out.contains(" $review "), "{out}");
+    }
+
+    #[test]
+    fn skill_refs_stay_literal_when_shell_or_unknown() {
+        let (_d, root) = skill_ws();
+        let t = "echo $HOME 和 $5 和 $(cmd) 和 $unknown";
+        assert_eq!(expand_skill_refs(t, &root), t);
+    }
+
+    #[test]
+    fn user_tokens_expand_dollar_then_at() {
+        let (_d, root) = skill_ws();
+        let out = expand_user_tokens("用 $review 检查 @main.rs", &root);
+        assert!(out.contains("<skill name=\"review\">"), "{out}");
+        assert!(out.contains("path=\"main.rs\""), "{out}");
     }
 
     #[tokio::test]

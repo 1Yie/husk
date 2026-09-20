@@ -1,10 +1,16 @@
 // Agent session ops — `agent_session` invokes (sidebar list/new/open).
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ChatMessage, SessionRow } from "../../types";
+import type { ChatMessage, ProjectOverview, SessionRow } from "../../types";
 
 export function listSessions() {
   return invoke<SessionRow[]>("agent_session", { op: "list" });
+}
+
+/** Sidebar project tree — every recent workspace with its full conversation
+ * list; the active workspace is first and carries the live running flags. */
+export function listProjects() {
+  return invoke<ProjectOverview[]>("agent_session", { op: "projects" });
 }
 
 export async function newSession() {
@@ -12,11 +18,19 @@ export async function newSession() {
   return r.active;
 }
 
+/** Persisted last-turn usage — rides along on ops that return history so
+ * a rebuilt view seeds the header meter instead of showing zeros. */
+export interface SessionUsage {
+  prompt: number;
+  completion: number;
+  context_window: number;
+}
+
 /** Switch to an existing session — returns the active id plus the
  * persisted history so the caller can rebuild the stream view when it
  * has no in-memory events for that session yet. */
 export async function openSession(id: number) {
-  const r = await invoke<{ active: number; history: ChatMessage[] }>(
+  const r = await invoke<{ active: number; history: ChatMessage[]; usage?: SessionUsage | null }>(
     "agent_session",
     { op: "open", id },
   );
@@ -26,7 +40,7 @@ export async function openSession(id: number) {
 /** Duplicate a session's history into a fresh session (which becomes the
  * active one) — returns the new id + the copied history. */
 export async function forkSession(id: number) {
-  return invoke<{ active: number; id: number; history: ChatMessage[] }>(
+  return invoke<{ active: number; id: number; history: ChatMessage[]; usage?: SessionUsage | null }>(
     "agent_session",
     { op: "fork", id },
   );
@@ -35,7 +49,7 @@ export async function forkSession(id: number) {
 /** Delete a session entirely. Returns the new active id + its history —
  * the backend auto-switches when the deleted session was on screen. */
 export async function deleteSession(id: number) {
-  return invoke<{ active: number; history: ChatMessage[] }>(
+  return invoke<{ active: number; history: ChatMessage[]; usage?: SessionUsage | null }>(
     "agent_session",
     { op: "delete", id },
   );
@@ -52,6 +66,7 @@ export interface WorkspaceSwitchResult {
   name: string;
   active: number;
   history: ChatMessage[];
+  usage?: SessionUsage | null;
   sessions: SessionRow[];
 }
 
@@ -74,6 +89,7 @@ export interface ModelItem {
   reasoning?: boolean;
   thinking_level_map?: Record<string, string | null>;
   available_levels?: string[];
+  context_window?: number;
 }
 
 export interface ModelInfo {
@@ -144,6 +160,17 @@ export function getSandboxInfo() {
   return invoke<SandboxInfo>("agent_session", { op: "get_sandbox_info" });
 }
 
+/** Git branch + dirty count for the active workspace — `branch` is null
+ * when the workspace isn't inside a repository. */
+export interface GitInfo {
+  branch: string | null;
+  dirty: number;
+}
+
+export function getGitInfo() {
+  return invoke<GitInfo>("agent_session", { op: "git_info" });
+}
+
 /** A workspace file entry for the `@` mention picker. */
 export interface FileItem {
   path: string;
@@ -168,4 +195,31 @@ export function listFiles(query?: string) {
 /** Workspace skills — `.agents/skills/` + aliases, for `/` and `$` pickers. */
 export function listSkills() {
   return invoke<SkillItem[]>("agent_session", { op: "list_skills" });
+}
+
+/** One attached file for the composer chips — `kind` decides how the
+ * prompt payload inlines it: `text` carries `content` (32KB-capped),
+ * `image`/`binary` are path-only references the model can't read. */
+export interface Attachment {
+  path: string;
+  name: string;
+  kind: "text" | "image" | "binary";
+  content?: string;
+  truncated?: boolean;
+}
+
+/** Native multi-select file picker for the `+` attach button —
+ * `kind` presets the filter list. */
+export function pickAttachments(kind: "image" | "text" | "any") {
+  return invoke<string[]>("agent_session", {
+    op: "pick_attachments",
+    payload: { kind },
+  });
+}
+
+export function readAttachment(path: string) {
+  return invoke<Attachment>("agent_session", {
+    op: "read_attachment",
+    payload: { path },
+  });
 }

@@ -2,7 +2,8 @@
 // Parses `todo` tool output and renders an interactive-looking, progress-tracked checklist.
 
 import { useMemo } from "react";
-import { Check, Circle, ListCheck } from "@keyline-icons/react";
+import { Check, ListCheck } from "@keyline-icons/react";
+import { cn } from "../../lib/utils";
 
 interface Props {
   content: string;
@@ -75,20 +76,19 @@ export function TodoView({ content }: Props) {
 
   return (
     <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-[#fafafa] dark:bg-[#141416] p-3 shadow-2xs select-text">
-      {/* Top status bar */}
-      <div className="flex items-center justify-between gap-3 pb-2.5 mb-2.5 border-b border-neutral-200/70 dark:border-neutral-800/80 select-none">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-3 pb-2.5 mb-2 border-b border-neutral-200/70 dark:border-neutral-800/80 select-none">
+        <div className="flex items-center gap-2 min-w-0">
           <ListCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-          <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200">
+          <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 shrink-0">
             任务清单
           </span>
           {headerMessage && (
-            <span className="text-[11px] text-neutral-400 font-normal">
+            <span className="text-[11px] text-neutral-400 font-normal truncate">
               · {headerMessage}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 shrink-0">
           <div className="w-24 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
             <div
               className="h-full bg-emerald-500 transition-all duration-300 rounded-full"
@@ -101,35 +101,34 @@ export function TodoView({ content }: Props) {
         </div>
       </div>
 
-      {/* Task checklist */}
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1">
         {items.map((item) => (
           <div
             key={item.id}
-            className={`flex items-start gap-2.5 py-1 px-1.5 rounded-lg transition-colors ${
+            className={cn(
+              "group flex items-start gap-2.5 py-1 px-1.5 rounded-lg transition-colors",
               item.done
                 ? "text-neutral-400 dark:text-neutral-500"
                 : "text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100/60 dark:hover:bg-neutral-800/40"
-            }`}
+            )}
           >
-            <span className="shrink-0 mt-0.5">
+            <span className="flex h-5 w-4 items-center justify-center shrink-0">
               {item.done ? (
-                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
                   <Check className="h-2.5 w-2.5 stroke-[2.8]" />
                 </span>
               ) : (
-                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-neutral-300 dark:border-neutral-600">
-                  <Circle className="h-2 w-2 opacity-0" />
-                </span>
+                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 dark:border-neutral-600 group-hover:border-neutral-400 dark:group-hover:border-neutral-500 transition-colors" />
               )}
             </span>
-            <span className="font-mono text-[11px] text-neutral-400 shrink-0 select-none">
+            <span className="flex h-5 items-center font-mono text-[11px] text-neutral-400 dark:text-neutral-500 shrink-0 select-none">
               #{item.id}
             </span>
             <span
-              className={`text-[12.5px] leading-relaxed break-words flex-1 ${
+              className={cn(
+                "text-[13px] leading-5 break-words flex-1",
                 item.done ? "line-through opacity-75" : "font-normal"
-              }`}
+              )}
             >
               {item.text}
             </span>

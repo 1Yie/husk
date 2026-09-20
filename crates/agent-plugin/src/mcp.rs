@@ -195,7 +195,7 @@ impl McpClient {
             .call_rpc("initialize", json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "agent-rs", "version": env!("CARGO_PKG_VERSION")},
+                "clientInfo": {"name": "husk", "version": env!("CARGO_PKG_VERSION")},
             }))
             .await
             .context("MCP initialize")?;

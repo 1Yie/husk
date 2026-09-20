@@ -110,7 +110,7 @@ impl SerenaBridge {
         let init = json!({
             "jsonrpc":"2.0","id":0,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05","capabilities":{},
-                      "clientInfo":{"name":"agent-rs","version":"0.1"}}
+                      "clientInfo":{"name":"husk","version":"0.1"}}
         });
         self.request(init, STARTUP_TIMEOUT).await?;
         let note = json!({"jsonrpc":"2.0","method":"notifications/initialized"});

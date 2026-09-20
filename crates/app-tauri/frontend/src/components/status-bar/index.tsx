@@ -1,6 +1,6 @@
 // Status bar — minimal bottom bar, shadcn Badge + Separator.
 
-import type { SessionView } from "../../hooks/useAgent";
+import type { SessionView } from "../../hooks/stream-view";
 import type { AgentState } from "../../types";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";

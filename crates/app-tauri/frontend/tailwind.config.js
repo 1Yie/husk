@@ -33,12 +33,20 @@ export default {
         "2xl": "22px",
       },
       fontFamily: {
-        sans: ['"Inter"', "-apple-system", "BlinkMacSystemFont", "system-ui", "sans-serif"],
-        mono: ['"JetBrains Mono"', "ui-monospace", "monospace"],
+        sans: ['"MiSans"', '"Inter"', "-apple-system", "BlinkMacSystemFont", "system-ui", "sans-serif"],
+        mono: ['"JetBrains Mono"', '"JetBrainsMono Nerd Font Mono"', '"JetBrainsMono NFM"', "ui-monospace", "monospace"],
       },
       boxShadow: {
         "sidebar-active": "0 1px 2px 0 rgba(0, 0, 0, 0.05)",
         "composer": "0 4px 20px 0 rgba(0, 0, 0, 0.06)",
+        /* Elevation for every popup layer (menus, popover, dialog, popup cards).
+           Tailwind's shadow-md/-lg keep a hard, near-opaque band right under the
+           popup edge; when a scrollbar/rail from the page runs behind the popup,
+           that band darkens the top of the bar into a hard grey right angle that
+           reads as "a square shadow hanging off the popup's rounded corner".
+           A wide blur with negative spread keeps the same elevation while the
+           edge falloff stays soft enough not to bite into what is behind. */
+        "popup": "0 8px 24px -6px rgba(0, 0, 0, 0.16), 0 2px 6px -2px rgba(0, 0, 0, 0.06)",
       },
       keyframes: {
         "collapsible-down": {

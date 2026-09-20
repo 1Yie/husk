@@ -23,7 +23,11 @@ interface WindowControlsProps {
 export function WindowControls({ maximize = true, className }: WindowControlsProps) {
   if (isMac) return null;
   return (
-    <div data-nodrag className={cn("flex items-center gap-0.5 shrink-0", className)}>
+    <div
+      data-nodrag
+      data-tauri-drag-region="false"
+      className={cn("flex items-center gap-0.5 shrink-0", className)}
+    >
       <WinButton onClick={() => void win.minimize().catch((e) => console.error("minimize:", e))}>
         <Minus className="size-[18px]" />
       </WinButton>

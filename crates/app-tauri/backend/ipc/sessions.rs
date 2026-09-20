@@ -18,6 +18,11 @@ pub fn agent_session(
         "list" => Ok(serde_json::json!(mgr.sidebar_rows().iter().map(|(id,t,p,a,r)| {
             serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r})
         }).collect::<Vec<_>>())),
+        // Sidebar project tree — every recent workspace with its full
+        // conversation list. The active workspace comes first (`current: true`)
+        // and carries the live running/active overlay; other projects are
+        // store-only snapshots (one workspace has actors at a time).
+        "projects" => Ok(serde_json::to_value(mgr.projects_overview()).map_err(|e| e.to_string())?),
         "new" => { mgr.new_session(); Ok(serde_json::json!({"active": mgr.active_id})) }
         // `open` also returns the persisted history so the webview can
         // rebuild the stream for a session it has no in-memory view for
@@ -27,7 +32,14 @@ pub fn agent_session(
             let id = id.ok_or("open needs id")?;
             mgr.open_session(id);
             let history = mgr.store_history(id).unwrap_or_default();
-            Ok(serde_json::json!({"active": mgr.active_id, "history": history}))
+            // `usage` is the persisted last-turn meter — seeds the header
+            // stats so a reopened session doesn't read 0/… until the next
+            // turn's `Usage` event.
+            Ok(serde_json::json!({
+                "active": mgr.active_id,
+                "history": history,
+                "usage": mgr.store_usage(id),
+            }))
         }
         // `delete` mirrors `open` in returning the new active id + its
         // history so the webview can rebuild the stream when the deleted
@@ -36,7 +48,8 @@ pub fn agent_session(
             let id = id.ok_or("delete needs id")?;
             mgr.delete_session(id);
             let history = mgr.store_history(mgr.active_id).unwrap_or_default();
-            Ok(serde_json::json!({"active": mgr.active_id, "history": history}))
+            let usage = mgr.store_usage(mgr.active_id);
+            Ok(serde_json::json!({"active": mgr.active_id, "history": history, "usage": usage}))
         }
         // `fork` copies the source session's latest snapshot into a new
         // session and activates it — same return shape as `open`.
@@ -45,7 +58,12 @@ pub fn agent_session(
             match mgr.fork_session(id) {
                 Some(new_id) => {
                     let history = mgr.store_history(new_id).unwrap_or_default();
-                    Ok(serde_json::json!({"active": mgr.active_id, "id": new_id, "history": history}))
+                    Ok(serde_json::json!({
+                        "active": mgr.active_id,
+                        "id": new_id,
+                        "history": history,
+                        "usage": mgr.store_usage(new_id),
+                    }))
                 }
                 None => Err("session has no history to fork yet".into()),
             }
@@ -60,6 +78,17 @@ pub fn agent_session(
                 }).collect::<Vec<_>>()
             }))
         }
+        // Header chip: branch + dirty count for the active workspace.
+        // Not-a-repo → branch:null (workspace can legitimately be outside git).
+        "git_info" => {
+            match agent_context::git::git_snapshot(&mgr.workspace_root) {
+                Ok(snap) => Ok(serde_json::json!({
+                    "branch": snap.branch,
+                    "dirty": snap.dirty_count(),
+                })),
+                Err(_) => Ok(serde_json::json!({ "branch": serde_json::Value::Null, "dirty": 0 })),
+            }
+        }
         "pick_workspace" => {
             let picked = rfd::FileDialog::new().set_title("Open Workspace Directory").pick_folder();
             if let Some(target) = picked {
@@ -71,6 +100,7 @@ pub fn agent_session(
                     "name": name,
                     "active": mgr.active_id,
                     "history": history,
+                    "usage": mgr.store_usage(mgr.active_id),
                     "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r)| {
                         serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r})
                     }).collect::<Vec<_>>(),
@@ -89,6 +119,7 @@ pub fn agent_session(
                 "name": name,
                 "active": mgr.active_id,
                 "history": history,
+                "usage": mgr.store_usage(mgr.active_id),
                 "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r)| {
                     serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r})
                 }).collect::<Vec<_>>(),
@@ -219,6 +250,87 @@ pub fn agent_session(
         // user-level dirs, Claude-Code/pi-compatible SKILL.md manifests).
         "list_skills" => {
             Ok(serde_json::json!(scan_skills(&mgr.workspace_root)))
+        }
+        // `+` attach button — native file picker, then `read_attachment`
+        // per path. `kind` presets the filter list; picked paths come back
+        // absolute and may live outside the workspace (unlike `@` mentions).
+        "pick_attachments" => {
+            let kind = payload
+                .as_ref()
+                .and_then(|p| p.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("any");
+            let mut dlg = rfd::FileDialog::new().set_title("添加附件");
+            dlg = match kind {
+                "image" => dlg.add_filter(
+                    "图片",
+                    &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"],
+                ),
+                "text" => dlg.add_filter(
+                    "文本",
+                    &[
+                        "txt", "md", "markdown", "json", "yaml", "yml", "toml",
+                        "xml", "csv", "log", "rs", "ts", "tsx", "js", "jsx",
+                        "py", "go", "java", "c", "cc", "cpp", "h", "hpp",
+                        "css", "html", "sh", "sql", "ini", "conf", "env",
+                    ],
+                ),
+                _ => dlg,
+            };
+            let picked = dlg.pick_files().unwrap_or_default();
+            Ok(serde_json::json!(
+                picked
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+            ))
+        }
+        // Read one picked file for the attachment chips. Text is inlined
+        // into the prompt as a fenced block (32KB cap — same bound the
+        // kernel's `@` expansion uses); images/binaries come back as
+        // path-only entries the model can reference but not read.
+        "read_attachment" => {
+            let p = payload
+                .as_ref()
+                .and_then(|p| p.get("path"))
+                .and_then(|v| v.as_str())
+                .ok_or("read_attachment needs path")?;
+            let path = std::path::PathBuf::from(p);
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.to_string());
+            let is_image = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| {
+                    ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]
+                        .contains(&e.to_lowercase().as_str())
+                })
+                .unwrap_or(false);
+            const MAX_BYTES: usize = 32 * 1024;
+            if is_image {
+                return Ok(serde_json::json!({
+                    "path": p, "name": name, "kind": "image",
+                }));
+            }
+            match std::fs::read(&path) {
+                Ok(bytes) if bytes.contains(&0) => Ok(serde_json::json!({
+                    "path": p, "name": name, "kind": "binary",
+                })),
+                Ok(bytes) => {
+                    let truncated = bytes.len() > MAX_BYTES;
+                    let capped = if truncated { &bytes[..MAX_BYTES] } else { &bytes[..] };
+                    Ok(serde_json::json!({
+                        "path": p,
+                        "name": name,
+                        "kind": "text",
+                        "content": String::from_utf8_lossy(capped),
+                        "truncated": truncated,
+                    }))
+                }
+                Err(e) => Err(format!("read {}: {e}", path.display())),
+            }
         }
         _ => Err(format!("unknown session op: {op}")),
     }

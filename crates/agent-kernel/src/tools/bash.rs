@@ -65,7 +65,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let plan = agent_sandbox::plan::SandboxPlan::from_audit(
         &verdict,
         ctx.workspace_root.as_ref().to_path_buf(),
-        std::env::temp_dir().join(format!("agent-rs-{:x}", std::process::id())),
+        std::env::temp_dir().join(format!("husk-{:x}", std::process::id())),
     );
     let cfg = agent_sandbox::SandboxConfig {
         workspace_dir: ctx.workspace_root.as_ref().to_path_buf(),
