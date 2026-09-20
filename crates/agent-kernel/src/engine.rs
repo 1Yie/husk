@@ -536,6 +536,7 @@ impl Engine {
                     tool_call_id: None,
                     is_error: None,
                         notice: None,
+                    ts: Some(agent_llm::types::now_ms()),
                 });
                 self.set_state(io, AgentState::Finished);
                 let _ = io.ui_tx.try_send(UiEvent::AssistantMessage(final_text));
@@ -550,6 +551,7 @@ impl Engine {
                 tool_call_id: None,
                 is_error: None,
                         notice: None,
+                ts: Some(agent_llm::types::now_ms()),
             });
 
             // Execute each tool call.

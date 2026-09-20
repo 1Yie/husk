@@ -109,4 +109,6 @@ export interface ChatMessage {
    * renders as a plain line, `error` with a `⚠` prefix. Absent means
    * internal context (system prompt, compaction note) — stays hidden. */
   notice?: "system" | "error" | "hidden";
+  /** Creation time (epoch ms) — drives the `—— time ——` turn divider. */
+  ts?: number | null;
 }

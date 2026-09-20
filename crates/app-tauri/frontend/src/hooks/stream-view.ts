@@ -5,7 +5,7 @@
 import type { AgentState } from "../types";
 
 export type StreamItem =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; ts?: number }
   | { kind: "assistant"; text: string; streaming: boolean }
   | { kind: "thinking"; text: string; done: boolean }
   | {

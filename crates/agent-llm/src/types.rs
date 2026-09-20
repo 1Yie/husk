@@ -64,6 +64,19 @@ pub struct ChatMessage {
     /// role (system = internal/hidden, others = their normal item).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<NoticeKind>,
+    /// Creation time (epoch ms) — persisted so a replayed view can draw
+    /// the same `—— time ——` turn divider the live stream showed. `None`
+    /// on old snapshots → no divider for those messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts: Option<i64>,
+}
+
+/// Wall-clock epoch millis — stamps every message at construction.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn content_as_string<S: serde::Serializer>(
@@ -75,37 +88,37 @@ fn content_as_string<S: serde::Serializer>(
 
 impl ChatMessage {
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()) }
     }
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()) }
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None }
+        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()) }
     }
     /// A user-facing system line the live stream emitted via
     /// `UiEvent::SystemMessage` — persisted so a reloaded view replays
     /// it exactly (vs `system()`, which is invisible internal context).
     pub fn notice(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System) }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System), ts: Some(now_ms()) }
     }
     /// Same, for a `UiEvent::Error` line — replays with the `⚠` prefix.
     pub fn notice_error(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error) }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error), ts: Some(now_ms()) }
     }
     /// A `Role::User` instruction the UI never showed (injected by the
     /// engine, e.g. the synthesis nudge) — kept for the provider,
     /// skipped on replay.
     pub fn user_hidden(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden) }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()) }
     }
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()) }
     }
     /// Failed tool result — same wire shape, plus the persisted `is_error`
     /// flag the UI replays into the red capsule state.
     pub fn tool_result_err(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None, ts: Some(now_ms()) }
     }
 }
 
@@ -180,9 +193,15 @@ pub enum StreamChunk {
 
 /// Assemble a completed tool call list from a chunk stream — used by the
 /// sampler and engine. Fragments for the same `index` merge by concat.
+///
+/// Slots are a map, not a Vec: the Responses API's `output_index` counts
+/// **every** output item (reasoning=0, message=1, first call=2…), so call
+/// indices are sparse. Gap-filling a Vec materialized an empty-name call
+/// per skipped index — the engine then logged "已跳过一个格式异常的空工具
+/// 调用" once per reasoning/message item before each real call.
 #[derive(Debug, Default)]
 pub struct ToolCallAssembler {
-    slots: Vec<ToolCall>,
+    slots: std::collections::BTreeMap<usize, ToolCall>,
 }
 
 impl ToolCallAssembler {
@@ -193,10 +212,11 @@ impl ToolCallAssembler {
     /// Fold one chunk. Returns `true` when the chunk was a tool delta.
     pub fn feed(&mut self, chunk: &StreamChunk) -> bool {
         if let StreamChunk::ToolCallDelta { index, id, name, args_delta } = chunk {
-            while self.slots.len() <= *index {
-                self.slots.push(ToolCall { id: String::new(), name: String::new(), arguments: String::new() });
-            }
-            let slot = &mut self.slots[*index];
+            let slot = self.slots.entry(*index).or_insert_with(|| ToolCall {
+                id: String::new(),
+                name: String::new(),
+                arguments: String::new(),
+            });
             if let Some(id) = id {
                 // id arrives once — assign, never append (Responses repeats
                 // call_id on argument deltas; appending corrupts it).
@@ -218,15 +238,32 @@ impl ToolCallAssembler {
         }
     }
 
-    /// Completed calls in `index` order.
+    /// Completed calls in `index` order — sparse indices collapse; no
+    /// empty slots survive.
     pub fn finish(self) -> Vec<ToolCall> {
-        self.slots
+        self.slots.into_values().collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assembler_collapses_sparse_output_indices() {
+        // Responses `output_index` counts reasoning/message items too —
+        // a call at index 2 must not materialize empty slots 0 and 1.
+        let mut a = ToolCallAssembler::new();
+        assert!(a.feed(&StreamChunk::ToolCallDelta {
+            index: 2,
+            id: Some("c1".into()),
+            name: Some("bash".into()),
+            args_delta: "{}".into(),
+        }));
+        let calls = a.finish();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+    }
 
     #[test]
     fn notice_roundtrips_and_old_snapshots_default() {

@@ -158,7 +158,7 @@ export function viewFromHistory(
       continue;
     }
     if (m.role === "user") {
-      v.items.push({ kind: "user", text });
+      v.items.push({ kind: "user", text, ts: m.ts ?? undefined });
     } else {
       v.items.push({ kind: "assistant", text, streaming: false });
       if (markerLine) v.items.push({ kind: "system", text: markerLine });

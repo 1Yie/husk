@@ -242,7 +242,7 @@ impl LlmProvider for GenericOpenAiProvider {
                     json!({ "role": "user", "content": "" })
                 });
                 if let Some(obj) = v.as_object_mut() {
-                    obj.remove("is_error"); obj.remove("notice");
+                    obj.remove("is_error"); obj.remove("notice"); obj.remove("ts");
                 }
                 v
             }).collect::<Vec<_>>(),
