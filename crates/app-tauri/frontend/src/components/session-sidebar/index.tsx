@@ -127,22 +127,22 @@ export function SessionSidebar({
     <TooltipProvider delayDuration={300}>
       <aside
         data-tauri-drag-region="deep"
-        className="w-[240px] flex-none flex flex-col bg-panel dark:bg-neutral-900 border-r border-hairline dark:border-neutral-800/80 select-none h-full text-neutral-800 dark:text-neutral-200"
+        className="w-[240px] flex-none flex flex-col bg-panel border-r border-hairline select-none h-full text-neutral-800"
       >
         <div
           data-tauri-drag-region="deep"
-          className="h-9 flex-none flex items-center px-3 gap-2 border-b border-hairline dark:border-neutral-800/80 bg-panel dark:bg-neutral-900 select-none cursor-default"
+          className="h-9 flex-none flex items-center px-3 gap-2 border-b border-hairline bg-panel select-none cursor-default"
         >
           {isMac && <div className="w-[78px] shrink-0" />}
 
-          <span className="text-[12px] font-semibold text-neutral-700 dark:text-neutral-300 tracking-tight">
+          <span className="text-[12px] font-semibold text-neutral-700 tracking-tight">
             Husk
           </span>
         </div>
 
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="flex-none flex items-center justify-between px-4 pt-3 pb-1">
-            <span className="text-[13px] font-medium text-neutral-600 dark:text-neutral-400">
+            <span className="text-[13px] font-medium text-neutral-600">
               会话
             </span>
             <Tooltip>
@@ -153,7 +153,7 @@ export function SessionSidebar({
                   data-tauri-drag-region="false"
                   onClick={onNew}
                   aria-label="新建会话"
-                  className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-200/60 dark:hover:bg-neutral-800 transition-colors"
+                  className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200/60 transition-colors"
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </button>
@@ -190,7 +190,7 @@ export function SessionSidebar({
 
           {/* Section: 项目 — open a project to read its full conversation list */}
           <div className="flex-none flex items-center justify-between px-4 pt-2 pb-1">
-            <span className="text-[13px] font-medium text-neutral-600 dark:text-neutral-400">
+            <span className="text-[13px] font-medium text-neutral-600">
               项目
             </span>
           </div>
@@ -224,7 +224,7 @@ export function SessionSidebar({
                 data-nodrag
                 data-tauri-drag-region="false"
                 onClick={onPickWorkspace}
-                className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[13px] text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[13px] text-neutral-600 hover:text-neutral-900 hover:bg-black/[0.04] transition-colors"
               >
                 <FolderOpen className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
                 <span>打开其他工作区...</span>
@@ -233,7 +233,7 @@ export function SessionSidebar({
           </div>
         </div>
 
-        <div className="h-11 px-4 flex items-center select-none flex-none bg-panel dark:bg-neutral-900">
+        <div className="h-11 px-4 flex items-center select-none flex-none bg-panel">
           <div data-nodrag data-tauri-drag-region="false" className="flex items-center gap-3.5">
             <Tooltip>
               <TooltipTrigger asChild>
@@ -241,7 +241,7 @@ export function SessionSidebar({
                   type="button"
                   onClick={onOpenSettings}
                   aria-label="设置"
-                  className="text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 transition-colors p-1 rounded hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                  className="text-neutral-500 hover:text-neutral-800 transition-colors p-1 rounded hover:bg-black/[0.04]"
                 >
                   <Settings className="h-4 w-4" />
                 </button>
@@ -258,7 +258,7 @@ export function SessionSidebar({
                     <button
                       type="button"
                       aria-label="通知"
-                      className="text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 transition-colors p-1 rounded hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                      className="text-neutral-500 hover:text-neutral-800 transition-colors p-1 rounded hover:bg-black/[0.04]"
                     >
                       <Bell className="h-4 w-4" />
                     </button>
@@ -269,10 +269,10 @@ export function SessionSidebar({
                 </TooltipContent>
               </Tooltip>
               <PopoverContent side="top" align="start" className="w-56 p-3 text-xs">
-                <div className="font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
+                <div className="font-semibold text-neutral-800 mb-1">
                   系统通知
                 </div>
-                <div className="text-neutral-500 dark:text-neutral-400">暂无新通知。</div>
+                <div className="text-neutral-500">暂无新通知。</div>
               </PopoverContent>
             </Popover>
           </div>
@@ -364,8 +364,8 @@ function SessionItem({
       className={cn(
         "group flex-none shrink-0 flex w-full items-center gap-1.5 rounded-md pl-7 pr-2 h-8 min-h-8 text-[13px] cursor-pointer select-none transition-colors",
         isActive
-          ? "bg-black/[0.06] dark:bg-white/[0.08] text-neutral-900 dark:text-white font-medium"
-          : "text-neutral-600 dark:text-neutral-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] hover:text-neutral-900 dark:hover:text-white font-normal",
+          ? "bg-black/[0.06] text-neutral-900 font-medium"
+          : "text-neutral-600 hover:bg-black/[0.04] hover:text-neutral-900 font-normal",
       )}
     >
       <span className="flex-1 min-w-0 truncate text-left">{displayTitle}</span>
@@ -373,7 +373,7 @@ function SessionItem({
         <Bookmark className="h-3 w-3 flex-none fill-current text-amber-500 dark:text-amber-400" />
       )}
       {hint && (
-        <span className="flex-none max-w-[64px] truncate text-[11px] text-neutral-400 dark:text-neutral-500">
+        <span className="flex-none max-w-[64px] truncate text-[11px] text-neutral-400">
           {hint}
         </span>
       )}
@@ -383,7 +383,7 @@ function SessionItem({
           <Orb
             variant="C3"
             size={14}
-            className="absolute inset-0 flex items-center justify-center text-neutral-800 dark:text-neutral-200 group-hover:invisible group-focus-within:invisible"
+            className="absolute inset-0 flex items-center justify-center text-neutral-800 group-hover:invisible group-focus-within:invisible"
           />
         )}
         {showActions && (
@@ -396,7 +396,7 @@ function SessionItem({
                 aria-label="会话操作"
                 onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => e.stopPropagation()}
-                className="absolute inset-0 rounded flex items-center justify-center text-neutral-400 invisible group-hover:visible group-focus-within:visible data-[state=open]:visible hover:bg-neutral-300/60 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200"
+                className="absolute inset-0 rounded flex items-center justify-center text-neutral-400 invisible group-hover:visible group-focus-within:visible data-[state=open]:visible hover:bg-neutral-300/60 hover:text-neutral-700"
               >
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </button>
@@ -458,7 +458,7 @@ function ProjectItem({
         data-nodrag
         data-tauri-drag-region="false"
         className={cn(
-          open && "sticky top-0 z-10 bg-panel dark:bg-neutral-900 pb-0.5"
+          open && "sticky top-0 z-10 bg-panel pb-0.5"
         )}
       >
         <TooltipSimple content={project.root} side="right" sideOffset={8}>
@@ -474,7 +474,7 @@ function ProjectItem({
                 onToggle();
               }
             }}
-            className="group w-full flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] text-neutral-800 dark:text-neutral-200 transition-colors text-left cursor-pointer hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+            className="group w-full flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] text-neutral-800 transition-colors text-left cursor-pointer hover:bg-black/[0.04]"
           >
             <span className="text-neutral-400 shrink-0">
               {open ? (
@@ -483,7 +483,7 @@ function ProjectItem({
                 <ChevronRight className="h-3.5 w-3.5" />
               )}
             </span>
-            <span className="text-neutral-500 dark:text-neutral-400 shrink-0">
+            <span className="text-neutral-500 shrink-0">
               {open ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
             </span>
             <span className="font-medium truncate flex-1 min-w-0">{project.name}</span>
@@ -498,7 +498,7 @@ function ProjectItem({
                   onSwitchWorkspace(project.root);
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
-                className="flex-none rounded p-0.5 text-neutral-400 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-200/60 dark:hover:bg-neutral-700"
+                className="flex-none rounded p-0.5 text-neutral-400 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-neutral-200/60"
               >
                 <FolderOpen className="h-3.5 w-3.5" />
               </button>
@@ -509,7 +509,7 @@ function ProjectItem({
               </span>
             )}
             {project.current && (
-              <span className="w-1.5 h-1.5 rounded-full bg-neutral-800 dark:bg-neutral-200 shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-neutral-800 shrink-0" />
             )}
           </div>
         </TooltipSimple>

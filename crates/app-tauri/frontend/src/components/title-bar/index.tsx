@@ -42,7 +42,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
       <div className="flex items-center min-w-0 max-w-[500px]">
         <TooltipSimple content={title} side="bottom">
           <span
-            className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 truncate cursor-default"
+            className="text-[13px] font-medium text-neutral-800 truncate cursor-default"
           >
             {title}
           </span>
@@ -55,7 +55,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
        * the meter cluster doesn't pop in mid-conversation. The git chip is
        * the only conditional one: outside a repo there is no branch to show. */}
       <div
-        className="flex items-center gap-3 flex-none mr-2 text-[11px] font-mono text-neutral-400 dark:text-neutral-500"
+        className="flex items-center gap-3 flex-none mr-2 text-[11px] font-mono text-neutral-400"
       >
         {gitInfo?.branch && (
           <TooltipSimple content={`Git 分支: ${gitInfo.branch}${gitInfo.dirty > 0 ? ` (${gitInfo.dirty} 处未提交修改)` : ""}`} side="bottom">

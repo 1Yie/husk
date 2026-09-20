@@ -22,7 +22,7 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
   if (!diff || lines.length === 0) return null;
 
   return (
-    <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 overflow-hidden shadow-2xs font-mono text-[12px] leading-relaxed select-text">
+    <div className="w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs font-mono text-[12px] leading-relaxed select-text">
       <div
         className="w-full overflow-x-auto overflow-y-auto"
         style={{ maxHeight }}
@@ -33,7 +33,7 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
               return (
                 <div
                   key={i}
-                  className="px-3 pt-2.5 pb-1 font-mono text-[12px] font-semibold text-neutral-700 dark:text-neutral-300 select-text"
+                  className="px-3 pt-2.5 pb-1 font-mono text-[12px] font-semibold text-neutral-700 select-text"
                 >
                   <span className="truncate font-mono">
                     {l.path || l.text}
@@ -182,7 +182,7 @@ function bgClass(k: LineKind) {
     case "del":
       return "bg-rose-500/10 dark:bg-rose-500/15";
     case "meta":
-      return "bg-neutral-100/50 dark:bg-neutral-800/40";
+      return "bg-neutral-100/50";
     default:
       return "";
   }
@@ -195,8 +195,8 @@ function fgClass(k: LineKind) {
     case "del":
       return "text-rose-800 dark:text-rose-300";
     case "meta":
-      return "text-neutral-400 dark:text-neutral-500 italic";
+      return "text-neutral-400 italic";
     default:
-      return "text-neutral-800 dark:text-neutral-200";
+      return "text-neutral-800";
   }
 }

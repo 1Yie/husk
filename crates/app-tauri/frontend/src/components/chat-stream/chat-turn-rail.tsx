@@ -97,8 +97,8 @@ export function ChatTurnRail({
         className={cn(
           "relative flex flex-col items-center py-2 px-1.5 rounded-full transition-colors touch-none cursor-pointer max-h-[calc(100vh-220px)] overflow-y-auto no-scrollbar",
           isDragging
-            ? "bg-neutral-200/50 dark:bg-neutral-800/60"
-            : "hover:bg-neutral-100/50 dark:hover:bg-neutral-800/40"
+            ? "bg-neutral-200/50"
+            : "hover:bg-neutral-100/50"
         )}
       >
         <div className="flex flex-col items-center">
@@ -136,8 +136,8 @@ export function ChatTurnRail({
                         className={cn(
                           "rounded-full transition-colors",
                           isActive
-                            ? "w-[2.5px] h-[3px] bg-neutral-900 dark:bg-white shadow-[0_0_3px_rgba(255,255,255,0.35)]"
-                            : "w-[2px] h-[2px] bg-neutral-600 dark:bg-neutral-400 group-hover/item:bg-neutral-800 dark:group-hover/item:bg-neutral-200"
+                            ? "w-[2.5px] h-[3px] bg-neutral-900 shadow-[0_0_3px_rgba(255,255,255,0.35)]"
+                            : "w-[2px] h-[2px] bg-neutral-600 group-hover/item:bg-neutral-800"
                         )}
                       />
                     ))}
@@ -148,7 +148,7 @@ export function ChatTurnRail({
                     className={cn(
                       "rounded-full transition-all duration-150",
                       isActive
-                        ? "w-[14px] h-[3.5px] bg-neutral-900 dark:bg-white shadow-[0_0_4px_rgba(255,255,255,0.35)]"
+                        ? "w-[14px] h-[3.5px] bg-neutral-900 shadow-[0_0_4px_rgba(255,255,255,0.35)]"
                         : "w-[14px] h-[2px] bg-neutral-300 dark:bg-[#383838] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#606060] group-hover/item:w-[16px]"
                     )}
                   />
@@ -158,7 +158,7 @@ export function ChatTurnRail({
                     className={cn(
                       "rounded-full transition-all duration-150",
                       isActive
-                        ? "w-[9px] h-[3.5px] bg-neutral-900 dark:bg-white shadow-[0_0_4px_rgba(255,255,255,0.35)]"
+                        ? "w-[9px] h-[3.5px] bg-neutral-900 shadow-[0_0_4px_rgba(255,255,255,0.35)]"
                         : "w-[8px] h-[2px] bg-neutral-300 dark:bg-[#383838] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#606060] group-hover/item:w-[10px]"
                     )}
                   />

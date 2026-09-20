@@ -92,7 +92,7 @@ function renderHighlightedLines(detailText: string, label: string, chip: string)
     // 1. Header line (e.g. "path/to/file.tsx (content_hash: ...)")
     if (/\(content_hash:\s*[a-f0-9]+\)/i.test(line)) {
       return (
-        <div key={idx} className="whitespace-pre font-mono text-neutral-500 dark:text-neutral-400 font-medium pb-1.5 mb-1 border-b border-neutral-200 dark:border-neutral-800/60">
+        <div key={idx} className="whitespace-pre font-mono text-neutral-500 font-medium pb-1.5 mb-1 border-b border-neutral-200">
           {line}
         </div>
       );
@@ -105,8 +105,8 @@ function renderHighlightedLines(detailText: string, label: string, chip: string)
       const code = numMatch[2];
       const highlighted = highlightCodeToHtml(code, lang);
       return (
-        <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-neutral-200/40 dark:hover:bg-neutral-800/40 px-1 -mx-1 rounded-xs transition-colors">
-          <span className="text-neutral-400 dark:text-neutral-500 select-none mr-2 inline-block min-w-[2.5rem] text-right font-mono">{prefix}</span>
+        <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-neutral-200/40 px-1 -mx-1 rounded-xs transition-colors">
+          <span className="text-neutral-400 select-none mr-2 inline-block min-w-[2.5rem] text-right font-mono">{prefix}</span>
           <span dangerouslySetInnerHTML={{ __html: highlighted }} />
         </div>
       );
@@ -115,7 +115,7 @@ function renderHighlightedLines(detailText: string, label: string, chip: string)
     // 3. Truncation notice
     if (/^[….]*\s*\[truncated\s*—.*\]\s*[….]*$/i.test(line)) {
       return (
-        <div key={idx} className="whitespace-pre font-mono text-amber-600 dark:text-amber-400/90 font-medium pt-1.5 mt-1 border-t border-neutral-200 dark:border-neutral-800/60">
+        <div key={idx} className="whitespace-pre font-mono text-amber-600 dark:text-amber-400/90 font-medium pt-1.5 mt-1 border-t border-neutral-200">
           {line}
         </div>
       );
@@ -124,7 +124,7 @@ function renderHighlightedLines(detailText: string, label: string, chip: string)
     // 4. Regular code / text line
     const highlighted = highlightCodeToHtml(line, lang);
     return (
-      <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-neutral-200/40 dark:hover:bg-neutral-800/40 px-1 -mx-1 rounded-xs transition-colors">
+      <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-neutral-200/40 px-1 -mx-1 rounded-xs transition-colors">
         <span dangerouslySetInnerHTML={{ __html: highlighted }} />
       </div>
     );
@@ -280,7 +280,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
     <div className="w-full my-1">
       <button
         aria-expanded={open}
-        className="text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex w-fit items-center gap-1.5 rounded-md px-1.5 py-1 text-xs cursor-pointer select-none transition-colors"
+        className="text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 flex w-fit items-center gap-1.5 rounded-md px-1.5 py-1 text-xs cursor-pointer select-none transition-colors"
         onClick={() => {
           setOpen((current) => !current);
         }}
@@ -343,7 +343,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                   <button
                     aria-expanded={rowOpen}
                     className={cn(
-                      "hover:bg-neutral-100 dark:hover:bg-neutral-800 flex h-7 w-fit max-w-full items-center gap-2 rounded-md px-1.5 text-left select-none transition-colors group",
+                      "hover:bg-neutral-100 flex h-7 w-fit max-w-full items-center gap-2 rounded-md px-1.5 text-left select-none transition-colors group",
                       hasDetail ? "cursor-pointer" : "cursor-default"
                     )}
                     onClick={() => {
@@ -351,7 +351,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                     }}
                     type="button"
                   >
-                    <span className="text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300 shrink-0 text-xs font-medium transition-colors">
+                    <span className="text-neutral-500 group-hover:text-neutral-700 shrink-0 text-xs font-medium transition-colors">
                       {asChipText(row.label)}
                     </span>
                     {displayChipText ? (
@@ -363,10 +363,10 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                         }
                         side="top"
                         sideOffset={6}
-                        className="max-w-xl bg-neutral-900/95 dark:bg-neutral-800/95 backdrop-blur-sm border border-neutral-700/60 p-2.5 shadow-xl select-text"
+                        className="max-w-xl bg-neutral-900/95 backdrop-blur-sm border border-neutral-700/60 p-2.5 shadow-xl select-text"
                       >
                         <span
-                          className="bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 inline-flex h-5 max-w-[280px] sm:max-w-[360px] md:max-w-[420px] items-center rounded-md px-1.5 font-mono text-[11px] shrink min-w-0 cursor-pointer"
+                          className="bg-neutral-100 text-neutral-600 inline-flex h-5 max-w-[280px] sm:max-w-[360px] md:max-w-[420px] items-center rounded-md px-1.5 font-mono text-[11px] shrink min-w-0 cursor-pointer"
                         >
                           <span className="truncate">{displayChipText}</span>
                         </span>
@@ -400,8 +400,8 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
                           ) : isTodo ? (
                             <TodoView content={detailText} />
                           ) : (
-                            <div className="w-full rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 overflow-hidden shadow-2xs">
-                              <div className="p-3 font-mono text-[11.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed overflow-x-auto max-h-[400px] overflow-y-auto select-text">
+                            <div className="w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs">
+                              <div className="p-3 font-mono text-[11.5px] text-neutral-700 leading-relaxed overflow-x-auto max-h-[400px] overflow-y-auto select-text">
                                 {renderHighlightedLines(detailText, row.label, row.chip)}
                               </div>
                             </div>

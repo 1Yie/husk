@@ -216,7 +216,7 @@ const userMarkdownComponents = {
     }
     return (
       <code
-        className="bg-black/[0.05] dark:bg-white/[0.08] text-neutral-800 dark:text-neutral-200 px-1.5 py-[1px] rounded-[4px] text-[12px] font-mono border border-black/[0.07] dark:border-white/[0.08] font-normal mx-0.5 inline-block leading-snug align-baseline"
+        className="bg-black/[0.05] text-neutral-800 px-1.5 py-[1px] rounded-[4px] text-[12px] font-mono border border-black/[0.07] font-normal mx-0.5 inline-block leading-snug align-baseline"
         {...props}
       >
         {children}
@@ -314,11 +314,11 @@ function EmptyGreeting() {
   const { label, Icon, tone } = timeGreeting();
   return (
     <div className="my-auto flex flex-col items-center gap-3 select-none pb-16">
-      <span className="flex items-center gap-3 text-[26px] leading-snug font-medium tracking-tight text-neutral-800 dark:text-neutral-100">
+      <span className="flex items-center gap-3 text-[26px] leading-snug font-medium tracking-tight text-neutral-800">
         <Icon size={24} className={tone} />
         {label}，今天想做点什么？
       </span>
-      <span className="text-[13px] text-neutral-400 dark:text-neutral-500">
+      <span className="text-[13px] text-neutral-400">
         在下方输入框发送消息，开始新对话
       </span>
     </div>
@@ -878,7 +878,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         <div
           ref={streamRootRef}
           onContextMenu={syncSelection}
-          className="bg-white dark:bg-neutral-950 flex-1 min-h-0 w-full flex flex-col select-text relative"
+          className="bg-white flex-1 min-h-0 w-full flex flex-col select-text relative"
         >
       <ChatTurnRail
         marks={marks}
@@ -918,17 +918,17 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                   aria-hidden="true"
                   data-tooltip={formatFullTime(turn.ts)}
                 >
-                  <div className="h-px flex-1 bg-neutral-200/70 dark:bg-neutral-700/60" />
-                  <span className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">
+                  <div className="h-px flex-1 bg-neutral-200/70" />
+                  <span className="text-[11px] font-medium text-neutral-400 tracking-wide">
                     {formatTurnTime(turn.ts)}
                   </span>
-                  <div className="h-px flex-1 bg-neutral-200/70 dark:bg-neutral-700/60" />
+                  <div className="h-px flex-1 bg-neutral-200/70" />
                 </div>
               )}
               {turn.userText && (
                 <div
                   id={`chat-turn-${turn.id}-user`}
-                  className="bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 ms-auto flex w-fit max-w-[80%] flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]"
+                  className="bg-neutral-100 text-neutral-900 ms-auto flex w-fit max-w-[80%] flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]"
                 >
                   <div className="min-w-0 text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text">
                     <UserMemoStreamdown text={collapsePromptArtifacts(turn.userText)} />
@@ -961,7 +961,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
                       return (
                         <div
-                          className="w-full min-w-0 text-[14px] text-neutral-900 dark:text-neutral-100 [&_p]:max-w-none"
+                          className="w-full min-w-0 text-[14px] text-neutral-900 [&_p]:max-w-none"
                           key={`step-${stepIdx}`}
                         >
                           <MemoStreamdown text={step.text} animating={isAnimating} />
@@ -1031,7 +1031,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             type="button"
             onClick={scrollToBottom}
             aria-label="回到底部"
-            className="w-8 h-8 rounded-full bg-white dark:bg-[#202024] hover:bg-neutral-50 dark:hover:bg-[#2a2a30] text-neutral-600 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-white flex items-center justify-center border border-neutral-200/90 dark:border-neutral-700/80 shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+            className="w-8 h-8 rounded-full bg-white dark:bg-[#202024] hover:bg-neutral-50 dark:hover:bg-[#2a2a30] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-neutral-200/90 shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
           >
             <ArrowDown className="h-4 w-4" />
           </button>

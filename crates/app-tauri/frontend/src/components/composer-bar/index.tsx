@@ -470,14 +470,14 @@ export function ComposerBar({
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
           {pending || hasActiveTodos ? (
             /* Outer container with attached banner: Approval (Priority 1) or Active Todo (Priority 2) */
-            <div className="w-full bg-panel dark:bg-neutral-900 rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
+            <div className="w-full bg-panel rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
               {pending ? (
                 /* Priority 1: Permission approval strip */
-                <div className="flex items-center gap-2 px-3 pt-0.5 text-xs text-neutral-600 dark:text-neutral-400 font-medium select-none">
+                <div className="flex items-center gap-2 px-3 pt-0.5 text-xs text-neutral-600 font-medium select-none">
                   <span className="text-neutral-500 shrink-0 flex items-center">
                     {toolIcon(pending.toolName)}
                   </span>
-                  <span className="shrink-0 text-neutral-800 dark:text-neutral-200 font-medium">
+                  <span className="shrink-0 text-neutral-800 font-medium">
                     允许执行
                   </span>
                   <TooltipSimple
@@ -488,10 +488,10 @@ export function ComposerBar({
                     }
                     side="top"
                     sideOffset={8}
-                    className="max-w-xl bg-neutral-900/95 dark:bg-neutral-800/95 backdrop-blur-sm border border-neutral-700/60 p-2.5 shadow-xl select-text"
+                    className="max-w-xl bg-neutral-900/95 backdrop-blur-sm border border-neutral-700/60 p-2.5 shadow-xl select-text"
                   >
                     <span
-                      className="font-mono text-[11px] text-neutral-600 dark:text-neutral-300 truncate min-w-0 flex-1 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] px-2 py-0.5 rounded cursor-pointer hover:bg-black/[0.07] dark:hover:bg-white/[0.09] transition-colors"
+                      className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-black/[0.04] border border-black/[0.06] px-2 py-0.5 rounded cursor-pointer hover:bg-black/[0.07] transition-colors"
                     >
                       {pending.args || pending.toolName}
                     </span>
@@ -515,13 +515,13 @@ export function ComposerBar({
               ) : (
                 /* Attached Todo List Strip */
                 <div className="flex flex-col gap-1.5 px-3 pt-0.5">
-                  <div className="flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400 font-medium select-none">
+                  <div className="flex items-center justify-between text-xs text-neutral-600 font-medium select-none">
                     <div className="flex items-center gap-2 min-w-0">
                       <ListCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                      <span className="shrink-0 text-neutral-800 dark:text-neutral-200 font-medium text-xs">
+                      <span className="shrink-0 text-neutral-800 font-medium text-xs">
                         任务清单
                       </span>
-                      <div className="w-16 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden shrink-0">
+                      <div className="w-16 h-1.5 rounded-full bg-neutral-200 overflow-hidden shrink-0">
                         <div
                           className="h-full bg-emerald-500 transition-all duration-300 rounded-full"
                           style={{
@@ -529,7 +529,7 @@ export function ComposerBar({
                           }}
                         />
                       </div>
-                      <span className="text-[11px] font-mono text-neutral-500 dark:text-neutral-400 shrink-0">
+                      <span className="text-[11px] font-mono text-neutral-500 shrink-0">
                         {latestTodos!.doneCount}/{latestTodos!.totalCount} (
                         {Math.round((latestTodos!.doneCount / latestTodos!.totalCount) * 100)}%)
                       </span>
@@ -540,7 +540,7 @@ export function ComposerBar({
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => setTodoCollapsed((prev) => !prev)}
-                        className="h-6 w-6 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
+                        className="h-6 w-6 text-neutral-400 hover:text-neutral-700 cursor-pointer"
                       >
                         <ChevronDown
                           className={cn(
@@ -567,8 +567,8 @@ export function ComposerBar({
                             className={cn(
                               "group flex items-center gap-2 text-xs py-0.5 px-1 rounded transition-colors",
                               item.done
-                                ? "text-neutral-400 dark:text-neutral-500"
-                                : "text-neutral-700 dark:text-neutral-300 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]",
+                                ? "text-neutral-400"
+                                : "text-neutral-700 hover:bg-black/[0.03]",
                             )}
                           >
                             <span className="flex h-4 w-3.5 items-center justify-center shrink-0">
@@ -577,10 +577,10 @@ export function ComposerBar({
                                   <Check className="h-2 w-2 stroke-[3]" />
                                 </span>
                               ) : (
-                                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 dark:border-neutral-600 group-hover:border-neutral-400 dark:group-hover:border-neutral-500 transition-colors" />
+                                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 group-hover:border-neutral-400 transition-colors" />
                               )}
                             </span>
-                            <span className="font-mono text-[10.5px] text-neutral-400 dark:text-neutral-500 shrink-0 select-none">
+                            <span className="font-mono text-[10.5px] text-neutral-400 shrink-0 select-none">
                               #{item.id}
                             </span>
                             <span className={cn("truncate flex-1 min-w-0", item.done && "line-through opacity-75")}>
@@ -594,7 +594,7 @@ export function ComposerBar({
                 </div>
               )}
 
-              <div className="bg-white dark:bg-neutral-950 border border-hairline dark:border-neutral-800 rounded-[18px] p-3 flex flex-col gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.02)]">
+              <div className="bg-white border border-hairline rounded-[18px] p-3 flex flex-col gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.02)]">
                 <AttachmentChips
                   items={attachments}
                   onRemove={(path) =>
@@ -639,7 +639,7 @@ export function ComposerBar({
             </div>
           ) : (
             /* Normal — single white card when no approval and no active todos. */
-            <div className="w-full bg-white dark:bg-neutral-950 border border-hairline dark:border-neutral-800 rounded-[22px] shadow-[0_2px_12px_rgba(0,0,0,0.025)] hover:border-neutral-300 dark:hover:border-neutral-700 transition-all p-3 flex flex-col gap-2">
+            <div className="w-full bg-white border border-hairline rounded-[22px] shadow-[0_2px_12px_rgba(0,0,0,0.025)] hover:border-neutral-300 transition-all p-3 flex flex-col gap-2">
               <AttachmentChips
                 items={attachments}
                 onRemove={(path) =>
@@ -722,14 +722,14 @@ function MentionPopup({
 
   if (rows.length === 0) {
     return (
-      <div className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 bg-white dark:bg-neutral-900 shadow-popup px-3 py-2.5 text-xs text-neutral-400">
+      <div className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-neutral-200/80 bg-white shadow-popup px-3 py-2.5 text-xs text-neutral-400">
         无匹配项
       </div>
     );
   }
   return (
     <div
-      className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 bg-white dark:bg-neutral-900 shadow-popup overflow-hidden"
+      className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-neutral-200/80 bg-white shadow-popup overflow-hidden"
       role="listbox"
     >
       <div ref={listRef} className="max-h-64 overflow-y-auto">
@@ -746,8 +746,8 @@ function MentionPopup({
             className={cn(
               "w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12.5px] transition-colors",
               i === active
-                ? "bg-neutral-100 dark:bg-neutral-800"
-                : "hover:bg-neutral-50 dark:hover:bg-neutral-800/60",
+                ? "bg-neutral-100"
+                : "hover:bg-neutral-50",
             )}
           >
             <span className="shrink-0 text-neutral-400">
@@ -759,10 +759,10 @@ function MentionPopup({
                 <Terminal className="h-3.5 w-3.5" />
               )}
             </span>
-            <span className="font-mono font-medium text-neutral-800 dark:text-neutral-200 shrink-0">
+            <span className="font-mono font-medium text-neutral-800 shrink-0">
               {r.label}
             </span>
-            <span className="truncate text-[11px] text-neutral-400 dark:text-neutral-500">
+            <span className="truncate text-[11px] text-neutral-400">
               {r.hint}
             </span>
           </button>
@@ -840,7 +840,7 @@ function AttachmentChips({
         <span
           key={a.path}
           title={a.path}
-          className="inline-flex items-center gap-1.5 max-w-[240px] pl-1.5 pr-1 py-1 rounded-md bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200/60 dark:border-neutral-700/60 text-[11.5px] text-neutral-700 dark:text-neutral-300"
+          className="inline-flex items-center gap-1.5 max-w-[240px] pl-1.5 pr-1 py-1 rounded-md bg-neutral-100 border border-neutral-200/60 text-[11.5px] text-neutral-700"
         >
           <span className="shrink-0 text-neutral-400">
             {a.kind === "image" && a.data_url ? (
@@ -861,7 +861,7 @@ function AttachmentChips({
           <button
             type="button"
             onClick={() => onRemove(a.path)}
-            className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
+            className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200 cursor-pointer"
             aria-label={`移除 ${a.name}`}
           >
             <X className="h-2.5 w-2.5" />
@@ -935,7 +935,7 @@ function ComposerTextarea({
       <div
         ref={mirrorRef}
         aria-hidden
-        className="pointer-events-none select-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-2 pt-1 pb-2 text-[14px] leading-relaxed text-neutral-900 dark:text-neutral-100"
+        className="pointer-events-none select-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-2 pt-1 pb-2 text-[14px] leading-relaxed text-neutral-900"
       >
         {highlightComposerTokens(value)}
         {"\u200B"}
@@ -990,7 +990,7 @@ function ComposerTextarea({
           streaming ? "插入指示引导生成 (Steer)…" : "输入消息… @ 引用文件 · / 命令 · $ 技能"
         }
         rows={1}
-        className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent text-transparent caret-neutral-800 dark:caret-neutral-200 selection:bg-neutral-300/70 dark:selection:bg-neutral-600/70"
+        className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent text-transparent caret-neutral-800 selection:bg-neutral-300/70"
       />
     </div>
   );
@@ -1046,7 +1046,7 @@ function ComposerToolbar({
               variant="ghost"
               size="icon-sm"
               aria-label="添加附件"
-              className="w-7 h-7 rounded-full text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              className="w-7 h-7 rounded-full text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100"
             >
               <Plus className="h-4 w-4" />
             </Button>
@@ -1080,7 +1080,7 @@ function ComposerToolbar({
           <DropdownMenuTrigger asChild>
             <button
               aria-label="权限模式"
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 dark:text-neutral-300 bg-neutral-100/80 dark:bg-neutral-800/80 hover:bg-neutral-200/70 dark:hover:bg-neutral-700/70 rounded-lg transition-colors border border-neutral-200/50 dark:border-neutral-700/50 select-none cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-neutral-100/80 hover:bg-neutral-200/70 rounded-lg transition-colors border border-neutral-200/50 select-none cursor-pointer"
             >
               <ShieldCheck className="h-3.5 w-3.5 text-neutral-500" />
               <span>{modeLabel}</span>
@@ -1088,7 +1088,7 @@ function ComposerToolbar({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="top" className="w-64">
-            <DropdownMenuLabel className="text-xs text-neutral-500 dark:text-neutral-400 font-normal">
+            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
               权限模式
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -1102,12 +1102,12 @@ function ComposerToolbar({
                     className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
                   >
                     <div className="flex items-center justify-between w-full">
-                      <span className="font-medium text-xs text-neutral-800 dark:text-neutral-200">
+                      <span className="font-medium text-xs text-neutral-800">
                         {m.label}
                       </span>
                       {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
                     </div>
-                    <span className="text-[11px] text-neutral-400 dark:text-neutral-500 leading-tight">
+                    <span className="text-[11px] text-neutral-400 leading-tight">
                       {m.desc}
                     </span>
                   </DropdownMenuItem>
@@ -1122,13 +1122,13 @@ function ComposerToolbar({
             <DropdownMenuTrigger asChild>
               <button
                 aria-label={`思考推理强度: ${currentThinkingLabel}`}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 dark:text-neutral-300 bg-neutral-100/80 dark:bg-neutral-800/80 hover:bg-neutral-200/70 dark:hover:bg-neutral-700/70 rounded-lg transition-colors border border-neutral-200/50 dark:border-neutral-700/50 select-none cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-neutral-100/80 hover:bg-neutral-200/70 rounded-lg transition-colors border border-neutral-200/50 select-none cursor-pointer"
               >
                 <Brain
                   className={cn(
                     "h-3.5 w-3.5 shrink-0",
                     activeThinkingLevel === "off"
-                      ? "text-neutral-400 dark:text-neutral-500"
+                      ? "text-neutral-400"
                       : "text-purple-600 dark:text-purple-400",
                   )}
                 />
@@ -1139,7 +1139,7 @@ function ComposerToolbar({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="top" className="w-48">
-              <DropdownMenuLabel className="text-xs text-neutral-500 dark:text-neutral-400 font-normal">
+              <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
                 思考推理强度
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
@@ -1153,10 +1153,10 @@ function ComposerToolbar({
                       className="flex items-center justify-between text-xs py-2 cursor-pointer"
                     >
                       <div className="flex flex-col gap-0.5 min-w-0 pr-2">
-                        <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                        <span className="font-medium text-neutral-800">
                           {lvl.label}
                         </span>
-                        <span className="text-[10.5px] text-neutral-400 dark:text-neutral-500 truncate">
+                        <span className="text-[10.5px] text-neutral-400 truncate">
                           {lvl.desc}
                         </span>
                       </div>
@@ -1177,7 +1177,7 @@ function ComposerToolbar({
           <DropdownMenuTrigger asChild>
             <button
               aria-label={`当前模型: ${activeModel || "未选择"} (${activeProvider})`}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors select-none cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer"
             >
               <span className="truncate max-w-[140px] font-mono text-[11.5px]">
                 {activeModel || "选择模型"}
@@ -1187,7 +1187,7 @@ function ComposerToolbar({
           </DropdownMenuTrigger>
 
           <DropdownMenuContent align="end" side="top" className="w-56">
-            <DropdownMenuLabel className="text-xs text-neutral-500 dark:text-neutral-400 font-normal">
+            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
               模型
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -1203,7 +1203,7 @@ function ComposerToolbar({
                       className="flex items-center justify-between text-xs py-2 cursor-pointer"
                     >
                       <div className="flex flex-col min-w-0 pr-2">
-                        <span className="font-mono font-medium truncate text-neutral-900 dark:text-neutral-100">
+                        <span className="font-mono font-medium truncate text-neutral-900">
                           {item.model}
                         </span>
                         <span className="text-[10px] text-neutral-400">{item.provider}</span>
@@ -1224,16 +1224,16 @@ function ComposerToolbar({
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="group relative w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 border border-neutral-200/80 dark:border-neutral-700 flex items-center justify-center cursor-pointer transition-all shadow-xs"
+                className="group relative w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 border border-neutral-200/80 flex items-center justify-center cursor-pointer transition-all shadow-xs"
                 onClick={() => void cancel()}
                 aria-label="中断回复"
               >
                 <Orb
                   variant="B3"
                   size={16}
-                  className="text-neutral-800 dark:text-neutral-200 group-hover:opacity-0 transition-opacity duration-150"
+                  className="text-neutral-800 group-hover:opacity-0 transition-opacity duration-150"
                 />
-                <Square className="h-2.5 w-2.5 fill-neutral-800 dark:fill-neutral-200 text-neutral-800 dark:text-neutral-200 absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150" />
+                <Square className="h-2.5 w-2.5 fill-neutral-800 text-neutral-800 absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="top">中断当前回复</TooltipContent>
@@ -1243,7 +1243,7 @@ function ComposerToolbar({
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="w-8 h-8 rounded-full bg-neutral-900 hover:bg-black text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
+                className="w-8 h-8 rounded-full bg-neutral-900 hover:bg-black text-white flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
                 onClick={() => void submit()}
                 aria-label="发送"
               >
@@ -1256,7 +1256,7 @@ function ComposerToolbar({
           <button
             type="button"
             disabled
-            className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-300 dark:text-neutral-600 flex items-center justify-center cursor-not-allowed border border-neutral-200/50 dark:border-neutral-700/50 transition-all select-none"
+            className="w-8 h-8 rounded-full bg-neutral-100 text-neutral-300 flex items-center justify-center cursor-not-allowed border border-neutral-200/50 transition-all select-none"
             aria-label="无法发送 (请输入内容)"
           >
             <ArrowUp className="h-4 w-4" />

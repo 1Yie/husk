@@ -22,7 +22,7 @@ const TooltipContent = React.forwardRef<
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
         "data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1",
         "data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1",
-        "dark:bg-neutral-800 dark:text-neutral-100 border border-neutral-700/50 select-none",
+        " border border-neutral-700/50 select-none",
         className
       )}
       {...props}
@@ -169,7 +169,7 @@ export function GlobalTooltip() {
         top: pos ? `${pos.top}px` : "-9999px",
         opacity: pos ? 1 : 0,
       }}
-      className="pointer-events-none z-[9999] overflow-hidden rounded-md bg-neutral-900 px-2.5 py-1 text-xs text-neutral-50 shadow-md dark:bg-neutral-800 dark:text-neutral-100 border border-neutral-700/50 select-none max-w-xs break-words transition-opacity duration-150 ease-out"
+      className="pointer-events-none z-[9999] overflow-hidden rounded-md bg-neutral-900 px-2.5 py-1 text-xs text-neutral-50 shadow-md border border-neutral-700/50 select-none max-w-xs break-words transition-opacity duration-150 ease-out"
     >
       {target.text}
     </div>
