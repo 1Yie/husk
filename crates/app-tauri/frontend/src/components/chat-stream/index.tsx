@@ -1031,7 +1031,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             type="button"
             onClick={scrollToBottom}
             aria-label="回到底部"
-            className="w-8 h-8 rounded-full bg-white dark:bg-[#202024] hover:bg-neutral-50 dark:hover:bg-[#2a2a30] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-neutral-200/90 shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+            className="w-8 h-8 rounded-full bg-white dark:bg-[#26262c] hover:bg-neutral-50 dark:hover:bg-[#2e2e36] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-neutral-200/90 shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
           >
             <ArrowDown className="h-4 w-4" />
           </button>

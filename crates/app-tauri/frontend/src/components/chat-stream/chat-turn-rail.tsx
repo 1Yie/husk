@@ -149,7 +149,7 @@ export function ChatTurnRail({
                       "rounded-full transition-all duration-150",
                       isActive
                         ? "w-[14px] h-[3.5px] bg-neutral-900 shadow-[0_0_4px_rgba(255,255,255,0.35)]"
-                        : "w-[14px] h-[2px] bg-neutral-300 dark:bg-[#383838] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#606060] group-hover/item:w-[16px]"
+                        : "w-[14px] h-[2px] bg-neutral-300 dark:bg-[#40404a] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#5c5c66] group-hover/item:w-[16px]"
                     )}
                   />
                 ) : (
@@ -159,13 +159,13 @@ export function ChatTurnRail({
                       "rounded-full transition-all duration-150",
                       isActive
                         ? "w-[9px] h-[3.5px] bg-neutral-900 shadow-[0_0_4px_rgba(255,255,255,0.35)]"
-                        : "w-[8px] h-[2px] bg-neutral-300 dark:bg-[#383838] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#606060] group-hover/item:w-[10px]"
+                        : "w-[8px] h-[2px] bg-neutral-300 dark:bg-[#40404a] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#5c5c66] group-hover/item:w-[10px]"
                     )}
                   />
                 )}
 
                 {isHovered && (
-                  <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-neutral-900/95 dark:bg-[#18181b]/95 text-white text-[11px] px-2.5 py-1.5 rounded-lg shadow-popup border border-neutral-700/60 backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
+                  <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-neutral-900/95 dark:bg-[#232329]/95 text-white text-[11px] px-2.5 py-1.5 rounded-lg shadow-popup border border-neutral-700/60 backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
                     <div className="flex items-center gap-1.5 text-[10px] font-medium text-neutral-400">
                       <span>{mark.previewTitle}</span>
                       <span className="text-neutral-500">•</span>
