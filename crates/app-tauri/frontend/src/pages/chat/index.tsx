@@ -13,9 +13,14 @@ interface ChatPageProps {
   workspaceRoot: string;
   gitInfo?: GitInfo | null;
   contextWindowHint?: number;
+  /** Session/workspace switch in flight — the stream shows a skeleton. */
+  loading?: boolean;
+  /** Active session key (`root:id`) — resets the stream's incremental
+   * mount window on session AND workspace switches. */
+  sessionKey?: string;
 }
 
-export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint }: ChatPageProps) {
+export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, loading, sessionKey }: ChatPageProps) {
   // The composer floats over the stream bottom — measure its real height
   // (card + pb-6 gap + the taller approval/todo banner variants) and feed
   // it to the stream as bottom padding, so the last message can always
@@ -40,7 +45,13 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
   return (
     <>
       <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} />
-      <ChatStream view={view} bottomPad={composerH + 24} composerH={composerH} />
+      <ChatStream
+        view={view}
+        bottomPad={composerH + 24}
+        composerH={composerH}
+        loading={loading}
+        sessionKey={sessionKey}
+      />
 
       {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
       <div

@@ -6,6 +6,7 @@ import { cjk } from "@streamdown/cjk";
 import { Streamdown } from "streamdown";
 import type { SessionView, StreamItem } from "../../hooks/stream-view";
 import { AssistantStatus } from "../assistant-status";
+import { ChatSkeleton } from "../chat-skeleton";
 import { ToolChips, type ToolChipRow } from "../tool-chips";
 import {
   Check,
@@ -319,6 +320,12 @@ interface Props {
   /** Real composer height measured in ChatPage, used to position the
    * floating scroll-to-bottom button exactly above the composer card. */
   composerH?: number;
+  /** True while a session/workspace switch is fetching + rebuilding the
+   * view — renders the skeleton instead of the (stale or empty) stream. */
+  loading?: boolean;
+  /** Identity of the session on screen (`root:id`) — resets the
+   * incremental render window so a long session mounts its tail first. */
+  sessionKey?: string;
 }
 
 type AssistantStep =
@@ -330,7 +337,41 @@ type AssistantStep =
 interface Turn {
   id: string;
   userText?: string;
+  /** Epoch ms of the user message — drives the `—— time ——` divider. */
+  ts?: number;
   steps: AssistantStep[];
+}
+
+/** `—— HH:mm ——` / `—— MM-DD HH:mm ——` / `—— YYYY-MM-DD HH:mm ——` —
+ * progressively more context the older the turn is. */
+function formatTurnTime(ts: number): string {
+  const d = new Date(ts);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) return hm;
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  if (d.getFullYear() === now.getFullYear()) return `${md} ${hm}`;
+  return `${d.getFullYear()}-${md} ${hm}`;
+}
+
+/** Full timestamp for the divider tooltip — date, time with seconds,
+ * GMT offset and IANA zone: `2025-09-20 17:37:42 GMT+8 (Asia/Shanghai)`. */
+function formatFullTime(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const offsetMin = -d.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? "+" : "-";
+  const hours = Math.abs(offsetMin) / 60;
+  const gmt = `GMT${sign}${Number.isInteger(hours) ? hours : hours.toFixed(1)}`;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return `${date} ${time} ${gmt} (${zone})`;
 }
 
 function parseTurns(items: StreamItem[]): Turn[] {
@@ -352,6 +393,7 @@ function parseTurns(items: StreamItem[]): Turn[] {
       currentTurn = {
         id: `turn-${turns.length}-${idx}`,
         userText: item.text,
+        ts: item.ts,
         steps: [],
       };
       turns.push(currentTurn);
@@ -445,11 +487,33 @@ function parseTurns(items: StreamItem[]): Turn[] {
   return turns;
 }
 
-export function ChatStream({ view, bottomPad = 128, composerH }: Props) {
+/** Turns mounted on first paint — long sessions render their tail first;
+ * the top sentinel expands the window as the user scrolls up. A full
+ * mount of a 200-turn transcript is the multi-second jank this avoids. */
+const TURN_PAGE = 30;
+
+export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
+
+  // Incremental mount window — how many trailing turns are in the DOM.
+  // `sessionKey` resets it so switching sessions starts at the tail again.
+  const [turnLimit, setTurnLimit] = useState(TURN_PAGE);
+  useEffect(() => {
+    setTurnLimit(TURN_PAGE);
+    // Session switch must land at the newest message — the scroll
+    // container is reused across sessions, so its scrollTop and the
+    // pinned flag would otherwise keep whatever position the previous
+    // session left (that's why some switches opened at the oldest turn).
+    pinnedRef.current = true;
+    setIsAtBottom(true);
+    requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+    });
+  }, [sessionKey]);
 
   const scrollToBottom = () => {
     pinnedRef.current = true;
@@ -474,7 +538,44 @@ export function ChatStream({ view, bottomPad = 128, composerH }: Props) {
 
   const turns = useMemo(() => parseTurns(view.items), [view.items]);
 
-  const hasActiveItem = view.items.some((i) => {
+  // The render window — trailing `turnLimit` turns. Older turns mount
+  // progressively via the top sentinel instead of all at once.
+  const visibleTurns =
+    turns.length > turnLimit ? turns.slice(turns.length - turnLimit) : turns;
+  const hiddenTurns = turns.length - visibleTurns.length;
+
+  // Top sentinel — scrolling into it grows the window by one page. Rate-
+  // capped so a fast fling spreads the mounts across frames instead of
+  // re-creating the full-mount jank it exists to avoid.
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const lastExpandRef = useRef(0);
+  useEffect(() => {
+    const root = scrollRef.current;
+    const target = sentinelRef.current;
+    if (!root || !target || hiddenTurns <= 0) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        const now = performance.now();
+        if (now - lastExpandRef.current < 250) return;
+        lastExpandRef.current = now;
+        setTurnLimit((c) => c + TURN_PAGE);
+      },
+      { root, rootMargin: "300px" }
+    );
+    obs.observe(target);
+    return () => obs.disconnect();
+  }, [hiddenTurns > 0, sessionKey]);
+
+  // Only items in the CURRENT turn count — a stale active item left by a
+  // dead earlier turn (streaming assistant that never got AssistantMessage,
+  // unresolved approval) would otherwise suppress "正在回复" forever while
+  // its own indicator sits scrolled-away in the old turn.
+  const lastUserIdx = view.items.reduce(
+    (acc, it, i) => (it.kind === "user" ? i : acc),
+    -1
+  );
+  const hasActiveItem = view.items.slice(lastUserIdx + 1).some((i) => {
     if (i.kind === "thinking" && !i.done) return true;
     if (i.kind === "assistant" && i.streaming) return true;
     if (i.kind === "tool" && i.content === undefined) return true;
@@ -625,6 +726,30 @@ export function ChatStream({ view, bottomPad = 128, composerH }: Props) {
       return;
     }
 
+    // The target may sit outside the mounted window — grow it to include
+    // the turn, then scroll once the DOM lands (two frames: state →
+    // render → layout).
+    const turnMatch = mark.targetId.match(/^chat-turn-(turn-\d+)-/);
+    if (turnMatch) {
+      const idx = turns.findIndex((t) => t.id === turnMatch[1]);
+      const firstVisible = turns.length - visibleTurns.length;
+      if (idx >= 0 && idx < firstVisible) {
+        setTurnLimit(turns.length - idx);
+        isSmoothScrollingRef.current = true;
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            document
+              .getElementById(mark.targetId)
+              ?.scrollIntoView({ behavior: "smooth", block: "start" });
+            setTimeout(() => {
+              isSmoothScrollingRef.current = false;
+            }, 500);
+          })
+        );
+        return;
+      }
+    }
+
     const el = document.getElementById(mark.targetId);
     if (el) {
       isSmoothScrollingRef.current = true;
@@ -661,12 +786,42 @@ export function ChatStream({ view, bottomPad = 128, composerH }: Props) {
       <div className="stream-scroll" ref={scrollRef} onScroll={onScroll}>
         <div className="max-w-3xl w-full mx-auto px-4 pt-6 flex flex-col gap-6 min-h-full">
           <div id="chat-stream-top" className="h-0 w-full" />
-          {view.items.length === 0 && !view.streaming && (
+          {loading ? (
+            <ChatSkeleton />
+          ) : view.items.length === 0 && !view.streaming ? (
             <EmptyGreeting />
+          ) : null}
+
+          {/* Mount-more sentinel — hitting it grows the turn window */}
+          {hiddenTurns > 0 && (
+            <div
+              ref={sentinelRef}
+              className="flex items-center justify-center py-2 text-[11px] text-neutral-400 select-none"
+              aria-hidden="true"
+            >
+              加载更早的消息…
+            </div>
           )}
 
-          {turns.map((turn, turnIdx) => (
-            <div key={turn.id} className="flex w-full flex-col gap-6">
+          {visibleTurns.map((turn, turnIdx) => (
+            <div
+              key={turn.id}
+              className="flex w-full flex-col gap-6"
+              style={{ contentVisibility: "auto", containIntrinsicSize: "auto 320px" }}
+            >
+              {turn.ts != null && (
+                <div
+                  className="flex items-center gap-3 select-none"
+                  aria-hidden="true"
+                  data-tooltip={formatFullTime(turn.ts)}
+                >
+                  <div className="h-px flex-1 bg-neutral-200/70 dark:bg-neutral-700/60" />
+                  <span className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">
+                    {formatTurnTime(turn.ts)}
+                  </span>
+                  <div className="h-px flex-1 bg-neutral-200/70 dark:bg-neutral-700/60" />
+                </div>
+              )}
               {turn.userText && (
                 <div
                   id={`chat-turn-${turn.id}-user`}
@@ -697,7 +852,7 @@ export function ChatStream({ view, bottomPad = 128, composerH }: Props) {
                     }
 
                     if (step.type === "text") {
-                      const isLastTurn = turnIdx === turns.length - 1;
+                      const isLastTurn = turnIdx === visibleTurns.length - 1;
                       const isLastStep = stepIdx === turn.steps.length - 1;
                       const isAnimating = view.streaming && isLastTurn && isLastStep;
 

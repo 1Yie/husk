@@ -10,7 +10,7 @@ import {
   GitFork,
   Bin,
 } from "@keyline-icons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectOverview, SessionRow } from "../../types";
 import { Orb } from "../agent-orb";
 import {
@@ -80,8 +80,26 @@ export function SessionSidebar({
   }, [projects]);
 
   // Projects open/close independently — opening one reveals its full
-  // conversation list without switching the active workspace.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // conversation list without switching the active workspace. The current
+  // workspace's project starts expanded by default.
+  const currentRoot = projects.find((p) => p.current)?.root;
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    currentRoot ? new Set([currentRoot]) : new Set()
+  );
+  // When the current workspace changes (first tree load lands async, or a
+  // switch lands), its project opens by default. A manual collapse still
+  // wins — this only fires when `currentRoot` itself changes.
+  const lastCurrentRef = useRef(currentRoot);
+  useEffect(() => {
+    if (!currentRoot || currentRoot === lastCurrentRef.current) return;
+    lastCurrentRef.current = currentRoot;
+    setExpanded((prev) => {
+      if (prev.has(currentRoot)) return prev;
+      const next = new Set(prev);
+      next.add(currentRoot);
+      return next;
+    });
+  }, [currentRoot]);
   const toggleProject = (root: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
