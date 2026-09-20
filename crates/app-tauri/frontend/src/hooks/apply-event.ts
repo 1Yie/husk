@@ -148,11 +148,28 @@ export function applyEvent(
   }
   if ("AssistantMessage" in ev) {
     closeOpenThinking(items);
-    const l = last();
-    if (l?.kind === "assistant" && l.streaming) {
-      items[items.length - 1] = { ...l, text: ev.AssistantMessage, streaming: false };
-    } else {
-      items.push({ kind: "assistant", text: ev.AssistantMessage, streaming: false });
+    // Replace the streamed draft IN PLACE — not just when it's `last()`:
+    // a ReasoningDelta can land between the streamed text and this final
+    // message (e.g. a second sampling pass after auto-compaction), which
+    // used to leave the draft plus a duplicate final block.
+    let replaced = false;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "assistant" && it.streaming) {
+        items[i] = { ...it, text: ev.AssistantMessage, streaming: false };
+        replaced = true;
+        break;
+      }
+      // Stop at the previous turn's boundary — an interrupted turn can
+      // leave a stale `streaming` draft; this message belongs to the
+      // current turn and must not retro-fill that one.
+      if (it.kind === "assistant" || it.kind === "user") break;
+    }
+    if (!replaced) {
+      const l = last();
+      if (!(l?.kind === "assistant" && l.text === ev.AssistantMessage)) {
+        items.push({ kind: "assistant", text: ev.AssistantMessage, streaming: false });
+      }
     }
     return { ...v, items };
   }
