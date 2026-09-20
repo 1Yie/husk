@@ -152,7 +152,6 @@ export function GlobalTooltip() {
     const side = rect.top < height + 12 ? "bottom" : "top";
     const targetCenterX = rect.left + rect.width / 2;
 
-    // Clamp left edge strictly between 12px and (windowWidth - width - 12px)
     const left = Math.max(12, Math.min(window.innerWidth - width - 12, targetCenterX - width / 2));
     const top = side === "top" ? rect.top - height - 6 : rect.bottom + 6;
 

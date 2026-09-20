@@ -90,7 +90,6 @@ export function applyEvent(
   if ("ToolCallFinished" in ev) {
     closeOpenThinking(items);
     const t = ev.ToolCallFinished;
-    // Resolve any standalone approval item first
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (it.kind === "approval" && !it.resolved && it.toolName === t.name) {
@@ -98,7 +97,6 @@ export function applyEvent(
         break;
       }
     }
-    // Update the running tool call and resolve its attached approval
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (it.kind === "tool" && it.content === undefined) {
@@ -119,7 +117,6 @@ export function applyEvent(
   if ("ApprovalRequested" in ev) {
     closeOpenThinking(items);
     const a = ev.ApprovalRequested;
-    // Attach approval directly to the matching active tool call
     let attached = false;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -137,7 +134,6 @@ export function applyEvent(
         break;
       }
     }
-    // Fallback: if no active tool found, push standalone approval item
     if (!attached) {
       items.push({
         kind: "approval",

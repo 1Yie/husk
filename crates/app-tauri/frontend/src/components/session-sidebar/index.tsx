@@ -115,7 +115,6 @@ export function SessionSidebar({
         data-tauri-drag-region="deep"
         className="w-[240px] flex-none flex flex-col bg-[#f3f3f3] dark:bg-[#18181b] border-r border-[#e5e5e5] dark:border-neutral-800/80 select-none h-full text-neutral-800 dark:text-neutral-200"
       >
-        {/* Top titlebar with the Husk brand */}
         <div
           data-tauri-drag-region="deep"
           className="h-9 flex-none flex items-center px-3 gap-2 border-b border-[#e5e5e5] dark:border-neutral-800/80 bg-[#f3f3f3] dark:bg-[#18181b] select-none cursor-default"
@@ -127,9 +126,7 @@ export function SessionSidebar({
           </span>
         </div>
 
-        {/* Content area */}
         <div className="flex-1 min-h-0 flex flex-col">
-          {/* Section: 会话 Header */}
           <div className="flex-none flex items-center justify-between px-4 pt-3 pb-1">
             <span className="text-[13px] font-medium text-neutral-600 dark:text-neutral-400">
               会话
@@ -220,9 +217,7 @@ export function SessionSidebar({
           </div>
         </div>
 
-        {/* Footer toolbar: ⚙  🔔 */}
         <div className="h-11 px-4 flex items-center select-none flex-none bg-[#f3f3f3] dark:bg-[#18181b]">
-          {/* Left utility icons */}
           <div data-nodrag data-tauri-drag-region="false" className="flex items-center gap-3.5">
             <Tooltip>
               <TooltipTrigger asChild>

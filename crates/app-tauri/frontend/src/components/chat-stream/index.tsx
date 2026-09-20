@@ -231,7 +231,6 @@ function collapsePromptArtifacts(md: string): string {
   res = codeBlockParts
     .map((block, bIdx) => {
       if (bIdx % 2 === 1) return block;
-      // Split by inline code (`...`)
       const inlineParts = block.split(/(`[^`]+`)/g);
       return inlineParts
         .map((part, iIdx) => {
@@ -775,7 +774,6 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
   return (
     <div className="bg-white dark:bg-[#141416] flex-1 min-h-0 w-full flex flex-col select-text relative">
-      {/* Left Turn Navigation Rail (Custom Left Scrollbar) */}
       <ChatTurnRail
         marks={marks}
         activeId={activeMarkId}
@@ -792,7 +790,6 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             <EmptyGreeting />
           ) : null}
 
-          {/* Mount-more sentinel — hitting it grows the turn window */}
           {hiddenTurns > 0 && (
             <div
               ref={sentinelRef}
@@ -914,7 +911,6 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         </div>
       </div>
 
-      {/* Floating Scroll to Bottom Button */}
       <div
         style={{ bottom: `${(composerH ?? (bottomPad ? bottomPad - 24 : 140)) + 12}px` }}
         className={cn(

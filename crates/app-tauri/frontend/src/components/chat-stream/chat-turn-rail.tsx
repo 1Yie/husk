@@ -120,7 +120,6 @@ export function ChatTurnRail({
                 }}
                 className="h-[11px] w-[20px] flex items-center justify-center group/item relative cursor-pointer"
               >
-                {/* Visual Mark based on type */}
                 {mark.type === "top" ? (
                   // Top mark: 4 dashed dots
                   <div
@@ -165,7 +164,6 @@ export function ChatTurnRail({
                   />
                 )}
 
-                {/* Floating Preview Tooltip */}
                 {isHovered && (
                   <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-neutral-900/95 dark:bg-[#18181b]/95 text-white text-[11px] px-2.5 py-1.5 rounded-lg shadow-popup border border-neutral-700/60 backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
                     <div className="flex items-center gap-1.5 text-[10px] font-medium text-neutral-400">
