@@ -38,6 +38,13 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import {
+  useNotifications,
+  useUnreadCount,
+  markRead,
+  markAllRead,
+  type AppNotification,
+} from "../../lib/notifications";
 
 /** Cross-project recent list cap — everything beyond it stays reachable by
  * opening the owning project in 项目. */
@@ -74,6 +81,25 @@ export function SessionSidebar({
   onPin,
   onDelete,
 }: Props) {
+  const notifications = useNotifications();
+  const unreadCount = useUnreadCount();
+  // Resolve a notification's session to its sidebar title — the store only
+  // carries root+id; names come from the same project tree the rows use.
+  const titleFor = (n: AppNotification): string => {
+    if (n.root === undefined || n.session === undefined) return n.title;
+    for (const p of projects) {
+      if (p.root !== n.root) continue;
+      const row = p.sessions.find((s) => s.id === n.session);
+      if (row) return `${n.title} — ${row.title}`;
+    }
+    return `${n.title} — 会话 #${n.session}`;
+  };
+  const openNotification = (n: AppNotification) => {
+    markRead(n.id);
+    if (n.root !== undefined && n.session !== undefined) {
+      onOpenSession(n.root, n.session);
+    }
+  };
   // Global recents: every project's conversations merged — pinned first
   // (each tier newest-first), so the top of the sidebar always answers
   // "what was I just doing" while pinned sessions stay reachable.
@@ -258,9 +284,14 @@ export function SessionSidebar({
                     <button
                       type="button"
                       aria-label="通知"
-                      className="text-neutral-500 hover:text-neutral-800 transition-colors p-1 rounded hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
+                      className="relative text-neutral-500 hover:text-neutral-800 transition-colors p-1 rounded hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
                     >
                       <Bell className="h-4 w-4" />
+                      {unreadCount > 0 && (
+                        <span className="absolute -top-0.5 -right-0.5 min-w-3.5 h-3.5 px-0.5 rounded-full bg-red-500 text-white dark:text-[#fafafa] text-[9px] font-semibold leading-[14px] text-center select-none">
+                          {unreadCount > 99 ? "99+" : unreadCount}
+                        </span>
+                      )}
                     </button>
                   </PopoverTrigger>
                 </TooltipTrigger>
@@ -268,11 +299,50 @@ export function SessionSidebar({
                   通知
                 </TooltipContent>
               </Tooltip>
-              <PopoverContent side="top" align="start" className="w-56 p-3 text-xs">
-                <div className="font-semibold text-neutral-800 mb-1">
-                  系统通知
+              <PopoverContent side="top" align="start" className="w-64 p-0 text-xs overflow-hidden">
+                <div className="flex items-center justify-between px-3 pt-2.5 pb-2">
+                  <div className="font-semibold text-neutral-800">系统通知</div>
+                  {unreadCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => markAllRead()}
+                      className="text-[11px] text-neutral-400 hover:text-neutral-700 transition-colors cursor-pointer"
+                    >
+                      全部已读
+                    </button>
+                  )}
                 </div>
-                <div className="text-neutral-500">暂无新通知。</div>
+                {notifications.length === 0 ? (
+                  <div className="px-3 pb-3 text-neutral-500">暂无新通知。</div>
+                ) : (
+                  <div className="max-h-64 overflow-y-auto border-t border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]">
+                    {notifications.map((n) => (
+                      <button
+                        key={n.id}
+                        type="button"
+                        onClick={() => openNotification(n)}
+                        className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] transition-colors cursor-pointer"
+                      >
+                        {!n.read && (
+                          <span className="mt-1.5 h-1.5 w-1.5 flex-none rounded-full bg-blue-500" />
+                        )}
+                        <span className={cn("min-w-0 flex-1", n.read && "pl-3.5")}>
+                          <span className={cn("block truncate", n.read ? "text-neutral-500" : "text-neutral-800 font-medium")}>
+                            {titleFor(n)}
+                          </span>
+                          {n.body && (
+                            <span className="block truncate text-neutral-500 mt-0.5">
+                              {n.body}
+                            </span>
+                          )}
+                          <span className="block text-neutral-400 mt-0.5 text-[10.5px]">
+                            {new Date(n.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </PopoverContent>
             </Popover>
           </div>

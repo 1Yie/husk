@@ -7,11 +7,12 @@
 // switch ("switching never kills the turn"), so the root in each event
 // envelope is what routes it to the right buffer.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as agent from "../invoke/agent";
 import type { AgentEventEnvelope } from "../types";
 import { applyEvent } from "./apply-event";
 import { emptyView, type SessionView } from "./stream-view";
+import { notify } from "../lib/notifications";
 
 /** Composite view key — workspace root + per-workspace session id. */
 export const viewKey = (root: string, id: number) => `${root}:${id}`;
@@ -36,6 +37,15 @@ export function useAgentEvents(workspaceRoot: string) {
       return next;
     });
   }, []);
+
+  // Keep the live view key in a ref — the event listener's closure is
+  // created once, so which session is "foreground" must be read through a
+  // ref. A Finished/Failed landing on any OTHER key is a background
+  // session ending → that's what the bell is for.
+  const activeKeyRef = useRef("");
+  useEffect(() => {
+    activeKeyRef.current = viewKey(workspaceRoot, activeId);
+  }, [workspaceRoot, activeId]);
 
   useEffect(() => {
     // Coalesce the kernel event stream into ~60fps batches — the engine
@@ -67,6 +77,18 @@ export function useAgentEvents(workspaceRoot: string) {
     };
     const un = agent.onAgentEvent((env) => {
       queue.push(env);
+      const ev = env.event;
+      if ("StateChanged" in ev) {
+        const s = ev.StateChanged;
+        const key = viewKey(env.root ?? "", env.session);
+        if (key !== activeKeyRef.current) {
+          if (s === "Finished") {
+            notify({ kind: "turn", title: "会话已完成", root: env.root ?? "", session: env.session });
+          } else if (typeof s === "object" && "Failed" in s) {
+            notify({ kind: "turn", title: "会话出错", body: s.Failed, root: env.root ?? "", session: env.session });
+          }
+        }
+      }
       if (timer == null) timer = setTimeout(flush, 16);
     });
     return () => {
