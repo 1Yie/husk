@@ -11,7 +11,22 @@ import { Button } from "@/components/ui/button";
 import { SettingsRenderer, SettingSelect } from "@/components/settings";
 import { getAppearance, setAppearance, type AppearanceConfig } from "../../invoke/agent/sessions";
 import { applyAppearance, broadcastAppearance, isDarkMode } from "../../lib/appearance";
-import { THEME_PRESETS, withPreset } from "../../lib/themes";
+import { THEME_PRESETS, withPreset, presetFor } from "../../lib/themes";
+
+/** Palette defaults shown in the color fields when no dark override is
+ *  stored — mirrors the `.dark` tokens in index.css. */
+const DARK_FALLBACK = { accent: "#4DA3FF", background: "#16161A", foreground: "#E4E4E7" };
+
+/** The accent/bg/fg this config resolves to under `dark` — dark overrides
+ *  win, then the preset's dark side, then the palette fallback. */
+function effectiveColors(cfg: AppearanceConfig, dark: boolean) {
+  const p = presetFor(cfg.theme_id);
+  return {
+    accent: (dark && (cfg.dark_accent ?? p?.darkAccent)) || cfg.accent,
+    background: (dark && (cfg.dark_background ?? p?.darkBackground)) || (dark ? DARK_FALLBACK.background : cfg.background),
+    foreground: (dark && (cfg.dark_foreground ?? p?.darkForeground)) || (dark ? DARK_FALLBACK.foreground : cfg.foreground),
+  };
+}
 
 export function AppearanceSettings() {
   const [themeMode, setThemeModeState] = useState<"system" | "light" | "dark">("system");
@@ -28,6 +43,10 @@ export function AppearanceSettings() {
   // First-load flag: applying the fetched config must not echo back a
   // `set_appearance` write (harmless but wasteful).
   const hydrated = useRef(false);
+  // The full last-known config — local color states only mirror the
+  // *current mode's* fields, so update() merges patches over this ref to
+  // avoid dropping the other mode's stored values.
+  const cfgRef = useRef<AppearanceConfig | null>(null);
 
   // Load the persisted config once, then apply it so the settings window
   // itself renders in the user's theme (it's a separate webview — no
@@ -35,11 +54,14 @@ export function AppearanceSettings() {
   useEffect(() => {
     void getAppearance()
       .then((cfg) => {
+        cfgRef.current = cfg;
+        const dark = isDarkMode(cfg);
+        const eff = effectiveColors(cfg, dark);
         setThemeModeState(cfg.theme_mode);
         if (cfg.theme_id) setSelectedThemeState(cfg.theme_id);
-        setAccentColorState(cfg.accent);
-        setBgColorState(cfg.background);
-        setFgColorState(cfg.foreground);
+        setAccentColorState(eff.accent);
+        setBgColorState(eff.background);
+        setFgColorState(eff.foreground);
         setUiFontState(cfg.ui_font);
         setCodeFontState(cfg.code_font);
         setContrastState(cfg.contrast);
@@ -52,7 +74,7 @@ export function AppearanceSettings() {
   /** One setter per field — updates local state, re-applies the theme for
    *  live preview, and persists the merged config. */
   const update = (patch: Partial<AppearanceConfig>) => {
-    const cfg: AppearanceConfig = {
+    const base = cfgRef.current ?? {
       theme_mode: themeMode,
       theme_id: selectedTheme,
       accent: accentColor,
@@ -61,8 +83,9 @@ export function AppearanceSettings() {
       ui_font: uiFont,
       code_font: codeFont,
       contrast,
-      ...patch,
     };
+    const cfg: AppearanceConfig = { ...base, ...patch };
+    cfgRef.current = cfg;
     applyAppearance(cfg);
     if (hydrated.current) {
       void setAppearance(patch)
@@ -71,26 +94,47 @@ export function AppearanceSettings() {
     }
   };
 
-  const setThemeMode = (v: "system" | "light" | "dark") => { setThemeModeState(v); update({ theme_mode: v }); };
+  const setThemeMode = (v: "system" | "light" | "dark") => {
+    setThemeModeState(v);
+    update({ theme_mode: v });
+    // Re-show the color fields for the new mode's stored values.
+    const c = cfgRef.current;
+    if (c) {
+      const eff = effectiveColors(c, isDarkMode(c));
+      setAccentColorState(eff.accent);
+      setBgColorState(eff.background);
+      setFgColorState(eff.foreground);
+    }
+  };
   // Picking a preset theme writes its colors into accent/background/
   // foreground — a later manual tweak keeps the id but overrides the token,
   // so "custom" is just the live state of the three color fields.
   const setSelectedTheme = (v: string) => {
     setSelectedThemeState(v);
-    const cur: AppearanceConfig = {
+    const cur = cfgRef.current ?? {
       theme_mode: themeMode, theme_id: selectedTheme, accent: accentColor,
       background: bgColor, foreground: fgColor, ui_font: uiFont,
       code_font: codeFont, contrast,
     };
     const next = withPreset(cur, v, isDarkMode(cur));
-    setAccentColorState(next.accent);
-    setBgColorState(next.background);
-    setFgColorState(next.foreground);
-    update({ theme_id: v, accent: next.accent, background: next.background, foreground: next.foreground });
+    const eff = effectiveColors(next, isDarkMode(next));
+    setAccentColorState(eff.accent);
+    setBgColorState(eff.background);
+    setFgColorState(eff.foreground);
+    update({
+      theme_id: v,
+      accent: next.accent,
+      background: next.background,
+      foreground: next.foreground,
+      dark_accent: next.dark_accent,
+      dark_background: next.dark_background,
+      dark_foreground: next.dark_foreground,
+    });
   };
-  const setAccentColor = (v: string) => { setAccentColorState(v); update({ accent: v }); };
-  const setBgColor = (v: string) => { setBgColorState(v); update({ background: v }); };
-  const setFgColor = (v: string) => { setFgColorState(v); update({ foreground: v }); };
+  const dark = themeMode === "dark" || (themeMode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const setAccentColor = (v: string) => { setAccentColorState(v); update(dark ? { dark_accent: v } : { accent: v }); };
+  const setBgColor = (v: string) => { setBgColorState(v); update(dark ? { dark_background: v } : { background: v }); };
+  const setFgColor = (v: string) => { setFgColorState(v); update(dark ? { dark_foreground: v } : { foreground: v }); };
   const setUiFont = (v: string) => { setUiFontState(v); update({ ui_font: v }); };
   const setCodeFont = (v: string) => { setCodeFontState(v); update({ code_font: v }); };
   const setContrast = (v: number) => { setContrastState(v); update({ contrast: v }); };
@@ -122,18 +166,20 @@ export function AppearanceSettings() {
         const text = await file.text();
         const json = JSON.parse(text);
         const patch: Partial<AppearanceConfig> = {};
-        if (json.accent) patch.accent = json.accent;
-        if (json.background) patch.background = json.background;
-        if (json.foreground) patch.foreground = json.foreground;
+        // Colors land on the current mode's side — a theme imported in
+        // dark mode customizes the dark surface, not the light one.
+        if (json.accent) (dark ? (patch.dark_accent = json.accent) : (patch.accent = json.accent));
+        if (json.background) (dark ? (patch.dark_background = json.background) : (patch.background = json.background));
+        if (json.foreground) (dark ? (patch.dark_foreground = json.foreground) : (patch.foreground = json.foreground));
         if (json.contrast !== undefined) patch.contrast = Number(json.contrast);
         if (json.uiFont) patch.ui_font = json.uiFont;
         if (json.codeFont) patch.code_font = json.codeFont;
         if (json.mode) patch.theme_mode = json.mode;
         if (json.name) patch.theme_id = json.name;
         // Update local state to match, then persist the merged patch.
-        if (patch.accent) setAccentColorState(patch.accent);
-        if (patch.background) setBgColorState(patch.background);
-        if (patch.foreground) setFgColorState(patch.foreground);
+        if (patch.accent ?? patch.dark_accent) setAccentColorState((patch.accent ?? patch.dark_accent)!);
+        if (patch.background ?? patch.dark_background) setBgColorState((patch.background ?? patch.dark_background)!);
+        if (patch.foreground ?? patch.dark_foreground) setFgColorState((patch.foreground ?? patch.dark_foreground)!);
         if (patch.contrast !== undefined) setContrastState(patch.contrast);
         if (patch.ui_font) setUiFontState(patch.ui_font);
         if (patch.code_font) setCodeFontState(patch.code_font);
@@ -276,16 +322,16 @@ export function AppearanceSettings() {
             <div className="flex items-center px-3 py-0.5">
               <span className="w-6 text-right text-neutral-400 text-xs pr-3 select-none">1</span>
               <div className="whitespace-pre">
-                <span className="text-[#7c3aed] font-medium">const </span>
-                <span className="text-[#b45309]">themePreview</span>
+                <span className="text-[#7c3aed] dark:text-[#a78bfa] font-medium">const </span>
+                <span className="text-[#b45309] dark:text-[#fbbf24]">themePreview</span>
                 <span className="text-neutral-500">: </span>
-                <span className="text-[#6366f1]">ThemeConfig </span>
-                <span className="text-[#2563eb]">= </span>
+                <span className="text-[#6366f1] dark:text-[#818cf8]">ThemeConfig </span>
+                <span className="text-[#2563eb] dark:text-[#60a5fa]">= </span>
                 <span className="text-neutral-700">{"{"}</span>
               </div>
             </div>
 
-            <div className="flex items-center relative bg-[#fef2f2] py-0.5">
+            <div className="flex items-center relative bg-[#fef2f2] dark:bg-[#3b2226] py-0.5">
               <div
                 className="absolute left-0 top-0 bottom-0 w-1"
                 style={{
@@ -293,15 +339,15 @@ export function AppearanceSettings() {
                     "repeating-linear-gradient(-45deg, #ef4444, #ef4444 2px, #fecaca 2px, #fecaca 4px)",
                 }}
               />
-              <span className="w-9 text-right text-[#dc2626] text-xs pr-3 select-none font-semibold">2</span>
+              <span className="w-9 text-right text-[#dc2626] dark:text-[#f87171] text-xs pr-3 select-none font-semibold">2</span>
               <div className="whitespace-pre">
-                <span className="text-[#b91c1c]">  surface: </span>
-                <span className="text-[#059669]">"sidebar"</span>
+                <span className="text-[#b91c1c] dark:text-[#f87171]">  surface: </span>
+                <span className="text-[#059669] dark:text-[#4ade80]">"sidebar"</span>
                 <span className="text-neutral-600">,</span>
               </div>
             </div>
 
-            <div className="flex items-center relative bg-[#fef2f2] py-0.5">
+            <div className="flex items-center relative bg-[#fef2f2] dark:bg-[#3b2226] py-0.5">
               <div
                 className="absolute left-0 top-0 bottom-0 w-1"
                 style={{
@@ -309,15 +355,15 @@ export function AppearanceSettings() {
                     "repeating-linear-gradient(-45deg, #ef4444, #ef4444 2px, #fecaca 2px, #fecaca 4px)",
                 }}
               />
-              <span className="w-9 text-right text-[#dc2626] text-xs pr-3 select-none font-semibold">3</span>
+              <span className="w-9 text-right text-[#dc2626] dark:text-[#f87171] text-xs pr-3 select-none font-semibold">3</span>
               <div className="whitespace-pre">
-                <span className="text-[#b91c1c]">  accent: </span>
-                <span className="text-[#059669]">"#2563eb"</span>
+                <span className="text-[#b91c1c] dark:text-[#f87171]">  accent: </span>
+                <span className="text-[#059669] dark:text-[#4ade80]">"#2563eb"</span>
                 <span className="text-neutral-600">,</span>
               </div>
             </div>
 
-            <div className="flex items-center relative bg-[#fef2f2] py-0.5">
+            <div className="flex items-center relative bg-[#fef2f2] dark:bg-[#3b2226] py-0.5">
               <div
                 className="absolute left-0 top-0 bottom-0 w-1"
                 style={{
@@ -325,10 +371,10 @@ export function AppearanceSettings() {
                     "repeating-linear-gradient(-45deg, #ef4444, #ef4444 2px, #fecaca 2px, #fecaca 4px)",
                 }}
               />
-              <span className="w-9 text-right text-[#dc2626] text-xs pr-3 select-none font-semibold">4</span>
+              <span className="w-9 text-right text-[#dc2626] dark:text-[#f87171] text-xs pr-3 select-none font-semibold">4</span>
               <div className="whitespace-pre">
-                <span className="text-[#b91c1c]">  contrast: </span>
-                <span className="text-[#2563eb]">42</span>
+                <span className="text-[#b91c1c] dark:text-[#f87171]">  contrast: </span>
+                <span className="text-[#2563eb] dark:text-[#60a5fa]">42</span>
                 <span className="text-neutral-600">,</span>
               </div>
             </div>
@@ -345,41 +391,41 @@ export function AppearanceSettings() {
             <div className="flex items-center px-3 py-0.5">
               <span className="w-6 text-right text-neutral-400 text-xs pr-3 select-none">1</span>
               <div className="whitespace-pre">
-                <span className="text-[#7c3aed] font-medium">const </span>
-                <span className="text-[#b45309]">themePreview</span>
+                <span className="text-[#7c3aed] dark:text-[#a78bfa] font-medium">const </span>
+                <span className="text-[#b45309] dark:text-[#fbbf24]">themePreview</span>
                 <span className="text-neutral-500">: </span>
-                <span className="text-[#6366f1]">ThemeConfig </span>
-                <span className="text-[#2563eb]">= </span>
+                <span className="text-[#6366f1] dark:text-[#818cf8]">ThemeConfig </span>
+                <span className="text-[#2563eb] dark:text-[#60a5fa]">= </span>
                 <span className="text-neutral-700">{"{"}</span>
               </div>
             </div>
 
-            <div className="flex items-center relative bg-[#f0fdf4] py-0.5">
-              <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#16a34a]" />
-              <span className="w-9 text-right text-[#16a34a] text-xs pr-3 select-none font-semibold">2</span>
+            <div className="flex items-center relative bg-[#f0fdf4] dark:bg-[#1c3328] py-0.5">
+              <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#16a34a] dark:bg-[#22c55e]" />
+              <span className="w-9 text-right text-[#16a34a] dark:text-[#4ade80] text-xs pr-3 select-none font-semibold">2</span>
               <div className="whitespace-pre">
-                <span className="text-[#15803d]">  surface: </span>
-                <span className="text-[#16a34a]">"sidebar-elevated"</span>
+                <span className="text-[#15803d] dark:text-[#4ade80]">  surface: </span>
+                <span className="text-[#16a34a] dark:text-[#4ade80]">"sidebar-elevated"</span>
                 <span className="text-neutral-600">,</span>
               </div>
             </div>
 
-            <div className="flex items-center relative bg-[#f0fdf4] py-0.5">
-              <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#16a34a]" />
-              <span className="w-9 text-right text-[#16a34a] text-xs pr-3 select-none font-semibold">3</span>
+            <div className="flex items-center relative bg-[#f0fdf4] dark:bg-[#1c3328] py-0.5">
+              <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#16a34a] dark:bg-[#22c55e]" />
+              <span className="w-9 text-right text-[#16a34a] dark:text-[#4ade80] text-xs pr-3 select-none font-semibold">3</span>
               <div className="whitespace-pre">
-                <span className="text-[#15803d]">  accent: </span>
-                <span className="text-[#16a34a]">"{accentColor.toLowerCase()}"</span>
+                <span className="text-[#15803d] dark:text-[#4ade80]">  accent: </span>
+                <span className="text-[#16a34a] dark:text-[#4ade80]">"{accentColor.toLowerCase()}"</span>
                 <span className="text-neutral-600">,</span>
               </div>
             </div>
 
-            <div className="flex items-center relative bg-[#f0fdf4] py-0.5">
-              <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#16a34a]" />
-              <span className="w-9 text-right text-[#16a34a] text-xs pr-3 select-none font-semibold">4</span>
+            <div className="flex items-center relative bg-[#f0fdf4] dark:bg-[#1c3328] py-0.5">
+              <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#16a34a] dark:bg-[#22c55e]" />
+              <span className="w-9 text-right text-[#16a34a] dark:text-[#4ade80] text-xs pr-3 select-none font-semibold">4</span>
               <div className="whitespace-pre">
-                <span className="text-[#15803d]">  contrast: </span>
-                <span className="text-[#2563eb]">{contrast}</span>
+                <span className="text-[#15803d] dark:text-[#4ade80]">  contrast: </span>
+                <span className="text-[#2563eb] dark:text-[#60a5fa]">{contrast}</span>
                 <span className="text-neutral-600">,</span>
               </div>
             </div>
@@ -473,7 +519,7 @@ export function AppearanceSettings() {
                   onChange={setSelectedTheme}
                   placeholder="选择主题"
                   prefix={
-                    <span className="bg-[#e0edff] text-[#2563eb] text-[10.5px] font-bold px-1.5 py-0.5 rounded leading-none">
+                    <span className="bg-[#e0edff] text-[#2563eb] dark:text-[#60a5fa] text-[10.5px] font-bold px-1.5 py-0.5 rounded leading-none">
                       Aa
                     </span>
                   }

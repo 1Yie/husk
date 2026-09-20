@@ -83,5 +83,8 @@ export function withPreset(
     accent: dark ? p.darkAccent : p.accent,
     background: dark ? p.darkBackground : p.background,
     foreground: dark ? p.darkForeground : p.foreground,
+    dark_accent: p.darkAccent,
+    dark_background: p.darkBackground,
+    dark_foreground: p.darkForeground,
   };
 }

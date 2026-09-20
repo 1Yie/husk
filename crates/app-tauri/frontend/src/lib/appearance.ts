@@ -32,18 +32,26 @@ function applyContrast(v: number) {
 
 export function applyAppearance(cfg: AppearanceConfig) {
   const root = document.documentElement;
-  root.classList.toggle("dark", isDarkMode(cfg));
-  root.style.setProperty("--husk-accent", cfg.accent);
-  root.style.setProperty("--husk-bg", cfg.background);
-  root.style.setProperty("--husk-fg", cfg.foreground);
+  const dark = isDarkMode(cfg);
+  root.classList.toggle("dark", dark);
+  // Accent: a dark override wins in dark mode, else the user's accent —
+  // it is meant to read on either surface.
+  root.style.setProperty("--husk-accent", (dark && cfg.dark_accent) || cfg.accent);
+  // bg/fg: in dark mode only a dark override is applied — writing the
+  // stored light value would clobber the `.dark` palette with a white
+  // surface. Absent → drop the inline var so the palette wins.
+  const bg = dark ? cfg.dark_background : cfg.background;
+  if (bg) root.style.setProperty("--husk-bg", bg); else root.style.removeProperty("--husk-bg");
+  const fg = dark ? cfg.dark_foreground : cfg.foreground;
+  if (fg) root.style.setProperty("--husk-fg", fg); else root.style.removeProperty("--husk-fg");
   root.style.setProperty("--husk-ui-font", cfg.ui_font);
   root.style.setProperty("--husk-code-font", cfg.code_font);
   applyContrast(cfg.contrast);
 
   // Body inherits the themed surface — the html element paints before
   // React mounts, so the first frame already matches the stored theme.
-  document.body.style.backgroundColor = cfg.background;
-  document.body.style.color = cfg.foreground;
+  document.body.style.backgroundColor = bg ?? "";
+  document.body.style.color = fg ?? "";
   document.body.style.fontFamily = cfg.ui_font;
 }
 

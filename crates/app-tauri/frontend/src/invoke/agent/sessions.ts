@@ -190,6 +190,11 @@ export interface AppearanceConfig {
   accent: string;
   background: string;
   foreground: string;
+  /** Dark-mode overrides — applied instead of the base values while the
+   *  effective mode is dark; absent → the `.dark` palette defaults win. */
+  dark_accent?: string | null;
+  dark_background?: string | null;
+  dark_foreground?: string | null;
   ui_font: string;
   code_font: string;
   contrast: number;

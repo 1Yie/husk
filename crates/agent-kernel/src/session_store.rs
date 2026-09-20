@@ -335,6 +335,14 @@ pub struct AppearanceSettings {
     pub background: String,
     #[serde(default = "default_fg")]
     pub foreground: String,
+    /// Dark-mode overrides — when set, `applyAppearance` uses these while
+    /// the effective mode is dark; absent → the `.dark` palette defaults.
+    #[serde(default)]
+    pub dark_accent: Option<String>,
+    #[serde(default)]
+    pub dark_background: Option<String>,
+    #[serde(default)]
+    pub dark_foreground: Option<String>,
     #[serde(default = "default_ui_font")]
     pub ui_font: String,
     #[serde(default = "default_code_font")]
@@ -360,6 +368,9 @@ impl Default for AppearanceSettings {
             accent: default_accent(),
             background: default_bg(),
             foreground: default_fg(),
+            dark_accent: None,
+            dark_background: None,
+            dark_foreground: None,
             ui_font: default_ui_font(),
             code_font: default_code_font(),
             contrast: default_contrast(),
