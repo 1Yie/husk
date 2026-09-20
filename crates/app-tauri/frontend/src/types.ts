@@ -76,6 +76,7 @@ export interface SessionRow {
   preview: string;
   active: boolean;
   running: boolean;
+  pinned: boolean;
 }
 
 /** A session row inside a project — `SessionRow` plus the timestamp the

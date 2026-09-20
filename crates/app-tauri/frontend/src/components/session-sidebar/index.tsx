@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   GitFork,
   Bin,
+  Bookmark,
 } from "@keyline-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectOverview, SessionRow } from "../../types";
@@ -20,6 +21,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -49,6 +57,7 @@ interface Props {
   onSwitchWorkspace?: (path: string) => void;
   onOpenSettings?: () => void;
   onFork?: (id: number) => void;
+  onPin?: (id: number, pinned: boolean) => void;
   onDelete?: (id: number) => void;
 }
 
@@ -62,10 +71,12 @@ export function SessionSidebar({
   onSwitchWorkspace,
   onOpenSettings,
   onFork,
+  onPin,
   onDelete,
 }: Props) {
-  // Global recents: every project's conversations merged by `updated_at`,
-  // so the top of the sidebar always answers "what was I just doing".
+  // Global recents: every project's conversations merged — pinned first
+  // (each tier newest-first), so the top of the sidebar always answers
+  // "what was I just doing" while pinned sessions stay reachable.
   const recents = useMemo(() => {
     const all = projects.flatMap((p) =>
       p.sessions.map((s) => ({
@@ -75,7 +86,10 @@ export function SessionSidebar({
         row: s,
       })),
     );
-    all.sort((a, b) => b.row.updated_at - a.row.updated_at);
+    all.sort((a, b) =>
+      Number(b.row.pinned) - Number(a.row.pinned) ||
+      b.row.updated_at - a.row.updated_at
+    );
     return all.slice(0, RECENT_LIMIT);
   }, [projects]);
 
@@ -113,11 +127,11 @@ export function SessionSidebar({
     <TooltipProvider delayDuration={300}>
       <aside
         data-tauri-drag-region="deep"
-        className="w-[240px] flex-none flex flex-col bg-[#f3f3f3] dark:bg-[#18181b] border-r border-[#e5e5e5] dark:border-neutral-800/80 select-none h-full text-neutral-800 dark:text-neutral-200"
+        className="w-[240px] flex-none flex flex-col bg-panel dark:bg-neutral-900 border-r border-hairline dark:border-neutral-800/80 select-none h-full text-neutral-800 dark:text-neutral-200"
       >
         <div
           data-tauri-drag-region="deep"
-          className="h-9 flex-none flex items-center px-3 gap-2 border-b border-[#e5e5e5] dark:border-neutral-800/80 bg-[#f3f3f3] dark:bg-[#18181b] select-none cursor-default"
+          className="h-9 flex-none flex items-center px-3 gap-2 border-b border-hairline dark:border-neutral-800/80 bg-panel dark:bg-neutral-900 select-none cursor-default"
         >
           {isMac && <div className="w-[78px] shrink-0" />}
 
@@ -167,6 +181,7 @@ export function SessionSidebar({
                   showActions={current}
                   onOpen={() => onOpenSession(root, row.id)}
                   onFork={onFork}
+                  onPin={onPin}
                   onDelete={onDelete}
                 />
               ))
@@ -197,6 +212,7 @@ export function SessionSidebar({
                   onOpenSession={onOpenSession}
                   onSwitchWorkspace={onSwitchWorkspace}
                   onFork={onFork}
+                  onPin={onPin}
                   onDelete={onDelete}
                 />
               ))
@@ -217,7 +233,7 @@ export function SessionSidebar({
           </div>
         </div>
 
-        <div className="h-11 px-4 flex items-center select-none flex-none bg-[#f3f3f3] dark:bg-[#18181b]">
+        <div className="h-11 px-4 flex items-center select-none flex-none bg-panel dark:bg-neutral-900">
           <div data-nodrag data-tauri-drag-region="false" className="flex items-center gap-3.5">
             <Tooltip>
               <TooltipTrigger asChild>
@@ -273,6 +289,7 @@ function SessionItem({
   showActions = true,
   onOpen,
   onFork,
+  onPin,
   onDelete,
 }: {
   row: SessionRow;
@@ -285,12 +302,56 @@ function SessionItem({
   showActions?: boolean;
   onOpen: () => void;
   onFork?: (id: number) => void;
+  onPin?: (id: number, pinned: boolean) => void;
   onDelete?: (id: number) => void;
 }) {
   const displayTitle = row.title === "new session" ? "新会话" : row.title || `会话 ${row.id}`;
   const [menuOpen, setMenuOpen] = useState(false);
 
-  return (
+  // Identical items for the "···" dropdown and the row's right-click menu.
+  // The two Radix families keep separate `Menu` contexts, so the same JSX
+  // can't be shared — one builder renders the items with whichever
+  // Item/Separator primitives the host menu provides.
+  const renderActionItems = (
+    Item: typeof DropdownMenuItem,
+    Separator: typeof DropdownMenuSeparator,
+  ) => (
+    <>
+      <Item
+        className="gap-2 text-xs cursor-pointer"
+        onClick={(e) => {
+          e.stopPropagation();
+          onPin?.(row.id, !row.pinned);
+        }}
+      >
+        <Bookmark className={cn("h-3.5 w-3.5", row.pinned && "fill-current")} />
+        {row.pinned ? "取消置顶" : "置顶会话"}
+      </Item>
+      <Item
+        className="gap-2 text-xs cursor-pointer"
+        onClick={(e) => {
+          e.stopPropagation();
+          onFork?.(row.id);
+        }}
+      >
+        <GitFork className="h-3.5 w-3.5" />
+        Fork 会话
+      </Item>
+      <Separator />
+      <Item
+        className="gap-2 text-xs cursor-pointer text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400 focus:bg-red-50 dark:focus:bg-red-950/40"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete?.(row.id);
+        }}
+      >
+        <Bin className="h-3.5 w-3.5" />
+        删除会话
+      </Item>
+    </>
+  );
+
+  const rowEl = (
     <div
       role="button"
       tabIndex={0}
@@ -308,6 +369,9 @@ function SessionItem({
       )}
     >
       <span className="flex-1 min-w-0 truncate text-left">{displayTitle}</span>
+      {row.pinned && (
+        <Bookmark className="h-3 w-3 flex-none fill-current text-amber-500 dark:text-amber-400" />
+      )}
       {hint && (
         <span className="flex-none max-w-[64px] truncate text-[11px] text-neutral-400 dark:text-neutral-500">
           {hint}
@@ -343,32 +407,25 @@ function SessionItem({
               sideOffset={4}
               className="min-w-[140px]"
             >
-              <DropdownMenuItem
-                className="gap-2 text-xs cursor-pointer"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFork?.(row.id);
-                }}
-              >
-                <GitFork className="h-3.5 w-3.5" />
-                Fork 会话
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="gap-2 text-xs cursor-pointer text-red-600 focus:text-red-600 focus:bg-red-50 dark:focus:bg-red-950/40"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete?.(row.id);
-                }}
-              >
-                <Bin className="h-3.5 w-3.5" />
-                删除会话
-              </DropdownMenuItem>
+              {renderActionItems(DropdownMenuItem, DropdownMenuSeparator)}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
       </div>
     </div>
+  );
+
+  // Right-click on the row opens the same menu the "···" button does.
+  // Cross-project recents (`showActions === false`) get no menu — fork/delete
+  // only address the active workspace's store.
+  if (!showActions) return rowEl;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{rowEl}</ContextMenuTrigger>
+      <ContextMenuContent className="min-w-[140px]">
+        {renderActionItems(ContextMenuItem, ContextMenuSeparator)}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -382,6 +439,7 @@ function ProjectItem({
   onOpenSession,
   onSwitchWorkspace,
   onFork,
+  onPin,
   onDelete,
 }: {
   project: ProjectOverview;
@@ -391,6 +449,7 @@ function ProjectItem({
   onOpenSession: (root: string, id: number) => void;
   onSwitchWorkspace?: (path: string) => void;
   onFork?: (id: number) => void;
+  onPin?: (id: number, pinned: boolean) => void;
   onDelete?: (id: number) => void;
 }) {
   return (
@@ -399,7 +458,7 @@ function ProjectItem({
         data-nodrag
         data-tauri-drag-region="false"
         className={cn(
-          open && "sticky top-0 z-10 bg-[#f3f3f3] dark:bg-[#18181b] pb-0.5"
+          open && "sticky top-0 z-10 bg-panel dark:bg-neutral-900 pb-0.5"
         )}
       >
         <TooltipSimple content={project.root} side="right" sideOffset={8}>
@@ -471,6 +530,7 @@ function ProjectItem({
                 showActions={project.current}
                 onOpen={() => onOpenSession(project.root, s.id)}
                 onFork={onFork}
+                onPin={onPin}
                 onDelete={onDelete}
               />
             ))

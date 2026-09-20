@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAgentEvents } from "./hooks/use-agent-events";
 import { useAgentSession } from "./hooks/use-agent-session";
 import { viewFromHistory } from "./hooks/view-from-history";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, openSettingsWindow, forkSession, deleteSession, type WorkspaceInfo } from "./invoke/agent";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, openSettingsWindow, forkSession, deleteSession, pinSession, type WorkspaceInfo } from "./invoke/agent";
 import type { SessionRow } from "./types";
 import { SessionSidebar } from "./components/session-sidebar";
 import { MainLayout } from "./layout/main-layout";
@@ -162,6 +162,10 @@ export function App() {
       ? "新会话"
       : pendingDelete.title;
 
+  const handlePinSession = (id: number, pinned: boolean) => {
+    void pinSession(id, pinned).then(() => void refresh()).catch(() => {});
+  };
+
   // The backend reports `running` from live handles (including parked
   // workspaces); overlaying `runningKeys` (fresh off `StateChanged`
   // events) makes the orb appear the moment a turn starts instead of up
@@ -200,6 +204,7 @@ export function App() {
               setViewLoading(false);
             }).catch(() => setViewLoading(false));
           }}
+          onPin={handlePinSession}
           onDelete={(id) => {
             // Deletion is destructive — park the row and let the dialog
             // below confirm before touching the backend.

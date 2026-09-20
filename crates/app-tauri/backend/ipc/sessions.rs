@@ -15,8 +15,8 @@ pub fn agent_session(
 ) -> Result<serde_json::Value, String> {
     let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
     match op.as_str() {
-        "list" => Ok(serde_json::json!(mgr.sidebar_rows().iter().map(|(id,t,p,a,r)| {
-            serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r})
+        "list" => Ok(serde_json::json!(mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
+            serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
         }).collect::<Vec<_>>())),
         // Sidebar project tree — every recent workspace with its full
         // conversation list. The active workspace comes first (`current: true`)
@@ -68,6 +68,19 @@ pub fn agent_session(
                 None => Err("session has no history to fork yet".into()),
             }
         }
+        // `pin` flips a session's pinned flag in the index — the sidebar
+        // re-reads `projects`/`list` after the call, so nothing else needs
+        // returning beyond the flag itself.
+        "pin" => {
+            let id = id.ok_or("pin needs id")?;
+            let pinned = payload
+                .as_ref()
+                .and_then(|p| p.get("pinned"))
+                .and_then(|v| v.as_bool())
+                .ok_or("pin needs payload.pinned")?;
+            let ok = mgr.pin_session(id, pinned).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "pinned": ok }))
+        }
         "workspace_info" => {
             let name = mgr.workspace_root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             Ok(serde_json::json!({
@@ -101,8 +114,8 @@ pub fn agent_session(
                     "active": mgr.active_id,
                     "history": history,
                     "usage": mgr.store_usage(mgr.active_id),
-                    "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r)| {
-                        serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r})
+                    "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
+                        serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
                     }).collect::<Vec<_>>(),
                 }))
             } else {
@@ -120,8 +133,8 @@ pub fn agent_session(
                 "active": mgr.active_id,
                 "history": history,
                 "usage": mgr.store_usage(mgr.active_id),
-                "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r)| {
-                    serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r})
+                "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
+                    serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
                 }).collect::<Vec<_>>(),
             }))
         }

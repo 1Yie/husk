@@ -28,6 +28,10 @@ pub struct SessionMeta {
     pub preview: String,
     /// Unix seconds of the last activity.
     pub updated_at: u64,
+    /// User-pinned sessions float to the top of `list()` ahead of recency —
+    /// the sidebar's pin toggle writes this.
+    #[serde(default)]
+    pub pinned: bool,
     /// Usage of the last completed turn — persisted so reopening a session
     /// seeds the header meter with real numbers before the next `Usage`
     /// event arrives (history alone can't reconstruct token counts).
@@ -93,11 +97,25 @@ impl SessionStore {
         self.dir.join("index.json")
     }
 
-    /// List sessions, newest first.
+    /// List sessions — pinned first, then newest activity within each tier.
     pub fn list(&self) -> Vec<SessionMeta> {
         let mut idx = self.read_index();
-        idx.sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         idx.sessions
+            .sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.updated_at.cmp(&a.updated_at)));
+        idx.sessions
+    }
+
+    /// Toggle a session's pinned flag; returns the new value.
+    pub fn set_pinned(&self, id: i64, pinned: bool) -> std::io::Result<bool> {
+        let mut idx = self.read_index();
+        if let Some(m) = idx.sessions.iter_mut().find(|s| s.id == id) {
+            m.pinned = pinned;
+            let json = serde_json::to_string_pretty(&idx)?;
+            std::fs::write(self.index_path(), json)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Load the latest history snapshot for a session.

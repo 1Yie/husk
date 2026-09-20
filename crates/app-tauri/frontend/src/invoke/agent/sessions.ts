@@ -55,6 +55,16 @@ export async function deleteSession(id: number) {
   );
 }
 
+/** Toggle a session's pinned flag — pinned rows float to the top of the
+ * sidebar ahead of recency order. */
+export async function pinSession(id: number, pinned: boolean) {
+  return invoke<{ pinned: boolean }>("agent_session", {
+    op: "pin",
+    id,
+    payload: { pinned },
+  });
+}
+
 export interface WorkspaceInfo {
   root: string;
   name: string;

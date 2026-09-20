@@ -496,11 +496,20 @@ impl SessionActor {
                     .find(|m| m.id == id)
                     .and_then(|m| m.usage)
             });
+        // Re-read the existing meta for the pin flag — a turn-boundary
+        // upsert must not clobber a pin the user set mid-turn.
+        let pinned = store
+            .list()
+            .into_iter()
+            .find(|m| m.id == id)
+            .map(|m| m.pinned)
+            .unwrap_or(false);
         let _ = store.upsert_meta(crate::session_store::SessionMeta {
             id,
             title,
             preview,
             updated_at: now,
+            pinned,
             usage,
         });
     }

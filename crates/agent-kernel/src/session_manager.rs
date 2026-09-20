@@ -65,6 +65,8 @@ pub struct ProjectSessionRow {
     /// Live turn flag. Only the active workspace has actors to report it,
     /// so rows of other projects always read `false`.
     pub running: bool,
+    /// User-pinned rows float to the top of the sidebar list.
+    pub pinned: bool,
 }
 
 /// One project (workspace) with its full conversation list.
@@ -340,6 +342,7 @@ impl SessionManager {
                                 updated_at: m.updated_at,
                                 active: false,
                                 running: live.map(|h| h.running).unwrap_or(false),
+                                pinned: m.pinned,
                             }
                         })
                         .collect()
@@ -373,6 +376,7 @@ impl SessionManager {
                     updated_at: m.updated_at,
                     active: m.id == self.active_id,
                     running: live.map(|h| h.running).unwrap_or(false),
+                    pinned: m.pinned,
                 }
             })
             .collect()
@@ -498,6 +502,7 @@ impl SessionManager {
             title: "新会话".into(),
             preview: String::new(),
             updated_at: now,
+            pinned: false,
             usage: None,
         });
         self.metas = self.store.list();
@@ -554,6 +559,7 @@ impl SessionManager {
                 .unwrap_or_else(|| "新会话".into()),
             preview: src.as_ref().map(|m| m.preview.clone()).unwrap_or_default(),
             updated_at: now,
+            pinned: src.as_ref().map(|m| m.pinned).unwrap_or(false),
             // The fork inherits the source's meter — its first prompt
             // re-samples the same history, so the number is a fair stand-in
             // until that turn's real `Usage` lands.
@@ -588,16 +594,27 @@ impl SessionManager {
     }
 
     /// Sidebar rows — persisted metas overlaid with live running/preview.
-    pub fn sidebar_rows(&self) -> Vec<(i64, String, String, bool, bool)> {
+    /// Tuple: (id, title, preview, active, running, pinned).
+    pub fn sidebar_rows(&self) -> Vec<(i64, String, String, bool, bool, bool)> {
         self.metas
             .iter()
             .map(|m| {
                 let live = self.handles.get(&m.id);
                 let preview = live.map(|h| h.preview.clone()).unwrap_or_else(|| m.preview.clone());
                 let running = live.map(|h| h.running).unwrap_or(false);
-                (m.id, m.title.clone(), preview, m.id == self.active_id, running)
+                (m.id, m.title.clone(), preview, m.id == self.active_id, running, m.pinned)
             })
             .collect()
+    }
+
+    /// Pin/unpin a session in the sidebar. Returns the new flag value —
+    /// `Err` only when the id isn't in the index.
+    pub fn pin_session(&mut self, id: i64, pinned: bool) -> std::io::Result<bool> {
+        let ok = self.store.set_pinned(id, pinned)?;
+        if ok {
+            self.metas = self.store.list();
+        }
+        Ok(ok)
     }
 
     /// Model info (active provider, active model, active thinking level, configured models list, config path).
