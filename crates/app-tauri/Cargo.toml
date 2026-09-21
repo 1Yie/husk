@@ -1,6 +1,6 @@
 [package]
 name = "husk"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Husk — Tauri desktop shell: React + Tailwind frontend over the shared kernel wiring"
 build = "build.rs"
@@ -19,6 +19,7 @@ dirs.workspace = true
 tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 tokio.workspace = true
 rfd = "0.15"
 xxhash-rust.workspace = true

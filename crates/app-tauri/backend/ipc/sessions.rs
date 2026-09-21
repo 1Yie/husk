@@ -4,6 +4,11 @@ use tauri::{Manager, State};
 
 use crate::kernel::KernelState;
 
+/// History slice size returned by `open`/`fork`/workspace switches and
+/// each `history_page` call — ~5-10 turns worth of stream items, enough
+/// for several viewports without mounting the whole session.
+const HISTORY_PAGE: usize = 80;
+
 #[tauri::command]
 pub fn agent_session(
     app: tauri::AppHandle,
@@ -31,15 +36,39 @@ pub fn agent_session(
         "open" => {
             let id = id.ok_or("open needs id")?;
             mgr.open_session(id);
-            let history = mgr.store_history(id).unwrap_or_default();
+            // Paged: only the newest slice mounts — older pages stream in
+            // on scroll-up via `history_page`. `history_total` lets the
+            // webview compute `loadedStart = total - history.len()`.
+            let (history, total, turns) = mgr.store_history_page(id, None, HISTORY_PAGE);
             // `usage` is the persisted last-turn meter — seeds the header
             // stats so a reopened session doesn't read 0/… until the next
             // turn's `Usage` event.
             Ok(serde_json::json!({
                 "active": mgr.active_id,
                 "history": history,
+                "history_total": total,
+                "turn_total": turns,
                 "usage": mgr.store_usage(id),
             }))
+        }
+        // Older-history page: `payload.before` is the exclusive end index
+        // (the current loadedStart); returns the slice just above it.
+        "history_raw" => {
+            // Full persisted history for the raw-JSON viewer — every
+            // message exactly as it rides the wire: roles, tool_calls
+            // (the model's sends + params), tool results, notices, ts.
+            let id = id.ok_or("history_raw needs id")?;
+            Ok(serde_json::json!({ "history": mgr.store_history(id).unwrap_or_default() }))
+        }
+        "history_page" => {
+            let id = id.ok_or("history_page needs id")?;
+            let before = payload
+                .as_ref()
+                .and_then(|p| p.get("before"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let (history, total, turns) = mgr.store_history_page(id, before, HISTORY_PAGE);
+            Ok(serde_json::json!({ "history": history, "history_total": total, "turn_total": turns }))
         }
         // `delete` mirrors `open` in returning the new active id + its
         // history so the webview can rebuild the stream when the deleted
@@ -47,9 +76,9 @@ pub fn agent_session(
         "delete" => {
             let id = id.ok_or("delete needs id")?;
             mgr.delete_session(id);
-            let history = mgr.store_history(mgr.active_id).unwrap_or_default();
+            let (history, total, turns) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
             let usage = mgr.store_usage(mgr.active_id);
-            Ok(serde_json::json!({"active": mgr.active_id, "history": history, "usage": usage}))
+            Ok(serde_json::json!({"active": mgr.active_id, "history": history, "history_total": total, "turn_total": turns, "usage": usage}))
         }
         // `fork` copies the source session's latest snapshot into a new
         // session and activates it — same return shape as `open`.
@@ -57,11 +86,13 @@ pub fn agent_session(
             let id = id.ok_or("fork needs id")?;
             match mgr.fork_session(id) {
                 Some(new_id) => {
-                    let history = mgr.store_history(new_id).unwrap_or_default();
+                    let (history, total, turns) = mgr.store_history_page(new_id, None, HISTORY_PAGE);
                     Ok(serde_json::json!({
                         "active": mgr.active_id,
                         "id": new_id,
                         "history": history,
+                        "history_total": total,
+                        "turn_total": turns,
                         "usage": mgr.store_usage(new_id),
                     }))
                 }
@@ -107,12 +138,14 @@ pub fn agent_session(
             if let Some(target) = picked {
                 mgr.switch_workspace(target).map_err(|e| e.to_string())?;
                 let name = mgr.workspace_root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                let history = mgr.store_history(mgr.active_id).unwrap_or_default();
+                let (history, total, turns) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
                 Ok(serde_json::json!({
                     "root": mgr.workspace_root.to_string_lossy(),
                     "name": name,
                     "active": mgr.active_id,
                     "history": history,
+                    "history_total": total,
+                    "turn_total": turns,
                     "usage": mgr.store_usage(mgr.active_id),
                     "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
                         serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
@@ -126,12 +159,14 @@ pub fn agent_session(
             let p = path.ok_or("switch_workspace needs path")?;
             mgr.switch_workspace(std::path::PathBuf::from(p)).map_err(|e| e.to_string())?;
             let name = mgr.workspace_root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let history = mgr.store_history(mgr.active_id).unwrap_or_default();
+            let (history, total, turns) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
             Ok(serde_json::json!({
                 "root": mgr.workspace_root.to_string_lossy(),
                 "name": name,
                 "active": mgr.active_id,
                 "history": history,
+                "history_total": total,
+                "turn_total": turns,
                 "usage": mgr.store_usage(mgr.active_id),
                 "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
                     serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
@@ -142,16 +177,181 @@ pub fn agent_session(
             let info = mgr.model_info();
             Ok(serde_json::to_value(&info).map_err(|e| e.to_string())?)
         }
+        // Agent overview — the settings page's read-only display of the
+        // agent's configuration surfaces: system-prompt template, live
+        // model info, skills, discovered MCP plugins, and the subagent spec.
+        "agent_overview" => {
+            let info = mgr.model_info();
+            Ok(serde_json::json!({
+                "instructions": agent_kernel::session::SYSTEM_PROMPT_TEMPLATE,
+                "model": serde_json::to_value(&info).map_err(|e| e.to_string())?,
+                "skills": scan_skills(&mgr.workspace_root),
+                "plugins": mgr.plugin_overview(),
+                // The `delegate` TOOL is the driver, not an agent — it's
+                // never listed. Rows = built-in agents + `*.md` manifests.
+                "subagents": agent_kernel::tools::delegate::BUILTIN_SUBAGENTS
+                    .iter()
+                    .map(|(n, d, p)| serde_json::json!({
+                        "name": n,
+                        "description": d,
+                        "prompt": p,
+                        "builtin": true,
+                    }))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .chain(
+                    agent_kernel::tools::delegate::discover_subagents(&mgr.workspace_root)
+                        .into_iter()
+                        .map(|a| serde_json::json!({
+                            "name": a.name,
+                            "description": a.description,
+                            "prompt": a.prompt,
+                            "path": a.path,
+                            "global": a.global,
+                            "builtin": false,
+                        })),
+                )
+                .collect::<Vec<_>>(),
+            }))
+        }
+        // ---- editable agent surfaces (settings "智能体" panes) ----
+        // `get_instructions` / `set_instructions` — the AGENTS.md pair the
+        // session prompt appends verbatim (global under ~/.config/husk,
+        // project at the workspace root).
+        "get_instructions" => Ok(mgr.instructions()),
+        "set_instructions" => {
+            let scope = payload.as_ref().and_then(|p| p.get("scope")).and_then(|v| v.as_str()).unwrap_or("");
+            let content = payload.as_ref().and_then(|p| p.get("content")).and_then(|v| v.as_str()).unwrap_or("");
+            mgr.set_instructions(scope, content)?;
+            Ok(serde_json::json!({ "success": true }))
+        }
+        // `create_skill` — scaffold `<name>/SKILL.md` under the workspace
+        // `.pi/skills/` (project) or `~/.pi/agent/skills/` (global).
+        "create_skill" => {
+            let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+            let desc = payload.as_ref().and_then(|p| p.get("description")).and_then(|v| v.as_str()).unwrap_or("");
+            let body = payload.as_ref().and_then(|p| p.get("body")).and_then(|v| v.as_str()).unwrap_or("");
+            let global = payload.as_ref().and_then(|p| p.get("scope")).and_then(|v| v.as_str()) == Some("global");
+            if !valid_slug(&name) {
+                return Err("技能名只能是小写字母/数字/-/ _".into());
+            }
+            let base = if global {
+                dirs::home_dir().map(|h| h.join(".pi/agent/skills"))
+            } else {
+                Some(mgr.workspace_root.join(".pi/skills"))
+            }
+            .ok_or("no skills dir")?;
+            let dir = base.join(&name);
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let path = dir.join("SKILL.md");
+            std::fs::write(
+                &path,
+                format!("---\nname: {name}\ndescription: {desc}\n---\n\n{body}\n"),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "success": true, "path": path.to_string_lossy() }))
+        }
+        // `add_mcp` — write `~/.config/husk/plugins/<id>/manifest.json`
+        // (kind: mcp, entry {command, args}); the plugin loads on next
+        // session spawn.
+        "add_mcp" => {
+            let id = payload.as_ref().and_then(|p| p.get("id")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+            let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or(&id).to_string();
+            let http = payload.as_ref().and_then(|p| p.get("transport")).and_then(|v| v.as_str()) == Some("http");
+            let command = payload.as_ref().and_then(|p| p.get("command")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let url = payload.as_ref().and_then(|p| p.get("url")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let args: Vec<String> = payload
+                .as_ref()
+                .and_then(|p| p.get("args"))
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let headers: serde_json::Map<String, serde_json::Value> = payload
+                .as_ref()
+                .and_then(|p| p.get("headers"))
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            if !valid_slug(&id) {
+                return Err("插件 ID 只能是小写字母/数字/-/ _".into());
+            }
+            // entry shape picks the transport — `{url}` = streamable HTTP,
+            // `{command, args}` = spawned stdio child (mcp.rs §Transport).
+            let entry = if http {
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err("url 需要是 http(s) 地址".into());
+                }
+                let mut e = serde_json::json!({ "url": url });
+                if !headers.is_empty() {
+                    e["headers"] = serde_json::Value::Object(headers);
+                }
+                e
+            } else {
+                if command.is_empty() {
+                    return Err("command 不能为空".into());
+                }
+                serde_json::json!({ "command": command, "args": args })
+            };
+            let dir = dirs::config_dir()
+                .map(|d| d.join("husk/plugins").join(&id))
+                .ok_or("no config dir")?;
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let manifest = serde_json::json!({
+                "id": id,
+                "name": name,
+                "version": "1.0.0",
+                "kind": "mcp",
+                "entry": entry,
+            });
+            let path = dir.join("manifest.json");
+            std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap())
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "success": true, "path": path.to_string_lossy() }))
+        }
+        // `create_subagent` — write `<name>.md` under `.pi/agents/` (project)
+        // or `~/.pi/agent/agents/` (global); `delegate { agent: "<name>" }`
+        // resolves it at call time.
+        "create_subagent" => {
+            let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+            let desc = payload.as_ref().and_then(|p| p.get("description")).and_then(|v| v.as_str()).unwrap_or("");
+            let prompt = payload.as_ref().and_then(|p| p.get("prompt")).and_then(|v| v.as_str()).unwrap_or("");
+            let global = payload.as_ref().and_then(|p| p.get("scope")).and_then(|v| v.as_str()) == Some("global");
+            if !valid_slug(&name) {
+                return Err("子代理名只能是小写字母/数字/-/ _".into());
+            }
+            if prompt.trim().is_empty() {
+                return Err("提示词不能为空".into());
+            }
+            let base = if global {
+                dirs::home_dir().map(|h| h.join(".pi/agent/agents"))
+            } else {
+                Some(mgr.workspace_root.join(".pi/agents"))
+            }
+            .ok_or("no agents dir")?;
+            std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+            let path = base.join(format!("{name}.md"));
+            std::fs::write(
+                &path,
+                format!("---\nname: {name}\ndescription: {desc}\n---\n\n{prompt}\n"),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "success": true, "path": path.to_string_lossy() }))
+        }
         // Default preferences — the settings popup's backing store. These
         // are the values NEW sessions spawn with; reading/writing them never
         // touches a live session (no gate write, no UiCommand, no
         // SystemMessage in the chat stream).
         "get_default_prefs" => {
-            let (permission_mode, thinking_level, agent_mode) = mgr.default_prefs();
+            let (permission_mode, thinking_level, agent_mode, compact_at) = mgr.default_prefs();
+            let lim = agent_kernel::sandbox_prefs::current();
             Ok(serde_json::json!({
                 "permission_mode": permission_mode,
                 "thinking_level": thinking_level,
                 "agent_mode": agent_mode,
+                "compact_at": compact_at,
+                "sandbox_network": lim.network_label(),
+                "sandbox_max_memory_mb": lim.max_memory_mb,
+                "sandbox_max_processes": lim.max_processes,
             }))
         }
         "set_default_prefs" => {
@@ -168,7 +368,31 @@ pub fn agent_session(
                 .get("agent_mode")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            mgr.set_default_prefs(permission_mode, thinking_level, agent_mode);
+            let compact_at = p.get("compact_at").and_then(|v| v.as_f64()).map(|f| f as f32);
+            // Sandbox overrides live in the process-wide slot — apply them
+            // BEFORE mgr.set_default_prefs so its persist captures the
+            // effective values. Any sandbox key in the payload rewrites all
+            // three fields from the merged view (UI sends the whole row).
+            let touched_sandbox = p.get("sandbox_network").is_some()
+                || p.get("sandbox_max_memory_mb").is_some()
+                || p.get("sandbox_max_processes").is_some();
+            if touched_sandbox {
+                let mut lim = agent_kernel::sandbox_prefs::current();
+                if let Some(v) = p.get("sandbox_network").and_then(|v| v.as_str()) {
+                    lim.network = agent_kernel::sandbox_prefs::network_from_label(v);
+                }
+                if p.get("sandbox_max_memory_mb").is_some() {
+                    lim.max_memory_mb = p.get("sandbox_max_memory_mb").and_then(|v| v.as_u64());
+                }
+                if p.get("sandbox_max_processes").is_some() {
+                    lim.max_processes = p
+                        .get("sandbox_max_processes")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32);
+                }
+                agent_kernel::sandbox_prefs::set(lim);
+            }
+            mgr.set_default_prefs(permission_mode, thinking_level, agent_mode, compact_at);
             Ok(serde_json::json!({ "success": true }))
         }
         // Appearance — the settings window's theme/accent/font choices,
@@ -199,6 +423,23 @@ pub fn agent_session(
             agent_kernel::save_appearance_settings(&s).map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true }))
         }
+        "open_url" => {
+            // Open an external link in the system browser — used by the
+            // settings About pane (repo / issues / releases). http(s) only.
+            let url = payload
+                .and_then(|p| p.get("url").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .ok_or("open_url needs a url")?;
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return Err("open_url only accepts http(s) urls".into());
+            }
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open").arg(&url).spawn();
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn();
+            Ok(serde_json::json!({ "success": true }))
+        }
         "open_config" => {
             if let Some(path) = agent_llm::AppConfig::default_path() {
                 #[cfg(target_os = "macos")]
@@ -218,11 +459,12 @@ pub fn agent_session(
                 .as_ref()
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .unwrap_or_default();
-            let config_val = if !raw.trim().is_empty() {
-                serde_json::from_str::<serde_json::Value>(&raw).unwrap_or(serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            };
+            // NORMALIZED view — `AppConfig::load` folds naked provider
+            // maps + camelCase aliases into the canonical shape, so the
+            // settings UI and `model_info` always see the same `providers`
+            // map regardless of how the file was hand-written.
+            let cfg = agent_llm::AppConfig::load(None).unwrap_or_default();
+            let config_val = serde_json::to_value(&cfg).unwrap_or_else(|_| serde_json::json!({}));
             Ok(serde_json::json!({
                 "path": path.map(|p| p.to_string_lossy().to_string()),
                 "raw": raw,
@@ -238,14 +480,45 @@ pub fn agent_session(
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            if let Some(val) = payload {
-                let formatted = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
-                std::fs::write(&path, formatted).map_err(|e| e.to_string())?;
-                let _ = mgr.model_info();
-                Ok(serde_json::json!({ "success": true }))
-            } else {
-                Err("save_app_config requires payload".into())
+            let Some(val) = payload else {
+                return Err("save_app_config requires payload".into());
+            };
+            // Normalize BEFORE writing — accept the canonical
+            // `{providers:{…}}` shape or a naked provider map, then write
+            // the file back in ITS OWN format (TOML stays TOML — never
+            // JSON-bytes-in-a-.toml-file).
+            let mut cfg =
+                serde_json::from_value::<agent_llm::AppConfig>(val.clone()).unwrap_or_default();
+            if cfg.providers.is_empty() {
+                if let Some(obj) = val.as_object() {
+                    for (k, v) in obj {
+                        if matches!(
+                            k.as_str(),
+                            "active_provider" | "activeProvider" | "active_model"
+                                | "activeModel" | "fallback_chain" | "fallbackChain"
+                                | "providers"
+                        ) {
+                            continue;
+                        }
+                        if let Ok(p) =
+                            serde_json::from_value::<agent_llm::ProviderConfig>(v.clone())
+                        {
+                            cfg.providers.insert(k.clone(), p);
+                        }
+                    }
+                }
             }
+            if cfg.providers.is_empty() {
+                return Err("config has no providers — refusing to write".into());
+            }
+            let text = if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                toml::to_string_pretty(&cfg).map_err(|e| e.to_string())?
+            } else {
+                serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?
+            };
+            std::fs::write(&path, text).map_err(|e| e.to_string())?;
+            let _ = mgr.model_info();
+            Ok(serde_json::json!({ "success": true }))
         }
         "get_sandbox_info" => {
             let (backend, loud) = agent_sandbox::detect_backend();
@@ -445,4 +718,13 @@ fn stage_attachment(
         return source.to_path_buf();
     }
     staged
+}
+
+
+/// Slug check for user-created ids (skill names, plugin ids, subagent
+/// names) — lowercase alnum + `-`/`_` only, so names stay path-safe.
+fn valid_slug(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }

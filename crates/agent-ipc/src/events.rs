@@ -168,7 +168,7 @@ pub enum UiEvent {
     SystemMessage(String),
     /// Token-usage update for the meter. `context_window` rides along so
     /// the UI can render fill percentage without re-deriving the bound.
-    Usage { prompt_tokens: u32, completion_tokens: u32, context_window: u32 },
+    Usage { prompt_tokens: u32, completion_tokens: u32, context_window: u32, cached_tokens: u32 },
     /// Session-fatal error.
     Error(String),
 }

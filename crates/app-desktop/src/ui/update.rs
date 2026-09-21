@@ -401,7 +401,7 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
         }
         // A tool call lands INLINE at this point in the stream — the chain
         // shows what ran, where, in order (Codex-style), not a bottom strip.
-        UiEvent::ToolCallStarted { name, args_preview } => {
+        UiEvent::ToolCallStarted { name, args_preview, .. } => {
             v.stream.push(StreamItem::Tool(StepRow {
                 id: v.stream.len(),
                 name: name.clone(),
@@ -506,6 +506,15 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                 v.stream.len(),
                 Role::System,
                 msg.clone(),
+            )));
+        }
+        // Interactive question cards are a Tauri-only surface — the
+        // desktop UI has no answer channel, so render the question text.
+        UiEvent::QuestionAsked { question, .. } => {
+            v.stream.push(StreamItem::Message(MessageRow::new(
+                v.stream.len(),
+                Role::System,
+                question.clone(),
             )));
         }
     }

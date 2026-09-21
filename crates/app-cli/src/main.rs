@@ -61,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         thinking_level_map,
         context_window,
         model_input,
+        compact_at: None,
     };
     let (mut actor, channels) = SessionActor::spawn(cfg);
     let cmd_tx = actor.command_sender();

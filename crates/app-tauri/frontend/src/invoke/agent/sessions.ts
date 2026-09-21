@@ -24,23 +24,46 @@ export interface SessionUsage {
   prompt: number;
   completion: number;
   context_window: number;
+  /** Prompt tokens served from the provider cache (absent on older rows). */
+  cached?: number;
 }
 
 /** Switch to an existing session — returns the active id plus the
  * persisted history so the caller can rebuild the stream view when it
  * has no in-memory events for that session yet. */
 export async function openSession(id: number) {
-  const r = await invoke<{ active: number; history: ChatMessage[]; usage?: SessionUsage | null }>(
+  const r = await invoke<{ active: number; history: ChatMessage[]; history_total?: number;
+  turn_total?: number; usage?: SessionUsage | null }>(
     "agent_session",
     { op: "open", id },
   );
   return r;
 }
 
+/** Older-history page — `before` is the exclusive end index (the current
+ * `loadedStart`); returns the slice just above it plus the full length. */
+/** Full persisted history for the raw-JSON viewer — the complete wire
+ * record (roles, tool_calls params, tool results, notices, ts). */
+export async function historyRaw(id: number) {
+  const r = await invoke<{ history: ChatMessage[] }>(
+    "agent_session",
+    { op: "history_raw", id },
+  );
+  return r.history;
+}
+
+export async function historyPage(id: number, before: number) {
+  return invoke<{ history: ChatMessage[]; history_total: number; turn_total?: number }>(
+    "agent_session",
+    { op: "history_page", id, payload: { before } },
+  );
+}
+
 /** Duplicate a session's history into a fresh session (which becomes the
  * active one) — returns the new id + the copied history. */
 export async function forkSession(id: number) {
-  return invoke<{ active: number; id: number; history: ChatMessage[]; usage?: SessionUsage | null }>(
+  return invoke<{ active: number; id: number; history: ChatMessage[]; history_total?: number;
+  turn_total?: number; usage?: SessionUsage | null }>(
     "agent_session",
     { op: "fork", id },
   );
@@ -49,7 +72,8 @@ export async function forkSession(id: number) {
 /** Delete a session entirely. Returns the new active id + its history —
  * the backend auto-switches when the deleted session was on screen. */
 export async function deleteSession(id: number) {
-  return invoke<{ active: number; history: ChatMessage[]; usage?: SessionUsage | null }>(
+  return invoke<{ active: number; history: ChatMessage[]; history_total?: number;
+  turn_total?: number; usage?: SessionUsage | null }>(
     "agent_session",
     { op: "delete", id },
   );
@@ -76,6 +100,8 @@ export interface WorkspaceSwitchResult {
   name: string;
   active: number;
   history: ChatMessage[];
+  history_total?: number;
+  turn_total?: number;
   usage?: SessionUsage | null;
   sessions: SessionRow[];
 }
@@ -117,10 +143,120 @@ export function getModelInfo() {
   return invoke<ModelInfo>("agent_session", { op: "model_info" });
 }
 
+/** A discovered MCP/plugin manifest (listing only — the server is never
+ * spawned for the settings display). */
+export interface PluginItem {
+  id: string;
+  name: string;
+  version: string;
+  kind: string;
+  entry: { command?: string; args?: string[]; url?: string };
+  tools: number;
+  commands: number;
+  sandboxed: boolean;
+  dir: string;
+}
+
+/** One subagent type the kernel can spawn. */
+export interface SubagentItem {
+  name: string;
+  description: string;
+  prompt: string;
+  timeout_secs?: number;
+  max_tool_rounds?: number;
+  max_depth?: number;
+  /** Builtin kernel delegate vs a `*.md` manifest under the agent dirs. */
+  builtin: boolean;
+  /** Manifest path — custom agents only. */
+  path?: string;
+  global?: boolean;
+}
+
+/** The agent's configuration surfaces for the settings "智能体" pane —
+ * read-only: system-prompt template, live model info, skills, MCP
+ * plugins, and subagent specs. */
+export interface AgentOverview {
+  instructions: string;
+  model: ModelInfo;
+  skills: SkillItem[];
+  plugins: PluginItem[];
+  subagents: SubagentItem[];
+}
+
+export function getAgentOverview() {
+  return invoke<AgentOverview>("agent_session", { op: "agent_overview" });
+}
+
+/** One instructions file (AGENTS.md) the session prompt appends verbatim. */
+export interface InstructionsFile {
+  path: string | null;
+  content: string;
+}
+export interface InstructionsSet {
+  global: InstructionsFile;
+  workspace: InstructionsFile;
+}
+export function getInstructions() {
+  return invoke<InstructionsSet>("agent_session", { op: "get_instructions" });
+}
+export function setInstructions(scope: "global" | "workspace", content: string) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "set_instructions",
+    payload: { scope, content },
+  });
+}
+
+export function createSkill(p: {
+  name: string;
+  description: string;
+  scope: "workspace" | "global";
+  body: string;
+}) {
+  return invoke<{ success: boolean; path: string }>("agent_session", {
+    op: "create_skill",
+    payload: p,
+  });
+}
+
+export function addMcp(p: {
+  id: string;
+  name: string;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  url?: string;
+  headers?: Record<string, string>;
+}) {
+  return invoke<{ success: boolean; path: string }>("agent_session", {
+    op: "add_mcp",
+    payload: p,
+  });
+}
+
+export function createSubagent(p: {
+  name: string;
+  description: string;
+  scope: "workspace" | "global";
+  prompt: string;
+}) {
+  return invoke<{ success: boolean; path: string }>("agent_session", {
+    op: "create_subagent",
+    payload: p,
+  });
+}
+
 export interface DefaultPrefs {
   permission_mode?: string;
   thinking_level?: string;
   agent_mode?: string;
+  /** Fraction of the context window that triggers compaction — 0.7/0.8/0.9. */
+  compact_at?: number;
+  /** Sandbox network override — "auto" (per-command audit) | "allow" | "deny". */
+  sandbox_network?: "auto" | "allow" | "deny";
+  /** Per-command memory cap (MB) — null/absent → the audit plan's 2048. */
+  sandbox_max_memory_mb?: number | null;
+  /** Fork-bomb process cap — null/absent → the audit plan's 256. */
+  sandbox_max_processes?: number | null;
 }
 
 /** The stored default preferences — what NEWLY created sessions spawn with.
@@ -141,6 +277,14 @@ export function setDefaultPrefs(prefs: DefaultPrefs) {
 
 export function openConfigFile() {
   return invoke<{ path: string }>("agent_session", { op: "open_config" });
+}
+
+/** Open an external link in the system browser (xdg-open / open / start). */
+export function openUrl(url: string) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "open_url",
+    payload: { url },
+  });
 }
 
 export interface AppConfigData {
@@ -222,6 +366,8 @@ export interface SkillItem {
   name: string;
   description: string;
   path: string;
+  /** Lives in a global skills dir rather than the workspace. */
+  global: boolean;
 }
 
 /** Fuzzy file index for the `@` picker — `query` is a lowercase substring. */

@@ -56,7 +56,7 @@ export type UiEvent =
     }
   | { AssistantMessage: string }
   | { SystemMessage: string }
-  | { Usage: { prompt_tokens: number; completion_tokens: number; context_window: number } }
+  | { Usage: { prompt_tokens: number; completion_tokens: number; context_window: number; cached_tokens: number } }
   | { Error: string };
 
 /** UI → kernel commands — mirrors `UiCommand`. */
