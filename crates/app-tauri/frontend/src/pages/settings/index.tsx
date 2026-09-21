@@ -14,13 +14,23 @@ import {
   Palette,
   ArrowLeft,
   Bot,
+  Archive,
+  Globe,
+  Cpu,
+  Activity,
+  Info,
+  FileText,
+  Wrench,
 } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { TitleBar } from "@/components/title-bar";
+import { WindowControls } from "@/components/window-controls";
+import { isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { getDefaultPrefs, setDefaultPrefs } from "../../invoke/agent/sessions";
+import { getDefaultPrefs, setDefaultPrefs, getSandboxInfo, type SandboxInfo } from "../../invoke/agent/sessions";
 import { AppearanceSettings } from "./appearance";
+import { AboutSettings } from "./about";
+import { AgentSettings, type AgentTab } from "./agent";
 import {
   SettingsRenderer,
   type SettingsCardOption,
@@ -70,11 +80,13 @@ const PERMISSION_OPTIONS: SettingsCardOption[] = [
 ];
 
 const THINKING_OPTIONS = [
-  { value: "off", label: "关闭思考", desc: "不使用额外推理过程，响应最快" },
-  { value: "low", label: "轻度思考", desc: "进行快速简短的分析" },
-  { value: "medium", label: "中等思考", desc: "平衡速度与分析质量" },
-  { value: "high", label: "深度思考", desc: "深层推演架构与复杂逻辑" },
-  { value: "max", label: "最大推演", desc: "全速深度推理，解决高难任务" },
+  { value: "off", label: "关闭思考（off）", desc: "不使用额外推理过程，响应最快" },
+  { value: "minimal", label: "最小推理（minimal）", desc: "最轻量推理深度" },
+  { value: "low", label: "轻度思考（low）", desc: "进行快速简短的分析" },
+  { value: "medium", label: "中等思考（medium）", desc: "平衡速度与分析质量" },
+  { value: "high", label: "深度思考（high）", desc: "深层推演架构与复杂逻辑" },
+  { value: "xhigh", label: "超高思考（xhigh）", desc: "超深层推演，慢而透彻" },
+  { value: "max", label: "最大推理（max）", desc: "全速深度推理，解决高难任务" },
 ];
 
 const AGENT_MODE_OPTIONS = [
@@ -83,7 +95,35 @@ const AGENT_MODE_OPTIONS = [
   { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
 ];
 
-type SettingsTab = "general" | "appearance";
+const COMPACT_AT_OPTIONS = [
+  { value: "70", label: "70%", desc: "更早压缩，给后续轮次留足余量" },
+  { value: "80", label: "80%", desc: "默认平衡值" },
+  { value: "90", label: "90%", desc: "尽量保留原始上下文，压缩更晚" },
+];
+
+const SANDBOX_NETWORK_OPTIONS = [
+  { value: "auto", label: "自动", desc: "按命令审计结果放行网络（默认）" },
+  { value: "allow", label: "始终允许", desc: "所有沙盒命令均可联网" },
+  { value: "deny", label: "始终禁止", desc: "强制断开所有沙盒命令的网络" },
+];
+
+const SANDBOX_MEMORY_OPTIONS = [
+  { value: "default", label: "默认（2048 MB）" },
+  { value: "512", label: "512 MB" },
+  { value: "1024", label: "1 GB" },
+  { value: "4096", label: "4 GB" },
+  { value: "8192", label: "8 GB" },
+];
+
+const SANDBOX_PROCS_OPTIONS = [
+  { value: "default", label: "默认（256）" },
+  { value: "64", label: "64" },
+  { value: "128", label: "128" },
+  { value: "512", label: "512" },
+  { value: "1024", label: "1024" },
+];
+
+type SettingsTab = "general" | "appearance" | AgentTab | "about";
 
 const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; icon: React.ReactNode }[] }[] = [
   {
@@ -93,6 +133,22 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
       { key: "appearance", label: "外观", icon: <Palette className="h-4 w-4 shrink-0" /> },
     ],
   },
+  {
+    label: "智能体",
+    items: [
+      { key: "instructions", label: "指令", icon: <FileText className="h-4 w-4 shrink-0" /> },
+      { key: "model", label: "模型", icon: <Cpu className="h-4 w-4 shrink-0" /> },
+      { key: "skills", label: "技能", icon: <Sparkles className="h-4 w-4 shrink-0" /> },
+      { key: "mcp", label: "MCP", icon: <Wrench className="h-4 w-4 shrink-0" /> },
+      { key: "subagent", label: "SubAgent", icon: <Bot className="h-4 w-4 shrink-0" /> },
+    ],
+  },
+  {
+    label: "系统",
+    items: [
+      { key: "about", label: "关于", icon: <Info className="h-4 w-4 shrink-0" /> },
+    ],
+  },
 ];
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
@@ -100,6 +156,11 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
   const [permission, setPermission] = useState("auto");
   const [thinking, setThinking] = useState("medium");
   const [agentMode, setAgentMode] = useState("build");
+  const [compactAt, setCompactAt] = useState("80");
+  const [sandboxNetwork, setSandboxNetwork] = useState("auto");
+  const [sandboxMem, setSandboxMem] = useState("default");
+  const [sandboxProcs, setSandboxProcs] = useState("default");
+  const [sandboxInfo, setSandboxInfo] = useState<SandboxInfo | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -108,6 +169,13 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         if (prefs.permission_mode) setPermission(prefs.permission_mode);
         if (prefs.thinking_level) setThinking(prefs.thinking_level);
         if (prefs.agent_mode) setAgentMode(prefs.agent_mode);
+        if (prefs.compact_at) setCompactAt(String(Math.round(prefs.compact_at * 100)));
+        if (prefs.sandbox_network) setSandboxNetwork(prefs.sandbox_network);
+        setSandboxMem(prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default");
+        setSandboxProcs(prefs.sandbox_max_processes ? String(prefs.sandbox_max_processes) : "default");
+        void getSandboxInfo()
+          .then(setSandboxInfo)
+          .catch(() => {});
       } catch (e) {
         console.error("load settings error:", e);
       }
@@ -129,18 +197,37 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
   const tabMeta = NAV_GROUPS.flatMap((g) => g.items).find((i) => i.key === activeTab);
 
   return (
-    <div className="flex h-full w-full flex-col bg-white overflow-hidden select-none">
-      <TitleBar title="设置" />
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left nav — same rail as the session sidebar: panel bg, white active
-            card, h-8-ish rows. The back affordance sits on top like the
-            reference's "返回工作区". */}
-        <aside className="w-56 flex-none bg-panel border-r border-hairline flex flex-col p-3 select-none justify-between">
-          <div className="flex flex-col gap-4">
+    <div className="relative flex h-full w-full bg-white overflow-hidden select-none">
+      {/* Top draggable strip across the right area + window controls anchored at top-right */}
+      <div
+        data-tauri-drag-region="deep"
+        className="absolute top-0 left-[240px] right-0 z-30 flex h-9 items-center justify-end px-3 select-none"
+      >
+        <WindowControls />
+      </div>
+
+      {/* Left nav — same rail as session sidebar: panel bg, white active card */}
+      <aside
+        data-tauri-drag-region="deep"
+        className="w-[240px] flex-none bg-panel border-r border-hairline flex flex-col justify-between h-full select-none"
+      >
+        <div className="flex flex-col">
+          {/* Top title strip matching the main sidebar */}
+          <div
+            data-tauri-drag-region="deep"
+            className="h-9 flex-none flex items-center px-3 gap-2 bg-panel select-none cursor-default"
+          >
+            {isMac && <div className="w-[78px] shrink-0" />}
+            <span className="text-[12px] font-semibold text-neutral-700 tracking-tight">
+              设置
+            </span>
+          </div>
+
+          <div className="p-3 flex flex-col gap-4">
             <button
               type="button"
               onClick={onClose}
-              className="flex items-center gap-2 px-2 h-8 rounded-lg text-[13px] font-medium text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] transition-colors cursor-pointer"
+              className="flex items-center gap-2 px-2 h-8 rounded-lg text-[13px] font-medium text-neutral-500 hover:text-neutral-800 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] transition-colors cursor-pointer"
             >
               <ArrowLeft className="h-4 w-4 shrink-0" />
               返回工作区
@@ -159,8 +246,11 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                     className={cn(
                       "w-full flex items-center gap-2.5 h-9 rounded-lg px-3 text-[13px] transition-all cursor-pointer",
                       activeTab === item.key
-                        ? "bg-white text-neutral-900 font-semibold shadow-xs border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]"
-                        : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] font-medium"
+                        ? // Same recipe as the session sidebar's active row:
+                          // 6% black wash + bright text — the vars lift it in
+                          // both themes, no dark: override needed.
+                          "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
+                        : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] font-normal"
                     )}
                   >
                     {item.icon}
@@ -170,16 +260,14 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               </div>
             ))}
           </div>
+        </div>
 
-          <span className="text-[11px] text-neutral-400 font-mono block text-center">
-            Husk v0.1.0
-          </span>
-        </aside>
+      </aside>
 
         {/* Content — big page title + grouped setting rows. */}
-        <div className="flex-1 min-h-0 overflow-y-auto bg-white">
-          <div className="px-10 py-8 max-w-3xl">
-            <h1 className="text-xl font-semibold text-neutral-900 mb-6">
+        <div className="flex-1 min-h-0 overflow-y-auto bg-white no-scrollbar">
+          <div className="w-full max-w-3xl mx-auto px-6 sm:px-10 py-8 pb-16">
+            <h1 className="text-xl font-semibold text-neutral-900 mb-6 tracking-tight">
               {tabMeta?.label}
             </h1>
 
@@ -190,6 +278,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                     kind: "cards",
                     key: "permission",
                     title: "默认权限模式",
+                    description: "配置 Agent 执行文件修改与终端命令时的默认权限拦截级别",
                     value: permission,
                     onChange: (v) => {
                       setPermission(v);
@@ -201,6 +290,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                     kind: "list",
                     key: "agent",
                     title: "Agent 偏好",
+                    description: "配置新会话启动时的默认运行模式与推理思考深度",
                     fields: [
                       {
                         key: "agentMode",
@@ -238,16 +328,93 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                           description: t.desc,
                         })),
                       },
+                      {
+                        key: "compactAt",
+                        type: "select",
+                        label: "上下文压缩阈值",
+                        description: "历史占用达到上下文窗口的该比例时触发自动压缩",
+                        icon: <Archive className="h-4 w-4 text-neutral-500" />,
+                        value: compactAt,
+                        onChange: (v) => {
+                          setCompactAt(v);
+                          void save({ compact_at: Number(v) / 100 });
+                        },
+                        placeholder: "选择阈值",
+                        options: COMPACT_AT_OPTIONS.map((t) => ({
+                          value: t.value,
+                          label: t.label,
+                          description: t.desc,
+                        })),
+                      },
+                    ],
+                  },
+                  {
+                    kind: "list",
+                    key: "sandbox",
+                    title: "沙盒设置",
+                    description: `命令执行的隔离与资源限制${
+                      sandboxInfo ? `（当前后端：${sandboxInfo.backend} · ${sandboxInfo.tier}）` : ""
+                    }`,
+                    fields: [
+                      {
+                        key: "sandboxNetwork",
+                        type: "select",
+                        label: "网络访问",
+                        description: "沙盒内命令的网络放行策略",
+                        icon: <Globe className="h-4 w-4 text-neutral-500" />,
+                        value: sandboxNetwork,
+                        onChange: (v) => {
+                          setSandboxNetwork(v);
+                          void save({ sandbox_network: v as "auto" | "allow" | "deny" });
+                        },
+                        placeholder: "选择网络策略",
+                        options: SANDBOX_NETWORK_OPTIONS.map((t) => ({
+                          value: t.value,
+                          label: t.label,
+                          description: t.desc,
+                        })),
+                      },
+                      {
+                        key: "sandboxMem",
+                        type: "select",
+                        label: "内存上限",
+                        description: "单条命令的常驻内存上限，超出即终止",
+                        icon: <Cpu className="h-4 w-4 text-neutral-500" />,
+                        value: sandboxMem,
+                        onChange: (v) => {
+                          setSandboxMem(v);
+                          void save({ sandbox_max_memory_mb: v === "default" ? null : Number(v) });
+                        },
+                        placeholder: "选择内存上限",
+                        options: SANDBOX_MEMORY_OPTIONS,
+                      },
+                      {
+                        key: "sandboxProcs",
+                        type: "select",
+                        label: "进程数上限",
+                        description: "单条命令可派生的最大进程数，防 fork 炸弹",
+                        icon: <Activity className="h-4 w-4 text-neutral-500" />,
+                        value: sandboxProcs,
+                        onChange: (v) => {
+                          setSandboxProcs(v);
+                          void save({ sandbox_max_processes: v === "default" ? null : Number(v) });
+                        },
+                        placeholder: "选择进程数上限",
+                        options: SANDBOX_PROCS_OPTIONS,
+                      },
                     ],
                   },
                 ]}
               />
-            ) : (
+            ) : activeTab === "appearance" ? (
               <AppearanceSettings />
+            ) : activeTab === "about" ? (
+              <AboutSettings />
+            ) : (
+              <AgentSettings tab={activeTab as AgentTab} />
             )}
           </div>
         </div>
-      </div>
     </div>
   );
 }

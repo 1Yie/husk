@@ -173,12 +173,12 @@ function FieldControl({ field }: { field: SettingField }) {
           value={field.value}
           onChange={(e) => field.onChange(e.target.value)}
           placeholder={field.placeholder}
-          className={cn("rounded-xl", field.width ?? "w-64")}
+          className={cn("h-8 text-xs rounded-xl", field.width ?? "w-64")}
         />
       );
     case "slider":
       return (
-        <div className="flex items-center gap-4">
+        <div className="flex h-8 items-center gap-4">
           <Slider
             value={[field.value]}
             onValueChange={([v]) => field.onChange(v)}
@@ -193,9 +193,13 @@ function FieldControl({ field }: { field: SettingField }) {
         </div>
       );
     case "switch":
-      return <Switch checked={field.value} onCheckedChange={field.onChange} />;
+      return (
+        <div className="flex h-8 items-center">
+          <Switch checked={field.value} onCheckedChange={field.onChange} />
+        </div>
+      );
     case "custom":
-      return <>{field.render()}</>;
+      return <div className="flex min-h-8 items-center">{field.render()}</div>;
   }
 }
 
@@ -239,14 +243,14 @@ function CardsSection({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-neutral-800">
+        <span className="text-sm font-semibold text-neutral-900">
           {section.title}
         </span>
         {section.description && (
           <span className="text-xs text-neutral-500">{section.description}</span>
         )}
       </div>
-      <div className="grid gap-2.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {section.options.map((opt) => {
           const isSelected = section.value === opt.value;
           return (
@@ -254,41 +258,41 @@ function CardsSection({
               key={opt.value}
               onClick={() => section.onChange(opt.value)}
               className={cn(
-                "p-3.5 cursor-pointer transition-all duration-150 shadow-none",
+                "p-4 cursor-pointer transition-all duration-150 shadow-none rounded-2xl flex flex-col justify-between select-none",
                 isSelected
-                  ? "border-neutral-900 bg-[color-mix(in_srgb,var(--husk-n50)_80%,transparent)] ring-1 ring-neutral-900"
+                  ? "border-accent ring-1 ring-accent/35 bg-[color-mix(in_srgb,var(--husk-accent)_4%,transparent)] shadow-xs"
                   : "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] bg-white hover:border-neutral-300 hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)]"
               )}
             >
-              <div className="flex items-start gap-3.5">
-                {opt.icon && <div className="mt-0.5">{opt.icon}</div>}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-neutral-900">
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {opt.icon && <div className="shrink-0">{opt.icon}</div>}
+                    <span className="text-sm font-semibold text-neutral-900 truncate">
                       {opt.label}
                     </span>
                     {opt.badge}
                   </div>
-                  {opt.description && (
-                    <p className="mt-1 text-xs leading-relaxed text-neutral-500">
-                      {opt.description}
-                    </p>
-                  )}
-                </div>
-                <div className="shrink-0 pt-0.5">
-                  <div
-                    className={cn(
-                      "flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
-                      isSelected
-                        ? "border-neutral-900 bg-neutral-900"
-                        : "border-neutral-300 bg-white"
-                    )}
-                  >
-                    {isSelected && (
-                      <div className="h-1.5 w-1.5 rounded-full bg-white" />
-                    )}
+                  <div className="shrink-0">
+                    <div
+                      className={cn(
+                        "flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
+                        isSelected
+                          ? "border-accent bg-accent"
+                          : "border-neutral-300 bg-white"
+                      )}
+                    >
+                      {isSelected && (
+                        <div className="h-1.5 w-1.5 rounded-full bg-white" />
+                      )}
+                    </div>
                   </div>
                 </div>
+                {opt.description && (
+                  <p className="mt-2 text-xs leading-relaxed text-neutral-500">
+                    {opt.description}
+                  </p>
+                )}
               </div>
             </Card>
           );
@@ -304,23 +308,41 @@ function ListSection({
   section: Extract<SettingsSection, { kind: "list" }>;
 }) {
   return (
-    <KvList>
-      <KvListHeader title={section.title} description={section.description}>
-        {section.actions}
-      </KvListHeader>
-      <KvListContent>
-        {section.fields.map((field) => (
-          <KvRow
-            key={field.key}
-            label={field.label}
-            description={field.description}
-            icon={field.icon}
-          >
-            <FieldControl field={field} />
-          </KvRow>
-        ))}
-      </KvListContent>
-    </KvList>
+    <div className="flex flex-col gap-3">
+      {(section.title || section.actions) && (
+        <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-0.5">
+            {section.title && (
+              <span className="text-sm font-semibold text-neutral-900">
+                {section.title}
+              </span>
+            )}
+            {section.description && (
+              <span className="text-xs text-neutral-500">
+                {section.description}
+              </span>
+            )}
+          </div>
+          {section.actions && (
+            <div className="flex items-center gap-2">{section.actions}</div>
+          )}
+        </div>
+      )}
+      <KvList>
+        <KvListContent>
+          {section.fields.map((field) => (
+            <KvRow
+              key={field.key}
+              label={field.label}
+              description={field.description}
+              icon={field.icon}
+            >
+              <FieldControl field={field} />
+            </KvRow>
+          ))}
+        </KvListContent>
+      </KvList>
+    </div>
   );
 }
 
@@ -328,11 +350,13 @@ function ListSection({
  * and layout render automatically. */
 export function SettingsRenderer({
   sections,
+  className,
 }: {
   sections: SettingsSection[];
+  className?: string;
 }) {
   return (
-    <>
+    <div className={cn("flex flex-col gap-8", className)}>
       {sections.map((s) =>
         s.kind === "cards" ? (
           <CardsSection key={s.key} section={s} />
@@ -340,6 +364,6 @@ export function SettingsRenderer({
           <ListSection key={s.key} section={s} />
         )
       )}
-    </>
+    </div>
   );
 }

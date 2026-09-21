@@ -13,7 +13,7 @@ export const KvList = React.forwardRef<HTMLDivElement, KvListProps>(
       <div
         ref={ref}
         className={cn(
-          "rounded-2xl border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] bg-white shadow-2xs overflow-hidden",
+          "rounded-2xl border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] dark:border-white/10 bg-white dark:bg-active shadow-2xs overflow-hidden",
           className
         )}
         {...props}
@@ -37,7 +37,7 @@ export const KvListHeader = React.forwardRef<HTMLDivElement, KvListHeaderProps>(
       <div
         ref={ref}
         className={cn(
-          "px-5 py-3.5 flex items-center justify-between bg-white border-b border-neutral-100",
+          "px-5 py-3.5 flex items-center justify-between bg-white dark:bg-active border-b border-neutral-100 dark:border-white/8",
           className
         )}
         {...props}
@@ -89,7 +89,7 @@ export const KvRow = React.forwardRef<HTMLDivElement, KvRowProps>(
       <div
         ref={ref}
         className={cn(
-          "px-5 py-3.5 flex items-center justify-between hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] transition-colors text-sm",
+          "px-5 py-3.5 min-h-[60px] flex items-center justify-between hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] transition-colors text-sm",
           className
         )}
         {...props}
@@ -163,7 +163,7 @@ export function ColorPill({
             "h-8 px-4 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-2xs transition-colors select-none border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)]",
             light
               ? "text-neutral-800 hover:bg-neutral-50"
-              : "text-white hover:opacity-90 hover:text-white border-transparent",
+              : "text-white hover:opacity-90 hover:text-white border-white/20",
             disabled && "opacity-50 cursor-not-allowed pointer-events-none",
             className
           )}
