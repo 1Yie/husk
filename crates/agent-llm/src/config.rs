@@ -24,9 +24,9 @@ pub enum ConfigError {
 /// Top-level config document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
-    #[serde(default, alias = "activeProvider")]
+    #[serde(default, alias = "activeProvider", skip_serializing_if = "Option::is_none")]
     pub active_provider: Option<String>,
-    #[serde(default, alias = "activeModel")]
+    #[serde(default, alias = "activeModel", skip_serializing_if = "Option::is_none")]
     pub active_model: Option<String>,
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
@@ -48,10 +48,10 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// Defaults per-provider (rare) — model usually comes from `active_model`.
-    #[serde(default, alias = "default_model", alias = "defaultModel")]
+    #[serde(default, alias = "default_model", alias = "defaultModel", skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     /// Compatibility flags (matching pi-agent / Devin format).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<ProviderCompat>,
     /// Configured models for this provider (can be simple string IDs or rich objects).
     #[serde(default)]
@@ -73,13 +73,13 @@ impl ProviderConfig {
 /// Feature compatibility flags matching pi-agent / Devin configs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCompat {
-    #[serde(default, alias = "supports_store", alias = "supportsStore")]
+    #[serde(default, alias = "supports_store", alias = "supportsStore", skip_serializing_if = "Option::is_none")]
     pub supports_store: Option<bool>,
-    #[serde(default, alias = "supports_developer_role", alias = "supportsDeveloperRole")]
+    #[serde(default, alias = "supports_developer_role", alias = "supportsDeveloperRole", skip_serializing_if = "Option::is_none")]
     pub supports_developer_role: Option<bool>,
-    #[serde(default, alias = "supports_reasoning_effort", alias = "supportsReasoningEffort")]
+    #[serde(default, alias = "supports_reasoning_effort", alias = "supportsReasoningEffort", skip_serializing_if = "Option::is_none")]
     pub supports_reasoning_effort: Option<bool>,
-    #[serde(default, alias = "max_tokens_field", alias = "maxTokensField")]
+    #[serde(default, alias = "max_tokens_field", alias = "maxTokensField", skip_serializing_if = "Option::is_none")]
     pub max_tokens_field: Option<String>,
 }
 
@@ -136,29 +136,29 @@ impl From<ModelConfig> for ModelEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ModelConfig {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
     #[serde(default)]
     pub input: Vec<String>,
-    #[serde(default, alias = "context_window", alias = "contextWindow")]
+    #[serde(default, alias = "context_window", alias = "contextWindow", skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<ModelCost>,
-    #[serde(default, alias = "thinking_level_map", alias = "thinkingLevelMap")]
+    #[serde(default, alias = "thinking_level_map", alias = "thinkingLevelMap", skip_serializing_if = "Option::is_none")]
     pub thinking_level_map: Option<HashMap<String, Option<String>>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ModelCost {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<f64>,
-    #[serde(default, alias = "cache_read", alias = "cacheRead")]
+    #[serde(default, alias = "cache_read", alias = "cacheRead", skip_serializing_if = "Option::is_none")]
     pub cache_read: Option<f64>,
-    #[serde(default, alias = "cache_write", alias = "cacheWrite")]
+    #[serde(default, alias = "cache_write", alias = "cacheWrite", skip_serializing_if = "Option::is_none")]
     pub cache_write: Option<f64>,
 }
 
@@ -176,6 +176,8 @@ pub enum ProviderKind {
     OpenaiResponses,
     #[serde(rename = "anthropic")]
     Anthropic,
+    #[serde(rename = "gemini")]
+    Gemini,
     #[serde(rename = "mock")]
     Mock,
 }
@@ -205,13 +207,15 @@ impl AppConfig {
         if !dir.exists() && legacy.is_dir() {
             let _ = std::fs::rename(&legacy, &dir);
         }
-        let json_path = dir.join("config.json");
-        if json_path.exists() {
-            return Some(json_path);
-        }
+        // TOML is canonical — a hand-edited config.toml is ALWAYS the
+        // live file when it exists; config.json only fills in otherwise.
         let toml_path = dir.join("config.toml");
         if toml_path.exists() {
             return Some(toml_path);
+        }
+        let json_path = dir.join("config.json");
+        if json_path.exists() {
+            return Some(json_path);
         }
         Some(toml_path)
     }
@@ -402,5 +406,56 @@ mod tests {
         assert_eq!(detailed.reasoning, Some(true));
         assert_eq!(detailed.context_window, Some(262144));
         assert_eq!(detailed.input, vec!["text", "image"]);
+    }
+
+    #[test]
+    fn toml_roundtrip_preserves_provider_and_models() {
+        // save_app_config writes `toml::to_string_pretty(&AppConfig)` — the
+        // serialized doc must reload to the same shape (skip_serializing_if
+        // keeps Option::None fields out of the doc entirely).
+        let toml_doc = r#"active_provider = "devin"
+active_model = "devin/swe-2"
+
+[providers.devin]
+type = "openai_responses"
+base_url = "https://api.nyanya.moe/v1"
+api_key = "sk-x"
+default_model = "devin/swe-2"
+
+[providers.devin.compat]
+supports_reasoning_effort = true
+
+[[providers.devin.models]]
+id = "devin/swe-2"
+name = "SWE-2"
+reasoning = true
+input = ["text", "image"]
+context_window = 262144
+
+[providers.devin.models.cost]
+input = 0.0
+output = 0.0
+
+[providers.devin.models.thinking_level_map]
+high = "high"
+"#;
+        let tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+        std::fs::write(tmp.path(), toml_doc).unwrap();
+        let cfg = AppConfig::load(Some(tmp.path())).expect("toml loads");
+
+        let out = toml::to_string_pretty(&cfg).expect("serializes back to toml");
+        let cfg2: AppConfig = toml::from_str(&out).expect("reparse");
+        assert_eq!(cfg2.active_provider.as_deref(), Some("devin"));
+        let devin = cfg2.providers.get("devin").unwrap();
+        assert_eq!(devin.kind, ProviderKind::OpenaiResponses);
+        let m = devin.find_model("devin/swe-2").unwrap().detailed().unwrap();
+        assert_eq!(m.reasoning, Some(true));
+        assert_eq!(m.context_window, Some(262144));
+        assert_eq!(m.input, vec!["text", "image"]);
+        assert_eq!(m.cost.as_ref().unwrap().input, Some(0.0));
+        assert_eq!(
+            m.thinking_level_map.as_ref().unwrap().get("high").unwrap().as_deref(),
+            Some("high")
+        );
     }
 }

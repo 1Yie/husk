@@ -70,9 +70,22 @@ impl ProviderFactory {
                 }
                 Ok(Arc::new(p))
             }
-            ProviderKind::Anthropic => Err(FactoryError::Unavailable(
-                AnthropicProvider::unimplemented().to_string(),
-            )),
+            ProviderKind::Anthropic => {
+                let mut p = AnthropicProvider::new(&cfg.base_url, key)
+                    .map_err(FactoryError::Build)?;
+                for (k, v) in &cfg.headers {
+                    p = p.with_header(k.clone(), v.clone());
+                }
+                Ok(Arc::new(p))
+            }
+            ProviderKind::Gemini => {
+                let mut p = crate::adapters::gemini::GeminiProvider::new(&cfg.base_url, key)
+                    .map_err(FactoryError::Build)?;
+                for (k, v) in &cfg.headers {
+                    p = p.with_header(k.clone(), v.clone());
+                }
+                Ok(Arc::new(p))
+            }
             ProviderKind::Mock => Ok(Arc::new(MockProvider::new())),
         }
     }
