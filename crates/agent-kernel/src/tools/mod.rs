@@ -4,6 +4,7 @@
 //! `smart_test_runner` plus `list_dir`, `smart_grep`, `bash`.
 
 pub mod apply_patch;
+pub mod ask;
 pub mod delegate;
 pub mod bash;
 pub mod fs_patch;

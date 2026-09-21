@@ -100,7 +100,10 @@ pub struct SessionHandle {
     #[allow(dead_code)]
     pub id: i64,
     pub cmd_tx: tokio::sync::mpsc::Sender<agent_ipc::UiCommand>,
-    pub decision: Arc<Mutex<Option<(u64, bool)>>>,
+    pub decision: Arc<Mutex<Option<(u64, bool)>>> ,
+    /// `AnswerQuestion` resolves the parked ask_question oneshot — same
+    /// bypass-the-pump channel as `decision`.
+    pub ask: Arc<crate::tools::registry::AskChannel>,
     pub permissions: Arc<std::sync::RwLock<crate::permissions::PermissionGate>>,
     /// The session's live agent mode — `SetAgentMode` writes here mid-turn
     /// so the next sampling round dispatches against the swapped registry.
@@ -449,6 +452,7 @@ impl SessionManager {
 
         let cmd_tx = actor.command_sender();
         let decision = actor.decision_writer();
+        let ask = actor.ask_channel();
         let permissions = actor.permissions_writer();
         let agent_mode = actor.agent_mode_writer();
         let thinking_level = actor.thinking_writer();
@@ -500,6 +504,7 @@ impl SessionManager {
             id,
             cmd_tx,
             decision,
+            ask,
             permissions,
             agent_mode,
             thinking_level,

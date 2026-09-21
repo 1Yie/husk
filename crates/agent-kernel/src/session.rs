@@ -62,7 +62,9 @@ pub struct SessionActor {
     /// Stage 6: write tracking for undo/rewind + files-changed list.
     hunks: HunkTracker,
     /// Engine's decision slot — `ToolDecision` writes here mid-turn.
-    decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
+    decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>> ,
+    /// `AnswerQuestion` resolves here mid-turn (same bypass pattern).
+    ask_channel: Arc<crate::tools::registry::AskChannel>,
     /// Engine's permissions slot — permission mode updates apply immediately mid-turn.
     permissions_slot: Arc<std::sync::RwLock<crate::permissions::PermissionGate>>,
     /// Engine's thinking-level slot — read by the manager to report the
@@ -237,6 +239,10 @@ impl SessionActor {
             Arc::new(child_full),
             Arc::new(child_ro),
         ));
+        // `ask_question` emits its card through the session's event channel.
+        tool_ctx.ask = Arc::new(crate::tools::registry::AskChannel::new(Some(
+            channels.event_tx.clone(),
+        )));
         let ctx = Arc::new(tool_ctx);
         let registry = Arc::new(registry);
         let mut engine = Engine::new(
@@ -255,6 +261,7 @@ impl SessionActor {
         engine.set_context_window(cfg.context_window.unwrap_or(256_000) as usize);
         engine.set_model_input(cfg.model_input.clone());
         let decision_slot = engine.decision_slot();
+        let ask_channel = engine.ask_channel();
         let permissions_slot = engine.permissions_writer();
         let thinking_slot = engine.thinking_level_shared();
 
@@ -307,6 +314,7 @@ impl SessionActor {
                 cmd_tx,
                 hunks,
                 decision_slot,
+                ask_channel,
                 permissions_slot,
                 thinking_slot,
                 steer_tx,
@@ -352,6 +360,12 @@ impl SessionActor {
     /// approval isn't queued behind the running `run_turn`.
     pub fn decision_writer(&self) -> Arc<std::sync::Mutex<Option<(u64, bool)>>> {
         self.decision_slot.clone()
+    }
+
+    /// `AnswerQuestion` resolves the parked `ask_question` oneshot —
+    /// bypasses the pump for the same reason `ToolDecision` does.
+    pub fn ask_channel(&self) -> Arc<crate::tools::registry::AskChannel> {
+        self.ask_channel.clone()
     }
 
     /// The shared permission gate slot — updates apply immediately mid-turn.
@@ -815,12 +829,20 @@ impl SessionActor {
                 // mid-turn path is the `cancel_writer()` the bridge writes
                 // directly so it isn't queued behind `run_turn`.
                 self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                // Wake a parked ask_question too — its exec polls the flag,
+                // but dropping the oneshot fails it fast either way.
+                self.ask_channel.clear();
                 self.state = AgentState::Finished;
                 let _ = self
                     .io
                     .ui_tx
                     .try_send(UiEvent::SystemMessage("已被用户中断".into()));
                 self.history.push(ChatMessage::notice("已被用户中断"));
+            }
+            UiCommand::AnswerQuestion { request_id, answer } => {
+                // Fallback path — commands.rs normally resolves the channel
+                // directly; this arm covers test-driven actors.
+                self.ask_channel.answer(request_id, answer);
             }
             UiCommand::ToolDecision { request_id, approved } => {
                 // Direct write to the engine's shared decision slot — this

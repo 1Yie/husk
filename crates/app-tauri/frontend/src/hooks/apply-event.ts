@@ -49,13 +49,16 @@ export function applyEvent(
       s !== "Idle" &&
       s !== "Finished" &&
       !(typeof s === "object" && "Failed" in s);
-    return { ...v, state: s, streaming };
+    // A finished/failed/idle turn resolves any parked question too.
+    const settled = s === "Idle" || s === "Finished" || (typeof s === "object" && "Failed" in s);
+    return { ...v, state: s, streaming, ...(settled ? { pendingQuestion: undefined } : {}) };
   }
   if ("UserPrompt" in ev) {
     items.push({ kind: "user", text: ev.UserPrompt, ts: Date.now() });
     return {
       ...v,
       items,
+      pendingQuestion: undefined,
       toksPerSec: 0,
       rate: { chars: 0, activeMs: 0, lastAt: null },
     };
@@ -145,6 +148,17 @@ export function applyEvent(
       });
     }
     return { ...v, items };
+  }
+  if ("QuestionAsked" in ev) {
+    const q = ev.QuestionAsked;
+    return {
+      ...v,
+      pendingQuestion: {
+        requestId: q.request_id,
+        question: q.question,
+        options: q.options ?? [],
+      },
+    };
   }
   if ("AssistantMessage" in ev) {
     closeOpenThinking(items);

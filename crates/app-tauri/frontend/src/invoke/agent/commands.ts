@@ -20,6 +20,10 @@ export const steer = (text: string) => send({ Steer: { text } });
 export const decideTool = (requestId: number, approved: boolean) =>
   send({ ToolDecision: { request_id: requestId, approved } });
 
+/** Answer a pending `ask_question` card — option label or free text. */
+export const answerQuestion = (requestId: number, answer: string) =>
+  send({ AnswerQuestion: { request_id: requestId, answer } });
+
 /** Abort the in-flight turn. */
 export const cancelTurn = () => send("Cancel");
 

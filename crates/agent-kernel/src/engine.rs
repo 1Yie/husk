@@ -269,6 +269,13 @@ impl Engine {
         self.decision.clone()
     }
 
+    /// `AnswerQuestion` resolves here — same bypass-the-pump pattern as
+    /// `decision_slot`: the command writes directly while the turn's tool
+    /// is parked awaiting the answer.
+    pub fn ask_channel(&self) -> Arc<crate::tools::registry::AskChannel> {
+        self.ctx.ask.clone()
+    }
+
     /// Hot-swap provider for the next turn.
     pub fn set_provider(&mut self, provider: Arc<dyn agent_llm::LlmProvider>) {
         self.sampler.set_provider(provider);

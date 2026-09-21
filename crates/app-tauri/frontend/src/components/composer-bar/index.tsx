@@ -28,8 +28,7 @@ import {
   Map as MapIcon,
   Clock,
   GripVertical,
-  ListPlus,
-} from "@keyline-icons/react";
+  ListPlus, MessagesSquare } from "@keyline-icons/react";
 import { Orb } from "../agent-orb";
 import { parseTodos, type TodoItem } from "../todo-view";
 import * as agent from "../../invoke/agent";
@@ -142,6 +141,14 @@ export function ComposerBar({
   // "立即发送" on a row promotes it to a live Steer.
   const [queued, setQueued] = useState<string[]>([]);
   useEffect(() => setQueued([]), [sessionKey]);
+  // ask_question — the answered id hides the strip (no echo event comes
+  // back); the input holds a custom free-text answer.
+  const [answeredId, setAnsweredId] = useState<number | null>(null);
+  const [questionInput, setQuestionInput] = useState("");
+  useEffect(() => {
+    setAnsweredId(null);
+    setQuestionInput("");
+  }, [sessionKey]);
   const [todoCollapsed, setTodoCollapsed] = useState(false);
   // Files attached via the `+` button — chips above the textarea; their
   // content rides inside the prompt text as fenced blocks (same channel
@@ -526,6 +533,23 @@ export function ComposerBar({
   };
 
   const pending = pendingApprovalOf(view);
+  const question =
+    view.pendingQuestion && view.pendingQuestion.requestId !== answeredId
+      ? view.pendingQuestion
+      : null;
+
+  const answerQuestion = async (text: string) => {
+    const q = question;
+    const t = text.trim();
+    if (!q || !t) return;
+    setAnsweredId(q.requestId);
+    try {
+      await agent.answerQuestion(q.requestId, t);
+    } catch (e) {
+      console.error("answerQuestion failed:", e);
+      setAnsweredId(null);
+    }
+  };
   const latestTodos = useMemo(() => extractLatestTodos(view), [view.items]);
   const hasActiveTodos = Boolean(latestTodos && latestTodos.totalCount > 0 && !latestTodos.allDone);
 
@@ -610,9 +634,62 @@ export function ComposerBar({
               </Button>
             </div>
           )}
-          {pending || hasActiveTodos || queued.length > 0 ? (
+          {pending || question || hasActiveTodos || queued.length > 0 ? (
             /* Outer container with attached banner: Approval (Priority 1) or Active Todo (Priority 2) */
             <div className="w-full bg-panel rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
+              {question ? (
+                /* ask_question card — option chips + free-text answer. */
+                <div className="flex flex-col gap-2 px-3.5 pt-0.5">
+                  <div className="flex items-start gap-2 text-xs text-neutral-600 font-medium select-none">
+                    <MessagesSquare className="h-3.5 w-3.5 text-neutral-500 shrink-0 mt-0.5" />
+                    <span className="text-neutral-800 leading-snug min-w-0">
+                      {question.question}
+                    </span>
+                  </div>
+                  {question.options.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pl-5">
+                      {question.options.map((o) => (
+                        <TooltipSimple
+                          key={o.label}
+                          content={o.description || o.label}
+                          side="top"
+                          sideOffset={6}
+                        >
+                          <button
+                            type="button"
+                            className="h-7 px-2.5 rounded-lg border border-hairline bg-[color-mix(in_srgb,var(--husk-black)_3%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] text-[12px] text-neutral-800 transition-colors cursor-pointer"
+                            onClick={() => void answerQuestion(o.label)}
+                          >
+                            {o.label}
+                          </button>
+                        </TooltipSimple>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 pl-5">
+                    <input
+                      value={questionInput}
+                      onChange={(e) => setQuestionInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                          void answerQuestion(questionInput);
+                        }
+                      }}
+                      placeholder="自定义回答…"
+                      className="flex-1 min-w-0 h-7 px-2.5 rounded-lg border border-hairline bg-transparent text-[12px] text-neutral-800 placeholder:text-neutral-400 outline-none focus:border-[color-mix(in_srgb,var(--husk-black)_25%,transparent)]"
+                    />
+                    <Button
+                      size="sm"
+                      disabled={!questionInput.trim()}
+                      className="shrink-0 h-7 px-2.5 text-[11px] bg-neutral-900 hover:bg-neutral-800 text-white dark:text-[#fafafa] cursor-pointer disabled:opacity-40"
+                      onClick={() => void answerQuestion(questionInput)}
+                    >
+                      回复
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
               {pending ? (
                 /* Priority 1: Permission approval strip */
                 <div className="flex items-center gap-2 px-3 pt-0.5 text-xs text-neutral-600 font-medium select-none">

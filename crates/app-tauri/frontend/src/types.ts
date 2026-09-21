@@ -18,8 +18,21 @@ export type AgentState =
   | { Failed: string };
 
 /** Kernel → UI events — mirrors `UiEvent`. */
+/** One offered answer on an `ask_question` card. */
+export interface AskOption {
+  label: string;
+  description?: string;
+}
+
 export type UiEvent =
   | { StateChanged: AgentState }
+  | {
+      QuestionAsked: {
+        request_id: number;
+        question: string;
+        options: AskOption[];
+      };
+    }
   | { UserPrompt: string }
   | { TextDelta: string }
   | { ReasoningDelta: string }
@@ -50,6 +63,7 @@ export type UiCommand =
   | { Prompt: { text: string } }
   | { Steer: { text: string } }
   | { ToolDecision: { request_id: number; approved: boolean } }
+  | { AnswerQuestion: { request_id: number; answer: string } }
   | "Cancel"
   | { SetModel: { provider: string; model: string } }
   | { SetPermissionMode: { mode: string } }

@@ -84,6 +84,10 @@ pub enum UiCommand {
     /// a stale click can be consumed by a *later* pending approval and
     /// approve a tool the user never reviewed (P1-a).
     ToolDecision { request_id: u64, approved: bool },
+    /// Answer to a pending `QuestionAsked` card — `request_id` correlates
+    /// the answer to the specific question, same staleness rule as
+    /// `ToolDecision`.
+    AnswerQuestion { request_id: u64, answer: String },
     /// Cancel the in-flight turn.
     Cancel,
     /// Hot-swap the active provider/model for the *next* turn.
@@ -105,6 +109,14 @@ pub enum UiCommand {
     UndoLastTurn,
 }
 
+/// One offered answer on an `ask_question` card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// Kernel → UI events. Every variant is displayable data — the frontend never
 /// re-parses text to figure out what happened.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +136,10 @@ pub enum UiEvent {
     /// A tool finished (or failed); `content` is the truncated model-facing
     /// text, `ui_type` is the optional typed card hint (`diff`/`table`/…).
     ToolCallFinished { name: String, ok: bool, content: String, ui_type: Option<String> },
+    /// `ask_question` paused the turn for structured input — the card
+    /// offers the model's options plus a free-text field. Resolved by
+    /// `AnswerQuestion`.
+    QuestionAsked { request_id: u64, question: String, options: Vec<AskOption> },
     /// A destructive op paused for review — `diff` is the unified diff for
     /// the approval card; `fuzzy` flags an approximate patch match.
     /// `request_id` is the correlation token the frontend echoes back in

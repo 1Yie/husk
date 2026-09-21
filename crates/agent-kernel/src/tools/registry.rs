@@ -24,7 +24,93 @@ use futures::future::BoxFuture;
 pub type Args = serde_json::Value;
 
 /// Shared context handed to every tool invocation.
-#[derive(Clone)]
+
+/// The structured-question channel — `ask_question` parks a oneshot here,
+/// emits `QuestionAsked` through `ui_tx`, and awaits the answer with the
+/// same cancel poll as `wait_for_decision`. Headless contexts get
+/// `ui_tx: None` → the tool refuses instead of deadlocking.
+pub struct AskChannel {
+    /// The session's UI event channel — `None` where nobody can answer
+    /// (delegated subagents, tests).
+    pub ui_tx: Option<tokio::sync::mpsc::Sender<agent_ipc::events::UiEvent>>,
+    pending: std::sync::Mutex<Option<(u64, tokio::sync::oneshot::Sender<String>)>>,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+impl AskChannel {
+    pub fn new(ui_tx: Option<tokio::sync::mpsc::Sender<agent_ipc::events::UiEvent>>) -> Self {
+        Self {
+            ui_tx,
+            pending: std::sync::Mutex::new(None),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// Emit the card, park the answer oneshot, await it (or cancellation).
+    pub async fn ask(
+        &self,
+        question: String,
+        options: Vec<agent_ipc::events::AskOption>,
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<String, ToolError> {
+        let Some(ui_tx) = &self.ui_tx else {
+            return Err(ToolError::Failed(
+                "ask_question unavailable — no UI channel in this context".into(),
+            ));
+        };
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.pending.lock().unwrap() = Some((id, tx));
+        if ui_tx
+            .try_send(agent_ipc::events::UiEvent::QuestionAsked {
+                request_id: id,
+                question,
+                options,
+            })
+            .is_err()
+        {
+            *self.pending.lock().unwrap() = None;
+            return Err(ToolError::Failed(
+                "ask_question failed — UI event channel is closed".into(),
+            ));
+        }
+        let mut rx = std::pin::pin!(rx);
+        loop {
+            tokio::select! {
+                r = &mut rx => {
+                    return r.map_err(|_| ToolError::Failed(
+                        "question channel closed before an answer arrived".into(),
+                    ));
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    if cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+                        *self.pending.lock().unwrap() = None;
+                        return Err(ToolError::Failed("cancelled".into()));
+                    }
+                }
+            }
+        }
+    }
+
+    /// `AnswerQuestion` writes here — resolves the parked oneshot when the
+    /// id matches (a stale answer for a cleared question is ignored).
+    pub fn answer(&self, request_id: u64, answer: String) -> bool {
+        match self.pending.lock().unwrap().take() {
+            Some((id, tx)) if id == request_id => tx.send(answer).is_ok(),
+            Some(p) => {
+                *self.pending.lock().unwrap() = Some(p);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Cancel path — dropping the oneshot wakes `ask()` with an error.
+    pub fn clear(&self) {
+        *self.pending.lock().unwrap() = None;
+    }
+}
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
@@ -44,6 +130,8 @@ pub struct ToolCtx {
     /// Subagent spawner — `delegate` runs a fresh-context child engine.
     /// `None` where delegation is unavailable (tests, child contexts).
     pub subagent: Option<crate::tools::delegate::SubagentSpawner>,
+    /// `ask_question`'s pending-answer slot + UI channel.
+    pub ask: Arc<crate::tools::registry::AskChannel>,
     /// Delegation depth — `delegate` bumps it in the child's ctx and the
     /// tool refuses past MAX_SUBAGENT_DEPTH, a second guard behind the
     /// registry-level exclusion of `delegate`.
@@ -67,6 +155,7 @@ impl ToolCtx {
             cancel: None,
             subagent: None,
             depth: 0,
+            ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
@@ -82,6 +171,7 @@ impl ToolCtx {
             cancel: None,
             subagent: None,
             depth: 0,
+            ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
@@ -251,6 +341,7 @@ impl ToolRegistry {
         r.register(crate::tools::web_fetch::spec());
         r.register(crate::tools::web_fetch::spec_alias());
         r.register(crate::tools::delegate::spec());
+        r.register(crate::tools::ask::spec());
         r
     }
 

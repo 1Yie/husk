@@ -35,6 +35,10 @@ export type StreamItem =
   | { kind: "system"; text: string };
 
 export interface SessionView {
+  /** An unresolved `QuestionAsked` — the composer renders it in the same
+   * slot as an approval strip. Cleared when answered (locally), when the
+   * turn ends, or when a new prompt lands. */
+  pendingQuestion?: { requestId: number; question: string; options: import("../types").AskOption[] };
   items: StreamItem[];
   state: AgentState | null;
   streaming: boolean;
