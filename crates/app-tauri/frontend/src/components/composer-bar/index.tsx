@@ -27,6 +27,8 @@ import {
   Bot,
   Map,
   Clock,
+  GripVertical,
+  ListPlus,
 } from "@keyline-icons/react";
 import { Orb } from "../agent-orb";
 import { parseTodos, type TodoItem } from "../todo-view";
@@ -457,6 +459,18 @@ export function ComposerBar({
   const removeQueued = (i: number) =>
     setQueued((q) => q.filter((_, j) => j !== i));
 
+  // Drag-to-reorder — plain HTML5 DnD on the row; `overIdx` paints the
+  // drop line. Order = send order, so the strip is the source of truth.
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const moveQueued = (from: number, to: number) =>
+    setQueued((q) => {
+      const next = [...q];
+      const [m] = next.splice(from, 1);
+      next.splice(to, 0, m);
+      return next;
+    });
+
   // Drain the queue one prompt per turn end — `wasStreaming` guards the
   // transition so a state change alone can't flush the whole list.
   const wasStreamingRef = useRef(false);
@@ -705,8 +719,37 @@ export function ComposerBar({
                     </span>
                   </div>
                   {queued.slice(0, 4).map((q, i) => (
-                    <div key={i} className="flex items-center gap-2 pl-5">
-                      <span className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-2 py-0.5 rounded">
+                    <div
+                      key={i}
+                      draggable
+                      onDragStart={(e) => {
+                        setDragIdx(i);
+                        e.dataTransfer.effectAllowed = "move";
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        setOverIdx(i);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (dragIdx != null && dragIdx !== i) moveQueued(dragIdx, i);
+                        setDragIdx(null);
+                        setOverIdx(null);
+                      }}
+                      onDragEnd={() => {
+                        setDragIdx(null);
+                        setOverIdx(null);
+                      }}
+                      className={cn(
+                        "flex items-center gap-1.5 pl-1 pr-0 rounded-md transition-colors",
+                        overIdx === i && dragIdx !== i &&
+                          "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] ring-1 ring-inset ring-[color-mix(in_srgb,var(--husk-n400)_60%,transparent)]",
+                        dragIdx === i && "opacity-40",
+                      )}
+                    >
+                      <GripVertical className="h-3.5 w-3.5 text-neutral-300 hover:text-neutral-500 cursor-grab active:cursor-grabbing shrink-0" />
+                      <span className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-2 py-0.5 rounded select-none">
                         {q.split("\n")[0]}
                       </span>
                       <Button
@@ -1414,6 +1457,22 @@ function ComposerToolbar({
         </DropdownMenu>
 
         {streaming ? (
+          <>
+            {canSubmit && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[#2b2b32] dark:hover:bg-[#34343d] dark:border-[#3f3f49] dark:text-[#d4d4d8] flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
+                    onClick={() => void submit()}
+                    aria-label="排队发送"
+                  >
+                    <ListPlus className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">排队发送 — 回合结束后自动发出 (Enter)</TooltipContent>
+              </Tooltip>
+            )}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -1432,6 +1491,7 @@ function ComposerToolbar({
             </TooltipTrigger>
             <TooltipContent side="top">中断当前回复</TooltipContent>
           </Tooltip>
+          </>
         ) : canSubmit ? (
           <Tooltip>
             <TooltipTrigger asChild>
