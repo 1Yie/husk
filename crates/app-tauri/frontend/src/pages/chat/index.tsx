@@ -1,6 +1,7 @@
 // Chat page — the conversation column of the main window: window title
 // bar (with the git/usage meter), the scrollable stream, and the composer.
 import { useEffect, useRef, useState } from "react";
+import { FolderOpen } from "@keyline-icons/react";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/components/chat-stream";
 import { ComposerBar } from "@/components/composer-bar";
@@ -27,9 +28,14 @@ interface ChatPageProps {
   onLoadOlder?: () => Promise<boolean>;
   /** Opens the raw-JSON history viewer. */
   onShowRaw?: () => void;
+  /** No workspace open — the empty pane's "打开工作区" button. */
+  onOpenWorkspace?: () => void;
+  /** Workspace info resolved — false during boot keeps the skeleton up
+   * instead of flashing the empty pane before the resume lands. */
+  workspaceReady?: boolean;
 }
 
-export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, modelCost, loading, sessionKey, hasMore, onLoadOlder, onShowRaw }: ChatPageProps) {
+export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, modelCost, loading, sessionKey, hasMore, onLoadOlder, onShowRaw, onOpenWorkspace, workspaceReady = true }: ChatPageProps) {
   // The composer floats over the stream bottom — measure its real height
   // (card + pb-6 gap + the taller approval/todo banner variants) and feed
   // it to the stream as bottom padding, so the last message can always
@@ -53,7 +59,15 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
 
   return (
     <>
-      <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} modelCost={modelCost} onShowRaw={onShowRaw} />
+      <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} modelCost={modelCost} onShowRaw={onShowRaw} noWorkspace={!workspaceRoot} />
+      {!workspaceRoot ? (
+        workspaceReady ? (
+          <NoWorkspacePane onOpenWorkspace={onOpenWorkspace} />
+        ) : (
+          <div className="flex-1 min-h-0" />
+        )
+      ) : (
+        <>
       <ChatStream
         // Remount per session — scroll position, pin state, landing
         // flag and the windowing shell state are all per-session.
@@ -77,6 +91,33 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
       <div ref={composerRef} className="absolute inset-x-0 bottom-0 pointer-events-none z-20">
         <ComposerBar view={view} workspaceRoot={workspaceRoot} sessionKey={sessionKey} />
       </div>
+        </>
+      )}
     </>
+  );
+}
+
+/** No workspace open — the project list lives in the sidebar; this pane
+ * offers the folder picker and a pointer at it. */
+function NoWorkspacePane({ onOpenWorkspace }: { onOpenWorkspace?: () => void }) {
+  return (
+    <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 select-none pb-16">
+      <FolderOpen className="h-8 w-8 text-neutral-300" />
+      <span className="text-[15px] font-medium text-neutral-700">
+        没有打开的工作区
+      </span>
+      <span className="text-[13px] text-neutral-400">
+        打开一个项目文件夹开始，或从左侧「项目」选择最近的工作区
+      </span>
+      {onOpenWorkspace && (
+        <button
+          type="button"
+          onClick={onOpenWorkspace}
+          className="mt-1 h-8 px-4 rounded-lg border border-neutral-200 text-[13px] text-neutral-700 hover:bg-neutral-50 transition-colors cursor-pointer"
+        >
+          打开工作区…
+        </button>
+      )}
+    </div>
   );
 }

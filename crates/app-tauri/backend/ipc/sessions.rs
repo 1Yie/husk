@@ -113,18 +113,33 @@ pub fn agent_session(
             Ok(serde_json::json!({ "pinned": ok }))
         }
         "workspace_info" => {
-            let name = mgr.workspace_root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = if mgr.workspace_active {
+                mgr.workspace_root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+            } else {
+                String::new()
+            };
             Ok(serde_json::json!({
-                "root": mgr.workspace_root.to_string_lossy(),
+                "root": if mgr.workspace_active { mgr.workspace_root.to_string_lossy().to_string() } else { String::new() },
                 "name": name,
                 "recents": mgr.recent_workspaces().iter().map(|w| {
                     serde_json::json!({ "path": w.path.to_string_lossy(), "name": w.name, "last_opened": w.last_opened })
                 }).collect::<Vec<_>>()
             }))
         }
+        // Remove a project from the sidebar: drops it from recents and
+        // tears down its actors — parked OR active. `removed_active` tells
+        // the webview the empty state is now showing (no workspace open).
+        "remove_workspace" => {
+            let p = path.ok_or("remove_workspace needs path")?;
+            let was_active = mgr.remove_workspace(&p);
+            Ok(serde_json::json!({ "removed_active": was_active }))
+        }
         // Header chip: branch + dirty count for the active workspace.
         // Not-a-repo → branch:null (workspace can legitimately be outside git).
         "git_info" => {
+            if !mgr.workspace_active {
+                return Ok(serde_json::json!({ "branch": serde_json::Value::Null, "dirty": 0 }));
+            }
             match agent_context::git::git_snapshot(&mgr.workspace_root) {
                 Ok(snap) => Ok(serde_json::json!({
                     "branch": snap.branch,

@@ -19,6 +19,10 @@ interface TitleBarProps {
   modelCost?: ModelItem["cost"];
   /** Opens the raw-JSON history viewer for the active session. */
   onShowRaw?: () => void;
+  /** No workspace open — a session title and token/cost stats describe
+   * nothing, so the whole cluster (title, raw button, git + usage chips)
+   * is dropped; only the drag region and window controls remain. */
+  noWorkspace?: boolean;
 }
 
 function fmtK(n: number) {
@@ -59,7 +63,7 @@ function turnCost(
   );
 }
 
-export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw }: TitleBarProps) {
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, noWorkspace = false }: TitleBarProps) {
   const prompt = view?.usage.prompt ?? 0;
   const completion = view?.usage.completion ?? 0;
   const cached = view?.usage.cachedTokens ?? 0;
@@ -79,6 +83,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
     >
       {isMac && <div className="w-[78px] shrink-0" />}
 
+      {!noWorkspace && (
       <div className="flex items-center min-w-0 max-w-[500px]">
         <TooltipSimple content={title} side="bottom">
           <span
@@ -101,12 +106,14 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
           </TooltipSimple>
         )}
       </div>
+      )}
 
       <div className="flex-1 h-full" />
 
       {/* Session stats — always rendered (zeroed before the first turn) so
        * the meter cluster doesn't pop in mid-conversation. The git chip is
        * the only conditional one: outside a repo there is no branch to show. */}
+      {!noWorkspace && (
       <div
         className="flex items-center gap-3 flex-none mr-2 text-[11px] font-mono text-neutral-400"
       >
@@ -166,6 +173,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
           </span>
         </TooltipSimple>
       </div>
+      )}
 
       <WindowControls />
     </div>

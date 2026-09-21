@@ -514,3 +514,20 @@ pub fn record_recent_workspace(workspace_root: &Path) {
         let _ = std::fs::write(path, json);
     }
 }
+
+/// Drop a workspace from the recents list — the sidebar's "移除项目" path.
+/// Session files under `sessions/<ws_hash>/` are NOT touched: removing a
+/// project is a list operation, reopening the folder restores everything.
+pub fn remove_recent_workspace(workspace_root: &Path) {
+    let Some(path) = recent_workspaces_path() else { return; };
+    let canon = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let mut list = load_recent_workspaces();
+    list.retain(|w| {
+        w.path.canonicalize().unwrap_or_else(|_| w.path.clone()) != canon
+    });
+    if let Ok(json) = serde_json::to_string_pretty(&list) {
+        let _ = std::fs::write(path, json);
+    }
+}

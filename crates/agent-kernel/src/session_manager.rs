@@ -164,6 +164,11 @@ pub struct SessionManager {
     pub compact_at: f32,
     /// Workspace root (for git branch / cwd display).
     pub workspace_root: std::path::PathBuf,
+    /// Whether a workspace is actually open. `false` = empty state — no
+    /// actors, no sessions; `workspace_root`/`store` keep their last (or
+    /// boot-fallback) values but nothing reads them until
+    /// `switch_workspace` flips this back on.
+    pub workspace_active: bool,
 }
 
 impl SessionManager {
@@ -201,25 +206,75 @@ impl SessionManager {
     pub fn spawn_at(root: Option<std::path::PathBuf>) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
         // No explicit root → reopen the workspace the user last had
         // open (MRU list head) so a session opened in another project
-        // survives an app restart; fall back to the process cwd only when
-        // there's no recorded history.
-        let cwd = root
+        // survives an app restart. No recents → empty state: the UI shows
+        // the no-workspace pane until the user picks one (no cwd fallback —
+        // a fresh install shouldn't silently attach the launch directory).
+        let cwd: Option<std::path::PathBuf> = root
             .or_else(|| {
                 crate::session_store::load_recent_workspaces()
                     .first()
                     .map(|w| w.path.clone())
                     .filter(|p| p.is_dir())
-            })
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
-        let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+            });
         let cfg = AppConfig::load(None).unwrap_or_default();
+        let (event_tx, event_rx) = std_mpsc::channel();
+        let (_p, default_model, default_pname) = resolve_provider(&cfg);
+
+        // Empty boot — nothing to resume: an inert store rooted at the
+        // app-data dir (never written; session ops are guarded on
+        // `workspace_active`), no actors, no metas.
+        let Some(cwd) = cwd else {
+            let store = Arc::new(
+                SessionStore::open(&crate::session_store::app_data_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp")))
+                .expect("session store"),
+            );
+            let defaults = crate::session_store::try_load_default_preferences();
+            if let Some(d) = &defaults {
+                crate::sandbox_prefs::set(crate::sandbox_prefs::SandboxLimits {
+                    network: d
+                        .sandbox_network
+                        .as_deref()
+                        .and_then(crate::sandbox_prefs::network_from_label),
+                    max_memory_mb: d.sandbox_max_memory_mb,
+                    max_processes: d.sandbox_max_processes,
+                });
+            }
+            let mgr = Self {
+                metas: Vec::new(),
+                store,
+                provider_cfg: cfg,
+                handles: HashMap::new(),
+                parked: HashMap::new(),
+                event_tx,
+                active_id: 0,
+                provider_name: default_pname,
+                model_name: default_model,
+                active_thinking_level: defaults.as_ref().and_then(|d| d.thinking_level.clone()),
+                permission_mode: defaults
+                    .as_ref()
+                    .map(|d| d.permission_mode.clone())
+                    .unwrap_or_else(|| "default".into()),
+                agent_mode: defaults
+                    .as_ref()
+                    .map(|d| d.agent_mode.clone())
+                    .unwrap_or_else(|| "build".into()),
+                compact_at: defaults
+                    .as_ref()
+                    .map(|d| d.compact_at)
+                    .unwrap_or(crate::compaction::COMPACT_AT),
+                workspace_root: std::path::PathBuf::new(),
+                workspace_active: false,
+            };
+            return (mgr, event_rx);
+        };
+
+        let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
         let store = Arc::new(SessionStore::open(&canon).unwrap_or_else(|_| {
             // Fallback: temp dir so the app still boots without a data dir.
             SessionStore::open(std::path::Path::new("/tmp"))
                 .expect("session store")
         }));
-        let (event_tx, event_rx) = std_mpsc::channel();
-        let (_p, default_model, default_pname) = resolve_provider(&cfg);
 
         crate::session_store::record_recent_workspace(&canon);
 
@@ -274,6 +329,7 @@ impl SessionManager {
             agent_mode,
             compact_at,
             workspace_root: canon,
+            workspace_active: true,
         };
 
         // Resume the session the user last had open; fall back to the
@@ -322,10 +378,12 @@ impl SessionManager {
         // so switching back reconnects the still-running session instead
         // of respawning from the last snapshot. `handles.clear()` here
         // used to orphan every actor mid-turn: the stream kept flowing
-        // but cancel/steer/approve became unreachable forever.
+        // but cancel/steer/approve became unreachable forever. From the
+        // empty state there is no outgoing workspace — skip the park.
+        let was_active = std::mem::replace(&mut self.workspace_active, true);
         let old_root = std::mem::replace(&mut self.workspace_root, canon);
         let old_handles = std::mem::take(&mut self.handles);
-        if !old_handles.is_empty() {
+        if was_active && !old_handles.is_empty() {
             self.parked
                 .insert(old_root.to_string_lossy().into_owned(), old_handles);
         }
@@ -354,6 +412,42 @@ impl SessionManager {
         crate::session_store::load_recent_workspaces()
     }
 
+    /// Remove a workspace from the recents list and tear down any live
+    /// actors it owns — parked or active. A running turn is aborted
+    /// (cancel flag set before the handle drops). Persisted session files
+    /// are kept: reopening the folder later restores history intact.
+    /// Returns true when the ACTIVE workspace was removed — the manager
+    /// drops to the empty state (`workspace_active = false`) and the UI
+    /// should show the no-workspace pane.
+    pub fn remove_workspace(&mut self, root: &str) -> bool {
+        let canon = std::path::Path::new(root)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(root));
+        let key = canon.to_string_lossy().into_owned();
+        if let Some(handles) = self.parked.remove(&key) {
+            for h in handles.values() {
+                h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        crate::session_store::remove_recent_workspace(&canon);
+
+        let active_canon = self
+            .workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace_root.clone());
+        let was_active = self.workspace_active && active_canon == canon;
+        if was_active {
+            for h in self.handles.values() {
+                h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.handles.clear();
+            self.metas.clear();
+            self.active_id = 0;
+            self.workspace_active = false;
+        }
+        was_active
+    }
+
     /// The sidebar's project tree: the active workspace first, then every
     /// recent workspace, each carrying its full persisted conversation list
     /// (newest first).
@@ -369,17 +463,20 @@ impl SessionManager {
             .canonicalize()
             .unwrap_or_else(|_| self.workspace_root.clone());
 
-        let mut out = vec![ProjectOverview {
-            root: canon.to_string_lossy().into_owned(),
-            name: project_name(&canon),
-            last_opened: 0,
-            current: true,
-            sessions: self.current_workspace_rows(),
-        }];
+        let mut out = Vec::new();
+        if self.workspace_active {
+            out.push(ProjectOverview {
+                root: canon.to_string_lossy().into_owned(),
+                name: project_name(&canon),
+                last_opened: 0,
+                current: true,
+                sessions: self.current_workspace_rows(),
+            });
+        }
 
         for w in self.recent_workspaces() {
             let w_canon = w.path.canonicalize().unwrap_or_else(|_| w.path.clone());
-            if w_canon == canon {
+            if self.workspace_active && w_canon == canon {
                 // Already first — borrow its recency stamp instead of
                 // listing the same project twice.
                 out[0].last_opened = w.last_opened;
@@ -561,7 +658,11 @@ impl SessionManager {
     }
 
     /// Create a brand-new session (fresh actor, no history) and activate it.
+    /// No-op in the empty state — a session needs a workspace to live in.
     pub fn new_session(&mut self) {
+        if !self.workspace_active {
+            return;
+        }
         let id = self.store.next_id();
         // Reserve the id in the index so the sidebar lists it immediately.
         let now = std::time::SystemTime::now()
@@ -584,6 +685,9 @@ impl SessionManager {
     /// Switch to an existing session — spawns its actor (resumed from the
     /// store) if not already live; the outgoing actor keeps running.
     pub fn open_session(&mut self, id: i64) {
+        if !self.workspace_active {
+            return;
+        }
         if !self.handles.contains_key(&id) {
             self.spawn_actor(id);
         }
@@ -596,6 +700,9 @@ impl SessionManager {
     /// If it was active, switch to the most recent remaining session, or
     /// open a fresh one when none are left.
     pub fn delete_session(&mut self, id: i64) {
+        if !self.workspace_active {
+            return;
+        }
         if let Some(h) = self.handles.remove(&id) {
             h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -613,6 +720,9 @@ impl SessionManager {
     /// activate it. Returns the new id; `None` when the source session has
     /// no history to copy yet.
     pub fn fork_session(&mut self, id: i64) -> Option<i64> {
+        if !self.workspace_active {
+            return None;
+        }
         let hist = self.store.load_history(id)?;
         let new_id = self.store.next_id();
         // Snapshot first — spawn_actor() resumes from the store, so the
@@ -735,6 +845,9 @@ impl SessionManager {
         before: Option<usize>,
         count: usize,
     ) -> (Vec<agent_llm::types::ChatMessage>, usize, usize) {
+        if !self.workspace_active {
+            return (Vec::new(), 0, 0);
+        }
         let hist = self.store.load_history(id).unwrap_or_default();
         let total = hist.len();
         // Visible turns ≈ non-hidden user messages — the rail sizes its
@@ -757,6 +870,9 @@ impl SessionManager {
     /// Reads the store fresh: `self.metas` only refreshes on structural ops
     /// and goes stale the moment an actor persists a turn.
     pub fn store_usage(&self, id: i64) -> Option<crate::session_store::SessionUsage> {
+        if !self.workspace_active {
+            return None;
+        }
         self.store
             .list()
             .into_iter()
@@ -767,6 +883,9 @@ impl SessionManager {
     /// Sidebar rows — persisted metas overlaid with live running/preview.
     /// Tuple: (id, title, preview, active, running, pinned).
     pub fn sidebar_rows(&self) -> Vec<(i64, String, String, bool, bool, bool)> {
+        if !self.workspace_active {
+            return Vec::new();
+        }
         self.metas
             .iter()
             .map(|m| {
@@ -781,6 +900,9 @@ impl SessionManager {
     /// Pin/unpin a session in the sidebar. Returns the new flag value —
     /// `Err` only when the id isn't in the index.
     pub fn pin_session(&mut self, id: i64, pinned: bool) -> std::io::Result<bool> {
+        if !self.workspace_active {
+            return Ok(false);
+        }
         let ok = self.store.set_pinned(id, pinned)?;
         if ok {
             self.metas = self.store.list();

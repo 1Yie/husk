@@ -4,7 +4,8 @@ import { useAgentEvents } from "./hooks/use-agent-events";
 import { useAgentSession } from "./hooks/use-agent-session";
 import { viewFromHistory, viewFromHistoryChunked } from "./hooks/view-from-history";
 import { loadReset, loadStamp } from "./lib/load-probe";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, forkSession, deleteSession, pinSession, historyPage, historyRaw, type WorkspaceInfo } from "./invoke/agent";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, historyPage, historyRaw, type WorkspaceInfo } from "./invoke/agent";
+import type { ProjectOverview } from "./types";
 import type { SessionRow } from "./types";
 import { SessionSidebar } from "./components/session-sidebar";
 import { MainLayout } from "./layout/main-layout";
@@ -144,6 +145,9 @@ export function App() {
   // Same pattern for the fork confirmation — duplicating a session's
   // history is additive but irreversible, so it confirms first.
   const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
+  // Same pattern for removing a project — only parked when the workspace
+  // still has a running turn (removal kills it); otherwise it goes direct.
+  const [pendingRemoveWs, setPendingRemoveWs] = useState<ProjectOverview | null>(null);
   // Settings is an overlay layer, not a page swap — the workspace stays
   // mounted underneath, so closing it costs nothing (the old takeover
   // unmounted ChatPage and remounted the whole stream on return).
@@ -169,6 +173,12 @@ export function App() {
     void getWorkspaceInfo().then((ws) => {
       if (ws) setWorkspace(ws);
     });
+  }, []);
+  // Workspace info only lands async — don't flash the empty pane during
+  // boot while the backend may still be resuming the last workspace.
+  const [wsReady, setWsReady] = useState(false);
+  useEffect(() => {
+    void getWorkspaceInfo().then(() => setWsReady(true)).catch(() => setWsReady(true));
   }, []);
 
   const handlePickWorkspace = async () => {
@@ -314,6 +324,26 @@ export function App() {
       ? "新会话"
       : pendingFork.title;
 
+  const requestRemoveWorkspace = (p: ProjectOverview) => {
+    // A running turn dies with the workspace — confirm first, matching
+    // the delete/fork dialog pattern. No running work → direct removal.
+    if (p.sessions.some((r) => r.running)) {
+      setPendingRemoveWs(p);
+      return;
+    }
+    void doRemoveWorkspace(p.root);
+  };
+
+  const doRemoveWorkspace = async (root: string) => {
+    const res = await removeWorkspace(root).catch(() => null);
+    void refresh();
+    if (res?.removed_active) {
+      setActiveId(0);
+    }
+    const ws = await getWorkspaceInfo().catch(() => null);
+    if (ws) setWorkspace(ws);
+  };
+
   const handlePinSession = (id: number, pinned: boolean) => {
     void pinSession(id, pinned).then(() => void refresh()).catch(() => {});
   };
@@ -355,6 +385,7 @@ export function App() {
         <SessionSidebar
           projects={sidebarProjects}
           activeId={activeId}
+          hasWorkspace={wsReady && !!workspace.root}
           onNew={handleNewSession}
           onOpenSession={handleOpenSession}
           onFork={(id) => {
@@ -372,6 +403,7 @@ export function App() {
           }}
           onPickWorkspace={handlePickWorkspace}
           onSwitchWorkspace={handleSwitchWorkspace}
+          onRemoveWorkspace={requestRemoveWorkspace}
           onOpenSettings={() => setSettingsOpen(true)}
         />
         }
@@ -388,6 +420,8 @@ export function App() {
           hasMore={(active?.historyStart ?? 0) > 0}
           onLoadOlder={handleLoadOlder}
           onShowRaw={handleShowRaw}
+          onOpenWorkspace={handlePickWorkspace}
+          workspaceReady={wsReady}
         />
       </MainLayout>
 
@@ -442,6 +476,42 @@ export function App() {
               }}
             >
               Fork
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pendingRemoveWs !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemoveWs(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base">移除项目</DialogTitle>
+            <DialogDescription>
+              项目「{pendingRemoveWs?.name}」有任务正在运行，移除会立即中断这些任务。会话记录会保留，重新打开该文件夹即可恢复。确定移除吗？
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingRemoveWs(null)}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (!pendingRemoveWs) return;
+                void doRemoveWorkspace(pendingRemoveWs.root);
+                setPendingRemoveWs(null);
+              }}
+            >
+              移除
             </Button>
           </DialogFooter>
         </DialogContent>

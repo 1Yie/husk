@@ -12,6 +12,7 @@ import {
   GitFork,
   Bin,
   Bookmark,
+  X,
 } from "@keyline-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectOverview, SessionRow } from "../../types";
@@ -58,12 +59,18 @@ interface Props {
   projects: ProjectOverview[];
   activeId?: number;
   version?: string;
+  /** No workspace open — a new session has nowhere to live, so the "+"
+   * button hides instead of no-op'ing on click. */
+  hasWorkspace?: boolean;
   onNew: () => void;
   /** Open a conversation anywhere in the tree — `root` lets the shell switch
    * workspaces when the row belongs to another project. */
   onOpenSession: (root: string, id: number) => void;
   onPickWorkspace?: () => void;
   onSwitchWorkspace?: (path: string) => void;
+  /** Remove a project from recents — tears down its actors; a running
+   * turn dies with it (the caller confirms first in that case). */
+  onRemoveWorkspace?: (project: ProjectOverview) => void;
   onOpenSettings?: () => void;
   onFork?: (id: number) => void;
   onPin?: (id: number, pinned: boolean) => void;
@@ -74,10 +81,12 @@ export function SessionSidebar({
   projects,
   activeId,
   version: propVersion,
+  hasWorkspace = true,
   onNew,
   onOpenSession,
   onPickWorkspace,
   onSwitchWorkspace,
+  onRemoveWorkspace,
   onOpenSettings,
   onFork,
   onPin,
@@ -208,23 +217,25 @@ export function SessionSidebar({
               项目
             </span>
             <div className="flex items-center gap-0.5">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    data-nodrag
-                    data-tauri-drag-region="false"
-                    onClick={onNew}
-                    aria-label="新建会话"
-                    className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" className="text-xs">
-                  新建会话
-                </TooltipContent>
-              </Tooltip>
+              {hasWorkspace && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      data-nodrag
+                      data-tauri-drag-region="false"
+                      onClick={onNew}
+                      aria-label="新建会话"
+                      className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="text-xs">
+                    新建会话
+                  </TooltipContent>
+                </Tooltip>
+              )}
               {onPickWorkspace && (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -263,6 +274,7 @@ export function SessionSidebar({
                   onToggle={() => toggleProject(p.root)}
                   onOpenSession={onOpenSession}
                   onSwitchWorkspace={onSwitchWorkspace}
+                  onRemoveWorkspace={onRemoveWorkspace}
                   onFork={onFork}
                   onPin={onPin}
                   onDelete={onDelete}
@@ -521,6 +533,7 @@ function ProjectItem({
   onToggle,
   onOpenSession,
   onSwitchWorkspace,
+  onRemoveWorkspace,
   onFork,
   onPin,
   onDelete,
@@ -531,6 +544,7 @@ function ProjectItem({
   onToggle: () => void;
   onOpenSession: (root: string, id: number) => void;
   onSwitchWorkspace?: (path: string) => void;
+  onRemoveWorkspace?: (project: ProjectOverview) => void;
   onFork?: (id: number) => void;
   onPin?: (id: number, pinned: boolean) => void;
   onDelete?: (id: number) => void;
@@ -584,6 +598,22 @@ function ProjectItem({
                 className="flex-none rounded p-0.5 text-neutral-400 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
               >
                 <FolderOpen className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {onRemoveWorkspace && (
+              <button
+                type="button"
+                data-nodrag
+                data-tauri-drag-region="false"
+                aria-label="移除项目"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemoveWorkspace(project);
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                className="flex-none rounded p-0.5 text-neutral-400 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
+              >
+                <X className="h-3.5 w-3.5" />
               </button>
             )}
             {project.sessions.length > 0 && (

@@ -118,6 +118,13 @@ export function switchWorkspace(path: string) {
   return invoke<WorkspaceSwitchResult>("agent_session", { op: "switch_workspace", path });
 }
 
+/** Drop a project from the sidebar recents and tear down its actors —
+ * running turns die with it. `removed_active` = the open workspace was
+ * removed; the app drops to the no-workspace empty state. */
+export function removeWorkspace(path: string) {
+  return invoke<{ removed_active: boolean }>("agent_session", { op: "remove_workspace", path });
+}
+
 export interface ModelItem {
   provider: string;
   model: string;
