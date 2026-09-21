@@ -11,6 +11,7 @@ pub mod fs_read;
 pub mod goal;
 pub mod grep;
 pub mod list_dir;
+pub(crate) mod net;
 pub mod registry;
 pub mod serena;
 pub mod test_runner;

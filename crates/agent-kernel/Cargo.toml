@@ -12,6 +12,7 @@ agent-ipc = { path = "../agent-ipc" }
 agent-sandbox = { path = "../agent-sandbox" }
 agent-plugin = { path = "../agent-plugin" }
 reqwest.workspace = true
+htmd.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 serde.workspace = true

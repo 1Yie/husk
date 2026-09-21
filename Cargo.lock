@@ -77,6 +77,7 @@ dependencies = [
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
+ "htmd",
  "ignore",
  "reqwest 0.12.28",
  "schemars 1.2.2",
@@ -3494,6 +3495,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "htmd"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5a1c7113c831fec68cbd79cd8bf281a84e5b6943f51473dc266b0b88a6a017e"
+dependencies = [
+ "html5ever",
+ "markup5ever_rcdom",
+ "phf",
+]
+
+[[package]]
 name = "html5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4518,6 +4530,18 @@ dependencies = [
  "log",
  "tendril",
  "web_atoms",
+]
+
+[[package]]
+name = "markup5ever_rcdom"
+version = "0.38.0+unofficial"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "333171ccdf66e915257740d44e38ea5b1b19ce7b45d33cc35cb6f118fbd981ff"
+dependencies = [
+ "html5ever",
+ "markup5ever",
+ "tendril",
+ "xml5ever",
 ]
 
 [[package]]
@@ -6957,6 +6981,7 @@ dependencies = [
  "parking_lot",
  "phf_shared",
  "precomputed-hash",
+ "serde",
 ]
 
 [[package]]
@@ -9355,6 +9380,16 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
+name = "xml5ever"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3dc9559429edf0cd3f327cc0afd9d6b36fa8cec6d93107b7fbe64f806b5f2d9"
+dependencies = [
+ "log",
+ "markup5ever",
+]
 
 [[package]]
 name = "xmlwriter"
