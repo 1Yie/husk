@@ -255,6 +255,9 @@ pub struct WorkspacePrefs {
     pub thinking_level: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// Per-workspace agent mode (`build` | `plan` | `goal`).
+    #[serde(default)]
+    pub agent_mode: Option<String>,
 }
 
 /// Global user default preferences for fresh/new sessions.
@@ -264,10 +267,16 @@ pub struct DefaultPreferences {
     pub permission_mode: String,
     #[serde(default = "default_pref_thinking_level")]
     pub thinking_level: Option<String>,
+    #[serde(default = "default_pref_agent_mode")]
+    pub agent_mode: String,
 }
 
 fn default_pref_permission_mode() -> String {
     "auto".into()
+}
+
+fn default_pref_agent_mode() -> String {
+    "build".into()
 }
 
 fn default_pref_thinking_level() -> Option<String> {
@@ -279,6 +288,7 @@ impl Default for DefaultPreferences {
         Self {
             permission_mode: default_pref_permission_mode(),
             thinking_level: default_pref_thinking_level(),
+            agent_mode: default_pref_agent_mode(),
         }
     }
 }

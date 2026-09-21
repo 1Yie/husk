@@ -54,10 +54,17 @@ pub struct TurnOutcome {
 
 pub struct Engine {
     sampler: Sampler,
-    registry: Arc<ToolRegistry>,
+    /// Mode-scoped registries — `set_agent_mode` swaps `registry` between
+    /// these. `plan` = readonly view; `goal` = full + goal contract tools.
+    registry_full: Arc<ToolRegistry>,
+    registry_plan: Arc<ToolRegistry>,
+    registry_goal: Arc<ToolRegistry>,
     ctx: Arc<ToolCtx>,
     model: String,
     temperature: f32,
+    /// Agent mode — shared slot like `permissions` so a mid-turn composer
+    /// switch applies at the next sampling round instead of next session.
+    agent_mode: Arc<std::sync::RwLock<crate::mode::AgentMode>>,
     /// Pending mid-turn steering text drained from `cmd_rx`.
     steer_queue: VecDeque<String>,
     /// Stage 6: the permission gate consulted before every tool dispatch.
@@ -100,12 +107,17 @@ impl Engine {
         model: impl Into<String>,
         temperature: f32,
     ) -> Self {
+        let registry_plan = Arc::new(registry.readonly_only());
+        let registry_goal = Arc::new((*registry).clone());
         Self {
             sampler: Sampler::new(provider),
-            registry,
+            registry_full: registry.clone(),
+            registry_plan,
+            registry_goal,
             ctx,
             model: model.into(),
             temperature,
+            agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
             steer_queue: VecDeque::new(),
             permissions: Arc::new(std::sync::RwLock::new(PermissionGate::from_mode_str("default"))),
             decision: Arc::new(std::sync::Mutex::new(None)),
@@ -200,6 +212,39 @@ impl Engine {
     /// Access the shared permission gate handle for direct mid-turn updates.
     pub fn permissions_writer(&self) -> Arc<std::sync::RwLock<PermissionGate>> {
         self.permissions.clone()
+    }
+
+    /// Switch the agent mode — swaps the active registry immediately; the
+    /// next sampling round sees the new tool set.
+    pub fn set_agent_mode(&mut self, mode: crate::mode::AgentMode) {
+        if let Ok(mut w) = self.agent_mode.write() {
+            *w = mode;
+        }
+    }
+
+    /// Shared mode slot — the actor polls it in `run_turn` (a mid-turn
+    /// `SetAgentMode` writes the slot without needing `&mut Engine`).
+    pub fn agent_mode_writer(&self) -> Arc<std::sync::RwLock<crate::mode::AgentMode>> {
+        self.agent_mode.clone()
+    }
+
+    /// Current agent mode — the actor reads this for the prompt swap and
+    /// the goal contract.
+    pub fn agent_mode(&self) -> crate::mode::AgentMode {
+        self.agent_mode
+            .read()
+            .map(|m| *m)
+            .unwrap_or_default()
+    }
+
+    /// The registry for the mode currently in the slot — resolved per call
+    /// so a mid-turn `SetAgentMode` applies at the very next dispatch.
+    fn active_registry(&self) -> Arc<ToolRegistry> {
+        match self.agent_mode() {
+            crate::mode::AgentMode::Plan => self.registry_plan.clone(),
+            crate::mode::AgentMode::Goal => self.registry_goal.clone(),
+            crate::mode::AgentMode::Build => self.registry_full.clone(),
+        }
     }
 
     /// The shared decision slot — SessionActor clones it to deliver
@@ -390,7 +435,7 @@ impl Engine {
             let mut policy_notes: Vec<String> = Vec::new();
 
             let effort = self.resolve_reasoning_effort();
-            let schema = self.registry.request_schema();
+            let schema = self.active_registry().request_schema();
             let tools_opt = if force_no_tools {
                 None
             } else {
@@ -706,7 +751,7 @@ impl Engine {
                 let call = &call_mut; // hooks may have rewritten args
 
                 // ---- Stage 6: permission gate before dispatch ----
-                let is_readonly = self.registry.is_readonly(&call.name);
+                let is_readonly = self.active_registry().is_readonly(&call.name);
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
                 let diff_summary = args.get("path").and_then(|v| v.as_str())
                     .map(|p| format!("{p}")).unwrap_or_else(|| call.name.clone());
@@ -725,7 +770,7 @@ impl Engine {
                 // `dispatch` on these tools is side-effect-free (returns
                 // PendingWrite), so it's safe to run pre-approval.
                 let staged: Option<crate::tools::registry::ToolResult> = if is_write {
-                    match self.registry.dispatch(&call.name, args.clone(), self.ctx.clone()).await {
+                    match self.active_registry().dispatch(&call.name, args.clone(), self.ctx.clone()).await {
                         Ok(res) => Some(res),
                         Err(e) => {
                             let msg = e.to_string();
@@ -808,7 +853,7 @@ impl Engine {
                     (res.content, ui_type, true, res.pending_write)
                 } else {
                     match self
-                        .registry
+                        .active_registry()
                         .dispatch(&call.name, args.clone(), self.ctx.clone())
                         .await
                     {

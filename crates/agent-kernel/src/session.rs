@@ -35,6 +35,9 @@ pub struct SessionConfig {
     pub temperature: f32,
     /// Permission mode label substituted into the prompt.
     pub permission_mode: String,
+    /// Agent mode (`build` | `plan` | `goal`) — governs the tool registry
+    /// and the turn contract; substituted into the prompt.
+    pub agent_mode: String,
     /// Whether to seed the tracker with git-dirty files (`AllDirty` mode).
     pub track_dirty: bool,
     /// Initial thinking / reasoning effort level.
@@ -176,6 +179,7 @@ impl SessionActor {
             .replace("{{DATE}}", &chrono_lite_date())
             .replace("{{WORKSPACE_ROOT}}", &cfg.workspace_root.display().to_string())
             .replace("{{PERMISSION_MODE}}", &cfg.permission_mode)
+            .replace("{{AGENT_MODE}}", crate::mode::AgentMode::from_str(&cfg.agent_mode).prompt_block())
             .replace("{{WORKSPACE_TREE}}", &workspace_tree)
             .replace("{{GIT_STATUS}}", &git_status);
 
@@ -227,6 +231,7 @@ impl SessionActor {
         engine.set_permissions(crate::permissions::PermissionGate::from_mode_str(
             &cfg.permission_mode,
         ));
+        engine.set_agent_mode(crate::mode::AgentMode::from_str(&cfg.agent_mode));
         engine.set_thinking_level(cfg.thinking_level.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
         engine.set_context_window(cfg.context_window.unwrap_or(256_000) as usize);

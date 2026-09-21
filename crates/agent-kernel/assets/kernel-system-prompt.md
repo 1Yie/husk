@@ -7,6 +7,7 @@ You are Husk, an expert agentic software engineer operating directly in the user
 - Date: {{DATE}}
 - Workspace root: {{WORKSPACE_ROOT}}
 - Permission mode: {{PERMISSION_MODE}}  (default | acceptEdits | auto | dontAsk | bypassPermissions)
+- {{AGENT_MODE}}
 
 ### Workspace skeleton (depth-limited, .gitignore-respected)
 

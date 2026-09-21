@@ -55,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
         model,
         temperature: 1.0,
         permission_mode: "auto".into(),
+        agent_mode: "build".into(),
         track_dirty: false,
         thinking_level: None,
         thinking_level_map,

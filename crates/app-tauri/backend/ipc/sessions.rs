@@ -147,10 +147,11 @@ pub fn agent_session(
         // touches a live session (no gate write, no UiCommand, no
         // SystemMessage in the chat stream).
         "get_default_prefs" => {
-            let (permission_mode, thinking_level) = mgr.default_prefs();
+            let (permission_mode, thinking_level, agent_mode) = mgr.default_prefs();
             Ok(serde_json::json!({
                 "permission_mode": permission_mode,
                 "thinking_level": thinking_level,
+                "agent_mode": agent_mode,
             }))
         }
         "set_default_prefs" => {
@@ -163,7 +164,11 @@ pub fn agent_session(
                 .get("thinking_level")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            mgr.set_default_prefs(permission_mode, thinking_level);
+            let agent_mode = p
+                .get("agent_mode")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            mgr.set_default_prefs(permission_mode, thinking_level, agent_mode);
             Ok(serde_json::json!({ "success": true }))
         }
         // Appearance — the settings window's theme/accent/font choices,

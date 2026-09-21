@@ -186,6 +186,7 @@ pub type ExecFn = Arc<
 >;
 
 /// One tool: name, schema for the LLM, readonly flag, exec fn.
+#[derive(Clone)]
 pub struct ToolSpec {
     pub name: &'static str,
     /// JSON Schema object describing the tool's parameters.
@@ -197,7 +198,7 @@ pub struct ToolSpec {
 
 /// Name → spec map. `BTreeMap` keeps the `tools` array deterministic
 /// (provider prompt-cache friendly).
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ToolRegistry {
     specs: BTreeMap<&'static str, ToolSpec>,
 }
@@ -226,6 +227,25 @@ impl ToolRegistry {
 
     pub fn register(&mut self, spec: ToolSpec) {
         self.specs.insert(spec.name, spec);
+    }
+
+    /// A view of this registry keeping only tools that satisfy `keep` —
+    /// agent modes build their registries from it (`plan` drops every
+    /// non-readonly spec, `goal` adds the contract tools on top of full).
+    pub fn filtered(&self, keep: impl Fn(&ToolSpec) -> bool) -> Self {
+        let mut r = Self::new();
+        for (name, spec) in &self.specs {
+            if keep(spec) {
+                r.specs.insert(name, spec.clone());
+            }
+        }
+        r
+    }
+
+    /// Read-only view — every spec whose writes could touch the workspace
+    /// drops out. `plan` mode dispatches against this.
+    pub fn readonly_only(&self) -> Self {
+        self.filtered(|s| s.readonly)
     }
 
     /// The `tools` array for an LLM request (OpenAI `function` shape).

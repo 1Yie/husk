@@ -47,6 +47,10 @@ pub struct SessionModelInfo {
     pub active_thinking_level: Option<String>,
     #[serde(default)]
     pub active_permission_mode: Option<String>,
+    /// Active agent mode (`build` | `plan` | `goal`) — the composer's
+    /// mode picker reads this on load.
+    #[serde(default)]
+    pub active_agent_mode: Option<String>,
     pub config_path: Option<String>,
     pub models: Vec<ModelDetails>,
 }
@@ -142,6 +146,8 @@ pub struct SessionManager {
     pub active_thinking_level: Option<String>,
     /// Active permission mode across sessions (e.g. "default", "acceptEdits", "auto").
     pub permission_mode: String,
+    /// Active agent mode across sessions (`build` | `plan` | `goal`).
+    pub agent_mode: String,
     /// Workspace root (for git branch / cwd display).
     pub workspace_root: std::path::PathBuf,
 }
@@ -205,6 +211,10 @@ impl SessionManager {
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
             .unwrap_or_else(|| "default".into());
+        let agent_mode = prefs
+            .agent_mode
+            .or_else(|| defaults.as_ref().map(|d| d.agent_mode.clone()))
+            .unwrap_or_else(|| "build".into());
         let active_thinking_level = prefs
             .thinking_level
             .or_else(|| defaults.and_then(|d| d.thinking_level));
@@ -221,6 +231,7 @@ impl SessionManager {
             model_name,
             active_thinking_level,
             permission_mode,
+            agent_mode,
             workspace_root: canon,
         };
 
@@ -249,6 +260,10 @@ impl SessionManager {
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
             .unwrap_or_else(|| "default".into());
+        self.agent_mode = prefs
+            .agent_mode
+            .or_else(|| defaults.as_ref().map(|d| d.agent_mode.clone()))
+            .unwrap_or_else(|| "build".into());
         self.active_thinking_level = prefs
             .thinking_level
             .or_else(|| defaults.and_then(|d| d.thinking_level));
@@ -415,6 +430,7 @@ impl SessionManager {
             model,
             temperature: 1.0,
             permission_mode: self.permission_mode.clone(),
+            agent_mode: self.agent_mode.clone(),
             track_dirty: true,
             thinking_level: self.active_thinking_level.clone(),
             thinking_level_map,
@@ -733,6 +749,7 @@ impl SessionManager {
             active_model: self.model_name.clone(),
             active_thinking_level: live_level.or_else(|| self.active_thinking_level.clone()),
             active_permission_mode: live_mode.or_else(|| Some(self.permission_mode.clone())),
+            active_agent_mode: Some(self.agent_mode.clone()),
             config_path: path,
             models,
         }
@@ -741,19 +758,26 @@ impl SessionManager {
     /// The stored default preferences — what NEW sessions spawn with.
     /// The settings popup reads/writes these; already-running sessions keep
     /// whatever they were spawned (or later switched) with.
-    pub fn default_prefs(&self) -> (String, Option<String>) {
-        (self.permission_mode.clone(), self.active_thinking_level.clone())
+    pub fn default_prefs(&self) -> (String, Option<String>, String) {
+        (
+            self.permission_mode.clone(),
+            self.active_thinking_level.clone(),
+            self.agent_mode.clone(),
+        )
     }
 
     /// Update the stored default preferences — applies to sessions spawned
     /// AFTER this call; live sessions are untouched (no gate write, no
     /// UiCommand, no SystemMessage in their stream).
-    pub fn set_default_prefs(&mut self, permission_mode: Option<String>, thinking_level: Option<String>) {
+    pub fn set_default_prefs(&mut self, permission_mode: Option<String>, thinking_level: Option<String>, agent_mode: Option<String>) {
         if let Some(m) = permission_mode {
             self.permission_mode = m;
         }
         if let Some(l) = thinking_level {
             self.active_thinking_level = if l.is_empty() { None } else { Some(l) };
+        }
+        if let Some(m) = agent_mode {
+            self.agent_mode = m;
         }
         self.persist_prefs();
         // Also persist the global defaults so fresh workspaces inherit them.
@@ -761,6 +785,7 @@ impl SessionManager {
             &crate::session_store::DefaultPreferences {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
+                agent_mode: self.agent_mode.clone(),
             },
         );
     }
@@ -772,6 +797,7 @@ impl SessionManager {
             model: Some(self.model_name.clone()),
             thinking_level: self.active_thinking_level.clone(),
             permission_mode: Some(self.permission_mode.clone()),
+            agent_mode: Some(self.agent_mode.clone()),
         };
         let _ = self.store.save_prefs(&prefs);
     }
@@ -792,6 +818,14 @@ impl SessionManager {
     /// Update active permission mode in manager metadata and persist to workspace prefs.
     pub fn set_permission_mode(&mut self, mode: String) {
         self.permission_mode = mode;
+        self.persist_prefs();
+    }
+
+    /// Update active agent mode in manager metadata and persist to
+    /// workspace prefs — the session's live swap happens through the
+    /// `SetAgentMode` command the caller also pumps in.
+    pub fn set_agent_mode(&mut self, mode: String) {
+        self.agent_mode = mode;
         self.persist_prefs();
     }
 }
