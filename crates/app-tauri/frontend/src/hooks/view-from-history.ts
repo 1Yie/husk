@@ -71,6 +71,60 @@ function extractArgsPreview(rawArgs?: string): string {
   return "";
 }
 
+/** `batch_execute` args → `N calls` chip text for the parent capsule. */
+function batchCallCount(rawArgs: string): string {
+  try {
+    const parsed = JSON.parse(rawArgs);
+    const n = Array.isArray(parsed?.calls) ? parsed.calls.length : 0;
+    return n > 0 ? `${n} calls` : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Rebuild a batch's nested tool items from its persisted args (`calls[]`)
+ * and result text (`── [i] tool (status) ──` sections — written to be
+ * machine-parseable for exactly this replay). Section names/status are
+ * authoritative; `calls[i].args` only supplies the chip preview. */
+function batchChildren(rawArgs: string, content: string) {
+  let calls: { tool?: string; args?: unknown }[] = [];
+  try {
+    const parsed = JSON.parse(rawArgs);
+    if (Array.isArray(parsed?.calls)) calls = parsed.calls;
+  } catch {
+    /* malformed args — sections below still carry names/status */
+  }
+  // Split on section headers; parts[0] is the `[batch_execute — …]` summary.
+  const parts = content.split(/\n── \[(\d+)\] /);
+  const items = [];
+  for (let i = 1; i + 1 < parts.length; i += 2) {
+    const idx = Number(parts[i]);
+    const rest = parts[i + 1];
+    const m = rest.match(/^(\S+) \(([^)]*)\) ──[^\n]*\n?([\s\S]*)$/);
+    if (!m) continue;
+    const [, tool, status, bodyRaw] = m;
+    // Drop the trailing cap-warning line — it belongs to the batch as a
+    // whole, not this item's body.
+    const body = bodyRaw
+      .replace(/\n?⚠ batch output cap reached[^\n]*$/s, "")
+      .trim();
+    const ok = status.startsWith("ok");
+    const callArgs = calls[idx]?.args;
+    items.push({
+      kind: "tool" as const,
+      name: tool,
+      args:
+        callArgs === undefined
+          ? ""
+          : extractArgsPreview(JSON.stringify(callArgs)),
+      content: body || undefined,
+      ok,
+      parent: "batch_execute",
+    });
+  }
+  return items;
+}
+
 /** Rebuild a `SessionView`'s item list from persisted `ChatMessage`
  * history — used when switching to a session whose in-memory view was
  * never built (first open after launch) or dropped. Tool result messages
@@ -91,12 +145,19 @@ export function viewFromHistory(
     };
   }
   // call_id → tool name and args: resolve from the preceding assistant `tool_calls`.
-  const idToTool = new Map<string, { name: string; args: string }>();
+  const idToTool = new Map<string, { name: string; args: string; raw: string }>();
   for (const m of history) {
     for (const c of m.tool_calls ?? []) {
+      const raw = c.function.arguments ?? "";
       idToTool.set(c.id, {
         name: c.function.name,
-        args: extractArgsPreview(c.function.arguments),
+        // batch_execute's own preview is the call count — the real
+        // per-item args live inside `calls[]`.
+        args:
+          c.function.name === "batch_execute"
+            ? batchCallCount(raw)
+            : extractArgsPreview(raw),
+        raw,
       });
     }
   }
@@ -115,6 +176,7 @@ export function viewFromHistory(
       const toolInfo = (m.tool_call_id && idToTool.get(m.tool_call_id)) || {
         name: "tool",
         args: "",
+        raw: "",
       };
       v.items.push({
         kind: "tool",
@@ -126,6 +188,15 @@ export function viewFromHistory(
         // `ToolCallFinished.ok` showed instead of a green one.
         ok: m.is_error !== true,
       });
+      // A batch's inner items were live-only events — they're not in
+      // history. Rebuild them from the persisted call list + the
+      // `── [i] tool (status) ──` result sections so the nested capsule
+      // survives reload.
+      if (toolInfo.name === "batch_execute") {
+        for (const child of batchChildren(toolInfo.raw, m.content ?? "")) {
+          v.items.push(child);
+        }
+      }
       continue;
     }
     let text =
