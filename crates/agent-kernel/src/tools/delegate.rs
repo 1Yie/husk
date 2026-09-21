@@ -20,10 +20,11 @@ use crate::engine::{Engine, EngineIo};
 use crate::permissions::PermissionGate;
 use agent_context::HunkTracker;
 use agent_llm::types::ChatMessage;
+use std::path::{Path, PathBuf};
 
 /// The child's system prompt — intentionally small: the parent's request
 /// carries the task context; the prompt only sets behavior contract.
-const SUBAGENT_PROMPT: &str = "You are a delegated subagent working inside the user's workspace. \
+pub const SUBAGENT_PROMPT: &str = "You are a delegated subagent working inside the user's workspace. \
 A parent agent handed you one scoped task — complete it autonomously and return your findings or \
 result as your final message. Rules: (1) no user is listening — never ask questions, report \
 blockers instead; (2) stay strictly inside the task's scope; (3) verify before claiming done — \
@@ -84,6 +85,9 @@ impl SubagentSpawner {
         parent_ctx: Arc<ToolCtx>,
         task: String,
         readonly: bool,
+        // Custom agent manifest body — replaces SUBAGENT_PROMPT when the
+        // caller named a `*.md` agent via `agent`.
+        agent_prompt: Option<String>,
     ) -> Result<String, String> {
         // The child shares workspace + sandbox + the parent's cancel flag;
         // it does NOT share session scratch (no session attach → todo-like
@@ -130,7 +134,8 @@ impl SubagentSpawner {
             .clone()
             .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
         let mut io = EngineIo { ui_tx, steer_rx, cancel };
-        let mut history = vec![ChatMessage::system(SUBAGENT_PROMPT)];
+        let system = agent_prompt.unwrap_or_else(|| SUBAGENT_PROMPT.to_string());
+        let mut history = vec![ChatMessage::system(system)];
         let mut hunks = HunkTracker::new(agent_context::TrackingMode::AgentOnly);
 
         let start = std::time::Instant::now();
@@ -153,6 +158,169 @@ impl SubagentSpawner {
     }
 }
 
+/// One user-defined subagent — a `*.md` manifest under an agents dir.
+/// The file's frontmatter carries `name`/`description`; the body IS the
+/// child's system prompt (same role as [`SUBAGENT_PROMPT`] for the builtin).
+pub struct SubagentInfo {
+    pub name: String,
+    pub description: String,
+    pub prompt: String,
+    pub path: String,
+    pub global: bool,
+}
+
+/// Built-in subagents — always available to `delegate { agent: "<name>" }`
+/// with no manifest file needed. A `*.md` manifest of the same name in an
+/// agent dir SHADOWS the builtin (checked first in [`find_subagent`]).
+/// (name, one-line description, system prompt)
+pub const BUILTIN_SUBAGENTS: &[(&str, &str, &str)] = &[
+    (
+        "review",
+        "代码审查：按严重度分级报告真实缺陷，只读不改",
+        r#"你是一名严格的代码审查员（code reviewer）。目标是找出真实存在的问题——bug、数据风险、安全漏洞、逻辑缺陷——而不是罗列风格偏好。
+
+工作准则：
+- 先弄清改动的意图与上下文（读相关调用方/被调方），再逐文件核对正确性
+- 检查重点：边界条件、空值/错误路径、并发与生命周期、注入与越权、资源泄漏、兼容性破坏
+- 按严重度分级：
+  · 阻断 —— 会出错的逻辑、数据丢失、安全漏洞，必须修
+  · 重要 —— 错误处理缺失、明显坏味道导致的隐患，应该修
+  · 建议 —— 可读性、一致性、小改进，可选
+- 每条问题给出：文件:行号、问题是什么、为什么是问题、建议怎么改
+- 不修改任何文件，只输出审查报告；拿不准的标"需人工确认"，不要当问题上报
+- 没有实质问题就直说，不要硬凑条目
+
+结束时输出：
+## 审查结论
+阻断 N / 重要 N / 建议 N，然后按级别列出问题清单。"#,
+    ),
+    (
+        "test",
+        "测试工程师：针对边界与错误路径设计并执行测试",
+        r#"你是一名测试工程师（test engineer）。目标是用测试暴露缺陷，而不是证明代码能跑。
+
+工作准则：
+- 先读实现，标出边界值、空值、错误路径、并发/时序、状态转换——测试瞄准这些点
+- 覆盖优先级：异常输入 > 错误处理 > 边界值 > 回归场景 > happy path
+- 遵循项目现有测试框架、目录约定与 fixture/helper 复用方式；测试名说清意图
+- 每个用例一个断言主题；不依赖执行顺序、不碰真实外部服务（用 mock/fake）
+- 能跑就跑：失败信息是成果的一部分；跑不了就说明环境与原因
+- 顺手记录覆盖缺口：哪些路径仍没有测试保护
+
+结束时输出：
+## 测试报告
+新增 N 个用例 / 通过 / 失败明细 / 仍未覆盖的风险点。"#,
+    ),
+    (
+        "ui-design",
+        "UI/UX 设计：交互优先的界面方案与可实现代码",
+        r#"你是一名 UI/UX 设计师。目标是把界面做"对"：先想清楚交互与信息层级，再落视觉与实现。
+
+工作准则：
+- 先定用户任务与信息优先级，再定布局结构——不为视觉效果牺牲可用性
+- 遵循项目现有设计体系：组件、间距阶、字号阶、语义色令牌；缺令牌时用中性色阶补齐
+- 可达性红线：对比度、键盘可达、可见焦点态、触摸目标 ≥ 40px
+- 每个组件都要交代状态：空态、加载、错误、悬停、禁用、选中
+- 输出落到实现层：结构说明 + 关键决策理由 + 可直接使用的代码/CSS（不写伪代码）
+- 文案用界面语言（动词开头、具体、无官腔）
+
+结束时输出：
+## 设计方案
+信息结构 → 关键决策 → 实现代码/标注 → 响应式与边界行为。"#,
+    ),
+];
+
+/// Agent manifest dirs — workspace first (project agents shadow globals
+/// of the same name), then per-user dirs. Mirrors the skills layout.
+const WORKSPACE_AGENT_DIRS: [&str; 2] = [".pi/agents", ".agents/agents"];
+const GLOBAL_AGENT_DIRS: [&str; 2] = [".pi/agent/agents", ".agents/agents"];
+
+/// Scan workspace + user-level agent manifests. Frontmatter is optional —
+/// a bare `name.md` file with no `---` block still registers (name from
+/// filename, no description).
+pub fn discover_subagents(root: &Path) -> Vec<SubagentInfo> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let ws: Vec<PathBuf> = WORKSPACE_AGENT_DIRS.iter().map(|d| root.join(d)).collect();
+    let gl: Vec<PathBuf> = dirs::home_dir()
+        .map(|h| GLOBAL_AGENT_DIRS.iter().map(|d| h.join(d)).collect())
+        .unwrap_or_default();
+    for (dirs, global) in [(ws, false), (gl, true)] {
+        for base in dirs {
+            let Ok(rd) = std::fs::read_dir(&base) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                if !p.is_file() || p.extension().is_none_or(|x| x != "md") {
+                    continue;
+                }
+                let content = std::fs::read_to_string(&p).unwrap_or_default();
+                let (fm_name, fm_desc, body) = split_agent(&content);
+                let name = fm_name
+                    .or_else(|| p.file_stem().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_default();
+                if name.is_empty() || !seen.insert(name.clone()) {
+                    continue;
+                }
+                out.push(SubagentInfo {
+                    name,
+                    description: fm_desc.unwrap_or_default(),
+                    prompt: body,
+                    path: p.to_string_lossy().into_owned(),
+                    global,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Resolve one agent name → manifest. File manifests win (a same-named
+/// `*.md` overrides the builtin); builtins are the fallback so
+/// `delegate { agent: "review" }` works out of the box.
+fn find_subagent(root: &Path, name: &str) -> Option<SubagentInfo> {
+    let want = name.to_lowercase();
+    discover_subagents(root)
+        .into_iter()
+        .find(|s| s.name.to_lowercase() == want)
+        .or_else(|| {
+            BUILTIN_SUBAGENTS
+                .iter()
+                .find(|(n, _, _)| n.eq_ignore_ascii_case(&want))
+                .map(|(n, d, p)| SubagentInfo {
+                    name: (*n).to_string(),
+                    description: (*d).to_string(),
+                    prompt: (*p).to_string(),
+                    path: String::new(),
+                    global: true,
+                })
+        })
+}
+
+/// `name`/`description` frontmatter split — same `---` convention skills use.
+fn split_agent(content: &str) -> (Option<String>, Option<String>, String) {
+    let trimmed = content.trim_start();
+    let Some(fm) = trimmed.strip_prefix("---") else {
+        return (None, None, content.to_string());
+    };
+    let Some(end) = fm.find("\n---") else {
+        return (None, None, content.to_string());
+    };
+    let mut name = None;
+    let mut desc = None;
+    for line in fm[..end].lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("name:") {
+            name = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
+        } else if let Some(v) = line.strip_prefix("description:") {
+            desc = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
+        }
+    }
+    (name, desc, fm[end + 4..].trim().to_string())
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct DelegateArgs {
     /// The complete task for the subagent — self-contained: the child sees
@@ -165,6 +333,11 @@ struct DelegateArgs {
     /// child runs on its own budget (48 tool rounds, 5 min).
     #[serde(default)]
     readonly: bool,
+    /// Optional custom subagent name — resolves `<name>.md` under the
+    /// workspace/global agent dirs and uses its body as the child's system
+    /// prompt instead of the builtin delegation prompt.
+    #[serde(default)]
+    agent: Option<String>,
 }
 
 pub fn spec() -> ToolSpec {
@@ -175,7 +348,13 @@ pub fn spec() -> ToolSpec {
              The child gets its own engine + history (none of this conversation), the same\n\
              workspace, and no `delegate` tool of its own. Use for parallel exploration,\n\
              isolated reviews, or focused subproblems. `readonly: true` restricts the child\n\
-             to inspection tools. Not available in plan mode.",
+             to inspection tools. `agent` names a custom `*.md` subagent manifest\n\
+             (workspace `.pi/agents/` or `~/.pi/agent/agents/`) whose body becomes\n\
+             the child's system prompt. Built-in agents: `review` (代码审查),
+\
+             `test` (测试工程), `ui-design` (UI 设计) — a same-named manifest overrides
+\
+             the builtin. Not available in plan mode.",
         ),
         // Not readonly: the delegation act itself writes nothing, but a
         // full child may edit — so `default` mode asks once, and `plan`
@@ -209,8 +388,18 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             "delegation unavailable in this context".into(),
         ));
     };
+    let agent_prompt = parsed
+        .agent
+        .as_deref()
+        .map(|n| {
+            find_subagent(&ctx.workspace_root, n)
+                .ok_or_else(|| format!("subagent `{n}` not found in agent dirs"))
+        })
+        .transpose()
+        .map_err(ToolError::Failed)?
+        .map(|s| s.prompt);
     let text = spawner
-        .run(ctx, task, parsed.readonly)
+        .run(ctx, task, parsed.readonly, agent_prompt)
         .await
         .map_err(ToolError::Failed)?;
     if text.is_empty() {
