@@ -121,6 +121,28 @@ pub(crate) struct WireUsage {
     prompt_tokens: Option<u32>,
     #[serde(default)]
     completion_tokens: Option<u32>,
+    /// OpenAI shape: `prompt_tokens_details.cached_tokens`.
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    /// DeepSeek-style flat fields.
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize)]
+pub(crate) struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
+}
+
+impl WireUsage {
+    fn cached(&self) -> Option<u32> {
+        self.prompt_tokens_details
+            .and_then(|d| d.cached_tokens)
+            .or(self.prompt_cache_hit_tokens)
+    }
 }
 
 /// Map one SSE `data:` payload into zero-or-more normalized chunks.
@@ -132,6 +154,7 @@ fn map_data(data: &str, pending_usage: &mut Option<WireUsage>) -> Vec<StreamChun
         return vec![StreamChunk::Done {
             prompt_tokens: usage.and_then(|u| u.prompt_tokens),
             completion_tokens: usage.and_then(|u| u.completion_tokens),
+            cached_tokens: usage.and_then(|u| u.cached()),
         }];
     }
 
@@ -358,6 +381,7 @@ impl LlmProvider for GenericOpenAiProvider {
                 Some(Ok(StreamChunk::Done {
                     prompt_tokens: None,
                     completion_tokens: None,
+                    cached_tokens: None,
                 }))
             }
         }).filter_map(|x| async move { x }));

@@ -255,7 +255,7 @@ impl LlmProvider for OpenAiResponsesProvider {
         }
 
         let data = sse::data_lines(resp.bytes_stream());
-        let mut usage: Option<(u32, u32)> = None;
+        let mut usage: Option<(u32, u32, u32)> = None;
         let mut done_emitted = false;
         // devin/swe-2 emits a text-protocol `[call: name(args)]` line inside
         // `output_text.delta` IN ADDITION TO the structured `function_call`
@@ -320,6 +320,7 @@ impl LlmProvider for OpenAiResponsesProvider {
                 Some(Ok(StreamChunk::Done {
                     prompt_tokens: usage.map(|u| u.0),
                     completion_tokens: usage.map(|u| u.1),
+                    cached_tokens: usage.map(|u| u.2),
                 }))
             }
         }).filter_map(|x| async move { x }));
@@ -377,6 +378,15 @@ struct RespUsage {
     input_tokens: Option<u32>,
     #[serde(default)]
     output_tokens: Option<u32>,
+    /// Responses API: `input_tokens_details.cached_tokens`.
+    #[serde(default)]
+    input_tokens_details: Option<InputTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
 }
 
 /// Incremental `[call: …]` stripper — buffers text deltas and removes any
@@ -528,7 +538,7 @@ fn parse_call_line(body: &str) -> Option<crate::types::ToolCall> {
 }
 
 /// One `data:` payload → zero-or-more `StreamChunk`s.
-fn map_data(data: &str, usage: &mut Option<(u32, u32)>) -> Vec<StreamChunk> {
+fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk> {
     if data.trim() == "[DONE]" {
         return vec![];
     }
@@ -609,12 +619,14 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32)>) -> Vec<StreamChunk> {
                     *usage = Some((
                         u.input_tokens.unwrap_or(0),
                         u.output_tokens.unwrap_or(0),
+                        u.input_tokens_details.and_then(|d| d.cached_tokens).unwrap_or(0),
                     ));
                 }
             }
             out.push(StreamChunk::Done {
                 prompt_tokens: usage.map(|u| u.0),
                 completion_tokens: usage.map(|u| u.1),
+                cached_tokens: usage.map(|u| u.2),
             });
         }
         "response.failed" | "response.error" | "error" => {

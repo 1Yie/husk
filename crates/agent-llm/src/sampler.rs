@@ -243,7 +243,7 @@ impl Sampler {
         if !done_seen {
             // Clean close without Done — synthesize so the caller's
             // invariants hold (spec: Done fires exactly once).
-            on_chunk(&StreamChunk::Done { prompt_tokens: None, completion_tokens: None });
+            on_chunk(&StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None });
         }
         Ok(())
     }

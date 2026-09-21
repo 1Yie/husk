@@ -251,6 +251,9 @@ pub enum StreamChunk {
     Done {
         prompt_tokens: Option<u32>,
         completion_tokens: Option<u32>,
+        /// Prompt tokens served from the provider's prompt cache —
+        /// `prompt - cached` is the fresh/billed portion.
+        cached_tokens: Option<u32>,
     },
     Error(String),
 }

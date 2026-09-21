@@ -58,7 +58,7 @@ impl MockProvider {
             .chunks(8)
             .map(|c| StreamChunk::ContentDelta(c.iter().collect()))
             .collect();
-        chunks.push(StreamChunk::Done { prompt_tokens: None, completion_tokens: None });
+        chunks.push(StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None });
         self.push_script(chunks);
     }
 }

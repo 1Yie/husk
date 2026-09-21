@@ -163,16 +163,21 @@ fn factory_builds_openai_compat_and_mock() {
     };
     assert_eq!(ProviderFactory::build(&mock_cfg).unwrap().id(), "mock");
 
-    // Anthropic stub must fail at build, not first request.
-    let anthro = ProviderConfig {
-        kind: ProviderKind::Anthropic,
-        base_url: "https://api.anthropic.com".into(),
-        api_key: "x".into(),
-        headers: Default::default(),
-        default_model: None,
-        ..Default::default()
-    };
-    assert!(ProviderFactory::build(&anthro).is_err());
+    // Anthropic + Gemini build real providers now (v2 adapters landed).
+    for (kind, id) in [
+        (ProviderKind::Anthropic, "anthropic"),
+        (ProviderKind::Gemini, "gemini"),
+    ] {
+        let cfg = ProviderConfig {
+            kind,
+            base_url: "".into(),
+            api_key: "x".into(),
+            headers: Default::default(),
+            default_model: None,
+            ..Default::default()
+        };
+        assert_eq!(ProviderFactory::build(&cfg).unwrap().id(), id);
+    }
 }
 
 // ---------- Sampler ----------
@@ -205,7 +210,7 @@ async fn sampler_retries_retryable_then_fails() {
     for _ in 0..4 {
         mock.push_script(vec![
             StreamChunk::Error("HTTP 429 too many requests".into()),
-            StreamChunk::Done { prompt_tokens: None, completion_tokens: None },
+            StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
         ]);
     }
     let sampler = Sampler::new(Arc::new(mock));
@@ -304,7 +309,7 @@ async fn openai_adapter_maps_wire_to_normalized() {
         if id.as_deref() == Some("c") && name.as_deref() == Some("f") && args_delta == "{"));
     assert!(matches!(seen[3], StreamChunk::ToolCallDelta { ref args_delta, .. } if args_delta == "}"));
     // usage chunk folds into Done via pending_usage
-    assert!(matches!(seen.last(), Some(StreamChunk::Done { prompt_tokens: Some(1), completion_tokens: Some(2) })));
+    assert!(matches!(seen.last(), Some(StreamChunk::Done { prompt_tokens: Some(1), completion_tokens: Some(2), .. })));
 }
 
 #[tokio::test]
@@ -313,7 +318,7 @@ async fn sampler_idle_timeout() {
     let mock = MockProvider::new()
         .with_script(vec![
             StreamChunk::ContentDelta("first".into()),
-            StreamChunk::Done { prompt_tokens: None, completion_tokens: None },
+            StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
         ])
         .with_latency(Duration::from_millis(0));
     // We can't wait 300 s in a test — just verify the constant exists and
