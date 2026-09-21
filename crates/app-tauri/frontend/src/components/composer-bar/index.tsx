@@ -24,6 +24,8 @@ import {
   File,
   Paperclip,
   X,
+  Bot,
+  Map,
 } from "@keyline-icons/react";
 import { Orb } from "../agent-orb";
 import { parseTodos, type TodoItem } from "../todo-view";
@@ -87,6 +89,12 @@ const PERMISSION_MODES = [
   { value: "bypassPermissions", label: "跳过权限", desc: "完全信任，自动跳过所有确认" },
 ] as const;
 
+const AGENT_MODES = [
+  { value: "build", label: "构建", desc: "完整工具集 — 读写、执行、验证" },
+  { value: "plan", label: "计划", desc: "只读分析，产出实施方案，批准后执行" },
+  { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
+] as const;
+
 const THINKING_LEVELS = [
   { value: "off", label: "关闭思考", desc: "不使用推理计算" },
   { value: "minimal", label: "极低强度", desc: "最小推理深度" },
@@ -119,6 +127,10 @@ export function ComposerBar({
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<string>("default");
+  // Agent mode (build/plan/goal) — orthogonal to the permission mode: the
+  // gate decides HOW calls get approved, the mode decides WHAT the session
+  // may do at all (plan = readonly registry, goal = completion contract).
+  const [agentMode, setAgentMode] = useState<string>("build");
   const [todoCollapsed, setTodoCollapsed] = useState(false);
   // Files attached via the `+` button — chips above the textarea; their
   // content rides inside the prompt text as fenced blocks (same channel
@@ -154,6 +166,7 @@ export function ComposerBar({
         if (info.active_provider) setActiveProvider(info.active_provider);
         if (info.active_thinking_level) setActiveThinkingLevel(info.active_thinking_level);
         if (info.active_permission_mode) setMode(info.active_permission_mode);
+        if (info.active_agent_mode) setAgentMode(info.active_agent_mode);
         if (info.models && Array.isArray(info.models)) {
           setModels(info.models);
         }
@@ -459,7 +472,32 @@ export function ComposerBar({
     }
   };
 
+  const switchAgentMode = async (m: string) => {
+    setAgentMode(m);
+    try {
+      await agent.setAgentMode(m);
+    } catch (e) {
+      console.error("setAgentMode failed:", e);
+    }
+  };
+
   const modeLabel = PERMISSION_MODES.find((m) => m.value === mode)?.label ?? "默认";
+  const agentModeLabel = AGENT_MODES.find((m) => m.value === agentMode)?.label ?? "构建";
+
+  // Plan → build handoff: a finished plan-mode turn ends on an assistant
+  // block (the plan). Approving flips to build and feeds the plan back as
+  // the execution instruction — Claude Code's exit-plan-mode flow.
+  const lastItem = view.items[view.items.length - 1];
+  const planReady =
+    agentMode === "plan" && !streaming && lastItem?.kind === "assistant";
+  const approvePlan = async () => {
+    await switchAgentMode("build");
+    try {
+      await agent.sendPrompt("上面的计划已获批准 — 按它实施。");
+    } catch (e) {
+      console.error("approve-plan send failed:", e);
+    }
+  };
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -468,6 +506,21 @@ export function ComposerBar({
           with the conversation stream. */}
       <div className="w-full px-4 pb-6 select-none pointer-events-none">
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
+          {planReady && (
+            <div className="w-full flex items-center gap-2 rounded-2xl border border-hairline bg-panel px-3.5 py-2.5 shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
+              <Map className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              <span className="text-xs text-neutral-600 font-medium flex-1">
+                计划已就绪 — 审核上面的方案
+              </span>
+              <Button
+                size="sm"
+                className="shrink-0 h-6 px-2.5 text-[11px] bg-neutral-900 hover:bg-neutral-800 text-white dark:text-[#fafafa] cursor-pointer"
+                onClick={() => void approvePlan()}
+              >
+                批准并执行
+              </Button>
+            </div>
+          )}
           {pending || hasActiveTodos ? (
             /* Outer container with attached banner: Approval (Priority 1) or Active Todo (Priority 2) */
             <div className="w-full bg-panel rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
@@ -616,6 +669,9 @@ export function ComposerBar({
                 />
 
                 <ComposerToolbar
+                  agentMode={agentMode}
+                  agentModeLabel={agentModeLabel}
+                  switchAgentMode={switchAgentMode}
                   modeLabel={modeLabel}
                   mode={mode}
                   switchMode={switchMode}
@@ -661,6 +717,9 @@ export function ComposerBar({
               />
 
               <ComposerToolbar
+                agentMode={agentMode}
+                agentModeLabel={agentModeLabel}
+                switchAgentMode={switchAgentMode}
                 modeLabel={modeLabel}
                 mode={mode}
                 switchMode={switchMode}
@@ -997,6 +1056,9 @@ function ComposerTextarea({
 }
 
 function ComposerToolbar({
+  agentMode,
+  agentModeLabel,
+  switchAgentMode,
   modeLabel,
   mode,
   switchMode,
@@ -1016,6 +1078,9 @@ function ComposerToolbar({
   submit,
   cancel,
 }: {
+  agentMode: string;
+  agentModeLabel: string;
+  switchAgentMode: (m: string) => Promise<void>;
   modeLabel: string;
   mode: string;
   switchMode: (m: string) => Promise<void>;
@@ -1073,6 +1138,47 @@ function ComposerToolbar({
               <Paperclip className="h-3.5 w-3.5 text-neutral-500" />
               其他文件
             </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label="代理模式"
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
+            >
+              <Bot className="h-3.5 w-3.5 text-neutral-500" />
+              <span>{agentModeLabel}</span>
+              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" className="w-64">
+            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+              代理模式
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              {AGENT_MODES.map((m) => {
+                const active = m.value === agentMode;
+                return (
+                  <DropdownMenuItem
+                    key={m.value}
+                    onClick={() => void switchAgentMode(m.value)}
+                    className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span className="font-medium text-xs text-neutral-800">
+                        {m.label}
+                      </span>
+                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
+                    </div>
+                    <span className="text-[11px] text-neutral-400 leading-tight">
+                      {m.desc}
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
 

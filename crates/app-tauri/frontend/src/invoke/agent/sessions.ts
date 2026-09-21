@@ -107,6 +107,8 @@ export interface ModelInfo {
   active_model: string;
   active_thinking_level?: string;
   active_permission_mode?: string;
+  /** `build` | `plan` | `goal` — the composer's agent-mode picker. */
+  active_agent_mode?: string;
   config_path?: string;
   models: ModelItem[];
 }
@@ -118,6 +120,7 @@ export function getModelInfo() {
 export interface DefaultPrefs {
   permission_mode?: string;
   thinking_level?: string;
+  agent_mode?: string;
 }
 
 /** The stored default preferences — what NEWLY created sessions spawn with.

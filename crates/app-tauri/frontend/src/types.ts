@@ -53,6 +53,7 @@ export type UiCommand =
   | "Cancel"
   | { SetModel: { provider: string; model: string } }
   | { SetPermissionMode: { mode: string } }
+  | { SetAgentMode: { mode: string } }
   | { SetThinkingLevel: { level: string } }
   | "UndoLastTurn";
 

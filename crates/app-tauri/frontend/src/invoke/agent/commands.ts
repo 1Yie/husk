@@ -32,6 +32,12 @@ export const setModel = (provider: string, model: string) =>
 export const setPermissionMode = (mode: string) =>
   send({ SetPermissionMode: { mode } });
 
+/** Switch the agent mode (`build` | `plan` | `goal`) — swaps the session's
+ * tool registry immediately (plan drops write tools; goal adds the
+ * goal_complete contract). */
+export const setAgentMode = (mode: string) =>
+  send({ SetAgentMode: { mode } });
+
 /** Set thinking / reasoning effort level (e.g. "off", "low", "medium", "high", "max"). */
 export const setThinkingLevel = (level: string) =>
   send({ SetThinkingLevel: { level } });
