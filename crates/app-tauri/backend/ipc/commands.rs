@@ -13,7 +13,7 @@ use crate::kernel::KernelState;
 #[tauri::command]
 pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), String> {
     let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
-    let (cancel, steer_tx, decision, permissions, cmd_tx) = {
+        let (cancel, steer_tx, decision, permissions, agent_mode, cmd_tx) = {
         let Some(handle) = mgr.active() else {
             return Err("no active session".into());
         };
@@ -22,6 +22,7 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
             handle.steer_tx.clone(),
             handle.decision.clone(),
             handle.permissions.clone(),
+                handle.agent_mode.clone(),
             handle.cmd_tx.clone(),
         )
     };
@@ -50,6 +51,12 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
         mgr.set_permission_mode(mode.clone());
         if let Ok(mut gate) = permissions.write() {
             *gate = agent_kernel::permissions::PermissionGate::from_mode_str(mode);
+        }
+    }
+    if let UiCommand::SetAgentMode { mode } = &cmd {
+        mgr.set_agent_mode(mode.clone());
+        if let Ok(mut slot) = agent_mode.write() {
+            *slot = agent_kernel::mode::AgentMode::from_str(mode);
         }
     }
     cmd_tx.try_send(cmd).map_err(|e| e.to_string())

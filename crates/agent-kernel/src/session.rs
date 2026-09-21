@@ -359,6 +359,12 @@ impl SessionActor {
         self.permissions_slot.clone()
     }
 
+    /// The shared agent-mode slot — `SetAgentMode` writes here mid-turn so
+    /// the engine's next sampling round already sees the swapped registry.
+    pub fn agent_mode_writer(&self) -> Arc<std::sync::RwLock<crate::mode::AgentMode>> {
+        self.engine.agent_mode_writer()
+    }
+
     /// The shared thinking-level slot — read-only mirror of the engine's
     /// level so the manager can report the session's actual value.
     pub fn thinking_writer(&self) -> Arc<std::sync::RwLock<Option<String>>> {
@@ -777,6 +783,30 @@ impl SessionActor {
                     .ui_tx
                     .try_send(UiEvent::SystemMessage(format!("权限模式已切换为: {mode}")));
                 self.history.push(ChatMessage::notice(format!("权限模式已切换为: {mode}")));
+            }
+            UiCommand::SetAgentMode { mode } => {
+                let new = crate::mode::AgentMode::from_str(&mode);
+                let old = self.engine.agent_mode();
+                self.engine.set_agent_mode(new);
+                // Rewrite the mode block inside the rendered system prompt —
+                // the contract text must match the registry the next round
+                // actually dispatches against.
+                if let Some(sys) = self.history.first_mut() {
+                    if sys.role == agent_llm::Role::System && sys.notice.is_none() {
+                        if let Some(c) = sys.content.take() {
+                            sys.content =
+                                Some(c.replace(old.prompt_block(), new.prompt_block()));
+                        }
+                    }
+                }
+                let label = match new {
+                    crate::mode::AgentMode::Build => "构建",
+                    crate::mode::AgentMode::Plan => "计划",
+                    crate::mode::AgentMode::Goal => "目标",
+                };
+                let line = format!("模式已切换为: {label}");
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                self.history.push(ChatMessage::notice(line));
             }
             UiCommand::Cancel => {
                 // P0-C4: real cooperative cancel — set the shared flag the

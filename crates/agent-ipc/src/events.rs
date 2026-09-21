@@ -94,6 +94,11 @@ pub enum UiCommand {
     /// parsing as `PermissionGate::from_mode_str`) so the composer dropdown
     /// stays a thin label→kernel mapping with no policy logic UI-side.
     SetPermissionMode { mode: String },
+    /// Switch the agent mode (`build` | `plan` | `goal`) — swaps the
+    /// session's tool registry immediately (plan drops write tools, goal
+    /// adds the completion contract) and rewrites the mode block inside
+    /// the rendered system prompt.
+    SetAgentMode { mode: String },
     /// Set the thinking/reasoning effort level (e.g. "off", "low", "medium", "high", "max").
     SetThinkingLevel { level: String },
     /// Undo/rewind the last-turn hunk set (Stage 6 wires HunkTracker).
