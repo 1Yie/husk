@@ -500,53 +500,66 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                               : "") }
                         : null,
                     ].filter((x): x is NonNullable<typeof x> => x !== null);
-                    const desc = m.id || segs.length ? (
-                      <span className="inline-flex flex-wrap items-center gap-x-1 gap-y-0.5">
-                        {m.id}
-                        {segs.map((seg, j) => (
-                          <span key={j} className="inline-flex items-center gap-1">
-                            <span className="text-neutral-300">·</span>
-                            {seg.icon}
-                            {seg.text}
-                          </span>
-                        ))}
-                      </span>
-                    ) : undefined;
                     return (
-                      <KvRow
+                      <div
                         key={m.id ?? i}
-                        label={m.name || m.id}
-                        description={desc}
-                        icon={<Cpu className="h-4 w-4" />}
+                        className="px-5 py-3 hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] transition-colors"
                       >
-                        <div className="flex items-center gap-2">
-                          {isActive && (
-                            <Badge className="text-[10px] px-1.5 py-0 h-4">当前</Badge>
-                          )}
-                          {m.reasoning === true && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                              思考
-                            </Badge>
-                          )}
-                          {m.reasoning === false && (
-                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                              无思考
-                            </Badge>
-                          )}
-                          {m.context_window ? (
-                            <span className="text-[11px] text-neutral-400 font-mono tabular-nums">
-                              {(m.context_window / 1000).toFixed(0)}k
+                        {/* Top row: identity left, status chips + edit right. */}
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className="text-neutral-500 shrink-0">
+                              <Cpu className="h-4 w-4" />
                             </span>
-                          ) : null}
-                          <Button
-                            size="sm" variant="ghost"
-                            className="h-6 w-6 p-0 text-neutral-500"
-                            onClick={() => openEditModel(pk, i)}
-                          >
-                            <SquarePen className="h-3.5 w-3.5" />
-                          </Button>
+                            <span className="text-sm text-neutral-800 truncate">
+                              {m.name || m.id}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isActive && (
+                              <Badge className="text-[10px] px-1.5 py-0 h-4">当前</Badge>
+                            )}
+                            {m.reasoning === true && (
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
+                                思考
+                              </Badge>
+                            )}
+                            {m.reasoning === false && (
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
+                                无思考
+                              </Badge>
+                            )}
+                            {m.context_window ? (
+                              <span className="text-[11px] text-neutral-400 font-mono tabular-nums">
+                                {(m.context_window / 1000).toFixed(0)}k
+                              </span>
+                            ) : null}
+                            <Button
+                              size="sm" variant="ghost"
+                              className="h-6 w-6 p-0 text-neutral-500"
+                              onClick={() => openEditModel(pk, i)}
+                            >
+                              <SquarePen className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </div>
-                      </KvRow>
+                        {/* Bottom row: meta line spanning the full card
+                          * width — id · modalities · thinking levels ·
+                          * pricing — instead of competing with the
+                          * title/right badges for the middle column. */}
+                        {(m.id || segs.length > 0) && (
+                          <div className="mt-1.5 pl-7 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono text-neutral-400">
+                            {m.id && <span>{m.id}</span>}
+                            {segs.map((seg, j) => (
+                              <span key={j} className="inline-flex items-center gap-1">
+                                <span className="text-neutral-300">·</span>
+                                {seg.icon}
+                                {seg.text}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     );
                   })
                 ) : (
