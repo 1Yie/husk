@@ -54,6 +54,8 @@ pub fn spec() -> ToolSpec {
              `expected_hash` from smart_read to guard against file drift.",
         ),
         readonly: false,
+        class: super::registry::ToolClass::WorkspaceMutation,
+        network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

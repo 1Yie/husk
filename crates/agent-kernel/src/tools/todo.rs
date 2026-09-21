@@ -56,6 +56,8 @@ pub fn spec() -> ToolSpec {
              multi-step work the user can see — plan, subtasks, follow-ups.",
         ),
         readonly: true,
+        class: super::registry::ToolClass::SessionMutation,
+        network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

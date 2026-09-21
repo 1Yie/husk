@@ -132,6 +132,11 @@ pub struct ToolCtx {
     pub subagent: Option<crate::tools::delegate::SubagentSpawner>,
     /// `ask_question`'s pending-answer slot + UI channel.
     pub ask: Arc<crate::tools::registry::AskChannel>,
+    /// Session UI event channel — tools that fan out (batch items,
+    /// subagent progress) emit ToolCallStarted/Finished here so internal
+    /// calls stay visible + auditable instead of running silently.
+    /// `None` in headless contexts → those tools skip emitting.
+    pub ui_tx: Option<tokio::sync::mpsc::Sender<agent_ipc::events::UiEvent>>,
     /// Live view of the engine's active registry — refreshed on every
     /// `active_registry()` resolution so `batch_execute` dispatches through
     /// the same mode-scoped registry as single calls (plan mode can't be
@@ -162,6 +167,7 @@ impl ToolCtx {
             depth: 0,
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             active_registry: std::sync::RwLock::new(None),
+            ui_tx: None,
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
@@ -179,6 +185,7 @@ impl ToolCtx {
             depth: 0,
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             active_registry: std::sync::RwLock::new(None),
+            ui_tx: None,
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
@@ -196,6 +203,26 @@ impl ToolCtx {
 
     /// Resolve a model-supplied path against the workspace root and prove it
     /// stays inside. Returns the canonical path or a sandbox-escape error.
+    /// Same context with a different cancel flag — `batch_execute` scopes
+    /// items to a batch deadline flag so a timeout can abort in-flight
+    /// blocking work without touching the turn's cancel.
+    pub fn with_cancel(&self, cancel: Arc<std::sync::atomic::AtomicBool>) -> ToolCtx {
+        ToolCtx {
+            workspace_root: self.workspace_root.clone(),
+            sandbox: self.sandbox.clone(),
+            session: self.session.clone(),
+            cancel: Some(cancel),
+            subagent: self.subagent.clone(),
+            ask: self.ask.clone(),
+            ui_tx: self.ui_tx.clone(),
+            active_registry: std::sync::RwLock::new(
+                self.active_registry.read().unwrap().clone(),
+            ),
+            depth: self.depth,
+            goal: self.goal.clone(),
+        }
+    }
+
     pub fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
         let p = Path::new(path);
         let joined = if p.is_absolute() {
@@ -310,6 +337,29 @@ pub type ExecFn = Arc<
         + Sync,
 >;
 
+/// What a call actually does — the capability seam `batch_execute`,
+/// permission policy, and (eventually) audit all key off. `readonly`
+/// stays as the auto-approval hint; `class` is the execution taxonomy —
+/// a tool can't sneak into an observation batch just by being readonly
+/// (ask_question, goal signals, todo all prove the flags differ).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolClass {
+    /// Pure reads — filesystem, network fetch, git status. Batch-eligible.
+    Observation,
+    /// Internal session state (todo) — serial semantics, never batched.
+    SessionMutation,
+    /// Writes to the workspace (patches, file edits) — permission-gated.
+    WorkspaceMutation,
+    /// Process execution (bash, test runner).
+    Process,
+    /// Turn-control signals (goal contract) — the engine consumes them.
+    Control,
+    /// Blocks on a human decision (ask_question).
+    HumanInteraction,
+    /// Spawns orchestration (delegate, batch_execute).
+    Orchestration,
+}
+
 /// One tool: name, schema for the LLM, readonly flag, exec fn.
 #[derive(Clone)]
 pub struct ToolSpec {
@@ -318,6 +368,11 @@ pub struct ToolSpec {
     pub schema: serde_json::Value,
     /// Read-only tools auto-run in `default` permission mode.
     pub readonly: bool,
+    /// Execution class — batch eligibility, policy, and audit key off it.
+    pub class: ToolClass,
+    /// Crosses the network boundary — batchable only under a tighter
+    /// per-batch cap (SSRF/rate-limit amplification guard).
+    pub network: bool,
     pub exec: ExecFn,
 }
 
@@ -325,7 +380,7 @@ pub struct ToolSpec {
 /// (provider prompt-cache friendly).
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
-    specs: BTreeMap<&'static str, ToolSpec>,
+    specs: BTreeMap<&'static str, Arc<ToolSpec>>,
 }
 
 impl ToolRegistry {
@@ -354,7 +409,7 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, spec: ToolSpec) {
-        self.specs.insert(spec.name, spec);
+        self.specs.insert(spec.name, Arc::new(spec));
     }
 
     /// A view of this registry keeping only tools that satisfy `keep` —
@@ -418,8 +473,8 @@ impl ToolRegistry {
 
     /// Spec lookup — `batch_execute` filters eligible tools through this
     /// before running them itself.
-    pub fn spec(&self, name: &str) -> Option<&ToolSpec> {
-        self.specs.get(name)
+    pub fn spec(&self, name: &str) -> Option<Arc<ToolSpec>> {
+        self.specs.get(name).cloned()
     }
 
     pub fn len(&self) -> usize {

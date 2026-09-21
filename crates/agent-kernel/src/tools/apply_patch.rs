@@ -54,6 +54,8 @@ pub fn spec() -> ToolSpec {
              remains the right tool for a single in-place search/replace.",
         ),
         readonly: false,
+        class: super::registry::ToolClass::WorkspaceMutation,
+        network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

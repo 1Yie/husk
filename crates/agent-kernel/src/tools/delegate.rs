@@ -100,6 +100,9 @@ impl SubagentSpawner {
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             // The child's own engine refreshes this on its first dispatch.
             active_registry: std::sync::RwLock::new(None),
+            // Forward the session's UI channel — a child's internal calls
+            // (batch items) surface in the parent's stream, not hidden.
+            ui_tx: parent_ctx.ui_tx.clone(),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         };
         let registry = if readonly {
@@ -178,6 +181,8 @@ pub fn spec() -> ToolSpec {
         // full child may edit — so `default` mode asks once, and `plan`
         // mode (readonly-only registry) excludes it entirely.
         readonly: false,
+        class: super::registry::ToolClass::Orchestration,
+        network: false,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

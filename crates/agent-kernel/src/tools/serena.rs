@@ -265,6 +265,8 @@ pub fn spec() -> ToolSpec {
         // Serena file tools write — treat the suite as non-readonly so the
         // permission gate applies.
         readonly: false,
+        class: super::registry::ToolClass::WorkspaceMutation,
+        network: false,
         exec,
     }
 }

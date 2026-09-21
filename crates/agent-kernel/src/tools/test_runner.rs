@@ -39,6 +39,8 @@ pub fn spec() -> ToolSpec {
              `cargo test`, `pytest`, `vitest`/`jest`, `go test`.",
         ),
         readonly: false, // test runs can write caches/artifacts; gate via permissions
+        class: super::registry::ToolClass::Process,
+        network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

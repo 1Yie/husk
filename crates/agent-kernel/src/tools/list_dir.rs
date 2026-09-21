@@ -37,6 +37,8 @@ pub fn spec() -> ToolSpec {
              targeted lookups instead of deep listings.",
         ),
         readonly: true,
+        class: super::registry::ToolClass::Observation,
+        network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

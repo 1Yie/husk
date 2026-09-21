@@ -38,6 +38,8 @@ pub fn spec() -> ToolSpec {
              bash is for builds, tests, and commands those don't cover.",
         ),
         readonly: false,
+        class: super::registry::ToolClass::Process,
+        network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
