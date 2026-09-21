@@ -38,6 +38,10 @@ struct ApplyPatchArgs {
     patch: String,
 }
 
+/// Patches above this are refused — an unbounded arg is a memory footgun
+/// the model shouldn't control.
+const MAX_PATCH_BYTES: usize = 2 * 1024 * 1024;
+
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "apply_patch",
@@ -55,10 +59,19 @@ pub fn spec() -> ToolSpec {
 }
 
 /// One parsed file operation.
+#[derive(Debug)]
 enum FileOp {
     Add { path: String, content: String },
     Delete { path: String },
-    Update { path: String, hunks: Vec<Hunk> },
+    Update { path: String, move_to: Option<String>, hunks: Vec<Hunk> },
+}
+
+/// In-memory per-path state for the patch pipeline — `original` is the
+/// disk content at first touch (None = absent), `current` the running
+/// result (None = deleted).
+struct FileState {
+    original: Option<String>,
+    current: Option<String>,
 }
 
 /// One `@@` hunk inside an `*** Update File` section: the leading-char
@@ -84,6 +97,11 @@ impl Hunk {
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let parsed: ApplyPatchArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("apply_patch args: {e}")))?;
+    if parsed.patch.len() > MAX_PATCH_BYTES {
+        return Err(ToolError::Args(format!(
+            "patch exceeds {MAX_PATCH_BYTES} bytes — split it into smaller patches"
+        )));
+    }
 
     let ops = parse_patch(&parsed.patch)?;
     if ops.is_empty() {
@@ -93,50 +111,117 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         ));
     }
 
+    // Virtual-fs pipeline: ops run against an in-memory view so repeated
+    // ops on one path compose (Update → Update → Move) instead of each
+    // reading stale disk content and last-write-wins losing earlier hunks.
+    // PendingWrites are emitted ONCE per touched path at the end.
+    let mut state: std::collections::HashMap<std::path::PathBuf, FileState> =
+        std::collections::HashMap::new();
+    let mut order: Vec<std::path::PathBuf> = Vec::new();
     let mut summary = String::new();
-    let mut writes: Vec<PendingWrite> = Vec::new();
     let mut any_fuzzy = false;
 
     for op in &ops {
         match op {
             FileOp::Add { path, content } => {
                 let abs = ctx.resolve(path)?;
-                // Diff from empty → everything is an add.
-                let diff = unified_diff("", content);
+                let st = load_state(&mut state, &mut order, &abs).await;
+                if st.current.is_some() {
+                    return Err(ToolError::Args(format!(
+                        "Add File {path}: file already exists — use Update File                          (or Delete File first to recreate)"
+                    )));
+                }
+                let mut content = content.clone();
+                if !content.is_empty() && !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                let diff = unified_diff(
+                    st.original.as_deref().unwrap_or(""),
+                    &content,
+                );
                 summary.push_str(&format!("added {path}\n\n{diff}\n"));
-                writes.push(PendingWrite {
-                    path: abs,
-                    content: content.clone().into_bytes(),
-                    op: WriteOp::Write,
-                    auto_mkdir: true,
-                });
+                st.current = Some(content);
             }
             FileOp::Delete { path } => {
                 let abs = ctx.resolve(path)?;
-                let old = tokio::fs::read_to_string(&abs).await.unwrap_or_default();
-                let diff = unified_diff(&old, "");
-                summary.push_str(&format!("deleted {path}\n\n{diff}\n"));
-                writes.push(PendingWrite {
-                    path: abs,
-                    content: Vec::new(),
-                    op: WriteOp::Delete,
-                    auto_mkdir: false,
-                });
+                let st = load_state(&mut state, &mut order, &abs).await;
+                let old = st.current.clone().ok_or_else(|| {
+                    ToolError::Failed(format!("Delete File {path}: does not exist"))
+                })?;
+                summary.push_str(&format!(
+                    "deleted {path}\n\n{}\n",
+                    unified_diff(&old, "")
+                ));
+                st.current = None;
             }
-            FileOp::Update { path, hunks } => {
+            FileOp::Update { path, move_to, hunks } => {
+                if hunks.is_empty() {
+                    return Err(ToolError::Args(format!(
+                        "Update File {path}: no `@@` hunks — each update needs                          at least one context/remove/add section"
+                    )));
+                }
                 let abs = ctx.resolve(path)?;
-                let old = tokio::fs::read_to_string(&abs).await?;
+                let old = {
+                    let st = load_state(&mut state, &mut order, &abs).await;
+                    st.current.clone().ok_or_else(|| {
+                        ToolError::Failed(format!(
+                            "Update File {path}: does not exist — use Add File"
+                        ))
+                    })?
+                };
                 let (new, fuzzy) = apply_hunks(path, &old, hunks)?;
                 any_fuzzy |= fuzzy;
-                let diff = unified_diff(&old, &new);
-                summary.push_str(&format!("updated {path}\n\n{diff}\n"));
-                writes.push(PendingWrite {
-                    path: abs,
-                    content: new.into_bytes(),
-                    op: WriteOp::Write,
-                    auto_mkdir: false,
-                });
+                summary.push_str(&format!(
+                    "updated {path}\n\n{}\n",
+                    unified_diff(&old, &new)
+                ));
+                if let Some(dest) = move_to {
+                    let dest_abs = ctx.resolve(dest)?;
+                    if dest_abs != abs {
+                        {
+                            let dst = load_state(&mut state, &mut order, &dest_abs).await;
+                            if dst.current.is_some() {
+                                return Err(ToolError::Args(format!(
+                                    "Move to {dest}: destination already exists"
+                                )));
+                            }
+                            dst.current = Some(new);
+                        }
+                        let src_st = state.get_mut(&abs).expect("loaded");
+                        src_st.current = None;
+                        summary.push_str(&format!("moved {path} → {dest}\n"));
+                        continue;
+                    }
+                }
+                state.get_mut(&abs).expect("loaded").current = Some(new);
             }
+        }
+    }
+
+    // Emit one PendingWrite per touched path, in first-touch order.
+    let mut writes: Vec<PendingWrite> = Vec::new();
+    for abs in order {
+        let st = &state[&abs];
+        match (&st.original, &st.current) {
+            (Some(o), Some(c)) if o != c => writes.push(PendingWrite {
+                path: abs,
+                content: c.clone().into_bytes(),
+                op: WriteOp::Write,
+                auto_mkdir: true,
+            }),
+            (None, Some(c)) => writes.push(PendingWrite {
+                path: abs,
+                content: c.clone().into_bytes(),
+                op: WriteOp::Write,
+                auto_mkdir: true,
+            }),
+            (Some(_), None) => writes.push(PendingWrite {
+                path: abs,
+                content: Vec::new(),
+                op: WriteOp::Delete,
+                auto_mkdir: false,
+            }),
+            _ => {} // unchanged, or never existed and still absent
         }
     }
 
@@ -148,6 +233,23 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     })
 }
 
+/// Load a path into the virtual fs on first touch (disk → FileState).
+async fn load_state<'a>(
+    state: &'a mut std::collections::HashMap<std::path::PathBuf, FileState>,
+    order: &mut Vec<std::path::PathBuf>,
+    abs: &std::path::Path,
+) -> &'a mut FileState {
+    if !state.contains_key(abs) {
+        let disk = tokio::fs::read_to_string(abs).await.ok();
+        state.insert(
+            abs.to_path_buf(),
+            FileState { original: disk.clone(), current: disk },
+        );
+        order.push(abs.to_path_buf());
+    }
+    state.get_mut(abs).expect("just inserted")
+}
+
 /// Split the patch envelope into file operations.
 fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
     let mut ops = Vec::new();
@@ -155,9 +257,11 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
 
     // Skip to `*** Begin Patch` (tolerate a bare patch that omits the
     // envelope — the model sometimes drops the wrapper).
+    let mut envelope = false;
     while let Some(l) = lines.peek() {
         if l.trim() == "*** Begin Patch" {
             lines.next();
+            envelope = true;
             break;
         }
         if l.trim().starts_with("*** Add File:")
@@ -171,9 +275,11 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
 
     let mut cur_path: Option<String> = None;
     let mut cur_op: Option<&'static str> = None; // "add" | "delete" | "update"
+    let mut cur_move: Option<String> = None;
     let mut add_lines: Vec<String> = Vec::new();
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut cur_hunk: Option<Hunk> = None;
+    let mut saw_end = false;
 
     // Flush the in-progress op into `ops`.
     macro_rules! flush {
@@ -194,19 +300,25 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
                 }
                 Some("update") => {
                     if let Some(p) = cur_path.take() {
-                        ops.push(FileOp::Update { path: p, hunks: std::mem::take(&mut hunks) });
+                        ops.push(FileOp::Update {
+                            path: p,
+                            move_to: cur_move.take(),
+                            hunks: std::mem::take(&mut hunks),
+                        });
                     }
                 }
                 _ => {}
             }
             add_lines.clear();
             hunks.clear();
+            cur_move = None;
         };
     }
 
     for raw in lines {
         let l = raw.trim_end();
         if l == "*** End Patch" {
+            saw_end = true;
             break;
         }
         if let Some(rest) = l.strip_prefix("*** ") {
@@ -221,6 +333,23 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
                 }
                 continue;
             }
+            if let Some(p) = rest.strip_prefix("Move to:") {
+                // `*** Move to:` continues the CURRENT Update op — it is
+                // not a new file op, so no flush. Without a preceding
+                // `*** Update File:` it is meaningless.
+                if cur_op != Some("update") {
+                    return Err(ToolError::Args(
+                        "`*** Move to:` must follow `*** Update File:`".into(),
+                    ));
+                }
+                if cur_move.is_some() {
+                    return Err(ToolError::Args(
+                        "duplicate `*** Move to:` in one Update File section".into(),
+                    ));
+                }
+                cur_move = Some(p.trim().to_string());
+                continue;
+            }
             flush!();
             if let Some(p) = rest.strip_prefix("Add File:") {
                 cur_op = Some("add");
@@ -232,7 +361,6 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
                 cur_op = Some("update");
                 cur_path = Some(p.trim().to_string());
             }
-            // Move markers etc. are ignored.
             continue;
         }
         match cur_op {
@@ -266,6 +394,13 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
         }
     }
     flush!();
+    // An opened envelope that never closes means the patch was truncated —
+    // silently accepting it would apply half a patch.
+    if envelope && !saw_end {
+        return Err(ToolError::Args(
+            "patch truncated — missing `*** End Patch`".into(),
+        ));
+    }
     Ok(ops)
 }
 
@@ -322,11 +457,49 @@ fn apply_hunks(path: &str, old: &str, hunks: &[Hunk]) -> Result<(String, bool), 
         }
 
         if before.is_empty() {
-            return Err(ToolError::Args(format!(
-                "{} had no context/remove lines — \
-                 each hunk needs ` ` or `-` lines to locate the change",
-                hunk_desc()
-            )));
+            if after.is_empty() {
+                return Err(ToolError::Args(format!(
+                    "{} is empty — each hunk needs ` `, `-`, or `+` lines",
+                    hunk_desc()
+                )));
+            }
+            // Insert-only hunk (`@@ marker` + `+` lines): codex inserts the
+            // `after` block right AFTER the marker line. Without a marker
+            // there is no anchor — keep refusing.
+            let marker = h.context.as_deref().ok_or_else(|| {
+                ToolError::Args(format!(
+                    "{} has only `+` lines and no `@@ marker` — \
+                     an insert needs a context line to anchor to",
+                    hunk_desc()
+                ))
+            })?;
+            let mut off = 0usize;
+            let mut hits: Vec<usize> = Vec::new();
+            for l in src.split_inclusive('\n') {
+                if l.trim_end() == marker {
+                    hits.push(off + l.len());
+                }
+                off += l.len();
+            }
+            match hits.len() {
+                1 => {
+                    src.insert_str(hits[0], &format!("{after}\n"));
+                }
+                n if n > 1 => {
+                    return Err(ToolError::Failed(format!(
+                        "{}: `@@ {marker}` matched {n} lines — \
+                         use a more specific marker",
+                        hunk_desc()
+                    )));
+                }
+                _ => {
+                    return Err(ToolError::Failed(format!(
+                        "{}: `@@ {marker}` not found in file",
+                        hunk_desc()
+                    )));
+                }
+            }
+            continue;
         }
         let hits: Vec<usize> = src.match_indices(before).map(|(i, _)| i).collect();
         match hits.len() {
@@ -489,5 +662,47 @@ mod tests {
         }];
         let (new, _) = apply_hunks("f.rs", old, &hunks).unwrap();
         assert_eq!(new, "fn a() {}\nfn tail() {}\n");
+    }
+
+    #[test]
+    fn truncated_envelope_is_rejected() {
+        let patch = "*** Begin Patch\n*** Add File: a.rs\n+line\n"; // no End Patch
+        let err = parse_patch(patch).unwrap_err().to_string();
+        assert!(err.contains("End Patch"), "missing marker error: {err}");
+        // Bare patches (no envelope) may legitimately end without it.
+        let bare = "*** Add File: a.rs\n+line\n";
+        assert!(parse_patch(bare).is_ok());
+    }
+
+    #[test]
+    fn move_to_parses_and_requires_update() {
+        let ok = "*** Begin Patch\n*** Update File: a.rs\n*** Move to: b.rs\n@@\n-x\n+y\n*** End Patch";
+        match parse_patch(ok).unwrap().as_slice() {
+            [FileOp::Update { move_to: Some(m), .. }] => assert_eq!(m, "b.rs"),
+            other => panic!("expected update+move, got {} ops", other.len()),
+        }
+        let bad = "*** Begin Patch\n*** Add File: a.rs\n*** Move to: b.rs\n+x\n*** End Patch";
+        assert!(parse_patch(bad).is_err());
+    }
+
+    #[test]
+    fn insert_only_hunk_anchors_at_context() {
+        let old = "fn a() {}\nfn b() {}\n";
+        let hunks = vec![Hunk {
+            context: Some("fn a() {}".into()),
+            lines: vec!["+fn inserted() {}".into()],
+            eof: false,
+        }];
+        let (new, _) = apply_hunks("f.rs", old, &hunks).unwrap();
+        assert_eq!(new, "fn a() {}\nfn inserted() {}\nfn b() {}\n");
+
+        // Ambiguous marker refuses instead of guessing.
+        let dup = "x\nx\n";
+        let hunks = vec![Hunk {
+            context: Some("x".into()),
+            lines: vec!["+y".into()],
+            eof: false,
+        }];
+        assert!(apply_hunks("f.txt", dup, &hunks).is_err());
     }
 }

@@ -20,6 +20,7 @@ bytes = "1"
 
 # agent-context — pure Rust only, no C linkage (Operating Principle 1)
 ignore = "0.4"
+globset = "0.4"
 gix = { version = "0.87", default-features = false, features = ["status", "sha1"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 similar = "2"
