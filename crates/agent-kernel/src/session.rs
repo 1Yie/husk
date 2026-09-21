@@ -25,7 +25,23 @@ use crate::tools::{ToolCtx, ToolRegistry};
 
 /// The rendered system prompt template — embedded at build time from the
 /// skill's canonical source (single source of truth, never hand-edited here).
-const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../assets/kernel-system-prompt.md");
+pub const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../assets/kernel-system-prompt.md");
+
+/// Append one instructions file to the rendered prompt as a `## User
+/// instructions` section — empty/missing files are no-ops.
+fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    out.push_str(&format!(
+        "\n\n## User instructions — {label} ({})\n\n{text}",
+        path.display()
+    ));
+}
 
 /// SessionActor configuration for one workspace.
 pub struct SessionConfig {
@@ -50,6 +66,8 @@ pub struct SessionConfig {
     /// Declared input modalities (`ModelConfig.input`, e.g.
     /// `["text", "image"]`) — `"image"` gates real image parts on the wire.
     pub model_input: Vec<String>,
+    /// Compaction trigger fraction — `None` → the engine's `COMPACT_AT`.
+    pub compact_at: Option<f32>,
 }
 
 /// One live session: owns history + engine, consumes commands, emits events.
@@ -92,7 +110,7 @@ pub struct SessionActor {
     /// Last completed turn's `(prompt, completion)` tokens — persisted
     /// into `SessionMeta` so a reopened session's header meter shows real
     /// numbers before the next `Usage` event.
-    last_usage: Option<(u32, u32)>,
+    last_usage: Option<(u32, u32, u32)>,
 }
 
 impl SessionActor {
@@ -207,6 +225,20 @@ impl SessionActor {
         let system_prompt = system_prompt
             .replace("{{MEMORY_BLOCK}}", &initial_memory_block);
 
+        // User instructions — `~/.config/husk/AGENTS.md` (user-wide) then
+        // `<workspace>/AGENTS.md` (project) append verbatim as dedicated
+        // sections. Edited from the settings "指令" pane; custom rules live
+        // outside the template so they never fight its contract.
+        let mut system_prompt = system_prompt;
+        if let Some(cfg_dir) = dirs::config_dir() {
+            append_instructions(&mut system_prompt, &cfg_dir.join("husk/AGENTS.md"), "user");
+        }
+        append_instructions(
+            &mut system_prompt,
+            &cfg.workspace_root.join("AGENTS.md"),
+            "project",
+        );
+
         // Fresh session → just the rendered system prompt; resume → the
         // persisted history (its system prompt was rendered at that session's
         // spawn — memory/workspace baked in for that turn).
@@ -266,6 +298,7 @@ impl SessionActor {
         engine.set_thinking_level(cfg.thinking_level.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
         engine.set_context_window(cfg.context_window.unwrap_or(256_000) as usize);
+        engine.set_compact_at(cfg.compact_at.unwrap_or(crate::compaction::COMPACT_AT));
         engine.set_model_input(cfg.model_input.clone());
         let decision_slot = engine.decision_slot();
         let ask_channel = engine.ask_channel();
@@ -534,10 +567,11 @@ impl SessionActor {
         // actor's `last_usage` starts empty until its first turn lands).
         let usage = self
             .last_usage
-            .map(|(prompt, completion)| crate::session_store::SessionUsage {
+            .map(|(prompt, completion, cached)| crate::session_store::SessionUsage {
                 prompt,
                 completion,
                 context_window: self.engine.context_window() as u32,
+                cached,
             })
             .or_else(|| {
                 store
@@ -649,7 +683,7 @@ impl SessionActor {
                 // Force a compaction pass via the engine's path.
                 let est = crate::compaction::estimate_tokens(&self.history);
                 let window = 256_000usize; // engine's context_window is the real bound
-                if crate::compaction::should_compact(est, window) {
+                if crate::compaction::should_compact_at(est, window, self.engine.compact_at()) {
                     let line = "正在压缩历史上下文…".to_string();
                     let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
                     self.history.push(ChatMessage::notice(line));

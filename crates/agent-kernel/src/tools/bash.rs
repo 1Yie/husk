@@ -69,7 +69,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         ctx.workspace_root.as_ref().to_path_buf(),
         std::env::temp_dir().join(format!("husk-{:x}", std::process::id())),
     );
-    let cfg = agent_sandbox::SandboxConfig {
+    let mut cfg = agent_sandbox::SandboxConfig {
         workspace_dir: ctx.workspace_root.as_ref().to_path_buf(),
         allow_network: !matches!(plan.network, agent_sandbox::plan::NetworkPolicy::Deny),
         max_memory_mb: plan.processes.max_memory_mb,
@@ -79,6 +79,9 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         environment: plan.environment.clone(),
         ..Default::default()
     };
+    // User overrides from the settings UI fold in last — a forced network
+    // policy / memory / process cap beats the audit plan's defaults.
+    crate::sandbox_prefs::apply_to(&mut cfg);
 
     let output = ctx
         .sandbox

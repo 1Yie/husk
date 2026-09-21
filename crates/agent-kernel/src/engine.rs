@@ -47,7 +47,8 @@ pub struct TurnOutcome {
     /// Final assistant text (concatenated content deltas).
     pub text: String,
     /// Usage from the last `Done` chunk.
-    pub usage: Option<(u32, u32)>,
+    /// (prompt, completion, cached) — cached ⊂ prompt.
+    pub usage: Option<(u32, u32, u32)>,
     /// Tool calls executed this turn (for hunk attribution / UI list).
     pub tool_calls_run: usize,
 }
@@ -79,8 +80,11 @@ pub struct Engine {
     decision: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
     /// Monotone id source for `ApprovalRequested` correlation.
     next_request_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Context window for the active model — compaction triggers at 80%.
+    /// Context window for the active model — compaction triggers at
+    /// `compact_at` × window (user-settable: 70/80/90%).
     context_window: usize,
+    /// Fraction of `context_window` that triggers compaction.
+    compact_at: f32,
     /// Per-turn tool-loop bound — sessions use the default; delegated
     /// subagents get a smaller budget.
     max_tool_rounds: usize,
@@ -131,6 +135,7 @@ impl Engine {
             decision: Arc::new(std::sync::Mutex::new(None)),
             next_request_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             context_window: 256_000,
+            compact_at: crate::compaction::COMPACT_AT,
             max_tool_rounds: 128,
             model_input: Vec::new(),
             compaction_suppressor: CompactionSuppressor::default(),
@@ -215,6 +220,16 @@ impl Engine {
     /// default (same bound `Usage` events report).
     pub fn context_window(&self) -> usize {
         self.context_window
+    }
+
+    /// Compaction trigger as a fraction of the window — the settings UI's
+    /// 70/80/90% choices write here at actor spawn.
+    pub fn set_compact_at(&mut self, frac: f32) {
+        self.compact_at = frac.clamp(0.5, 0.95);
+    }
+
+    pub fn compact_at(&self) -> f32 {
+        self.compact_at
     }
 
     /// SessionActor installs the permission gate (mode + repo rules).
@@ -365,7 +380,7 @@ impl Engine {
             self.supports_images(),
         );
         let est = compaction::estimate_tokens(history);
-        if compaction::should_compact(est, self.context_window)
+        if compaction::should_compact_at(est, self.context_window, self.compact_at)
             && self.compaction_suppressor.check()
         {
             self.set_state(io, AgentState::Compacting);
@@ -525,7 +540,7 @@ impl Engine {
                             StreamChunk::ToolCallDelta { .. } => {
                                 assembler.feed(chunk);
                             }
-                            StreamChunk::Done { prompt_tokens, completion_tokens } => {
+                            StreamChunk::Done { prompt_tokens, completion_tokens, cached_tokens } => {
                                 saw_done = true;
                                 // Flush any coalesced deltas BEFORE the
                                 // terminal event lands so the UI never
@@ -541,11 +556,13 @@ impl Engine {
                                     ));
                                 }
                                 if let (Some(p), Some(c)) = (prompt_tokens, completion_tokens) {
-                                    usage = Some((*p, *c));
+                                    let cached = cached_tokens.unwrap_or(0);
+                                    usage = Some((*p, *c, cached));
                                     let _ = io.ui_tx.try_send(UiEvent::Usage {
                                         prompt_tokens: *p,
                                         completion_tokens: *c,
                                         context_window: self.context_window as u32,
+                                        cached_tokens: cached,
                                     });
                                 }
                             }

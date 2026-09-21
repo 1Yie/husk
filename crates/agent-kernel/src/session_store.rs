@@ -45,11 +45,19 @@ pub struct SessionUsage {
     pub prompt: u32,
     pub completion: u32,
     pub context_window: u32,
+    /// Prompt tokens served from the provider cache — `prompt - cached`
+    /// is the uncached/billed share. `default` keeps old meta files valid.
+    #[serde(default)]
+    pub cached: u32,
 }
 
 /// The on-disk session index for one workspace.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionIndex {
+    /// The session the user last had open — restored on next launch
+    /// instead of defaulting to the most recently updated one.
+    #[serde(default)]
+    pub last_active: Option<i64>,
     pub sessions: Vec<SessionMeta>,
 }
 
@@ -118,6 +126,22 @@ impl SessionStore {
         }
     }
 
+    /// The session the user last had open — `None` on a fresh/old index.
+    pub fn last_active(&self) -> Option<i64> {
+        self.read_index().last_active
+    }
+
+    /// Record which session is open — restored on next launch.
+    pub fn set_last_active(&self, id: i64) -> std::io::Result<()> {
+        let mut idx = self.read_index();
+        if idx.last_active == Some(id) {
+            return Ok(());
+        }
+        idx.last_active = Some(id);
+        let json = serde_json::to_string_pretty(&idx)?;
+        std::fs::write(self.index_path(), json)
+    }
+
     /// Load the latest history snapshot for a session.
     pub fn load_history(&self, id: i64) -> Option<Vec<ChatMessage>> {
         let text = std::fs::read_to_string(self.history_path(id)).ok()?;
@@ -165,6 +189,9 @@ impl SessionStore {
     pub fn remove(&self, id: i64) -> std::io::Result<()> {
         let mut idx = self.read_index();
         idx.sessions.retain(|s| s.id != id);
+        if idx.last_active == Some(id) {
+            idx.last_active = None;
+        }
         let json = serde_json::to_string_pretty(&idx)?;
         std::fs::write(self.index_path(), json)?;
         let _ = std::fs::remove_file(self.history_path(id));
@@ -269,6 +296,22 @@ pub struct DefaultPreferences {
     pub thinking_level: Option<String>,
     #[serde(default = "default_pref_agent_mode")]
     pub agent_mode: String,
+    /// Fraction of the context window that triggers compaction (0.70/0.80/0.90).
+    #[serde(default = "default_pref_compact_at")]
+    pub compact_at: f32,
+    /// Sandbox network override: "auto" (audit decides) | "allow" | "deny".
+    #[serde(default)]
+    pub sandbox_network: Option<String>,
+    /// Per-command sandbox memory cap override (MB).
+    #[serde(default)]
+    pub sandbox_max_memory_mb: Option<u64>,
+    /// Per-command sandbox process-count cap override.
+    #[serde(default)]
+    pub sandbox_max_processes: Option<u32>,
+}
+
+fn default_pref_compact_at() -> f32 {
+    0.80
 }
 
 fn default_pref_permission_mode() -> String {
@@ -289,6 +332,10 @@ impl Default for DefaultPreferences {
             permission_mode: default_pref_permission_mode(),
             thinking_level: default_pref_thinking_level(),
             agent_mode: default_pref_agent_mode(),
+            compact_at: default_pref_compact_at(),
+            sandbox_network: None,
+            sandbox_max_memory_mb: None,
+            sandbox_max_processes: None,
         }
     }
 }

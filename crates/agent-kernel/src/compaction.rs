@@ -41,10 +41,16 @@ pub fn estimate_tokens(msgs: &[ChatMessage]) -> usize {
         .sum()
 }
 
+/// Should compaction fire at a caller-chosen fraction? The settings UI
+/// exposes 70/80/90% of the window.
+pub fn should_compact_at(tokens: usize, window: usize, frac: f32) -> bool {
+    tokens >= (window as f32 * frac) as usize
+}
+
 /// Should compaction fire? `tokens` is the current estimate, `window` the
 /// model's context size.
 pub fn should_compact(tokens: usize, window: usize) -> bool {
-    tokens >= (window as f32 * COMPACT_AT) as usize
+    should_compact_at(tokens, window, COMPACT_AT)
 }
 
 /// Should the *prefire* Pass-1 start early (hide the latency)?

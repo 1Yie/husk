@@ -15,6 +15,7 @@ pub mod engine;
 pub mod hooks;
 pub mod mode;
 pub mod permissions;
+pub mod sandbox_prefs;
 pub mod session;
 pub mod session_store;
 pub mod session_manager;

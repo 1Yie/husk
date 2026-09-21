@@ -154,6 +154,9 @@ pub struct SessionManager {
     pub permission_mode: String,
     /// Active agent mode across sessions (`build` | `plan` | `goal`).
     pub agent_mode: String,
+    /// Fraction of the context window that triggers compaction — the
+    /// settings UI's 70/80/90% choices; applies to actors spawned after set.
+    pub compact_at: f32,
     /// Workspace root (for git branch / cwd display).
     pub workspace_root: std::path::PathBuf,
 }
@@ -191,7 +194,17 @@ impl SessionManager {
 
     /// Boot the manager at a specific workspace root (or current directory / most recent).
     pub fn spawn_at(root: Option<std::path::PathBuf>) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
+        // No explicit root → reopen the workspace the user last had
+        // open (MRU list head) so a session opened in another project
+        // survives an app restart; fall back to the process cwd only when
+        // there's no recorded history.
         let cwd = root
+            .or_else(|| {
+                crate::session_store::load_recent_workspaces()
+                    .first()
+                    .map(|w| w.path.clone())
+                    .filter(|p| p.is_dir())
+            })
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
         let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
         let cfg = AppConfig::load(None).unwrap_or_default();
@@ -223,7 +236,23 @@ impl SessionManager {
             .unwrap_or_else(|| "build".into());
         let active_thinking_level = prefs
             .thinking_level
-            .or_else(|| defaults.and_then(|d| d.thinking_level));
+            .or_else(|| defaults.as_ref().and_then(|d| d.thinking_level.clone()));
+        let compact_at = defaults
+            .as_ref()
+            .map(|d| d.compact_at)
+            .unwrap_or(crate::compaction::COMPACT_AT);
+        // Sandbox overrides are process-global — seed the slot once so
+        // process tools read them even before the settings window opens.
+        if let Some(d) = &defaults {
+            crate::sandbox_prefs::set(crate::sandbox_prefs::SandboxLimits {
+                network: d
+                    .sandbox_network
+                    .as_deref()
+                    .and_then(crate::sandbox_prefs::network_from_label),
+                max_memory_mb: d.sandbox_max_memory_mb,
+                max_processes: d.sandbox_max_processes,
+            });
+        }
 
         let mut mgr = Self {
             metas: store.list(),
@@ -238,11 +267,17 @@ impl SessionManager {
             active_thinking_level,
             permission_mode,
             agent_mode,
+            compact_at,
             workspace_root: canon,
         };
 
-        // Resume the most recent session if one exists; else start fresh.
-        let first = mgr.metas.first().map(|m| m.id);
+        // Resume the session the user last had open; fall back to the
+        // most recent when it no longer exists, or start fresh.
+        let first = mgr
+            .store
+            .last_active()
+            .filter(|id| mgr.metas.iter().any(|m| m.id == *id))
+            .or_else(|| mgr.metas.first().map(|m| m.id));
         match first {
             Some(id) => mgr.open_session(id),
             None => mgr.new_session(),
@@ -297,7 +332,11 @@ impl SessionManager {
         self.metas = self.store.list();
         crate::session_store::record_recent_workspace(&self.workspace_root);
 
-        let first = self.metas.first().map(|m| m.id);
+        let first = self
+            .store
+            .last_active()
+            .filter(|id| self.metas.iter().any(|m| m.id == *id))
+            .or_else(|| self.metas.first().map(|m| m.id));
         match first {
             Some(id) => self.open_session(id),
             None => self.new_session(),
@@ -442,6 +481,7 @@ impl SessionManager {
             thinking_level_map,
             context_window,
             model_input,
+            compact_at: Some(self.compact_at),
         };
 
         let (mut actor, channels) = match self.store.load_history(id) {
@@ -543,6 +583,7 @@ impl SessionManager {
             self.spawn_actor(id);
         }
         self.active_id = id;
+        let _ = self.store.set_last_active(id);
     }
 
     /// Delete a session — abort its turn, drop the actor handle (closing
@@ -594,7 +635,77 @@ impl SessionManager {
         self.metas = self.store.list();
         self.spawn_actor(new_id);
         self.active_id = new_id;
+        let _ = self.store.set_last_active(new_id);
         Some(new_id)
+    }
+
+    /// Discovered MCP/plugin manifests for the settings UI — reads
+    /// `manifest.json` files under `~/.config/husk/plugins/` and
+    /// `<repo>/.agent/plugins/`. Listing only: this never spawns a server.
+    pub fn plugin_overview(&self) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        for mpath in agent_plugin::discover(&self.workspace_root) {
+            let Ok(text) = std::fs::read_to_string(&mpath) else {
+                continue;
+            };
+            let Ok(m) = serde_json::from_str::<agent_plugin::PluginManifest>(&text) else {
+                continue;
+            };
+            out.push(serde_json::json!({
+                "id": m.id,
+                "name": m.name,
+                "version": m.version,
+                "kind": match m.kind {
+                    agent_plugin::PluginKind::Mcp => "mcp",
+                    agent_plugin::PluginKind::Wasm => "wasm",
+                },
+                "entry": m.entry,
+                "tools": m.capabilities.tools.len(),
+                "commands": m.capabilities.commands.len(),
+                "sandboxed": m.sandboxed,
+                "dir": m.dir.to_string_lossy(),
+            }));
+        }
+        out
+    }
+
+    /// The two user-instruction files the settings "指令" pane edits —
+    /// `~/.config/husk/AGENTS.md` (user-wide) and `<workspace>/AGENTS.md`
+    /// (project). Both append to every new session's system prompt.
+    pub fn instructions(&self) -> serde_json::Value {
+        let global = dirs::config_dir().map(|d| d.join("husk/AGENTS.md"));
+        let ws = self.workspace_root.join("AGENTS.md");
+        let read = |p: &Option<std::path::PathBuf>| {
+            p.as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .unwrap_or_default()
+        };
+        serde_json::json!({
+            "global": {
+                "path": global.as_ref().map(|p| p.to_string_lossy().to_string()),
+                "content": read(&global),
+            },
+            "workspace": {
+                "path": ws.to_string_lossy().to_string(),
+                "content": std::fs::read_to_string(&ws).unwrap_or_default(),
+            },
+        })
+    }
+
+    /// Write one instructions file (`global` | `workspace`) — creates the
+    /// config dir on first save.
+    pub fn set_instructions(&self, scope: &str, content: &str) -> Result<(), String> {
+        let path = match scope {
+            "global" => dirs::config_dir()
+                .map(|d| d.join("husk/AGENTS.md"))
+                .ok_or("no config dir")?,
+            "workspace" => self.workspace_root.join("AGENTS.md"),
+            _ => return Err(format!("unknown instructions scope `{scope}`")),
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, content).map_err(|e| e.to_string())
     }
 
     /// The active session's handles (for UI commands).
@@ -605,6 +716,35 @@ impl SessionManager {
     /// Load a session's persisted history (for rebuilding a closed view).
     pub fn store_history(&self, id: i64) -> Option<Vec<agent_llm::types::ChatMessage>> {
         self.store.load_history(id)
+    }
+
+    /// Paged history — `(slice, total_len)`. `before` is an exclusive
+    /// end index into the full message list; `None` takes the tail page.
+    /// The webview mounts history in pages instead of all at once: a
+    /// 65k-node session made every frame pathological on WebKitGTK, so
+    /// `open` returns only the newest page and scroll-up fetches older
+    /// slices via `history_page`.
+    pub fn store_history_page(
+        &self,
+        id: i64,
+        before: Option<usize>,
+        count: usize,
+    ) -> (Vec<agent_llm::types::ChatMessage>, usize, usize) {
+        let hist = self.store.load_history(id).unwrap_or_default();
+        let total = hist.len();
+        // Visible turns ≈ non-hidden user messages — the rail sizes its
+        // overview track against this so unloaded history still occupies
+        // its true share of the strip.
+        let turn_total = hist
+            .iter()
+            .filter(|m| {
+                m.role == agent_llm::types::Role::User
+                    && m.notice != Some(agent_llm::types::NoticeKind::Hidden)
+            })
+            .count();
+        let end = before.map(|b| b.min(total)).unwrap_or(total);
+        let start = end.saturating_sub(count);
+        (hist[start..end].to_vec(), total, turn_total)
     }
 
     /// A session's persisted last-turn usage — seeds the header meter when
@@ -658,6 +798,9 @@ impl SessionManager {
                     let reasoning = d.and_then(|x| x.reasoning).unwrap_or(false)
                         || d.and_then(|x| x.thinking_level_map.as_ref()).is_some();
                     let thinking_level_map = d.and_then(|x| x.thinking_level_map.clone());
+                    // Levels come ONLY from the model's thinking_level_map
+                    // — a model with `reasoning: true` but no map exposes no
+                    // selectable levels, and the picker stays hidden.
                     let mut available_levels = Vec::new();
                     if let Some(map) = &thinking_level_map {
                         for lvl in &["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
@@ -667,14 +810,6 @@ impl SessionManager {
                                 available_levels.push(lvl.to_string());
                             }
                         }
-                    } else if reasoning {
-                        available_levels = vec![
-                            "off".into(),
-                            "low".into(),
-                            "medium".into(),
-                            "high".into(),
-                            "max".into(),
-                        ];
                     }
 
                     models.push(ModelDetails {
@@ -768,18 +903,19 @@ impl SessionManager {
     /// The stored default preferences — what NEW sessions spawn with.
     /// The settings popup reads/writes these; already-running sessions keep
     /// whatever they were spawned (or later switched) with.
-    pub fn default_prefs(&self) -> (String, Option<String>, String) {
+    pub fn default_prefs(&self) -> (String, Option<String>, String, f32) {
         (
             self.permission_mode.clone(),
             self.active_thinking_level.clone(),
             self.agent_mode.clone(),
+            self.compact_at,
         )
     }
 
     /// Update the stored default preferences — applies to sessions spawned
     /// AFTER this call; live sessions are untouched (no gate write, no
     /// UiCommand, no SystemMessage in their stream).
-    pub fn set_default_prefs(&mut self, permission_mode: Option<String>, thinking_level: Option<String>, agent_mode: Option<String>) {
+    pub fn set_default_prefs(&mut self, permission_mode: Option<String>, thinking_level: Option<String>, agent_mode: Option<String>, compact_at: Option<f32>) {
         if let Some(m) = permission_mode {
             self.permission_mode = m;
         }
@@ -789,13 +925,23 @@ impl SessionManager {
         if let Some(m) = agent_mode {
             self.agent_mode = m;
         }
+        if let Some(f) = compact_at {
+            self.compact_at = f.clamp(0.5, 0.95);
+        }
         self.persist_prefs();
         // Also persist the global defaults so fresh workspaces inherit them.
+        // Sandbox overrides live in the process-wide slot — read it back so
+        // the file always mirrors the effective values.
+        let lim = crate::sandbox_prefs::current();
         let _ = crate::session_store::save_default_preferences(
             &crate::session_store::DefaultPreferences {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
+                compact_at: self.compact_at,
+                sandbox_network: Some(lim.network_label().into()),
+                sandbox_max_memory_mb: lim.max_memory_mb,
+                sandbox_max_processes: lim.max_processes,
             },
         );
     }
