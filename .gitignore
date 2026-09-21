@@ -55,3 +55,6 @@ config.local.json
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# app-desktop — local iced experiment, untracked
+crates/app-desktop/
