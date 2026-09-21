@@ -87,6 +87,7 @@ export function applyEvent(
       kind: "tool",
       name,
       args: ev.ToolCallStarted.args_preview,
+      parent: ev.ToolCallStarted.parent,
     });
     return { ...v, items };
   }
@@ -102,7 +103,13 @@ export function applyEvent(
     }
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      if (it.kind === "tool" && it.content === undefined) {
+      // Same-parent match: a batch child's Finished lands on the child
+      // row, not the batch capsule itself (and vice versa).
+      if (
+        it.kind === "tool" &&
+        it.content === undefined &&
+        it.parent === (t.parent ?? undefined)
+      ) {
         items[i] = {
           ...it,
           content: t.content,

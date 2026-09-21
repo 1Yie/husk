@@ -477,6 +477,36 @@ function parseTurns(items: StreamItem[]): Turn[] {
     }
 
     if (item.kind === "tool" || item.kind === "approval") {
+      // Batch children — attach to the nearest preceding batch_execute
+      // row in the current step instead of counting as a top-level call.
+      if (item.kind === "tool" && item.parent) {
+        const lastStep = t.steps[t.steps.length - 1];
+        if (lastStep?.type === "tools") {
+          for (let j = lastStep.rows.length - 1; j >= 0; j--) {
+            if (lastStep.rows[j].label === item.parent) {
+              const child: ToolChipRow = {
+                id: `tool-${idx}`,
+                label: item.name,
+                chip: item.args && item.args !== item.name ? item.args : "",
+                status:
+                  item.content === undefined
+                    ? "running"
+                    : item.ok === false
+                      ? "aborted"
+                      : "done",
+                detail: item.content ? [item.content] : undefined,
+                uiType: item.uiType,
+              };
+              lastStep.rows[j].children = [
+                ...(lastStep.rows[j].children ?? []),
+                child,
+              ];
+              break;
+            }
+          }
+          continue;
+        }
+      }
       const row: ToolChipRow =
         item.kind === "tool"
           ? {

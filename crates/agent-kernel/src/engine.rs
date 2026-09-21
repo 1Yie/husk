@@ -786,6 +786,7 @@ impl Engine {
                 let _ = io.ui_tx.try_send(UiEvent::ToolCallStarted {
                     name: call.name.clone(),
                     args_preview,
+                    parent: None,
                 });
                 self.set_state(io, AgentState::ExecutingTool {
                     tool_name: call.name.clone(),
@@ -798,6 +799,7 @@ impl Engine {
                     let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
                         name: call.name.clone(), ok: false,
                         content: msg.clone(), ui_type: None,
+                        parent: None,
                     });
                     history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                     continue;
@@ -831,6 +833,7 @@ impl Engine {
                             let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
                                 name: call.name.clone(), ok: false,
                                 content: msg.clone(), ui_type: None,
+                        parent: None,
                             });
                             history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                             continue;
@@ -855,6 +858,7 @@ impl Engine {
                         let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
                             name: call.name.clone(), ok: false,
                             content: reason.clone(), ui_type: None,
+                        parent: None,
                         });
                         history.push(ChatMessage::tool_result_err(call.id.clone(), reason));
                         continue; // skip dispatch — denied by policy
@@ -890,6 +894,7 @@ impl Engine {
                             let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
                                 name: call.name.clone(), ok: false,
                                 content: msg.clone(), ui_type: None,
+                        parent: None,
                             });
                             history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                             continue;
@@ -979,6 +984,7 @@ impl Engine {
                     ok,
                     content: content.clone(),
                     ui_type,
+                        parent: None,
                 });
 
                 // `ok` survives into the snapshot via `is_error` so a

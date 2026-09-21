@@ -228,6 +228,9 @@ function isDiffText(text: string): boolean {
 }
 
 export type ToolChipRow = {
+  /** Calls emitted inside this one (`batch_execute` items) — rendered
+   * nested under the row, not counted as top-level calls. */
+  children?: ToolChipRow[];
   chip: string;
   detail?: string[];
   id: string;
@@ -276,6 +279,123 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
 
   if (rows.length === 0) return null;
 
+  const renderRow = (row: ToolChipRow, depth = 0) => {
+    const rowOpen = isRowOpen(row);
+    const statusText =
+      row.approval && !row.approval.resolved
+        ? "待批准"
+        : row.status === "aborted" || (row.approval?.resolved && !row.approval?.approved)
+          ? "已中断"
+          : row.status === "running"
+            ? "进行中"
+            : "完成";
+
+    const detailText = row.detail ? row.detail.join("\n").trim() : "";
+    const isDiff =
+      row.uiType === "diff" ||
+      Boolean(row.approval?.diff) ||
+      isDiffText(detailText);
+
+    const diffContent =
+      isDiff && detailText.length > 0
+        ? detailText
+        : (row.approval?.diff ?? (isDiff ? detailText : null));
+
+    const isTodo =
+      row.label === "todo" ||
+      row.uiType === "todo" ||
+      (detailText.includes("Todo List:") && detailText.includes("[")) ||
+      /\[[ xX]\]\s*#?\d+/i.test(detailText);
+
+    const hasDetail = Boolean(diffContent) || detailText.length > 0;
+    const fullChipText = asChipText(formatChipArgs(row.label, row.chip));
+    const displayChipText = truncateArgText(fullChipText, 60);
+
+    return (
+      <div key={row.id} className="w-full">
+        <button
+          aria-expanded={rowOpen}
+          className={cn(
+            "hover:bg-neutral-100 flex h-7 w-fit max-w-full items-center gap-2 rounded-md px-1.5 text-left select-none transition-colors group",
+            hasDetail ? "cursor-pointer" : "cursor-default"
+          )}
+          onClick={() => {
+            if (hasDetail) toggleRow(row.id, rowOpen);
+          }}
+          type="button"
+        >
+          <span className="text-neutral-500 group-hover:text-neutral-700 shrink-0 text-xs font-medium transition-colors">
+            {asChipText(row.label)}
+          </span>
+          {displayChipText ? (
+            <TooltipSimple
+              content={
+                <div className="max-w-xl max-h-60 overflow-y-auto font-mono text-xs break-all whitespace-pre-wrap select-text leading-relaxed">
+                  {fullChipText}
+                </div>
+              }
+              side="top"
+              sideOffset={6}
+              className="max-w-xl bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] backdrop-blur-sm border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)] p-2.5 shadow-xl select-text"
+            >
+              <span
+                className="bg-neutral-100 text-neutral-600 inline-flex h-5 max-w-[280px] sm:max-w-[360px] md:max-w-[420px] items-center rounded-md px-1.5 font-mono text-[11px] shrink min-w-0 cursor-pointer"
+              >
+                <span className="truncate">{displayChipText}</span>
+              </span>
+            </TooltipSimple>
+          ) : null}
+          <span className="text-neutral-400 shrink-0 text-[11px]">
+            {statusText}
+            {row.children && row.children.length > 0 ? ` · ${row.children.length} 项` : ""}
+          </span>
+          {hasDetail && (
+            <ChevronDown
+              className={cn(
+                "h-3 w-3 text-neutral-400 transition-transform duration-250 ease-out shrink-0",
+                rowOpen ? "rotate-0" : "-rotate-90"
+              )}
+            />
+          )}
+        </button>
+
+        {hasDetail ? (
+          <div
+            className="grid transition-[grid-template-rows,opacity] duration-250 ease-out w-full"
+            style={{
+              gridTemplateRows: rowOpen ? "1fr" : "0fr",
+              opacity: rowOpen ? 1 : 0,
+            }}
+          >
+            <div className="min-h-0 overflow-hidden w-full">
+              <div className="w-full pt-1 pb-1.5">
+                {diffContent ? (
+                  <DiffView diff={diffContent} maxHeight={600} />
+                ) : isTodo ? (
+                  <TodoView content={detailText} />
+                ) : (
+                  <div className="w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs">
+                    <div className="p-3 font-mono text-[11.5px] text-neutral-700 leading-relaxed overflow-x-auto max-h-[400px] overflow-y-auto select-text">
+                      {renderHighlightedLines(detailText, row.label, row.chip)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Nested batch items — indented under the parent capsule,
+            same row UI, not counted as top-level calls. */}
+        {row.children && row.children.length > 0 ? (
+          <div className="ml-4 pl-2.5 border-l border-[color-mix(in_srgb,var(--husk-black)_12%,transparent)] flex flex-col gap-1 mt-1">
+            {row.children.map((c) => renderRow(c, depth + 1))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div className="w-full my-1">
       <button
@@ -306,113 +426,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
       >
         <div className="min-h-0 overflow-hidden w-full">
           <div className="pt-1.5 flex flex-col gap-1.5 w-full">
-            {rows.map((row) => {
-              const rowOpen = isRowOpen(row);
-              const statusText =
-                row.approval && !row.approval.resolved
-                  ? "待批准"
-                  : row.status === "aborted" || (row.approval?.resolved && !row.approval?.approved)
-                    ? "已中断"
-                    : row.status === "running"
-                      ? "进行中"
-                      : "完成";
-
-              const detailText = row.detail ? row.detail.join("\n").trim() : "";
-              const isDiff =
-                row.uiType === "diff" ||
-                Boolean(row.approval?.diff) ||
-                isDiffText(detailText);
-
-              const diffContent =
-                isDiff && detailText.length > 0
-                  ? detailText
-                  : (row.approval?.diff ?? (isDiff ? detailText : null));
-
-              const isTodo =
-                row.label === "todo" ||
-                row.uiType === "todo" ||
-                (detailText.includes("Todo List:") && detailText.includes("[")) ||
-                /\[[ xX]\]\s*#?\d+/i.test(detailText);
-
-              const hasDetail = Boolean(diffContent) || detailText.length > 0;
-              const fullChipText = asChipText(formatChipArgs(row.label, row.chip));
-              const displayChipText = truncateArgText(fullChipText, 60);
-
-              return (
-                <div key={row.id} className="w-full">
-                  <button
-                    aria-expanded={rowOpen}
-                    className={cn(
-                      "hover:bg-neutral-100 flex h-7 w-fit max-w-full items-center gap-2 rounded-md px-1.5 text-left select-none transition-colors group",
-                      hasDetail ? "cursor-pointer" : "cursor-default"
-                    )}
-                    onClick={() => {
-                      if (hasDetail) toggleRow(row.id, rowOpen);
-                    }}
-                    type="button"
-                  >
-                    <span className="text-neutral-500 group-hover:text-neutral-700 shrink-0 text-xs font-medium transition-colors">
-                      {asChipText(row.label)}
-                    </span>
-                    {displayChipText ? (
-                      <TooltipSimple
-                        content={
-                          <div className="max-w-xl max-h-60 overflow-y-auto font-mono text-xs break-all whitespace-pre-wrap select-text leading-relaxed">
-                            {fullChipText}
-                          </div>
-                        }
-                        side="top"
-                        sideOffset={6}
-                        className="max-w-xl bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] backdrop-blur-sm border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)] p-2.5 shadow-xl select-text"
-                      >
-                        <span
-                          className="bg-neutral-100 text-neutral-600 inline-flex h-5 max-w-[280px] sm:max-w-[360px] md:max-w-[420px] items-center rounded-md px-1.5 font-mono text-[11px] shrink min-w-0 cursor-pointer"
-                        >
-                          <span className="truncate">{displayChipText}</span>
-                        </span>
-                      </TooltipSimple>
-                    ) : null}
-                    <span className="text-neutral-400 shrink-0 text-[11px]">
-                      {statusText}
-                    </span>
-                    {hasDetail && (
-                      <ChevronDown
-                        className={cn(
-                          "h-3 w-3 text-neutral-400 transition-transform duration-250 ease-out shrink-0",
-                          rowOpen ? "rotate-0" : "-rotate-90"
-                        )}
-                      />
-                    )}
-                  </button>
-
-                  {hasDetail ? (
-                    <div
-                      className="grid transition-[grid-template-rows,opacity] duration-250 ease-out w-full"
-                      style={{
-                        gridTemplateRows: rowOpen ? "1fr" : "0fr",
-                        opacity: rowOpen ? 1 : 0,
-                      }}
-                    >
-                      <div className="min-h-0 overflow-hidden w-full">
-                        <div className="w-full pt-1 pb-1.5">
-                          {diffContent ? (
-                            <DiffView diff={diffContent} maxHeight={600} />
-                          ) : isTodo ? (
-                            <TodoView content={detailText} />
-                          ) : (
-                            <div className="w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs">
-                              <div className="p-3 font-mono text-[11.5px] text-neutral-700 leading-relaxed overflow-x-auto max-h-[400px] overflow-y-auto select-text">
-                                {renderHighlightedLines(detailText, row.label, row.chip)}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
+            {rows.map((row) => renderRow(row))}
           </div>
         </div>
       </div>

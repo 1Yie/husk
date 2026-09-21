@@ -132,10 +132,26 @@ pub enum UiEvent {
     /// A tool began executing. `args_preview` is a single-line summary of
     /// the call's target (a path / command / pattern) shown on the capsule —
     /// the full output only appears when the capsule is expanded.
-    ToolCallStarted { name: String, args_preview: String },
+    ToolCallStarted {
+        name: String,
+        args_preview: String,
+        /// Set on calls emitted INSIDE another tool (`batch_execute`
+        /// items) — the UI nests them under the parent capsule instead
+        /// of counting them as top-level calls.
+        #[serde(default)]
+        parent: Option<String>,
+    },
     /// A tool finished (or failed); `content` is the truncated model-facing
     /// text, `ui_type` is the optional typed card hint (`diff`/`table`/…).
-    ToolCallFinished { name: String, ok: bool, content: String, ui_type: Option<String> },
+    ToolCallFinished {
+        name: String,
+        ok: bool,
+        content: String,
+        ui_type: Option<String>,
+        /// Same nesting marker as `ToolCallStarted::parent`.
+        #[serde(default)]
+        parent: Option<String>,
+    },
     /// `ask_question` paused the turn for structured input — the card
     /// offers the model's options plus a free-text field. Resolved by
     /// `AnswerQuestion`.

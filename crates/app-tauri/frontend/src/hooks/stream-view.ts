@@ -15,6 +15,9 @@ export type StreamItem =
       content?: string;
       ok?: boolean;
       uiType?: string;
+      /** Set on calls emitted inside another tool (`batch_execute`
+       * items) — the stream nests them under the parent capsule. */
+      parent?: string;
       approval?: {
         requestId: number;
         diff?: string;

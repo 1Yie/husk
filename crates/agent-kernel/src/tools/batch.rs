@@ -211,6 +211,9 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                         if let Some(ui) = &ctx.ui_tx {
                             let _ = ui.try_send(agent_ipc::events::UiEvent::ToolCallStarted {
                                 name: tool.clone(),
+                                // Nested — the UI renders this under the
+                                // batch_execute capsule, not top-level.
+                                parent: Some("batch_execute".into()),
                                 args_preview: call
                                     .args
                                     .get("path")
@@ -264,6 +267,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                 ok,
                                 content,
                                 ui_type: None,
+                                parent: Some("batch_execute".into()),
                             });
                         }
                         out
