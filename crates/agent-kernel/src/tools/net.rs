@@ -47,6 +47,22 @@ fn cancelled(cancel: &Option<Arc<AtomicBool>>) -> bool {
     cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
 }
 
+/// Is this address a proxy fake-ip — the DNS placeholder a local
+/// Clash/V2Ray/Surge returns in fake-ip mode so it can recover the real
+/// hostname from the fake address. 198.18.0.0/15 is the canonical pool
+/// (also RFC 2544 benchmarking). A fake-ip answer isn't a routable
+/// private target — the proxy owns the connection, so refusing it just
+/// bricks every fetch when the user's resolver is a fake-ip proxy.
+fn is_fake_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 198 && (o[1] & 0xFE) == 18 // 198.18.0.0/15
+        }
+        _ => false,
+    }
+}
+
 /// Is this address reachable without touching private/loopback/metadata
 /// space? Anything not public is refused — the agent runs on hosts where
 /// `127.0.0.1`, `169.254.169.254`, or a LAN gateway are real attack surface.
@@ -118,10 +134,14 @@ pub async fn validate_url(url: &Url) -> Result<(), ToolError> {
         return Err(ToolError::Failed(format!("DNS lookup for '{host}' returned no addresses")));
     }
     for addr in &addrs {
-        if !is_public_ip(&addr.ip()) {
+        let ip = addr.ip();
+        // fake-ip is a proxy placeholder, not a real destination — the
+        // connection goes through the local proxy which owns the hostname,
+        // so the SSRF check doesn't apply to it.
+        if !is_public_ip(&ip) && !is_fake_ip(&ip) {
             return Err(ToolError::Failed(format!(
                 "refused: '{host}' resolves to private/reserved address {}",
-                addr.ip()
+                ip
             )));
         }
     }
@@ -228,6 +248,19 @@ mod tests {
         for good in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
             assert!(is_public_ip(&ip(good)), "{good} should be allowed");
         }
+    }
+
+    #[test]
+    fn fake_ip_segment_is_allowed() {
+        // Clash/V2Ray fake-ip mode answers every A query with a 198.18.x.x
+        // placeholder — refusing it bricks all fetches behind a local proxy.
+        for fake in ["198.18.0.74", "198.18.0.1", "198.19.255.255"] {
+            assert!(is_fake_ip(&ip(fake)), "{fake} should be a fake-ip");
+            assert!(!is_public_ip(&ip(fake)), "{fake} is still non-public");
+        }
+        // Just outside the segment is still refused.
+        assert!(!is_fake_ip(&ip("198.17.0.1")));
+        assert!(!is_fake_ip(&ip("198.20.0.1")));
     }
 
     #[tokio::test]
