@@ -25,7 +25,7 @@ import {
   Paperclip,
   X,
   Bot,
-  Map,
+  Map as MapIcon,
   Clock,
   GripVertical,
   ListPlus,
@@ -459,10 +459,12 @@ export function ComposerBar({
   const removeQueued = (i: number) =>
     setQueued((q) => q.filter((_, j) => j !== i));
 
-  // Drag-to-reorder — plain HTML5 DnD on the row; `overIdx` paints the
-  // drop line. Order = send order, so the strip is the source of truth.
+  // Drag-to-reorder — pointer-based, NOT HTML5 DnD: WebKitGTK (Linux
+  // webview) never fires dragstart/drop reliably. pointerdown on the grip
+  // arms the drag; a window listener converts pointer Y into an insertion
+  // index via row midpoints and reorders LIVE — the list is its own preview.
   const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const moveQueued = (from: number, to: number) =>
     setQueued((q) => {
       const next = [...q];
@@ -470,6 +472,37 @@ export function ComposerBar({
       next.splice(to, 0, m);
       return next;
     });
+
+  useEffect(() => {
+    if (dragIdx == null) return;
+    const onMove = (e: PointerEvent) => {
+      // Insertion index = number of row midpoints above the pointer; after
+      // removing the dragged row the index shifts down by one if it was
+      // below the drag origin.
+      let target = queued.length;
+      for (let idx = 0; idx < queued.length; idx++) {
+        const el = rowRefs.current.get(idx);
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (e.clientY < r.top + r.height / 2) {
+          target = idx;
+          break;
+        }
+      }
+      const to = target > dragIdx ? target - 1 : target;
+      if (to !== dragIdx && to >= 0 && to < queued.length) {
+        moveQueued(dragIdx, to);
+        setDragIdx(to);
+      }
+    };
+    const onUp = () => setDragIdx(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragIdx, queued]);
 
   // Drain the queue one prompt per turn end — `wasStreaming` guards the
   // transition so a state change alone can't flush the whole list.
@@ -564,7 +597,7 @@ export function ComposerBar({
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
           {planReady && (
             <div className="w-full flex items-center gap-2 rounded-2xl border border-hairline bg-panel px-3.5 py-2.5 shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
-              <Map className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              <MapIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
               <span className="text-xs text-neutral-600 font-medium flex-1">
                 计划已就绪 — 审核上面的方案
               </span>
@@ -721,34 +754,22 @@ export function ComposerBar({
                   {queued.slice(0, 4).map((q, i) => (
                     <div
                       key={i}
-                      draggable
-                      onDragStart={(e) => {
-                        setDragIdx(i);
-                        e.dataTransfer.effectAllowed = "move";
-                      }}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = "move";
-                        setOverIdx(i);
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        if (dragIdx != null && dragIdx !== i) moveQueued(dragIdx, i);
-                        setDragIdx(null);
-                        setOverIdx(null);
-                      }}
-                      onDragEnd={() => {
-                        setDragIdx(null);
-                        setOverIdx(null);
+                      ref={(el) => {
+                        if (el) rowRefs.current.set(i, el);
+                        else rowRefs.current.delete(i);
                       }}
                       className={cn(
-                        "flex items-center gap-1.5 pl-1 pr-0 rounded-md transition-colors",
-                        overIdx === i && dragIdx !== i &&
-                          "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] ring-1 ring-inset ring-[color-mix(in_srgb,var(--husk-n400)_60%,transparent)]",
+                        "flex items-center gap-1.5 pl-1 pr-0 rounded-md transition-opacity",
                         dragIdx === i && "opacity-40",
                       )}
                     >
-                      <GripVertical className="h-3.5 w-3.5 text-neutral-300 hover:text-neutral-500 cursor-grab active:cursor-grabbing shrink-0" />
+                      <GripVertical
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          setDragIdx(i);
+                        }}
+                        className="h-3.5 w-3.5 text-neutral-300 hover:text-neutral-500 cursor-grab active:cursor-grabbing shrink-0 touch-none"
+                      />
                       <span className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-2 py-0.5 rounded select-none">
                         {q.split("\n")[0]}
                       </span>
