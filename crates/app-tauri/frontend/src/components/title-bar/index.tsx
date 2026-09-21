@@ -19,9 +19,7 @@ interface TitleBarProps {
   modelCost?: ModelItem["cost"];
   /** Opens the raw-JSON history viewer for the active session. */
   onShowRaw?: () => void;
-  /** No workspace open — a session title and token/cost stats describe
-   * nothing, so the whole cluster (title, raw button, git + usage chips)
-   * is dropped; only the drag region and window controls remain. */
+  /** No workspace open — hide title, raw button and the stats cluster. */
   noWorkspace?: boolean;
 }
 

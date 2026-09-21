@@ -30,8 +30,7 @@ interface ChatPageProps {
   onShowRaw?: () => void;
   /** No workspace open — the empty pane's "打开工作区" button. */
   onOpenWorkspace?: () => void;
-  /** Workspace info resolved — false during boot keeps the skeleton up
-   * instead of flashing the empty pane before the resume lands. */
+  /** Boot not resolved — keep the skeleton instead of the empty pane. */
   workspaceReady?: boolean;
 }
 
@@ -97,8 +96,6 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
   );
 }
 
-/** No workspace open — the project list lives in the sidebar; this pane
- * offers the folder picker and a pointer at it. */
 function NoWorkspacePane({ onOpenWorkspace }: { onOpenWorkspace?: () => void }) {
   return (
     <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 select-none pb-16">

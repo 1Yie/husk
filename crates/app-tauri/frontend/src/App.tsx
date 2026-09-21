@@ -145,8 +145,6 @@ export function App() {
   // Same pattern for the fork confirmation — duplicating a session's
   // history is additive but irreversible, so it confirms first.
   const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
-  // Same pattern for removing a project — only parked when the workspace
-  // still has a running turn (removal kills it); otherwise it goes direct.
   const [pendingRemoveWs, setPendingRemoveWs] = useState<ProjectOverview | null>(null);
   // Settings is an overlay layer, not a page swap — the workspace stays
   // mounted underneath, so closing it costs nothing (the old takeover
@@ -174,8 +172,7 @@ export function App() {
       if (ws) setWorkspace(ws);
     });
   }, []);
-  // Workspace info only lands async — don't flash the empty pane during
-  // boot while the backend may still be resuming the last workspace.
+  // Hold the skeleton until boot resume resolves — no empty-pane flash.
   const [wsReady, setWsReady] = useState(false);
   useEffect(() => {
     void getWorkspaceInfo().then(() => setWsReady(true)).catch(() => setWsReady(true));
@@ -325,8 +322,7 @@ export function App() {
       : pendingFork.title;
 
   const requestRemoveWorkspace = (p: ProjectOverview) => {
-    // A running turn dies with the workspace — confirm first, matching
-    // the delete/fork dialog pattern. No running work → direct removal.
+    // A running turn dies with it — confirm first.
     if (p.sessions.some((r) => r.running)) {
       setPendingRemoveWs(p);
       return;

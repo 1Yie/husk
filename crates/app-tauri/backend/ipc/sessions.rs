@@ -126,9 +126,7 @@ pub fn agent_session(
                 }).collect::<Vec<_>>()
             }))
         }
-        // Remove a project from the sidebar: drops it from recents and
-        // tears down its actors — parked OR active. `removed_active` tells
-        // the webview the empty state is now showing (no workspace open).
+        // `removed_active` = the open workspace is gone; show the empty state.
         "remove_workspace" => {
             let p = path.ok_or("remove_workspace needs path")?;
             let was_active = mgr.remove_workspace(&p);

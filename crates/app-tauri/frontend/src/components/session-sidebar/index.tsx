@@ -59,8 +59,6 @@ interface Props {
   projects: ProjectOverview[];
   activeId?: number;
   version?: string;
-  /** No workspace open — a new session has nowhere to live, so the "+"
-   * button hides instead of no-op'ing on click. */
   hasWorkspace?: boolean;
   onNew: () => void;
   /** Open a conversation anywhere in the tree — `root` lets the shell switch
@@ -68,8 +66,6 @@ interface Props {
   onOpenSession: (root: string, id: number) => void;
   onPickWorkspace?: () => void;
   onSwitchWorkspace?: (path: string) => void;
-  /** Remove a project from recents — tears down its actors; a running
-   * turn dies with it (the caller confirms first in that case). */
   onRemoveWorkspace?: (project: ProjectOverview) => void;
   onOpenSettings?: () => void;
   onFork?: (id: number) => void;

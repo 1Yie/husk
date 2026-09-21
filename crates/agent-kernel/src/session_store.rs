@@ -515,9 +515,7 @@ pub fn record_recent_workspace(workspace_root: &Path) {
     }
 }
 
-/// Drop a workspace from the recents list — the sidebar's "移除项目" path.
-/// Session files under `sessions/<ws_hash>/` are NOT touched: removing a
-/// project is a list operation, reopening the folder restores everything.
+/// Drop a workspace from recents; session files are left on disk.
 pub fn remove_recent_workspace(workspace_root: &Path) {
     let Some(path) = recent_workspaces_path() else { return; };
     let canon = workspace_root

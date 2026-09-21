@@ -164,10 +164,7 @@ pub struct SessionManager {
     pub compact_at: f32,
     /// Workspace root (for git branch / cwd display).
     pub workspace_root: std::path::PathBuf,
-    /// Whether a workspace is actually open. `false` = empty state — no
-    /// actors, no sessions; `workspace_root`/`store` keep their last (or
-    /// boot-fallback) values but nothing reads them until
-    /// `switch_workspace` flips this back on.
+    /// Workspace is open. `false` = empty state: no actors, no sessions.
     pub workspace_active: bool,
 }
 
@@ -204,11 +201,8 @@ impl SessionManager {
 
     /// Boot the manager at a specific workspace root (or current directory / most recent).
     pub fn spawn_at(root: Option<std::path::PathBuf>) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
-        // No explicit root → reopen the workspace the user last had
-        // open (MRU list head) so a session opened in another project
-        // survives an app restart. No recents → empty state: the UI shows
-        // the no-workspace pane until the user picks one (no cwd fallback —
-        // a fresh install shouldn't silently attach the launch directory).
+        // No explicit root → MRU recents head. No recents → empty state
+        // (no cwd fallback — don't silently attach the launch directory).
         let cwd: Option<std::path::PathBuf> = root
             .or_else(|| {
                 crate::session_store::load_recent_workspaces()
@@ -220,9 +214,7 @@ impl SessionManager {
         let (event_tx, event_rx) = std_mpsc::channel();
         let (_p, default_model, default_pname) = resolve_provider(&cfg);
 
-        // Empty boot — nothing to resume: an inert store rooted at the
-        // app-data dir (never written; session ops are guarded on
-        // `workspace_active`), no actors, no metas.
+        // Empty boot: inert store, no actors, no metas.
         let Some(cwd) = cwd else {
             let store = Arc::new(
                 SessionStore::open(&crate::session_store::app_data_dir()
@@ -378,8 +370,7 @@ impl SessionManager {
         // so switching back reconnects the still-running session instead
         // of respawning from the last snapshot. `handles.clear()` here
         // used to orphan every actor mid-turn: the stream kept flowing
-        // but cancel/steer/approve became unreachable forever. From the
-        // empty state there is no outgoing workspace — skip the park.
+        // but cancel/steer/approve became unreachable forever.
         let was_active = std::mem::replace(&mut self.workspace_active, true);
         let old_root = std::mem::replace(&mut self.workspace_root, canon);
         let old_handles = std::mem::take(&mut self.handles);
@@ -412,13 +403,10 @@ impl SessionManager {
         crate::session_store::load_recent_workspaces()
     }
 
-    /// Remove a workspace from the recents list and tear down any live
-    /// actors it owns — parked or active. A running turn is aborted
-    /// (cancel flag set before the handle drops). Persisted session files
-    /// are kept: reopening the folder later restores history intact.
-    /// Returns true when the ACTIVE workspace was removed — the manager
-    /// drops to the empty state (`workspace_active = false`) and the UI
-    /// should show the no-workspace pane.
+    /// Drop a project from recents and tear down its actors (parked or
+    /// active — a running turn is aborted). Session files stay on disk:
+    /// reopening the folder restores history. Returns true when the ACTIVE
+    /// workspace went away.
     pub fn remove_workspace(&mut self, root: &str) -> bool {
         let canon = std::path::Path::new(root)
             .canonicalize()
@@ -658,7 +646,6 @@ impl SessionManager {
     }
 
     /// Create a brand-new session (fresh actor, no history) and activate it.
-    /// No-op in the empty state — a session needs a workspace to live in.
     pub fn new_session(&mut self) {
         if !self.workspace_active {
             return;
