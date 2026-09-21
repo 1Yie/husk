@@ -32,7 +32,7 @@ export function AboutSettings() {
         <img
           src={iconUrl}
           alt="Husk"
-          className="h-24 w-24 rounded-[22%] shadow-md"
+          className="h-28 w-28"
           draggable={false}
         />
         <div className="flex flex-col items-center gap-1.5">

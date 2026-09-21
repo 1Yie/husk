@@ -1,9 +1,11 @@
+import iconUrl from "@/assets/husk-icon.png";
 import {
   Plus,
   ChevronRight,
   ChevronDown,
   Folder,
   FolderOpen,
+  FolderPlus,
   Settings,
   Bell,
   MoreHorizontal,
@@ -161,6 +163,7 @@ export function SessionSidebar({
         >
           {isMac && <div className="w-[78px] shrink-0" />}
 
+          <img src={iconUrl} alt="" draggable={false} className="h-4 w-4 shrink-0" />
           <span className="text-[12px] font-semibold text-neutral-700 tracking-tight">
             Husk
           </span>
@@ -171,23 +174,6 @@ export function SessionSidebar({
             <span className="text-[13px] font-medium text-neutral-600">
               会话
             </span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  data-nodrag
-                  data-tauri-drag-region="false"
-                  onClick={onNew}
-                  aria-label="新建会话"
-                  className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" className="text-xs">
-                新建会话
-              </TooltipContent>
-            </Tooltip>
           </div>
 
           {/* Recent sessions — newest first across every project, capped so
@@ -214,11 +200,51 @@ export function SessionSidebar({
             )}
           </div>
 
-          {/* Section: 项目 — open a project to read its full conversation list */}
+          {/* Section: 项目 — open a project to read its full conversation list.
+              Right side: "+" starts a session in the current workspace, the
+              folder icon picks a different workspace directory. */}
           <div className="flex-none flex items-center justify-between px-4 pt-2 pb-1">
             <span className="text-[13px] font-medium text-neutral-600">
               项目
             </span>
+            <div className="flex items-center gap-0.5">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    data-nodrag
+                    data-tauri-drag-region="false"
+                    onClick={onNew}
+                    aria-label="新建会话"
+                    className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" className="text-xs">
+                  新建会话
+                </TooltipContent>
+              </Tooltip>
+              {onPickWorkspace && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      data-nodrag
+                      data-tauri-drag-region="false"
+                      onClick={onPickWorkspace}
+                      aria-label="打开其他工作区"
+                      className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+                    >
+                      <FolderPlus className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="text-xs">
+                    打开其他工作区
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
           </div>
 
           {/* Project list: the content area's only scroller. */}
@@ -241,22 +267,9 @@ export function SessionSidebar({
                   onPin={onPin}
                   onDelete={onDelete}
                 />
-              ))
-            )}
-
-            {onPickWorkspace && (
-              <button
-                type="button"
-                data-nodrag
-                data-tauri-drag-region="false"
-                onClick={onPickWorkspace}
-                className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[13px] text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] transition-colors"
-              >
-                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-                <span>打开其他工作区...</span>
-              </button>
-            )}
-          </div>
+               ))
+             )}
+           </div>
         </div>
 
         <div className="h-11 px-4 flex items-center select-none flex-none bg-panel">
