@@ -87,7 +87,10 @@ export function applyEvent(
       kind: "tool",
       name,
       args: ev.ToolCallStarted.args_preview,
-      parent: ev.ToolCallStarted.parent,
+      // Rust Option<String> serializes `null`, not `undefined` —
+      // normalize at the boundary so the Finished matcher's
+      // `=== undefined` comparison actually works.
+      parent: ev.ToolCallStarted.parent ?? undefined,
     });
     return { ...v, items };
   }
@@ -108,7 +111,7 @@ export function applyEvent(
       if (
         it.kind === "tool" &&
         it.content === undefined &&
-        it.parent === (t.parent ?? undefined)
+        (it.parent ?? undefined) === (t.parent ?? undefined)
       ) {
         items[i] = {
           ...it,

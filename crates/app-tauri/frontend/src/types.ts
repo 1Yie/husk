@@ -36,14 +36,14 @@ export type UiEvent =
   | { UserPrompt: string }
   | { TextDelta: string }
   | { ReasoningDelta: string }
-  | { ToolCallStarted: { name: string; args_preview: string; parent?: string } }
+  | { ToolCallStarted: { name: string; args_preview: string; parent?: string | null } }
   | {
       ToolCallFinished: {
         name: string;
         ok: boolean;
         content: string;
         ui_type?: string;
-        parent?: string;
+        parent?: string | null;
       };
     }
   | {
