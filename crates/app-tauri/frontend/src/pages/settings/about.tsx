@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { openUrl } from "../../invoke/agent/sessions";
 import iconUrl from "../../assets/husk-icon.png";
 
-const REPO_URL = "https://github.com/1Yie/agent-rs";
+const REPO_URL = "https://github.com/1Yie/husk";
 const AUTHOR_URL = "https://github.com/1Yie";
 
 export function AboutSettings() {
@@ -64,7 +64,7 @@ export function AboutSettings() {
               onClick={() => void openUrl(REPO_URL)}
               className="flex items-center gap-1 text-[13px] text-accent hover:underline cursor-pointer"
             >
-              github.com/1Yie/agent-rs
+              github.com/1Yie/husk
               <ArrowUpRight className="h-3.5 w-3.5" />
             </button>
           </KvRow>
