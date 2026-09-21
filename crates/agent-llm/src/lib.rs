@@ -4,7 +4,7 @@
 //! JSON.** Everything behind `Arc<dyn LlmProvider>` speaks the normalized
 //! `StreamChunk` protocol; adding a provider = adding one adapter file.
 //!
-//! Stage 2 scope: types, trait, OpenAI-compat adapter, mock, config,
+//! Stage 2 scope: types, trait, adapters, config,
 //! factory, SSE helpers, sampler resilience. `masking`/`fallback` are stubbed
 //! for their Stage-11/2 completion.
 

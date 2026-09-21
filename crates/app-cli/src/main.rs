@@ -104,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// `config.toml` → provider + model — same resolution order as the desktop
-/// (`active_provider` → first available → mock).
+/// (`active_provider` → first available → unconfigured stub).
 fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String) {
     if let Some(name) = &cfg.active_provider {
         if let Some(pcfg) = cfg.providers.get(name) {
@@ -124,5 +124,5 @@ fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String
             return (p, model);
         }
     }
-    (Arc::new(agent_llm::adapters::MockProvider::new()), "mock".into())
+    (Arc::new(agent_llm::provider::UnconfiguredProvider), "default".into())
 }

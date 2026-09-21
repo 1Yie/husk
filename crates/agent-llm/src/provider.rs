@@ -51,7 +51,7 @@ impl Capabilities {
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Stable adapter id: `"openai_compat" | "anthropic" | "mock"`.
+    /// Stable adapter id: `"openai_compat" | "anthropic" | "openai_responses" | "gemini"`.
     fn id(&self) -> &'static str;
 
     /// Baseline capability table — adapters override; `ProviderCompat`
@@ -85,4 +85,27 @@ pub trait LlmProvider: Send + Sync {
         temperature: f32,
         reasoning_effort: Option<&str>,
     ) -> anyhow::Result<BoxStream<StreamChunk>>;
+}
+
+/// Stand-in when `config.toml` names no usable provider: every stream call
+/// fails immediately with a clear message instead of silently answering
+/// with canned output. `models()` is empty so pickers show nothing.
+pub struct UnconfiguredProvider;
+
+#[async_trait]
+impl LlmProvider for UnconfiguredProvider {
+    fn id(&self) -> &'static str {
+        "unconfigured"
+    }
+
+    async fn chat_stream(
+        &self,
+        _model: &str,
+        _messages: &[ChatMessage],
+        _tools: Option<serde_json::Value>,
+        _temperature: f32,
+        _reasoning_effort: Option<&str>,
+    ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        anyhow::bail!("no provider configured — add one in Settings")
+    }
 }

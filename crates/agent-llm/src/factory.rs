@@ -9,7 +9,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::adapters::{
-    anthropic::AnthropicProvider, GenericOpenAiProvider, MockProvider,
+    anthropic::AnthropicProvider, GenericOpenAiProvider,
     OpenAiResponsesProvider,
 };
 use crate::config::{ProviderConfig, ProviderKind, SecretResolution};
@@ -86,7 +86,6 @@ impl ProviderFactory {
                 }
                 Ok(Arc::new(p))
             }
-            ProviderKind::Mock => Ok(Arc::new(MockProvider::new())),
         }
     }
 }

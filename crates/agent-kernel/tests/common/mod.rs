@@ -1,8 +1,7 @@
-//! `MockProvider` — deterministic scripted provider for headless tests.
+//! `ScriptedProvider` — deterministic provider for headless tests.
 //!
-//! Engine, compaction, and tool-loop tests run with zero network: queue
-//! scripts of `StreamChunk`s, one script per `chat_stream` call, optional
-//! per-chunk latency.
+//! Queue scripts of `StreamChunk`s, one script per `chat_stream` call
+//! (FIFO). When scripts run out the call errors, so test bugs are loud.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -12,20 +11,17 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::StreamExt;
 
-use crate::provider::{BoxStream, LlmProvider};
-use crate::types::{ChatMessage, StreamChunk};
+use agent_llm::provider::{BoxStream, LlmProvider};
+use agent_llm::types::{ChatMessage, StreamChunk};
 
-/// Replays scripted chunk lists. Each `chat_stream` call pops one script
-/// (FIFO); when scripts run out it returns an error chunk, making test bugs
-/// loud instead of silently looping.
-pub struct MockProvider {
+pub struct ScriptedProvider {
     scripts: Mutex<VecDeque<Vec<StreamChunk>>>,
     latency: Duration,
     /// Captured requests for assertions: (model, message_count, tools_present).
     pub calls: Mutex<Vec<(String, usize, bool)>>,
 }
 
-impl MockProvider {
+impl ScriptedProvider {
     pub fn new() -> Self {
         Self {
             scripts: Mutex::new(VecDeque::new()),
@@ -34,7 +30,6 @@ impl MockProvider {
         }
     }
 
-    /// Queue one response script. Chainable.
     pub fn with_script(self, chunks: Vec<StreamChunk>) -> Self {
         self.scripts.lock().unwrap().push_back(chunks);
         self
@@ -44,13 +39,12 @@ impl MockProvider {
         self.scripts.lock().unwrap().push_back(chunks);
     }
 
-    /// Per-chunk delivery delay — used to exercise throttling/steering paths.
     pub fn with_latency(mut self, latency: Duration) -> Self {
         self.latency = latency;
         self
     }
 
-    /// Convenience: script a simple text answer ending in `Done`.
+    /// Script a simple text answer ending in `Done`.
     pub fn script_text(&self, text: &str) {
         let mut chunks: Vec<StreamChunk> = text
             .chars()
@@ -63,16 +57,16 @@ impl MockProvider {
     }
 }
 
-impl Default for MockProvider {
+impl Default for ScriptedProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl LlmProvider for MockProvider {
+impl LlmProvider for ScriptedProvider {
     fn id(&self) -> &'static str {
-        "mock"
+        "scripted"
     }
 
     async fn chat_stream(
@@ -88,14 +82,12 @@ impl LlmProvider for MockProvider {
             messages.len(),
             tools.is_some(),
         ));
-
         let script = self
             .scripts
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or_else(|| anyhow!("MockProvider: no script queued for this call"))?;
-
+            .ok_or_else(|| anyhow!("ScriptedProvider: no script queued for this call"))?;
         let latency = self.latency;
         let stream = futures::stream::iter(script).then(move |chunk| async move {
             if latency > Duration::ZERO {

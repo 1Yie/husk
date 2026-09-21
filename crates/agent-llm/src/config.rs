@@ -178,8 +178,6 @@ pub enum ProviderKind {
     Anthropic,
     #[serde(rename = "gemini")]
     Gemini,
-    #[serde(rename = "mock")]
-    Mock,
 }
 
 /// Outcome of resolving one provider's secret indirection.

@@ -6,7 +6,7 @@
 //!
 //! Stage 3 scope: tool registry + phase-1 built-ins.
 //! Stage 4 scope: `AgentState` machine + `SessionActor` + `channels` — the
-//! ReAct loop runs headless on `MockProvider` (`cargo test -p agent-kernel`).
+//! ReAct loop runs headless on a scripted provider (`cargo test -p agent-kernel`).
 
 pub mod channels;
 pub mod commands;

@@ -1,4 +1,4 @@
-//! Stage-4 acceptance: the full ReAct loop runs headless on MockProvider —
+//! Stage-4 acceptance: the full ReAct loop runs headless on a scripted provider —
 //! prompt → stream → tool call → tool result injected → re-sample → final
 //! answer. No network, no display server.
 
@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use agent_ipc::{AgentState, UiCommand, UiEvent};
 use agent_kernel::session::{SessionActor, SessionConfig};
-use agent_llm::adapters::MockProvider;
+mod common;
+use common::ScriptedProvider;
 use agent_llm::types::StreamChunk;
 
 fn collect_script_tool_call_then_answer() -> Vec<Vec<StreamChunk>> {
@@ -36,14 +37,14 @@ async fn headless_react_loop_drives_tool_then_answers() {
     std::fs::write(dir.path().join("a.txt"), "x").unwrap();
     std::fs::write(dir.path().join("b.txt"), "y").unwrap();
 
-    let mock = MockProvider::new();
+    let stub = ScriptedProvider::new();
     for script in collect_script_tool_call_then_answer() {
-        mock.push_script(script);
+        stub.push_script(script);
     }
 
     let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
-        provider: Arc::new(mock),
+        provider: Arc::new(stub),
         model: "test-model".into(),
         temperature: 0.0,
         permission_mode: "default".into(),
@@ -97,12 +98,12 @@ async fn headless_react_loop_drives_tool_then_answers() {
 async fn system_prompt_is_rendered_with_workspace_and_git() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("marker.txt"), "x").unwrap();
-    let mock = MockProvider::new();
-    mock.script_text("ok");
+    let stub = ScriptedProvider::new();
+    stub.script_text("ok");
 
     let (mut actor, _c) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
-        provider: Arc::new(mock),
+        provider: Arc::new(stub),
         model: "m".into(),
         temperature: 0.0,
         permission_mode: "default".into(),
@@ -124,13 +125,13 @@ async fn system_prompt_is_rendered_with_workspace_and_git() {
 #[tokio::test]
 async fn steer_between_turns_becomes_a_prompt() {
     let dir = tempfile::tempdir().unwrap();
-    let mock = MockProvider::new();
-    mock.script_text("first");
-    mock.script_text("steered answer");
+    let stub = ScriptedProvider::new();
+    stub.script_text("first");
+    stub.script_text("steered answer");
 
     let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
-        provider: Arc::new(mock),
+        provider: Arc::new(stub),
         model: "m".into(),
         temperature: 0.0,
         permission_mode: "default".into(),

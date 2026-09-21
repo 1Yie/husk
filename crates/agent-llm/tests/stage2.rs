@@ -1,10 +1,11 @@
-//! Stage-2 acceptance tests: normalized chunk mapping, mock replay,
+//! Stage-2 acceptance tests: normalized chunk mapping, scripted replay,
 //! config indirection, sampler resilience — all headless, zero network.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_llm::adapters::MockProvider;
+mod common;
+use common::ScriptedProvider;
 use agent_llm::config::{AppConfig, ProviderConfig, ProviderKind, SecretResolution};
 use agent_llm::factory::ProviderFactory;
 use agent_llm::sampler::{SampleRequest, Sampler};
@@ -12,41 +13,6 @@ use agent_llm::types::{ChatMessage, StreamChunk, ToolCallAssembler};
 use agent_llm::LlmProvider;
 use futures::StreamExt;
 
-// ---------- MockProvider ----------
-
-#[tokio::test]
-async fn mock_replays_script_and_records_calls() {
-    let mock = MockProvider::new();
-    mock.script_text("hello world");
-
-    let mut stream = mock
-        .chat_stream("test-model", &[ChatMessage::user("hi")], None, 0.5, None)
-        .await
-        .unwrap();
-
-    let mut text = String::new();
-    let mut done = false;
-    while let Some(Ok(c)) = stream.next().await {
-        match c {
-            StreamChunk::ContentDelta(t) => text.push_str(&t),
-            StreamChunk::Done { .. } => done = true,
-            _ => {}
-        }
-    }
-    assert_eq!(text, "hello world");
-    assert!(done, "Done must fire exactly once");
-
-    let calls = mock.calls.lock().unwrap();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "test-model");
-}
-
-#[tokio::test]
-async fn mock_without_script_errors() {
-    let mock = MockProvider::new();
-    let res = mock.chat_stream("m", &[], None, 0.0, None).await;
-    assert!(res.is_err());
-}
 
 // ---------- ToolCallAssembler ----------
 
@@ -140,7 +106,7 @@ fn missing_env_marks_unavailable_not_panic() {
 }
 
 #[test]
-fn factory_builds_openai_compat_and_mock() {
+fn factory_builds_providers() {
     std::env::set_var("STAGE2_FACTORY_KEY", "k");
     let cfg = ProviderConfig {
         kind: ProviderKind::OpenaiCompat,
@@ -152,16 +118,6 @@ fn factory_builds_openai_compat_and_mock() {
     };
     let p = ProviderFactory::build(&cfg).unwrap();
     assert_eq!(p.id(), "openai_compat");
-
-    let mock_cfg = ProviderConfig {
-        kind: ProviderKind::Mock,
-        base_url: "".into(),
-        api_key: "".into(),
-        headers: Default::default(),
-        default_model: None,
-        ..Default::default()
-    };
-    assert_eq!(ProviderFactory::build(&mock_cfg).unwrap().id(), "mock");
 
     // Anthropic + Gemini build real providers now (v2 adapters landed).
     for (kind, id) in [
@@ -185,8 +141,8 @@ fn factory_builds_openai_compat_and_mock() {
 #[tokio::test]
 async fn sampler_synthesizes_done_on_clean_close() {
     // Script without a Done chunk — sampler must synthesize it.
-    let mock = MockProvider::new().with_script(vec![StreamChunk::ContentDelta("hi".into())]);
-    let sampler = Sampler::new(Arc::new(mock));
+    let stub = ScriptedProvider::new().with_script(vec![StreamChunk::ContentDelta("hi".into())]);
+    let sampler = Sampler::new(Arc::new(stub));
 
     let mut chunks = Vec::new();
     sampler
@@ -206,14 +162,14 @@ async fn sampler_retries_retryable_then_fails() {
     // A retryable in-stream Error chunk (429 / upstream 5xx) now escalates
     // to a failed attempt — the retry loop must see it. Three scripts of
     // `Error(429)` exhaust the retry budget.
-    let mock = MockProvider::new();
+    let stub = ScriptedProvider::new();
     for _ in 0..4 {
-        mock.push_script(vec![
+        stub.push_script(vec![
             StreamChunk::Error("HTTP 429 too many requests".into()),
             StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
         ]);
     }
-    let sampler = Sampler::new(Arc::new(mock));
+    let sampler = Sampler::new(Arc::new(stub));
     let mut events = Vec::new();
     let res = sampler
         .sample(
@@ -234,11 +190,11 @@ async fn sampler_detects_doom_loop() {
     let doom: Vec<StreamChunk> = (0..200)
         .map(|_| StreamChunk::ContentDelta("the same eight chars".into()))
         .collect();
-    let mock = MockProvider::new();
+    let stub = ScriptedProvider::new();
     for _ in 0..4 {
-        mock.push_script(doom.clone());
+        stub.push_script(doom.clone());
     }
-    let sampler = Sampler::new(Arc::new(mock));
+    let sampler = Sampler::new(Arc::new(stub));
     let res = sampler
         .sample(
             SampleRequest { model: "m", temperature: 0.0, tools: None, reasoning_effort: None },
@@ -315,7 +271,7 @@ async fn openai_adapter_maps_wire_to_normalized() {
 #[tokio::test]
 async fn sampler_idle_timeout() {
     // Chunk followed by infinite stall — emulate with huge latency.
-    let mock = MockProvider::new()
+    let stub = ScriptedProvider::new()
         .with_script(vec![
             StreamChunk::ContentDelta("first".into()),
             StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
@@ -323,6 +279,6 @@ async fn sampler_idle_timeout() {
         .with_latency(Duration::from_millis(0));
     // We can't wait 300 s in a test — just verify the constant exists and
     // the timeout path is wired (verified structurally by code review).
-    let _sampler = Sampler::new(Arc::new(mock));
+    let _sampler = Sampler::new(Arc::new(stub));
     assert_eq!(agent_llm::sampler::IDLE_TIMEOUT, Duration::from_secs(300));
 }

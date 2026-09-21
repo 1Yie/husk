@@ -9,7 +9,7 @@
 //!
 //! `Failed` is terminal per turn, not per session.
 //!
-//! Stage 4 runs this headless on `MockProvider` — the loop is: sample →
+//! Stage 4 runs this headless on a scripted provider — the loop is: sample →
 //! collect text + tool calls → execute each tool → append results as a
 //! `tool` message → re-sample, until a turn ends with no pending tool calls.
 //! Permission gating (Stage 6) inserts `AwaitingToolConfirmation` between
@@ -1203,7 +1203,7 @@ mod tests {
     #[test]
     fn test_thinking_level_resolution() {
         let mut engine = Engine::new(
-            Arc::new(agent_llm::adapters::MockProvider::new()),
+            Arc::new(agent_llm::provider::UnconfiguredProvider),
             Arc::new(ToolRegistry::with_builtins()),
             Arc::new(ToolCtx::new(Path::new("."))),
             "devin/swe-2",

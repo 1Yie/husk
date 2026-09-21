@@ -60,8 +60,8 @@ async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, To
     let parsed: AskQuestionArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(e.to_string()))?;
 
-    // Headless fast-fail BEFORE building the request — a child agent
-    /// must never park on a oneshot nobody can answer.
+    // Headless fast-fail before building the request — a child agent
+    // must never park on a oneshot nobody can answer.
     if !ctx.ask.is_available() {
         return Err(ToolError::Failed(
             "ask_question requires an interactive user session".into(),

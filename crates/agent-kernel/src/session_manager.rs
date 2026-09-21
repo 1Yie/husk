@@ -1022,9 +1022,9 @@ fn resolve_provider(
         }
     }
     (
-        Arc::new(agent_llm::adapters::MockProvider::new()),
-        "mock".into(),
-        "mock (no provider configured)".into(),
+        Arc::new(agent_llm::provider::UnconfiguredProvider),
+        "default".into(),
+        "no provider configured".into(),
     )
 }
 
