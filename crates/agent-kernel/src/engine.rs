@@ -108,7 +108,12 @@ impl Engine {
         temperature: f32,
     ) -> Self {
         let registry_plan = Arc::new(registry.readonly_only());
-        let registry_goal = Arc::new((*registry).clone());
+        // Goal mode = full set + the completion contract — the model
+        // declares `goal_complete`/`goal_blocked` to end its run.
+        let mut goal_reg = (*registry).clone();
+        goal_reg.register(crate::tools::goal::spec_complete());
+        goal_reg.register(crate::tools::goal::spec_blocked());
+        let registry_goal = Arc::new(goal_reg);
         Self {
             sampler: Sampler::new(provider),
             registry_full: registry.clone(),
@@ -366,6 +371,14 @@ impl Engine {
         let mut tool_rounds = 0usize;
         let mut force_no_tools = false;
         const MAX_TOOL_ROUNDS: usize = 128; // guard against runaway tool loops
+        /// Goal-mode pushback counter — how many times the model went
+        /// quiet without declaring `goal_complete`/`goal_blocked`.
+        let mut goal_followups = 0usize;
+        const MAX_GOAL_FOLLOWUPS: usize = 8;
+        // A fresh turn starts with a clean goal signal — a leftover
+        // `goal_complete` from an earlier turn must not short-circuit this
+        // one (the contract is per-turn: each goal prompt ends declared).
+        self.ctx.goal.store(0, std::sync::atomic::Ordering::Relaxed);
         /// Cancel sentinel — the `Err` value and `Failed` reason (never
         /// rendered verbatim; the status bar localizes `Failed`). The
         /// user-facing line is `CANCEL_TEXT`.
@@ -619,6 +632,24 @@ impl Engine {
                     history.push(ChatMessage::user_hidden(
                         "Please provide your final answer and summary to the user based on the tool results above.",
                     ));
+                    continue;
+                }
+
+                // Goal contract — in `goal` mode going quiet undeclared is
+                // not a finish: the model must call `goal_complete` /
+                // `goal_blocked`. Push it back to work (capped — a model
+                // that can't converge shouldn't spin forever).
+                if self.agent_mode() == crate::mode::AgentMode::Goal
+                    && self.ctx.goal.load(std::sync::atomic::Ordering::Relaxed) == 0
+                    && goal_followups < MAX_GOAL_FOLLOWUPS
+                {
+                    goal_followups += 1;
+                    if !final_text.is_empty() {
+                        history.push(ChatMessage::assistant(final_text));
+                    }
+                    let nudge = "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。";
+                    history.push(ChatMessage::user_hidden(nudge));
+                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(nudge.into()));
                     continue;
                 }
 

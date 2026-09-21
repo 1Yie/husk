@@ -8,6 +8,7 @@ pub mod delegate;
 pub mod bash;
 pub mod fs_patch;
 pub mod fs_read;
+pub mod goal;
 pub mod grep;
 pub mod list_dir;
 pub mod registry;
