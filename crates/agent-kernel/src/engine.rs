@@ -378,7 +378,7 @@ impl Engine {
         // A fresh turn starts with a clean goal signal — a leftover
         // `goal_complete` from an earlier turn must not short-circuit this
         // one (the contract is per-turn: each goal prompt ends declared).
-        self.ctx.goal.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.ctx.goal.reset();
         /// Cancel sentinel — the `Err` value and `Failed` reason (never
         /// rendered verbatim; the status bar localizes `Failed`). The
         /// user-facing line is `CANCEL_TEXT`.
@@ -640,7 +640,7 @@ impl Engine {
                 // `goal_blocked`. Push it back to work (capped — a model
                 // that can't converge shouldn't spin forever).
                 if self.agent_mode() == crate::mode::AgentMode::Goal
-                    && self.ctx.goal.load(std::sync::atomic::Ordering::Relaxed) == 0
+                    && self.ctx.goal.state() == crate::tools::goal::GoalState::Running
                     && goal_followups < MAX_GOAL_FOLLOWUPS
                 {
                     goal_followups += 1;

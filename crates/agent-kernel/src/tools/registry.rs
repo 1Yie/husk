@@ -44,10 +44,11 @@ pub struct ToolCtx {
     /// Subagent spawner — `delegate` runs a fresh-context child engine.
     /// `None` where delegation is unavailable (tests, child contexts).
     pub subagent: Option<crate::tools::delegate::SubagentSpawner>,
-    /// Goal-mode contract signal: `goal_complete`/`goal_blocked` write it,
-    /// the engine reads it when the model goes quiet. 0 running · 1 done ·
-    /// 2 blocked. Always present (cheap); only consulted in `goal` mode.
-    pub goal: Arc<std::sync::atomic::AtomicU8>,
+    /// Goal-mode control channel: `goal_complete`/`goal_blocked` declare
+    /// through it, the engine polls `state()` when the model goes quiet and
+    /// takes the signal payload for the final report. Always present
+    /// (cheap); only consulted in `goal` mode.
+    pub goal: Arc<crate::tools::goal::GoalController>,
 }
 
 impl ToolCtx {
@@ -61,7 +62,7 @@ impl ToolCtx {
             session: None,
             cancel: None,
             subagent: None,
-            goal: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
 
@@ -75,7 +76,7 @@ impl ToolCtx {
             session: None,
             cancel: None,
             subagent: None,
-            goal: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
 

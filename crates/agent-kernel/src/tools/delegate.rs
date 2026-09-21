@@ -79,7 +79,7 @@ impl SubagentSpawner {
             session: None,
             cancel: parent_ctx.cancel.clone(),
             subagent: None,
-            goal: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            goal: Arc::new(crate::tools::goal::GoalController::new()),
         };
         let registry = if readonly {
             self.registry_readonly.clone()

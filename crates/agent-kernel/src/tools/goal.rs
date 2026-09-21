@@ -1,26 +1,115 @@
-//! `goal_complete` / `goal_blocked` — the goal-mode contract tools.
+//! `goal_complete` / `goal_blocked` — the goal-mode control protocol.
 //!
-//! Registered only in the goal-mode registry: the model declares the
-//! outcome through one of these instead of just stopping. Both write the
-//! shared `ctx.goal` signal the engine polls when the model goes quiet —
-//! 0 = still running, 1 = complete, 2 = blocked. `goal_blocked` doesn't
-//! fail the turn; it ends it with the reason as the final report.
+//! These are NOT ordinary tools: they are lifecycle signals the model
+//! sends to the harness (`Agent → Engine`), not observations or mutations.
+//! Registered only in the goal-mode registry; the model declares the
+//! outcome through one of them instead of just going quiet.
+//!
+//! Semantics: a declaration is the model's CLAIM, not harness verification.
+//! `goal_complete` ends the turn with the model's stated result — wiring an
+//! acceptance/verification stage behind `GoalState::Complete` is the
+//! designed seam for a future Acceptance Engine, and the tool API won't
+//! change when it lands. `goal_blocked` doesn't fail the turn; it ends it
+//! with the blocker as the final report (ToolError vs GoalBlocked are
+//! different outcomes and must not be conflated).
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 
 use futures::FutureExt;
 use serde::Deserialize;
 
 use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
 
+/// The declared lifecycle state — the model's claim, not a verified fact.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalState {
+    Running = 0,
+    Complete = 1,
+    Blocked = 2,
+}
+
+impl GoalState {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Complete,
+            2 => Self::Blocked,
+            _ => Self::Running,
+        }
+    }
+}
+
+/// The declaration payload — state alone would lose the summary/reason the
+/// model attached, forcing the engine to re-parse tool text. Kept beside
+/// the atomic so the engine can `take_signal()` for the final report (and
+/// a future verifier gets the claim verbatim).
+#[derive(Debug, Clone)]
+pub enum GoalSignal {
+    Complete {
+        summary: String,
+        reported_evidence: Option<String>,
+    },
+    Blocked {
+        reason: String,
+    },
+}
+
+/// The control channel between goal tools and the engine. Tools declare
+/// through `complete()`/`blocked()` — they never touch the atomic — and
+/// the engine polls `state()` / `take_signal()`. A fresh turn calls
+/// `reset()` so a leftover declaration can't short-circuit it.
+pub struct GoalController {
+    state: AtomicU8,
+    signal: Mutex<Option<GoalSignal>>,
+}
+
+impl GoalController {
+    pub fn new() -> Self {
+        Self {
+            state: AtomicU8::new(GoalState::Running as u8),
+            signal: Mutex::new(None),
+        }
+    }
+
+    pub fn reset(&self) {
+        *self.signal.lock().unwrap() = None;
+        self.state.store(GoalState::Running as u8, Ordering::Release);
+    }
+
+    pub fn complete(&self, summary: String, reported_evidence: Option<String>) {
+        *self.signal.lock().unwrap() = Some(GoalSignal::Complete { summary, reported_evidence });
+        self.state.store(GoalState::Complete as u8, Ordering::Release);
+    }
+
+    pub fn blocked(&self, reason: String) {
+        *self.signal.lock().unwrap() = Some(GoalSignal::Blocked { reason });
+        self.state.store(GoalState::Blocked as u8, Ordering::Release);
+    }
+
+    pub fn state(&self) -> GoalState {
+        GoalState::from_u8(self.state.load(Ordering::Acquire))
+    }
+
+    pub fn take_signal(&self) -> Option<GoalSignal> {
+        self.signal.lock().unwrap().take()
+    }
+}
+
+impl Default for GoalController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GoalCompleteArgs {
     /// What was achieved — becomes the turn's final report.
     summary: String,
-    /// Verified acceptance evidence: the checks that ran and their
-    /// outcomes (tests passed, build green, files changed). Plain text.
+    /// Model-REPORTED acceptance notes: the checks you ran and their
+    /// outcomes (tests passed, build green). Declared, not verified.
     #[serde(default)]
-    evidence: Option<String>,
+    reported_evidence: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -37,7 +126,7 @@ pub fn spec_complete() -> ToolSpec {
             "Declare the goal achieved — ends the turn. Only call this when the goal is \
              verifiably met; a declared completion IS the result the user sees.",
         ),
-        readonly: true, // a signal write to session scratch, not the workspace
+        readonly: true, // auto-allowed control signal, not a filesystem read
         exec: Arc::new(|args, ctx| exec_complete(args, ctx).boxed()),
     }
 }
@@ -49,7 +138,7 @@ pub fn spec_blocked() -> ToolSpec {
             "Declare the goal unreachable — ends the turn with the blocker as the report. \
              Call when you cannot make progress without outside input.",
         ),
-        readonly: true,
+        readonly: true, // auto-allowed control signal
         exec: Arc::new(|args, ctx| exec_blocked(args, ctx).boxed()),
     }
 }
@@ -57,10 +146,20 @@ pub fn spec_blocked() -> ToolSpec {
 async fn exec_complete(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let parsed: GoalCompleteArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(e.to_string()))?;
-    ctx.goal.store(1, std::sync::atomic::Ordering::Relaxed);
-    let mut out = format!("✅ 目标已宣告完成\n{}", parsed.summary.trim());
-    if let Some(ev) = parsed.evidence.map(|e| e.trim().to_string()).filter(|e| !e.is_empty()) {
-        out.push_str(&format!("\n\n验收依据：\n{ev}"));
+    // A control signal with an empty claim is meaningless — stricter than
+    // ordinary tool args.
+    let summary = parsed.summary.trim();
+    if summary.is_empty() {
+        return Err(ToolError::Args("summary must not be empty".into()));
+    }
+    let evidence = parsed
+        .reported_evidence
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty());
+    ctx.goal.complete(summary.to_string(), evidence.clone());
+    let mut out = format!("✅ 目标已宣告完成\n{summary}");
+    if let Some(ev) = evidence {
+        out.push_str(&format!("\n\n验收依据（模型声明，未经验证）：\n{ev}"));
     }
     Ok(ToolResult::text(out))
 }
@@ -68,9 +167,10 @@ async fn exec_complete(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, Tool
 async fn exec_blocked(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let parsed: GoalBlockedArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(e.to_string()))?;
-    ctx.goal.store(2, std::sync::atomic::Ordering::Relaxed);
-    Ok(ToolResult::text(format!(
-        "⛔ 目标受阻\n{}",
-        parsed.reason.trim()
-    )))
+    let reason = parsed.reason.trim();
+    if reason.is_empty() {
+        return Err(ToolError::Args("reason must not be empty".into()));
+    }
+    ctx.goal.blocked(reason.to_string());
+    Ok(ToolResult::text(format!("⛔ 目标受阻\n{reason}")))
 }
