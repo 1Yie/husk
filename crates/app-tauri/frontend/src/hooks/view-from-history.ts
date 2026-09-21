@@ -5,8 +5,8 @@
 // steer annotations strip to the bare text.
 
 import * as agent from "../invoke/agent";
-import type { ChatMessage } from "../types";
 import { emptyView, type SessionView } from "./stream-view";
+import type { ChatMessage } from "../types";
 
 /** Strip persisted `[call: …]` text-protocol echoes from an assistant
  * message — mirrors the kernel's `strip_call_echo` so a poisoned snapshot
@@ -134,7 +134,8 @@ function batchChildren(rawArgs: string, content: string) {
  * its next `Usage` event. */
 export function viewFromHistory(
   history: ChatMessage[],
-  usage?: agent.SessionUsage | null
+  usage?: agent.SessionUsage | null,
+  baseIndex = 0,
 ): SessionView {
   const v = emptyView();
   if (usage) {
@@ -142,35 +143,79 @@ export function viewFromHistory(
       prompt: usage.prompt,
       completion: usage.completion,
       contextWindow: usage.context_window,
+      cachedTokens: usage.cached ?? 0,
     };
   }
   // call_id → tool name and args: resolve from the preceding assistant `tool_calls`.
   const idToTool = new Map<string, { name: string; args: string; raw: string }>();
-  for (const m of history) {
-    for (const c of m.tool_calls ?? []) {
-      const raw = c.function.arguments ?? "";
-      idToTool.set(c.id, {
-        name: c.function.name,
-        // batch_execute's own preview is the call count — the real
-        // per-item args live inside `calls[]`.
-        args:
-          c.function.name === "batch_execute"
-            ? batchCallCount(raw)
-            : extractArgsPreview(raw),
-        raw,
-      });
-    }
+  for (const m of history) indexToolCalls(idToTool, m);
+  history.forEach((m, i) => foldMessage(v, idToTool, m, baseIndex + i));
+  return v;
+}
+
+/** Chunked variant — folds ~24 messages per macrotask so a session
+ * rebuild doesn't monopolize the main thread: sidebar/settings input
+ * keeps dispatching between slices. Same output as `viewFromHistory`. */
+export async function viewFromHistoryChunked(
+  history: ChatMessage[],
+  usage?: agent.SessionUsage | null,
+  baseIndex = 0,
+): Promise<SessionView> {
+  const v = emptyView();
+  if (usage) {
+    v.usage = {
+      prompt: usage.prompt,
+      completion: usage.completion,
+      contextWindow: usage.context_window,
+      cachedTokens: usage.cached ?? 0,
+    };
   }
-  for (const m of history) {
+  const idToTool = new Map<string, { name: string; args: string; raw: string }>();
+  for (const m of history) indexToolCalls(idToTool, m);
+  for (let i = 0; i < history.length; i++) {
+    foldMessage(v, idToTool, history[i], baseIndex + i);
+    if (i % 24 === 23) await new Promise((r) => setTimeout(r, 0));
+  }
+  return v;
+}
+
+type ToolInfo = { name: string; args: string; raw: string };
+
+/** call_id → tool name/args index — one pass over `tool_calls` on the
+ * preceding assistant messages. */
+function indexToolCalls(idToTool: Map<string, ToolInfo>, m: ChatMessage) {
+  for (const c of m.tool_calls ?? []) {
+    const raw = c.function.arguments ?? "";
+    idToTool.set(c.id, {
+      name: c.function.name,
+      // batch_execute's own preview is the call count — the real
+      // per-item args live inside `calls[]`.
+      args:
+        c.function.name === "batch_execute"
+          ? batchCallCount(raw)
+          : extractArgsPreview(raw),
+      raw,
+    });
+  }
+}
+
+/** Fold one persisted message into the view's item list — shared by the
+ * sync and time-sliced builders. */
+function foldMessage(
+  v: SessionView,
+  idToTool: Map<string, ToolInfo>,
+  m: ChatMessage,
+  hi: number,
+) {
     // `notice` marks the system lines the live stream actually showed —
     // replayed verbatim. Everything else (system prompt, compaction
     // note, hook injections) is internal context and stays hidden.
     if (m.role === "system") {
       if (m.notice === "system")
-        v.items.push({ kind: "system", text: m.content ?? "" });
+        v.items.push({ kind: "system", text: m.content ?? "", hi });
       else if (m.notice === "error")
-        v.items.push({ kind: "system", text: `⚠ ${m.content ?? ""}` });
-      continue;
+        v.items.push({ kind: "system", text: `⚠ ${m.content ?? ""}`, hi });
+      return;
     }
     if (m.role === "tool") {
       const toolInfo = (m.tool_call_id && idToTool.get(m.tool_call_id)) || {
@@ -180,6 +225,7 @@ export function viewFromHistory(
       };
       v.items.push({
         kind: "tool",
+        hi,
         name: toolInfo.name,
         args: toolInfo.args,
         content: m.content ?? "",
@@ -194,10 +240,10 @@ export function viewFromHistory(
       // survives reload.
       if (toolInfo.name === "batch_execute") {
         for (const child of batchChildren(toolInfo.raw, m.content ?? "")) {
-          v.items.push(child);
+          v.items.push({ ...child, hi });
         }
       }
-      continue;
+      return;
     }
     let text =
       m.role === "assistant" ? stripCallEcho(m.content ?? "") : (m.content ?? "");
@@ -216,7 +262,7 @@ export function viewFromHistory(
       // `hidden` marks engine-injected instructions (tool-limit nudge,
       // synthesis prompt) — the provider sees them but the live stream
       // never drew a bubble, so replay must skip them too.
-      if (m.notice === "hidden") continue;
+      if (m.notice === "hidden") return;
       // Mid-turn steering persists as "The user interrupted: X" — the
       // live stream echoes the bare text, so strip the annotation.
       const steer = text.match(/^The user interrupted: ([\s\S]*)$/);
@@ -225,15 +271,13 @@ export function viewFromHistory(
     // Assistant messages that only carry `tool_calls` have no visible text —
     // the matching `tool` result already renders the capsule.
     if (!text.trim()) {
-      if (markerLine) v.items.push({ kind: "system", text: markerLine });
-      continue;
+      if (markerLine) v.items.push({ kind: "system", text: markerLine, hi });
+      return;
     }
     if (m.role === "user") {
-      v.items.push({ kind: "user", text, ts: m.ts ?? undefined });
+      v.items.push({ kind: "user", text, ts: m.ts ?? undefined, hi });
     } else {
-      v.items.push({ kind: "assistant", text, streaming: false });
-      if (markerLine) v.items.push({ kind: "system", text: markerLine });
+      v.items.push({ kind: "assistant", text, streaming: false, hi });
+      if (markerLine) v.items.push({ kind: "system", text: markerLine, hi });
     }
-  }
-  return v;
 }

@@ -5,9 +5,12 @@
 import type { AgentState } from "../types";
 
 export type StreamItem =
-  | { kind: "user"; text: string; ts?: number }
-  | { kind: "assistant"; text: string; streaming: boolean }
-  | { kind: "thinking"; text: string; done: boolean }
+  /** `hi` = global history index — stamped by `viewFromHistory` for
+   * persisted messages; live items leave it undefined. It makes turn
+   * keys stable when older pages prepend above. */
+  | { kind: "user"; text: string; ts?: number; hi?: number }
+  | { kind: "assistant"; text: string; streaming: boolean; hi?: number }
+  | { kind: "thinking"; text: string; done: boolean; hi?: number }
   | {
       kind: "tool";
       name: string;
@@ -18,6 +21,7 @@ export type StreamItem =
       /** Set on calls emitted inside another tool (`batch_execute`
        * items) — the stream nests them under the parent capsule. */
       parent?: string;
+      hi?: number;
       approval?: {
         requestId: number;
         diff?: string;
@@ -34,8 +38,9 @@ export type StreamItem =
       fuzzy: boolean;
       resolved?: boolean;
       approved?: boolean;
+      hi?: number;
     }
-  | { kind: "system"; text: string };
+  | { kind: "system"; text: string; hi?: number };
 
 export interface SessionView {
   /** An unresolved `QuestionAsked` — the composer renders it in the same
@@ -43,9 +48,26 @@ export interface SessionView {
    * turn ends, or when a new prompt lands. */
   pendingQuestion?: { requestId: number; question: string; options: import("../types").AskOption[] };
   items: StreamItem[];
+  /** Index into the full persisted history where `items[0]` starts —
+   * `> 0` means older pages exist and can be fetched via `history_page`.
+   * Undefined for live-only views. */
+  historyStart?: number;
+  /** Full persisted message count — the rail uses it to size the
+   * overview track against the whole session, not just loaded pages. */
+  historyTotal?: number;
+  /** Full turn count (non-hidden user messages) — drives the rail's
+   * unloaded placeholder marks. */
+  turnTotal?: number;
   state: AgentState | null;
   streaming: boolean;
-  usage: { prompt: number; completion: number; contextWindow: number };
+  usage: {
+    prompt: number;
+    completion: number;
+    contextWindow: number;
+    /** Prompt tokens served from the provider cache — `prompt -
+     * cachedTokens` is the uncached share billed at full rate. */
+    cachedTokens: number;
+  };
   /** Assistant output rate (tok/s) — a live estimate while deltas flow
    * (chars/4 over active stream time), finalized from the real
    * `completion_tokens` when the `Usage` event lands. Resets each turn. */
@@ -60,7 +82,7 @@ export const emptyView = (): SessionView => ({
   items: [],
   state: null,
   streaming: false,
-  usage: { prompt: 0, completion: 0, contextWindow: 0 },
+  usage: { prompt: 0, completion: 0, contextWindow: 0, cachedTokens: 0 },
   toksPerSec: 0,
   rate: { chars: 0, activeMs: 0, lastAt: null },
 });

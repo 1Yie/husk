@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as agent from "../invoke/agent";
 import type { AgentEventEnvelope } from "../types";
 import { applyEvent } from "./apply-event";
-import { emptyView, type SessionView } from "./stream-view";
+import { emptyView, type SessionView, type StreamItem } from "./stream-view";
 import { notify } from "../lib/notifications";
 
 /** Composite view key — workspace root + per-workspace session id. */
@@ -28,12 +28,30 @@ export function useAgentEvents(workspaceRoot: string) {
   /** Install a rebuilt view for `id` — used by `openSession` when the
    * session has no live event buffer. Never overwrites an existing view:
    * a live buffer is newer than the last persisted snapshot. */
-  const loadView = useCallback((root: string, id: number, view: SessionView) => {
+  const loadView = useCallback((root: string, id: number, view: SessionView, meta?: {
+    historyStart?: number;
+    historyTotal?: number;
+    turnTotal?: number;
+  }) => {
     setViews((m) => {
       const k = viewKey(root, id);
       if (m.has(k)) return m;
       const next = new Map(m);
-      next.set(k, view);
+      next.set(k, meta ? { ...view, ...meta } : view);
+      return next;
+    });
+  }, []);
+
+  /** Prepend an older-history page — `items` are folded StreamItems
+   * already stamped with global `hi`s; `historyStart` is the new slice
+   * start (0 = history fully loaded). */
+  const prependItems = useCallback((root: string, id: number, items: StreamItem[], historyStart: number) => {
+    setViews((m) => {
+      const k = viewKey(root, id);
+      const v = m.get(k);
+      if (!v) return m;
+      const next = new Map(m);
+      next.set(k, { ...v, items: [...items, ...v.items], historyStart });
       return next;
     });
   }, []);
@@ -153,6 +171,7 @@ export function useAgentEvents(workspaceRoot: string) {
     active,
     setActiveId,
     loadView,
+    prependItems,
     runningKeys,
     gitInfo,
     ctxWindow,

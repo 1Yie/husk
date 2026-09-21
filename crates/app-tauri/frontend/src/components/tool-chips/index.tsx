@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "@keyline-icons/react";
 import { DiffView } from "../diff-view";
 import { TodoView } from "../todo-view";
@@ -69,7 +69,18 @@ function getToolLanguage(detailText: string, label: string, chip: string): strin
   return "text";
 }
 
-function renderHighlightedLines(detailText: string, label: string, chip: string) {
+/** Cap the mounted line count inside a capsule — the scroll box clips
+ *  the visual height but not the DOM, and a multi-thousand-line tool
+ *  output is tens of thousands of nodes (that single-handedly froze the
+ *  whole webview). User expands explicitly — no scroll-time mounting. */
+const MAX_DETAIL_LINES = 150;
+
+function renderHighlightedLines(
+  detailText: string,
+  label: string,
+  chip: string,
+  maxLines = Number.MAX_SAFE_INTEGER,
+) {
   if (!detailText) return null;
 
   // 1. Strip ANSI escape codes (terminal color/style sequences that cause garbled text)
@@ -88,7 +99,7 @@ function renderHighlightedLines(detailText: string, label: string, chip: string)
   const lang = getToolLanguage(clean, label, chip);
   const lines = clean.split("\n");
 
-  return lines.map((line, idx) => {
+  return lines.slice(0, maxLines).map((line, idx) => {
     // 1. Header line (e.g. "path/to/file.tsx (content_hash: ...)")
     if (/\(content_hash:\s*[a-f0-9]+\)/i.test(line)) {
       return (
@@ -245,6 +256,72 @@ export type ToolChipRow = {
   };
 };
 
+function DetailLines({
+  detailText,
+  label,
+  chip,
+}: {
+  detailText: string;
+  label: string;
+  chip: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  // Cheap line count for the footer — the real split happens inside
+  // renderHighlightedLines; this is just `\n` accounting.
+  const lineCount = useMemo(
+    () => detailText.split("\n").length,
+    [detailText],
+  );
+  const capped = !expanded && lineCount > MAX_DETAIL_LINES;
+  return (
+    <>
+      {renderHighlightedLines(
+        detailText,
+        label,
+        chip,
+        capped ? MAX_DETAIL_LINES : Number.MAX_SAFE_INTEGER,
+      )}
+      {capped && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="w-full text-center font-mono text-[11px] text-neutral-400 hover:text-neutral-600 pt-1.5 mt-1 border-t border-neutral-200 select-none"
+        >
+          … 还有 {lineCount - MAX_DETAIL_LINES} 行，点击展开全部
+        </button>
+      )}
+    </>
+  );
+}
+
+/** Detail body that mounts its children only after the row has been
+ * opened once — the grid collapse is CSS-only (`0fr` + overflow-hidden),
+ * so without this every collapsed row still paid a full DiffView /
+ * DetailLines render at mount (hundreds of Prism-highlighted lines per
+ * tool call — the actual ~50-160ms-per-turn mount cost). Once opened it
+ * stays mounted so the collapse animation keeps working. */
+function RowDetail({ open, children }: { open: boolean; children: React.ReactNode }) {
+  const [everOpened, setEverOpened] = useState(open);
+  useEffect(() => {
+    if (open) setEverOpened(true);
+  }, [open]);
+  return (
+    <div
+      className="grid transition-[grid-template-rows,opacity] duration-250 ease-out w-full"
+      style={{
+        gridTemplateRows: open ? "1fr" : "0fr",
+        opacity: open ? 1 : 0,
+      }}
+    >
+      <div className="min-h-0 overflow-hidden w-full">
+        <div className="w-full pt-1 pb-1.5">
+          {everOpened ? children : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
   const [open, setOpen] = useState(true);
   const [openRows, setOpenRows] = useState<Set<string>>(new Set());
@@ -360,29 +437,19 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
         </button>
 
         {hasDetail ? (
-          <div
-            className="grid transition-[grid-template-rows,opacity] duration-250 ease-out w-full"
-            style={{
-              gridTemplateRows: rowOpen ? "1fr" : "0fr",
-              opacity: rowOpen ? 1 : 0,
-            }}
-          >
-            <div className="min-h-0 overflow-hidden w-full">
-              <div className="w-full pt-1 pb-1.5">
-                {diffContent ? (
-                  <DiffView diff={diffContent} maxHeight={600} />
-                ) : isTodo ? (
-                  <TodoView content={detailText} />
-                ) : (
-                  <div className="w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs">
-                    <div className="p-3 font-mono text-[11.5px] text-neutral-700 leading-relaxed overflow-x-auto max-h-[400px] overflow-y-auto select-text">
-                      {renderHighlightedLines(detailText, row.label, row.chip)}
-                    </div>
-                  </div>
-                )}
+          <RowDetail open={rowOpen}>
+            {diffContent ? (
+              <DiffView diff={diffContent} maxHeight={600} />
+            ) : isTodo ? (
+              <TodoView content={detailText} />
+            ) : (
+              <div className="w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs">
+                <div className="p-3 font-mono text-[11.5px] text-neutral-700 leading-relaxed overflow-x-auto max-h-[400px] overflow-y-auto select-text">
+                  <DetailLines detailText={detailText} label={row.label} chip={row.chip} />
+                </div>
               </div>
-            </div>
-          </div>
+            )}
+          </RowDetail>
         ) : null}
 
         {/* Nested batch items — indented under the parent capsule,

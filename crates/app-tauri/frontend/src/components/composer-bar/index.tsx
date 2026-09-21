@@ -99,13 +99,23 @@ const AGENT_MODES = [
 
 const THINKING_LEVELS = [
   { value: "off", label: "关闭思考", desc: "不使用推理计算" },
-  { value: "minimal", label: "极低强度", desc: "最小推理深度" },
-  { value: "low", label: "低强度", desc: "轻度思考分析" },
+  { value: "minimal", label: "最小推理", desc: "最轻量推理深度" },
+  { value: "low", label: "轻度思考", desc: "快速简短的分析" },
   { value: "medium", label: "中等思考", desc: "标准平衡思考" },
-  { value: "high", label: "高强度", desc: "深度推演与设计" },
-  { value: "xhigh", label: "超高强度", desc: "超深层推演" },
-  { value: "max", label: "最大思考", desc: "最大算力深度推演" },
+  { value: "high", label: "深度思考", desc: "深度推演与设计" },
+  { value: "xhigh", label: "超高思考", desc: "超深层推演" },
+  { value: "max", label: "最大推理", desc: "最大算力深度推演" },
 ] as const;
+
+/** Suffix shown after a level's label — the raw wire value, or
+ *  `value→mapped` when the active model's thinking_level_map rewrites it
+ *  (e.g. low→max means picking low sends `max` to the model). */
+function thinkingSuffix(value: string, map?: Record<string, string | null>): string {
+  const mapped = map?.[value];
+  return typeof mapped === "string" && mapped && mapped !== value
+    ? `${value}→${mapped}`
+    : value;
+}
 
 /** Tool name → icon for the approval strip. */
 function toolIcon(name: string) {
@@ -207,19 +217,18 @@ export function ComposerBar({
     (currentModelObj?.available_levels && currentModelObj.available_levels.length > 0),
   );
 
-  const availableLevelValues =
-    currentModelObj?.available_levels && currentModelObj.available_levels.length > 0
-      ? currentModelObj.available_levels
-      : hasReasoning
-        ? ["off", "low", "medium", "high", "max"]
-        : [];
+  // Strictly model-driven: no thinking_level_map → no selectable levels
+  // → the picker stays hidden even for `reasoning: true` models.
+  const availableLevelValues = currentModelObj?.available_levels ?? [];
 
   const effectiveThinkingLevels = THINKING_LEVELS.filter((lvl) =>
     availableLevelValues.includes(lvl.value),
   );
 
   const currentThinkingObj = THINKING_LEVELS.find((l) => l.value === activeThinkingLevel);
-  const currentThinkingLabel = currentThinkingObj?.label || activeThinkingLevel;
+  const currentThinkingLabel = currentThinkingObj
+    ? `${currentThinkingObj.label}（${thinkingSuffix(currentThinkingObj.value, currentModelObj?.thinking_level_map ?? undefined)}）`
+    : activeThinkingLevel;
 
   const handleSelectModel = async (provider: string, model: string) => {
     setActiveModel(model);
@@ -911,6 +920,7 @@ export function ComposerBar({
                   hasReasoning={hasReasoning}
                   activeThinkingLevel={activeThinkingLevel}
                   currentThinkingLabel={currentThinkingLabel}
+                  thinkingMap={currentModelObj?.thinking_level_map ?? undefined}
                   effectiveThinkingLevels={effectiveThinkingLevels}
                   onSelectThinkingLevel={handleSelectThinkingLevel}
                   streaming={streaming}
@@ -959,6 +969,7 @@ export function ComposerBar({
                 hasReasoning={hasReasoning}
                 activeThinkingLevel={activeThinkingLevel}
                 currentThinkingLabel={currentThinkingLabel}
+                thinkingMap={currentModelObj?.thinking_level_map ?? undefined}
                 effectiveThinkingLevels={effectiveThinkingLevels}
                 onSelectThinkingLevel={handleSelectThinkingLevel}
                 streaming={streaming}
@@ -1298,6 +1309,7 @@ function ComposerToolbar({
   hasReasoning,
   activeThinkingLevel,
   currentThinkingLabel,
+  thinkingMap,
   effectiveThinkingLevels,
   onSelectThinkingLevel,
   streaming,
@@ -1320,6 +1332,7 @@ function ComposerToolbar({
   hasReasoning: boolean;
   activeThinkingLevel: string;
   currentThinkingLabel: string;
+  thinkingMap?: Record<string, string | null>;
   effectiveThinkingLevels: readonly { value: string; label: string; desc: string }[];
   onSelectThinkingLevel: (level: string) => Promise<void>;
   streaming: boolean;
@@ -1467,8 +1480,8 @@ function ComposerToolbar({
                       : "text-purple-600 dark:text-purple-400",
                   )}
                 />
-                <span className="truncate max-w-[90px]">
-                  {activeThinkingLevel === "off" ? "思考关闭" : `思考: ${currentThinkingLabel}`}
+                <span className="truncate max-w-[140px]">
+                  {currentThinkingLabel}
                 </span>
                 <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
               </button>
@@ -1489,7 +1502,7 @@ function ComposerToolbar({
                     >
                       <div className="flex flex-col gap-0.5 min-w-0 pr-2">
                         <span className="font-medium text-neutral-800">
-                          {lvl.label}
+                          {lvl.label}（{thinkingSuffix(lvl.value, thinkingMap)}）
                         </span>
                         <span className="text-[10.5px] text-neutral-400 truncate">
                           {lvl.desc}

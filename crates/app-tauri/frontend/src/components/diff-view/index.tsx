@@ -1,7 +1,7 @@
 // DiffView — Full-width modern unified diff renderer with dark-mode support,
 // multi-file patch header awareness, hunk styling, and scrollable container.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 interface Props {
   diff: string;
@@ -17,7 +17,14 @@ interface DLine {
 }
 
 export function DiffView({ diff, maxHeight = 500 }: Props) {
+  const [expanded, setExpanded] = useState(false);
   const lines = useMemo(() => parseDiff(diff), [diff]);
+  // Same contract as the tool-detail cap: the scroll box clips the
+  // visual height, not the DOM — a giant diff must not mount tens of
+  // thousands of nodes. Explicit click-to-expand.
+  const MAX_DIFF_LINES = 200;
+  const capped = !expanded && lines.length > MAX_DIFF_LINES;
+  const visible = capped ? lines.slice(0, MAX_DIFF_LINES) : lines;
 
   if (!diff || lines.length === 0) return null;
 
@@ -28,7 +35,7 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
         style={{ maxHeight }}
       >
         <div className="min-w-full w-max py-1">
-          {lines.map((l, i) => {
+          {visible.map((l, i) => {
             if (l.kind === "file_header") {
               return (
                 <div
@@ -75,6 +82,15 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
               </div>
             );
           })}
+          {capped && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="w-full text-center font-mono text-[11px] text-neutral-400 hover:text-neutral-600 pt-1.5 mt-1 border-t border-neutral-200 select-none"
+            >
+              … 还有 {lines.length - MAX_DIFF_LINES} 行，点击展开全部
+            </button>
+          )}
         </div>
       </div>
     </div>

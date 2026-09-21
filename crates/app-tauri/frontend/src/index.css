@@ -129,7 +129,7 @@ body {
     /* Native scrolling remains composited and performant, while the conventional
        right-side scrollbar is hidden in favor of the custom left-side turn rail.
        Symmetric horizontal padding ensures perfect centering with the bottom composer. */
-    @apply flex-1 min-h-0 overflow-y-scroll transform-gpu px-4 py-4 flex flex-col items-center;
+    @apply flex-1 min-h-0 overflow-y-scroll px-4 py-4 flex flex-col items-center;
     scrollbar-width: none;
     -ms-overflow-style: none;
   }
@@ -766,6 +766,7 @@ img.emoji {
   grid-template-rows: 0fr;
   opacity: 0;
 }
+
 
 
 

@@ -21,8 +21,11 @@ export const chatMarkdownComponents = {
     </div>
   ),
   thead: ({ children, ...props }: React.ComponentPropsWithoutRef<"thead">) => (
+    // No sticky here — every sticky element inside the scroll tree is a
+    // per-frame layout recalc on WebKitGTK; a table's header can just
+    // scroll away with its body.
     <thead
-      className="sticky top-0 z-10 bg-neutral-50 border-b border-neutral-200 select-none"
+      className="bg-neutral-50 border-b border-neutral-200 select-none"
       {...props}
     >
       {children}

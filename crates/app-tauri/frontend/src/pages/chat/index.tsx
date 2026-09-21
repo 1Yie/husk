@@ -18,9 +18,15 @@ interface ChatPageProps {
   /** Active session key (`root:id`) — resets the stream's incremental
    * mount window on session AND workspace switches. */
   sessionKey?: string;
+  /** Older-history pages exist above the loaded slice. */
+  hasMore?: boolean;
+  /** Scroll-top handler — fetches + prepends the next older page. */
+  onLoadOlder?: () => Promise<boolean>;
+  /** Opens the raw-JSON history viewer. */
+  onShowRaw?: () => void;
 }
 
-export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, loading, sessionKey }: ChatPageProps) {
+export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, loading, sessionKey, hasMore, onLoadOlder, onShowRaw }: ChatPageProps) {
   // The composer floats over the stream bottom — measure its real height
   // (card + pb-6 gap + the taller approval/todo banner variants) and feed
   // it to the stream as bottom padding, so the last message can always
@@ -44,13 +50,18 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
 
   return (
     <>
-      <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} />
+      <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} onShowRaw={onShowRaw} />
       <ChatStream
+        // Remount per session — scroll position, pin state, landing
+        // flag and the windowing shell state are all per-session.
+        key={sessionKey}
         view={view}
         bottomPad={composerH + 24}
         composerH={composerH}
         loading={loading}
         sessionKey={sessionKey}
+        hasMore={hasMore}
+        onLoadOlder={onLoadOlder}
       />
 
       {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}

@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { useAgentEvents } from "./hooks/use-agent-events";
 import { useAgentSession } from "./hooks/use-agent-session";
-import { viewFromHistory } from "./hooks/view-from-history";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, forkSession, deleteSession, pinSession, type WorkspaceInfo } from "./invoke/agent";
+import { viewFromHistory, viewFromHistoryChunked } from "./hooks/view-from-history";
+import { loadReset, loadStamp } from "./lib/load-probe";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, forkSession, deleteSession, pinSession, historyPage, historyRaw, type WorkspaceInfo } from "./invoke/agent";
 import type { SessionRow } from "./types";
 import { SessionSidebar } from "./components/session-sidebar";
 import { MainLayout } from "./layout/main-layout";
 import { ChatPage } from "./pages/chat";
 import { SettingsPage } from "./pages/settings";
+import { RawHistoryDialog } from "./components/raw-history-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -36,6 +38,9 @@ function isEditableTarget(e: Event): boolean {
 function useAppChromeGuards() {
   useEffect(() => {
     const onContextMenu = (e: MouseEvent) => {
+      // Dev keeps the native webview menu — right-click inspect is the
+      // debugger's front door on WebKitGTK.
+      if (import.meta.env.DEV) return;
       // Radix ContextMenuTrigger calls preventDefault itself; letting the
       // event through to a trigger is what opens our custom menu.
       if (isEditableTarget(e)) return;
@@ -78,6 +83,7 @@ export function App() {
     activeId,
     setActiveId,
     loadView,
+    prependItems,
     runningKeys,
     gitInfo,
     ctxWindow,
@@ -86,6 +92,50 @@ export function App() {
   // True while a session/workspace switch is fetching history + rebuilding
   // the view — the stream renders a skeleton instead of a stale/empty pane.
   const [viewLoading, setViewLoading] = useState(false);
+  // Drop the loading veil only AFTER the mounted tree has committed and
+  // painted — session loads full-mount every turn in one synchronous
+  // commit, and if the veil lifts inside that same commit the app shows
+  // a frozen half-frame instead of "loading → ready". Two rAFs carries
+  // the flag past the next paint boundary.
+  const releaseLoading = useCallback(() => {
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => setViewLoading(false)),
+    );
+  }, []);
+
+  /** Fold the returned page + mount it, then lift the veil after the
+   * commit has painted. */
+  const mountLoadedView = useCallback(
+    async (
+      root: string,
+      id: number,
+      r: {
+        history: Parameters<typeof viewFromHistory>[0];
+        history_total?: number;
+        turn_total?: number;
+        usage?: Parameters<typeof viewFromHistory>[1];
+      },
+    ) => {
+      const folded = await viewFromHistoryChunked(
+        r.history,
+        r.usage,
+        // Global baseIndex — items[0] sits at historyStart in the full
+        // log, so hi = historyStart + i. baseIndex=0 collided with real
+        // page indices → duplicate t{hi} turn/mark ids (multiple active
+        // rail marks + key remount churn).
+        (r.history_total ?? r.history.length) - r.history.length,
+      );
+      loadStamp("fold");
+      loadView(root, id, folded, {
+        historyStart: (r.history_total ?? r.history.length) - r.history.length,
+        historyTotal: r.history_total,
+        turnTotal: r.turn_total,
+      });
+      releaseLoading();
+    },
+    [loadView, releaseLoading],
+  );
+
   // Non-null while the delete confirmation dialog is open — holds the row
   // snapshot taken at click time so the dialog still shows the right title
   // even if the session list refreshes in between.
@@ -93,9 +143,26 @@ export function App() {
   // Same pattern for the fork confirmation — duplicating a session's
   // history is additive but irreversible, so it confirms first.
   const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
-  // Settings is a full-window takeover, not a popup — the session keeps
-  // running underneath while the settings pane covers the whole shell.
+  // Settings is an overlay layer, not a page swap — the workspace stays
+  // mounted underneath, so closing it costs nothing (the old takeover
+  // unmounted ChatPage and remounted the whole stream on return).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Raw-JSON history viewer — fetches the full persisted record on open.
+  const [rawOpen, setRawOpen] = useState(false);
+  const [rawData, setRawData] = useState<import("./types").ChatMessage[] | null>(null);
+  const [rawLoading, setRawLoading] = useState(false);
+  const handleShowRaw = useCallback(async () => {
+    if (!activeId) return;
+    setRawOpen(true);
+    setRawLoading(true);
+    try {
+      setRawData(await historyRaw(activeId));
+    } catch {
+      setRawData(null);
+    } finally {
+      setRawLoading(false);
+    }
+  }, [activeId]);
 
   useEffect(() => {
     void getWorkspaceInfo().then((ws) => {
@@ -113,14 +180,14 @@ export function App() {
       // switching back restores the live stream, not a store snapshot.
       setActiveId(res.active);
       if (res.history.length > 0) {
-        loadView(res.root, res.active, viewFromHistory(res.history, res.usage));
+        mountLoadedView(res.root, res.active, res);
       }
       void refresh();
       void getWorkspaceInfo().then((ws) => {
         if (ws) setWorkspace(ws);
       });
     }
-    setViewLoading(false);
+    if (!res || res.history.length === 0) releaseLoading();
   };
 
   const handleSwitchWorkspace = async (path: string) => {
@@ -131,14 +198,14 @@ export function App() {
       setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
       setActiveId(res.active);
       if (res.history.length > 0) {
-        loadView(res.root, res.active, viewFromHistory(res.history, res.usage));
+        mountLoadedView(res.root, res.active, res);
       }
       void refresh();
       void getWorkspaceInfo().then((ws) => {
         if (ws) setWorkspace(ws);
       });
     }
-    setViewLoading(false);
+    if (!res || res.history.length === 0) releaseLoading();
   };
 
   // Open a conversation from anywhere in the sidebar tree. Ids are
@@ -146,7 +213,12 @@ export function App() {
   // active workspace first — its actors get parked (kept alive), not
   // killed, so a running turn survives the switch.
   const handleOpenSession = async (root: string, id: number) => {
+    loadReset();
     setViewLoading(true);
+    // Flip the pointer NOW — the clicked session's empty view +
+    // skeleton replace the old content in the same frame instead of
+    // the old conversation lingering through the whole kernel load.
+    setActiveId(id);
     if (root && root !== workspace.root) {
       const res = await switchWorkspace(root);
       if (!res) {
@@ -159,14 +231,14 @@ export function App() {
       });
     }
     const r = await openSession(id);
-    if (r) {
-      setActiveId(id);
+    loadStamp("ipc:openSession");
+    if (r && r.history.length > 0) {
       // `root` (the clicked row's project) is the canonical workspace
       // after any switch above — key the rebuilt view under it.
-      if (r.history.length > 0)
-        loadView(root || workspace.root, id, viewFromHistory(r.history, r.usage));
+      mountLoadedView(root || workspace.root, id, r);
+    } else {
+      releaseLoading();
     }
-    setViewLoading(false);
   };
 
   const handleNewSession = async () => {
@@ -183,10 +255,24 @@ export function App() {
       // If the deleted session was on screen, the backend already
       // switched to another — follow it and rebuild its view.
       setActiveId(r.active);
-      if (r.history.length > 0) loadView(workspace.root, r.active, viewFromHistory(r.history, r.usage));
-      setViewLoading(false);
+      if (r.history.length > 0) mountLoadedView(workspace.root, r.active, r);
+      else releaseLoading();
     }).catch(() => setViewLoading(false));
   };
+
+  /** Older-history page — the stream's scroll-top trigger calls this;
+   * folds the slice with a `baseIndex` so every item carries its global
+   * `hi` and turn keys stay stable across prepends. */
+  const handleLoadOlder = useCallback(async () => {
+    if (!workspace.root || !activeId) return false;
+    const start = active?.historyStart ?? 0;
+    if (start <= 0) return false;
+    const r = await historyPage(activeId, start);
+    if (r.history.length === 0) return false;
+    const folded = await viewFromHistoryChunked(r.history, undefined, start - r.history.length);
+    prependItems(workspace.root, activeId, folded.items, start - r.history.length);
+    return true;
+  }, [workspace.root, activeId, active?.historyStart, prependItems]);
 
   // First-load: the kernel resumed the most recent session at boot, but
   // the webview only sees *new* events — rebuild the stream from the
@@ -203,8 +289,8 @@ export function App() {
     setViewLoading(true);
     void openSession(current.id).then((r) => {
       if (r && r.history.length > 0)
-        loadView(currentRoot, current.id, viewFromHistory(r.history, r.usage));
-      setViewLoading(false);
+        mountLoadedView(currentRoot, current.id, r);
+      else releaseLoading();
     });
     setActiveId(current.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -242,9 +328,8 @@ export function App() {
       }
       void refresh();
       setActiveId(r.id);
-      if (r.history.length > 0)
-        loadView(workspace.root, r.id, viewFromHistory(r.history, r.usage));
-      setViewLoading(false);
+      if (r.history.length > 0) mountLoadedView(workspace.root, r.id, r);
+      else releaseLoading();
     }).catch(() => setViewLoading(false));
   };
 
@@ -260,15 +345,6 @@ export function App() {
       running: s.running || runningKeys.has(`${p.root}:${s.id}`),
     })),
   }));
-
-  if (settingsOpen) {
-    return (
-      <>
-        <Toaster />
-        <SettingsPage onClose={() => setSettingsOpen(false)} />
-      </>
-    );
-  }
 
   return (
     <>
@@ -307,8 +383,31 @@ export function App() {
           contextWindowHint={ctxWindow}
           loading={viewLoading}
           sessionKey={`${workspace.root}:${activeId}`}
+          hasMore={(active?.historyStart ?? 0) > 0}
+          onLoadOlder={handleLoadOlder}
+          onShowRaw={handleShowRaw}
         />
       </MainLayout>
+
+      {/* Settings overlay — floats above the workspace, which keeps its
+          DOM (and the expensive stream tree) mounted the whole time.
+          z-40 on purpose: Radix dropdowns/popovers portal at z-50 and
+          must render ABOVE the settings pane — a higher overlay hides
+          every KV popup inside it. */}
+      {settingsOpen && (
+        <div className="fixed inset-0 z-40">
+          <SettingsPage onClose={() => setSettingsOpen(false)} />
+        </div>
+      )}
+
+      {/* Raw-JSON history viewer — opened from the title-bar icon. */}
+      <RawHistoryDialog
+        open={rawOpen}
+        onOpenChange={setRawOpen}
+        messages={rawData}
+        loading={rawLoading}
+        title={sessionTitle}
+      />
 
       {/* Fork confirmation — creates a copy of the session's history. */}
       <Dialog

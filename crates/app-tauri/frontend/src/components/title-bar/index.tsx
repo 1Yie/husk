@@ -1,6 +1,6 @@
 import { WindowControls } from "@/components/window-controls";
 import { isMac } from "@/lib/platform";
-import { GitBranch, ChartPie, Zap } from "@keyline-icons/react";
+import { GitBranch, ChartPie, Zap, BarChartHorizontalStart, Inbox } from "@keyline-icons/react";
 import { BrainCircuit } from "lucide-react";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import type { SessionView } from "../../hooks/stream-view";
@@ -13,6 +13,8 @@ interface TitleBarProps {
   /** Active model's context window — used as the meter denominator before
    * the first `Usage` event arrives. */
   contextWindowHint?: number;
+  /** Opens the raw-JSON history viewer for the active session. */
+  onShowRaw?: () => void;
 }
 
 function fmtK(n: number) {
@@ -23,9 +25,11 @@ function fmtRate(n: number) {
   return n >= 100 ? `${Math.round(n)}` : n.toFixed(1);
 }
 
-export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint }: TitleBarProps) {
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, onShowRaw }: TitleBarProps) {
   const prompt = view?.usage.prompt ?? 0;
   const completion = view?.usage.completion ?? 0;
+  const cached = view?.usage.cachedTokens ?? 0;
+  const uncached = Math.max(0, prompt - cached);
   const ctxWin = view?.usage.contextWindow || contextWindowHint || 256000;
   const pct = Math.round((prompt / ctxWin) * 100);
   const toks = view?.toksPerSec ?? 0;
@@ -47,6 +51,19 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
             {title}
           </span>
         </TooltipSimple>
+        {onShowRaw && (
+          <TooltipSimple content="查看原始对话 (JSON)" side="bottom">
+            <button
+              type="button"
+              data-tauri-drag-region="false"
+              onClick={onShowRaw}
+              className="ml-1 flex-none rounded p-1 text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+              aria-label="查看原始对话 JSON"
+            >
+              <BarChartHorizontalStart className="h-3.5 w-3.5" />
+            </button>
+          </TooltipSimple>
+        )}
       </div>
 
       <div className="flex-1 h-full" />
@@ -80,6 +97,15 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
           <span className="flex items-center gap-1 cursor-default">
             <BrainCircuit className="h-3 w-3" />
             {fmtK(completion)}
+          </span>
+        </TooltipSimple>
+        <TooltipSimple
+          content={`提示词缓存命中: ${fmtK(cached)} · 未缓存: ${fmtK(uncached)}`}
+          side="bottom"
+        >
+          <span className="flex items-center gap-1 cursor-default">
+            <Inbox className="h-3 w-3" />
+            {fmtK(cached)}/{fmtK(uncached)}
           </span>
         </TooltipSimple>
         <TooltipSimple content={`生成速率: ${fmtRate(toks)} tok/s`} side="bottom">

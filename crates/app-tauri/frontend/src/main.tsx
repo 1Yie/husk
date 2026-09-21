@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
+import "./lib/frame-probe";
 import { TooltipProvider, GlobalTooltip } from "@/components/ui/tooltip";
 import { getAppearance } from "./invoke/agent";
 import { initAppearance } from "./lib/appearance";

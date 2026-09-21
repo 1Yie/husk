@@ -36,3 +36,22 @@ export function ChatSkeleton() {
     </div>
   );
 }
+
+/** Compact variant for scroll-top pagination — one user bubble + a few
+ * assistant lines, mounted in place of the "load older" hint while a
+ * history page is in flight. Reads as content resolving above the fold,
+ * not a spinner. */
+export function OlderPageSkeleton() {
+  const bar =
+    "rounded-md bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]";
+  return (
+    <div className="flex w-full flex-col gap-6 animate-pulse" aria-hidden="true">
+      <div className={`ms-auto h-9 w-48 rounded-xl ${bar}`} />
+      <div className="flex flex-col gap-2.5 pl-1">
+        <div className={`h-4 w-3/4 ${bar}`} />
+        <div className={`h-4 w-full ${bar}`} />
+        <div className={`h-4 w-2/3 ${bar}`} />
+      </div>
+    </div>
+  );
+}

@@ -217,6 +217,7 @@ export function applyEvent(
         prompt: ev.Usage.prompt_tokens,
         completion: ev.Usage.completion_tokens,
         contextWindow: ev.Usage.context_window,
+        cachedTokens: ev.Usage.cached_tokens,
       },
     };
   }

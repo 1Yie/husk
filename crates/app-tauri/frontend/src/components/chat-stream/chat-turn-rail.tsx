@@ -3,7 +3,13 @@ import { cn } from "@/lib/utils";
 
 export interface RailMark {
   id: string;
-  type: "top" | "user" | "assistant";
+  type: "top" | "user" | "assistant" | "placeholder";
+  /** Ordinal within the unloaded range — click-seek uses it to estimate
+   * which history index this placeholder stands for. */
+  phIndex?: number;
+  /** Owning turn — lets the rail measure the always-mounted shell when
+   *  the marked content itself is windowed out. */
+  turnId?: string;
   targetId: string;
   previewTitle: string;
   previewSnippet: string;
@@ -16,6 +22,9 @@ interface ChatTurnRailProps {
   onSelectMark: (mark: RailMark) => void;
   onDragScroll: (ratio: number) => void;
   className?: string;
+  /** Session load in flight — the track renders a skeleton strip
+   * (pulsing dashes) instead of empty/missing marks. */
+  loading?: boolean;
 }
 
 export function ChatTurnRail({
@@ -24,6 +33,7 @@ export function ChatTurnRail({
   onSelectMark,
   onDragScroll,
   className,
+  loading,
 }: ChatTurnRailProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -76,6 +86,29 @@ export function ChatTurnRail({
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {}
   };
+
+  if (loading) {
+    // Skeleton strip — same pill shape as the real track.
+    return (
+      <div
+        className={cn(
+          "absolute left-3 top-1/2 -translate-y-1/2 z-30 flex flex-col items-center select-none",
+          className
+        )}
+      >
+        <div className="flex flex-col items-center py-2 px-1.5 rounded-full gap-0">
+          {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+            <div key={i} className="h-[11px] w-[20px] flex items-center justify-center">
+              <div
+                className="w-[10px] h-[2px] rounded-full bg-neutral-300 dark:bg-[#40404a] animate-pulse"
+                style={{ animationDelay: `${i * 90}ms` }}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   if (marks.length <= 1) {
     return null;
@@ -142,6 +175,15 @@ export function ChatTurnRail({
                       />
                     ))}
                   </div>
+                ) : mark.type === "placeholder" ? (
+                  // Unloaded turn — a small dot ("点点点" column fills the
+                  // rail's unloaded share; click pages up to that region).
+                  <div
+                    className={cn(
+                      "rounded-full transition-all duration-150",
+                      "w-[3px] h-[3px] bg-neutral-300 dark:bg-[#4a4a55] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#6b6b78] group-hover/item:w-[4px] group-hover/item:h-[4px]"
+                    )}
+                  />
                 ) : mark.type === "user" ? (
                   // User mark: Long dash (14px wide, 2px high -> active: 14px wide, 3.5px high pill)
                   <div
@@ -164,7 +206,7 @@ export function ChatTurnRail({
                   />
                 )}
 
-                {isHovered && (
+                {isHovered && mark.type !== "placeholder" && (
                   <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] dark:bg-[#232329]/95 text-white text-[11px] px-2.5 py-1.5 rounded-lg shadow-popup border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)] backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
                     <div className="flex items-center gap-1.5 text-[10px] font-medium text-neutral-400">
                       <span>{mark.previewTitle}</span>

@@ -222,7 +222,7 @@ export function SessionSidebar({
           </div>
 
           {/* Project list: the content area's only scroller. */}
-          <div className="flex-1 min-h-0 overflow-y-auto transform-gpu flex flex-col gap-0.5 px-2 pb-2">
+          <div data-tauri-drag-region="false" className="flex-1 min-h-0 overflow-y-auto transform-gpu flex flex-col gap-0.5 px-2 pb-2">
             {projects.length === 0 ? (
               <div className="pl-3 h-8 flex items-center text-[13px] text-neutral-400">
                 暂无项目
@@ -315,7 +315,7 @@ export function SessionSidebar({
                 {notifications.length === 0 ? (
                   <div className="px-3 pb-3 text-neutral-500">暂无新通知。</div>
                 ) : (
-                  <div className="max-h-64 overflow-y-auto border-t border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]">
+                  <div data-tauri-drag-region="false" className="max-h-64 overflow-y-auto border-t border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]">
                     {notifications.map((n) => (
                       <button
                         key={n.id}
@@ -434,7 +434,7 @@ function SessionItem({
       className={cn(
         "group flex-none shrink-0 flex w-full items-center gap-1.5 rounded-md pl-7 pr-2 h-8 min-h-8 text-[13px] cursor-pointer select-none transition-colors",
         isActive
-          ? "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900 font-medium"
+          ? "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
           : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] hover:text-neutral-900 font-normal",
       )}
     >

@@ -34,7 +34,7 @@ export function AssistantStatus({
 
   return (
     <Collapsible open={open} onOpenChange={canToggle ? setOpen : undefined} className="w-full min-w-0 select-none my-1">
-      <div className={open && thinkingText ? "sticky top-0 z-10 bg-white" : ""}>
+      <div className={open && thinkingText ? "bg-white" : ""}>
         <CollapsibleTrigger asChild>
           <Button
             variant="ghost"
