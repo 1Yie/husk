@@ -1,4 +1,9 @@
-//! `mcp.rs` — full MCP JSON-RPC 2.0 client over stdio.
+//! `mcp.rs` — full MCP JSON-RPC 2.0 client over stdio or streamable HTTP.
+//!
+//! Transport is picked per manifest `entry`: `{command, args}` spawns a
+//! child process (newline-framed stdio), `{url}` POSTs JSON-RPC to a
+//! streamable-HTTP endpoint (plain-JSON or SSE response, `Mcp-Session-Id`
+//! carried across calls).
 //!
 //! Contract (plugin-system.md §MCP bridge): protocol `2024-11-05`, the
 //! **complete** lifecycle — anything less fails real community servers:
@@ -42,10 +47,29 @@ pub struct ServerCaps {
     pub prompts: bool,
 }
 
+/// How the client reaches its server — picked by the manifest `entry`.
+enum Transport {
+    /// `{command, args}` — child process, newline-framed stdio.
+    Stdio {
+        stdin: Arc<Mutex<ChildStdin>>,
+        /// Held for kill-on-drop; never touched directly.
+        _child: Mutex<Child>,
+    },
+    /// `{url}` — streamable HTTP: each JSON-RPC message is one POST; the
+    /// reply comes back in the POST response body (plain JSON or an SSE
+    /// stream we scan for our request id).
+    Http {
+        url: String,
+        client: reqwest::Client,
+        session_id: Mutex<Option<String>>,
+        headers: HashMap<String, String>,
+    },
+}
+
 /// One live MCP server: spawned child + demux reader + tool schema cache.
 pub struct McpClient {
     pub plugin_id: String,
-    stdin: Arc<Mutex<ChildStdin>>,
+    transport: Transport,
     req_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
     pub caps: std::sync::Mutex<ServerCaps>,
@@ -55,8 +79,8 @@ pub struct McpClient {
     pub prompts: Mutex<Vec<Value>>,
     /// resource uri → metadata (from `resources/list`, when declared).
     pub resources: Mutex<Vec<Value>>,
-    _child: Mutex<Child>,
-    /// stderr ring buffer (surfaced on error cards).
+    /// stderr ring buffer (surfaced on error cards) — stdio only.
+
     pub stderr_log: Arc<Mutex<Vec<String>>>,
 }
 
@@ -65,6 +89,40 @@ impl McpClient {
     /// the server declares them).
     pub async fn start(manifest: &PluginManifest) -> Result<Arc<Self>> {
         let entry = &manifest.entry;
+
+        // HTTP transport — `entry.url` means streamable HTTP instead of a
+        // spawned child. No env/stdin machinery applies.
+        if let Some(url) = entry["url"].as_str() {
+            let headers: HashMap<String, String> = entry["headers"]
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, v)| (k.clone(), resolve_indirect(v.as_str().unwrap_or(""), "header")))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let client = Arc::new(Self {
+                plugin_id: manifest.id.clone(),
+                transport: Transport::Http {
+                    url: url.to_string(),
+                    client: reqwest::Client::builder()
+                        .timeout(CALL_TIMEOUT)
+                        .build()
+                        .context("reqwest build")?,
+                    session_id: Mutex::new(None),
+                    headers,
+                },
+                req_id: AtomicU64::new(1),
+                pending: Arc::new(Mutex::new(HashMap::new())),
+                caps: std::sync::Mutex::new(ServerCaps::default()),
+                tools: Mutex::new(Vec::new()),
+                prompts: Mutex::new(Vec::new()),
+                resources: Mutex::new(Vec::new()),
+                stderr_log: Arc::new(Mutex::new(Vec::new())),
+            });
+            return client.handshake().await;
+        }
+
         let command = entry["command"].as_str().context("mcp entry.command")?;
         let args: Vec<String> = entry["args"]
             .as_array()
@@ -81,25 +139,7 @@ impl McpClient {
             .map(|o| {
                 o.iter()
                     .map(|(k, v)| {
-                        let val = v.as_str().unwrap_or("");
-                        let resolved = match val.strip_prefix("env:") {
-                            Some(name) => {
-                                if host_env_is_secret(name) {
-                                    tracing::warn!(
-                                        plugin_env = %k,
-                                        host_var = %name,
-                                        "MCP env indirection to a secret-shaped \
-                                         host variable refused (would exfiltrate \
-                                         credentials into the plugin)"
-                                    );
-                                    String::new()
-                                } else {
-                                    std::env::var(name).unwrap_or_default()
-                                }
-                            }
-                            None => val.to_string(),
-                        };
-                        (k.clone(), resolved)
+                        (k.clone(), resolve_indirect(v.as_str().unwrap_or(""), "env"))
                     })
                     .collect()
             })
@@ -147,14 +187,16 @@ impl McpClient {
 
         let client = Arc::new(Self {
             plugin_id: manifest.id.clone(),
-            stdin: Arc::new(Mutex::new(stdin)),
+            transport: Transport::Stdio {
+                stdin: Arc::new(Mutex::new(stdin)),
+                _child: Mutex::new(child),
+            },
             req_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             caps: std::sync::Mutex::new(ServerCaps::default()),
             tools: Mutex::new(Vec::new()),
             prompts: Mutex::new(Vec::new()),
             resources: Mutex::new(Vec::new()),
-            _child: Mutex::new(child),
             stderr_log,
         });
 
@@ -190,8 +232,13 @@ impl McpClient {
             });
         }
 
-        // ---- lifecycle: initialize → initialized → list ----
-        let init = client
+        client.handshake().await
+    }
+
+    /// initialize → initialized → list — shared by both transports (the
+    /// wire differs, the sequence doesn't).
+    async fn handshake(self: &Arc<Self>) -> Result<Arc<Self>> {
+        let init = self
             .call_rpc("initialize", json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
@@ -202,18 +249,16 @@ impl McpClient {
 
         // Capture declared caps — gate every later call on them.
         let caps = init.get("capabilities").cloned().unwrap_or_default();
-        *client.caps.lock().unwrap() = ServerCaps {
+        *self.caps.lock().unwrap() = ServerCaps {
             tools: caps.get("tools").is_some(),
             resources: caps.get("resources").is_some(),
             prompts: caps.get("prompts").is_some(),
         };
-        client
-            .notify("notifications/initialized", json!({}))
-            .await?;
-        client.refresh_lists().await?;
+        self.notify("notifications/initialized", json!({})).await?;
+        self.refresh_lists().await?;
 
-        info!(plugin = %client.plugin_id, "MCP ready");
-        Ok(client)
+        info!(plugin = %self.plugin_id, "MCP ready");
+        Ok(self.clone())
     }
 
     /// Re-pull `tools/list` + `resources/list` + `prompts/list` per caps.
@@ -250,36 +295,143 @@ impl McpClient {
         }
     }
 
-    /// JSON-RPC call — allocate id → oneshot → write line → await ≤30 s.
+    /// JSON-RPC call — allocate id → oneshot → write line → await ≤30 s
+    /// (stdio) or POST and read the response body (HTTP).
     pub async fn call_rpc(&self, method: &str, params: Value) -> Result<Value> {
-        let id = self.req_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        match &self.transport {
+            Transport::Stdio { stdin, .. } => {
+                let id = self.req_id.fetch_add(1, Ordering::SeqCst);
+                let (tx, rx) = oneshot::channel();
+                self.pending.lock().await.insert(id, tx);
 
-        let line = serde_json::to_string(&json!({
-            "jsonrpc": "2.0", "id": id, "method": method, "params": params,
-        }))?;
-        {
-            let mut stdin = self.stdin.lock().await;
-            stdin.write_all(line.as_bytes()).await?;
-            stdin.write_all(b"\n").await?;
-            stdin.flush().await?;
+                let line = serde_json::to_string(&json!({
+                    "jsonrpc": "2.0", "id": id, "method": method, "params": params,
+                }))?;
+                {
+                    let mut stdin = stdin.lock().await;
+                    stdin.write_all(line.as_bytes()).await?;
+                    stdin.write_all(b"\n").await?;
+                    stdin.flush().await?;
+                }
+
+                tokio::time::timeout(CALL_TIMEOUT, rx)
+                    .await
+                    .context("MCP call timeout")??
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
+            Transport::Http {
+                url,
+                client,
+                session_id,
+                headers,
+            } => {
+                let id = self.req_id.fetch_add(1, Ordering::SeqCst);
+                let body = json!({
+                    "jsonrpc": "2.0", "id": id, "method": method, "params": params,
+                });
+                let msg = self
+                    .http_roundtrip(client, url, session_id, headers, &body, Some(id))
+                    .await?;
+                // Same demux contract as stdio: result or error.message.
+                if let Some(err) = msg.get("error") {
+                    return Err(anyhow::anyhow!(
+                        err["message"].as_str().unwrap_or("rpc error").to_string()
+                    ));
+                }
+                Ok(msg.get("result").cloned().unwrap_or(Value::Null))
+            }
         }
+    }
 
-        tokio::time::timeout(CALL_TIMEOUT, rx)
-            .await
-            .context("MCP call timeout")??
-            .map_err(|e| anyhow::anyhow!(e))
+    /// One HTTP POST — shared by `call_rpc` (expects a response for `id`)
+    /// and `notify` (fire-and-forget). Handles `Mcp-Session-Id` capture,
+    /// static headers, and both reply shapes (plain JSON / SSE stream).
+    async fn http_roundtrip(
+        &self,
+        client: &reqwest::Client,
+        url: &str,
+        session_id: &Mutex<Option<String>>,
+        headers: &HashMap<String, String>,
+        body: &Value,
+        want_id: Option<u64>,
+    ) -> Result<Value> {
+        let mut req = client
+            .post(url)
+            .header("Accept", "application/json, text/event-stream")
+            .json(body);
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        if let Some(sid) = session_id.lock().await.clone() {
+            req = req.header("Mcp-Session-Id", sid);
+        }
+        let resp = req.send().await.context("MCP http send")?;
+        if let Some(sid) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+        {
+            *session_id.lock().await = Some(sid.to_string());
+        }
+        let status = resp.status();
+        // 202/204 = accepted, no response body (the notification path).
+        if status.as_u16() == 202 || status.as_u16() == 204 {
+            return Ok(Value::Null);
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("MCP http {status}: {text}"));
+        }
+        let ctype = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let text = resp.text().await?;
+        if ctype.contains("text/event-stream") {
+            // SSE — scan `data:` lines for the JSON-RPC message with our id.
+            for line in text.lines() {
+                let Some(d) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let Ok(v) = serde_json::from_str::<Value>(d.trim()) else {
+                    continue;
+                };
+                if want_id.is_none() || v["id"].as_u64() == want_id {
+                    return Ok(v);
+                }
+            }
+            return Err(anyhow::anyhow!("MCP SSE stream had no matching response"));
+        }
+        let v: Value = serde_json::from_str(text.trim())
+            .context("MCP http response parse")?;
+        Ok(v)
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<()> {
         let line = serde_json::to_string(&json!({
             "jsonrpc": "2.0", "method": method, "params": params,
         }))?;
-        let mut stdin = self.stdin.lock().await;
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-        stdin.flush().await?;
+        match &self.transport {
+            Transport::Stdio { stdin, .. } => {
+                let mut stdin = stdin.lock().await;
+                stdin.write_all(line.as_bytes()).await?;
+                stdin.write_all(b"\n").await?;
+                stdin.flush().await?;
+            }
+            Transport::Http {
+                url,
+                client,
+                session_id,
+                headers,
+            } => {
+                let body: Value = serde_json::from_str(&line)?;
+                // Notification — server replies 202/204 with no body.
+                self.http_roundtrip(client, url, session_id, headers, &body, None)
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -339,6 +491,27 @@ impl McpClient {
 /// the sandbox env-sanitizer: suffix/prefix match, not substring (a var
 /// literally *named* `API_KEY` or ending `_TOKEN` is refused; `NOTES_KEY`
 /// would also match — erring toward refuse is the safe side).
+/// `env:VAR` indirection → resolve from the host environment, refusing
+/// secret-shaped names (same policy as manifest env vars). Plain values
+/// pass through untouched.
+fn resolve_indirect(val: &str, kind: &str) -> String {
+    match val.strip_prefix("env:") {
+        Some(name) => {
+            if host_env_is_secret(name) {
+                tracing::warn!(
+                    host_var = %name,
+                    "MCP {kind} indirection to a secret-shaped host variable \
+                     refused (would exfiltrate credentials into the plugin)"
+                );
+                String::new()
+            } else {
+                std::env::var(name).unwrap_or_default()
+            }
+        }
+        None => val.to_string(),
+    }
+}
+
 fn host_env_is_secret(name: &str) -> bool {
     let u = name.to_uppercase();
     const SECRET_SUFFIXES: &[&str] = &[
