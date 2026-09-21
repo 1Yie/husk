@@ -81,6 +81,9 @@ pub struct Engine {
     next_request_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Context window for the active model — compaction triggers at 80%.
     context_window: usize,
+    /// Per-turn tool-loop bound — sessions use the default; delegated
+    /// subagents get a smaller budget.
+    max_tool_rounds: usize,
     /// The active model's declared input modalities (`ModelConfig.input`,
     /// e.g. `["text", "image"]`). `"image"` gates whether user-attached
     /// images ride the wire as real parts or degrade to path references.
@@ -128,6 +131,7 @@ impl Engine {
             decision: Arc::new(std::sync::Mutex::new(None)),
             next_request_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             context_window: 256_000,
+            max_tool_rounds: 128,
             model_input: Vec::new(),
             compaction_suppressor: CompactionSuppressor::default(),
             hooks: crate::hooks::HookChain::new(),
@@ -135,6 +139,12 @@ impl Engine {
             thinking_level: Arc::new(std::sync::RwLock::new(None)),
             thinking_level_map: None,
         }
+    }
+
+    /// Bound the tool loop per turn — default 128; delegated children
+    /// get a tighter budget so a runaway subagent can't burn the turn.
+    pub fn set_max_tool_rounds(&mut self, rounds: usize) {
+        self.max_tool_rounds = rounds;
     }
 
     /// Set thinking / reasoning intensity level.
@@ -370,9 +380,11 @@ impl Engine {
         let mut tool_calls_run = 0usize;
         let mut tool_rounds = 0usize;
         let mut force_no_tools = false;
-        const MAX_TOOL_ROUNDS: usize = 128; // guard against runaway tool loops
-        /// Goal-mode pushback counter — how many times the model went
-        /// quiet without declaring `goal_complete`/`goal_blocked`.
+        // Guard against runaway tool loops — delegated children get a
+        // smaller bound via set_max_tool_rounds.
+        let max_tool_rounds = self.max_tool_rounds;
+        // Goal-mode pushback counter — how many times the model went
+        // quiet without declaring `goal_complete`/`goal_blocked`.
         let mut goal_followups = 0usize;
         const MAX_GOAL_FOLLOWUPS: usize = 8;
         // A fresh turn starts with a clean goal signal — a leftover
@@ -969,8 +981,8 @@ impl Engine {
             }
 
             // If we have reached or exceeded the tool limit, force the next round to be a synthesis round without tools
-            if tool_rounds >= MAX_TOOL_ROUNDS && !force_no_tools {
-                let msg = format!("已达单轮工具调用上限 ({MAX_TOOL_ROUNDS} 轮)，正在汇总已收集的信息生成最终回答...");
+            if tool_rounds >= max_tool_rounds && !force_no_tools {
+                let msg = format!("已达单轮工具调用上限 ({max_tool_rounds} 轮)，正在汇总已收集的信息生成最终回答...");
                 let _ = io.ui_tx.try_send(UiEvent::SystemMessage(msg.clone()));
                 history.push(ChatMessage::notice(msg));
                 history.push(ChatMessage::user_hidden(

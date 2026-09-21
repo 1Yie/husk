@@ -44,6 +44,10 @@ pub struct ToolCtx {
     /// Subagent spawner — `delegate` runs a fresh-context child engine.
     /// `None` where delegation is unavailable (tests, child contexts).
     pub subagent: Option<crate::tools::delegate::SubagentSpawner>,
+    /// Delegation depth — `delegate` bumps it in the child's ctx and the
+    /// tool refuses past MAX_SUBAGENT_DEPTH, a second guard behind the
+    /// registry-level exclusion of `delegate`.
+    pub depth: u8,
     /// Goal-mode control channel: `goal_complete`/`goal_blocked` declare
     /// through it, the engine polls `state()` when the model goes quiet and
     /// takes the signal payload for the final report. Always present
@@ -62,6 +66,7 @@ impl ToolCtx {
             session: None,
             cancel: None,
             subagent: None,
+            depth: 0,
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
@@ -76,6 +81,7 @@ impl ToolCtx {
             session: None,
             cancel: None,
             subagent: None,
+            depth: 0,
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }

@@ -311,7 +311,8 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
             }
             add_lines.clear();
             hunks.clear();
-            cur_move = None;
+            // cur_move self-clears via take() in the Update arm — and it can
+            // only be set under an Update op, so nothing leaks across ops.
         };
     }
 
