@@ -112,6 +112,13 @@ pub fn sanitize_for_sample(
 
 /// Drop oldest non-system messages until `estimate_tokens(history)` fits
 /// `budget`. The system prompt (history[0]) is never dropped.
+///
+/// Tool-pair integrity (Responses API): dropping a `Role::Tool` row would
+/// orphan its `function_call` — strict backends (deepseek) reject the
+/// request with `No tool output found for tool call …`. So removing a tool
+/// row also strips the matching `tool_calls` entry on its assistant row;
+/// an assistant row left with no calls AND no content is removed too (a
+/// blank turn replays as a meaningless message).
 fn fit_conversation_to_budget(history: &mut Vec<ChatMessage>, budget: usize) {
     while history.len() > 1 && estimate_tokens(history) > budget {
         // Find the first non-system index and remove it — prefer dropping
@@ -127,7 +134,43 @@ fn fit_conversation_to_budget(history: &mut Vec<ChatMessage>, budget: usize) {
                     .position(|(_, m)| m.role != Role::System).map(|p| p + 1)
             });
         match drop_idx {
-            Some(i) if i < history.len() => { history.remove(i); }
+            Some(i) if i < history.len() => {
+                let removed = history.remove(i);
+                if removed.role == Role::Tool {
+                    if let Some(tid) = &removed.tool_call_id {
+                        // Orphan guard: the matching assistant row's call
+                        // is pulled with its output so the pair stays
+                        // atomic — an unpaired function_call is a 400.
+                        for m in history.iter_mut() {
+                            if m.role != Role::Assistant {
+                                continue;
+                            }
+                            if let Some(calls) = &mut m.tool_calls {
+                                let before = calls.len();
+                                calls.retain(|c| c.id != *tid);
+                                if calls.len() != before {
+                                    // Assistant row now carries neither
+                                    // calls nor text → drop the blank turn.
+                                    if calls.is_empty()
+                                        && m.content.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true)
+                                    {
+                                        m.tool_calls = None;
+                                        m.content = None;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Sweep any assistant row that ended up fully empty
+                // (no calls, no content) — it replays as a blank message.
+                history.retain(|m| {
+                    m.role != Role::Assistant
+                        || m.content.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false)
+                        || m.tool_calls.as_ref().map(|c| !c.is_empty()).unwrap_or(false)
+                });
+            }
             _ => break, // only system left — can't shrink further
         }
     }
@@ -165,12 +208,23 @@ pub fn plan(history: &[ChatMessage], window: usize) -> Option<CompactionPlan> {
     if cut <= 1 {
         return None; // suffix already covers everything
     }
+    // Don't split a tool block: if the suffix would begin with `Role::Tool`
+    // rows, their assistant `tool_calls` row sits in the prefix — compacting
+    // it away orphans the outputs, and strict backends (deepseek) reject the
+    // replayed request. Fold the dangling outputs into the compacted prefix.
+    while cut < history.len() && history[cut].role == Role::Tool {
+        cut += 1;
+    }
+    if cut >= history.len() {
+        return None; // the tail is one tool block — nothing to summarize past
+    }
     let prefix_tokens = estimate_tokens(&history[..cut]);
     Some(CompactionPlan { prefix_end: cut, prefix_tokens })
 }
 
-/// Apply a completed compaction: replace history[0..plan.prefix_end) with a
-/// single synthesized `NOTE` message. The `note_text` is Pass-2's output
+/// Apply a completed compaction: replace history[1..plan.prefix_end) with a
+/// single synthesized `NOTE` message — `history[0]` (the kernel system
+/// prompt) is never compacted away. The `note_text` is Pass-2's output
 /// (the condensed summary the provider produced).
 pub fn apply(history: &mut Vec<ChatMessage>, plan: &CompactionPlan, note_text: String) {
     let note = ChatMessage {
@@ -185,7 +239,10 @@ pub fn apply(history: &mut Vec<ChatMessage>, plan: &CompactionPlan, note_text: S
         ts: None,
             images: Vec::new(),
     };
-    history.splice(0..plan.prefix_end, std::iter::once(note));
+    // Splice from index 1 — `history[0]` is the rendered kernel system
+    // prompt; compacting it away would strip the model's tool protocol and
+    // mode contract for the rest of the session.
+    history.splice(1..plan.prefix_end, std::iter::once(note));
 }
 
 /// Sticky suppression state — after a failed compaction we don't re-fire on
@@ -328,6 +385,55 @@ mod tests {
     }
 
     #[test]
+    fn fit_removes_orphaned_tool_call_with_its_output() {
+        // A tool result is dropped for budget → the matching `tool_calls`
+        // entry on the assistant row must go too, else the next request
+        // replays an unpaired `function_call` and deepseek 400s with
+        // "No tool output found for tool call …".
+        let mut h = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "q"),
+            ChatMessage {
+                role: Role::Assistant,
+                content: Some("calling".into()),
+                tool_calls: Some(vec![
+                    agent_llm::types::ToolCall {
+                        id: "call_a".into(), name: "bash".into(), arguments: "{}".into(),
+                    },
+                    agent_llm::types::ToolCall {
+                        id: "call_b".into(), name: "bash".into(), arguments: "{}".into(),
+                    },
+                ]),
+                tool_call_id: None, is_error: None, notice: None, ts: None,
+                images: Vec::new(),
+            },
+            {
+                let mut m = msg(Role::Tool, &"output_a ".repeat(500));
+                m.tool_call_id = Some("call_a".into());
+                m
+            },
+            {
+                let mut m = msg(Role::Tool, "out_b");
+                m.tool_call_id = Some("call_b".into());
+                m
+            },
+            msg(Role::Assistant, "done"),
+        ];
+        // Budget fits everything except the bulky call_a output — one
+        // drop removes it and the orphaned call_a entry, nothing else.
+        let total = estimate_tokens(&h);
+        let call_a_out = 500 * "output_a ".len() / 4 + 4;
+        sanitize_for_sample(&mut h, total - call_a_out + 50, true, true);
+        // The bulky call_a output is gone; its call must be gone too.
+        let assistant = h.iter().find(|m| m.role == Role::Assistant && m.tool_calls.is_some()).unwrap();
+        let ids: Vec<&str> = assistant.tool_calls.as_ref().unwrap().iter().map(|c| c.id.as_str()).collect();
+        assert!(!ids.contains(&"call_a"), "orphaned call_a must be removed");
+        assert!(ids.contains(&"call_b"), "call_b survives with its output");
+        // call_b's output row is still present.
+        assert!(h.iter().any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_b")));
+    }
+
+    #[test]
     fn plan_splits_prefix_suffix() {
         let mut h = vec![msg(Role::System, "sys")];
         for _i in 0..20 {
@@ -352,8 +458,10 @@ mod tests {
         let p = plan(&h, 400).unwrap();
         let orig_len = h.len();
         apply(&mut h, &p, "summary".into());
-        assert_eq!(h.len(), orig_len - p.prefix_end + 1);
-        assert!(h[0].content.as_deref().unwrap().contains("[context note"));
+        // Splice starts at 1 — the system prompt survives compaction.
+        assert_eq!(h.len(), orig_len - p.prefix_end + 2);
+        assert_eq!(h[0].content.as_deref().unwrap(), "sys");
+        assert!(h[1].content.as_deref().unwrap().contains("[context note"));
     }
 
     #[test]
