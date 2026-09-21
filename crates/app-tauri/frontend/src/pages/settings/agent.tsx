@@ -505,7 +505,6 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                         key={m.id ?? i}
                         className="px-5 py-3 hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] transition-colors"
                       >
-                        {/* Top row: identity left, status chips + edit right. */}
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-3 min-w-0">
                             <span className="text-neutral-500 shrink-0">
@@ -543,10 +542,7 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                             </Button>
                           </div>
                         </div>
-                        {/* Bottom row: meta line spanning the full card
-                          * width — id · modalities · thinking levels ·
-                          * pricing — instead of competing with the
-                          * title/right badges for the middle column. */}
+                        {/* Meta line spanning the full card width. */}
                         {(m.id || segs.length > 0) && (
                           <div className="mt-1.5 pl-7 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono text-neutral-400">
                             {m.id && <span>{m.id}</span>}

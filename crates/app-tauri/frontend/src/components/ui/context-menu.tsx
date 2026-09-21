@@ -4,13 +4,8 @@ import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import { cn } from "@/lib/utils";
 
 // Same visual contract as dropdown-menu.tsx — one menu look across the app.
-// `modal` stays off so Radix never scroll-locks <body> mid-open.
-// NOTE: `modal={false}` is not a style choice — Radix defaults `modal=true`,
-// which mounts `MenuRootContentModal` (focus trap + `hideOthers` DOM walk +
-// RemoveScroll body lock) on every open. Under a busy main thread that work
-// delays the positioner's first paint and the menu flashes at the viewport's
-// top-left before snapping to the pointer. The non-modal branch skips all of
-// it; callers can still opt back in via props.
+// modal={false}: Radix's modal branch mounts a focus trap + body scroll-lock
+// whose extra work delayed first paint — the top-left flash on right-click.
 const ContextMenu = (
   props: React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Root>
 ) => <ContextMenuPrimitive.Root modal={false} {...props} />;

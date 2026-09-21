@@ -70,21 +70,13 @@ impl OpenAiResponsesProvider {
     /// `ChatMessage` list → Responses `input` array + `instructions`.
     /// System messages become `instructions`; everything else maps to items.
     ///
-    /// Integrity pass (verified against devin upstream): a `function_call_output`
-    /// whose `call_id` has no matching `function_call` item earlier in the input
-    /// is rejected upstream as `invalid_argument` → `internal_server_error`. We
-    /// track emitted call ids and DROP orphan outputs (a session whose assistant
-    /// tool_calls row was lost to an old persistence bug). Likewise an assistant
-    /// message with empty content AND no tool calls is dropped — it replays as a
-    /// blank turn.
-    ///
-    /// Symmetric repair (deepseek's Responses shim verifies BOTH directions
-    /// and rejects with `400 "No tool output found for tool call …"`): a
-    /// `function_call` whose output never landed — a malformed call skipped
-    /// before the engine's pairing fix, an interrupted turn, a compacted or
-    /// hand-edited snapshot — gets a synthesized placeholder output emitted
-    /// right where the real one was expected (immediately after the call,
-    /// before the next non-output item).
+    /// Integrity pass (upstream rejects unpaired items as
+    /// `invalid_argument`/`400 "No tool output found"`): orphan
+    /// `function_call_output` rows (no matching `function_call` earlier)
+    /// are dropped, blank assistant rows (empty content AND no tool calls)
+    /// are dropped, and a `function_call` whose output never landed gets a
+    /// synthesized placeholder emitted right after the call, before the
+    /// next non-output item.
     fn build_input(messages: &[ChatMessage]) -> (Vec<Value>, Option<String>) {
         let mut input = Vec::new();
         let mut instructions = Vec::new();
@@ -654,16 +646,9 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
                     // fall back to extracting it when `item.name` is absent
                     // — otherwise the assembler finishes a name="" call and
                     // the engine reports "malformed empty tool call".
-                    //
-                    // `item.done` is handled too: deepseek's Responses
-                    // shim leaves `call_id` empty on `added`/`args.delta`
-                    // and only fills it on the completed item — without
-                    // this arm the assembled call keeps id="" and the next
-                    // turn's replay 400s on `call_id: empty string`. The
-                    // assembler's assign-once rule keeps whichever id
-                    // arrived first (provisional `item.id` from `added`,
-                    // or the real `call_id` here); the persisted id stays
-                    // internally consistent with the tool result either way.
+                    // `item.done` is handled too: some shims leave `call_id`
+                    // empty until the completed item — without this arm the
+                    // assembled call keeps id="" and the next replay 400s.
                     let id = item.call_id.or_else(|| ev.call_id.clone()).or(item.id);
                     let name = item.name.or_else(|| {
                         id.as_deref()
@@ -741,9 +726,6 @@ mod tests {
 
     #[test]
     fn reasoning_text_delta_maps_to_reasoning_chunk() {
-        // DeepSeek's shim streams raw CoT under `reasoning_text.delta`,
-        // not the OpenAI `reasoning_summary_text.delta` — both must reach
-        // the UI as ReasoningDelta or a thinking model renders silent.
         let mut usage = None;
         let chunks = map_data(
             r#"{"type":"response.reasoning_text.delta","delta":"thinking hard"}"#,

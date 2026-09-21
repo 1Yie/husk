@@ -1,5 +1,3 @@
-// ChatStream — matches gensei's web ConversationThread design 1:1.
-// Replaces legacy app-desktop timeline dots, lines, and avatar cards.
 
 import { memo, useEffect, useRef, useState, useCallback, useMemo, type ComponentType, type ReactNode } from "react";
 import { cjk } from "@streamdown/cjk";
@@ -465,11 +463,7 @@ function FooterBtn({
   );
 }
 
-/** Per-side message footer — timestamp + tiny actions. The old
- * `—— HH:mm ——` divider lived ABOVE the turn; the stamp now sits under
- * the content it belongs to: user footer right-aligned under the bubble,
- * assistant footer left-aligned under the reply. Actions lead, the
- * timestamp trails last. */
+/** Per-side message footer — tiny actions, timestamp trailing last. */
 function TurnFooter({
   ts,
   copyText,
@@ -1450,10 +1444,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                       })}
                     </div>
                   )}
-                  {/* Assistant-side footer — stamps at the reply's
-                    * completion time (falls back to the prompt's ts for
-                    * text-less turns), copy + last-turn retry. Hidden
-                    * while this turn is still streaming. */}
+                  {/* ts falls back to the prompt's for text-less turns;
+                    * hidden while this turn streams. */}
                   {turn.steps.length > 0 &&
                     (!view.streaming || turnIdx !== visibleTurns.length - 1) &&
                     (turn.assistantTs ?? turn.ts) != null && (
