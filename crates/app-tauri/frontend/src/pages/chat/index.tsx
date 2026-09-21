@@ -13,6 +13,9 @@ interface ChatPageProps {
   workspaceRoot: string;
   gitInfo?: GitInfo | null;
   contextWindowHint?: number;
+  /** Active model's $/1M-token pricing — the header renders the running
+   * $ figure against `view.usage` when present. */
+  modelCost?: import("../../invoke/agent").ModelItem["cost"];
   /** Session/workspace switch in flight — the stream shows a skeleton. */
   loading?: boolean;
   /** Active session key (`root:id`) — resets the stream's incremental
@@ -26,7 +29,7 @@ interface ChatPageProps {
   onShowRaw?: () => void;
 }
 
-export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, loading, sessionKey, hasMore, onLoadOlder, onShowRaw }: ChatPageProps) {
+export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, modelCost, loading, sessionKey, hasMore, onLoadOlder, onShowRaw }: ChatPageProps) {
   // The composer floats over the stream bottom — measure its real height
   // (card + pb-6 gap + the taller approval/todo banner variants) and feed
   // it to the stream as bottom padding, so the last message can always
@@ -50,7 +53,7 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
 
   return (
     <>
-      <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} onShowRaw={onShowRaw} />
+      <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} modelCost={modelCost} onShowRaw={onShowRaw} />
       <ChatStream
         // Remount per session — scroll position, pin state, landing
         // flag and the windowing shell state are all per-session.

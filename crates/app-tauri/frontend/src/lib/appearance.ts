@@ -7,6 +7,7 @@
  */
 
 import { emit, listen } from "@tauri-apps/api/event";
+import { useEffect, useState } from "react";
 import type { AppearanceConfig } from "../invoke/agent";
 import { getAppearance } from "../invoke/agent";
 
@@ -106,4 +107,27 @@ export async function broadcastAppearance() {
   } catch {
     /* ignore */
   }
+}
+
+/** Live currency symbol for money displays — reads `appearance.json` once
+ *  and follows the `appearance://changed` broadcast, so flipping the
+ *  setting in the settings window relabels the header cost chip without
+ *  a restart. Missing key (old files) → "$". Symbol is plain text —
+ *  `¥` / `$` — no icon. */
+export function useCurrencySymbol(): "$" | "¥" {
+  const [cny, setCny] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    const read = () =>
+      getAppearance()
+        .then((c) => { if (!dead) setCny(c.currency === "cny"); })
+        .catch(() => {});
+    void read();
+    const un = listen(APPEARANCE_CHANGED, () => void read());
+    return () => {
+      dead = true;
+      void un.then((f) => f());
+    };
+  }, []);
+  return cny ? "¥" : "$";
 }

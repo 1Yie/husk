@@ -36,6 +36,11 @@ pub struct ModelDetails {
     /// engine's 256_000 default applies.
     #[serde(default)]
     pub context_window: Option<u64>,
+    /// Pricing ($/1M tokens) from the model's config entry — `None` means
+    /// "cost unknown, don't render a meter". The frontend turns the last
+    /// `Usage` event into a $ figure against these rates.
+    #[serde(default)]
+    pub cost: Option<agent_llm::ModelCost>,
 }
 
 /// Aggregated model information for UI dropdowns.
@@ -820,6 +825,7 @@ impl SessionManager {
                         thinking_level_map,
                         available_levels,
                         context_window: d.and_then(|x| x.context_window),
+                        cost: d.and_then(|x| x.cost.clone()),
                     });
                 }
             } else if let Some(dm) = &pcfg.default_model {
@@ -831,6 +837,7 @@ impl SessionManager {
                     thinking_level_map: None,
                     available_levels: Vec::new(),
                     context_window: None,
+                    cost: None,
                 });
             } else {
                 models.push(ModelDetails {
@@ -841,6 +848,7 @@ impl SessionManager {
                     thinking_level_map: None,
                     available_levels: Vec::new(),
                     context_window: None,
+                    cost: None,
                 });
             }
         }
@@ -854,6 +862,7 @@ impl SessionManager {
                 thinking_level_map: None,
                 available_levels: Vec::new(),
                 context_window: None,
+                cost: None,
             });
         }
 

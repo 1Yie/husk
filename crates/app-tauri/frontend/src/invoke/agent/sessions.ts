@@ -126,6 +126,23 @@ export interface ModelItem {
   thinking_level_map?: Record<string, string | null>;
   available_levels?: string[];
   context_window?: number;
+  /** $/1M tokens — from the model's config `cost` block. Absent when the
+   * model carries no pricing; the header cost chip hides itself then. */
+  cost?: {
+    input?: number;
+    output?: number;
+    cache_read?: number;
+    cache_write?: number;
+  };
+}
+
+/** Broadcast after any config write (model list, prefs, instructions) so
+ * mounted views re-fetch — without it a settings save only surfaced on
+ * remount (the stale model-picker bug). */
+export const CONFIG_CHANGED_EVENT = "husk:config-changed";
+
+export function notifyConfigChanged() {
+  window.dispatchEvent(new CustomEvent(CONFIG_CHANGED_EVENT));
 }
 
 export interface ModelInfo {
@@ -272,6 +289,11 @@ export function setDefaultPrefs(prefs: DefaultPrefs) {
   return invoke<{ success: boolean }>("agent_session", {
     op: "set_default_prefs",
     payload: prefs,
+  }).then((r) => {
+    // Prefs shape the composer's mode/level pickers too — same refresh
+    // trigger as a full config save.
+    notifyConfigChanged();
+    return r;
   });
 }
 
@@ -306,7 +328,11 @@ export function getAppConfig() {
 }
 
 export function saveAppConfig(payload: any) {
-  return invoke<{ success: boolean }>("agent_session", { op: "save_app_config", payload });
+  return invoke<{ success: boolean }>("agent_session", { op: "save_app_config", payload })
+    .then((r) => {
+      notifyConfigChanged();
+      return r;
+    });
 }
 
 export function getSandboxInfo() {
@@ -341,6 +367,8 @@ export interface AppearanceConfig {
   ui_font: string;
   code_font: string;
   contrast: number;
+  /** Cost display currency — "usd" | "cny". Absent in older files → usd. */
+  currency?: "usd" | "cny";
 }
 
 export function getAppearance() {

@@ -413,7 +413,7 @@ pub fn agent_session(
             };
             // Merge only the keys the caller sent — partial updates keep
             // the rest of the file intact.
-            for k in ["theme_mode","theme_id","accent","background","foreground","dark_accent","dark_background","dark_foreground","ui_font","code_font","contrast"] {
+            for k in ["theme_mode","theme_id","accent","background","foreground","dark_accent","dark_background","dark_foreground","ui_font","code_font","contrast","currency"] {
                 if let Some(v) = p.get(k) {
                     obj.insert(k.into(), v.clone());
                 }

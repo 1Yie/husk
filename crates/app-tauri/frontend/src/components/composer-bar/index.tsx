@@ -208,6 +208,20 @@ export function ComposerBar({
     void fetchModels();
   }, [workspaceRoot]);
 
+  // Settings saves broadcast CONFIG_CHANGED_EVENT — re-fetch so a
+  // newly added/edited model appears in the picker without remount.
+  useEffect(() => {
+    const onChange = () => void fetchModels();
+    window.addEventListener(agent.CONFIG_CHANGED_EVENT, onChange);
+    // Window focus covers the other edit path — a config.toml saved from
+    // an external editor while the app was unfocused.
+    window.addEventListener("focus", onChange);
+    return () => {
+      window.removeEventListener(agent.CONFIG_CHANGED_EVENT, onChange);
+      window.removeEventListener("focus", onChange);
+    };
+  }, []);
+
   const currentModelObj =
     models.find((m) => m.model === activeModel && m.provider === activeProvider) ||
     models.find((m) => m.model === activeModel);

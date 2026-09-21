@@ -1,10 +1,11 @@
 import { WindowControls } from "@/components/window-controls";
 import { isMac } from "@/lib/platform";
+import { useCurrencySymbol } from "@/lib/appearance";
 import { GitBranch, ChartPie, Zap, BarChartHorizontalStart, Inbox } from "@keyline-icons/react";
 import { BrainCircuit } from "lucide-react";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import type { SessionView } from "../../hooks/stream-view";
-import type { GitInfo } from "../../invoke/agent";
+import type { GitInfo, ModelItem } from "../../invoke/agent";
 
 interface TitleBarProps {
   title?: string;
@@ -13,6 +14,9 @@ interface TitleBarProps {
   /** Active model's context window — used as the meter denominator before
    * the first `Usage` event arrives. */
   contextWindowHint?: number;
+  /** Active model's $/1M-token pricing — the cost chip renders only when
+   * the model carries a `cost` block. */
+  modelCost?: ModelItem["cost"];
   /** Opens the raw-JSON history viewer for the active session. */
   onShowRaw?: () => void;
 }
@@ -25,7 +29,37 @@ function fmtRate(n: number) {
   return n >= 100 ? `${Math.round(n)}` : n.toFixed(1);
 }
 
-export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, onShowRaw }: TitleBarProps) {
+/** Sub-dollar precision: 4 decimals under a cent, 3 under a dollar. */
+function fmtCost(n: number, sym: string) {
+  if (n === 0) return `${sym}0.00`;
+  if (n < 0.01) return `${sym}${n.toFixed(4)}`;
+  if (n < 1) return `${sym}${n.toFixed(3)}`;
+  return `${sym}${n.toFixed(2)}`;
+}
+
+/** Running $ for the displayed usage — uncached prompt at `input`, cached
+ * hits at `cache_read` (falling back to input), completion at `output`.
+ * Prices are $/1M tokens. `cache_write` exists in config but the wire
+ * doesn't report written-vs-read cache split, so it stays unused. */
+function turnCost(
+  prompt: number,
+  cached: number,
+  completion: number,
+  cost: ModelItem["cost"],
+): number | null {
+  if (!cost) return null;
+  const input = cost.input ?? 0;
+  const cacheRead = cost.cache_read ?? input;
+  const output = cost.output ?? 0;
+  return (
+    (Math.max(0, prompt - cached) * input +
+      cached * cacheRead +
+      completion * output) /
+    1e6
+  );
+}
+
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw }: TitleBarProps) {
   const prompt = view?.usage.prompt ?? 0;
   const completion = view?.usage.completion ?? 0;
   const cached = view?.usage.cachedTokens ?? 0;
@@ -33,6 +67,8 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   const ctxWin = view?.usage.contextWindow || contextWindowHint || 256000;
   const pct = Math.round((prompt / ctxWin) * 100);
   const toks = view?.toksPerSec ?? 0;
+  const cost = turnCost(prompt, cached, completion, modelCost);
+  const sym = useCurrencySymbol();
   const ctxColor =
     pct >= 80 ? "text-red-500 dark:text-red-400" : pct >= 50 ? "text-amber-500 dark:text-amber-400" : undefined;
 
@@ -108,6 +144,21 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
             {fmtK(cached)}/{fmtK(uncached)}
           </span>
         </TooltipSimple>
+        {cost !== null && (
+          <TooltipSimple
+            content={
+              `本轮花费: ${fmtCost(cost, sym)}` +
+              `（输入 ${sym}${modelCost?.input ?? 0}/M` +
+              (modelCost?.cache_read != null ? ` · 缓存读 ${sym}${modelCost.cache_read}/M` : "") +
+              ` · 输出 ${sym}${modelCost?.output ?? 0}/M）`
+            }
+            side="bottom"
+          >
+            <span className="flex items-center gap-1 cursor-default">
+              {fmtCost(cost, sym)}
+            </span>
+          </TooltipSimple>
+        )}
         <TooltipSimple content={`生成速率: ${fmtRate(toks)} tok/s`} side="bottom">
           <span className="flex items-center gap-1 cursor-default">
             <Zap className="h-3 w-3" />

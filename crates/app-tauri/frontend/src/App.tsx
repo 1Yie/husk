@@ -87,6 +87,7 @@ export function App() {
     runningKeys,
     gitInfo,
     ctxWindow,
+    modelCost,
   } = useAgentEvents(workspace.root);
   const { projects, sessions, refresh, newSession, openSession } = useAgentSession();
   // True while a session/workspace switch is fetching history + rebuilding
@@ -381,6 +382,7 @@ export function App() {
           workspaceRoot={workspace.root}
           gitInfo={gitInfo}
           contextWindowHint={ctxWindow}
+          modelCost={modelCost}
           loading={viewLoading}
           sessionKey={`${workspace.root}:${activeId}`}
           hasMore={(active?.historyStart ?? 0) > 0}
@@ -416,7 +418,7 @@ export function App() {
           if (!open) setPendingFork(null);
         }}
       >
-        <DialogContent className="max-w-sm gap-3 p-4">
+        <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-base">Fork 会话</DialogTitle>
             <DialogDescription>
@@ -451,7 +453,7 @@ export function App() {
           if (!open) setPendingDelete(null);
         }}
       >
-        <DialogContent className="max-w-sm gap-3 p-4">
+        <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-base">删除会话</DialogTitle>
             <DialogDescription>

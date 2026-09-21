@@ -9,6 +9,7 @@ import { applyAppearance, broadcastAppearance } from "../../lib/appearance";
  *  stored colors/fonts/contrast); only `theme_mode` is user-editable. */
 export function AppearanceSettings() {
   const [themeMode, setThemeModeState] = useState<"system" | "light" | "dark">("system");
+  const [currency, setCurrency] = useState<"usd" | "cny">("usd");
   // First-load flag: applying the fetched config must not echo back a
   // `set_appearance` write.
   const hydrated = useRef(false);
@@ -22,6 +23,7 @@ export function AppearanceSettings() {
       .then((cfg) => {
         cfgRef.current = cfg;
         setThemeModeState(cfg.theme_mode);
+        setCurrency(cfg.currency === "cny" ? "cny" : "usd");
         applyAppearance(cfg);
         hydrated.current = true;
       })
@@ -37,6 +39,16 @@ export function AppearanceSettings() {
     }
     if (hydrated.current) {
       void setAppearance({ theme_mode: v })
+        .then(() => broadcastAppearance())
+        .catch((e) => console.error("save appearance:", e));
+    }
+  };
+
+  const setCurrencyMode = (v: "usd" | "cny") => {
+    setCurrency(v);
+    if (cfgRef.current) cfgRef.current = { ...cfgRef.current, currency: v };
+    if (hydrated.current) {
+      void setAppearance({ currency: v })
         .then(() => broadcastAppearance())
         .catch((e) => console.error("save appearance:", e));
     }
@@ -167,6 +179,40 @@ export function AppearanceSettings() {
               深色
             </span>
           </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-semibold text-neutral-900">
+            货币单位
+          </span>
+          <span className="text-xs text-neutral-500">
+            标题栏会话花费的显示符号，仅切换标识不做汇率换算
+          </span>
+        </div>
+
+        <div className="flex gap-2">
+          {(
+            [
+              { v: "usd", label: "$ 美元" },
+              { v: "cny", label: "¥ 人民币" },
+            ] as const
+          ).map(({ v, label }) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setCurrencyMode(v)}
+              className={cn(
+                "h-8 px-4 rounded-lg text-xs font-medium transition-colors cursor-pointer select-none",
+                currency === v
+                  ? "border-2 border-accent text-neutral-900 bg-accent/5"
+                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] text-neutral-600 hover:border-neutral-300"
+              )}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
     </div>

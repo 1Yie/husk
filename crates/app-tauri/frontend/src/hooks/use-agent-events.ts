@@ -24,6 +24,10 @@ export function useAgentEvents(workspaceRoot: string) {
   // Context-window size of the active model — lets the header meter show
   // the real denominator before the first `Usage` event of a session.
   const [ctxWindow, setCtxWindow] = useState(0);
+  // Active model's $/1M-token pricing — the header renders the running
+  // cost against `view.usage`. Undefined when the model has no `cost`
+  // block → the chip hides.
+  const [modelCost, setModelCost] = useState<agent.ModelItem["cost"]>();
 
   /** Install a rebuilt view for `id` — used by `openSession` when the
    * session has no live event buffer. Never overwrites an existing view:
@@ -96,7 +100,7 @@ export function useAgentEvents(workspaceRoot: string) {
     const un = agent.onAgentEvent((env) => {
       queue.push(env);
       const ev = env.event;
-      if ("StateChanged" in ev) {
+      if (typeof ev === "object" && "StateChanged" in ev) {
         const s = ev.StateChanged;
         const key = viewKey(env.root ?? "", env.session);
         if (key !== activeKeyRef.current) {
@@ -121,7 +125,7 @@ export function useAgentEvents(workspaceRoot: string) {
   // streaming edge, since a turn is the main thing that dirties the tree.
   // Same cadence for the model's context window (model may switch between
   // turns via the composer picker).
-  useEffect(() => {
+  const refreshModelInfo = useCallback(() => {
     let dead = false;
     void agent
       .getGitInfo()
@@ -139,12 +143,27 @@ export function useAgentEvents(workspaceRoot: string) {
           ) ?? info.models.find((m) => m.model === info.active_model);
         const cw = cur?.context_window;
         if (!dead && cw) setCtxWindow(cw);
+        if (!dead) setModelCost(cur?.cost);
       })
       .catch(() => {});
     return () => {
       dead = true;
     };
-  }, [activeId, active.streaming]);
+  }, []);
+
+  useEffect(() => {
+    const off = refreshModelInfo();
+    return off;
+  }, [activeId, active.streaming, refreshModelInfo]);
+
+  // A settings save broadcasts CONFIG_CHANGED_EVENT — re-read model info
+  // so a renamed/repriced/re-windowed model reflects in the header
+  // immediately instead of on the next turn edge.
+  useEffect(() => {
+    const onChange = () => { void refreshModelInfo(); };
+    window.addEventListener(agent.CONFIG_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(agent.CONFIG_CHANGED_EVENT, onChange);
+  }, [refreshModelInfo]);
 
   // Sidebar running flags — derived live from each session's last
   // `StateChanged`, so the orb reacts on the event itself instead of
@@ -175,5 +194,6 @@ export function useAgentEvents(workspaceRoot: string) {
     runningKeys,
     gitInfo,
     ctxWindow,
+    modelCost,
   };
 }

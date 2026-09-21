@@ -407,6 +407,11 @@ pub struct AppearanceSettings {
     /// 0–100 contrast slider value (UI hint, maps to a subtle text boost).
     #[serde(default = "default_contrast")]
     pub contrast: u32,
+    /// Cost display currency — "usd" | "cny". A display hint only: the
+    /// title-bar chip renders the same number with `$` or `¥`; no FX
+    /// conversion happens anywhere.
+    #[serde(default = "default_currency")]
+    pub currency: String,
 }
 
 fn default_theme_mode() -> String { "system".into() }
@@ -416,6 +421,7 @@ fn default_fg() -> String { "#1A1C1F".into() }
 fn default_ui_font() -> String { "-apple-system, BlinkMacSystemFont, \"Segoe UI\"".into() }
 fn default_code_font() -> String { "ui-monospace, \"SFMono-Regular\", monospace".into() }
 fn default_contrast() -> u32 { 45 }
+fn default_currency() -> String { "usd".into() }
 
 impl Default for AppearanceSettings {
     fn default() -> Self {
@@ -431,6 +437,7 @@ impl Default for AppearanceSettings {
             ui_font: default_ui_font(),
             code_font: default_code_font(),
             contrast: default_contrast(),
+            currency: default_currency(),
         }
     }
 }
