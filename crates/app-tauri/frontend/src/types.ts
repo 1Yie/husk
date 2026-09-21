@@ -57,7 +57,8 @@ export type UiEvent =
   | { AssistantMessage: string }
   | { SystemMessage: string }
   | { Usage: { prompt_tokens: number; completion_tokens: number; context_window: number; cached_tokens: number } }
-  | { Error: string };
+  | { Error: string }
+  | "TurnRetry";
 
 /** UI → kernel commands — mirrors `UiCommand`. */
 export type UiCommand =
@@ -70,7 +71,8 @@ export type UiCommand =
   | { SetPermissionMode: { mode: string } }
   | { SetAgentMode: { mode: string } }
   | { SetThinkingLevel: { level: string } }
-  | "UndoLastTurn";
+  | "UndoLastTurn"
+  | "Retry";
 
 /** The `agent://event` envelope — owning workspace root + session id +
  * the event payload. Session ids are per-workspace; `root` keeps a

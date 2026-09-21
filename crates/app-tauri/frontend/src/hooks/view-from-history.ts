@@ -277,7 +277,7 @@ function foldMessage(
     if (m.role === "user") {
       v.items.push({ kind: "user", text, ts: m.ts ?? undefined, hi });
     } else {
-      v.items.push({ kind: "assistant", text, streaming: false, hi });
+      v.items.push({ kind: "assistant", text, streaming: false, ts: m.ts ?? undefined, hi });
       if (markerLine) v.items.push({ kind: "system", text: markerLine, hi });
     }
 }

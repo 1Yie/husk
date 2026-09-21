@@ -107,6 +107,10 @@ pub enum UiCommand {
     SetThinkingLevel { level: String },
     /// Undo/rewind the last-turn hunk set (Stage 6 wires HunkTracker).
     UndoLastTurn,
+    /// Regenerate the last turn — the session rewinds `history` to the
+    /// last user prompt's position and re-runs it through the normal
+    /// Prompt path. Idle-only; ignored while a turn is active.
+    Retry,
 }
 
 /// One offered answer on an `ask_question` card.
@@ -171,4 +175,8 @@ pub enum UiEvent {
     Usage { prompt_tokens: u32, completion_tokens: u32, context_window: u32, cached_tokens: u32 },
     /// Session-fatal error.
     Error(String),
+    /// A `Retry` command rewound the session to the last user prompt —
+    /// the UI drops the retried turn's items before the fresh
+    /// `UserPrompt` echo lands on the same stream.
+    TurnRetry,
 }

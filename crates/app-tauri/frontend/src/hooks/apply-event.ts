@@ -38,6 +38,18 @@ export function applyEvent(
   const items = [...v.items];
   const last = () => items[items.length - 1];
 
+  if (ev === "TurnRetry") {
+    // The session rewound to before the last turn's user prompt — drop
+    // that turn's items (user bubble included; the fresh `UserPrompt`
+    // echo re-adds it). Any pending question/approval dies with the turn.
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].kind === "user") {
+        items.splice(i);
+        break;
+      }
+    }
+    return { ...v, items, pendingQuestion: undefined };
+  }
   if ("StateChanged" in ev) {
     const s = ev.StateChanged;
     // Mirror the kernel's `AgentState::is_active()` — the reply-wait pill
@@ -75,9 +87,31 @@ export function applyEvent(
   if ("ReasoningDelta" in ev) {
     const rate = bumpRate(v, ev.ReasoningDelta);
     const l = last();
-    if (l?.kind === "thinking" && !l.done)
-      items[items.length - 1] = { ...l, text: l.text + ev.ReasoningDelta };
-    else items.push({ kind: "thinking", text: ev.ReasoningDelta, done: false });
+    // The current reply's thinking block is either the tail item, or sits
+    // immediately before the streaming assistant bubble — some backends
+    // (deepseek's Responses shim) emit reasoning deltas AFTER the answer
+    // text, which used to spawn a dangling "思考过程" pill at the end of
+    // the reply. Append to that block, or insert a fresh one ahead of the
+    // streaming assistant; a done block reopening is harmless (the next
+    // TextDelta/AssistantMessage closes it again via closeOpenThinking).
+    let ti = l?.kind === "thinking" && !l.done ? items.length - 1 : -1;
+    if (ti < 0 && l?.kind === "assistant" && l.streaming) {
+      const p = items.length - 2;
+      if (items[p]?.kind === "thinking") ti = p;
+    }
+    if (ti >= 0) {
+      const it = items[ti];
+      if (it.kind === "thinking")
+        items[ti] = { ...it, text: it.text + ev.ReasoningDelta, done: false };
+    } else if (l?.kind === "assistant" && l.streaming) {
+      items.splice(items.length - 1, 0, {
+        kind: "thinking",
+        text: ev.ReasoningDelta,
+        done: false,
+      });
+    } else {
+      items.push({ kind: "thinking", text: ev.ReasoningDelta, done: false });
+    }
     return { ...v, items, rate, toksPerSec: rateEstimate(rate) };
   }
   if ("ToolCallStarted" in ev) {
@@ -180,7 +214,7 @@ export function applyEvent(
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (it.kind === "assistant" && it.streaming) {
-        items[i] = { ...it, text: ev.AssistantMessage, streaming: false };
+        items[i] = { ...it, text: ev.AssistantMessage, streaming: false, ts: Date.now() };
         replaced = true;
         break;
       }
@@ -192,7 +226,7 @@ export function applyEvent(
     if (!replaced) {
       const l = last();
       if (!(l?.kind === "assistant" && l.text === ev.AssistantMessage)) {
-        items.push({ kind: "assistant", text: ev.AssistantMessage, streaming: false });
+        items.push({ kind: "assistant", text: ev.AssistantMessage, streaming: false, ts: Date.now() });
       }
     }
     return { ...v, items };

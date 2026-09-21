@@ -48,3 +48,7 @@ export const setThinkingLevel = (level: string) =>
 
 /** Rewind the last-turn hunk set. */
 export const undoLastTurn = () => send("UndoLastTurn");
+
+/** Regenerate the last turn — the kernel rewinds history to the last
+ * user prompt and re-runs it (slash intercept + hooks included). */
+export const retryTurn = () => send("Retry");

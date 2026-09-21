@@ -9,7 +9,7 @@ export type StreamItem =
    * persisted messages; live items leave it undefined. It makes turn
    * keys stable when older pages prepend above. */
   | { kind: "user"; text: string; ts?: number; hi?: number }
-  | { kind: "assistant"; text: string; streaming: boolean; hi?: number }
+  | { kind: "assistant"; text: string; streaming: boolean; ts?: number; hi?: number }
   | { kind: "thinking"; text: string; done: boolean; hi?: number }
   | {
       kind: "tool";

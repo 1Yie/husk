@@ -517,6 +517,17 @@ fn apply_to_view(v: &mut SessionView, ev: &UiEvent) {
                 question.clone(),
             )));
         }
+        // A `Retry` rewound the session — drop the retried turn's rows so
+        // the fresh `UserPrompt` echo doesn't stack on top of them.
+        UiEvent::TurnRetry => {
+            if let Some(i) = v
+                .stream
+                .iter()
+                .rposition(|it| matches!(it, StreamItem::Message(m) if m.role == Role::User))
+            {
+                v.stream.truncate(i);
+            }
+        }
     }
 }
 

@@ -155,6 +155,28 @@ impl SessionActor {
             }
         }
         let mut known_call_ids = std::collections::HashSet::new();
+        // 4. strip dangling `tool_calls` entries — a call whose output never
+        //    landed (a malformed call skipped before the pairing fix, a
+        //    crash mid-dispatch, a hand-edited snapshot) replays on strict
+        //    backends as `function_call` with no `function_call_output` →
+        //    deepseek rejects every later request with `No tool output
+        //    found for tool call …`. Dropping the entry also orphan-drops
+        //    nothing: outputs of *kept* calls are untouched below.
+        let output_ids: std::collections::HashSet<String> = history
+            .iter()
+            .filter(|m| m.role == agent_llm::types::Role::Tool)
+            .filter_map(|m| m.tool_call_id.clone())
+            .collect();
+        for m in &mut history {
+            if m.role == agent_llm::types::Role::Assistant {
+                if let Some(calls) = &mut m.tool_calls {
+                    calls.retain(|c| output_ids.contains(&c.id));
+                    if calls.is_empty() {
+                        m.tool_calls = None;
+                    }
+                }
+            }
+        }
         history.retain(|m| {
             match m.role {
                 agent_llm::types::Role::Assistant => {
@@ -732,55 +754,97 @@ impl SessionActor {
         }
     }
 
+    /// `UiCommand::Prompt` / `UiCommand::Retry` shared path — slash-command
+    /// intercept + the `on_user_input` hook chain, then `run_prompt`. Kept
+    /// out of the `match` so `Retry` can re-enter it without recursion.
+    async fn handle_prompt(&mut self, text: String) {
+        // Stage 9: `/x` slash commands intercept before the ReAct
+        // loop — zero tokens. Unknown `/x` falls through as a prompt.
+        let workspace_root = self.workspace_root.clone();
+        let cmd_result = {
+            let mut ctx = CommandCtx {
+                history: &mut self.history,
+                permission_mode: "default",
+                workspace_root: &workspace_root,
+                ui_tx: &self.io.ui_tx,
+            };
+            CommandRegistry::try_run(&text, &mut ctx).await
+        }; // ctx dropped here — the history/ui_tx borrows end
+        match cmd_result {
+            Some(CommandResult::Reply(r)) => {
+                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(r.clone()));
+                self.history.push(ChatMessage::notice(r));
+            }
+            Some(CommandResult::Control(op)) => {
+                self.run_control(op).await;
+            }
+            Some(CommandResult::FeedToAgent(prompt)) => {
+                self.run_prompt(prompt).await;
+            }
+            None => {
+                // Hook chain: on_user_input may block/rewrite.
+                match self.hooks.run_on_user_input(&text).await {
+                    crate::hooks::HookAction::BlockTurn(reason) => {
+                        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(reason.clone()));
+                        self.history.push(ChatMessage::notice(reason));
+                    }
+                    crate::hooks::HookAction::InjectSystemNote(note) => {
+                        self.history.push(ChatMessage::system(note));
+                        self.run_prompt(text).await;
+                    }
+                    crate::hooks::HookAction::MutateMessages(msgs) => {
+                        self.history = msgs;
+                        self.run_prompt(text).await;
+                    }
+                    crate::hooks::HookAction::Continue => {
+                        self.run_prompt(text).await;
+                    }
+                }
+            }
+        }
+    }
+
     /// Consume a `UiCommand`. `Prompt` runs a turn to completion; `Steer`
     /// lands mid-turn via the engine's drain; the rest are no-ops until their
     /// owning stages land.
     pub async fn handle(&mut self, cmd: UiCommand) {
         match cmd {
             UiCommand::Prompt { text } => {
-                // Stage 9: `/x` slash commands intercept before the ReAct
-                // loop — zero tokens. Unknown `/x` falls through as a prompt.
-                let workspace_root = self.workspace_root.clone();
-                let cmd_result = {
-                    let mut ctx = CommandCtx {
-                        history: &mut self.history,
-                        permission_mode: "default",
-                        workspace_root: &workspace_root,
-                        ui_tx: &self.io.ui_tx,
-                    };
-                    CommandRegistry::try_run(&text, &mut ctx).await
-                }; // ctx dropped here — the history/ui_tx borrows end
-                match cmd_result {
-                    Some(CommandResult::Reply(r)) => {
-                        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(r.clone()));
-                        self.history.push(ChatMessage::notice(r));
+                self.handle_prompt(text).await;
+            }
+            UiCommand::Retry => {
+                // Regenerate the last turn: rewind `history` to just before
+                // its user prompt and re-run the text through the full
+                // Prompt path (slash intercept + hooks), so a retried `/x`
+                // behaves exactly like a hand-typed resend. `TurnRetry`
+                // tells the UI to drop the old turn's items before the
+                // fresh `UserPrompt` echo lands. Idle-only — a live turn
+                // owns the prompt slot and a pending approval/question is
+                // mid-flight state a rewind can't safely discard.
+                if self.state.is_active() {
+                    return;
+                }
+                let idx = self.history.iter().rposition(|m| {
+                    if m.role != agent_llm::Role::User || m.notice.is_some() {
+                        return false;
                     }
-                    Some(CommandResult::Control(op)) => {
-                        self.run_control(op).await;
+                    // Mid-turn steering persists as a user message carrying
+                    // this fixed prefix — it belongs to the turn being
+                    // retried, so it can't be the rewind target itself.
+                    !m.content
+                        .as_deref()
+                        .unwrap_or("")
+                        .starts_with("The user interrupted:")
+                });
+                if let Some(idx) = idx {
+                    let text = self.history[idx].content.clone().unwrap_or_default();
+                    if text.is_empty() {
+                        return;
                     }
-                    Some(CommandResult::FeedToAgent(prompt)) => {
-                        self.run_prompt(prompt).await;
-                    }
-                    None => {
-                        // Hook chain: on_user_input may block/rewrite.
-                        match self.hooks.run_on_user_input(&text).await {
-                            crate::hooks::HookAction::BlockTurn(reason) => {
-                                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(reason.clone()));
-                                self.history.push(ChatMessage::notice(reason));
-                            }
-                            crate::hooks::HookAction::InjectSystemNote(note) => {
-                                self.history.push(ChatMessage::system(note));
-                                self.run_prompt(text).await;
-                            }
-                            crate::hooks::HookAction::MutateMessages(msgs) => {
-                                self.history = msgs;
-                                self.run_prompt(text).await;
-                            }
-                            crate::hooks::HookAction::Continue => {
-                                self.run_prompt(text).await;
-                            }
-                        }
-                    }
+                    info!(history_idx = idx, "retry — rewinding to last user prompt");
+                    self.history.truncate(idx);
+                    let _ = self.io.ui_tx.try_send(UiEvent::TurnRetry);
+                    self.handle_prompt(text).await;
                 }
             }
             UiCommand::Steer { text } => {

@@ -1,7 +1,7 @@
 // ChatStream — matches gensei's web ConversationThread design 1:1.
 // Replaces legacy app-desktop timeline dots, lines, and avatar cards.
 
-import { memo, useEffect, useRef, useState, useCallback, useMemo, type ComponentType } from "react";
+import { memo, useEffect, useRef, useState, useCallback, useMemo, type ComponentType, type ReactNode } from "react";
 import { cjk } from "@streamdown/cjk";
 import { Streamdown } from "streamdown";
 import type { SessionView, StreamItem } from "../../hooks/stream-view";
@@ -24,6 +24,7 @@ import {
   Sparkles,
   TextQuote,
   FileArrowRight,
+  RotateCcw,
   type IconProps,
 } from "@keyline-icons/react";
 import { chatMarkdownComponents } from "./markdown-components";
@@ -37,11 +38,21 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { requestQuote, selectionWithin } from "../../lib/selection-bus";
 import { cn } from "@/lib/utils";
 import { loadStamp } from "@/lib/load-probe";
 import { readAttachment } from "../../invoke/agent/sessions";
+import { retryTurn } from "../../invoke/agent/commands";
 
 const streamdownIcons = {
   CheckIcon: Check,
@@ -390,8 +401,11 @@ interface Turn {
    * click-seek target the right turn after its page loads. */
   hi?: number;
   userText?: string;
-  /** Epoch ms of the user message — drives the `—— time ——` divider. */
+  /** Epoch ms of the user message — footer timestamp on the bubble. */
   ts?: number;
+  /** Epoch ms of the last assistant item — the turn-end stamp under the
+   * assistant block. Falls back to `ts` when a turn produced no text. */
+  assistantTs?: number;
   steps: AssistantStep[];
 }
 
@@ -425,6 +439,128 @@ function formatFullTime(ts: number): string {
   const gmt = `GMT${sign}${Number.isInteger(hours) ? hours : hours.toFixed(1)}`;
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return `${date} ${time} ${gmt} (${zone})`;
+}
+
+/** Tiny ghost icon-button for the per-message footers. */
+function FooterBtn({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <TooltipSimple content={label} side="bottom">
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        className="h-5 w-5 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 transition-colors cursor-pointer"
+      >
+        {children}
+      </button>
+    </TooltipSimple>
+  );
+}
+
+/** Per-side message footer — timestamp + tiny actions. The old
+ * `—— HH:mm ——` divider lived ABOVE the turn; the stamp now sits under
+ * the content it belongs to: user footer right-aligned under the bubble,
+ * assistant footer left-aligned under the reply. Actions lead, the
+ * timestamp trails last. */
+function TurnFooter({
+  ts,
+  copyText,
+  onRetry,
+  align,
+}: {
+  ts: number;
+  copyText?: string;
+  onRetry?: () => void;
+  align: "start" | "end";
+}) {
+  const [copied, setCopied] = useState(false);
+  const [retryOpen, setRetryOpen] = useState(false);
+  const copy = async () => {
+    if (!copyText) return;
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      toast.error("复制失败");
+    }
+  };
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 text-[11px] text-neutral-400 select-none",
+        align === "end" ? "justify-end" : "justify-start"
+      )}
+    >
+      {copyText != null && copyText.trim() !== "" && (
+        <FooterBtn label="复制" onClick={() => void copy()}>
+          {copied ? (
+            <Check className="h-3.5 w-3.5" />
+          ) : (
+            <Copy className="h-3.5 w-3.5" />
+          )}
+        </FooterBtn>
+      )}
+      {onRetry && (
+        <>
+          <FooterBtn label="重试" onClick={() => setRetryOpen(true)}>
+            <RotateCcw className="h-3.5 w-3.5" />
+          </FooterBtn>
+          <Dialog open={retryOpen} onOpenChange={setRetryOpen}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle className="text-base">重试回复</DialogTitle>
+                <DialogDescription>
+                  将移除当前回复，并从你的消息重新生成。该操作不可撤销。
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRetryOpen(false)}
+                >
+                  取消
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setRetryOpen(false);
+                    onRetry();
+                  }}
+                >
+                  重试
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
+      <span
+        className="cursor-default px-0.5 tabular-nums"
+        data-tooltip={formatFullTime(ts)}
+      >
+        {formatTurnTime(ts)}
+      </span>
+    </div>
+  );
+}
+
+/** The copyable text of a turn's assistant side — text steps joined,
+ * thinking/tool rows excluded (copy = the answer, not the trace). */
+function assistantCopyText(turn: Turn): string {
+  return turn.steps
+    .flatMap((s) => (s.type === "text" ? [s.text] : []))
+    .join("\n\n")
+    .trim();
 }
 
 function parseTurns(items: StreamItem[]): Turn[] {
@@ -476,6 +612,7 @@ function parseTurns(items: StreamItem[]): Turn[] {
     }
 
     if (item.kind === "assistant") {
+      if (item.ts != null) t.assistantTs = item.ts;
       if (lastStep?.type === "text") {
         lastStep.text = item.text;
         lastStep.streaming = item.streaming;
@@ -1236,27 +1373,19 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                   id={`chat-turn-${turn.id}`}
                   className="flex w-full flex-col gap-6"
                 >
-                  {turn.ts != null && (
-                    <div
-                      className="flex items-center gap-3 select-none"
-                      aria-hidden="true"
-                      data-tooltip={formatFullTime(turn.ts)}
-                    >
-                      <div className="h-px flex-1 bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]" />
-                      <span className="text-[11px] font-medium text-neutral-400 tracking-wide">
-                        {formatTurnTime(turn.ts)}
-                      </span>
-                      <div className="h-px flex-1 bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]" />
-                    </div>
-                  )}
                   {turn.userText && (
                     <div
                       id={`chat-turn-${turn.id}-user`}
-                      className="bg-neutral-100 text-neutral-900 ms-auto flex w-fit max-w-[80%] flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]"
+                      className="ms-auto flex w-fit max-w-[80%] flex-col items-end gap-1"
                     >
-                      <div className="min-w-0 text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text [overflow-wrap:anywhere]">
-                        <UserMemoStreamdown text={collapsePromptArtifacts(turn.userText)} />
+                      <div className="bg-neutral-100 text-neutral-900 flex w-fit flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]">
+                        <div className="min-w-0 text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text [overflow-wrap:anywhere]">
+                          <UserMemoStreamdown text={collapsePromptArtifacts(turn.userText)} />
+                        </div>
                       </div>
+                      {turn.ts != null && (
+                        <TurnFooter align="end" ts={turn.ts} copyText={turn.userText} />
+                      )}
                     </div>
                   )}
 
@@ -1321,6 +1450,26 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                       })}
                     </div>
                   )}
+                  {/* Assistant-side footer — stamps at the reply's
+                    * completion time (falls back to the prompt's ts for
+                    * text-less turns), copy + last-turn retry. Hidden
+                    * while this turn is still streaming. */}
+                  {turn.steps.length > 0 &&
+                    (!view.streaming || turnIdx !== visibleTurns.length - 1) &&
+                    (turn.assistantTs ?? turn.ts) != null && (
+                      <div className="-mt-4">
+                        <TurnFooter
+                          align="start"
+                          ts={(turn.assistantTs ?? turn.ts) as number}
+                          copyText={assistantCopyText(turn)}
+                          onRetry={
+                            turnIdx === visibleTurns.length - 1
+                              ? () => void retryTurn()
+                              : undefined
+                          }
+                        />
+                      </div>
+                    )}
                 </div>
               ))}
 
