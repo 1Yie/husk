@@ -480,10 +480,13 @@ impl SessionActor {
 
         let outcome_text = text.clone();
         match self.engine.run_turn(&mut self.io, &mut self.history, text, &mut self.hunks).await {
+            // `run_turn` already emitted the terminal `StateChanged` on every
+            // exit path (Finished at the assistant-message boundary, Failed at
+            // each early return) — re-emitting here doubles the event and the
+            // frontend's turn-end notification.
             Ok(outcome) => {
                 self.state = AgentState::Finished;
                 self.last_usage = outcome.usage;
-                let _ = self.io.ui_tx.try_send(UiEvent::StateChanged(AgentState::Finished));
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
@@ -501,7 +504,8 @@ impl SessionActor {
                 // a SystemMessage for cancel, an Error for transport and
                 // in-stream failures. Re-emitting here prints the same
                 // reminder twice (the cancelled-turn double-line bug).
-                let _ = self.io.ui_tx.try_send(UiEvent::StateChanged(AgentState::Failed(e.clone())));
+                // It also already emitted the terminal `StateChanged(Failed)`
+                // at each early return — no re-send here.
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
                     outcome: "failed".into(),
