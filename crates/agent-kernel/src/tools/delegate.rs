@@ -98,6 +98,8 @@ impl SubagentSpawner {
             // Subagents are headless — ask_question refuses fast rather
             // than parking on a oneshot nobody can answer.
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+            // The child's own engine refreshes this on its first dispatch.
+            active_registry: std::sync::RwLock::new(None),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         };
         let registry = if readonly {

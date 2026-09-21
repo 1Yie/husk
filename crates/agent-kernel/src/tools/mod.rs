@@ -5,6 +5,7 @@
 
 pub mod apply_patch;
 pub mod ask;
+pub mod batch;
 pub mod delegate;
 pub mod bash;
 pub mod fs_patch;

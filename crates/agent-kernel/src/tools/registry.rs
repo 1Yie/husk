@@ -132,6 +132,11 @@ pub struct ToolCtx {
     pub subagent: Option<crate::tools::delegate::SubagentSpawner>,
     /// `ask_question`'s pending-answer slot + UI channel.
     pub ask: Arc<crate::tools::registry::AskChannel>,
+    /// Live view of the engine's active registry — refreshed on every
+    /// `active_registry()` resolution so `batch_execute` dispatches through
+    /// the same mode-scoped registry as single calls (plan mode can't be
+    /// bypassed by batching a captured full registry).
+    pub active_registry: std::sync::RwLock<Option<Arc<ToolRegistry>>>,
     /// Delegation depth — `delegate` bumps it in the child's ctx and the
     /// tool refuses past MAX_SUBAGENT_DEPTH, a second guard behind the
     /// registry-level exclusion of `delegate`.
@@ -156,6 +161,7 @@ impl ToolCtx {
             subagent: None,
             depth: 0,
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+            active_registry: std::sync::RwLock::new(None),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
@@ -172,6 +178,7 @@ impl ToolCtx {
             subagent: None,
             depth: 0,
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+            active_registry: std::sync::RwLock::new(None),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         }
     }
@@ -342,6 +349,7 @@ impl ToolRegistry {
         r.register(crate::tools::web_fetch::spec_alias());
         r.register(crate::tools::delegate::spec());
         r.register(crate::tools::ask::spec());
+        r.register(crate::tools::batch::spec());
         r
     }
 
@@ -406,6 +414,12 @@ impl ToolRegistry {
 
     pub fn is_readonly(&self, name: &str) -> bool {
         self.specs.get(name).map(|s| s.readonly).unwrap_or(false)
+    }
+
+    /// Spec lookup — `batch_execute` filters eligible tools through this
+    /// before running them itself.
+    pub fn spec(&self, name: &str) -> Option<&ToolSpec> {
+        self.specs.get(name)
     }
 
     pub fn len(&self) -> usize {

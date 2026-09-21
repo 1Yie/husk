@@ -255,11 +255,15 @@ impl Engine {
     /// The registry for the mode currently in the slot — resolved per call
     /// so a mid-turn `SetAgentMode` applies at the very next dispatch.
     fn active_registry(&self) -> Arc<ToolRegistry> {
-        match self.agent_mode() {
+        let reg = match self.agent_mode() {
             crate::mode::AgentMode::Plan => self.registry_plan.clone(),
             crate::mode::AgentMode::Goal => self.registry_goal.clone(),
             crate::mode::AgentMode::Build => self.registry_full.clone(),
-        }
+        };
+        // Refresh the ctx slot — `batch_execute` dispatches through the
+        // same mode-scoped registry this call resolved.
+        *self.ctx.active_registry.write().unwrap() = Some(reg.clone());
+        reg
     }
 
     /// The shared decision slot — SessionActor clones it to deliver
