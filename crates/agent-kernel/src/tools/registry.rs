@@ -46,6 +46,13 @@ impl AskChannel {
         }
     }
 
+    /// Interactive? `None` ui_tx means headless (subagent, test) — the
+    /// tool checks this BEFORE building a request so a child agent can't
+    /// park on a oneshot nobody can ever answer.
+    pub fn is_available(&self) -> bool {
+        self.ui_tx.is_some()
+    }
+
     /// Emit the card, park the answer oneshot, await it (or cancellation).
     pub async fn ask(
         &self,

@@ -15,7 +15,9 @@ use futures::FutureExt;
 const MAX_QUESTION_BYTES: usize = 1024;
 const MAX_OPTIONS: usize = 4;
 const MAX_LABEL_BYTES: usize = 80;
-const MAX_DESCRIPTION_BYTES: usize = 200;
+/// UI text constraint — chars, not bytes (a 中文 glyph is 3 UTF-8
+/// bytes; the limit is what the card renders, not the payload size).
+const MAX_DESCRIPTION_CHARS: usize = 200;
 
 /// `schema_for` reads the doc comments into the JSON Schema descriptions.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -58,10 +60,17 @@ async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, To
     let parsed: AskQuestionArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(e.to_string()))?;
 
+    // Headless fast-fail BEFORE building the request — a child agent
+    /// must never park on a oneshot nobody can answer.
+    if !ctx.ask.is_available() {
+        return Err(ToolError::Failed(
+            "ask_question requires an interactive user session".into(),
+        ));
+    }
     let question = parsed.question.trim();
     if question.is_empty() || question.len() > MAX_QUESTION_BYTES {
         return Err(ToolError::Args(format!(
-            "`question` must be 1..{MAX_QUESTION_BYTES} bytes"
+            "`question` must be 1..{MAX_QUESTION_BYTES} UTF-8 bytes"
         )));
     }
     if parsed.options.len() > MAX_OPTIONS {
@@ -69,6 +78,7 @@ async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, To
             "at most {MAX_OPTIONS} options — merge or drop the rest"
         )));
     }
+    let mut seen = std::collections::HashSet::new();
     let mut options = Vec::with_capacity(parsed.options.len());
     for opt in &parsed.options {
         let label = opt.label.trim();
@@ -77,10 +87,20 @@ async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, To
                 "option labels must be 1..{MAX_LABEL_BYTES} bytes"
             )));
         }
-        let description = opt.description.as_ref().and_then(|d| {
-            let t = d.trim();
-            (!t.is_empty()).then(|| t.chars().take(MAX_DESCRIPTION_BYTES).collect::<String>())
-        });
+        if !seen.insert(label.to_string()) {
+            return Err(ToolError::Args(
+                "option labels must be unique".into(),
+            ));
+        }
+        let description = match opt.description.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(t) if t.chars().count() > MAX_DESCRIPTION_CHARS => {
+                return Err(ToolError::Args(format!(
+                    "option descriptions must be ≤{MAX_DESCRIPTION_CHARS} chars"
+                )));
+            }
+            Some(t) => Some(t.to_string()),
+        };
         options.push(agent_ipc::events::AskOption {
             label: label.to_string(),
             description,
@@ -89,7 +109,14 @@ async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, To
 
     let answer = ctx
         .ask
-        .ask(question.to_string(), options, ctx.cancel.clone())
+        .ask(question.to_string(), options.clone(), ctx.cancel.clone())
         .await?;
-    Ok(ToolResult::text(format!("用户回答：{answer}")))
+    // Echo which structured option the answer maps to — the UI knows
+    // it was a click vs free text, and telemetry can consume the index
+    // without re-parsing prose.
+    let result = match options.iter().position(|o| o.label == answer) {
+        Some(i) => format!("用户回答：{answer}（选项 {i}）"),
+        None => format!("用户回答（自定义）：{answer}"),
+    };
+    Ok(ToolResult::text(result))
 }

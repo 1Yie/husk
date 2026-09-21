@@ -225,8 +225,13 @@ impl SessionActor {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let registry = ToolRegistry::with_builtins();
         // Subagent registries: a child never carries `delegate` (recursion
-        // guard); `readonly` children drop every non-readonly tool too.
-        let child_full = registry.filtered(|s| s.name != "delegate");
+        // guard) or `HumanInteraction` tools (nobody can answer a child's
+        // question — deny at the policy layer, not just via missing ui_tx);
+        // `readonly` children drop every non-readonly tool too.
+        let child_full = registry.filtered(|s| {
+            s.name != "delegate"
+                && s.class != crate::tools::registry::ToolClass::HumanInteraction
+        });
         let child_ro = child_full.readonly_only();
         let mut tool_ctx =
             ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
