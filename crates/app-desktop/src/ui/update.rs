@@ -273,7 +273,7 @@ impl App {
         self.sessions = mgr
             .sidebar_rows()
             .into_iter()
-            .map(|(id, title, _preview, active, running)| super::state::SessionRow {
+            .map(|(id, title, _preview, active, running, _pinned)| super::state::SessionRow {
                 id,
                 title,
                 active,

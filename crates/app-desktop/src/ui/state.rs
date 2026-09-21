@@ -278,7 +278,7 @@ impl App {
         let sessions = mgr
             .sidebar_rows()
             .into_iter()
-            .map(|(id, title, _preview, active, running)| SessionRow {
+            .map(|(id, title, _preview, active, running, _pinned)| SessionRow {
                 id,
                 title,
                 active,
