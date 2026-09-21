@@ -88,10 +88,10 @@ impl WorkspaceScanner {
 
         let mut builder = WalkBuilder::new(&root);
         builder
-            .hidden(true) // skip dotfiles/dirs
-            .git_ignore(true) // respect .gitignore
-            .git_exclude(true) // respect .git/info/exclude + core.excludesFile
-            .require_git(false) // .gitignore rules still apply outside git repos
+            .hidden(true)
+            .git_ignore(true)
+            .git_exclude(true)
+            .require_git(false) // .gitignore still applies outside git repos
             .max_depth(Some(max_depth.saturating_add(1))) // walker counts root as depth 0
             .sort_by_file_name(|a, b| a.cmp(b))
             .follow_links(false);
@@ -278,7 +278,6 @@ mod tests {
         let idx = WorkspaceScanner::build_file_index(root, 0).unwrap();
         assert!(idx.iter().any(|e| e == "a/b/c/d/deep.txt"));
         assert!(idx.iter().any(|e| e == "top.rs"));
-        // Files only — no directory rows, no gitignored paths.
         assert!(!idx.iter().any(|e| e.ends_with('/')));
         assert!(!idx.iter().any(|e| e.contains("ignored")));
     }

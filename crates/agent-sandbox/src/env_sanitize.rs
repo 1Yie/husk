@@ -205,9 +205,6 @@ pub fn sanitize_env(
             out.push((name.clone(), value.clone()));
         }
     }
-    // PATH + toolchain work is policy-driven now — the backend calls
-    // [`apply_environment_policy`] with the plan's environment decision
-    // and its own mount roots.
     out
 }
 

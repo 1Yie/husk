@@ -2,24 +2,17 @@
 //!
 //! Contract (kernel-architecture.md §Hunk tracking):
 //!
-//! - `RecordAgentWrite {path, old, new, origin}` after every successful write
-//!   (built-in or plugin) → hunks keyed by turn; `origin` distinguishes
-//!   `agent` vs `plugin:<id>` vs `sandbox-merge`.
-//! - `HandleFileChange {path}` from a `notify` watcher attributes *external*
-//!   edits — they never merge into agent undo history.
-//! - Powers: per-turn "files changed" list, Undo/Rewind (reverse-apply
-//!   recorded hunks), dirty-file warnings on session start.
+//! - `record_write` after every successful write (built-in or plugin) →
+//!   hunks keyed by turn; `origin` distinguishes `agent` vs `plugin:<id>`
+//!   vs `sandbox-merge`.
+//! - `handle_external_change` attributes watcher-observed edits — they never
+//!   merge into agent undo history.
+//! - Powers per-turn "files changed" lists, Undo/Rewind, and dirty-file
+//!   warnings on session start.
 //!
-//! This module is the *tracker* (recording + query). The actor wrapper
-//! (`HunkTrackerActor`) lives in kernel `channels.rs` once the `notify`
-//! watcher lands — for now the engine drives it synchronously post-write.
-//!
-//! P0 changes vs the original design:
-//! - `Hunk.old`/`new` are `Vec<u8>` (not `String`) so binary/non-UTF-8 writes
-//!   enter undo history instead of being silently skipped.
-//! - `undo_plan` returns `Result` and refuses to overwrite a file that was
-//!   externally modified *after* the agent's last write — undo must never
-//!   clobber user edits made outside the session.
+//! `Hunk.old`/`new` are `Vec<u8>` so binary/non-UTF-8 writes enter undo
+//! history, and `undo_plan` refuses to overwrite a file modified externally
+//! after the agent's last write — undo must never clobber user edits.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -139,12 +132,10 @@ impl HunkTracker {
     /// Generates the unified diff eagerly for UTF-8 content so Undo is a
     /// pure restore — no re-diffing at rewind time.
     ///
-    /// Accepts raw bytes so non-UTF-8/binary writes are recorded too.
-    ///
     /// Bounded: a hunk whose `old`/`new` exceeds `MAX_HUNK_CONTENT` has its
     /// content dropped (path+turn still recorded, undo skips it); when the
     /// total hunk count passes `MAX_TOTAL_HUNKS` the oldest records are
-    /// evicted first (P2 — a long session can't grow this unboundedly).
+    /// evicted first.
     pub fn record_write(
         &mut self,
         path: impl Into<PathBuf>,
@@ -161,8 +152,8 @@ impl HunkTracker {
             _ => String::new(), // binary — no line diff
         };
 
-        // Cap per-hunk content — a huge file is tracked by path only; its
-        // content can't be byte-restored anyway, so don't keep it resident.
+        // Content over the cap is dropped — a huge file is tracked by path
+        // only; it can't be byte-restored anyway.
         let (old, new, content_dropped) = {
             let too_big = old.as_ref().map(|o| o.len()).unwrap_or(0) > MAX_HUNK_CONTENT
                 || new.len() > MAX_HUNK_CONTENT;
@@ -189,13 +180,10 @@ impl HunkTracker {
         self.evict_if_needed();
     }
 
-    /// Drop the oldest hunks once `total` exceeds `MAX_TOTAL_HUNKS` —
-    /// eviction removes the record entirely (its undo info is gone, which
-    /// beats an unbounded resident set).
+    /// Drop the oldest hunks once `total` exceeds `MAX_TOTAL_HUNKS`.
     fn evict_if_needed(&mut self) {
         while self.total > MAX_TOTAL_HUNKS {
-            // Find the file whose oldest hunk is the global oldest (lowest
-            // turn, then longest resident) and drop its front hunk.
+            // Evict the globally oldest hunk (lowest turn) first.
             if let Some((_, st)) = self
                 .file_states
                 .iter_mut()
@@ -210,8 +198,7 @@ impl HunkTracker {
         }
     }
 
-    /// Convenience UTF-8 wrapper kept for call sites that already hold
-    /// `String`s — avoids forcing every caller to think in bytes.
+    /// UTF-8 convenience wrapper over [`Self::record_write`].
     pub fn record_write_str(
         &mut self,
         path: impl Into<PathBuf>,
@@ -228,11 +215,8 @@ impl HunkTracker {
     }
 
     /// Attribute an external (watcher-observed) change — counted, never
-    /// merged into undo history (kernel-architecture.md: "don't merge them
-    /// into agent undo history").
-    ///
-    /// Marks `external_after_last_write` when the file has recorded agent
-    /// hunks — a later undo to a pre-external state would clobber this edit.
+    /// merged into undo history. Marks `external_after_last_write` when the
+    /// file has recorded agent hunks, so a later undo won't clobber it.
     pub fn handle_external_change(&mut self, path: impl Into<PathBuf>) {
         let st = self.file_states.entry(path.into()).or_default();
         st.external_changes += 1;
@@ -262,9 +246,8 @@ impl HunkTracker {
     }
 
     /// The undo payload for `turn`: per-file "restore to state before this
-    /// turn's first write" instructions. Applying these reproduces the
-    /// pre-turn workspace — Rewind is the same thing scoped to an earlier
-    /// turn.
+    /// turn's first write" instructions. Rewind is the same thing scoped to
+    /// an earlier turn.
     ///
     /// Returns `Err(UndoError::ExternalChange)` if any target file was
     /// modified externally *after* the agent's last recorded write —
@@ -275,8 +258,8 @@ impl HunkTracker {
         for path in self.files_in_turn(turn) {
             let st = self.file_states.get(path).expect("files_in_turn yields known paths");
             // Refuse when the file can't be safely restored: externally
-            // modified after our last write, OR its hunk content was evicted
-            // for size (no bytes to restore → undo would corrupt it).
+            // modified after our last write, or hunk content evicted for
+            // size (no bytes to restore).
             if st.external_after_last_write
                 || st.hunks.iter().any(|h| h.turn == turn && h.content_dropped)
             {
@@ -296,9 +279,8 @@ impl HunkTracker {
         Ok(ops)
     }
 
-    /// Non-failing variant that skips externally-modified files instead of
-    /// erroring the whole plan — used when the caller wants best-effort undo
-    /// plus a list of files it could not safely revert.
+    /// Non-failing variant: skips unrestorable files and returns them in the
+    /// second tuple slot.
     pub fn undo_plan_partial(&self, turn: u32) -> (Vec<UndoOp>, Vec<PathBuf>) {
         let mut ops = Vec::new();
         let mut skipped = Vec::new();
@@ -320,8 +302,7 @@ impl HunkTracker {
         (ops, skipped)
     }
 
-    /// Dirty-file warnings for session start (`AllDirty` mode) — caller seeds
-    /// this by marking files it knows were dirty.
+    /// Seed dirty-file warnings for session start (`AllDirty` mode only).
     pub fn mark_dirty_at_start(&mut self, path: impl Into<PathBuf>) {
         if self.mode == TrackingMode::AllDirty {
             self.file_states
@@ -402,7 +383,7 @@ mod tests {
         let mut t = HunkTracker::new(TrackingMode::AgentOnly);
         t.begin_turn();
         t.record_write_str("a.rs", Some("v1".into()), "v2".into(), "agent");
-        t.handle_external_change("b.rs"); // external file w/o hunks — not ours
+        t.handle_external_change("b.rs");
 
         let plan = t.undo_plan(1).unwrap();
         assert_eq!(plan.len(), 1); // only a.rs
@@ -414,8 +395,7 @@ mod tests {
         let mut t = HunkTracker::new(TrackingMode::AgentOnly);
         t.begin_turn();
         t.record_write_str("a.rs", Some("v1".into()), "v2".into(), "agent");
-        // User edited a.rs outside the session AFTER the agent write.
-        t.handle_external_change("a.rs");
+        t.handle_external_change("a.rs"); // user edit after the agent write
 
         let err = t.undo_plan(1).unwrap_err();
         assert_eq!(
@@ -460,9 +440,8 @@ mod tests {
         t.begin_turn();
         t.record_write_str("a.rs", Some("v1".into()), "v2".into(), "agent");
         t.handle_external_change("a.rs");
-        // Agent writes again — the newest hunk becomes the trusted baseline,
-        // so undo to *its* `old` is permitted (the external edit is already
-        // inside the recorded chain as this hunk's predecessor).
+        // A fresh write re-baselines: undo to the newest hunk's `old` is
+        // permitted again.
         t.record_write_str("a.rs", Some("vX".into()), "v3".into(), "agent");
         let plan = t.undo_plan(1).unwrap();
         assert_eq!(plan[0].restore_to.as_deref(), Some(b"v1".as_slice()));

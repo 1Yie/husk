@@ -195,7 +195,6 @@ fn dev_environment_binds() -> Vec<PathBuf> {
     let mut mounts = Vec::new();
     let home = dirs_home();
 
-    // 1. Check well-known toolchain directories in HOME
     if let Some(ref h) = home {
         for rel in HOME_DEV_DIRS {
             let p = h.join(rel);
@@ -203,14 +202,13 @@ fn dev_environment_binds() -> Vec<PathBuf> {
                 mounts.push(p);
             }
         }
-        // Also mount ~/.gitconfig if present so git operations know author identity
+        // ~/.gitconfig lets git know author identity inside the sandbox.
         let gitconfig = h.join(".gitconfig");
         if gitconfig.is_file() {
             mounts.push(gitconfig);
         }
     }
 
-    // 2. Check explicit toolchain environment variables
     for var in ENV_TOOLCHAIN_VARS {
         if let Some(val) = std::env::var_os(var) {
             let p = PathBuf::from(val);
@@ -225,7 +223,6 @@ fn dev_environment_binds() -> Vec<PathBuf> {
         }
     }
 
-    // 3. Check directories in host PATH
     if let Some(path_var) = std::env::var_os("PATH") {
         for entry in std::env::split_paths(&path_var) {
             if entry.is_dir() && !is_sensitive(&entry, home.as_deref()) {
@@ -237,7 +234,7 @@ fn dev_environment_binds() -> Vec<PathBuf> {
                 if is_in_base_system(&entry) {
                     continue;
                 }
-                // If entry is `<parent>/bin`, mount the `<parent>` toolchain root (e.g. Flutter SDK)
+                // `<parent>/bin` → mount the whole toolchain root (e.g. Flutter SDK).
                 if entry.file_name().map_or(false, |n| n == "bin") {
                     if let Some(parent) = entry.parent() {
                         if Some(parent) != home.as_deref() && parent.is_dir() {
@@ -322,7 +319,6 @@ impl SandboxBackend for LinuxBwrap {
 
         let mut argv: Vec<String> = Vec::with_capacity(128);
 
-        // ---- 1. ro base system binds ----
         for sys in SYSTEM_RO_DIRS {
             if Path::new(sys).exists() {
                 argv.push("--ro-bind".into());
@@ -331,7 +327,6 @@ impl SandboxBackend for LinuxBwrap {
             }
         }
 
-        // ---- 2. ro system configuration (/etc/ssl, /etc/pki, /etc/hosts, /etc/alternatives, etc.) ----
         for conf in SYSTEM_CONFIG_PATHS {
             if Path::new(conf).exists() {
                 argv.push("--ro-bind".into());
@@ -340,20 +335,18 @@ impl SandboxBackend for LinuxBwrap {
             }
         }
 
-        // resolv.conf: only when network is allowed
+        // resolv.conf only when network is allowed — it leaks the resolver.
         if cfg.allow_network && Path::new("/etc/resolv.conf").exists() {
             argv.push("--ro-bind".into());
             argv.push("/etc/resolv.conf".into());
             argv.push("/etc/resolv.conf".into());
         }
 
-        // ---- 3. special filesystems ----
         argv.push("--proc".into());
         argv.push("/proc".into());
         argv.push("--dev".into());
         argv.push("/dev".into());
 
-        // ---- 4. process-isolated /tmp (tmpfs) and /var/tmp symlink ----
         argv.push("--tmpfs".into());
         argv.push("/tmp".into());
         if Path::new("/var").exists() {
@@ -364,12 +357,11 @@ impl SandboxBackend for LinuxBwrap {
             argv.push("/var/tmp".into());
         }
 
-        // Bind run_dir at its host path for XDG_RUNTIME_DIR compatibility
+        // run_dir bound at its host path for XDG_RUNTIME_DIR compatibility.
         argv.push("--bind".into());
         argv.push(run_dir.to_string_lossy().into_owned());
         argv.push(run_dir.to_string_lossy().into_owned());
 
-        // ---- 5. developer environments & toolchains (bun, volta, cargo, rustup, python, etc.) ----
         let dev_binds = dev_environment_binds();
         for dev_dir in &dev_binds {
             if dev_dir.exists() {
@@ -379,7 +371,6 @@ impl SandboxBackend for LinuxBwrap {
             }
         }
 
-        // ---- 6. caller-specified extra ro mounts ----
         for extra_ro in &cfg.extra_ro_mounts {
             if extra_ro.exists() {
                 argv.push("--ro-bind".into());
@@ -388,14 +379,12 @@ impl SandboxBackend for LinuxBwrap {
             }
         }
 
-        // ---- 7. sensitive dirs & files masked with /dev/null ----
         for mask in sensitive_masks() {
             argv.push("--ro-bind".into());
             argv.push("/dev/null".into());
             argv.push(mask.to_string_lossy().into_owned());
         }
 
-        // ---- 8. caller-specified extra rw mounts ----
         for extra_rw in &cfg.extra_rw_mounts {
             if extra_rw.exists() {
                 argv.push("--bind".into());
@@ -404,20 +393,18 @@ impl SandboxBackend for LinuxBwrap {
             }
         }
 
-        // ---- 9. workspace bind LAST (rw; CoW snapshot mounts at same path) ----
+        // Workspace bind must come last — rw, shadows any overlapping mount.
         argv.push("--bind".into());
         argv.push(ws.to_string_lossy().into_owned());
         argv.push(ws.to_string_lossy().into_owned());
 
-        // ---- 10. network isolation ----
         if !cfg.allow_network {
             argv.push("--unshare-net".into());
         }
 
-        // ---- 11. PID namespace: fork-bomb containment ----
+        // PID namespace — fork-bomb containment.
         argv.push("--unshare-pid".into());
 
-        // ---- 12. env: clearenv + sanitized set + toolchain cache redirects ----
         argv.push("--clearenv".into());
         let mut extra = cfg.env_vars.clone();
         if !extra.iter().any(|(k, _)| k == "TMPDIR") {
@@ -432,7 +419,7 @@ impl SandboxBackend for LinuxBwrap {
         if !extra.iter().any(|(k, _)| k == "CARGO_TARGET_DIR") {
             extra.push(("CARGO_TARGET_DIR".into(), ws.join("target").to_string_lossy().into_owned()));
         }
-        // Redirect package manager caches to writable /tmp so installs don't fail with EROFS
+        // Package-manager caches → writable /tmp so installs don't EROFS.
         if !extra.iter().any(|(k, _)| k == "BUN_INSTALL_CACHE_DIR") {
             extra.push(("BUN_INSTALL_CACHE_DIR".into(), "/tmp/bun-cache".into()));
         }
@@ -473,11 +460,9 @@ impl SandboxBackend for LinuxBwrap {
         argv.push(ws.to_string_lossy().into_owned());
         argv.push("--die-with-parent".into());
         argv.push("--".into());
-        // Absolute path to sh
         argv.push("/bin/sh".into());
         argv.push("-c".into());
 
-        // Prepend resource limits to the command
         let mut inner = String::new();
         if cfg.max_memory_mb > 0 {
             inner.push_str(&format!("ulimit -v {}; ", cfg.max_memory_mb * 1024));
@@ -488,7 +473,6 @@ impl SandboxBackend for LinuxBwrap {
         inner.push_str(cmd);
         argv.push(inner);
 
-        // ---- spawn with timeout + tree kill ----
         let timeout = std::time::Duration::from_secs(cfg.timeout_secs.min(600));
         let child = tokio::process::Command::new("bwrap")
             .args(&argv)

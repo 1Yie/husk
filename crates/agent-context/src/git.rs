@@ -145,10 +145,7 @@ fn collect_status_and_stat(
     use gix::status::Item;
 
     let mut status_lines: Vec<String> = Vec::new();
-    // path → (added, deleted) aggregated for the --stat section. We count
-    // only whether a file changed (git status doesn't need real line counts
-    // to be useful to the model — but we report real +/- where the worktree
-    // diff yields them cheaply: binary/unknown → 0).
+    // Paths aggregated for the --stat section.
     let mut stat: Vec<String> = Vec::new();
 
     let platform = repo
@@ -270,8 +267,7 @@ fn enforce_budget(snap: &mut GitSnapshot) {
         snap.truncated = true;
     }
     if snap.truncated {
-        // The marker itself must fit too — worst case it's already accounted
-        // for above since to_prompt_block() includes it once set.
+        // Marker fits too — to_prompt_block() includes it once set.
     }
 }
 

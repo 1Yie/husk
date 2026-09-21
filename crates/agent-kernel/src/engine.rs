@@ -9,12 +9,10 @@
 //!
 //! `Failed` is terminal per turn, not per session.
 //!
-//! Stage 4 runs this headless on a scripted provider — the loop is: sample →
-//! collect text + tool calls → execute each tool → append results as a
-//! `tool` message → re-sample, until a turn ends with no pending tool calls.
-//! Permission gating (Stage 6) inserts `AwaitingToolConfirmation` between
-//! "tool call arrived" and "tool executes"; the loop already emits the state
-//! transition so the wiring point is explicit.
+//! Turn loop: sample → collect text + tool calls → execute each tool →
+//! append results as a `tool` message → re-sample, until a turn ends with
+//! no pending tool calls. Permission gating inserts `AwaitingToolConfirmation`
+//! between "tool call arrived" and "tool executes".
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -66,17 +64,15 @@ pub struct Engine {
     /// Agent mode — shared slot like `permissions` so a mid-turn composer
     /// switch applies at the next sampling round instead of next session.
     agent_mode: Arc<std::sync::RwLock<crate::mode::AgentMode>>,
-    /// Pending mid-turn steering text drained from `cmd_rx`.
+    /// Pending mid-turn steering text drained from `io.steer_rx`.
     steer_queue: VecDeque<String>,
-    /// Stage 6: the permission gate consulted before every tool dispatch.
+    /// Permission gate consulted before every tool dispatch.
     permissions: Arc<std::sync::RwLock<PermissionGate>>,
     /// Decision slot shared with SessionActor — the engine can't hold a
     /// receiver `&mut self`-locked across `run_turn`, so the actor writes
-    /// `Some((request_id, approved))` here and the engine polls it between
-    /// polls. The `request_id` correlates the verdict to a specific
-    /// `ApprovalRequested` — a stale click whose id doesn't match the
-    /// pending request is ignored instead of approving a different tool
-    /// (P1-a).
+    /// `Some((request_id, approved))` here and the engine polls it. The
+    /// `request_id` correlates a verdict to its `ApprovalRequested`; stale
+    /// ids are ignored instead of approving a different tool (P1-a).
     decision: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
     /// Monotone id source for `ApprovalRequested` correlation.
     next_request_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -92,9 +88,9 @@ pub struct Engine {
     /// e.g. `["text", "image"]`). `"image"` gates whether user-attached
     /// images ride the wire as real parts or degrade to path references.
     model_input: Vec<String>,
-    /// Stage 7: compaction retry-storm suppression.
+    /// Compaction retry-storm suppression.
     compaction_suppressor: CompactionSuppressor,
-    /// Stage 9: ordered hook chain (veto/mutate before+after tools).
+    /// Ordered hook chain (veto/mutate before+after tools).
     hooks: crate::hooks::HookChain,
     /// Plugin tool router — built-in names win; plugins fill the rest.
     plugin_router: Option<Arc<agent_plugin::PluginManager>>,
@@ -372,12 +368,11 @@ impl Engine {
         history.push(user_msg);
         self.set_state(io, AgentState::Reasoning);
 
-        // ---- Stage 7: sanitize + compaction check before sampling ----
-        // Sanitize runs every turn (flatten tool calls, strip reasoning,
-        // budget-fit); compaction only when estimate crosses 80% of window.
-        // P1-b: only flatten tool_calls into text when the provider uses a
-        // text protocol — a native function-calling provider needs the
-        // structured array intact or every Role::Tool result orphans.
+        // Sanitize every turn (flatten tool calls, strip reasoning,
+        // budget-fit); compact only when the estimate crosses `compact_at`.
+        // P1-b: only flatten tool_calls into text for a text-protocol
+        // provider — native function-calling needs the structured array
+        // intact or every Role::Tool result orphans.
         let native_tc = self.sampler.provider().native_tool_calls();
         compaction::sanitize_for_sample(
             history,
@@ -412,8 +407,8 @@ impl Engine {
         let mut tool_calls_run = 0usize;
         let mut tool_rounds = 0usize;
         let mut force_no_tools = false;
-        // Guard against runaway tool loops — delegated children get a
-        // smaller bound via set_max_tool_rounds.
+        // Runaway-loop bound; delegated children get a smaller budget via
+        // set_max_tool_rounds.
         let max_tool_rounds = self.max_tool_rounds;
         // Goal-mode pushback counter — how many times the model went
         // quiet without declaring `goal_complete`/`goal_blocked`.
@@ -427,8 +422,7 @@ impl Engine {
         /// rendered verbatim; the status bar localizes `Failed`). The
         /// user-facing line is `CANCEL_TEXT`.
         const CANCEL_ERR: &str = "turn cancelled by user";
-        /// The one system line shown for a cancelled turn — a single
-        /// reminder, in the UI's language.
+        /// The single system line shown for a cancelled turn.
         const CANCEL_TEXT: &str = "已被用户中断";
 
         loop {
@@ -442,7 +436,6 @@ impl Engine {
                 return Err(CANCEL_ERR.into());
             }
 
-            // Inject any mid-turn steering as a user message before sampling.
             self.drain_steering(io, history);
             while let Some(steer) = self.steer_queue.pop_front() {
                 // Echo the steer as a user bubble — the live stream never
@@ -461,7 +454,6 @@ impl Engine {
                 history.push(steer_msg);
             }
 
-            // Budget check + sanitize before each sample pass
             let native_tc = self.sampler.provider().native_tool_calls();
             compaction::sanitize_for_sample(
                 history,
@@ -633,9 +625,9 @@ impl Engine {
             }
 
             if let Err(e) = res {
-                // ---- Stream salvage (hardening §4) ----
-                // Partial text + the interrupt line + the error line all
-                // persist — replay matches the live stream line-for-line.
+                // Stream salvage (hardening §4): partial text + interrupt
+                // line + error line all persist — replay matches the live
+                // stream line-for-line.
                 if !round_text.is_empty() {
                     history.push(ChatMessage::assistant(round_text.clone()));
                     let line = "流传输中断 — 已保留部分内容";
@@ -682,7 +674,6 @@ impl Engine {
             }
 
             if calls.is_empty() {
-                // No tool calls → turn complete.
                 let final_text = if round_text.trim().is_empty() && !text.trim().is_empty() {
                     text.clone()
                 } else {
@@ -730,7 +721,6 @@ impl Engine {
                 return Ok(TurnOutcome { text, usage, tool_calls_run });
             }
 
-            // Append the assistant turn with its tool calls.
             history.push(ChatMessage {
                 role: agent_llm::Role::Assistant,
                 content: if round_text.is_empty() { None } else { Some(round_text.clone()) },
@@ -742,7 +732,6 @@ impl Engine {
                 images: Vec::new(),
             });
 
-            // Execute each tool call.
             tool_rounds += 1;
 
             for (call_idx, call) in calls.iter().enumerate() {
@@ -839,7 +828,7 @@ impl Engine {
                     tool_name: call.name.clone(),
                 });
 
-                // ---- Stage 9: before_tool hooks (veto/mutate, pre-gate) ----
+                // before_tool hooks (veto/mutate, pre-gate)
                 let mut call_mut = call.clone();
                 if !self.hooks.run_before_tool(&mut call_mut).await {
                     let msg = format!("tool `{}` vetoed by hook", call.name);
@@ -853,7 +842,7 @@ impl Engine {
                 }
                 let call = &call_mut; // hooks may have rewritten args
 
-                // ---- Stage 6: permission gate before dispatch ----
+                // Permission gate before dispatch
                 let is_readonly = self.active_registry().is_readonly(&call.name);
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
                 let diff_summary = args.get("path").and_then(|v| v.as_str())
@@ -908,24 +897,22 @@ impl Engine {
                         parent: None,
                         });
                         history.push(ChatMessage::tool_result_err(call.id.clone(), reason));
-                        continue; // skip dispatch — denied by policy
+                        continue;
                     }
                     Decision::Ask { diff_summary } => {
                         // Pause in AwaitingToolConfirmation; the UI's
-                        // ToolDecision resolves it. Wait on the shared slot
-                        // (SessionActor writes it via decision_slot()).
-                        // P1-a: a fresh request_id correlates this specific
-                        // pending approval to its verdict — a stale decision
-                        // from an earlier card can't approve this tool.
+                        // ToolDecision writes the shared slot via
+                        // decision_slot(). P1-a: a fresh request_id ties
+                        // this pending approval to its verdict — a stale
+                        // decision can't approve this tool.
                         let request_id = self.next_request_id
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         self.set_state(io, AgentState::AwaitingToolConfirmation {
                             tool_name: call.name.clone(),
                             diff_summary: diff_summary.clone(),
                         });
-                        // P1-c: show the REAL unified diff + fuzzy flag the
-                        // staged run produced — the card no longer lies
-                        // about what will be written.
+                        // P1-c: show the REAL diff + fuzzy flag the staged
+                        // run produced — the card reflects what gets written.
                         let _ = io.ui_tx.try_send(UiEvent::ApprovalRequested {
                             request_id,
                             tool_name: call.name.clone(),
@@ -952,8 +939,8 @@ impl Engine {
 
 
 
-                // Resolve the tool result. For a staged write tool we already
-                // have it; otherwise dispatch now (read-only/bash).
+                // Staged write tools already hold their result; dispatch the
+                // rest now (read-only/bash).
                 let (mut content, ui_type, mut ok, pending_write) = if let Some(res) = staged {
                     let ui_type = res.ui_type.map(|s| s.to_string());
                     (res.content, ui_type, true, res.pending_write)
@@ -1023,7 +1010,7 @@ impl Engine {
                     }
                 }
 
-                // ---- Stage 9: after_tool hooks (may mutate output) ----
+                // after_tool hooks (may mutate output)
                 self.hooks.run_after_tool(&call, &mut content).await;
 
                 let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
@@ -1055,7 +1042,6 @@ impl Engine {
                 force_no_tools = true;
             }
 
-            // Tools done → back to sampling for the model's next move.
             self.set_state(io, AgentState::Reasoning);
         }
     }
@@ -1085,7 +1071,6 @@ impl Engine {
             ChatMessage::user(prefix_text),
         ];
 
-        // One summarize call — no tools, low temperature.
         let mut note = String::new();
         let req = SampleRequest {
             model: &self.model,
@@ -1210,18 +1195,15 @@ mod tests {
             1.0,
         );
 
-        // Without level set
         assert_eq!(engine.resolve_reasoning_effort(), None);
 
-        // Off returns None
         engine.set_thinking_level(Some("off".into()));
         assert_eq!(engine.resolve_reasoning_effort(), None);
 
-        // With default mapping (no map installed)
         engine.set_thinking_level(Some("medium".into()));
         assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("medium"));
 
-        // With custom thinking level map installed (like Devin SWE-2)
+        // Custom thinking-level map (like Devin SWE-2).
         let mut map = std::collections::HashMap::new();
         map.insert("off".into(), None);
         map.insert("minimal".into(), None);

@@ -160,7 +160,6 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         caps.push(Capability::Runtime { toolchain });
     }
 
-    // Redirections → file caps.
     for r in &cmd.redirects {
         let p = PathBuf::from(&r.target);
         caps.push(if r.write {
@@ -170,11 +169,9 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         });
     }
 
-    // Positional args used as paths by the common verbs.
     let arg_path = |i: usize| cmd.args.get(i).map(|a| PathBuf::from(a.trim_matches('"').trim_matches('\'')));
 
     match prog {
-        // ---- deletes ----
         "rm" | "unlink" | "rmdir" => {
             // Any flag carrying a recursive delete: `-r`, `-rf`, `-R`,
             // `--recursive`. GNU long opts match too.
@@ -228,7 +225,6 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
                 }
             }
         }
-        // ---- reads ----
         "cat" | "head" | "tail" | "less" | "more" | "file" | "stat" | "wc" => {
             for a in &cmd.args {
                 if !a.starts_with('-') {
@@ -245,7 +241,6 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
                 }
             }
         }
-        // ---- privilege ----
         "sudo" | "doas" => {
             caps.push(Capability::PrivilegeEscalation);
             // the wrapped command counts as an execute too — extract it.
@@ -255,7 +250,6 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
                 }
             }
         }
-        // ---- network ----
         "curl" | "wget" => {
             let target = cmd.args.iter()
                 .find(|a| a.contains("://") || a.contains('.'))
@@ -267,7 +261,6 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         "ssh" | "scp" | "rsync" | "nc" | "ncat" | "telnet" => {
             caps.push(Capability::Network { target: None });
         }
-        // ---- package managers ----
         "npm" | "yarn" | "pnpm" | "bun" | "pip" | "pip3" | "cargo" | "apt"
         | "apt-get" | "brew" | "dnf" | "pacman" | "gem" | "composer" => {
             let sub = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
@@ -302,7 +295,6 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         "git" => {
             let sub = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
             match sub {
-                // Destructive VCS — history-rewriting or file-discarding.
                 "push" if cmd.args.iter().any(|a| a == "--force" || a == "-f" || a == "--force-with-lease") => {
                     caps.push(Capability::DestructiveVcs { operation: "git push --force".into() });
                     caps.push(Capability::Network { target: None });
@@ -316,14 +308,12 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
                 "checkout" | "restore" if cmd.args.iter().any(|a| a == "--" || a.starts_with('-') && a.contains('f')) => {
                     caps.push(Capability::DestructiveVcs { operation: format!("git {sub} — discards changes") });
                 }
-                // Network-touching VCS ops.
                 "push" | "pull" | "fetch" | "clone" | "submodule" | "remote" => {
                     caps.push(Capability::Network { target: None });
                 }
                 _ => {}
             }
         }
-        // ---- device / process ----
         "dd" => {
             for a in &cmd.args {
                 if let Some(rest) = a.strip_prefix("of=") {

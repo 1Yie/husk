@@ -1,9 +1,5 @@
-//! agent-context — perception/cognition layer.
-//!
-//! Stage 1 scope: workspace file-tree scan + git snapshot.
-//! Stage 6 added `hunks` (write tracking / undo).
-//! Later stages add `budget` (truncation) and `memory` (LibSQL + FastEmbed)
-//! per the capability roadmap.
+//! agent-context — perception/cognition layer: workspace file-tree scan,
+//! git snapshot, write tracking (`hunks`), and hierarchical `memory`.
 
 pub mod git;
 pub mod hunks;

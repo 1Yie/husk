@@ -1,18 +1,17 @@
 //! `memory/store.rs` — hierarchical memory persistence.
 //!
 //! Contract (capability-roadmap.md §1): layers = working / session /
-//! episodic / semantic / persona. Per-workspace partitioning by
-//! `hash(canonical_root)`. LibSQL + FastEmbed is the spec target — this
-//! implementation uses **redb (pure-Rust embedded KV)** for the structured
-//! tables and a **deterministic hash-embedding** for the vector index, so
-//! the single-binary zero-C constraint holds. The public API mirrors the
-//! LibSQL semantics (facts + episodes + persona + top-k recall) so Stage 11
-//! can swap the backend behind `memory::Store` without touching callers.
+//! episodic / semantic / persona, partitioned per workspace by
+//! `hash(canonical_root)`. LibSQL + FastEmbed is the spec target; this
+//! implementation uses redb (pure-Rust embedded KV) + a deterministic
+//! hash-embedding so the zero-C single-binary constraint holds, behind an
+//! API that mirrors the LibSQL semantics (facts + episodes + persona +
+//! top-k recall).
 //!
-//! Write path (distiller): post-turn background task — summarize → extract
-//! facts → dedupe (`cosine > 0.92` merge) → write episode + facts.
+//! Write path (distiller): summarize → extract facts → dedupe
+//! (`cosine > 0.92` merge) → write episode + facts.
 //! Read path: embed prompt → top-k (k=8) facts + last-3 episodes →
-//! `<memory>` block ≤2 KB after the workspace skeleton.
+//! `<memory>` block ≤2 KB.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -71,8 +70,7 @@ pub struct Persona {
 }
 
 /// The store — one `redb::Database` per `memory.db`, writes serialized
-/// through a `Mutex` (redb is single-writer by design; the production-hardening
-/// write-actor lands in Stage 11 over this same Mutex).
+/// through a `Mutex` (redb is single-writer by design).
 pub struct MemoryStore {
     db: Database,
     /// `hash(canonical_root)` — partitions facts/episodes per workspace.
@@ -87,8 +85,8 @@ impl MemoryStore {
     /// Open (or create) `memory.db` for `workspace_root`.
     pub fn open(path: &Path, workspace_root: &Path) -> Result<Self, String> {
         let db = Database::create(path).map_err(|e| e.to_string())?;
-        // Create tables + stamp schema_version up-front so reads never
-        // race creation and migrations have a version to compare against.
+        // Create tables + stamp schema_version up-front so reads never race
+        // creation and migrations have a version to compare against.
         {
             let w = db.begin_write().map_err(|e| e.to_string())?;
             w.open_table(FACTS).map_err(|e| e.to_string())?;
@@ -108,9 +106,9 @@ impl MemoryStore {
             w.commit().map_err(|e| e.to_string())?;
         }
         let workspace_id = workspace_id(workspace_root);
-        // P0-C1: seed `next_id` above the max id already persisted — redb has
-        // no auto-increment, and restarting at 1 would silently overwrite
-        // existing facts/episodes via `insert`. Scan both tables once.
+        // Seed `next_id` above the max persisted id — redb has no
+        // auto-increment, and restarting at 1 would silently overwrite
+        // existing facts/episodes via `insert`.
         let next_id = {
             let r = db.begin_read().map_err(|e| e.to_string())?;
             let mut max_id = 0u64;
@@ -138,14 +136,11 @@ impl MemoryStore {
         self.workspace_id
     }
 
-    // ---------------- facts (semantic memory) ----------------
-
     /// Insert a fact — dedupes vs. existing by `cosine > 0.92` (merge =
     /// bump confidence, else insert). Returns the fact's id.
     pub fn upsert_fact(&self, text: impl Into<String>, confidence: f32) -> Result<u64, String> {
         let text = text.into();
         let emb = self.embed(&text);
-        // Dedupe: cosine > 0.92 → merge (bump confidence, don't duplicate).
         if let Some((id, existing)) = self.find_similar(&emb, 0.92)? {
             let mut f = existing;
             f.confidence = (f.confidence + confidence).min(1.0);
@@ -217,8 +212,6 @@ impl MemoryStore {
         Ok(out)
     }
 
-    // ---------------- episodes ----------------
-
     /// Append an episode.
     pub fn add_episode(&self, e: Episode) -> Result<u64, String> {
         let id = self.alloc_id()?;
@@ -251,8 +244,6 @@ impl MemoryStore {
         out.sort_by_key(|e| e.created_at);
         Ok(out.into_iter().rev().take(n).collect())
     }
-
-    // ---------------- persona ----------------
 
     pub fn set_persona(&self, key: &str, value: &str) -> Result<(), String> {
         let w = self.db.begin_write().map_err(|e| e.to_string())?;
@@ -287,12 +278,8 @@ impl MemoryStore {
         Ok(out)
     }
 
-    // ---------------- internals ----------------
-
     fn alloc_id(&self) -> Result<u64, String> {
-        // Poison-safe: a panicked writer must not take every later alloc down
-        // with it (release profile is panic=abort anyway, but a poisoned
-        // mutex here is a recoverable-by-design path).
+        // Poison-safe: a panicked writer must not poison every later alloc.
         let mut g = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
         let id = *g;
         *g += 1;
@@ -309,7 +296,6 @@ impl MemoryStore {
             let idx = (h as usize) % self.embed_dim;
             v[idx] += 1.0;
         }
-        // L2 normalize.
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm > 0.0 {
             for x in v.iter_mut() {
@@ -344,8 +330,8 @@ impl MemoryStore {
                 out.push_str(&format!("{}: {}\n", p.key, p.value));
             }
         }
-        // 2 KB cap — UTF-8-safe: a byte cut inside a multi-byte char would
-        // panic (P2). Round down to the nearest char boundary.
+        // UTF-8-safe 2 KB cap: round down to a char boundary — cutting inside
+        // a multi-byte char would panic.
         if out.len() > 2048 {
             let mut n = 2048;
             while n > 0 && !out.is_char_boundary(n) {

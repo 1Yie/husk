@@ -77,7 +77,7 @@ pub struct SessionActor {
     state: AgentState,
     io: EngineIo,
     cmd_tx: mpsc::Sender<UiCommand>,
-    /// Stage 6: write tracking for undo/rewind + files-changed list.
+    /// Write tracking for undo/rewind + files-changed list.
     hunks: HunkTracker,
     /// Engine's decision slot — `ToolDecision` writes here mid-turn.
     decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>> ,
@@ -98,9 +98,9 @@ pub struct SessionActor {
     cmd_rx: mpsc::Receiver<UiCommand>,
     /// Workspace root (undo writes resolve against it).
     workspace_root: PathBuf,
-    /// Stage 9: ordered hook chain (lifecycle interception).
+    /// Ordered hook chain (lifecycle interception).
     hooks: HookChain,
-    /// Stage 10: memory store + post-turn distiller (background task).
+    /// Memory store + post-turn distiller (background task).
     memory: Option<Arc<MemoryStore>>,
     distiller: Option<Arc<TurnDistiller>>,
     /// Stable session identity — sidebar ordering + persistence file name.
@@ -208,7 +208,7 @@ impl SessionActor {
     ) -> (Self, super::channels::UiChannels) {
         let mut channels = ui_channels();
 
-        // ---- Stage 1 scan: workspace skeleton + git snapshot ----
+        // Workspace skeleton + git snapshot.
         let workspace_tree = WorkspaceScanner::build_skeleton(&cfg.workspace_root)
             .map(|t| t.to_prompt_block())
             .unwrap_or_else(|e| format!("(workspace scan failed: {e})\n"));
@@ -216,7 +216,6 @@ impl SessionActor {
             .map(|s| s.to_prompt_block())
             .unwrap_or_else(|_| "(not a git repository)\n".to_string());
 
-        // ---- Render the kernel system prompt ----
         let system_prompt = SYSTEM_PROMPT_TEMPLATE
             .replace("{{DATE}}", &chrono_lite_date())
             .replace("{{WORKSPACE_ROOT}}", &cfg.workspace_root.display().to_string())
@@ -225,10 +224,10 @@ impl SessionActor {
             .replace("{{WORKSPACE_TREE}}", &workspace_tree)
             .replace("{{GIT_STATUS}}", &git_status);
 
-        // Stage 10: memory store — `memory.db` at ~/.local/share/husk/,
-        // partitioned by `hash(canonical_root)`. The `{{MEMORY_BLOCK}}` is
-        // refreshed per-turn (recall happens in `run_prompt`, not once at
-        // spawn — the block must track the evolving store).
+        // `memory.db` lives at ~/.local/share/husk/, partitioned by
+        // `hash(canonical_root)`. `{{MEMORY_BLOCK}}` is refreshed per-turn
+        // (recall happens in `run_prompt`, not once at spawn — the block
+        // must track the evolving store).
         let (memory, distiller, initial_memory_block) = {
             let db_dir = crate::session_store::app_data_dir();
             let store = db_dir.and_then(|d| {
@@ -247,9 +246,8 @@ impl SessionActor {
         let system_prompt = system_prompt
             .replace("{{MEMORY_BLOCK}}", &initial_memory_block);
 
-        // User instructions — `~/.config/husk/AGENTS.md` (user-wide) then
-        // `<workspace>/AGENTS.md` (project) append verbatim as dedicated
-        // sections. Edited from the settings "指令" pane; custom rules live
+        // `~/.config/husk/AGENTS.md` (user-wide) then `<workspace>/AGENTS.md`
+        // (project) append verbatim as dedicated sections — custom rules live
         // outside the template so they never fight its contract.
         let mut system_prompt = system_prompt;
         if let Some(cfg_dir) = dirs::config_dir() {
@@ -337,19 +335,18 @@ impl SessionActor {
         // `UiCommand::Steer` texts into it mid-turn (engine drains between
         // tool calls). Between turns a Steer is a Prompt.
         let (steer_tx, steer_rx) = mpsc::channel::<String>(32);
-        // P0-C4: cooperative cancel flag shared with the engine — the UI
-        // writes it via `cancel_writer()` (bypassing the command pump so a
-        // Cancel lands mid-turn); the engine checks it between chunks and
-        // before each tool dispatch. The flag was created above so the
-        // `ToolCtx` subagent spawner already carries a clone of it.
+        // P0-C4: shared cancel flag — the UI writes it via `cancel_writer()`
+        // (bypassing the command pump so a Cancel lands mid-turn); the engine
+        // polls it between chunks and before each tool dispatch. Created above
+        // `ToolCtx` so the subagent spawner already carries a clone.
         let io = EngineIo {
             ui_tx: channels.event_tx.clone(),
             steer_rx,
             cancel: cancel.clone(),
         };
 
-        // Stage 6: hunk tracker — `AllDirty` seeds with git-dirty files so a
-        // dirty-tree warning can precede the first prompt.
+        // `AllDirty` seeds the tracker with git-dirty files so a dirty-tree
+        // warning can precede the first prompt.
         let mut hunks = HunkTracker::new(if cfg.track_dirty {
             TrackingMode::AllDirty
         } else {
@@ -411,7 +408,7 @@ impl SessionActor {
         }
     }
 
-    /// The frontend's command sender — Stage 5 bridge clones this.
+    /// The frontend's command sender — the bridge clones this.
     /// `Prompt`/`Steer`/`SetModel`/`UndoLastTurn` go here.
     pub fn command_sender(&self) -> mpsc::Sender<UiCommand> {
         self.cmd_tx.clone()
@@ -480,13 +477,11 @@ impl SessionActor {
         // abort this one before it starts.
         self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
         self.state = AgentState::ScanningWorkspace;
-        // Echo the prompt so the UI stream renders a user block.
         let _ = self.io.ui_tx.try_send(UiEvent::UserPrompt(text.clone()));
         let turn = self.hunks.begin_turn();
 
-        // Stage 10: refresh the `<memory>` block before the turn — recall
-        // top-k facts + recent episodes for this prompt. The block lives in
-        // the system message (history[0]); swap its placeholder region.
+        // Refresh the `<memory>` block before the turn — it lives in the
+        // system message (history[0]); swap its placeholder region.
         if let Some(m) = &self.memory {
             if let Ok(block) = m.memory_block(&text) {
                 if !block.trim().is_empty() {
@@ -524,10 +519,9 @@ impl SessionActor {
                 warn!("turn failed: {e}");
                 // `run_turn` emits its own display line before every Err —
                 // a SystemMessage for cancel, an Error for transport and
-                // in-stream failures. Re-emitting here prints the same
-                // reminder twice (the cancelled-turn double-line bug).
-                // It also already emitted the terminal `StateChanged(Failed)`
-                // at each early return — no re-send here.
+                // in-stream failures — plus the terminal `StateChanged(Failed)`.
+                // Re-emitting here prints the reminder twice (the cancelled-
+                // turn double-line bug).
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
                     outcome: "failed".into(),
@@ -634,8 +628,8 @@ impl SessionActor {
         &self.history
     }
 
-    /// Stage 10: hand the turn's record to the background distiller — never
-    /// blocks the turn's completion path.
+    /// Hand the turn's record to the background distiller — never blocks
+    /// the turn's completion path.
     fn queue_distill(&mut self, record: TurnRecord) {
         if let Some(d) = &self.distiller {
             d.spawn_distill(record);
@@ -706,7 +700,6 @@ impl SessionActor {
                 self.history.push(ChatMessage::notice(line));
             }
             ControlOp::Compact => {
-                // Force a compaction pass via the engine's path.
                 let est = crate::compaction::estimate_tokens(&self.history);
                 let window = 256_000usize; // engine's context_window is the real bound
                 if crate::compaction::should_compact_at(est, window, self.engine.compact_at()) {
@@ -758,8 +751,8 @@ impl SessionActor {
     /// intercept + the `on_user_input` hook chain, then `run_prompt`. Kept
     /// out of the `match` so `Retry` can re-enter it without recursion.
     async fn handle_prompt(&mut self, text: String) {
-        // Stage 9: `/x` slash commands intercept before the ReAct
-        // loop — zero tokens. Unknown `/x` falls through as a prompt.
+        // `/x` slash commands intercept before the ReAct loop — zero
+        // tokens. Unknown `/x` falls through as a prompt.
         let workspace_root = self.workspace_root.clone();
         let cmd_result = {
             let mut ctx = CommandCtx {
@@ -932,11 +925,10 @@ impl SessionActor {
                 self.history.push(ChatMessage::notice(line));
             }
             UiCommand::Cancel => {
-                // P0-C4: real cooperative cancel — set the shared flag the
-                // engine polls between chunks and before each tool dispatch.
-                // The command-pump path covers the between-turns case; the
-                // mid-turn path is the `cancel_writer()` the bridge writes
-                // directly so it isn't queued behind `run_turn`.
+                // P0-C4: set the shared flag the engine polls between chunks
+                // and before each tool dispatch. This pump path covers the
+                // between-turns case; mid-turn cancels arrive via
+                // `cancel_writer()`, which isn't queued behind `run_turn`.
                 self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 // Wake a parked ask_question too — its exec polls the flag,
                 // but dropping the oneshot fails it fast either way.
@@ -954,11 +946,11 @@ impl SessionActor {
                 self.ask_channel.answer(request_id, answer);
             }
             UiCommand::ToolDecision { request_id, approved } => {
-                // Direct write to the engine's shared decision slot — this
-                // reaches the wait even when handle() is invoked mid-turn
-                // via run()'s serial pump (the turn future polls the slot,
-                // not this channel). The request_id correlates the verdict
-                // to a specific ApprovalRequested (P1-a).
+                // Direct write to the engine's shared decision slot — reaches
+                // the wait even when handle() runs mid-turn via run()'s
+                // serial pump (the turn future polls the slot, not this
+                // channel). The request_id correlates the verdict to a
+                // specific ApprovalRequested (P1-a).
                 *self.decision_slot.lock().unwrap() = Some((request_id, approved));
             }
             UiCommand::UndoLastTurn => {
@@ -1001,8 +993,8 @@ fn strip_call_echo(text: &str) -> String {
         // Emit text before the call, trimming a directly-preceding newline.
         let before = &rest[..start];
         out.push_str(before.strip_suffix('\n').unwrap_or(before));
-        // Skip the `[call:…]` run — to the closing `]` (or end of input).
         let after = &rest[start..];
+        // Skip the `[call:…]` run to the closing `]` (or end of input).
         let end = after.find(']').map(|i| i + 1).unwrap_or(after.len());
         rest = &after[end..];
         // Swallow one newline right after the call line.
