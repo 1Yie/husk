@@ -8,6 +8,8 @@
 //! | `data.type`                                  | → StreamChunk            |
 //! |----------------------------------------------|--------------------------|
 //! | `response.reasoning_summary_text.delta`      | `ReasoningDelta`         |
+//! | `response.reasoning_text.delta` (raw CoT —   | `ReasoningDelta`         |
+//! |   deepseek / open-weight models)             |                          |
 //! | `response.output_text.delta`                 | `ContentDelta`           |
 //! | `response.output_item.added` (function_call) | `ToolCallDelta{name,id}` |
 //! | `response.function_call_arguments.delta`     | `ToolCallDelta{args}`    |
@@ -20,23 +22,21 @@
 //! `{type:"message"/"function_call"}` items. `instructions` carries the
 //! system prompt separately.
 
-use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::provider::{BoxStream, LlmProvider};
-use crate::sse;
+use crate::transport::{DoneGuard, Transport};
 use crate::types::{ChatMessage, Role, StreamChunk};
 
 /// `/v1/responses` provider — shares the `GenericOpenAiProvider` HTTP/auth
 /// shell but speaks the Responses protocol.
 pub struct OpenAiResponsesProvider {
-    client: reqwest::Client,
+    transport: Transport,
     base_url: String,
     api_key: String,
-    extra_headers: Vec<(String, String)>,
     compat: Option<crate::config::ProviderCompat>,
 }
 
@@ -45,16 +45,10 @@ impl OpenAiResponsesProvider {
         base_url: impl Into<String>,
         api_key: impl Into<String>,
     ) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .tcp_nodelay(true)
-            .pool_max_idle_per_host(4)
-            .build()
-            .context("build reqwest client")?;
         Ok(Self {
-            client,
+            transport: Transport::new()?,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
-            extra_headers: Vec::new(),
             compat: None,
         })
     }
@@ -65,7 +59,7 @@ impl OpenAiResponsesProvider {
     }
 
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.extra_headers.push((key.into(), value.into()));
+        self.transport = self.transport.with_header(key, value);
         self
     }
 
@@ -83,15 +77,54 @@ impl OpenAiResponsesProvider {
     /// tool_calls row was lost to an old persistence bug). Likewise an assistant
     /// message with empty content AND no tool calls is dropped — it replays as a
     /// blank turn.
+    ///
+    /// Symmetric repair (deepseek's Responses shim verifies BOTH directions
+    /// and rejects with `400 "No tool output found for tool call …"`): a
+    /// `function_call` whose output never landed — a malformed call skipped
+    /// before the engine's pairing fix, an interrupted turn, a compacted or
+    /// hand-edited snapshot — gets a synthesized placeholder output emitted
+    /// right where the real one was expected (immediately after the call,
+    /// before the next non-output item).
     fn build_input(messages: &[ChatMessage]) -> (Vec<Value>, Option<String>) {
         let mut input = Vec::new();
         let mut instructions = Vec::new();
         let mut seen_call_ids: std::collections::HashSet<String> = Default::default();
+        // Call ids still awaiting their `function_call_output`, in call
+        // order — drained by matching tool rows or by placeholder
+        // synthesis at the next non-output boundary.
+        let mut expected: Vec<String> = Vec::new();
+        // Calls persisted with `id: ""` (a provider that never named them —
+        // deepseek's Responses shim before the item.done fix) get synthesized
+        // ids here, queued so a tool row with `tool_call_id: ""` still pairs
+        // positionally with the Nth id-less call. Two passes would diverge;
+        // one queue keeps replay self-consistent for poisoned snapshots.
+        let mut blank_ids: std::collections::VecDeque<String> = Default::default();
+        let mut synth_seq = 0usize;
+
+        // Missing outputs must sit directly after their call — flush them
+        // before any item that isn't a `function_call_output`.
+        macro_rules! flush_missing {
+            () => {
+                for id in expected.drain(..) {
+                    input.push(json!({
+                        "type": "function_call_output",
+                        "call_id": id,
+                        "output": "(tool result missing — the call was interrupted or dropped from history)",
+                    }));
+                }
+            };
+        }
+
         for m in messages {
             let text = m.content.clone().unwrap_or_default();
             match m.role {
+                // System rows fold into `instructions` — they never occupy
+                // an `input` position, so they must NOT flush `expected`
+                // (a mid-block notice would otherwise synthesize outputs
+                // prematurely and orphan the real rows after it).
                 Role::System => instructions.push(text),
                 Role::User => {
+                    flush_missing!();
                     // Vision: image refs become `input_image` parts after
                     // the text part — materialized `data:` URLs, degrading
                     // to a text note when the staged file is gone.
@@ -114,24 +147,38 @@ impl OpenAiResponsesProvider {
                     }));
                 }
                 Role::Assistant => {
-                    // An assistant message with tool_calls replays as
-                    // function_call items; a plain one is a message.
-                    if let Some(calls) = &m.tool_calls {
-                        for c in calls {
-                            seen_call_ids.insert(c.id.clone());
-                            input.push(json!({
-                                "type": "function_call",
-                                "call_id": c.id,
-                                "name": c.name,
-                                "arguments": c.arguments,
-                            }));
-                        }
-                    }
+                    flush_missing!();
+                    // Text first, then function_call items — the natural
+                    // output order ("I'll check the files" → calls), and it
+                    // keeps each call adjacent to its outputs instead of
+                    // wedging the assistant text between them (strict
+                    // shims pair by position).
                     if !text.is_empty() {
                         input.push(json!({
                             "role": "assistant",
                             "content": [{ "type": "output_text", "text": text }],
                         }));
+                    }
+                    if let Some(calls) = &m.tool_calls {
+                        for c in calls {
+                            // A `call_id: ""` is a hard 400 upstream —
+                            // synthesize a stable id for this pass.
+                            let id = if c.id.is_empty() {
+                                synth_seq += 1;
+                                format!("call_synth_{synth_seq}")
+                            } else {
+                                c.id.clone()
+                            };
+                            blank_ids.push_back(id.clone());
+                            seen_call_ids.insert(id.clone());
+                            expected.push(id.clone());
+                            input.push(json!({
+                                "type": "function_call",
+                                "call_id": id,
+                                "name": c.name,
+                                "arguments": c.arguments,
+                            }));
+                        }
                     }
                 }
                 Role::Tool => {
@@ -139,19 +186,48 @@ impl OpenAiResponsesProvider {
                     // when a matching function_call was emitted. An orphan
                     // output (call_id never seen) makes devin's upstream
                     // reject the whole request as invalid_argument.
-                    let call_id = m.tool_call_id.clone().unwrap_or_default();
+                    let mut call_id = m.tool_call_id.clone().unwrap_or_default();
+                    // `tool_call_id: ""` pairs with the earliest unpaired
+                    // call — preserves output ordering from the poisoned
+                    // snapshot (engine dispatched calls in tool_calls order).
+                    if call_id.is_empty() {
+                        if let Some(id) = blank_ids.pop_front() {
+                            call_id = id;
+                        } else if let Some(id) = expected.first() {
+                            // No blank-id call outstanding — the blank output
+                            // still belongs to the earliest unanswered call
+                            // (dispatched in order); pairing it keeps the real
+                            // output instead of dropping + synthesizing.
+                            call_id = id.clone();
+                        }
+                    }
                     if seen_call_ids.contains(&call_id) {
                         input.push(json!({
                             "type": "function_call_output",
                             "call_id": call_id,
                             "output": text,
                         }));
+                        if let Some(pos) = expected.iter().position(|id| *id == call_id) {
+                            expected.remove(pos);
+                        }
+                        // A paired call also leaves the blank-id queue —
+                        // otherwise a later `tool_call_id: ""` row pops an
+                        // already-answered id and emits a SECOND output for
+                        // it while the real unanswered call gets a
+                        // placeholder (mixed snapshots: some calls kept real
+                        // ids, some were persisted blank).
+                        if let Some(pos) = blank_ids.iter().position(|id| *id == call_id) {
+                            blank_ids.remove(pos);
+                        }
                     }
                     // else: orphan tool output — drop it (and its blank
                     // assistant row is already absent since tool_calls=None).
                 }
             }
         }
+        // Trailing dangling calls — history ends mid-tools (cancel before
+        // dispatch fill, crash before persist).
+        flush_missing!();
         let instructions = if instructions.is_empty() {
             None
         } else {
@@ -190,6 +266,18 @@ impl LlmProvider for OpenAiResponsesProvider {
         "openai_responses"
     }
 
+    fn capabilities(&self) -> crate::provider::Capabilities {
+        let mut caps = crate::provider::Capabilities::all();
+        if let Some(allowed) = self
+            .compat
+            .as_ref()
+            .and_then(|c| c.supports_reasoning_effort)
+        {
+            caps.reasoning = allowed;
+        }
+        caps
+    }
+
     async fn chat_stream(
         &self,
         model: &str,
@@ -217,10 +305,8 @@ impl LlmProvider for OpenAiResponsesProvider {
         }
         if let Some(effort) = reasoning_effort {
             let allowed = self
-                .compat
-                .as_ref()
-                .and_then(|c| c.supports_reasoning_effort)
-                .unwrap_or(true);
+                .capabilities()
+                .reasoning;
             if allowed {
                 body["reasoning"] = json!({ "effort": effort });
             }
@@ -229,34 +315,23 @@ impl LlmProvider for OpenAiResponsesProvider {
             body["tools"] = t;
         }
 
-        let mut req = self
-            .client
-            .post(self.responses_url())
-            .bearer_auth(&self.api_key)
-            .header("Accept", "text/event-stream")
-            .json(&body);
-        for (k, v) in &self.extra_headers {
-            req = req.header(k, v);
-        }
-
-        if std::env::var("AGENT_DUMP_REQ").is_ok() {
-            eprintln!("\n===REQ(responses)===\n{}\n===/REQ===",
-                serde_json::to_string(&body).unwrap());
-        }
-
-        let resp = req.send().await.context("responses request")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "provider returned {status}: {}",
-                &text[..text.len().min(512)]
-            ));
-        }
-
-        let data = sse::data_lines(resp.bytes_stream());
-        let mut usage: Option<(u32, u32, u32)> = None;
-        let mut done_emitted = false;
+        let req = self
+            .transport
+            .post(&self.responses_url(), &body)
+            .bearer_auth(&self.api_key);
+        let data = self
+            .transport
+            .send_sse(req, &body, "responses request")
+            .await?;
+        // Shared with the tail fallback — a `Copy` capture would snapshot
+        // `None` at construction, so the synthesized Done must read usage
+        // through the Arc, not a moved Option.
+        let usage = std::sync::Arc::new(std::sync::Mutex::new(
+            None::<(u32, u32, u32)>,
+        ));
+        let done = DoneGuard::new();
+        let usage2 = usage.clone();
+        let flag = done.clone();
         // devin/swe-2 emits a text-protocol `[call: name(args)]` line inside
         // `output_text.delta` IN ADDITION TO the structured `function_call`
         // item — a duplicate that must not reach history (the model parrots
@@ -269,7 +344,7 @@ impl LlmProvider for OpenAiResponsesProvider {
             let items: Vec<anyhow::Result<StreamChunk>> = match res {
                 Err(e) => vec![Err(e)],
                 Ok(d) => {
-                    let evs = map_data(&d, &mut usage);
+                    let evs = map_data(&d, &mut *usage2.lock().unwrap());
                     let mut items: Vec<anyhow::Result<StreamChunk>> = evs
                         .into_iter()
                         .filter_map(|c| match c {
@@ -281,13 +356,13 @@ impl LlmProvider for OpenAiResponsesProvider {
                             // structured call carries the intent).
                             StreamChunk::ToolCallDelta { .. } => {
                                 stripper.flush_call_line();
+                                flag.observe(&c);
                                 Some(c)
                             }
-                            StreamChunk::Done { .. } => {
-                                done_emitted = true;
-                                Some(c)
+                            other => {
+                                flag.observe(&other);
+                                Some(other)
                             }
-                            other => Some(other),
                         })
                         .map(Ok)
                         .collect();
@@ -295,12 +370,12 @@ impl LlmProvider for OpenAiResponsesProvider {
                     // stripper become real ToolCallDelta so swe-2's
                     // text-protocol calls actually execute (not just hidden).
                     // Each recovered text-call gets its own assembler slot —
-                    // index grows per call so two `[call:]` lines don't
+                    // grows per call so two `[call:]` lines don't
                     // concat into one corrupted slot.
                     let mut slot = 10_000usize;
                     for call in stripper.take_recovered() {
                         items.push(Ok(StreamChunk::ToolCallDelta {
-                            index: slot,
+                            slot,
                             id: Some(call.id),
                             name: Some(call.name),
                             args_delta: call.arguments,
@@ -313,17 +388,14 @@ impl LlmProvider for OpenAiResponsesProvider {
             futures::stream::iter(items)
         });
 
-        let stream = stream.chain(futures::stream::once(async move {
-            if done_emitted {
-                None
-            } else {
-                Some(Ok(StreamChunk::Done {
-                    prompt_tokens: usage.map(|u| u.0),
-                    completion_tokens: usage.map(|u| u.1),
-                    cached_tokens: usage.map(|u| u.2),
-                }))
+        let stream = done.finish(stream, move || {
+            let u = *usage.lock().unwrap();
+            StreamChunk::Done {
+                prompt_tokens: u.map(|u| u.0),
+                completion_tokens: u.map(|u| u.1),
+                cached_tokens: u.map(|u| u.2),
             }
-        }).filter_map(|x| async move { x }));
+        });
 
         Ok(Box::pin(stream))
     }
@@ -360,6 +432,11 @@ struct RespEvent {
 struct RespItem {
     #[serde(rename = "type")]
     kind: String,
+    /// The provider's item id (`fc_…`) — fallback correlation key when a
+    /// backend omits `call_id` (deepseek fills it only on `item.done`, or
+    /// never). Distinct from `call_id` (`call_…`) on the OpenAI wire.
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     call_id: Option<String>,
     #[serde(default)]
@@ -548,7 +625,13 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
     };
     let mut out = Vec::new();
     match ev.kind.as_str() {
-        "response.reasoning_summary_text.delta" => {
+        // Reasoning streams under two event kinds depending on the backend:
+        // `reasoning_summary_text.delta` carries OpenAI's *summarized*
+        // reasoning, while open-weight models (deepseek's shim) stream the
+        // raw CoT as `reasoning_text.delta`. Both fold into ReasoningDelta —
+        // without the second arm a thinking model renders as silent.
+        "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta" => {
             if let Some(d) = ev.delta {
                 if !d.is_empty() {
                     out.push(StreamChunk::ReasoningDelta(d));
@@ -562,7 +645,7 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
                 }
             }
         }
-        "response.output_item.added" => {
+        "response.output_item.added" | "response.output_item.done" => {
             if let Some(item) = ev.item {
                 if item.kind == "function_call" {
                     // call_id like `list_dir:0#hash` — the *name* is the
@@ -571,9 +654,19 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
                     // fall back to extracting it when `item.name` is absent
                     // — otherwise the assembler finishes a name="" call and
                     // the engine reports "malformed empty tool call".
+                    //
+                    // `item.done` is handled too: deepseek's Responses
+                    // shim leaves `call_id` empty on `added`/`args.delta`
+                    // and only fills it on the completed item — without
+                    // this arm the assembled call keeps id="" and the next
+                    // turn's replay 400s on `call_id: empty string`. The
+                    // assembler's assign-once rule keeps whichever id
+                    // arrived first (provisional `item.id` from `added`,
+                    // or the real `call_id` here); the persisted id stays
+                    // internally consistent with the tool result either way.
+                    let id = item.call_id.or_else(|| ev.call_id.clone()).or(item.id);
                     let name = item.name.or_else(|| {
-                        item.call_id
-                            .as_deref()
+                        id.as_deref()
                             .and_then(|cid| {
                                 // `name:0#hash` → `name`. A plain `call_…`
                                 // id has no `:` and yields nothing, so we
@@ -584,8 +677,8 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
                             .filter(|s| !s.is_empty())
                     });
                     out.push(StreamChunk::ToolCallDelta {
-                        index: ev.output_index.unwrap_or(0),
-                        id: item.call_id,
+                        slot: ev.output_index.unwrap_or(0),
+                        id,
                         name,
                         args_delta: String::new(),
                     });
@@ -606,7 +699,7 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
                         .filter(|s| !s.is_empty())
                 });
                 out.push(StreamChunk::ToolCallDelta {
-                    index: ev.output_index.unwrap_or(0),
+                    slot: ev.output_index.unwrap_or(0),
                     id,
                     name,
                     args_delta: d,
@@ -643,7 +736,154 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
 
 #[cfg(test)]
 mod tests {
-    use super::CallStripper;
+    use super::{map_data, CallStripper, OpenAiResponsesProvider};
+    use crate::types::{ChatMessage, StreamChunk, ToolCall};
+
+    #[test]
+    fn reasoning_text_delta_maps_to_reasoning_chunk() {
+        // DeepSeek's shim streams raw CoT under `reasoning_text.delta`,
+        // not the OpenAI `reasoning_summary_text.delta` — both must reach
+        // the UI as ReasoningDelta or a thinking model renders silent.
+        let mut usage = None;
+        let chunks = map_data(
+            r#"{"type":"response.reasoning_text.delta","delta":"thinking hard"}"#,
+            &mut usage,
+        );
+        assert!(matches!(
+            chunks.first(),
+            Some(StreamChunk::ReasoningDelta(t)) if t == "thinking hard"
+        ));
+    }
+
+    #[test]
+    fn build_input_synthesizes_empty_call_ids() {
+        // Deepseek's Responses shim never emits call_id — the assembler
+        // used to persist `id: ""`, and the next request 400'd on
+        // `call_id: empty string`. build_input must synthesize ids and
+        // pair blank tool_call_id outputs positionally.
+        let mut calls_msg = ChatMessage::assistant("");
+        calls_msg.tool_calls = Some(vec![ToolCall {
+            id: String::new(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }]);
+        let mut tool_msg = ChatMessage::tool_result("", "ok");
+        tool_msg.tool_call_id = Some(String::new());
+
+        let (input, _) = OpenAiResponsesProvider::build_input(&[calls_msg, tool_msg]);
+        let call = &input[0];
+        assert_eq!(call["type"], "function_call");
+        assert_ne!(call["call_id"], ""); // strict upstream rejects ""
+        let output = &input[1];
+        assert_eq!(output["type"], "function_call_output");
+        assert_eq!(output["call_id"], call["call_id"]); // paired positionally
+    }
+
+    #[test]
+    fn build_input_drops_orphan_outputs() {
+        // A tool row whose call_id never appeared upstream stays dropped.
+        let mut tool_msg = ChatMessage::tool_result("nope", "x");
+        tool_msg.tool_call_id = Some("nope".into());
+        let (input, _) = OpenAiResponsesProvider::build_input(&[tool_msg]);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn build_input_synthesizes_missing_outputs() {
+        // deepseek's Responses shim rejects a `function_call` whose output
+        // never landed — "No tool output found for tool call …" (400). The
+        // placeholder must sit immediately after the call row, before the
+        // next non-output item.
+        let mut calls_msg = ChatMessage::assistant("calling");
+        calls_msg.tool_calls = Some(vec![
+            ToolCall { id: "call_1".into(), name: "bash".into(), arguments: "{}".into() },
+            ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() },
+        ]);
+        let mut out1 = ChatMessage::tool_result("call_1", "ok");
+        out1.tool_call_id = Some("call_1".into());
+        let (input, _) = OpenAiResponsesProvider::build_input(&[
+            calls_msg, out1, ChatMessage::assistant("done"),
+        ]);
+        // assistant text, function_call, function_call, output(call_1),
+        // output(call_2 synth), assistant text.
+        let types: Vec<&str> = input
+            .iter()
+            .map(|i| i["type"].as_str().or_else(|| i["role"].as_str()).unwrap_or("?"))
+            .collect();
+        assert_eq!(types, [
+            "assistant", "function_call", "function_call",
+            "function_call_output", "function_call_output",
+            "assistant",
+        ]);
+        assert_eq!(input[4]["call_id"], "call_2");
+    }
+
+    #[test]
+    fn build_input_flushes_missing_at_end() {
+        // History ends mid-tools — the trailing call gets a placeholder
+        // output so the replayed request stays pair-valid.
+        let mut calls_msg = ChatMessage::assistant("calling");
+        calls_msg.tool_calls = Some(vec![
+            ToolCall { id: "call_z".into(), name: "bash".into(), arguments: "{}".into() },
+        ]);
+        let (input, _) = OpenAiResponsesProvider::build_input(&[calls_msg]);
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[2]["type"], "function_call_output");
+        assert_eq!(input[2]["call_id"], "call_z");
+    }
+
+    #[test]
+    fn build_input_does_not_flush_on_system_rows() {
+        // A mid-block system notice folds into `instructions` — it must not
+        // trigger placeholder synthesis, or the real tool row after it
+        // would orphan-drop.
+        let mut calls_msg = ChatMessage::assistant("calling");
+        calls_msg.tool_calls = Some(vec![
+            ToolCall { id: "call_1".into(), name: "bash".into(), arguments: "{}".into() },
+        ]);
+        let mut out1 = ChatMessage::tool_result("call_1", "real output");
+        out1.tool_call_id = Some("call_1".into());
+        let (input, _) = OpenAiResponsesProvider::build_input(&[
+            calls_msg,
+            ChatMessage::notice("已插入引导指令"),
+            out1,
+        ]);
+        let outputs: Vec<_> = input
+            .iter()
+            .filter(|i| i["type"] == "function_call_output")
+            .collect();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["output"], "real output");
+    }
+
+    #[test]
+    fn build_input_blank_output_pairs_with_unanswered_call() {
+        // Mixed snapshot: calls kept real ids, but one output row was
+        // persisted `tool_call_id: ""`. The blank row must pair with the
+        // first UNANSWERED call — not pop an already-paired id off the
+        // blank queue and emit a duplicate output for it.
+        let mut calls_msg = ChatMessage::assistant("calling");
+        calls_msg.tool_calls = Some(vec![
+            ToolCall { id: "call_1".into(), name: "bash".into(), arguments: "{}".into() },
+            ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() },
+        ]);
+        let mut out1 = ChatMessage::tool_result("call_1", "first");
+        out1.tool_call_id = Some("call_1".into());
+        let mut out2 = ChatMessage::tool_result("", "second");
+        out2.tool_call_id = Some(String::new());
+
+        let (input, _) =
+            OpenAiResponsesProvider::build_input(&[calls_msg, out1, out2]);
+        let outputs: Vec<_> = input
+            .iter()
+            .filter(|i| i["type"] == "function_call_output")
+            .collect();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0]["call_id"], "call_1");
+        assert_eq!(outputs[0]["output"], "first");
+        assert_eq!(outputs[1]["call_id"], "call_2");
+        assert_eq!(outputs[1]["output"], "second");
+    }
 
     #[test]
     fn strips_call_lines() {

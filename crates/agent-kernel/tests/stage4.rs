@@ -15,17 +15,17 @@ fn collect_script_tool_call_then_answer() -> Vec<Vec<StreamChunk>> {
     let script1 = vec![
         StreamChunk::ContentDelta("Let me look at the workspace.".into()),
         StreamChunk::ToolCallDelta {
-            index: 0,
+            slot: 0,
             id: Some("call_1".into()),
             name: Some("list_dir".into()),
             args_delta: tool_args,
         },
-        StreamChunk::Done { prompt_tokens: Some(10), completion_tokens: Some(5) },
+        StreamChunk::Done { prompt_tokens: Some(10), completion_tokens: Some(5), cached_tokens: None },
     ];
     // Script 2: after the tool result, model answers + Done.
     let script2 = vec![
         StreamChunk::ContentDelta("The workspace has 2 entries.".into()),
-        StreamChunk::Done { prompt_tokens: Some(20), completion_tokens: Some(8) },
+        StreamChunk::Done { prompt_tokens: Some(20), completion_tokens: Some(8), cached_tokens: None },
     ];
     vec![script1, script2]
 }
@@ -52,6 +52,7 @@ async fn headless_react_loop_drives_tool_then_answers() {
         thinking_level: None,
         thinking_level_map: None,
         context_window: None,
+        compact_at: None,
         model_input: Vec::new(),
     });
 
@@ -110,6 +111,7 @@ async fn system_prompt_is_rendered_with_workspace_and_git() {
         thinking_level: None,
         thinking_level_map: None,
         context_window: None,
+        compact_at: None,
         model_input: Vec::new(),
     });
     actor.handle(UiCommand::Prompt { text: "hi".into() }).await;
@@ -137,6 +139,7 @@ async fn steer_between_turns_becomes_a_prompt() {
         thinking_level: None,
         thinking_level_map: None,
         context_window: None,
+        compact_at: None,
         model_input: Vec::new(),
     });
 

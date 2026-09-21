@@ -13,10 +13,53 @@ use crate::types::{ChatMessage, StreamChunk};
 
 pub type BoxStream<T> = Pin<Box<dyn Stream<Item = anyhow::Result<T>> + Send>>;
 
+/// What a wire protocol can actually express — declared by the adapter as
+/// a baseline, narrowed per-deployment by `ProviderCompat` config fields.
+/// The engine consults this BEFORE assembling request params, so rules
+/// like "no temperature while thinking" live in one declared table instead
+/// of scattering `if provider == …` guesses across adapters.
+#[derive(Debug, Clone, Copy)]
+pub struct Capabilities {
+    /// Structured tool calls on the wire (OpenAI `tool_calls`, Anthropic
+    /// `tool_use`, Gemini `functionCall`). `false` = a text-protocol
+    /// provider — the kernel flattens calls into message text instead.
+    pub native_tool_calls: bool,
+    /// Accepts a reasoning/thinking directive (`reasoning_effort`,
+    /// `thinking.budget_tokens`, `thinkingConfig.thinkingBudget`). `false`
+    /// → the engine never computes an effort value for this provider.
+    pub reasoning: bool,
+    /// `temperature` may be sent while reasoning is enabled. Anthropic's
+    /// thinking mode rejects temperature outright (400); OpenAI accepts
+    /// both — adapters that return `false` here drop the field themselves.
+    pub temperature_with_reasoning: bool,
+    /// Accepts inline image parts (`input_image` / `image` / `inlineData`).
+    pub vision: bool,
+}
+
+impl Capabilities {
+    /// Everything-supported baseline — adapters narrow what their wire
+    /// cannot express.
+    pub const fn all() -> Self {
+        Self {
+            native_tool_calls: true,
+            reasoning: true,
+            temperature_with_reasoning: true,
+            vision: true,
+        }
+    }
+}
+
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Stable adapter id: `"openai_compat" | "anthropic" | "mock"`.
     fn id(&self) -> &'static str;
+
+    /// Baseline capability table — adapters override; `ProviderCompat`
+    /// config fields can narrow it further per-deployment. See field docs
+    /// for what each bit gates.
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::all()
+    }
 
     /// Whether this provider consumes structured `tool_calls` on the wire
     /// (OpenAI `function`/`function_call`, Anthropic `tool_use`).
@@ -28,7 +71,7 @@ pub trait LlmProvider: Send + Sync {
     /// message text instead. Without this branch, flattening a *native*
     /// provider's tool_calls orphans its `Role::Tool` results (P1-b).
     fn native_tool_calls(&self) -> bool {
-        true
+        self.capabilities().native_tool_calls
     }
 
     /// `tools` is a provider-agnostic JSON Schema array; the adapter maps it

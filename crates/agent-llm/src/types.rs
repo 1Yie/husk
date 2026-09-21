@@ -2,7 +2,7 @@
 //!
 //! Rules (llm-provider-layer.md §types):
 //! * `arguments` fragments are **concatenated**, never parsed until `Done`
-//!   or the next `index` begins — JSON arrives split across chunks.
+//!   or the next `slot` begins — JSON arrives split across chunks.
 //! * `Done` fires exactly once per request, even on `[DONE]`-sentinel vs.
 //!   clean-close differences between backends.
 //! * `Error` is a stream item, not stream termination — SamplerActor decides
@@ -188,6 +188,13 @@ impl ChatMessage {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
+    /// Canonical invocation id — provider-issued when the wire has one
+    /// (`call_…`, `toolu_…`), `call_*`-synthesized by the assembler when it
+    /// doesn't (Gemini `functionCall` carries no id at all). Never empty
+    /// once a call reaches the engine. Adapters replay it through their
+    /// own correlation field (`call_id`, `tool_use_id`); name-keyed wires
+    /// (Gemini `functionResponse`) resolve the tool name by looking this
+    /// id up against the earlier assistant `tool_calls`.
     pub id: String,
     pub name: String,
     /// JSON assembled incrementally from `args_delta` fragments.
@@ -241,8 +248,16 @@ pub enum StreamChunk {
     ContentDelta(String),
     /// Tool-call fragment — id/name arrive once, arguments stream as JSON
     /// shards under `args_delta`.
+    ///
+    /// `slot` identifies WHICH invocation within this response the delta
+    /// belongs to — an opaque merge key, not a positional index. Each wire
+    /// fills it differently: OpenAI sends `tool_calls[i].index`, Responses
+    /// sends `output_index` (sparse — reasoning and message items consume
+    /// numbers too), Anthropic sends content-block `index`, Gemini
+    /// synthesizes a counter. The assembler only requires that deltas for
+    /// the same invocation share a slot and that slots sort in call order.
     ToolCallDelta {
-        index: usize,
+        slot: usize,
         id: Option<String>,
         name: Option<String>,
         args_delta: String,
@@ -259,7 +274,7 @@ pub enum StreamChunk {
 }
 
 /// Assemble a completed tool call list from a chunk stream — used by the
-/// sampler and engine. Fragments for the same `index` merge by concat.
+/// sampler and engine. Fragments for the same `slot` merge by concat.
 ///
 /// Slots are a map, not a Vec: the Responses API's `output_index` counts
 /// **every** output item (reasoning=0, message=1, first call=2…), so call
@@ -268,7 +283,7 @@ pub enum StreamChunk {
 /// 调用" once per reasoning/message item before each real call.
 #[derive(Debug, Default)]
 pub struct ToolCallAssembler {
-    slots: std::collections::BTreeMap<usize, ToolCall>,
+    calls: std::collections::BTreeMap<usize, ToolCall>,
 }
 
 impl ToolCallAssembler {
@@ -278,8 +293,8 @@ impl ToolCallAssembler {
 
     /// Fold one chunk. Returns `true` when the chunk was a tool delta.
     pub fn feed(&mut self, chunk: &StreamChunk) -> bool {
-        if let StreamChunk::ToolCallDelta { index, id, name, args_delta } = chunk {
-            let slot = self.slots.entry(*index).or_insert_with(|| ToolCall {
+        if let StreamChunk::ToolCallDelta { slot, id, name, args_delta } = chunk {
+            let call = self.calls.entry(*slot).or_insert_with(|| ToolCall {
                 id: String::new(),
                 name: String::new(),
                 arguments: String::new(),
@@ -287,28 +302,45 @@ impl ToolCallAssembler {
             if let Some(id) = id {
                 // id arrives once — assign, never append (Responses repeats
                 // call_id on argument deltas; appending corrupts it).
-                if slot.id.is_empty() {
-                    slot.id = id.clone();
+                if call.id.is_empty() {
+                    call.id = id.clone();
                 }
             }
             if let Some(name) = name {
                 // name likewise arrives once — assign; appending produced
                 // `smart_readsmart_read…` when the args delta re-sent it.
-                if slot.name.is_empty() {
-                    slot.name = name.clone();
+                if call.name.is_empty() {
+                    call.name = name.clone();
                 }
             }
-            slot.arguments.push_str(args_delta);
+            call.arguments.push_str(args_delta);
             true
         } else {
             false
         }
     }
 
-    /// Completed calls in `index` order — sparse indices collapse; no
+    /// Completed calls in `slot` order — sparse slots collapse; no
     /// empty slots survive.
-    pub fn finish(self) -> Vec<ToolCall> {
-        self.slots.into_values().collect()
+    ///
+    /// Backfills a synthesized `id` on any call the provider never named:
+    /// some Responses-API backends (deepseek) only expose `call_id` on
+    /// `output_item.done` — or not at all — and persisting `id: ""`
+    /// replays next turn as `function_call.call_id: ""`, which strict
+    /// upstreams reject with `400 invalid_request_error`.
+    pub fn finish(mut self) -> Vec<ToolCall> {
+        static SYNTH_SEQ: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        for call in self.calls.values_mut() {
+            if call.id.is_empty() {
+                call.id = format!(
+                    "call_{:x}_{}",
+                    now_ms(),
+                    SYNTH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+            }
+        }
+        self.calls.into_values().collect()
     }
 }
 
@@ -322,7 +354,7 @@ mod tests {
         // a call at index 2 must not materialize empty slots 0 and 1.
         let mut a = ToolCallAssembler::new();
         assert!(a.feed(&StreamChunk::ToolCallDelta {
-            index: 2,
+            slot: 2,
             id: Some("c1".into()),
             name: Some("bash".into()),
             args_delta: "{}".into(),

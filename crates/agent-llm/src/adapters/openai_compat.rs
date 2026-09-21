@@ -13,24 +13,21 @@
 //! | `usage` block (final chunk)   | merged into `Done`                             |
 //! | non-2xx on `send()`           | `Err` before stream starts, body included      |
 
-use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider};
-use crate::sse;
+use crate::transport::{DoneGuard, Transport};
 use crate::types::{ChatMessage, Role, StreamChunk};
 
 /// One provider for every OpenAI-shaped backend. `api_key` is the *resolved*
 /// secret — config's `env:`/`keyring:` indirection happens in `factory`.
 pub struct GenericOpenAiProvider {
-    client: reqwest::Client,
+    transport: Transport,
     base_url: String,
     api_key: String,
-    /// Extra static headers some backends require (e.g. `HTTP-Referer`).
-    extra_headers: Vec<(String, String)>,
     compat: Option<crate::config::ProviderCompat>,
 }
 
@@ -39,16 +36,10 @@ impl GenericOpenAiProvider {
         base_url: impl Into<String>,
         api_key: impl Into<String>,
     ) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .tcp_nodelay(true)
-            .pool_max_idle_per_host(4)
-            .build()
-            .context("build reqwest client")?;
         Ok(Self {
-            client,
+            transport: Transport::new()?,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
-            extra_headers: Vec::new(),
             compat: None,
         })
     }
@@ -59,7 +50,7 @@ impl GenericOpenAiProvider {
     }
 
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.extra_headers.push((key.into(), value.into()));
+        self.transport = self.transport.with_header(key, value);
         self
     }
 
@@ -197,7 +188,7 @@ fn map_data(data: &str, pending_usage: &mut Option<WireUsage>) -> Vec<StreamChun
                     .map(|f| (f.name.clone(), f.arguments.clone().unwrap_or_default()))
                     .unwrap_or((None, String::new()));
                 out.push(StreamChunk::ToolCallDelta {
-                    index: tc.index,
+                    slot: tc.index,
                     id: tc.id.clone(),
                     name,
                     args_delta: args,
@@ -237,10 +228,149 @@ pub fn test_map_data(
     out
 }
 
+/// Serialize one `ChatMessage` to its wire `Value` — replay-only fields
+/// (`is_error`, `notice`, `ts`, `images`) are stripped; a user message with
+/// image refs becomes a content-parts array (text first, `image_url` parts
+/// after; unresolvable refs degrade to a text note).
+fn serialize_message(m: &ChatMessage) -> serde_json::Value {
+    let mut v = serde_json::to_value(m).unwrap_or_else(|_| {
+        json!({ "role": "user", "content": "" })
+    });
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("is_error"); obj.remove("notice"); obj.remove("ts");
+        if !m.images.is_empty() && matches!(m.role, Role::User) {
+            let mut parts = vec![json!({
+                "type": "text",
+                "text": m.content.clone().unwrap_or_default(),
+            })];
+            for img in &m.images {
+                match img.data_url() {
+                    Some(url) => parts.push(json!({
+                        "type": "image_url",
+                        "image_url": { "url": url },
+                    })),
+                    None => parts.push(json!({
+                        "type": "text",
+                        "text": format!("(image unavailable: {})", img.path.display()),
+                    })),
+                }
+            }
+            obj.insert("content".into(), json!(parts));
+        }
+        obj.remove("images");
+    }
+    v
+}
+
+/// `ChatMessage` list → wire `messages` with a tool-pairing integrity pass.
+///
+/// Strict OpenAI-compat backends (deepseek verified) reject the whole
+/// request — `400 "No tool output found for tool call …"` — when history
+/// carries either side of a broken pair:
+///
+/// * a `tool_calls` entry with no matching `role:"tool"` output (a skipped
+///   malformed call, an interrupted turn, a compacted-away output, a
+///   poisoned snapshot), or
+/// * a `tool` message whose `tool_call_id` never appeared on an earlier
+///   `tool_calls` entry (orphan output).
+///
+/// Repair rules, applied in order:
+/// 1. `tool_calls` entries with an empty `id` get a synthesized one (the
+///    assembler backfills live, but old snapshots can persist `""`).
+/// 2. A non-`tool` message arriving while outputs are still expected flushes
+///    synthesized placeholder outputs — they must sit immediately after
+///    their assistant row, before whatever comes next.
+/// 3. `tool` rows with an unseen `tool_call_id` are dropped; a blank
+///    `tool_call_id` pairs positionally with the earliest outstanding call.
+fn build_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
+    // Call ids still awaiting their `tool` output, in call order.
+    let mut expected: Vec<String> = Vec::new();
+    let mut synth_seq = 0usize;
+
+    // Missing outputs must be emitted directly after their assistant row —
+    // any non-tool message boundary flushes them first.
+    macro_rules! flush_missing {
+        () => {
+            for id in expected.drain(..) {
+                out.push(json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": "(tool result missing — the call was interrupted or dropped from history)",
+                }));
+            }
+        };
+    }
+
+    for m in messages {
+        let mut v = serialize_message(m);
+        match m.role {
+            Role::Assistant => {
+                flush_missing!();
+                // Rewrite empty call ids in the emitted message so the wire
+                // and the pairing ledger agree.
+                if let Some(calls) = v.get_mut("tool_calls").and_then(|c| c.as_array_mut()) {
+                    for c in calls.iter_mut() {
+                        let id = c.get("id").and_then(|i| i.as_str()).unwrap_or_default();
+                        if id.is_empty() {
+                            synth_seq += 1;
+                            let id = format!("call_synth_{synth_seq}");
+                            c["id"] = json!(id);
+                            expected.push(id);
+                        } else {
+                            expected.push(id.to_string());
+                        }
+                    }
+                }
+                out.push(v);
+            }
+            Role::Tool => {
+                let mut call_id = m.tool_call_id.clone().unwrap_or_default();
+                if call_id.is_empty() {
+                    // Blank id pairs positionally with the earliest
+                    // outstanding call (engine dispatched in order).
+                    if expected.is_empty() {
+                        continue; // orphan — no call to pair with
+                    }
+                    call_id = expected.remove(0);
+                    v["tool_call_id"] = json!(call_id);
+                    out.push(v);
+                } else if let Some(pos) = expected.iter().position(|id| *id == call_id) {
+                    expected.remove(pos);
+                    out.push(v);
+                }
+                // else: orphan tool output — drop it.
+            }
+            _ => {
+                flush_missing!();
+                out.push(v);
+            }
+        }
+    }
+    // Trailing dangling calls — the last assistant row ended the history
+    // mid-tools (cancelled turn, crash before persist).
+    flush_missing!();
+    out
+}
+
 #[async_trait]
 impl LlmProvider for GenericOpenAiProvider {
     fn id(&self) -> &'static str {
         "openai_compat"
+    }
+
+    fn capabilities(&self) -> crate::provider::Capabilities {
+        let mut caps = crate::provider::Capabilities::all();
+        // `compat.supports_reasoning_effort` is the per-deployment kill
+        // switch for shims that reject the field outright.
+        if let Some(allowed) = self
+            .compat
+            .as_ref()
+            .and_then(|c| c.supports_reasoning_effort)
+        {
+            caps.reasoning = allowed;
+        }
+        caps
     }
 
     async fn chat_stream(
@@ -259,42 +389,11 @@ impl LlmProvider for GenericOpenAiProvider {
             "model": model,
             // `is_error` is replay-only metadata persisted in the session
             // snapshot — strip it from the wire or strict OpenAI-compat
-            // backends reject the unknown field.
-            "messages": messages.iter().map(|m| {
-                let mut v = serde_json::to_value(m).unwrap_or_else(|_| {
-                    json!({ "role": "user", "content": "" })
-                });
-                if let Some(obj) = v.as_object_mut() {
-                    obj.remove("is_error"); obj.remove("notice"); obj.remove("ts");
-                    // Vision: a user message carrying ImageRefs becomes a
-                    // content-parts array — text part first, then one
-                    // `image_url` part per resolved file. Unresolvable refs
-                    // degrade to a text note so the model knows what was
-                    // meant to be there. `images` itself is stripped like
-                    // the other replay-only fields.
-                    if !m.images.is_empty() && matches!(m.role, Role::User) {
-                        let mut parts = vec![json!({
-                            "type": "text",
-                            "text": m.content.clone().unwrap_or_default(),
-                        })];
-                        for img in &m.images {
-                            match img.data_url() {
-                                Some(url) => parts.push(json!({
-                                    "type": "image_url",
-                                    "image_url": { "url": url },
-                                })),
-                                None => parts.push(json!({
-                                    "type": "text",
-                                    "text": format!("(image unavailable: {})", img.path.display()),
-                                })),
-                            }
-                        }
-                        obj.insert("content".into(), json!(parts));
-                    }
-                    obj.remove("images");
-                }
-                v
-            }).collect::<Vec<_>>(),
+            // backends reject the unknown field. `build_messages` also
+            // repairs tool-call pairing — a dangling `tool_calls` entry or
+            // orphan tool row is a hard 400 on strict backends (deepseek:
+            // "No tool output found for tool call …").
+            "messages": build_messages(messages),
             "stream": true,
         });
         if temperature > 0.0 {
@@ -307,10 +406,8 @@ impl LlmProvider for GenericOpenAiProvider {
         }
         if let Some(effort) = reasoning_effort {
             let allowed = self
-                .compat
-                .as_ref()
-                .and_then(|c| c.supports_reasoning_effort)
-                .unwrap_or(true);
+                .capabilities()
+                .reasoning;
             if allowed {
                 body["reasoning_effort"] = json!(effort);
             }
@@ -324,47 +421,31 @@ impl LlmProvider for GenericOpenAiProvider {
             body["tools"] = t;
         }
 
-        let mut req = self
-            .client
-            .post(self.chat_completions_url())
-            .bearer_auth(&self.api_key)
-            .header("Accept", "text/event-stream")
-            .json(&body);
-        for (k, v) in &self.extra_headers {
-            req = req.header(k, v);
-        }
-
-        // Session trace — dump the outbound body so a silently-empty reply
-        // can be correlated to the exact request shape. Remove before ship.
-        if std::env::var("AGENT_DUMP_REQ").is_ok() {
-            eprintln!("\n===REQ===\n{}\n===/REQ===", serde_json::to_string(&body).unwrap());
-        }
-
-        let resp = req.send().await.context("chat completions request")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "provider returned {status}: {}",
-                &text[..text.len().min(512)]
-            ));
-        }
-
-        let data = sse::data_lines(resp.bytes_stream());
+        let req = self
+            .transport
+            .post(&self.chat_completions_url(), &body)
+            .bearer_auth(&self.api_key);
+        let data = self
+            .transport
+            .send_sse(req, &body, "chat completions request")
+            .await?;
         // Track the last-seen usage block so a [DONE] sentinel can fold it
         // into `Done` — and a clean-close ending (no sentinel) still emits it.
-        let mut pending_usage: Option<WireUsage> = None;
-        let mut done_emitted = false;
+        // Shared with the tail fallback: a plain `Copy` capture snapshots
+        // at construction, so the synthesized Done would never see usage
+        // (and always fire even after a real Done).
+        let pending_usage = std::sync::Arc::new(std::sync::Mutex::new(None::<WireUsage>));
+        let done = DoneGuard::new();
+        let pending2 = pending_usage.clone();
+        let flag = done.clone();
 
         let stream = data.flat_map(move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
             let items: Vec<anyhow::Result<StreamChunk>> = match res {
                 Err(e) => vec![Err(e)],
-                Ok(d) => map_data(&d, &mut pending_usage)
+                Ok(d) => map_data(&d, &mut *pending2.lock().unwrap())
                     .into_iter()
                     .map(|c| {
-                        if matches!(c, StreamChunk::Done { .. }) {
-                            done_emitted = true;
-                        }
+                        flag.observe(&c);
                         Ok(c)
                     })
                     .collect(),
@@ -373,19 +454,88 @@ impl LlmProvider for GenericOpenAiProvider {
         });
 
         // Guarantee Done-exactly-once: if the backend closed without [DONE]
-        // or a trailing usage chunk, synthesize it at stream end.
-        let stream = stream.chain(futures::stream::once(async move {
-            if done_emitted {
-                None
-            } else {
-                Some(Ok(StreamChunk::Done {
-                    prompt_tokens: None,
-                    completion_tokens: None,
-                    cached_tokens: None,
-                }))
+        // or a trailing usage chunk, synthesize it at stream end — carrying
+        // whatever usage a clean-close trailer delivered.
+        let stream = done.finish(stream, move || {
+            let u = *pending_usage.lock().unwrap();
+            StreamChunk::Done {
+                prompt_tokens: u.and_then(|u| u.prompt_tokens),
+                completion_tokens: u.and_then(|u| u.completion_tokens),
+                cached_tokens: u.and_then(|u| u.cached()),
             }
-        }).filter_map(|x| async move { x }));
+        });
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ChatMessage, Role, ToolCall};
+
+    fn m(role: Role, text: &str) -> ChatMessage {
+        ChatMessage {
+            role, content: Some(text.into()), tool_calls: None,
+            tool_call_id: None, is_error: None, notice: None, ts: None,
+            images: Vec::new(),
+        }
+    }
+
+    fn call(id: &str) -> ToolCall {
+        ToolCall { id: id.into(), name: "bash".into(), arguments: "{}".into() }
+    }
+
+    #[test]
+    fn build_messages_repairs_dangling_call() {
+        // call_2's output never landed (skipped malformed call, interrupted
+        // turn, compacted-away row) — a synthesized placeholder must fill it
+        // immediately after the assistant row or strict backends (deepseek)
+        // reject the whole request: "No tool output found for tool call …".
+        let mut a = m(Role::Assistant, "calling");
+        a.tool_calls = Some(vec![call("call_1"), call("call_2")]);
+        let mut t = m(Role::Tool, "out1");
+        t.tool_call_id = Some("call_1".into());
+        let msgs = build_messages(&[
+            m(Role::System, "s"), m(Role::User, "q"), a, t, m(Role::Assistant, "done"),
+        ]);
+        let pos_a = msgs.iter().position(|v| v["tool_calls"].is_array()).unwrap();
+        assert_eq!(msgs[pos_a + 1]["tool_call_id"].as_str().unwrap(), "call_1");
+        assert_eq!(msgs[pos_a + 2]["tool_call_id"].as_str().unwrap(), "call_2");
+        assert_eq!(msgs[pos_a + 2]["role"].as_str().unwrap(), "tool");
+        // The final assistant message comes after the synthesized output.
+        assert_eq!(msgs[pos_a + 3]["role"].as_str().unwrap(), "assistant");
+    }
+
+    #[test]
+    fn build_messages_drops_orphan_output() {
+        let mut t = m(Role::Tool, "orphan");
+        t.tool_call_id = Some("never-called".into());
+        let msgs = build_messages(&[m(Role::System, "s"), t, m(Role::User, "q")]);
+        assert!(msgs.iter().all(|v| v["role"] != "tool"));
+    }
+
+    #[test]
+    fn build_messages_synthesizes_empty_call_id() {
+        let mut a = m(Role::Assistant, "x");
+        a.tool_calls = Some(vec![call("")]);
+        let mut t = m(Role::Tool, "out");
+        t.tool_call_id = Some(String::new()); // blank pairs positionally
+        let msgs = build_messages(&[a, t]);
+        let id = msgs[0]["tool_calls"][0]["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("call_synth_"));
+        assert_eq!(msgs[1]["tool_call_id"].as_str().unwrap(), id);
+    }
+
+    #[test]
+    fn build_messages_trailing_dangling_call_gets_output() {
+        // History ends mid-tools (cancel before dispatch, crash before
+        // persist) — synthesize the missing outputs at the tail.
+        let mut a = m(Role::Assistant, "calling");
+        a.tool_calls = Some(vec![call("call_z")]);
+        let msgs = build_messages(&[a]);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1]["role"].as_str().unwrap(), "tool");
+        assert_eq!(msgs[1]["tool_call_id"].as_str().unwrap(), "call_z");
     }
 }

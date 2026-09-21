@@ -55,19 +55,19 @@ fn tool_call_assembler_concatenates_fragments() {
     let mut asm = ToolCallAssembler::new();
     let chunks = vec![
         StreamChunk::ToolCallDelta {
-            index: 0,
+            slot: 0,
             id: Some("call_1".into()),
             name: Some("fuzzy_patch".into()),
             args_delta: "{\"path\":\"a".into(),
         },
         StreamChunk::ToolCallDelta {
-            index: 0,
+            slot: 0,
             id: None,
             name: None,
             args_delta: ".rs\"}".into(),
         },
         StreamChunk::ToolCallDelta {
-            index: 1,
+            slot: 1,
             id: Some("call_2".into()),
             name: Some("bash".into()),
             args_delta: "{}".into(),
@@ -305,7 +305,7 @@ async fn openai_adapter_maps_wire_to_normalized() {
     }
     assert!(matches!(seen[0], StreamChunk::ReasoningDelta(ref s) if s == "r1"));
     assert!(matches!(seen[1], StreamChunk::ContentDelta(ref s) if s == "a"));
-    assert!(matches!(seen[2], StreamChunk::ToolCallDelta { index: 0, ref id, ref name, ref args_delta }
+    assert!(matches!(seen[2], StreamChunk::ToolCallDelta { slot: 0, ref id, ref name, ref args_delta }
         if id.as_deref() == Some("c") && name.as_deref() == Some("f") && args_delta == "{"));
     assert!(matches!(seen[3], StreamChunk::ToolCallDelta { ref args_delta, .. } if args_delta == "}"));
     // usage chunk folds into Done via pending_usage

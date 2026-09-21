@@ -6,7 +6,7 @@
 //! |---------------------------------------------|-------------------------------------|
 //! | `content_block_delta.text_delta`            | `ContentDelta`                      |
 //! | `content_block_delta.thinking_delta`        | `ReasoningDelta`                    |
-//! | `content_block_start(tool_use)`             | `ToolCallDelta{index,id,name}`      |
+//! | `content_block_start(tool_use)`             | `ToolCallDelta{slot,id,name}`       |
 //! | `content_block_delta.input_json_delta`      | `ToolCallDelta{args_delta}`         |
 //! | `message_delta`/`message_stop` + usage      | `Done{prompt,completion,cached}`    |
 //!
@@ -16,13 +16,12 @@
 //! only shape Anthropic accepts after a `tool_use` turn. `max_tokens` is
 //! mandatory; `thinking` is enabled via `reasoning_effort` → budget map.
 
-use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider};
-use crate::sse;
+use crate::transport::{DoneGuard, Transport};
 use crate::types::{ChatMessage, Role, StreamChunk};
 
 /// `anthropic-version` — the stable Messages API contract.
@@ -44,34 +43,27 @@ fn thinking_budget(effort: &str) -> Option<u32> {
 }
 
 pub struct AnthropicProvider {
-    client: reqwest::Client,
+    transport: Transport,
     base_url: String,
     api_key: String,
-    extra_headers: Vec<(String, String)>,
 }
 
 impl AnthropicProvider {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .tcp_nodelay(true)
-            .pool_max_idle_per_host(4)
-            .build()
-            .context("build reqwest client")?;
         let base = base_url.into().trim_end_matches('/').to_string();
         Ok(Self {
-            client,
+            transport: Transport::new()?,
             base_url: if base.is_empty() {
                 "https://api.anthropic.com".to_string()
             } else {
                 base
             },
             api_key: api_key.into(),
-            extra_headers: Vec::new(),
         })
     }
 
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.extra_headers.push((key.into(), value.into()));
+        self.transport = self.transport.with_header(key, value);
         self
     }
 
@@ -214,7 +206,7 @@ fn map_event(
             let cb = &event["content_block"];
             if cb["type"].as_str() == Some("tool_use") {
                 vec![StreamChunk::ToolCallDelta {
-                    index: idx,
+                    slot: idx,
                     id: cb["id"].as_str().map(String::from),
                     name: cb["name"].as_str().map(String::from),
                     args_delta: String::new(),
@@ -238,7 +230,7 @@ fn map_event(
                     .map(|t| vec![StreamChunk::ReasoningDelta(t.to_string())])
                     .unwrap_or_default(),
                 "input_json_delta" => vec![StreamChunk::ToolCallDelta {
-                    index: idx,
+                    slot: idx,
                     id: None,
                     name: None,
                     args_delta: d["partial_json"].as_str().unwrap_or("").to_string(),
@@ -271,6 +263,15 @@ impl LlmProvider for AnthropicProvider {
         "anthropic"
     }
 
+    fn capabilities(&self) -> crate::provider::Capabilities {
+        let mut caps = crate::provider::Capabilities::all();
+        // Anthropic's extended-thinking mode rejects `temperature` with a
+        // 400 — the constraint is declared here so the request builder and
+        // any future caller read it from one place.
+        caps.temperature_with_reasoning = false;
+        caps
+    }
+
     async fn chat_stream(
         &self,
         model: &str,
@@ -289,7 +290,8 @@ impl LlmProvider for AnthropicProvider {
         if !system.is_empty() {
             body["system"] = json!(system);
         }
-        if temperature > 0.0 {
+        let thinking_on = reasoning_effort.and_then(thinking_budget).is_some();
+        if temperature > 0.0 && !(thinking_on && !self.capabilities().temperature_with_reasoning) {
             body["temperature"] = json!(temperature);
         }
         let mut beta: Option<&str> = None;
@@ -305,54 +307,35 @@ impl LlmProvider for AnthropicProvider {
         }
 
         let mut req = self
-            .client
-            .post(self.messages_url())
+            .transport
+            .post(&self.messages_url(), &body)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", API_VERSION)
-            .header("Accept", "text/event-stream")
-            .json(&body);
+            .header("anthropic-version", API_VERSION);
         if let Some(b) = beta {
             req = req.header("anthropic-beta", b);
         }
-        for (k, v) in &self.extra_headers {
-            req = req.header(k, v);
-        }
-
-        if std::env::var("AGENT_DUMP_REQ").is_ok() {
-            eprintln!("\n===REQ===\n{}\n===/REQ===", serde_json::to_string(&body).unwrap());
-        }
-
-        let resp = req.send().await.context("anthropic messages request")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "provider returned {status}: {}",
-                &text[..text.len().min(512)]
-            ));
-        }
-
-        let data = sse::data_lines(resp.bytes_stream());
+        let data = self
+            .transport
+            .send_sse(req, &body, "anthropic messages request")
+            .await?;
         // Shared stream state — the flat_map mapper and the tail Done
         // fallback must see the SAME usage/done flags (a `move`-copied
         // Option would fork them, losing usage on the fallback path).
         let pending = std::sync::Arc::new(std::sync::Mutex::new(
             (None::<u32>, None::<u32>, None::<u32>),
         ));
-        let done_emitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = DoneGuard::new();
         let pending2 = pending.clone();
-        let done2 = done_emitted.clone();
+        let flag = done.clone();
 
         let stream = data.flat_map(move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
             let items: Vec<anyhow::Result<StreamChunk>> = match res {
                 Err(e) => vec![Err(e)],
                 Ok(d) => match serde_json::from_str::<serde_json::Value>(&d) {
-                    Ok(ev) => map_event(&ev, &mut pending2.lock().unwrap())
+                    Ok(ev) => map_event(&ev, &mut *pending2.lock().unwrap())
                         .into_iter()
                         .map(|c| {
-                            if matches!(c, StreamChunk::Done { .. }) {
-                                done2.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
+                            flag.observe(&c);
                             Ok(c)
                         })
                         .collect(),
@@ -365,21 +348,14 @@ impl LlmProvider for AnthropicProvider {
             futures::stream::iter(items)
         });
 
-        let stream = stream.chain(
-            futures::stream::once(async move {
-                if done_emitted.load(std::sync::atomic::Ordering::Relaxed) {
-                    None
-                } else {
-                    let p = *pending.lock().unwrap();
-                    Some(Ok(StreamChunk::Done {
-                        prompt_tokens: p.0,
-                        completion_tokens: p.1,
-                        cached_tokens: p.2,
-                    }))
-                }
-            })
-            .filter_map(|x| async move { x }),
-        );
+        let stream = done.finish(stream, move || {
+            let p = *pending.lock().unwrap();
+            StreamChunk::Done {
+                prompt_tokens: p.0,
+                completion_tokens: p.1,
+                cached_tokens: p.2,
+            }
+        });
 
         Ok(Box::pin(stream))
     }

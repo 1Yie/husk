@@ -180,6 +180,12 @@ impl Engine {
 
     /// Resolves the effective wire reasoning effort ("low", "medium", "high", "max" or None).
     pub fn resolve_reasoning_effort(&self) -> Option<String> {
+        // Capability gate first — a wire that can't express reasoning (or
+        // has it compat-disabled via `supports_reasoning_effort = false`)
+        // gets no effort regardless of the thinking level the user picked.
+        if !self.sampler.provider().capabilities().reasoning {
+            return None;
+        }
         let guard = self.thinking_level.read().ok()?;
         let level = guard.as_deref()?;
         if level == "off" {
@@ -657,7 +663,23 @@ impl Engine {
             debug_assert!(saw_done, "sampler guarantees Done exactly once");
 
             text.push_str(&round_text);
-            let calls = assembler.finish();
+            let mut calls = assembler.finish();
+
+            // Degenerate calls — a truncated/announcement delta can produce
+            // a slot with a real provider `id` but no `name` (deepseek sends
+            // id-only `tool_calls` deltas). Persisting it in the assistant
+            // row's `tool_calls` while skipping dispatch orphans the entry:
+            // strict backends reject every later request with
+            // `No tool output found for tool call …` (400). Drop the call
+            // BEFORE the assistant row is built so no dangling id ever
+            // reaches the wire — and `name:""` is itself malformed anyway.
+            let bad_calls = calls.iter().filter(|c| c.name.trim().is_empty()).count();
+            if bad_calls > 0 {
+                calls.retain(|c| !c.name.trim().is_empty());
+                let line = format!("已跳过 {bad_calls} 个格式异常的空工具调用");
+                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                history.push(ChatMessage::notice(line));
+            }
 
             if calls.is_empty() {
                 // No tool calls → turn complete.
@@ -746,9 +768,17 @@ impl Engine {
                 // empty-name or empty-args call that must never dispatch
                 // (it'd surface as `unknown tool ''` and poison history).
                 if call.name.trim().is_empty() {
-                    let line = "已跳过一个格式异常的空工具调用".to_string();
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
-                    history.push(ChatMessage::notice(line));
+                    // Unreachable since the pre-persist filter above — kept
+                    // as a pairing guard: a skipped call must still emit a
+                    // tool row, or its `tool_calls` entry dangles and strict
+                    // providers reject the next request (deepseek 400).
+                    let msg = "skipped malformed empty tool call".to_string();
+                    let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                        name: call.name.clone(), ok: false,
+                        content: msg.clone(), ui_type: None,
+                        parent: None,
+                    });
+                    history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                     continue;
                 }
                 tool_calls_run += 1;

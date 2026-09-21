@@ -6,24 +6,23 @@
 //! |----------------------------------------------|----------------------------------|
 //! | `parts[{text}]` (no `thought` flag)          | `ContentDelta`                   |
 //! | `parts[{thought:true, text}]`                | `ReasoningDelta`                 |
-//! | `parts[{functionCall:{name,args}}]`          | `ToolCallDelta{index,id,name,args_delta}` |
+//! | `parts[{functionCall:{name,args}}]`          | `ToolCallDelta{slot,id,name,args_delta}`  |
 //! | `usageMetadata` (terminal chunk)             | `Done{prompt,completion,cached}` |
 //!
 //! Function calls arrive COMPLETE per chunk (not JSON shards) — each gets a
-//! synthetic index and `args_delta = stringify(args)` in one shot; the
+//! synthetic slot and `args_delta = stringify(args)` in one shot; the
 //! kernel's assembler treats it as a finished call.
 //!
 //! History notes: system text → top-level `systemInstruction`; tool results
 //! ride back as `functionResponse` parts inside a `user` turn (consecutive
 //! `Role::Tool` messages coalesce). `x-goog-api-key` is the auth header.
 
-use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider};
-use crate::sse;
+use crate::transport::{DoneGuard, Transport};
 use crate::types::{ChatMessage, Role, StreamChunk};
 
 /// `reasoning_effort` → `thinkingConfig.thinkingBudget` — `-1` lets the
@@ -39,34 +38,27 @@ fn thinking_budget(effort: &str) -> Option<i64> {
 }
 
 pub struct GeminiProvider {
-    client: reqwest::Client,
+    transport: Transport,
     base_url: String,
     api_key: String,
-    extra_headers: Vec<(String, String)>,
 }
 
 impl GeminiProvider {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .tcp_nodelay(true)
-            .pool_max_idle_per_host(4)
-            .build()
-            .context("build reqwest client")?;
         let base = base_url.into().trim_end_matches('/').to_string();
         Ok(Self {
-            client,
+            transport: Transport::new()?,
             base_url: if base.is_empty() {
                 "https://generativelanguage.googleapis.com/v1beta".to_string()
             } else {
                 base
             },
             api_key: api_key.into(),
-            extra_headers: Vec::new(),
         })
     }
 
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.extra_headers.push((key.into(), value.into()));
+        self.transport = self.transport.with_header(key, value);
         self
     }
 
@@ -87,6 +79,12 @@ fn split_data_url(url: &str) -> Option<(String, String)> {
 fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
     let mut system: Vec<serde_json::Value> = Vec::new();
     let mut out: Vec<serde_json::Value> = Vec::new();
+    // Invocation id → tool name, built from assistant `tool_calls` rows as
+    // we walk. Gemini's `functionResponse` is keyed by NAME (the wire has
+    // no call-id concept), so a `tool_call_id` like `call_0` must resolve
+    // back to the real name — replaying the id itself makes upstream see
+    // a response for a function that was never called.
+    let mut call_names: std::collections::HashMap<String, String> = Default::default();
 
     let mut i = 0;
     while i < messages.len() {
@@ -126,6 +124,7 @@ fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serd
                     }
                 }
                 for tc in m.tool_calls.iter().flatten() {
+                    call_names.insert(tc.id.clone(), tc.name.clone());
                     let args = serde_json::from_str::<serde_json::Value>(&tc.arguments)
                         .unwrap_or_else(|_| json!({}));
                     parts.push(json!({
@@ -141,14 +140,15 @@ fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serd
                 let mut parts = Vec::new();
                 while i < messages.len() && matches!(messages[i].role, Role::Tool) {
                     let t = &messages[i];
-                    // Gemini keys functionResponse by tool NAME (no id
-                    // concept) — the call id holds name in OpenAI shape, so
-                    // recover the name from our flat ToolCall when present;
-                    // tool_call_id here is the call's name already on
-                    // replay (tool_result messages store the name in id).
+                    let id = t.tool_call_id.clone().unwrap_or_default();
+                    // Resolve the canonical invocation id back to the tool
+                    // name. Fallback keeps legacy snapshots working — some
+                    // stored the bare name in tool_call_id (an id that
+                    // never appeared on a call IS the name).
+                    let name = call_names.get(&id).cloned().unwrap_or(id);
                     parts.push(json!({
                         "functionResponse": {
-                            "name": t.tool_call_id.clone().unwrap_or_default(),
+                            "name": name,
                             "response": {
                                 "result": t.content.clone().unwrap_or_default(),
                             },
@@ -223,41 +223,24 @@ impl LlmProvider for GeminiProvider {
             body["tools"] = t;
         }
 
-        let mut req = self
-            .client
-            .post(self.stream_url(model))
-            .header("x-goog-api-key", &self.api_key)
-            .header("Accept", "text/event-stream")
-            .json(&body);
-        for (k, v) in &self.extra_headers {
-            req = req.header(k, v);
-        }
-
-        if std::env::var("AGENT_DUMP_REQ").is_ok() {
-            eprintln!("\n===REQ===\n{}\n===/REQ===", serde_json::to_string(&body).unwrap());
-        }
-
-        let resp = req.send().await.context("gemini streamGenerateContent")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "provider returned {status}: {}",
-                &text[..text.len().min(512)]
-            ));
-        }
-
-        let data = sse::data_lines(resp.bytes_stream());
+        let req = self
+            .transport
+            .post(&self.stream_url(model), &body)
+            .header("x-goog-api-key", &self.api_key);
+        let data = self
+            .transport
+            .send_sse(req, &body, "gemini streamGenerateContent")
+            .await?;
         // Shared stream state — usage arrives on the terminal chunk; the
         // synthetic-Done fallback reads it, so both must see one copy.
         let usage = std::sync::Arc::new(std::sync::Mutex::new(
             None::<serde_json::Value>,
         ));
         let call_index = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let done_emitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = DoneGuard::new();
         let usage2 = usage.clone();
         let calls2 = call_index.clone();
-        let done2 = done_emitted.clone();
+        let flag = done.clone();
 
         let stream = data.flat_map(move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
             let items: Vec<anyhow::Result<StreamChunk>> = match res {
@@ -275,7 +258,7 @@ impl LlmProvider for GeminiProvider {
                                         let fc = &part["functionCall"];
                                         let idx = calls2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                         out.push(StreamChunk::ToolCallDelta {
-                                            index: idx,
+                                            slot: idx,
                                             id: Some(format!("call_{idx}")),
                                             name: fc["name"].as_str().map(String::from),
                                             args_delta: serde_json::to_string(
@@ -296,7 +279,12 @@ impl LlmProvider for GeminiProvider {
                                     }
                                 }
                             }
-                            out.into_iter().map(Ok).collect()
+                            out.into_iter()
+                                .map(|c| {
+                                    flag.observe(&c);
+                                    Ok(c)
+                                })
+                                .collect()
                         }
                         Err(e) => vec![Ok(StreamChunk::Error(format!(
                             "malformed SSE JSON: {e}; payload: {}",
@@ -308,30 +296,61 @@ impl LlmProvider for GeminiProvider {
             futures::stream::iter(items)
         });
 
-        let stream = stream.chain(
-            futures::stream::once(async move {
-                if done_emitted.load(std::sync::atomic::Ordering::Relaxed) {
-                    return None;
-                }
-                let u = usage.lock().unwrap().clone();
-                Some(Ok(StreamChunk::Done {
-                    prompt_tokens: u
-                        .as_ref()
-                        .and_then(|v| v["promptTokenCount"].as_u64())
-                        .map(|v| v as u32),
-                    completion_tokens: u
-                        .as_ref()
-                        .and_then(|v| v["candidatesTokenCount"].as_u64())
-                        .map(|v| v as u32),
-                    cached_tokens: u
-                        .as_ref()
-                        .and_then(|v| v["cachedContentTokenCount"].as_u64())
-                        .map(|v| v as u32),
-                }))
-            })
-            .filter_map(|x| async move { x }),
-        );
+        let stream = done.finish(stream, move || {
+            let u = usage.lock().unwrap().clone();
+            StreamChunk::Done {
+                prompt_tokens: u
+                    .as_ref()
+                    .and_then(|v| v["promptTokenCount"].as_u64())
+                    .map(|v| v as u32),
+                completion_tokens: u
+                    .as_ref()
+                    .and_then(|v| v["candidatesTokenCount"].as_u64())
+                    .map(|v| v as u32),
+                cached_tokens: u
+                    .as_ref()
+                    .and_then(|v| v["cachedContentTokenCount"].as_u64())
+                    .map(|v| v as u32),
+            }
+        });
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_contents;
+    use crate::types::{ChatMessage, ToolCall};
+
+    #[test]
+    fn tool_result_resolves_name_from_call_id() {
+        // Gemini's `functionResponse` is name-keyed — the canonical
+        // invocation id (`call_0`) must resolve back through the earlier
+        // assistant `tool_calls`, not go on the wire as the name. Two
+        // same-name calls keep their response order (Gemini's own
+        // correlation rule).
+        let mut calls = ChatMessage::assistant("calling");
+        calls.tool_calls = Some(vec![
+            ToolCall { id: "call_0".into(), name: "search".into(), arguments: "{}".into() },
+            ToolCall { id: "call_1".into(), name: "search".into(), arguments: "{}".into() },
+        ]);
+        let r1 = ChatMessage::tool_result("call_0", "first");
+        let r2 = ChatMessage::tool_result("call_1", "second");
+        let (_sys, contents) = build_contents(&[calls, r1, r2]);
+        let responses = &contents[1]["parts"];
+        assert_eq!(responses[0]["functionResponse"]["name"], "search");
+        assert_eq!(responses[0]["functionResponse"]["response"]["result"], "first");
+        assert_eq!(responses[1]["functionResponse"]["name"], "search");
+        assert_eq!(responses[1]["functionResponse"]["response"]["result"], "second");
+    }
+
+    #[test]
+    fn legacy_name_in_tool_call_id_still_resolves() {
+        // Old snapshots stored the bare name in `tool_call_id` — an id
+        // that never appeared on a call IS the name.
+        let r = ChatMessage::tool_result("search", "out");
+        let (_sys, contents) = build_contents(&[r]);
+        assert_eq!(contents[0]["parts"][0]["functionResponse"]["name"], "search");
     }
 }

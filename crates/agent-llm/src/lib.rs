@@ -15,6 +15,7 @@ pub mod masking;
 pub mod provider;
 pub mod sampler;
 pub mod sse;
+pub mod transport;
 pub mod types;
 
 pub use config::{
@@ -22,5 +23,6 @@ pub use config::{
 };
 pub use factory::ProviderFactory;
 pub use masking::EgressMasker;
-pub use provider::{BoxStream, LlmProvider};
+pub use provider::{BoxStream, Capabilities, LlmProvider};
+pub use transport::{DoneGuard, Transport};
 pub use types::{ChatMessage, Role, StreamChunk, ToolCall};
