@@ -569,6 +569,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const endRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  // Index of the last user item seen — a newly appended one means the
+  // user just submitted, which always re-pins to the bottom.
+  const lastUserIdxRef = useRef(-1);
 
   // Incremental mount window — how many trailing turns are in the DOM.
   // `sessionKey` resets it so switching sessions starts at the tail again.
@@ -581,6 +584,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     // session left (that's why some switches opened at the oldest turn).
     pinnedRef.current = true;
     setIsAtBottom(true);
+    lastUserIdxRef.current = -1;
     requestAnimationFrame(() => {
       const el = scrollRef.current;
       if (el) el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
@@ -748,6 +752,20 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   }, [marks]);
 
   useEffect(() => {
+    // Own-message jump: a new `kind:"user"` item means the user just
+    // submitted — snap to the bottom even if they'd scrolled up to read
+    // (sending a message with no visible response feels broken).
+    let lastUser = -1;
+    for (let i = view.items.length - 1; i >= 0; i--) {
+      if (view.items[i].kind === "user") {
+        lastUser = i;
+        break;
+      }
+    }
+    if (lastUser !== -1 && lastUser !== lastUserIdxRef.current) {
+      pinnedRef.current = true;
+    }
+    lastUserIdxRef.current = lastUser;
     if (pinnedRef.current) {
       endRef.current?.scrollIntoView({ block: "end" });
       setIsAtBottom(true);
