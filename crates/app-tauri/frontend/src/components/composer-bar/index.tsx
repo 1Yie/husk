@@ -26,6 +26,7 @@ import {
   X,
   Bot,
   Map,
+  Clock,
 } from "@keyline-icons/react";
 import { Orb } from "../agent-orb";
 import { parseTodos, type TodoItem } from "../todo-view";
@@ -121,9 +122,12 @@ function toolIcon(name: string) {
 export function ComposerBar({
   view,
   workspaceRoot,
+  sessionKey,
 }: {
   view: SessionView;
   workspaceRoot?: string;
+  /** `root:id` — queued drafts belong to a session; switching drops them. */
+  sessionKey?: string;
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<string>("default");
@@ -131,6 +135,11 @@ export function ComposerBar({
   // gate decides HOW calls get approved, the mode decides WHAT the session
   // may do at all (plan = readonly registry, goal = completion contract).
   const [agentMode, setAgentMode] = useState<string>("build");
+  // Queued follow-ups — submitting mid-turn parks the payload here instead
+  // of steering; each drains as a fresh prompt the moment the turn ends.
+  // "立即发送" on a row promotes it to a live Steer.
+  const [queued, setQueued] = useState<string[]>([]);
+  useEffect(() => setQueued([]), [sessionKey]);
   const [todoCollapsed, setTodoCollapsed] = useState(false);
   // Files attached via the `+` button — chips above the textarea; their
   // content rides inside the prompt text as fenced blocks (same channel
@@ -419,14 +428,47 @@ export function ComposerBar({
     const payload = `${trimmed}${blocks}`;
     setText("");
     setAttachments([]);
+    if (streaming) {
+      // Queue it — delivered as a fresh Prompt the moment this turn ends.
+      // Mid-turn steering is still one click away on the queued row.
+      setQueued((q) => [...q, payload]);
+      return;
+    }
     try {
-      if (streaming) await agent.steer(payload);
-      else await agent.sendPrompt(payload);
+      await agent.sendPrompt(payload);
     } catch (e) {
       console.error("agent_cmd failed:", e);
       setText(trimmed);
     }
   };
+
+  /** Promote a queued draft to a live Steer — delivered mid-turn. */
+  const steerNow = async (i: number) => {
+    const item = queued[i];
+    setQueued((q) => q.filter((_, j) => j !== i));
+    try {
+      await agent.steer(item);
+    } catch (e) {
+      console.error("steer failed:", e);
+      setQueued((q) => [item, ...q]);
+    }
+  };
+
+  const removeQueued = (i: number) =>
+    setQueued((q) => q.filter((_, j) => j !== i));
+
+  // Drain the queue one prompt per turn end — `wasStreaming` guards the
+  // transition so a state change alone can't flush the whole list.
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    const was = wasStreamingRef.current;
+    wasStreamingRef.current = streaming;
+    if (was && !streaming && queued.length > 0) {
+      const head = queued[0];
+      setQueued((q) => q.slice(1));
+      void agent.sendPrompt(head);
+    }
+  }, [streaming, queued]);
 
   const cancel = async () => {
     try {
@@ -521,7 +563,7 @@ export function ComposerBar({
               </Button>
             </div>
           )}
-          {pending || hasActiveTodos ? (
+          {pending || hasActiveTodos || queued.length > 0 ? (
             /* Outer container with attached banner: Approval (Priority 1) or Active Todo (Priority 2) */
             <div className="w-full bg-panel rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
               {pending ? (
@@ -565,7 +607,9 @@ export function ComposerBar({
                     拒绝
                   </Button>
                 </div>
-              ) : (
+              ) : null}
+
+              {!pending && hasActiveTodos ? (
                 /* Attached Todo List Strip */
                 <div className="flex flex-col gap-1.5 px-3 pt-0.5">
                   <div className="flex items-center justify-between text-xs text-neutral-600 font-medium select-none">
@@ -645,7 +689,51 @@ export function ComposerBar({
                     </div>
                   </div>
                 </div>
-              )}
+              ) : null}
+
+              {queued.length > 0 ? (
+                /* Queued follow-ups — parked drafts sent when the turn ends;
+                   approval-strip visual family (icon · label · chips · actions). */
+                <div className="flex flex-col gap-1.5 px-3 pt-0.5">
+                  <div className="flex items-center gap-2 text-xs text-neutral-600 font-medium select-none">
+                    <Clock className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+                    <span className="shrink-0 text-neutral-800 font-medium text-xs">
+                      排队消息
+                    </span>
+                    <span className="text-[11px] font-mono text-neutral-500">
+                      {queued.length} 条 · 回合结束后按序发送
+                    </span>
+                  </div>
+                  {queued.slice(0, 4).map((q, i) => (
+                    <div key={i} className="flex items-center gap-2 pl-5">
+                      <span className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-2 py-0.5 rounded">
+                        {q.split("\n")[0]}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="shrink-0 h-6 px-2 text-[11px] border-neutral-300 text-neutral-600 hover:bg-neutral-200 cursor-pointer"
+                        onClick={() => void steerNow(i)}
+                      >
+                        立即发送
+                      </Button>
+                      <button
+                        type="button"
+                        aria-label="移除"
+                        className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200 transition-colors cursor-pointer"
+                        onClick={() => removeQueued(i)}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                  {queued.length > 4 && (
+                    <span className="pl-5 text-[11px] text-neutral-400">
+                      …还有 {queued.length - 4} 条
+                    </span>
+                  )}
+                </div>
+              ) : null}
 
               <div className="bg-white border border-hairline rounded-[18px] p-3 flex flex-col gap-2 shadow-[0_2px_8px_rgba(0,0,0,0.02)]">
                 <AttachmentChips

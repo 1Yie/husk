@@ -61,7 +61,7 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
       />
 
       <div ref={composerRef} className="absolute inset-x-0 bottom-0 pointer-events-none z-20">
-        <ComposerBar view={view} workspaceRoot={workspaceRoot} />
+        <ComposerBar view={view} workspaceRoot={workspaceRoot} sessionKey={sessionKey} />
       </div>
     </>
   );
