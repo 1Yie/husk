@@ -212,30 +212,6 @@ pub fn agent_session(
                 Err("config path not found".into())
             }
         }
-        "open_settings_window" => {
-            if let Some(win) = app.get_webview_window("settings") {
-                let _ = win.unminimize();
-                let _ = win.show();
-                let _ = win.set_focus();
-                let _ = win.eval("window.location.reload()");
-            } else {
-                tauri::WebviewWindowBuilder::new(
-                    &app,
-                    "settings",
-                    tauri::WebviewUrl::App("index.html?window=settings".into()),
-                )
-                .title("设置")
-                .inner_size(980.0, 680.0)
-                .min_inner_size(800.0, 540.0)
-                .resizable(true)
-                .maximizable(false)
-                .decorations(false)
-                .center()
-                .build()
-                .map_err(|e| e.to_string())?;
-            }
-            Ok(serde_json::json!({ "success": true }))
-        }
         "get_app_config" => {
             let path = agent_llm::AppConfig::default_path();
             let raw = path

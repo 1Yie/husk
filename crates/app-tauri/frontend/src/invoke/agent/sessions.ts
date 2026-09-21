@@ -157,10 +157,6 @@ export interface SandboxInfo {
   is_fallback: boolean;
 }
 
-export function openSettingsWindow() {
-  return invoke<{ success: boolean }>("agent_session", { op: "open_settings_window" });
-}
-
 export function getAppConfig() {
   return invoke<AppConfigData>("agent_session", { op: "get_app_config" });
 }

@@ -1,17 +1,23 @@
+// Settings page — full-window takeover inside the main window (Zed-style):
+// clicking the sidebar gear swaps the chat layout for a settings view with
+// its own left nav + scrollable content, same window, same session running
+// underneath. Esc or "返回工作区" goes back.
+
 import { useEffect, useState } from "react";
 import {
   SlidersHorizontal,
-  Settings as SettingsIcon,
   TriangleAlert,
   Zap,
   SquarePen,
   ShieldCheck,
   Sparkles,
   Palette,
+  ArrowLeft,
+  Bot,
 } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { PopupWindow } from "@/layout/popup-window";
+import { TitleBar } from "@/components/title-bar";
 import { cn } from "@/lib/utils";
 import { getDefaultPrefs, setDefaultPrefs } from "../../invoke/agent/sessions";
 import { AppearanceSettings } from "./appearance";
@@ -71,157 +77,177 @@ const THINKING_OPTIONS = [
   { value: "max", label: "最大推演", desc: "全速深度推理，解决高难任务" },
 ];
 
-export function SettingsWindow() {
-  const [activeTab, setActiveTab] = useState<"appearance" | "preferences">("appearance");
+const AGENT_MODE_OPTIONS = [
+  { value: "build", label: "构建", desc: "完整工具集 — 读写、执行、验证" },
+  { value: "plan", label: "计划", desc: "只读分析，产出实施方案，批准后执行" },
+  { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
+];
+
+type SettingsTab = "general" | "appearance";
+
+const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; icon: React.ReactNode }[] }[] = [
+  {
+    label: "基础设置",
+    items: [
+      { key: "general", label: "常规", icon: <SlidersHorizontal className="h-4 w-4 shrink-0" /> },
+      { key: "appearance", label: "外观", icon: <Palette className="h-4 w-4 shrink-0" /> },
+    ],
+  },
+];
+
+export function SettingsPage({ onClose }: { onClose: () => void }) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
   const [permission, setPermission] = useState("auto");
   const [thinking, setThinking] = useState("medium");
-
-  const loadData = async () => {
-    try {
-      const prefs = await getDefaultPrefs();
-      if (prefs.permission_mode) {
-        setPermission(prefs.permission_mode);
-      }
-      if (prefs.thinking_level) {
-        setThinking(prefs.thinking_level);
-      }
-    } catch (e) {
-      console.error("load settings error:", e);
-    }
-  };
+  const [agentMode, setAgentMode] = useState("build");
 
   useEffect(() => {
-    void loadData();
+    void (async () => {
+      try {
+        const prefs = await getDefaultPrefs();
+        if (prefs.permission_mode) setPermission(prefs.permission_mode);
+        if (prefs.thinking_level) setThinking(prefs.thinking_level);
+        if (prefs.agent_mode) setAgentMode(prefs.agent_mode);
+      } catch (e) {
+        console.error("load settings error:", e);
+      }
+    })();
   }, []);
 
-  const handlePermissionChange = async (val: string) => {
-    setPermission(val);
-    try {
-      await setDefaultPrefs({ permission_mode: val });
-    } catch (e) {
-      console.error("Failed to update permission mode:", e);
-    }
-  };
+  // Esc goes back to the workspace — same reflex as every full-screen pane.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
-  const handleThinkingChange = async (val: string) => {
-    setThinking(val);
-    try {
-      await setDefaultPrefs({ thinking_level: val });
-    } catch (e) {
-      console.error("Failed to update thinking level:", e);
-    }
-  };
+  const save = (patch: Parameters<typeof setDefaultPrefs>[0]) =>
+    setDefaultPrefs(patch).catch((e) => console.error("save prefs failed:", e));
+
+  const tabMeta = NAV_GROUPS.flatMap((g) => g.items).find((i) => i.key === activeTab);
 
   return (
-    <PopupWindow
-      maximize={false}
-      title={
-        <div data-drag data-tauri-drag-region className="flex items-center gap-2">
-          <SettingsIcon className="h-4 w-4 text-neutral-600 shrink-0" />
-          <span className="text-[13px] font-semibold text-neutral-800 tracking-tight">
-            设置
+    <div className="flex h-full w-full flex-col bg-white overflow-hidden select-none">
+      <TitleBar title="设置" />
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left nav — same rail as the session sidebar: panel bg, white active
+            card, h-8-ish rows. The back affordance sits on top like the
+            reference's "返回工作区". */}
+        <aside className="w-56 flex-none bg-panel border-r border-hairline flex flex-col p-3 select-none justify-between">
+          <div className="flex flex-col gap-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex items-center gap-2 px-2 h-8 rounded-lg text-[13px] font-medium text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="h-4 w-4 shrink-0" />
+              返回工作区
+            </button>
+
+            {NAV_GROUPS.map((g) => (
+              <div key={g.label} className="flex flex-col gap-1">
+                <span className="px-3 pb-1 text-[11px] font-medium text-neutral-400 tracking-wide">
+                  {g.label}
+                </span>
+                {g.items.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setActiveTab(item.key)}
+                    className={cn(
+                      "w-full flex items-center gap-2.5 h-9 rounded-lg px-3 text-[13px] transition-all cursor-pointer",
+                      activeTab === item.key
+                        ? "bg-white text-neutral-900 font-semibold shadow-xs border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]"
+                        : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] font-medium"
+                    )}
+                  >
+                    {item.icon}
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <span className="text-[11px] text-neutral-400 font-mono block text-center">
+            Husk v0.1.0
           </span>
-        </div>
-      }
-    >
-      <div className="flex flex-1 overflow-hidden h-[calc(100vh-36px)]">
-        <aside
-          data-tauri-drag-region="deep"
-          className="w-56 flex-none bg-[color-mix(in_srgb,var(--husk-n100)_60%,transparent)] border-r border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] flex flex-col p-3 select-none justify-between"
-        >
-          {/* Nav items are h-10, but the Button base radius (rounded-lg = 14px)
-              is sized for h-9 controls: at h-10 it lands at 70% of half-height
-              and reads visibly tighter than the h-8 session rows in the main
-              sidebar (88%), despite the identical white active-card treatment.
-              rounded-xl (18px → 90%) puts the two sidebars on the same footing. */}
-          <div data-nodrag data-tauri-drag-region="false" className="flex flex-col gap-1.5">
-            <Button
-              variant="ghost"
-              onClick={() => setActiveTab("appearance")}
-              className={cn(
-                "w-full justify-start gap-2.5 h-10 rounded-xl px-3 text-[13px] transition-all",
-                activeTab === "appearance"
-                  ? "bg-white text-neutral-900 font-semibold shadow-xs border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]"
-                  : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] font-medium"
-              )}
-            >
-              <Palette className="h-4 w-4 text-neutral-900 shrink-0" />
-              <span>外观</span>
-            </Button>
-
-            <Button
-              variant="ghost"
-              onClick={() => setActiveTab("preferences")}
-              className={cn(
-                "w-full justify-start gap-2.5 h-10 rounded-xl px-3 text-[13px] transition-all",
-                activeTab === "preferences"
-                  ? "bg-white text-neutral-900 font-semibold shadow-xs border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]"
-                  : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] font-medium"
-              )}
-            >
-              <SlidersHorizontal className="h-4 w-4 text-neutral-900 shrink-0" />
-              <span>个性化</span>
-            </Button>
-          </div>
-
-          <div className="p-1">
-            <span className="text-[11px] text-neutral-400 font-mono block text-center">
-              Husk v0.1.0
-            </span>
-          </div>
         </aside>
 
+        {/* Content — big page title + grouped setting rows. */}
         <div className="flex-1 min-h-0 overflow-y-auto bg-white">
-          <div className="p-8 flex flex-col justify-between min-h-[calc(100vh-36px)]">
-            {activeTab === "appearance" ? (
-              <AppearanceSettings />
-            ) : (
-              <div className="flex flex-col gap-6 max-w-3xl">
-                <div>
-                  <h2 className="text-base font-semibold text-neutral-900">
-                    个性化偏好
-                  </h2>
-                </div>
+          <div className="px-10 py-8 max-w-3xl">
+            <h1 className="text-xl font-semibold text-neutral-900 mb-6">
+              {tabMeta?.label}
+            </h1>
 
-                <SettingsRenderer
-                  sections={[
-                    {
-                      kind: "cards",
-                      key: "permission",
-                      title: "默认权限模式",
-                      value: permission,
-                      onChange: (v) => void handlePermissionChange(v),
-                      options: PERMISSION_OPTIONS,
+            {activeTab === "general" ? (
+              <SettingsRenderer
+                sections={[
+                  {
+                    kind: "cards",
+                    key: "permission",
+                    title: "默认权限模式",
+                    value: permission,
+                    onChange: (v) => {
+                      setPermission(v);
+                      void save({ permission_mode: v });
                     },
-                    {
-                      kind: "list",
-                      key: "model",
-                      title: "模型偏好",
-                      fields: [
-                        {
-                          key: "thinking",
-                          type: "select",
-                          label: "默认思考深度",
-                          description: "配置新会话启动时的默认推理思考深度",
-                          icon: <Sparkles className="h-4 w-4 text-neutral-500" />,
-                          value: thinking,
-                          onChange: (v) => void handleThinkingChange(v),
-                          placeholder: "选择思考深度",
-                          options: THINKING_OPTIONS.map((t) => ({
-                            value: t.value,
-                            label: t.label,
-                            description: t.desc,
-                          })),
+                    options: PERMISSION_OPTIONS,
+                  },
+                  {
+                    kind: "list",
+                    key: "agent",
+                    title: "Agent 偏好",
+                    fields: [
+                      {
+                        key: "agentMode",
+                        type: "select",
+                        label: "默认代理模式",
+                        description: "新会话启动时的代理模式；运行中可在输入框随时切换",
+                        icon: <Bot className="h-4 w-4 text-neutral-500" />,
+                        value: agentMode,
+                        onChange: (v) => {
+                          setAgentMode(v);
+                          void save({ agent_mode: v });
                         },
-                      ],
-                    },
-                  ]}
-                />
-              </div>
+                        placeholder: "选择代理模式",
+                        options: AGENT_MODE_OPTIONS.map((t) => ({
+                          value: t.value,
+                          label: t.label,
+                          description: t.desc,
+                        })),
+                      },
+                      {
+                        key: "thinking",
+                        type: "select",
+                        label: "默认思考深度",
+                        description: "新会话启动时的默认推理思考深度",
+                        icon: <Sparkles className="h-4 w-4 text-neutral-500" />,
+                        value: thinking,
+                        onChange: (v) => {
+                          setThinking(v);
+                          void save({ thinking_level: v });
+                        },
+                        placeholder: "选择思考深度",
+                        options: THINKING_OPTIONS.map((t) => ({
+                          value: t.value,
+                          label: t.label,
+                          description: t.desc,
+                        })),
+                      },
+                    ],
+                  },
+                ]}
+              />
+            ) : (
+              <AppearanceSettings />
             )}
           </div>
         </div>
       </div>
-    </PopupWindow>
+    </div>
   );
 }

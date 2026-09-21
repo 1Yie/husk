@@ -3,11 +3,12 @@ import { Toaster } from "@/components/ui/sonner";
 import { useAgentEvents } from "./hooks/use-agent-events";
 import { useAgentSession } from "./hooks/use-agent-session";
 import { viewFromHistory } from "./hooks/view-from-history";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, openSettingsWindow, forkSession, deleteSession, pinSession, type WorkspaceInfo } from "./invoke/agent";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, forkSession, deleteSession, pinSession, type WorkspaceInfo } from "./invoke/agent";
 import type { SessionRow } from "./types";
 import { SessionSidebar } from "./components/session-sidebar";
 import { MainLayout } from "./layout/main-layout";
 import { ChatPage } from "./pages/chat";
+import { SettingsPage } from "./pages/settings";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -92,6 +93,9 @@ export function App() {
   // Same pattern for the fork confirmation — duplicating a session's
   // history is additive but irreversible, so it confirms first.
   const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
+  // Settings is a full-window takeover, not a popup — the session keeps
+  // running underneath while the settings pane covers the whole shell.
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     void getWorkspaceInfo().then((ws) => {
@@ -257,6 +261,15 @@ export function App() {
     })),
   }));
 
+  if (settingsOpen) {
+    return (
+      <>
+        <Toaster />
+        <SettingsPage onClose={() => setSettingsOpen(false)} />
+      </>
+    );
+  }
+
   return (
     <>
       <Toaster />
@@ -282,7 +295,7 @@ export function App() {
           }}
           onPickWorkspace={handlePickWorkspace}
           onSwitchWorkspace={handleSwitchWorkspace}
-          onOpenSettings={() => void openSettingsWindow()}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
         }
       >
