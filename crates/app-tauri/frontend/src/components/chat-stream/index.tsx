@@ -560,9 +560,29 @@ function parseTurns(items: StreamItem[]): Turn[] {
 }
 
 /** Turns mounted on first paint — long sessions render their tail first;
- * the top sentinel expands the window as the user scrolls up. A full
- * mount of a 200-turn transcript is the multi-second jank this avoids. */
+ * the edge sentinels expand the window as the user scrolls. A full mount
+ * of a 200-turn transcript is the multi-second jank this avoids. */
 const TURN_PAGE = 30;
+/** Hard DOM bound — the mounted window never exceeds this many turns;
+ * expanding one edge evicts the other (its placeholder keeps the
+ * estimated height so the scrollbar doesn't jump). */
+const MAX_MOUNTED = 150;
+/** Fallback turn height estimate before the real average is measured. */
+const DEFAULT_TURN_H = 320;
+
+/** A few pulsing rows inside a hidden-turns placeholder — the "skeleton"
+ * the user asked for: scrolling into an unmounted stretch reads as
+ * content-instead-of-nothing while the sentinel triggers the real mount. */
+function TurnSkeletonBlock() {
+  return (
+    <div className="flex flex-col gap-4 py-4 animate-pulse select-none">
+      <div className="h-4 w-2/5 rounded-lg bg-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] self-end" />
+      <div className="h-3 w-4/5 rounded-lg bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]" />
+      <div className="h-3 w-3/5 rounded-lg bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]" />
+      <div className="h-3 w-2/5 rounded-lg bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]" />
+    </div>
+  );
+}
 
 export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -573,11 +593,23 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // user just submitted, which always re-pins to the bottom.
   const lastUserIdxRef = useRef(-1);
 
-  // Incremental mount window — how many trailing turns are in the DOM.
-  // `sessionKey` resets it so switching sessions starts at the tail again.
-  const [turnLimit, setTurnLimit] = useState(TURN_PAGE);
+  // Two-sided mount window: `hidden.top`/`hidden.bottom` count turns
+  // NOT mounted at each edge. `null` = derive "last TURN_PAGE" — the
+  // initial and post-switch shape. Expanding one edge past MAX_MOUNTED
+  // evicts the other, so DOM size stays bounded no matter how long the
+  // session runs.
+  const [hidden, setHidden] = useState<{ top: number; bottom: number } | null>(null);
+  // Scroll anchoring: before a top-edge mutation we record scrollHeight;
+  // after the DOM lands we restore the viewport's content position.
+  const pendingAnchorRef = useRef<number | null>(null);
+  // Measured average mounted-turn height — drives placeholder heights so
+  // unmounted turns still occupy roughly their real space (no white gap,
+  // honest scrollbar).
+  const avgHRef = useRef(DEFAULT_TURN_H);
+  const contentRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    setTurnLimit(TURN_PAGE);
+    setHidden(null);
     // Session switch must land at the newest message — the scroll
     // container is reused across sessions, so its scrollTop and the
     // pinned flag would otherwise keep whatever position the previous
@@ -594,6 +626,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const scrollToBottom = () => {
     pinnedRef.current = true;
     setIsAtBottom(true);
+    // Mount the tail before scrolling — a bottom-evicted window would
+    // otherwise scroll into the placeholder, not the live stream.
+    setHidden((h) => (h ? { top: h.top, bottom: 0 } : h));
     isSmoothScrollingRef.current = true;
     const el = scrollRef.current;
     if (el) {
@@ -614,34 +649,109 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
   const turns = useMemo(() => parseTurns(view.items), [view.items]);
 
-  // The render window — trailing `turnLimit` turns. Older turns mount
-  // progressively via the top sentinel instead of all at once.
-  const visibleTurns =
-    turns.length > turnLimit ? turns.slice(turns.length - turnLimit) : turns;
-  const hiddenTurns = turns.length - visibleTurns.length;
+  // The mounted slice — `hidden` null derives the fresh tail window.
+  const hiddenTop = hidden?.top ?? Math.max(0, turns.length - TURN_PAGE);
+  const hiddenBottom = hidden?.bottom ?? 0;
+  const mountedTurns = turns.slice(hiddenTop, turns.length - hiddenBottom);
+
+  // Keep the average height estimate honest — measured from what's
+  // actually mounted, clamped so one giant turn can't poison it.
+  useEffect(() => {
+    const el = contentRef.current;
+    if (el && mountedTurns.length > 0) {
+      avgHRef.current = Math.min(
+        800,
+        Math.max(140, el.scrollHeight / mountedTurns.length),
+      );
+    }
+  }, [mountedTurns.length, view.items]);
+
+  // Apply a pending top-edge anchor — the DOM just changed above the
+  // viewport; shift scrollTop by the height delta so the content the
+  // user was reading stays put.
+  useEffect(() => {
+    const prev = pendingAnchorRef.current;
+    const el = scrollRef.current;
+    if (prev !== null && el) {
+      pendingAnchorRef.current = null;
+      const delta = el.scrollHeight - prev;
+      if (delta !== 0) el.scrollTop += delta;
+    }
+  }, [mountedTurns.length]);
 
   // Top sentinel — scrolling into it grows the window by one page. Rate-
-  // capped so a fast fling spreads the mounts across frames instead of
-  // re-creating the full-mount jank it exists to avoid.
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  // Edge sentinels inside the hidden-turn placeholders — each expands
+  // its edge and, past MAX_MOUNTED, evicts the far edge (which keeps an
+  // estimated-height placeholder, so the viewport never sees a gap).
+  // Top-edge mutations record an anchor first so the viewport content
+  // doesn't jump when turns mount or evict above it.
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+  const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const lastExpandRef = useRef(0);
+
+  const expandTop = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) pendingAnchorRef.current = el.scrollHeight;
+    setHidden((h) => {
+      const top = Math.max(0, (h?.top ?? Math.max(0, turns.length - TURN_PAGE)) - TURN_PAGE);
+      let bottom = h?.bottom ?? 0;
+      // Over the DOM bound → evict bottom turns into their placeholder.
+      const overflow = turns.length - top - bottom - MAX_MOUNTED;
+      if (overflow > 0) bottom += overflow;
+      return { top, bottom };
+    });
+  }, [turns.length]);
+
+  const expandBottom = useCallback(() => {
+    setHidden((h) => {
+      let top = h?.top ?? Math.max(0, turns.length - TURN_PAGE);
+      const bottom = Math.max(0, (h?.bottom ?? 0) - TURN_PAGE);
+      const overflow = turns.length - top - bottom - MAX_MOUNTED;
+      if (overflow > 0) {
+        // Evicting top turns shrinks height ABOVE the viewport — anchor.
+        const el = scrollRef.current;
+        if (el) pendingAnchorRef.current = el.scrollHeight;
+        top += overflow;
+      }
+      return { top, bottom };
+    });
+  }, [turns.length]);
+
   useEffect(() => {
     const root = scrollRef.current;
-    const target = sentinelRef.current;
-    if (!root || !target || hiddenTurns <= 0) return;
+    const target = topSentinelRef.current;
+    if (!root || !target || hiddenTop <= 0) return;
     const obs = new IntersectionObserver(
       (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return;
         const now = performance.now();
         if (now - lastExpandRef.current < 250) return;
         lastExpandRef.current = now;
-        setTurnLimit((c) => c + TURN_PAGE);
+        expandTop();
       },
       { root, rootMargin: "300px" }
     );
     obs.observe(target);
     return () => obs.disconnect();
-  }, [hiddenTurns > 0, sessionKey]);
+  }, [hiddenTop > 0, sessionKey, expandTop]);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    const target = bottomSentinelRef.current;
+    if (!root || !target || hiddenBottom <= 0) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        const now = performance.now();
+        if (now - lastExpandRef.current < 250) return;
+        lastExpandRef.current = now;
+        expandBottom();
+      },
+      { root, rootMargin: "300px" }
+    );
+    obs.observe(target);
+    return () => obs.disconnect();
+  }, [hiddenBottom > 0, sessionKey, expandBottom]);
 
   // Only items in the CURRENT turn count — a stale active item left by a
   // dead earlier turn (streaming assistant that never got AssistantMessage,
@@ -822,9 +932,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const turnMatch = mark.targetId.match(/^chat-turn-(turn-\d+)-/);
     if (turnMatch) {
       const idx = turns.findIndex((t) => t.id === turnMatch[1]);
-      const firstVisible = turns.length - visibleTurns.length;
-      if (idx >= 0 && idx < firstVisible) {
-        setTurnLimit(turns.length - idx);
+      const inWindow = idx >= hiddenTop && idx < turns.length - hiddenBottom;
+      if (idx >= 0 && !inWindow) {
+        // Mount a window starting at the mark — anchors don't matter here
+        // since we're about to jump to the target anyway.
+        setHidden({
+          top: idx,
+          bottom: Math.max(0, turns.length - (idx + MAX_MOUNTED)),
+        });
         isSmoothScrollingRef.current = true;
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {
@@ -936,7 +1051,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       />
 
       <div className="stream-scroll" ref={scrollRef} onScroll={onScroll}>
-        <div className="max-w-3xl w-full mx-auto px-4 pt-6 flex flex-col gap-6 min-h-full">
+        <div ref={contentRef} className="max-w-3xl w-full mx-auto px-4 pt-6 flex flex-col gap-6 min-h-full">
           <div id="chat-stream-top" className="h-0 w-full" />
           {loading ? (
             <ChatSkeleton />
@@ -944,17 +1059,25 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             <EmptyGreeting />
           ) : null}
 
-          {hiddenTurns > 0 && (
+          {hiddenTop > 0 && (
+            // Placeholder occupies the hidden prefix's ESTIMATED height —
+            // scrolling into it can't hit a white gap, and the scrollbar
+            // stays honest. The sentinel sits at its bottom so the mount
+            // fires while the placeholder is entering view, not after.
             <div
-              ref={sentinelRef}
-              className="flex items-center justify-center py-2 text-[11px] text-neutral-400 select-none"
+              className="relative w-full"
+              style={{ height: hiddenTop * avgHRef.current }}
               aria-hidden="true"
             >
-              加载更早的消息…
+              <TurnSkeletonBlock />
+              <div
+                ref={topSentinelRef}
+                className="absolute bottom-0 inset-x-0 h-1"
+              />
             </div>
           )}
 
-          {visibleTurns.map((turn, turnIdx) => (
+          {mountedTurns.map((turn, turnIdx) => (
             <div
               key={turn.id}
               className="flex w-full flex-col gap-6"
@@ -1003,7 +1126,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                     }
 
                     if (step.type === "text") {
-                      const isLastTurn = turnIdx === visibleTurns.length - 1;
+                      const isLastTurn = turnIdx === mountedTurns.length - 1;
                       const isLastStep = stepIdx === turn.steps.length - 1;
                       const isAnimating = view.streaming && isLastTurn && isLastStep;
 
@@ -1061,6 +1184,20 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             className="w-full flex-none pointer-events-none select-none"
             aria-hidden="true"
           />
+          {hiddenBottom > 0 && (
+            // Bottom-evicted turns — same estimated-height placeholder.
+            <div
+              className="relative w-full"
+              style={{ height: hiddenBottom * avgHRef.current }}
+              aria-hidden="true"
+            >
+              <TurnSkeletonBlock />
+              <div
+                ref={bottomSentinelRef}
+                className="absolute top-0 inset-x-0 h-1"
+              />
+            </div>
+          )}
           <div ref={endRef} />
         </div>
       </div>
