@@ -9,15 +9,23 @@ use serde::Deserialize;
 
 use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
 
-/// Max entries returned before the fold marker.
+/// Max entries returned before the fold marker — bounds the OUTPUT.
 const MAX_ENTRIES: usize = 500;
+/// Max entries consumed from the walker — bounds the WORK. Sorting one
+/// giant dir level can still cost, but the iterator itself stops here.
+const MAX_SCAN_ENTRIES: usize = 4_000;
 
 #[derive(Debug, serde::Serialize, Deserialize, schemars::JsonSchema)]
 struct ListDirArgs {
-    /// Workspace-relative directory path (default ".").
+    /// Workspace-relative directory path (default "."). Absolute paths are
+    /// accepted only when they still resolve inside the workspace.
     path: Option<String>,
-    /// Recurse depth (default 1 = direct children only).
+    /// Recurse depth (default 1 = direct children only, max 4).
+    #[schemars(range(min = 1, max = 4))]
     depth: Option<usize>,
+    /// Include hidden entries (dotfiles like .github). Default false —
+    /// hidden files are skipped.
+    include_hidden: Option<bool>,
 }
 
 pub fn spec() -> ToolSpec {
@@ -41,15 +49,28 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     if !root.is_dir() {
         return Err(ToolError::Failed(format!("not a directory: {rel}")));
     }
-    let depth = parsed.depth.unwrap_or(1).min(4); // deep listings waste tokens
+    let depth = parsed.depth.unwrap_or(1).clamp(1, 4); // deep listings waste tokens
+    let include_hidden = parsed.include_hidden.unwrap_or(false);
+    // Header echoes a normalized view of the path the model passed —
+    // "./src/" should print "src/", not "./src//".
+    let display = {
+        let d = rel.trim_end_matches('/');
+        let d = d.strip_prefix("./").unwrap_or(d);
+        if d.is_empty() { "." } else { d }
+    };
 
-    let mut out = format!("{rel}/\n");
+    let mut out = format!("{display}/\n");
     let mut count = 0usize;
+    let mut scanned = 0usize;
+    let mut errors = 0usize;
     let mut truncated = false;
 
     let mut builder = ignore::WalkBuilder::new(&root);
     builder
-        .hidden(true)
+        // Symlinks are NOT followed (ignore's default) — a symlinked dir is
+        // listed as a leaf, never descended into, so workspace containment
+        // can't be escaped through it.
+        .hidden(!include_hidden)
         .git_ignore(true)
         .git_exclude(true)
         .require_git(false)
@@ -57,9 +78,19 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         .sort_by_file_name(|a, b| a.cmp(b));
 
     for result in builder.build() {
+        scanned += 1;
+        if scanned > MAX_SCAN_ENTRIES {
+            truncated = true;
+            break;
+        }
         let entry = match result {
             Ok(e) => e,
-            Err(_) => continue,
+            // Count unreadable entries instead of swallowing them — a
+            // listing that hides failures reads as "complete" when it isn't.
+            Err(_) => {
+                errors += 1;
+                continue;
+            }
         };
         if entry.depth() == 0 {
             continue;
@@ -74,8 +105,14 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         };
         let indent = "  ".repeat(entry.depth().saturating_sub(1));
         let mut name = rel_path.to_string_lossy().replace('\\', "/");
-        if entry.file_type().is_some_and(|ft| ft.is_dir()) && !name.ends_with('/') {
-            name.push('/');
+        match entry.file_type() {
+            Some(ft) if ft.is_symlink() => name.push('@'),
+            Some(ft) if ft.is_dir() => {
+                if !name.ends_with('/') {
+                    name.push('/');
+                }
+            }
+            _ => {}
         }
         out.push_str(&format!("{indent}{name}\n"));
         count += 1;
@@ -83,6 +120,12 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 
     if truncated {
         out.push_str("… [too large to list fully — narrow the path or use smart_grep] …\n");
+    }
+    if errors > 0 {
+        out.push_str(&format!(
+            "⚠ {errors} entr{} could not be read (permissions or I/O error) — listing is incomplete\n",
+            if errors == 1 { "y" } else { "ies" }
+        ));
     }
     Ok(ToolResult::text(out))
 }
