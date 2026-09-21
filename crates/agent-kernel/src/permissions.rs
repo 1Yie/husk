@@ -103,11 +103,21 @@ const DESTRUCTIVE_BINARIES: &[&str] = &[
 pub struct PermissionGate {
     mode: PermissionMode,
     rules: PermissionRules,
+    /// Subagent context: nothing answers `Ask`, so escalations deny
+    /// outright and the refusal is reported back to the child model.
+    headless: bool,
 }
 
 impl PermissionGate {
     pub fn new(mode: PermissionMode, rules: PermissionRules) -> Self {
-        Self { mode, rules }
+        Self { mode, rules, headless: false }
+    }
+
+    /// Gate for a delegated subagent — `auto` baseline (readonly, edits,
+    /// and safe shell auto-run) with `headless` on: anything that would
+    /// pause for human approval denies instead, since no UI answers it.
+    pub fn for_subagent() -> Self {
+        Self { mode: PermissionMode::Auto, rules: PermissionRules::default(), headless: true }
     }
 
     pub fn from_mode_str(mode: &str) -> Self {
@@ -131,6 +141,26 @@ impl PermissionGate {
     ///
     /// Precedence: deny > ask > allow > mode default.
     pub fn decide(
+        &self,
+        tool_name: &str,
+        is_readonly: bool,
+        command: Option<&str>,
+        diff_summary: impl Into<String>,
+    ) -> Decision {
+        let d = self.decide_inner(tool_name, is_readonly, command, diff_summary);
+        if self.headless {
+            match d {
+                Decision::Ask { .. } => Decision::Deny {
+                    reason: "requires human approval — unavailable inside a delegated subagent".into(),
+                },
+                d => d,
+            }
+        } else {
+            d
+        }
+    }
+
+    fn decide_inner(
         &self,
         tool_name: &str,
         is_readonly: bool,

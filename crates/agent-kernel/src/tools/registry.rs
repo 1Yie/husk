@@ -37,6 +37,13 @@ pub struct ToolCtx {
     /// history file in the app state dir — never into the user's repo.
     /// `None` for unattached contexts (tests, headless spawns).
     pub session: Option<(i64, Arc<crate::session_store::SessionStore>)>,
+    /// Parent turn's cooperative cancel flag — a delegated subagent polls
+    /// it so a user cancel propagates into the delegation instead of
+    /// orphaning a running child. `None` in unattached contexts.
+    pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Subagent spawner — `delegate` runs a fresh-context child engine.
+    /// `None` where delegation is unavailable (tests, child contexts).
+    pub subagent: Option<crate::tools::delegate::SubagentSpawner>,
 }
 
 impl ToolCtx {
@@ -48,6 +55,8 @@ impl ToolCtx {
             workspace_root: Arc::from(root.as_path()),
             sandbox: Arc::from(sandbox),
             session: None,
+            cancel: None,
+            subagent: None,
         }
     }
 
@@ -55,7 +64,13 @@ impl ToolCtx {
     pub fn with_sandbox(root: impl Into<PathBuf>, sandbox: Arc<dyn agent_sandbox::SandboxBackend>) -> Self {
         let root = root.into();
         let root = root.canonicalize().unwrap_or(root);
-        Self { workspace_root: Arc::from(root.as_path()), sandbox, session: None }
+        Self {
+            workspace_root: Arc::from(root.as_path()),
+            sandbox,
+            session: None,
+            cancel: None,
+            subagent: None,
+        }
     }
 
     /// Attach the owning session — gives tools access to per-session
@@ -222,6 +237,7 @@ impl ToolRegistry {
         r.register(crate::tools::serena::spec());
         r.register(crate::tools::web_fetch::spec());
         r.register(crate::tools::web_fetch::spec_alias());
+        r.register(crate::tools::delegate::spec());
         r
     }
 

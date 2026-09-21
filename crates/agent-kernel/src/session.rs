@@ -217,10 +217,28 @@ impl SessionActor {
             .ok()
             .map(Arc::new);
 
-        let registry = Arc::new(ToolRegistry::with_builtins());
-        let ctx = Arc::new(
-            ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone()),
-        );
+        // Cooperative cancel flag — hoisted above `ToolCtx` so delegated
+        // subagents inherit it (a user cancel tears down in-flight child
+        // runs instead of orphaning them).
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let registry = ToolRegistry::with_builtins();
+        // Subagent registries: a child never carries `delegate` (recursion
+        // guard); `readonly` children drop every non-readonly tool too.
+        let child_full = registry.filtered(|s| s.name != "delegate");
+        let child_ro = child_full.readonly_only();
+        let mut tool_ctx =
+            ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
+        tool_ctx.cancel = Some(cancel.clone());
+        tool_ctx.subagent = Some(crate::tools::delegate::SubagentSpawner::new(
+            cfg.provider.clone(),
+            cfg.model.clone(),
+            cfg.temperature,
+            cfg.context_window.unwrap_or(256_000) as usize,
+            Arc::new(child_full),
+            Arc::new(child_ro),
+        ));
+        let ctx = Arc::new(tool_ctx);
+        let registry = Arc::new(registry);
         let mut engine = Engine::new(
             cfg.provider.clone(),
             registry,
@@ -253,8 +271,8 @@ impl SessionActor {
         // P0-C4: cooperative cancel flag shared with the engine — the UI
         // writes it via `cancel_writer()` (bypassing the command pump so a
         // Cancel lands mid-turn); the engine checks it between chunks and
-        // before each tool dispatch.
-        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // before each tool dispatch. The flag was created above so the
+        // `ToolCtx` subagent spawner already carries a clone of it.
         let io = EngineIo {
             ui_tx: channels.event_tx.clone(),
             steer_rx,
