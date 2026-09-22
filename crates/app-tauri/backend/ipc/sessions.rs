@@ -322,8 +322,8 @@ pub fn agent_session(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true, "path": path.to_string_lossy() }))
         }
-        // `create_subagent` — write `<name>.md` under `.pi/agents/` (project)
-        // or `~/.pi/agent/agents/` (global); `delegate { agent: "<name>" }`
+        // `create_subagent` — write `<name>.md` under `.husk/agents/` (project)
+        // or `~/.config/husk/agents/` (global); `delegate { agent: "<name>" }`
         // resolves it at call time.
         "create_subagent" => {
             let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
@@ -337,9 +337,11 @@ pub fn agent_session(
                 return Err("提示词不能为空".into());
             }
             let base = if global {
-                dirs::home_dir().map(|h| h.join(".pi/agent/agents"))
+                agent_kernel::tools::delegate::global_agent_dir()
             } else {
-                Some(mgr.workspace_root.join(".pi/agents"))
+                Some(agent_kernel::tools::delegate::workspace_agent_dir(
+                    &mgr.workspace_root,
+                ))
             }
             .ok_or("no agents dir")?;
             std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;

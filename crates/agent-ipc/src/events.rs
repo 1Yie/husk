@@ -127,9 +127,19 @@ pub enum UiEvent {
     /// The user prompt echoed back — the stream renders it as a user block.
     UserPrompt(String),
     /// A token delta (already throttled by the bridge — NOT per SSE chunk).
-    TextDelta(String),
-    /// Reasoning-trace delta (separate visual stream).
-    ReasoningDelta(String),
+    /// `parent` is set on a delegated child's deltas so the UI nests them under
+    /// that child's capsule instead of mixing them into the turn's draft.
+    TextDelta {
+        text: String,
+        #[serde(default)]
+        parent: Option<String>,
+    },
+    /// Reasoning-trace delta (separate visual stream; same `parent` rule).
+    ReasoningDelta {
+        text: String,
+        #[serde(default)]
+        parent: Option<String>,
+    },
     /// A tool began executing. `args_preview` is a single-line summary of
     /// the call's target (a path / command / pattern) shown on the capsule —
     /// the full output only appears when the capsule is expanded.

@@ -266,7 +266,11 @@ impl SessionActor {
         };
         let system_prompt = system_prompt
             .replace("{{MEMORY_BLOCK}}", &initial_memory_block)
-            .replace("{{SKILLS_BLOCK}}", skills.catalog());
+            .replace("{{SKILLS_BLOCK}}", skills.catalog())
+            .replace(
+                "{{SUBAGENTS_BLOCK}}",
+                &crate::tools::delegate::catalog(&cfg.workspace_root),
+            );
 
         // `~/.config/husk/AGENTS.md` (user-wide) then `<workspace>/AGENTS.md`
         // (project) append verbatim as dedicated sections — custom rules live
@@ -508,6 +512,15 @@ impl SessionActor {
                 if let Some(content) = sys.content.take() {
                     sys.content = Some(replace_block(&content, "skills", &block));
                 }
+            }
+        }
+
+        // Subagent catalog — cheap to rebuild (a handful of small manifests) and
+        // the settings UI can add one while the session is open.
+        if let Some(sys) = self.history.get_mut(0) {
+            if let Some(content) = sys.content.take() {
+                let block = crate::tools::delegate::catalog(&self.workspace_root);
+                sys.content = Some(replace_block(&content, "subagents", &block));
             }
         }
 

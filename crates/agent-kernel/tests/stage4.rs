@@ -240,7 +240,53 @@ async fn reasoning_traces_persist_for_replay() {
 /// fetches the body on demand. Without this the model never learned that any
 /// skill existed — the feature was user-only (`$name` / `/name`).
 #[tokio::test]
-async fn skills_catalog_is_in_the_prompt_and_refreshes() {
+async fn subagent_catalog_is_in_the_prompt_and_refreshes() {
+    let dir = tempfile::tempdir().unwrap();
+    let write_agent = |name: &str, desc: &str| {
+        let p = dir.path().join(".husk/agents");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(
+            p.join(format!("{name}.md")),
+            format!("---\nname: {name}\ndescription: {desc}\n---\n\nYou are {name}.\n"),
+        )
+        .unwrap();
+    };
+    write_agent("helper", "project-local helper agent");
+
+    let stub = ScriptedProvider::new();
+    stub.script_text("ok");
+    let (mut actor, _c) = SessionActor::spawn(SessionConfig {
+        workspace_root: dir.path().to_path_buf(),
+        provider: Arc::new(stub),
+        model: "m".into(),
+        temperature: 0.0,
+        permission_mode: "default".into(),
+        agent_mode: "build".into(),
+        track_dirty: false,
+        thinking_level: None,
+        thinking_level_map: None,
+        context_window: None,
+        compact_at: None,
+        model_input: Vec::new(),
+        model_params: None,
+    });
+
+    let system = actor.history()[0].content.clone().unwrap_or_default();
+    assert!(system.contains("`helper`"), "catalog misses the manifest:\n{system}");
+    assert!(system.contains("project-local helper agent"), "{system}");
+    assert!(system.contains("(project)"), "{system}");
+    // Builtins are still listed so `agent: "review"` keeps working.
+    assert!(system.contains("`review`") && system.contains("(built-in)"), "{system}");
+
+    // A manifest added mid-session shows up after the next turn.
+    write_agent("later", "added while the session was open");
+    actor.handle(UiCommand::Prompt { text: "hi".into() }).await;
+    let system = actor.history()[0].content.clone().unwrap_or_default();
+    assert!(system.contains("`later`"), "catalog did not refresh:\n{system}");
+    assert!(system.contains("`helper`"), "{system}");
+}
+
+async fn subagent_catalog_is_in_the_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let write_skill = |name: &str, desc: &str| {
         let p = dir.path().join(".agents/skills").join(name);

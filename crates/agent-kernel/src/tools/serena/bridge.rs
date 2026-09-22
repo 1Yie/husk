@@ -70,63 +70,130 @@ pub trait BridgeFactory: Send + Sync {
     async fn spawn(&self, root: &Path) -> Result<Arc<dyn McpBridge>, ToolError>;
 }
 
-/// How to launch Serena. `uvx` by default; overridable so a deployment can pin
-/// a release or a fork instead of re-resolving a branch on every cold start
-/// (`HUSK_SERENA_SOURCE`), and so tests can point at a stub server
-/// (`HUSK_SERENA_CMD`).
+/// How to launch Serena.
+///
+/// The installed CLI (`uv tool install -p 3.13 serena-agent` + `serena init`) is
+/// preferred: `uvx` re-resolves the repo branch on every cold start. `uvx` stays
+/// as the fallback; `HUSK_SERENA_CMD` / `HUSK_SERENA_SOURCE` let a deployment
+/// pin a build, and tests point `argv_override` at a stub MCP server.
 #[derive(Debug, Clone)]
 pub struct SerenaLaunch {
-    pub program: String,
+    /// `None` = prefer an installed `serena` and fall back to `uvx`.
+    pub program: Option<String>,
     pub source: String,
-    /// Full argv override. Production leaves this `None` and gets
-    /// `--from <source> serena start-mcp-server --project <root> …`; tests
-    /// point it at a stub MCP server instead of `uvx`.
+    /// Repeated `--mode` values. The default drops Serena's own memory and
+    /// onboarding tools: nothing here uses them and they only lengthen the
+    /// catalog. `HUSK_SERENA_MODES=` (empty) keeps them.
+    pub modes: Vec<String>,
+    /// Full argv override — the stub-server tests launch this way.
     pub argv_override: Option<Vec<String>>,
 }
 
 impl SerenaLaunch {
     pub fn from_env() -> Self {
         Self {
-            program: std::env::var("HUSK_SERENA_CMD").unwrap_or_else(|_| "uvx".into()),
-            // Default stays the branch tip: pinning is opt-in, because the
-            // tool surface (names/schemas) changes between Serena releases.
+            program: std::env::var("HUSK_SERENA_CMD").ok(),
             source: std::env::var("HUSK_SERENA_SOURCE")
                 .unwrap_or_else(|_| "git+https://github.com/oraios/serena".into()),
+            modes: std::env::var("HUSK_SERENA_MODES")
+                .map(|raw| {
+                    raw.split([',', ' '])
+                        .map(str::trim)
+                        .filter(|m| !m.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_else(|_| vec!["no-memories".into()]),
             argv_override: None,
         }
     }
 
-    fn command(&self, root: &Path) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new(&self.program);
-        match &self.argv_override {
-            Some(argv) => cmd.args(argv),
-            None => cmd.args([
-                "--from",
-                &self.source,
-                "serena",
-                "start-mcp-server",
-                "--transport",
-                "stdio",
-                "--project",
-                &root.to_string_lossy(),
-                "--context",
-                "ide",
-            ]),
-        };
-        cmd
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        // Piped, never null: a startup failure with a nulled stderr is
-        // undiagnosable (see `diagnostics`).
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    /// `start-mcp-server` plus the flags upstream documents for a workspace-scoped
+    /// client: stdio, the project root, the `ide` context (basic file ops and
+    /// shell belong to the host agent), and no dashboard window.
+    fn server_args(&self, root: &Path) -> Vec<String> {
+        let mut args: Vec<String> = vec![
+            "start-mcp-server".into(),
+            "--transport".into(),
+            "stdio".into(),
+            "--project".into(),
+            root.to_string_lossy().into_owned(),
+            "--context".into(),
+            "ide".into(),
+            "--open-web-dashboard".into(),
+            "false".into(),
+        ];
+        for mode in &self.modes {
+            args.push("--mode".into());
+            args.push(mode.clone());
+        }
+        args
+    }
+
+    /// `uvx` runs Serena straight from the repo — the documented fallback when
+    /// nothing is installed. `-p 3.13` is not optional: Serena needs 3.13.
+    fn uvx_args(&self, root: &Path) -> Vec<String> {
+        let mut args: Vec<String> = vec![
+            "-p".into(),
+            "3.13".into(),
+            "--from".into(),
+            self.source.clone(),
+            "serena".into(),
+        ];
+        args.extend(self.server_args(root));
+        args
+    }
+
+    fn argv_for(&self, program: &str, root: &Path) -> Vec<String> {
+        if program.rsplit('/').next() == Some("uvx") {
+            return self.uvx_args(root);
+        }
+        self.server_args(root)
+    }
+
+    /// Explicit override → installed `serena` → `uvx`.
+    fn resolve(&self, root: &Path) -> (String, Vec<String>) {
+        if let Some(argv) = &self.argv_override {
+            let program = self.program.clone().unwrap_or_else(|| "serena".into());
+            return (program, argv.clone());
+        }
+        if let Some(program) = &self.program {
+            let args = self.argv_for(program, root);
+            return (program.clone(), args);
+        }
+        match which("serena") {
+            Some(installed) => (installed, self.server_args(root)),
+            None => ("uvx".into(), self.uvx_args(root)),
+        }
+    }
+
+    fn command(&self, program: &str, args: &[String], root: &Path) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            // Piped, never null: a startup failure with a nulled stderr is
+            // undiagnosable (see `diagnostics`).
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         cmd
     }
 }
 
+/// First hit for `bin` on PATH — the difference between "the user installed
+/// Serena" and "fall back to `uvx`".
+fn which(bin: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(bin))
+        .find(|candidate| candidate.is_file())
+        .map(|p| p.display().to_string())
+}
+
 pub struct SerenaBridge {
-    launch: SerenaLaunch,
+    /// Resolved launch command — what `resolve()` picked, for error messages.
+    program: String,
     /// Root the server was scoped to — for diagnostics and error messages.
     root: std::path::PathBuf,
     stdin: Mutex<ChildStdin>,
@@ -148,10 +215,13 @@ impl SerenaBridge {
     }
 
     pub async fn spawn_with(root: &Path, launch: SerenaLaunch) -> Result<Arc<Self>, ToolError> {
-        let mut child = launch
-            .command(root)
-            .spawn()
-            .map_err(|e| ToolError::Failed(format!("spawn serena ({} missing?): {e}", launch.program)))?;
+        let (program, args) = launch.resolve(root);
+        let mut child = launch.command(&program, &args, root).spawn().map_err(|e| {
+            ToolError::Failed(format!(
+                "spawn serena via `{program}` failed: {e}\n(install it: `uv tool install \
+                 -p 3.13 serena-agent`, then `serena init` — `uvx` is only the fallback)"
+            ))
+        })?;
 
         let stdin = child
             .stdin
@@ -169,7 +239,7 @@ impl SerenaBridge {
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let stderr_tail: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::new()));
         let bridge = Arc::new(Self {
-            launch,
+            program,
             root: root.to_path_buf(),
             stdin: Mutex::new(stdin),
             pending: pending.clone(),
@@ -235,9 +305,8 @@ impl SerenaBridge {
         match bridge.initialize().await {
             Ok(()) => Ok(bridge),
             Err(e) => Err(ToolError::Failed(format!(
-                "serena did not come up ({} --from {}): {e}{}",
-                bridge.launch.program,
-                bridge.launch.source,
+                "serena did not come up ({}): {e}{}",
+                bridge.program,
                 bridge.stderr_suffix().await
             ))),
         }
@@ -250,6 +319,13 @@ impl SerenaBridge {
         } else {
             format!("\nserena stderr (tail):\n{tail}")
         }
+    }
+
+    /// Mark the bridge dead and kill the child (idempotent).
+    async fn shutdown_child(&self) {
+        self.dead.store(true, Ordering::Relaxed);
+        let mut child = self._child.lock().await;
+        let _ = child.start_kill();
     }
 
     /// `initialize` + `notifications/initialized` handshake.
@@ -304,8 +380,12 @@ impl SerenaBridge {
         let reply = match tokio::time::timeout(timeout, rx).await {
             Err(_) => {
                 self.pending.lock().await.remove(&id);
+                // The server is still busy with an id nobody waits for any more,
+                // so the next request would queue behind it: kill it and let the
+                // manager start a clean one.
+                self.shutdown_child().await;
                 Err(ToolError::Failed(format!(
-                    "serena request timed out after {}s",
+                    "serena request timed out after {}s (server killed; the next call restarts it)",
                     timeout.as_secs()
                 )))
             }
@@ -400,8 +480,9 @@ mod tests {
     /// (pending map, death detection, stderr capture).
     fn stub_launch() -> SerenaLaunch {
         SerenaLaunch {
-            program: std::env::current_exe().expect("test binary path").display().to_string(),
+            program: Some(std::env::current_exe().expect("test binary path").display().to_string()),
             source: String::new(),
+            modes: Vec::new(),
             argv_override: Some(vec![
                 "--exact".into(),
                 STUB_TEST.into(),
@@ -547,8 +628,9 @@ mod tests {
     async fn spawn_reports_a_missing_program_with_the_root() {
         let dir = tempfile::tempdir().unwrap();
         let launch = SerenaLaunch {
-            program: "/nonexistent/uvx-for-husk-test".into(),
+            program: Some("/nonexistent/uvx-for-husk-test".into()),
             source: "git+https://example.invalid/serena".into(),
+            modes: Vec::new(),
             argv_override: None,
         };
         let err = SerenaBridge::spawn_with(dir.path(), launch)
@@ -558,5 +640,42 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("spawn serena"), "{msg}");
         assert!(msg.contains("uvx-for-husk-test"), "{msg}");
+    }
+
+    /// The launch shape is a contract with Serena's CLI: stdio, the project, the
+    /// `ide` context, no dashboard window, and `-p 3.13` on the `uvx` fallback.
+    #[test]
+    fn launch_args_follow_the_documented_serena_cli() {
+        let launch = SerenaLaunch {
+            program: None,
+            source: "git+https://example.invalid/serena".into(),
+            modes: vec!["no-memories".into()],
+            argv_override: None,
+        };
+        let server = launch.server_args(Path::new("/ws"));
+        assert_eq!(server[0], "start-mcp-server");
+        let value = |flag: &str| server.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone());
+        assert_eq!(value("--transport").as_deref(), Some("stdio"));
+        assert_eq!(value("--project").as_deref(), Some("/ws"));
+        assert_eq!(value("--context").as_deref(), Some("ide"));
+        assert_eq!(value("--mode").as_deref(), Some("no-memories"));
+        assert_eq!(value("--open-web-dashboard").as_deref(), Some("false"));
+
+        let uvx = launch.uvx_args(Path::new("/ws"));
+        let head: Vec<&str> = uvx.iter().take(6).map(String::as_str).collect();
+        assert_eq!(
+            head,
+            vec![
+                "-p",
+                "3.13",
+                "--from",
+                "git+https://example.invalid/serena",
+                "serena",
+                "start-mcp-server"
+            ]
+        );
+
+        let bare = SerenaLaunch { modes: Vec::new(), ..launch };
+        assert!(!bare.server_args(Path::new("/ws")).iter().any(|a| a == "--mode"));
     }
 }

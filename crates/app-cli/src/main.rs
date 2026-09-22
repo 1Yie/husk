@@ -81,8 +81,8 @@ async fn main() -> anyhow::Result<()> {
     let pump = tokio::spawn(async move {
         while let Some(ev) = ev_rx.recv().await {
             match &ev {
-                UiEvent::TextDelta(t) => print!("{t}"),
-                UiEvent::ReasoningDelta(t) => eprint!("\x1b[2m{t}\x1b[0m"),
+                UiEvent::TextDelta { text, .. } => print!("{text}"),
+                UiEvent::ReasoningDelta { text, .. } => eprint!("\x1b[2m{text}\x1b[0m"),
                 UiEvent::StateChanged(s) => eprintln!("\n[state] {s:?}"),
                 UiEvent::SystemMessage(m) => eprintln!("\n[sys] {m}"),
                 UiEvent::Error(e) => eprintln!("[err] {e}"),

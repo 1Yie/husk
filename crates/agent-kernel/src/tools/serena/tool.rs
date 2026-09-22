@@ -55,8 +55,9 @@ pub fn spec() -> ToolSpec {
 
             let bridge = manager.bridge(&root).await.map_err(|e| {
                 ToolError::Failed(format!(
-                    "serena unavailable for {}: {e}\n(needs `uvx` on PATH; the \
-                     first `uvx --from …` resolve also needs network)",
+                    "serena unavailable for {}: {e}\n(install: `uv tool install -p 3.13 \
+                     serena-agent`, then `serena init`; `serena project health-check` \
+                     diagnoses a project and `serena project index` builds its index)",
                     root.display()
                 ))
             })?;

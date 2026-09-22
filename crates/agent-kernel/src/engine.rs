@@ -540,18 +540,20 @@ impl Engine {
                                 round_reasoning.push_str(t);
                                 pending_reasoning_delta.push_str(t);
                                 if pending_reasoning_delta.len() >= 120 {
-                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta(
-                                        std::mem::take(&mut pending_reasoning_delta),
-                                    ));
+                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta {
+                                        text: std::mem::take(&mut pending_reasoning_delta),
+                                        parent: None,
+                                    });
                                 }
                             }
                             StreamChunk::ContentDelta(t) => {
                                 round_text.push_str(t);
                                 pending_text_delta.push_str(t);
                                 if pending_text_delta.len() >= 120 {
-                                    let _ = io.ui_tx.send(UiEvent::TextDelta(
-                                        std::mem::take(&mut pending_text_delta),
-                                    ));
+                                    let _ = io.ui_tx.send(UiEvent::TextDelta {
+                                        text: std::mem::take(&mut pending_text_delta),
+                                        parent: None,
+                                    });
                                 }
                             }
                             StreamChunk::ToolCallDelta { .. } => {
@@ -563,14 +565,16 @@ impl Engine {
                                 // terminal event lands so the UI never
                                 // renders trailing text after Finished.
                                 if !pending_text_delta.is_empty() {
-                                    let _ = io.ui_tx.send(UiEvent::TextDelta(
-                                        std::mem::take(&mut pending_text_delta),
-                                    ));
+                                    let _ = io.ui_tx.send(UiEvent::TextDelta {
+                                        text: std::mem::take(&mut pending_text_delta),
+                                        parent: None,
+                                    });
                                 }
                                 if !pending_reasoning_delta.is_empty() {
-                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta(
-                                        std::mem::take(&mut pending_reasoning_delta),
-                                    ));
+                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta {
+                                        text: std::mem::take(&mut pending_reasoning_delta),
+                                        parent: None,
+                                    });
                                 }
                                 if let (Some(p), Some(c)) = (prompt_tokens, completion_tokens) {
                                     let cached = cached_tokens.unwrap_or(0);
@@ -586,14 +590,16 @@ impl Engine {
                             StreamChunk::Error(e) => {
                                 stream_error = Some(e.clone());
                                 if !pending_text_delta.is_empty() {
-                                    let _ = io.ui_tx.send(UiEvent::TextDelta(
-                                        std::mem::take(&mut pending_text_delta),
-                                    ));
+                                    let _ = io.ui_tx.send(UiEvent::TextDelta {
+                                        text: std::mem::take(&mut pending_text_delta),
+                                        parent: None,
+                                    });
                                 }
                                 if !pending_reasoning_delta.is_empty() {
-                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta(
-                                        std::mem::take(&mut pending_reasoning_delta),
-                                    ));
+                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta {
+                                        text: std::mem::take(&mut pending_reasoning_delta),
+                                        parent: None,
+                                    });
                                 }
                                 // The `*[error: e]*` marker + turn-end `Error` event
                                 // report this — no extra SystemMessage (it printed
@@ -613,14 +619,16 @@ impl Engine {
             // returned — a stream that ended cleanly before hitting 120
             // chars would otherwise strand its tail in the buffer.
             if !pending_text_delta.is_empty() {
-                let _ = io.ui_tx.send(UiEvent::TextDelta(
-                    std::mem::take(&mut pending_text_delta),
-                ));
+                let _ = io.ui_tx.send(UiEvent::TextDelta {
+                    text: std::mem::take(&mut pending_text_delta),
+                    parent: None,
+                });
             }
             if !pending_reasoning_delta.is_empty() {
-                let _ = io.ui_tx.send(UiEvent::ReasoningDelta(
-                    std::mem::take(&mut pending_reasoning_delta),
-                ));
+                let _ = io.ui_tx.send(UiEvent::ReasoningDelta {
+                    text: std::mem::take(&mut pending_reasoning_delta),
+                    parent: None,
+                });
             }
 
             // Persist the sampler policy notices — they replayed live,

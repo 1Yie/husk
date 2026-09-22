@@ -149,28 +149,53 @@ impl UiSink {
         let mut queue = self.inner.queue.lock().unwrap_or_else(|e| e.into_inner());
         let under_watermark = queue.len() < UI_CHANNEL_CAP;
         match ev {
-            UiEvent::TextDelta(delta) => {
+            // Deltas merge only with a tail from the *same* stream: a delegated
+            // child's text must never be appended to the turn's draft (or to
+            // another child's) just because both happen to be deltas.
+            UiEvent::TextDelta { text, parent } => {
                 if under_watermark {
-                    queue.push_back(UiEvent::TextDelta(delta));
+                    queue.push_back(UiEvent::TextDelta { text, parent });
                     self.inner.stats.sent.fetch_add(1, Ordering::Relaxed);
-                } else if let Some(UiEvent::TextDelta(tail)) = queue.back_mut() {
-                    tail.push_str(&delta);
+                } else if let Some(UiEvent::TextDelta {
+                    text: tail,
+                    parent: tail_parent,
+                }) = queue.back_mut()
+                {
+                    if *tail_parent != parent {
+                        self.inner.stats.dropped.fetch_add(1, Ordering::Relaxed);
+                        return Err(SendError::Saturated(UiEvent::TextDelta { text, parent }));
+                    }
+                    tail.push_str(&text);
                     self.inner.stats.coalesced.fetch_add(1, Ordering::Relaxed);
                 } else {
                     self.inner.stats.dropped.fetch_add(1, Ordering::Relaxed);
-                    return Err(SendError::Saturated(UiEvent::TextDelta(delta)));
+                    return Err(SendError::Saturated(UiEvent::TextDelta { text, parent }));
                 }
             }
-            UiEvent::ReasoningDelta(delta) => {
+            UiEvent::ReasoningDelta { text, parent } => {
                 if under_watermark {
-                    queue.push_back(UiEvent::ReasoningDelta(delta));
+                    queue.push_back(UiEvent::ReasoningDelta { text, parent });
                     self.inner.stats.sent.fetch_add(1, Ordering::Relaxed);
-                } else if let Some(UiEvent::ReasoningDelta(tail)) = queue.back_mut() {
-                    tail.push_str(&delta);
+                } else if let Some(UiEvent::ReasoningDelta {
+                    text: tail,
+                    parent: tail_parent,
+                }) = queue.back_mut()
+                {
+                    if *tail_parent != parent {
+                        self.inner.stats.dropped.fetch_add(1, Ordering::Relaxed);
+                        return Err(SendError::Saturated(UiEvent::ReasoningDelta {
+                            text,
+                            parent,
+                        }));
+                    }
+                    tail.push_str(&text);
                     self.inner.stats.coalesced.fetch_add(1, Ordering::Relaxed);
                 } else {
                     self.inner.stats.dropped.fetch_add(1, Ordering::Relaxed);
-                    return Err(SendError::Saturated(UiEvent::ReasoningDelta(delta)));
+                    return Err(SendError::Saturated(UiEvent::ReasoningDelta {
+                        text,
+                        parent,
+                    }));
                 }
             }
             ev => {
@@ -294,7 +319,10 @@ mod tests {
     use super::*;
 
     fn delta(s: &str) -> UiEvent {
-        UiEvent::TextDelta(s.into())
+        UiEvent::TextDelta {
+            text: s.into(),
+            parent: None,
+        }
     }
 
     /// Fill the queue to the delta watermark.
@@ -321,7 +349,7 @@ mod tests {
         tx.send(delta("y")).expect("merged");
         let events = drain(&mut rx);
         assert_eq!(events.len(), UI_CHANNEL_CAP);
-        let UiEvent::TextDelta(tail) = events.last().unwrap() else {
+        let UiEvent::TextDelta { text: tail, .. } = events.last().unwrap() else {
             panic!("expected a text delta tail");
         };
         assert_eq!(tail, "xy");
@@ -344,7 +372,10 @@ mod tests {
         // A delta arriving while the tail is a control event cannot merge.
         assert!(matches!(tx.send(delta("late")), Err(SendError::Saturated(_))));
         let events = drain(&mut rx);
-        let control = events.iter().filter(|e| !matches!(e, UiEvent::TextDelta(_))).count();
+        let control = events
+            .iter()
+            .filter(|e| !matches!(e, UiEvent::TextDelta { .. }))
+            .count();
         assert_eq!(control, 11);
         assert!(matches!(events.last().unwrap(), UiEvent::AssistantMessage(t) if t == "done"));
         assert_eq!(rx.stats().dropped, 1);
@@ -364,9 +395,9 @@ mod tests {
         tx.send(UiEvent::StateChanged(agent_ipc::AgentState::Finished)).unwrap();
         let events = drain(&mut rx);
         assert_eq!(events.len(), 4);
-        assert!(matches!(&events[0], UiEvent::TextDelta(t) if t == "a"));
+        assert!(matches!(&events[0], UiEvent::TextDelta { text: t, .. } if t == "a"));
         assert!(matches!(&events[1], UiEvent::ToolCallStarted { name, .. } if name == "read"));
-        assert!(matches!(&events[2], UiEvent::TextDelta(t) if t == "b"));
+        assert!(matches!(&events[2], UiEvent::TextDelta { text: t, .. } if t == "b"));
         assert!(matches!(&events[3], UiEvent::StateChanged(_)));
     }
 
@@ -396,6 +427,39 @@ mod tests {
         tokio::task::yield_now().await;
         tx.send(delta("late")).unwrap();
         let ev = handle.await.unwrap().expect("woken by the doorbell");
-        assert!(matches!(ev, UiEvent::TextDelta(t) if t == "late"));
+        assert!(matches!(ev, UiEvent::TextDelta { text: t, .. } if t == "late"));
+    }
+
+    /// A delegated child's delta must not merge into the turn's draft tail (or
+    /// into another child's) just because both are `TextDelta` — the parent tag
+    /// is part of the merge key.
+    #[tokio::test]
+    async fn deltas_merge_only_within_the_same_parent() {
+        let child = |s: &str| UiEvent::TextDelta {
+            text: s.into(),
+            parent: Some("subagent #1".into()),
+        };
+        let (tx, mut rx) = UiSink::channel();
+        saturate(&tx); // saturated; the tail is the turn's own delta
+
+        // The child's text cannot append to the turn's tail: dropped, not merged.
+        assert!(matches!(tx.send(child("c1")), Err(SendError::Saturated(_))));
+        assert_eq!(rx.stats().dropped, 1);
+
+        // Make room, seed the child's tail, then saturate on that tail: now the
+        // merge key matches, so the child's next deltas coalesce.
+        assert!(rx.try_recv().is_some());
+        tx.send(child("c1")).expect("room for the child's first delta");
+        tx.send(child("c2")).expect("same parent merges");
+        tx.send(child("c3")).expect("same parent merges");
+        tx.send(delta("turn")).expect_err("turn text must not merge into a child's tail");
+
+        let events = drain(&mut rx);
+        let UiEvent::TextDelta { text, parent } = events.last().unwrap() else {
+            panic!("expected the child's delta as the tail: {events:?}");
+        };
+        assert_eq!(parent.as_deref(), Some("subagent #1"));
+        assert!(text.ends_with("c1c2c3"), "{text}");
+        assert_eq!(rx.stats().coalesced, 2);
     }
 }

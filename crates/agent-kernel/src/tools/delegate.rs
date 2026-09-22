@@ -13,6 +13,7 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolSpec};
+use agent_ipc::events::UiEvent;
 use crate::engine::{Engine, EngineIo};
 use crate::permissions::PermissionGate;
 use agent_context::HunkTracker;
@@ -41,6 +42,45 @@ const MAX_SUBAGENT_DEPTH: u8 = 1;
 /// Tasks beyond this are refused — the task enters the child's history and
 /// unbounded text is a token-amplification footgun.
 const MAX_DELEGATE_TASK_BYTES: usize = 32 * 1024;
+/// Parallel `tasks`: the count *is* the concurrency cap, validated before
+/// anything spawns — there is no queue to schedule.
+const MAX_PARALLEL_TASKS: usize = 3;
+/// A parallel batch shares one wall clock (the children run together), so it
+/// gets only a little headroom over a single child's own timeout.
+const PARALLEL_TIMEOUT_SLACK: std::time::Duration = std::time::Duration::from_secs(30);
+/// Cap on the child card's streamed body: the report is model-facing, and a card
+/// that carries a whole report would bloat the UI stream.
+const CHILD_CARD_MAX: usize = 4 * 1024;
+
+/// How one child shows up in the parent's stream.
+fn child_label(agent: Option<&str>, index: usize, total: usize) -> String {
+    match agent {
+        Some(name) => format!("{name} #{}", index + 1),
+        None if total == 1 => "subagent".to_string(),
+        None => format!("subagent #{}", index + 1),
+    }
+}
+
+/// One child card, nested under the `delegate` row — a fan-out reads as N
+/// capsules instead of one silent multi-minute wait. `ok: None` starts the card.
+fn emit_child(parent_ctx: &ToolCtx, label: &str, ok: Option<bool>, body: &str) {
+    let Some(ui) = &parent_ctx.ui_tx else { return };
+    let event = match ok {
+        None => UiEvent::ToolCallStarted {
+            name: label.to_string(),
+            parent: Some("delegate".into()),
+            args_preview: body.chars().take(120).collect(),
+        },
+        Some(ok) => UiEvent::ToolCallFinished {
+            name: label.to_string(),
+            ok,
+            content: body.chars().take(CHILD_CARD_MAX).collect(),
+            ui_type: None,
+            parent: Some("delegate".into()),
+        },
+    };
+    let _ = ui.send(event);
+}
 
 /// Everything `delegate` needs to spawn a child engine — built once per
 /// session and carried on `ToolCtx` so the tool can clone it per call.
@@ -75,6 +115,79 @@ impl SubagentSpawner {
         }
     }
 
+    /// Run 2–3 read-only children at once, input order preserved in the report.
+    ///
+    /// Concurrency is the validated task count ([`MAX_PARALLEL_TASKS`]) — there is
+    /// no queue. One batch cancel flag serves every child: the parent's cancel or
+    /// the batch deadline flips it, which is what actually stops their sandboxed
+    /// work (dropping the futures alone would abandon a running process).
+    async fn run_parallel(
+        &self,
+        parent_ctx: Arc<ToolCtx>,
+        tasks: Vec<String>,
+        agent_prompt: Option<String>,
+        agent_name: Option<String>,
+    ) -> Result<String, String> {
+        let batch_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(parent) = parent_ctx.cancel.clone() {
+            let flag = batch_cancel.clone();
+            tokio::spawn(async move {
+                loop {
+                    if flag.load(std::sync::atomic::Ordering::Relaxed)
+                        || parent.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            });
+        }
+        let deadline = SUBAGENT_TIMEOUT + PARALLEL_TIMEOUT_SLACK;
+        let total = tasks.len();
+        let runs = futures::future::join_all(tasks.iter().cloned().enumerate().map(|(i, task)| {
+            let ctx = parent_ctx.clone();
+            let prompt = agent_prompt.clone();
+            let cancel = batch_cancel.clone();
+            let label = child_label(agent_name.as_deref(), i, total);
+            async move {
+                let started = std::time::Instant::now();
+                let out = self.run(ctx, task, true, prompt, cancel, &label).await;
+                (i, started.elapsed().as_secs_f32(), out)
+            }
+        }));
+        let results = match tokio::time::timeout(deadline, runs).await {
+            Ok(results) => results,
+            Err(_) => {
+                batch_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Err(format!(
+                    "parallel delegation exceeded {}s and was cancelled (each child also has \
+                     its own {}s limit)",
+                    deadline.as_secs(),
+                    SUBAGENT_TIMEOUT.as_secs()
+                ));
+            }
+        };
+        let (mut ok, mut failed) = (0usize, 0usize);
+        let mut body = String::new();
+        for (i, seconds, result) in results {
+            match result {
+                Ok(text) => {
+                    ok += 1;
+                    body.push_str(&format!("\n── [{i}] ok · {seconds:.0}s ──\n{text}\n"));
+                }
+                Err(e) => {
+                    failed += 1;
+                    body.push_str(&format!("\n── [{i}] failed ──\n{e}\n"));
+                }
+            }
+        }
+        Ok(format!(
+            "parallel delegation — {ok} ok, {failed} failed of {} read-only subagents:\n{body}",
+            tasks.len()
+        ))
+    }
+
     /// Run one child turn to completion; the result the parent sees is the
     /// child's final assistant text.
     async fn run(
@@ -85,7 +198,78 @@ impl SubagentSpawner {
         // Custom agent manifest body — replaces SUBAGENT_PROMPT when the
         // caller named a `*.md` agent via `agent`.
         agent_prompt: Option<String>,
+        // Cancellation for this child specifically: the parent's flag for a
+        // single call, the batch's own flag (parent OR deadline) for a fan-out.
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        // Card label in the parent's stream (`review #1`, `subagent`, …).
+        label: &str,
     ) -> Result<String, String> {
+        // Everything the child emits goes through its own sink and is forwarded
+        // into the parent's stream tagged with this child's label — so a fan-out
+        // shows what each child is doing, and drafting, under its own capsule.
+        // `StateChanged` stays local: it is turn-level, and forwarding it would
+        // fight the parent's own state machine.
+        let (child_sink, mut child_rx) = crate::channels::UiSink::channel();
+        // Kept so the child's last deltas land *before* its card is closed —
+        // and so the forwarder stops deterministically once the child is torn
+        // down (the engine holds a sink clone for as long as it lives).
+        let forward_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
+        if let Some(parent_sink) = parent_ctx.ui_tx.clone() {
+            let tag = label.to_string();
+            let stop = forward_stop.clone();
+            forwarder = Some(tokio::spawn(async move {
+                // Drain-then-stop instead of waiting for every sink clone to
+                // drop: the child's engine keeps one alive for its whole
+                // lifetime, so "all senders gone" would never fire.
+                loop {
+                    let Some(ev) = child_rx.try_recv() else {
+                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        continue;
+                    };
+                    {
+                    let forwarded = match ev {
+                        UiEvent::ToolCallStarted {
+                            name, args_preview, ..
+                        } => UiEvent::ToolCallStarted {
+                            name,
+                            args_preview,
+                            parent: Some(tag.clone()),
+                        },
+                        UiEvent::ToolCallFinished {
+                            name,
+                            ok,
+                            content,
+                            ui_type,
+                            ..
+                        } => UiEvent::ToolCallFinished {
+                            name,
+                            ok,
+                            content,
+                            ui_type,
+                            parent: Some(tag.clone()),
+                        },
+                        UiEvent::TextDelta { text, .. } => UiEvent::TextDelta {
+                            text,
+                            parent: Some(tag.clone()),
+                        },
+                        UiEvent::ReasoningDelta { text, .. } => UiEvent::ReasoningDelta {
+                            text,
+                            parent: Some(tag.clone()),
+                        },
+                        // Text/state stay local while this child is the only
+                        // stream on screen; the parent's own reply is not.
+                        _ => continue,
+                    };
+                    let _ = parent_sink.send(forwarded);
+                    }
+                }
+            }));
+        }
+
         // The child shares workspace + sandbox + the parent's cancel flag;
         // it does NOT share session scratch (no session attach → todo-like
         // tools degrade) and cannot delegate further (no spawner).
@@ -93,7 +277,7 @@ impl SubagentSpawner {
             workspace_root: parent_ctx.workspace_root.clone(),
             sandbox: parent_ctx.sandbox.clone(),
             session: None,
-            cancel: parent_ctx.cancel.clone(),
+            cancel: Some(cancel.clone()),
             subagent: None,
             depth: parent_ctx.depth + 1,
             // Subagents are headless — ask_question refuses fast rather
@@ -101,9 +285,7 @@ impl SubagentSpawner {
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             // The child's own engine refreshes this on its first dispatch.
             active_registry: std::sync::RwLock::new(None),
-            // Forward the session's UI channel — a child's internal calls
-            // (batch items) surface in the parent's stream, not hidden.
-            ui_tx: parent_ctx.ui_tx.clone(),
+            ui_tx: Some(child_sink.clone()),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
         };
         let registry = if readonly {
@@ -122,44 +304,59 @@ impl SubagentSpawner {
         engine.set_context_window(self.context_window);
         engine.set_max_tool_rounds(SUBAGENT_TOOL_ROUNDS);
 
-        // Dead UI channel — the child's progress is not streamed to the
-        // frontend in v1. Dropping the receiver is what makes it dead:
-        // `UiSink::send` then fails without buffering anything.
-        let (ui_tx, ui_rx) = crate::channels::UiSink::channel();
-        drop(ui_rx);
+        let ui_tx = child_sink;
         let (_steer_tx, steer_rx) = tokio::sync::mpsc::channel(1);
-        let cancel = parent_ctx
-            .cancel
-            .clone()
-            .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
         let mut io = EngineIo { ui_tx, steer_rx, cancel };
         let system = agent_prompt.unwrap_or_else(|| SUBAGENT_PROMPT.to_string());
+        let task_preview = task.clone();
         let mut history = vec![ChatMessage::system(system)];
         let mut hunks = HunkTracker::new(agent_context::TrackingMode::AgentOnly);
 
         let start = std::time::Instant::now();
-        let outcome = tokio::time::timeout(
+        emit_child(parent_ctx.as_ref(), label, None, &task_preview);
+        let ran = tokio::time::timeout(
             SUBAGENT_TIMEOUT,
             engine.run_turn(&mut io, &mut history, task, &mut hunks),
         )
-        .await
-        .map_err(|_| {
-            format!("subagent exceeded {}s budget", SUBAGENT_TIMEOUT.as_secs())
-        })??;
-        // Attach the run's cost so the parent can budget follow-ups —
-        // opaque bare text hides how much work the child actually did.
-        Ok(format!(
-            "[subagent report — {} tool calls, {:.0}s]\n{}",
-            outcome.tool_calls_run,
-            start.elapsed().as_secs_f32(),
-            outcome.text
-        ))
+        .await;
+        // Attach the run's cost so the parent can budget follow-ups — opaque bare
+        // text hides how much work the child actually did.
+        let report = match ran {
+            Err(_) => Err(format!(
+                "subagent exceeded {}s budget",
+                SUBAGENT_TIMEOUT.as_secs()
+            )),
+            Ok(Err(e)) => Err(format!("{e}")),
+            Ok(Ok(outcome)) => Ok(format!(
+                "[subagent report — {} tool calls, {:.0}s]\n{}",
+                outcome.tool_calls_run,
+                start.elapsed().as_secs_f32(),
+                outcome.text
+            )),
+        };
+        // Close the child's stream first: dropping the engine and io releases
+        // every sink clone, so the forwarder drains and exits, and only then
+        // does the card finish.
+        drop(io);
+        drop(engine);
+        // The child is done producing; the forwarder drains what is queued and
+        // exits, so its last deltas still precede the card's finish.
+        forward_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(task) = forwarder {
+            let _ = task.await;
+        }
+        match &report {
+            Ok(text) => emit_child(parent_ctx.as_ref(), label, Some(true), text),
+            Err(e) => emit_child(parent_ctx.as_ref(), label, Some(false), e),
+        }
+        report
     }
 }
 
 /// One user-defined subagent — a `*.md` manifest under an agents dir.
 /// The file's frontmatter carries `name`/`description`; the body IS the
 /// child's system prompt (same role as [`SUBAGENT_PROMPT`] for the builtin).
+#[derive(Debug)]
 pub struct SubagentInfo {
     pub name: String,
     pub description: String,
@@ -229,10 +426,32 @@ pub const BUILTIN_SUBAGENTS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Agent manifest dirs — workspace first (project agents shadow globals
-/// of the same name), then per-user dirs. Mirrors the skills layout.
-const WORKSPACE_AGENT_DIRS: [&str; 2] = [".pi/agents", ".agents/agents"];
-const GLOBAL_AGENT_DIRS: [&str; 2] = [".pi/agent/agents", ".agents/agents"];
+/// Agent manifest dirs — workspace first (a project agent shadows a global one
+/// of the same name), then user-level. `.husk/agents/` is Husk's own workspace
+/// state dir (next to `.husk/attachments/`); the others are read-only aliases
+/// for trees other tools already write (`.agents/` = agentskills convention,
+/// `.claude/` = Claude Code).
+const WORKSPACE_AGENT_DIRS: [&str; 3] = [".husk/agents", ".agents/agents", ".claude/agents"];
+
+/// Where a project-scoped agent manifest belongs.
+pub fn workspace_agent_dir(root: &Path) -> PathBuf {
+    root.join(WORKSPACE_AGENT_DIRS[0])
+}
+
+/// Where a user-scoped agent manifest belongs — `None` without a config dir.
+pub fn global_agent_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|cfg| cfg.join("husk").join("agents"))
+}
+
+/// User-level agent dirs, highest priority first.
+fn global_agent_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = global_agent_dir().into_iter().collect();
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".agents/agents"));
+        dirs.push(home.join(".claude/agents"));
+    }
+    dirs
+}
 
 /// Scan workspace + user-level agent manifests. Frontmatter is optional —
 /// a bare `name.md` file with no `---` block still registers (name from
@@ -241,9 +460,7 @@ pub fn discover_subagents(root: &Path) -> Vec<SubagentInfo> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     let ws: Vec<PathBuf> = WORKSPACE_AGENT_DIRS.iter().map(|d| root.join(d)).collect();
-    let gl: Vec<PathBuf> = dirs::home_dir()
-        .map(|h| GLOBAL_AGENT_DIRS.iter().map(|d| h.join(d)).collect())
-        .unwrap_or_default();
+    let gl: Vec<PathBuf> = global_agent_dirs();
     for (dirs, global) in [(ws, false), (gl, true)] {
         for base in dirs {
             let Ok(rd) = std::fs::read_dir(&base) else {
@@ -274,6 +491,40 @@ pub fn discover_subagents(root: &Path) -> Vec<SubagentInfo> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// The prompt's agent catalog: discovered manifests first (they shadow same-named
+/// builtins), then the builtins nothing shadows. Without it the model can only
+/// pick names it happens to remember from the tool description, which makes a
+/// user-authored manifest effectively unreachable.
+pub fn catalog(root: &Path) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for sub in discover_subagents(root) {
+        seen.insert(sub.name.to_lowercase());
+        let description = sub.description.trim();
+        lines.push(format!(
+            "- `{}` — {} ({})",
+            sub.name,
+            if description.is_empty() {
+                "(no description)"
+            } else {
+                description
+            },
+            if sub.global { "user" } else { "project" }
+        ));
+    }
+    for (name, description, _) in BUILTIN_SUBAGENTS {
+        if seen.contains(&name.to_lowercase()) {
+            continue;
+        }
+        lines.push(format!("- `{name}` — {description} (built-in)"));
+    }
+    if lines.is_empty() {
+        "(none installed)".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// Resolve one agent name → manifest. File manifests win (a same-named
@@ -322,10 +573,16 @@ fn split_agent(content: &str) -> (Option<String>, Option<String>, String) {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct DelegateArgs {
+    /// One scoped task. Mutually exclusive with `tasks`.
+    #[serde(default)]
+    task: Option<String>,
+    /// 2–3 independent tasks run in parallel — requires `readonly: true`, so one
+    /// approval can never cover several writers.
+    #[serde(default)]
+    tasks: Option<Vec<String>>,
     /// The complete task for the subagent — self-contained: the child sees
     /// no conversation history, only this text plus workspace state.
-    task: String,
-    /// Restrict the child to read-only tools (inspection, research,
+    /// Restrict every child to read-only tools (inspection, research,
     /// verification). Default false — the child may edit and run commands
     /// under the headless gate: readonly/edits/normal-shell auto-approve,
     /// destructive or human-approval operations are denied outright. The
@@ -343,17 +600,16 @@ pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "delegate",
         schema: schema_for::<DelegateArgs>(
-            "Delegate one scoped task to a fresh-context subagent and return its final report.\n\
-             The child gets its own engine + history (none of this conversation), the same\n\
-             workspace, and no `delegate` tool of its own. Use for parallel exploration,\n\
-             isolated reviews, or focused subproblems. `readonly: true` restricts the child\n\
-             to inspection tools. `agent` names a custom `*.md` subagent manifest\n\
-             (workspace `.pi/agents/` or `~/.pi/agent/agents/`) whose body becomes\n\
-             the child's system prompt. Built-in agents: `review` (代码审查),
-\
-             `test` (测试工程), `ui-design` (UI 设计) — a same-named manifest overrides
-\
-             the builtin. Not available in plan mode.",
+            "Delegate scoped tasks to fresh-context subagents and return their reports.\n\
+             A child gets its own engine + history (none of this conversation), the same\n\
+             workspace, and no `delegate` tool of its own. Use for isolated reviews or\n\
+             focused subproblems. `tasks` (2–3 of them) runs them in parallel and requires\n\
+             `readonly: true` — write-capable children run one per call. `readonly` restricts\n\
+             a child to inspection tools. `agent` names a custom `*.md` manifest (workspace\n\
+             `.husk/agents/`, user `~/.config/husk/agents/`; `.agents/agents/` and\n\
+             `.claude/agents/` are read too) whose body becomes the child's system prompt.\n\
+             Built-in agents: `review` (代码审查), `test` (测试工程), `ui-design` (UI 设计) —\n\
+             a same-named manifest overrides the builtin. Not available in plan mode.",
         ),
         // Not readonly: the delegation act itself writes nothing, but a
         // full child may edit — so `default` mode asks once, and `plan`
@@ -365,18 +621,55 @@ pub fn spec() -> ToolSpec {
     }
 }
 
+/// Which form the call uses, after validation. Split out so the rules are
+/// testable without a provider, a child engine, or a workspace.
+fn resolve_tasks(args: &DelegateArgs) -> Result<Vec<String>, String> {
+    let one = |raw: &str, label: &str| -> Result<String, String> {
+        let task = raw.trim();
+        if task.is_empty() {
+            return Err(format!("{label} must be a non-empty instruction"));
+        }
+        if task.len() > MAX_DELEGATE_TASK_BYTES {
+            return Err(format!(
+                "{label} exceeds {MAX_DELEGATE_TASK_BYTES} bytes — scope it down"
+            ));
+        }
+        Ok(task.to_string())
+    };
+    match (args.task.as_deref(), args.tasks.as_deref()) {
+        (Some(_), Some(_)) => Err("pass either `task` (one) or `tasks` (2–3), not both".into()),
+        (None, None) => Err("`task` or `tasks` is required".into()),
+        (Some(task), None) => Ok(vec![one(task, "`task`")?]),
+        (None, Some(list)) => {
+            if list.len() < 2 {
+                return Err(
+                    "`tasks` is for 2–3 parallel subagents — use `task` for a single one".into(),
+                );
+            }
+            if list.len() > MAX_PARALLEL_TASKS {
+                return Err(format!(
+                    "at most {MAX_PARALLEL_TASKS} parallel tasks per call — split the rest"
+                ));
+            }
+            if !args.readonly {
+                return Err(
+                    "parallel `tasks` requires `readonly: true` — write-capable children run \
+                     one per call, because a single approval cannot cover several writers"
+                        .into(),
+                );
+            }
+            list.iter()
+                .enumerate()
+                .map(|(i, raw)| one(raw, &format!("task #{}", i + 1)))
+                .collect()
+        }
+    }
+}
+
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let parsed: DelegateArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(e.to_string()))?;
-    let task = parsed.task.trim().to_string();
-    if task.is_empty() {
-        return Err(ToolError::Args("`task` must be a non-empty instruction".into()));
-    }
-    if task.len() > MAX_DELEGATE_TASK_BYTES {
-        return Err(ToolError::Args(format!(
-            "`task` exceeds {MAX_DELEGATE_TASK_BYTES} bytes — scope it down"
-        )));
-    }
+    let tasks = resolve_tasks(&parsed).map_err(ToolError::Args)?;
     if ctx.depth >= MAX_SUBAGENT_DEPTH {
         return Err(ToolError::Failed(
             "delegation depth limit reached — a subagent cannot delegate".into(),
@@ -387,7 +680,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             "delegation unavailable in this context".into(),
         ));
     };
-    let agent_prompt = parsed
+    let resolved = parsed
         .agent
         .as_deref()
         .map(|n| {
@@ -395,14 +688,114 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 .ok_or_else(|| format!("subagent `{n}` not found in agent dirs"))
         })
         .transpose()
-        .map_err(ToolError::Failed)?
-        .map(|s| s.prompt);
-    let text = spawner
-        .run(ctx, task, parsed.readonly, agent_prompt)
-        .await
         .map_err(ToolError::Failed)?;
+    let agent_name = resolved.as_ref().map(|s| s.name.clone());
+    let agent_prompt = resolved.map(|s| s.prompt);
+    // Single-child calls inherit the parent's cancel flag; a parallel batch gets
+    // its own flag so the batch can also stop on its own deadline.
+    let cancel = ctx
+        .cancel
+        .clone()
+        .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let text = if tasks.len() == 1 {
+        let label = child_label(agent_name.as_deref(), 0, 1);
+        spawner
+            .run(ctx, tasks[0].clone(), parsed.readonly, agent_prompt, cancel, &label)
+            .await
+            .map_err(ToolError::Failed)?
+    } else {
+        spawner
+            .run_parallel(ctx, tasks, agent_prompt, agent_name)
+            .await
+            .map_err(ToolError::Failed)?
+    };
     if text.is_empty() {
         return Ok(ToolResult::text("(subagent finished with no report)"));
     }
     Ok(ToolResult::text(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(task: Option<&str>, tasks: Option<&[&str]>, readonly: bool) -> DelegateArgs {
+        DelegateArgs {
+            task: task.map(str::to_string),
+            tasks: tasks.map(|list| list.iter().map(|t| t.to_string()).collect()),
+            readonly,
+            agent: None,
+        }
+    }
+
+    #[test]
+    fn one_form_only_and_it_must_carry_an_instruction() {
+        assert!(resolve_tasks(&args(None, None, false)).is_err());
+        assert!(resolve_tasks(&args(Some("  "), None, false)).is_err());
+        assert!(resolve_tasks(&args(Some("a"), Some(&["b"]), true)).is_err());
+        assert_eq!(
+            resolve_tasks(&args(Some("  go  "), None, false)).unwrap(),
+            vec!["go"]
+        );
+    }
+
+    /// Parallel children are read-only by construction: one approval cannot
+    /// cover several writers, so `tasks` without `readonly: true` is refused
+    /// before anything spawns.
+    #[test]
+    fn parallel_tasks_require_readonly_and_respect_the_cap() {
+        let two = ["a", "b"];
+        let err = resolve_tasks(&args(None, Some(&two), false)).unwrap_err();
+        assert!(err.contains("readonly: true"), "{err}");
+        assert_eq!(resolve_tasks(&args(None, Some(&two), true)).unwrap().len(), 2);
+
+        let err = resolve_tasks(&args(None, Some(&["one"]), true)).unwrap_err();
+        assert!(err.contains("`task`"), "{err}");
+        let err = resolve_tasks(&args(None, Some(&["a", "b", "c", "d"]), true)).unwrap_err();
+        assert!(err.contains("at most 3"), "{err}");
+        assert!(resolve_tasks(&args(None, Some(&["ok", "  "]), true)).is_err());
+    }
+
+    /// The catalog has to list what `agent:` can resolve — builtins, plus a
+    /// project manifest that shadows one.
+    #[test]
+    fn catalog_lists_builtins_and_shadowing_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = catalog(dir.path());
+        assert!(bare.contains("`review`"), "{bare}");
+        assert!(bare.contains("(built-in)"), "{bare}");
+
+        let ws = workspace_agent_dir(dir.path());
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("review.md"),
+            "---\nname: review\ndescription: our own reviewer\n---\n\nHUNT\n",
+        )
+        .unwrap();
+        let with_manifest = catalog(dir.path());
+        assert!(with_manifest.contains("our own reviewer"), "{with_manifest}");
+        assert!(with_manifest.contains("(project)"), "{with_manifest}");
+        assert_eq!(with_manifest.matches("`review`").count(), 1, "{with_manifest}");
+    }
+
+    /// Manifests live in Husk's own dirs; the project one wins over the same
+    /// name elsewhere (no writes to `$HOME` in this test).
+    #[test]
+    fn project_agents_shadow_and_dirs_are_husk_owned() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = workspace_agent_dir(dir.path());
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("shadow.md"),
+            "---\nname: shadow\ndescription: project\n---\n\nPROJECT\n",
+        )
+        .unwrap();
+        let found = discover_subagents(dir.path());
+        let hits: Vec<&SubagentInfo> = found.iter().filter(|s| s.name == "shadow").collect();
+        assert_eq!(hits.len(), 1, "{found:?}");
+        assert!(!hits[0].global);
+        assert!(ws.ends_with(".husk/agents"), "{ws:?}");
+        let global = global_agent_dir().expect("config dir");
+        assert!(global.ends_with("husk/agents"), "{global:?}");
+    }
 }

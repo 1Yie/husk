@@ -53,15 +53,114 @@ struct ItemOut {
 struct BatchCall {
     /// Tool name — must be an observation tool (read_file, list_dir,
     /// smart_grep, web_fetch…). Mutations, delegation, questions, session
-    /// state, and control signals are rejected per-item.
+    /// state, and control signals are rejected per-item. `name`/`tool_name`
+    /// are accepted because models reach for them.
+    #[serde(alias = "name", alias = "tool_name")]
     tool: String,
-    /// Arguments for that tool, same shape as a direct call.
-    #[serde(default)]
+    /// Arguments for that tool, same shape as a direct call. `arguments` is
+    /// accepted as an alias (the MCP spelling).
+    #[serde(default, alias = "arguments")]
     args: serde_json::Value,
+    /// Argument keys written inline instead of under `args`
+    /// (`{"tool":"smart_read","path":"…"}`) — absorbed by [`BatchCall::normalized`].
+    #[serde(flatten)]
+    inline: serde_json::Map<String, serde_json::Value>,
+}
+
+impl BatchCall {
+    /// Fold inline keys into `args`: the flattened form is the second thing
+    /// every model tries, and rejecting it costs a whole turn.
+    fn normalized(mut self) -> Self {
+        if self.inline.is_empty() {
+            return self;
+        }
+        let inline = std::mem::take(&mut self.inline);
+        match &mut self.args {
+            serde_json::Value::Null => self.args = serde_json::Value::Object(inline),
+            serde_json::Value::Object(map) => {
+                for (key, value) in inline {
+                    // An explicit `args` entry wins over an inline duplicate.
+                    map.entry(key).or_insert(value);
+                }
+            }
+            _ => {}
+        }
+        self
+    }
+}
+
+/// One `calls[]` entry after lenient parsing.
+#[derive(Debug)]
+enum ParsedItem {
+    Call(BatchCall),
+    /// Unparseable — reported as that item's rejection instead of failing the
+    /// whole batch, and named from whatever the item did carry.
+    Bad { name: String, reason: String },
+}
+
+/// The documented shape, quoted back at the model when an item makes no sense.
+const SHAPE_HINT: &str = "`{calls: [{tool, args}]}` — e.g. \
+{\"calls\":[{\"tool\":\"smart_read\",\"args\":{\"path\":\"src/lib.rs\"}}]} \
+(`args` may be omitted and its keys written inline next to `tool`)";
+
+fn json_kind(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
+/// Parse `{calls: […]}` leniently: the strict derive first, and anything it
+/// rejects becomes a per-item failure that quotes what arrived.
+fn parse_items(args: serde_json::Value) -> Result<Vec<ParsedItem>, ToolError> {
+    let raw = args.get("calls").cloned().ok_or_else(|| {
+        ToolError::Args(format!(
+            "batch_execute args: missing field `calls`\nExpected {SHAPE_HINT}"
+        ))
+    })?;
+    let items = raw.as_array().cloned().ok_or_else(|| {
+        ToolError::Args(format!(
+            "batch_execute args: `calls` must be an array, got {}\nExpected {SHAPE_HINT}",
+            json_kind(&raw)
+        ))
+    })?;
+    Ok(items
+        .into_iter()
+        .map(|item| match serde_json::from_value::<BatchCall>(item.clone()) {
+            Ok(call) => ParsedItem::Call(call.normalized()),
+            Err(e) => {
+                let name = ["tool", "name", "tool_name"]
+                    .iter()
+                    .find_map(|k| item.get(k).and_then(|v| v.as_str()))
+                    .unwrap_or("(unnamed)")
+                    .to_string();
+                let mut shown = item.to_string();
+                if shown.len() > 160 {
+                    shown.truncate(shown.floor_char_boundary(160));
+                    shown.push('…');
+                }
+                ParsedItem::Bad {
+                    name,
+                    reason: format!(
+                        "item could not be parsed ({e}); got {shown} — expected \
+                         {{tool, args}} with `tool` naming an Observation tool"
+                    ),
+                }
+            }
+        })
+        .collect())
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct BatchArgs {
+    /// Read only by `schema_for` — runtime parsing goes through `parse_items`,
+    /// which is lenient about the shapes models actually emit.
+    #[allow(dead_code)]
+
     /// Up to 16 independent calls — results come back in THIS order.
     calls: Vec<BatchCall>,
 }
@@ -92,12 +191,11 @@ fn is_batchable(spec: &ToolSpec) -> bool {
 }
 
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
-    let parsed: BatchArgs = serde_json::from_value(args)
-        .map_err(|e| ToolError::Args(e.to_string()))?;
-    if parsed.calls.is_empty() {
+    let items = parse_items(args)?;
+    if items.is_empty() {
         return Err(ToolError::Args("`calls` must not be empty".into()));
     }
-    if parsed.calls.len() > MAX_BATCH_CALLS {
+    if items.len() > MAX_BATCH_CALLS {
         return Err(ToolError::Args(format!(
             "at most {MAX_BATCH_CALLS} calls per batch — split the rest"
         )));
@@ -114,14 +212,25 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     // per-item rejection instead of silently queueing.
     let mut network_used = 0usize;
     let mut eligible_flags: Vec<Result<Arc<ToolSpec>, String>> =
-        Vec::with_capacity(parsed.calls.len());
-    for call in &parsed.calls {
+        Vec::with_capacity(items.len());
+    for item in &items {
+        let ParsedItem::Call(call) = item else {
+            let ParsedItem::Bad { reason, .. } = item else {
+                unreachable!()
+            };
+            eligible_flags.push(Err(reason.clone()));
+            continue;
+        };
         match registry.spec(&call.tool) {
-            None => eligible_flags.push(Err("unknown tool".into())),
+            None => eligible_flags.push(Err(format!(
+                "unknown tool `{}` — not in the active registry",
+                call.tool
+            ))),
             Some(spec) if !is_batchable(&spec) => {
-                eligible_flags.push(Err(
-                    "not batchable — only Observation tools run in a batch".into(),
-                ))
+                eligible_flags.push(Err(format!(
+                    "`{}` is not batchable — only Observation tools run in a batch",
+                    call.tool
+                )))
             }
             Some(spec) if spec.network => {
                 network_used += 1;
@@ -162,16 +271,18 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     }
 
     let started = Instant::now();
-    let streams = parsed
-        .calls
+    let streams = items
         .into_iter()
         .zip(eligible_flags)
         .enumerate()
-        .map(|(i, (call, flag))| {
+        .map(|(i, (item, flag))| {
             let ctx = ctx.clone();
             let batch_cancel = budget.cancel.clone();
             let deadline = budget.deadline;
-            let tool = call.tool.clone();
+            let (tool, call_args) = match item {
+                ParsedItem::Call(call) => (call.tool, call.args),
+                ParsedItem::Bad { name, .. } => (name, serde_json::Value::Null),
+            };
             async move {
                 let t0 = Instant::now();
                 let out = match flag {
@@ -192,11 +303,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                 // Nested — the UI renders this under the
                                 // batch_execute capsule, not top-level.
                                 parent: Some("batch_execute".into()),
-                                args_preview: call
-                                    .args
+                                args_preview: call_args
                                     .get("path")
-                                    .or_else(|| call.args.get("pattern"))
-                                    .or_else(|| call.args.get("url"))
+                                    .or_else(|| call_args.get("pattern"))
+                                    .or_else(|| call_args.get("url"))
                                     .and_then(|v| v.as_str())
                                     .unwrap_or_default()
                                     .chars()
@@ -205,7 +315,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                             });
                         }
                         let remaining = deadline.saturating_duration_since(Instant::now());
-                        let run = (spec.exec)(call.args, item_ctx);
+                        let run = (spec.exec)(call_args, item_ctx);
                         let out = match tokio::time::timeout(remaining, run).await {
                             Err(_) => ItemOut {
                                 tool: tool.clone(),
@@ -335,6 +445,90 @@ mod tests {
             let spec = reg.spec(name).unwrap_or_else(|| panic!("{name} missing"));
             assert_eq!(is_batchable(&spec), want, "{name}");
         }
+    }
+
+    /// Every shape a model reaches for must land as a usable call — the old
+    /// strict derive failed the whole batch with a bare `missing field \`tool\``.
+    #[test]
+    fn item_shapes_the_model_writes_all_parse() {
+        let items = parse_items(serde_json::json!({"calls": [
+            {"tool": "smart_read", "args": {"path": "a.rs"}},
+            {"name": "list_dir", "arguments": {"path": "."}},
+            {"tool_name": "smart_grep", "pattern": "TODO"},
+            {"tool": "smart_read", "path": "b.rs", "start": 3}
+        ]}))
+        .unwrap();
+        assert_eq!(items.len(), 4);
+        for item in &items {
+            let ParsedItem::Call(call) = item else {
+                panic!("unparsed: {item:?}")
+            };
+            assert!(!call.tool.is_empty());
+            assert!(
+                call.args.is_object(),
+                "{} args not normalized: {:?}",
+                call.tool,
+                call.args
+            );
+        }
+        let ParsedItem::Call(grep) = &items[2] else { unreachable!() };
+        assert_eq!(grep.args["pattern"], "TODO", "inline keys must survive");
+    }
+
+    #[test]
+    fn a_bad_item_is_rejected_alone_with_the_expected_shape() {
+        let items = parse_items(serde_json::json!({"calls": [
+            {"tool": "list_dir", "args": {"path": "."}},
+            {"path": "orphan.rs"},
+            7
+        ]}))
+        .unwrap();
+        assert!(matches!(items[0], ParsedItem::Call(_)));
+        let ParsedItem::Bad { name, reason } = &items[1] else {
+            panic!("expected a rejected item")
+        };
+        assert_eq!(name, "(unnamed)");
+        assert!(reason.contains("tool"), "{reason}");
+        assert!(matches!(items[2], ParsedItem::Bad { .. }));
+    }
+
+    #[test]
+    fn a_missing_or_non_array_calls_field_names_the_shape() {
+        let e = format!("{}", parse_items(serde_json::json!({})).unwrap_err());
+        assert!(e.contains("missing field `calls`"), "{e}");
+        assert!(e.contains("{calls:"), "{e}");
+        let e = format!(
+            "{}",
+            parse_items(serde_json::json!({"calls": {}})).unwrap_err()
+        );
+        assert!(e.contains("must be an array"), "{e}");
+    }
+
+    /// End-to-end through the real dispatch: good items run, the shapeless one
+    /// is rejected alone, and the batch still reports every section.
+    #[tokio::test]
+    async fn a_real_batch_runs_and_isolates_a_shapeless_item() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+        let mut ctx = ToolCtx::new(dir.path());
+        ctx.active_registry = std::sync::RwLock::new(Some(Arc::new(
+            crate::tools::registry::ToolRegistry::with_builtins(),
+        )));
+        let out = exec(
+            serde_json::json!({"calls": [
+                {"tool": "list_dir", "args": {"path": "."}},
+                {"name": "smart_read", "arguments": {"path": "a.rs"}},
+                {"path": "orphan.rs"}
+            ]}),
+            Arc::new(ctx),
+        )
+        .await
+        .expect("a bad item must not fail the batch");
+        let text = out.content;
+        assert!(text.contains("list_dir (ok"), "{text}");
+        assert!(text.contains("smart_read (ok"), "{text}");
+        assert!(text.contains("rejected"), "{text}");
+        assert!(text.contains("could not be parsed"), "{text}");
     }
 
     #[test]
