@@ -1567,7 +1567,9 @@ function ComposerTextarea({
             streaming ? "插入指示引导生成 (Steer)…" : "输入消息… @ 引用文件 · / 命令 · $ 技能"
           }
           rows={1}
-          className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent text-transparent caret-neutral-800 selection:bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)]"
+          // `dark:bg-transparent` is load-bearing: the base Textarea carries an opaque
+          // dark surface, and a plain `bg-transparent` cannot cancel a `dark:` variant.
+          className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent dark:bg-transparent text-transparent caret-neutral-800 selection:bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)]"
         />
       {menuPoint && (
         <ComposerMenu

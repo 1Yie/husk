@@ -49,3 +49,5 @@ export const SURFACE_CONTROL_HOVER = "hover:bg-neutral-100 dark:hover:bg-[var(--
 /** Form controls (input, textarea, quiet buttons): a visible well on both themes.
  *  `bg-transparent` left them identical to the page background in dark mode. */
 export const SURFACE_INPUT = "bg-white dark:bg-[var(--husk-card)] border-hairline";
+// To override this, cancel the same variant (`bg-transparent dark:bg-transparent`);
+// a plain `bg-transparent` leaves the dark surface in place.
