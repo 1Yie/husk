@@ -124,15 +124,13 @@ pub trait LlmProvider: Send + Sync {
         Capabilities::all()
     }
 
-    /// Whether this provider consumes structured `tool_calls` on the wire
-    /// (OpenAI `function`/`function_call`, Anthropic `tool_use`).
+    /// Whether this provider consumes structured `tool_calls` on the wire (OpenAI
+    /// `function_call`, Anthropic `tool_use`).
     ///
-    /// `true` (default) — the kernel keeps `ChatMessage::tool_calls`
-    /// structured and the adapter serializes them natively. `false` — a
-    /// text-protocol provider that only understands inline `[call: …]`
-    /// echoes; the kernel's sanitize step then flattens tool_calls into
-    /// message text instead. Without this branch, flattening a *native*
-    /// provider's tool_calls orphans its `Role::Tool` results (P1-b).
+    /// `false` marks a text-protocol provider that only understands inline
+    /// `[call: …]` echoes; the sanitize step then flattens `tool_calls` into message
+    /// text. Flattening a native provider's `tool_calls` would orphan its
+    /// `Role::Tool` results (P1-b).
     fn native_tool_calls(&self) -> bool {
         self.capabilities().native_tool_calls
     }

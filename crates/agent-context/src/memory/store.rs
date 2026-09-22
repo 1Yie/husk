@@ -1,17 +1,12 @@
 //! `memory/store.rs` — hierarchical memory persistence.
 //!
-//! Contract (capability-roadmap.md §1): layers = working / session /
-//! episodic / semantic / persona, partitioned per workspace by
-//! `hash(canonical_root)`. LibSQL + FastEmbed is the spec target; this
-//! implementation uses redb (pure-Rust embedded KV) + a deterministic
-//! hash-embedding so the zero-C single-binary constraint holds, behind an
-//! API that mirrors the LibSQL semantics (facts + episodes + persona +
-//! top-k recall).
+//! Layers: working / session / episodic / semantic / persona, partitioned per
+//! workspace by `hash(canonical_root)`. redb plus a deterministic hash-embedding stand
+//! in for the spec's LibSQL + FastEmbed, keeping the single-binary constraint, behind an
+//! API that mirrors those semantics (facts + episodes + persona + top-k recall).
 //!
-//! Write path (distiller): summarize → extract facts → dedupe
-//! (`cosine > 0.92` merge) → write episode + facts.
-//! Read path: embed prompt → top-k (k=8) facts + last-3 episodes →
-//! `<memory>` block ≤2 KB.
+//! Write path: summarize → extract facts → dedupe (`cosine > 0.92` merges). Read path:
+//! embed prompt → top-8 facts + last 3 episodes → a `<memory>` block ≤2 KB.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -24,7 +19,7 @@ const FACTS: TableDefinition<u64, &[u8]> = TableDefinition::new("facts");
 const EPISODES: TableDefinition<u64, &[u8]> = TableDefinition::new("episodes");
 /// persona table: `key -> value` (JSON string).
 const PERSONA: TableDefinition<&str, &[u8]> = TableDefinition::new("persona");
-/// meta table: `key -> value` — `schema_version`, future migrations stamp here.
+/// meta table: `key -> value` — `schema_version` and migration stamps.
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 /// Current schema version — bump when a table changes; the open path runs
@@ -38,7 +33,7 @@ pub struct Fact {
     pub id: u64,
     pub workspace_id: u64,
     pub text: String,
-    /// `f32` embedding (hash-embed for now; FastEmbed behind a feature later).
+    /// `f32` embedding — a deterministic hash-embed.
     pub embedding: Vec<f32>,
     /// `0.0..=1.0` — corrections seed 0.6; repeated confirmation raises.
     pub confidence: f32,

@@ -1,9 +1,7 @@
 //! Event forwarder — drains `SessionManager::event_rx` (the tagged
-//! `(workspace_root, session_id, UiEvent)` queue) and emits each as
-//! `agent://event`. One thread for the app lifetime; the webview listener
-//! routes by root + session id from the `{ root, session, event }`
-//! envelope — session ids are per-workspace, the root keeps a parked
-//! workspace's still-running actors from colliding with the active one's.
+//! `(workspace_root, session_id, UiEvent)` queue) and emits each as `agent://event`
+//! with a `{ root, session, event }` envelope. Session ids are per-workspace, so the
+//! root is what keeps a parked workspace's actors from colliding with the active one.
 
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};

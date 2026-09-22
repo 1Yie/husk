@@ -1,18 +1,14 @@
 //! `skill` — the agent-facing adapter over the skill backend.
 //!
-//! Everything real (discovery, loading, rendering, caching) lives in
-//! [`crate::skills`]; this file is only the tool contract: args in, a framed
-//! instruction block out. Progressive disclosure is the point — the system
-//! prompt carries a catalog (name + clipped description), the body is fetched
-//! here, on demand, when the model decides a skill fits the task. Inlining
-//! every body would cost ~80k tokens on a normal machine.
+//! Discovery, loading, rendering and caching live in [`crate::skills`]; this file
+//! is only the tool contract: args in, framed instructions out. The prompt carries
+//! a catalog (name + clipped description) and a body is fetched on demand —
+//! inlining every body would cost tens of thousands of tokens per turn.
 //!
-//! Read-only: it reads instruction files, never the workspace, so it is
-//! auto-approved. That is also the whole security story: **loading a skill
-//! grants nothing.** The text lands in the turn as instructions, and every
-//! action it asks for still goes through Tool → Capability → Policy → Audit →
-//! Approval like any other call. A malicious SKILL.md can try to talk the model
-//! into something; it cannot widen a tool's permissions.
+//! Read-only and auto-approved: it reads instruction files, never the workspace.
+//! Loading a skill grants nothing — the text lands as instructions, and every
+//! action it asks for still goes through the normal tool policy.
+
 
 use std::sync::Arc;
 

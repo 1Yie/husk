@@ -1,13 +1,12 @@
-//! Shell AST — a lightweight parser that understands command *structure*,
-//! not safety. It answers "what did this shell text syntactically do":
-//! commands, arguments, pipelines, redirections, logical operators, command
-//! substitution, subshells, background. Safety decisions belong to the
-//! capability extractor + policy layers, never to the parser.
+//! Shell AST — a lightweight parser that understands command *structure*, not
+//! safety: commands, arguments, pipelines, redirections, operators, command
+//! substitution, subshells, background. Safety decisions belong to the capability
+//! extractor and the policy layers, never to the parser.
 //!
-//! Deliberately zero-dependency (Principle 1) — a hand-rolled tokenizer +
-//! recursive-descent parser over the POSIX-ish subset agents actually emit.
-//! It is not a full bash grammar; unparseable fragments degrade to a raw
-//! `Simple` command carrying the literal text so downstream still sees it.
+//! Zero-dependency, hand-rolled tokenizer + recursive-descent parser over the
+//! POSIX-ish subset agents emit. Unparseable fragments degrade to a raw `Simple`
+//! command carrying the literal text, so downstream still sees them.
+
 
 /// A parsed command line — the root is a list of `&&`/`||`/`;`-joined
 /// pipelines (`And`/`Or`/`Seq`), each pipeline a `Pipe` of `Command`s.

@@ -1,14 +1,14 @@
 //! `fuzzy_patch` — search/replace blocks, never diffs, never rewrites.
 //!
-//! Match pipeline (native-tools.md, ordered, first success wins):
+//! Match pipeline, ordered, first success wins:
 //! 1. Normalize `\r\n`→`\n` on source and both blocks.
-//! 2. Exact match: 1 hit → apply; >1 → error that *teaches* ("matched N
-//!    locations — add surrounding context lines"); 0 → tier 3.
-//! 3. Whitespace-tolerant: per-line trim-normalized match.
-//! 4. Fuzzy (last resort): sliding-window similarity ≥0.9 — flagged in the
-//!    result so the approval card can say "matched approximately".
-//! 5. `expected_hash` checked **before** any match attempt — stale-context
-//!    writes are a top corruption source.
+//! 2. Exact match: 1 hit applies; >1 errors with guidance; 0 falls through.
+//! 3. Per-line whitespace-tolerant match.
+//! 4. Last resort: sliding-window similarity ≥0.9, flagged in the result so the
+//!    approval card can say "matched approximately".
+//! 5. `expected_hash` is checked before any match attempt — stale context is the
+//!    top source of corrupted writes.
+
 
 use std::sync::Arc;
 
@@ -78,7 +78,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 
     let res = apply(&source, &parsed.search, &parsed.replace)?;
 
-    // P1-c: the tool no longer writes — it returns `patched_content` as a
+    // The tool does not write — it returns `patched_content` as a
     // `PendingWrite` and the ENGINE commits it after the permission decision.
     // This makes the side effect explicit, keeps the fuzzy flag honest on
     // the approval card, and lets the engine record the hunk in one step

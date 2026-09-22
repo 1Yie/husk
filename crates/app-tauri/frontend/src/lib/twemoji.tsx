@@ -8,8 +8,8 @@ interface TwemojiItemProps {
 
 /**
  * Individual Twemoji image with automatic fallback.
- * If the SVG fails to load (offline, network error, or missing glyph),
- * it seamlessly falls back to the native unicode emoji text so no broken '?' icon appears.
+ * Falls back to the native unicode emoji when the SVG fails to load (offline or a
+ * missing glyph), so no broken '?' icon appears.
  */
 export function TwemojiItem({ match, codePoint }: TwemojiItemProps) {
   const [failed, setFailed] = useState(false);
@@ -32,7 +32,7 @@ export function TwemojiItem({ match, codePoint }: TwemojiItemProps) {
 
 /**
  * Parses a string or React children to replace unicode emoji characters
- * with sharp, unified Twemoji SVG elements, with graceful fallback to native text.
+ * with Twemoji SVG elements, falling back to native text when an image is unavailable.
  */
 export function renderWithTwemoji(node: React.ReactNode): React.ReactNode {
   if (node == null) return node;

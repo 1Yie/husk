@@ -1,12 +1,9 @@
 //! The two event enums that cross the kernel↔frontend channel.
 //!
-//! Serialization is for the *wire* (app-cli/headless, future mesh); in-process
-//! iced usage moves the same enums over `tokio::mpsc` — one contract, both
-//! transports.
-//!
-//! `AgentEvent` (sampler→session internal feedback) is deliberately NOT here:
-//! it's kernel-internal, carries `agent_llm::StreamChunk`, and never crosses
-//! a transport — see `agent-kernel/src/channels.rs`.
+//! `AgentEvent` (sampler→session feedback) is kernel-internal, carries
+//! `agent_llm::StreamChunk` and never crosses a transport — see
+//! `agent-kernel/src/channels.rs`.
+
 
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +19,7 @@ pub enum AgentState {
     StreamingToken,
     /// A write/destructive tool is paused for user review.
     AwaitingToolConfirmation { tool_name: String, diff_summary: String },
-    /// A plugin wants a capability beyond its manifest (Stage 9).
+    /// A plugin wants a capability beyond its manifest.
     AwaitingPluginConsent { plugin_id: String, capability: String },
     /// P2: generalizes tool/plugin/capture approvals.
     AwaitingConsent { kind: String },
@@ -105,7 +102,7 @@ pub enum UiCommand {
     SetAgentMode { mode: String },
     /// Set the thinking/reasoning effort level (e.g. "off", "low", "medium", "high", "max").
     SetThinkingLevel { level: String },
-    /// Undo/rewind the last-turn hunk set (Stage 6 wires HunkTracker).
+    /// Undo/rewind the last turn's hunk set.
     UndoLastTurn,
     /// Regenerate the last turn — the session rewinds `history` to the
     /// last user prompt's position and re-runs it through the normal

@@ -10,11 +10,10 @@
 //! | `content_block_delta.input_json_delta`      | `ToolCallDelta{args_delta}`         |
 //! | `message_delta`/`message_stop` + usage      | `Done{prompt,completion,cached}`    |
 //!
-//! Request notes: `system` is a top-level field (never a message); tool
-//! results fold back in as `tool_result` blocks inside a `user` message —
-//! consecutive `Role::Tool` history coalesces into ONE user message, the
-//! only shape Anthropic accepts after a `tool_use` turn. `max_tokens` is
-//! mandatory; `thinking` is enabled via `reasoning_effort` → budget map.
+//! Request notes: `system` is a top-level field, and tool results fold back as
+//! `tool_result` blocks in a `user` message — consecutive `Role::Tool` history
+//! coalesces into one, the only shape Anthropic accepts after a `tool_use` turn.
+//! `max_tokens` is mandatory; `reasoning_effort` maps to a thinking budget.
 
 use async_trait::async_trait;
 use futures::StreamExt;

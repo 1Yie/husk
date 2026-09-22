@@ -1,18 +1,10 @@
 //! `ToolSpec` + dispatch — one registry for built-ins and plugin tools.
 //!
-//! Contract (kernel-architecture.md §Tool registry):
-//!
-//! ```text
-//! pub struct ToolSpec {
-//!     pub name: &'static str,
-//!     pub schema: serde_json::Value,   // JSON Schema for the LLM
-//!     pub readonly: bool,             // skips confirmation in `default` mode
-//!     pub exec: fn(Args, &ToolCtx) -> BoxFuture<ToolResult>,
-//! }
-//! ```
-//!
-//! Plugin tools merge here under `plugin_id:name` (Stage 9). The registry
-//! produces the `tools` array for the LLM request and dispatches by name.
+//! A spec carries the name, the JSON Schema sent to the model, the `readonly`
+//! flag (skips confirmation in `default` mode) and the exec fn. The registry
+//! produces the request's `tools` array and dispatches by name; plugin tools
+//! merge in under `plugin_id:name` (Stage 9).
+
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

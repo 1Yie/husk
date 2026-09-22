@@ -1,18 +1,14 @@
 //! `AgentState` machine + the ReAct turn loop.
 //!
-//! Transitions (kernel-architecture.md §AgentState):
-//!
 //! ```text
 //! Idle→ScanningWorkspace→Reasoning→StreamingToken
 //!     →{Finished | AwaitingToolConfirmation→ExecutingTool→Reasoning}
 //! ```
 //!
-//! `Failed` is terminal per turn, not per session.
-//!
-//! Turn loop: sample → collect text + tool calls → execute each tool →
-//! append results as a `tool` message → re-sample, until a turn ends with
-//! no pending tool calls. Permission gating inserts `AwaitingToolConfirmation`
-//! between "tool call arrived" and "tool executes".
+//! `Failed` is terminal per turn, not per session. The loop samples, runs the
+//! returned tool calls, appends their results as `tool` messages and re-samples
+//! until a turn ends with none pending.
+
 
 use std::collections::VecDeque;
 use std::sync::Arc;

@@ -74,9 +74,8 @@ pub enum EnvironmentPolicy {
     /// plain commands keep it too (a `make` can invoke `cargo` internally
     /// — detection can't see inside build scripts).
     DevToolchain,
-    /// Only the named toolchains — strict mode for future callers that
-    /// trust their capability detection end-to-end. `Vec` of lowercase
-    /// toolchain names (`"node"`, `"bun"`, `"rust"`).
+    /// Only the named toolchains — strict mode. `Vec` of lowercase toolchain
+    /// names (`"node"`, `"bun"`, `"rust"`).
     Select(Vec<String>),
 }
 

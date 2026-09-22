@@ -1,26 +1,19 @@
 //! `linux_bwrap.rs` — bubblewrap backend (primary on Linux).
 //!
-//! Sandboxing model:
-//! 1. Base system libraries and binaries (/usr, /lib, /bin, /lib64, /opt, /snap) are mounted read-only.
-//! 2. Essential system configuration (/etc/ssl, /etc/pki, /etc/hosts, /etc/passwd, /etc/ld.so.cache,
-//!    /etc/alternatives, etc.) is mounted read-only so that dynamic linking, TLS/HTTPS, DNS resolution,
-//!    and system alternatives work seamlessly.
-//! 3. Process-isolated /tmp (tmpfs) is mounted read-write, with /var/tmp symlinked, enabling temporary
-//!    file creation by runtimes (bun, node, python, gcc, etc.).
-//! 4. System and user development environments (bun, volta, cargo, rustup, nvm, fnm, deno, pnpm,
-//!    python/pyenv, conda, go, sdkman, and tools from PATH) are discovered and mounted read-only.
-//! 5. Sensitive credentials and secrets (.ssh, .gnupg, .aws, .cargo/credentials*, .npmrc,
-//!    agent-harness auth/session state, etc.) are masked with /dev/null or omitted entirely.
-//!    A masked path stays visible as a device node in listings — the content is what is
-//!    withheld, not the name.
-//! 6. Toolchain cache environment variables (BUN_INSTALL_CACHE_DIR, npm_config_cache, etc.) are
-//!    redirected to /tmp to prevent EROFS errors while keeping host caches immutable.
-//! 7. The agent's own user-level skill roots are mounted read-only (callers pass them in
-//!    `extra_ro_mounts`): skills live outside the workspace, so without them a sandboxed
-//!    command could not open the sibling files a skill references. A PATH entry's
-//!    `<root>/bin` expands to `<root>` only for real SDK roots — hidden HOME entries are
-//!    agent/tool state and get their `bin` alone.
-//! 8. The workspace is mounted read-write last, ensuring workspace access takes precedence.
+//! 1. System libraries, binaries and essential config (`/usr`, `/lib`, `/bin`,
+//!    `/etc/ssl`, `/etc/passwd`, `/etc/ld.so.cache`, …) are mounted read-only so
+//!    linking, TLS and DNS resolution work.
+//! 2. A tmpfs `/tmp` (with `/var/tmp` symlinked) is writable, plus a per-run dir
+//!    for `XDG_RUNTIME_DIR`.
+//! 3. Discovered toolchains (bun, volta, cargo, rustup, python, go, …) mount
+//!    read-only, and their cache env vars point at `/tmp` so host caches stay
+//!    immutable.
+//! 4. Credentials (`.ssh`, `.gnupg`, `.aws`, `.npmrc`, agent auth/session state,
+//!    …) are masked with `/dev/null`: the content is withheld, not the name.
+//! 5. `extra_ro_mounts` — callers pass the user-level skill roots — mount
+//!    read-only. A PATH `<root>/bin` expands to `<root>` only for real SDK roots.
+//! 6. The workspace mounts read-write last, so it wins any overlap.
+
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;

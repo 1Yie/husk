@@ -1,17 +1,10 @@
 //! `hooks.rs` — ordered `AgentHook` chain over the state machine.
 //!
-//! Contract (plugin-system.md §Hooks): lifecycle interception, AOP over the
-//! ReAct loop. Phase-3 of the pipeline (commands → providers → hooks) — the
-//! chain exists and runs, but ships empty until a concrete need appears.
-//!
-//! Rules:
-//! - Ordered by registration; each hook gets a bounded timeout (2 s) — a
-//!   slow hook degrades to `Continue`, never stalls the turn.
-//! - `before_tool_execute` runs **before** the permission/audit gate — a
-//!   hook can veto or rewrite args but cannot approve (safety stays with
-//!   permissions).
-//! - `after_tool_execute` output mutation obeys the same truncation budget;
-//!   mutations are marked `⚡ hook <id>` in the UI.
+//! Hooks run in registration order under a 2s timeout: a slow hook degrades to
+//! `Continue` instead of stalling the turn. `before_tool_execute` runs ahead of
+//! the permission gate, so a hook can veto or rewrite args but never approve.
+//! The chain ships empty until a concrete need appears.
+
 
 use std::sync::Arc;
 use std::time::Duration;

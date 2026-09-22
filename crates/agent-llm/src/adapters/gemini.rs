@@ -9,13 +9,10 @@
 //! | `parts[{functionCall:{name,args}}]`          | `ToolCallDelta{slot,id,name,args_delta}`  |
 //! | `usageMetadata` (terminal chunk)             | `Done{prompt,completion,cached}` |
 //!
-//! Function calls arrive COMPLETE per chunk (not JSON shards) — each gets a
-//! synthetic slot and `args_delta = stringify(args)` in one shot; the
-//! kernel's assembler treats it as a finished call.
-//!
-//! History notes: system text → top-level `systemInstruction`; tool results
-//! ride back as `functionResponse` parts inside a `user` turn (consecutive
-//! `Role::Tool` messages coalesce). `x-goog-api-key` is the auth header.
+//! Function calls arrive complete per chunk (not JSON shards), so each gets a
+//! synthetic slot with `args_delta = stringify(args)` in one shot. System text
+//! becomes top-level `systemInstruction`; tool results ride back as
+//! `functionResponse` parts in a `user` turn; auth is `x-goog-api-key`.
 
 use async_trait::async_trait;
 use futures::StreamExt;

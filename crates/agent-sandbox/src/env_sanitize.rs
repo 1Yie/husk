@@ -1,20 +1,16 @@
-//! Env sanitization — applied to **every** spawn, sandboxed or not.
+//! Env sanitization — applied to every spawn, sandboxed or not.
 //!
-//! Contract (sandbox-model.md §4): never inherit host env wholesale.
-//! The **allowlist is the security boundary**; the denylist (matched on
-//! uppercased name **and** value) is heuristic defense-in-depth —
-//! substring value-matching errs toward stripping, and a secret named
-//! `FOO` still dies by not being allowlisted rather than by pattern luck.
-//! `extra` vars are caller-built infrastructure (TMPDIR, cache
-//! redirects): they skip the allowlist but never the denylist.
+//! The allowlist is the security boundary; the denylist (matched on uppercased
+//! name and value) is defense-in-depth. `extra` vars are caller-built
+//! infrastructure (TMPDIR, cache redirects): they skip the allowlist, never the
+//! denylist.
 //!
-//! PATH is treated as a capability, not config: `rebuild_path` appends
-//! discovered dev bins (GUI launches inherit a minimal PATH), and each
-//! backend then calls [`prune_path`] so only entries the executor can
-//! resolve survive — unmounted roots resolve nothing inside and just
-//! widen the hijack surface. `HOME` stays the real home deliberately:
-//! the mounted toolchains (`~/.volta`, `~/.rustup`, …) live at real
-//! paths; sensitive subdirs are masked by the backend, not hidden here.
+//! PATH is treated as a capability: `rebuild_path` appends discovered dev bins
+//! (GUI launches inherit a minimal PATH) and each backend then prunes entries its
+//! mounts cannot resolve — they resolve nothing inside and only widen the hijack
+//! surface. `HOME` stays the real home: mounted toolchains live at real paths, and
+//! sensitive subdirs are masked by the backend instead.
+
 
 /// Names kept from the host env (exact match, case-insensitive).
 const ALLOWLIST: &[&str] = &[
@@ -208,18 +204,13 @@ pub fn sanitize_env(
     out
 }
 
-/// Apply the plan's [`crate::plan::EnvironmentPolicy`] to a sanitized env —
-/// the single point where PATH becomes a capability.
+/// Apply the plan's [`crate::plan::EnvironmentPolicy`] to a sanitized env — the one
+/// point where PATH becomes a capability.
 ///
-/// * [`EnvironmentPolicy::DevToolchain`] (the default): append discovered
-///   dev bin dirs to PATH and inject toolchain vars — the sandbox mirrors
-///   the host's dev setup, minus secrets.
-/// * `Minimal` / `Select` (future strict callers): baseline PATH only —
-///   `Select`'s per-toolchain gating lands when a caller trusts
-///   detection end-to-end; it degrades to `Minimal` until then.
-///
-/// Either way, PATH is then pruned to `allowed_roots` minus
-/// `denied_roots` — see [`prune_path`].
+/// `DevToolchain` (the default) appends discovered dev bin dirs and injects
+/// toolchain vars; `Minimal`/`Select` keep the baseline PATH only (`Select`'s
+/// per-toolchain gating degrades to `Minimal` until a caller trusts detection).
+/// Either way PATH is then pruned to `allowed_roots` minus `denied_roots`.
 pub fn apply_environment_policy(
     envs: &mut Vec<(String, String)>,
     policy: &crate::plan::EnvironmentPolicy,
@@ -253,17 +244,14 @@ pub fn is_safe_env(name: &str, value: &str) -> bool {
     is_allowed(name) && !is_denied(name, value)
 }
 
-/// Prune a PATH string to entries a sandbox can actually resolve.
+/// Prune a PATH string to entries a sandbox can resolve.
 ///
-/// `allowed_roots`: `Some` keeps an entry only under one of these roots
-/// (the dirs bound into the namespace — an entry pointing at an
-/// unmounted dir resolves nothing inside and only widens the hijack
-/// surface); `None` keeps every absolute entry (raw-host mode).
-/// `denied_roots` always wins — entries under the workspace or the
-/// sandbox's scratch dirs are dropped in every mode: those locations
-/// are agent-writable, so an inherited entry there is a planted-binary
-/// channel, not a convenience. Non-absolute entries (`.`, `bin`) are
-/// always dropped — cwd-relative inside the sandbox.
+/// `allowed_roots: Some` keeps an entry only under one of those roots (the dirs bound
+/// into the namespace — an entry at an unmounted dir resolves nothing and only widens
+/// the hijack surface); `None` keeps every absolute entry (raw-host mode).
+/// `denied_roots` always wins: entries under the workspace or the scratch dirs are
+/// agent-writable, so inheriting one is a planted-binary channel. Non-absolute entries
+/// are dropped outright — they resolve against the sandbox's cwd.
 pub fn prune_path(
     path_value: &str,
     allowed_roots: Option<&[std::path::PathBuf]>,

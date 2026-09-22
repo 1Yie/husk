@@ -1,8 +1,7 @@
 //! Wire codec: serde JSON + length-prefixed framing.
 //!
-//! Layout per frame: `u32 BE length` + `length` bytes of JSON. The same
-//! envelope the future gRPC mesh reuses — the payload is always the
-//! serialized `UiCommand`/`UiEvent` enum.
+//! Layout per frame: `u32 BE length` + `length` bytes of JSON — always a serialized
+//! `UiCommand`/`UiEvent` enum.
 
 use thiserror::Error;
 

@@ -265,26 +265,19 @@ fn serialize_message(m: &ChatMessage) -> serde_json::Value {
     v
 }
 
-/// `ChatMessage` list → wire `messages` with a tool-pairing integrity pass.
+/// `ChatMessage` list → wire `messages`, with a tool-pairing integrity pass.
 ///
-/// Strict OpenAI-compat backends (deepseek verified) reject the whole
-/// request — `400 "No tool output found for tool call …"` — when history
-/// carries either side of a broken pair:
+/// Strict OpenAI-compat backends (deepseek verified) reject the whole request —
+/// `400 "No tool output found for tool call …"` — when history carries either side of
+/// a broken pair: a `tool_calls` entry with no matching `role:"tool"` output (skipped
+/// call, interrupted turn, compacted-away output), or a `tool` row whose
+/// `tool_call_id` never appeared.
 ///
-/// * a `tool_calls` entry with no matching `role:"tool"` output (a skipped
-///   malformed call, an interrupted turn, a compacted-away output, a
-///   poisoned snapshot), or
-/// * a `tool` message whose `tool_call_id` never appeared on an earlier
-///   `tool_calls` entry (orphan output).
-///
-/// Repair rules, applied in order:
-/// 1. `tool_calls` entries with an empty `id` get a synthesized one (the
-///    assembler backfills live, but old snapshots can persist `""`).
-/// 2. A non-`tool` message arriving while outputs are still expected flushes
-///    synthesized placeholder outputs — they must sit immediately after
-///    their assistant row, before whatever comes next.
-/// 3. `tool` rows with an unseen `tool_call_id` are dropped; a blank
-///    `tool_call_id` pairs positionally with the earliest outstanding call.
+/// Repair, in order: `tool_calls` entries with an empty `id` get a synthesized one;
+/// a non-`tool` message arriving while outputs are expected flushes placeholder
+/// outputs directly after their assistant row; `tool` rows with an unseen
+/// `tool_call_id` are dropped, and a blank one pairs positionally with the earliest
+/// outstanding call.
 #[cfg(test)]
 fn build_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
     build_messages_dev(messages, &crate::config::ProviderCompat::default())

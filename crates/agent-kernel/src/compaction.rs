@@ -1,22 +1,14 @@
-//! `compaction` — two-pass history summarization near the context window.
+//! `compaction` — history summarization near the context window.
 //!
-//! Contract (kernel-architecture.md §Compaction):
+//! - Trigger: estimated tokens ≈80% of `context_window`; optional prefire starts
+//!   Pass 1 at 70% so the latency hides behind the next turn.
+//! - Two-pass: summarize the prefix into `NOTE₁`, then condense `NOTE₁` + suffix
+//!   until the total fits the window again.
+//! - The sanitize pipeline runs before every sample, not just at compaction.
+//! - A failed compaction suppresses the next trigger, so it cannot retry-storm.
 //!
-//! - Trigger: estimated tokens ≈ 80% of `context_window`. Optional prefire
-//!   starts Pass 1 at `PREFIRE_LEAD_PERCENT` (70%) so the latency is hidden
-//!   behind the next turn.
-//! - Two-pass: split history into prefix/suffix at the midpoint → summarize
-//!   the prefix into `NOTE₁` (a dense context note) → condense `NOTE₁` +
-//!   suffix so the total fits the window again.
-//! - Sanitize pipeline runs *before* every sample (not just at compaction):
-//!   flatten tool calls, gate image refs on model
-//!   modality, `fit_conversation_to_budget`.
-//! - Sticky suppression (`SUPPRESS_STICKY`, `SUPPRESS_UNTIL_SUCCESS`)
-//!   prevents compaction retry storms — after a failed compaction we don't
-//!   re-attempt on every turn.
-//!
-//! Token estimate: `chars / 4` (GPT-class models; good enough for the 80%
-//! trigger — exact counting isn't worth a tokenizer dep).
+//! Token estimate is `chars / 4` — good enough for a soft trigger.
+
 
 use agent_llm::types::{ChatMessage, Role};
 
@@ -58,22 +50,13 @@ pub fn should_prefire(tokens: usize, window: usize) -> bool {
     tokens >= (window as f32 * PREFIRE_LEAD_PERCENT) as usize
 }
 
-/// Sanitize + budget-fit the history in place — runs before every sample.
+/// Sanitize + budget-fit the history in place; runs before every sample.
 ///
-/// Steps (kernel-architecture.md):
-/// 1. Flatten tool calls into the message text — **only** when the provider
-///    doesn't accept structured `tool_calls` (`native_tool_calls == false`).
-///    For a native provider, flattening would orphan every `Role::Tool`
-///    result (its `tool_call_id` no longer has a matching `function_call`)
-///    so the model loses all tool output (P1-b).
-/// 2. Reasoning traces are deliberately left alone: they are display-only
-///    (no adapter puts them on the wire), and the persisted row is what a
-///    reopened session replays as its `思考过程` block.
-/// 3. Image refs: kept verbatim when the active model declares `"image"`
-///    input; stripped when it's text-only (e.g. a mid-session downgrade) —
-///    the marker text stays as provenance.
-/// 4. `fit_conversation_to_budget` — drop oldest non-system messages until
-///    the estimate fits `budget_tokens`.
+/// Tool calls are flattened into text only for providers without native tool
+/// calls — flattening orphans every `Role::Tool` result (P1-b). Reasoning traces
+/// are left alone: display-only, and a reopened session replays them. Image refs
+/// survive only when the model declares image input, the marker text otherwise.
+/// Oldest non-system messages are dropped until the estimate fits `budget_tokens`.
 pub fn sanitize_for_sample(
     history: &mut Vec<ChatMessage>,
     budget_tokens: usize,

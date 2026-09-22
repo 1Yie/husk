@@ -1,18 +1,12 @@
 //! `HunkTracker` — file-change attribution for undo/rewind.
 //!
-//! Contract (kernel-architecture.md §Hunk tracking):
+//! `record_write` runs after every successful write, keyed by turn, with `origin`
+//! distinguishing `agent` / `plugin:<id>` / `sandbox-merge`; a watcher-observed edit
+//! goes through `handle_external_change` and never merges into agent undo history.
+//! Powers per-turn "files changed", Undo/Rewind and dirty-file warnings.
 //!
-//! - `record_write` after every successful write (built-in or plugin) →
-//!   hunks keyed by turn; `origin` distinguishes `agent` vs `plugin:<id>`
-//!   vs `sandbox-merge`.
-//! - `handle_external_change` attributes watcher-observed edits — they never
-//!   merge into agent undo history.
-//! - Powers per-turn "files changed" lists, Undo/Rewind, and dirty-file
-//!   warnings on session start.
-//!
-//! `Hunk.old`/`new` are `Vec<u8>` so binary/non-UTF-8 writes enter undo
-//! history, and `undo_plan` refuses to overwrite a file modified externally
-//! after the agent's last write — undo must never clobber user edits.
+//! `Hunk.old`/`new` are `Vec<u8>`, so binary writes are undoable, and `undo_plan`
+//! refuses to overwrite a file modified externally after the agent's last write.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

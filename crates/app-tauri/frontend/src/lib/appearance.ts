@@ -1,9 +1,7 @@
 /**
- * Appearance applier — bridges the persisted `appearance.json` config to
- * the DOM. Both windows (main + settings) call `initAppearance()` once at
- * boot; it resolves the effective mode (system listens to
- * `prefers-color-scheme`), toggles `.dark` on <html>, and writes the
- * accent/bg/fg/font CSS custom properties the shell reads.
+ * Appearance applier — bridges `appearance.json` to the DOM: resolves the effective
+ * mode (system listens to `prefers-color-scheme`), toggles `.dark` on <html> and
+ * writes the accent/bg/fg/font custom properties.
  */
 
 import { emit, listen } from "@tauri-apps/api/event";

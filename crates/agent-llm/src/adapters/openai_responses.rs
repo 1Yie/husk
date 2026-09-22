@@ -1,26 +1,22 @@
-//! OpenAI Responses API adapter (`/v1/responses`) — the newer protocol that
-//! superseded chat/completions for reasoning models. Devin's
-//! `api: "openai-responses"` config maps here.
+//! OpenAI Responses API adapter (`/v1/responses`) — the protocol reasoning models
+//! use; Devin's `api: "openai-responses"` config maps here.
 //!
-//! Wire mapping — Responses streams `event:` + `data:` pairs where the
-//! `data.type` discriminates the event:
+//! Streams `event:` + `data:` pairs, discriminated by `data.type`:
 //!
 //! | `data.type`                                  | → StreamChunk            |
 //! |----------------------------------------------|--------------------------|
 //! | `response.reasoning_summary_text.delta`      | `ReasoningDelta`         |
-//! | `response.reasoning_text.delta` (raw CoT —   | `ReasoningDelta`         |
-//! |   deepseek / open-weight models)             |                          |
+//! | `response.reasoning_text.delta` (raw CoT)    | `ReasoningDelta`         |
 //! | `response.output_text.delta`                 | `ContentDelta`           |
 //! | `response.output_item.added` (function_call) | `ToolCallDelta{name,id}` |
 //! | `response.function_call_arguments.delta`     | `ToolCallDelta{args}`    |
 //! | `response.completed`                         | `Done{usage}`            |
 //! | `response.failed` / `response.error`         | `Error`                  |
 //!
-//! Input shape: `input` is an array of items — `{role, content:[{type:
-//! "input_text", text}]}` for user/system, `{type:"function_call_output",
-//! call_id, output}` for tool results, and assistant history replays as
-//! `{type:"message"/"function_call"}` items. `instructions` carries the
-//! system prompt separately.
+//! `input` is an array of items — `{role, content:[{type:"input_text", text}]}` for
+//! user/system, `{type:"function_call_output", call_id, output}` for tool results,
+//! assistant history replayed as `{type:"message"/"function_call"}`. The system
+//! prompt rides separately in `instructions`.
 
 use async_trait::async_trait;
 use futures::StreamExt;

@@ -1,12 +1,11 @@
-//! Normalized model — the ONLY types that cross the provider boundary.
+//! Normalized model — the only types that cross the provider boundary.
 //!
-//! Rules (llm-provider-layer.md §types):
-//! * `arguments` fragments are **concatenated**, never parsed until `Done`
-//!   or the next `slot` begins — JSON arrives split across chunks.
-//! * `Done` fires exactly once per request, even on `[DONE]`-sentinel vs.
-//!   clean-close differences between backends.
-//! * `Error` is a stream item, not stream termination — SamplerActor decides
-//!   retry vs. propagate.
+//! * `arguments` fragments are concatenated, never parsed until `Done` or the next
+//!   slot begins — JSON arrives split across chunks.
+//! * `Done` fires exactly once per request, whatever the backend's sentinel.
+//! * `Error` is a stream item, not stream termination — `SamplerActor` decides
+//!   retry vs propagate.
+
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -261,16 +260,14 @@ pub enum StreamChunk {
     ReasoningDelta(String),
     /// User-visible text delta.
     ContentDelta(String),
-    /// Tool-call fragment — id/name arrive once, arguments stream as JSON
-    /// shards under `args_delta`.
+    /// Tool-call fragment — id/name arrive once, arguments stream as JSON shards under
+    /// `args_delta`.
     ///
-    /// `slot` identifies WHICH invocation within this response the delta
-    /// belongs to — an opaque merge key, not a positional index. Each wire
-    /// fills it differently: OpenAI sends `tool_calls[i].index`, Responses
-    /// sends `output_index` (sparse — reasoning and message items consume
-    /// numbers too), Anthropic sends content-block `index`, Gemini
-    /// synthesizes a counter. The assembler only requires that deltas for
-    /// the same invocation share a slot and that slots sort in call order.
+    /// `slot` is an opaque merge key for which invocation a delta belongs to, not a
+    /// positional index: OpenAI sends `tool_calls[i].index`, Responses a sparse
+    /// `output_index`, Anthropic a content-block `index`, Gemini a counter. The
+    /// assembler only needs deltas of one invocation to share a slot, and slots to
+    /// sort in call order.
     ToolCallDelta {
         slot: usize,
         id: Option<String>,

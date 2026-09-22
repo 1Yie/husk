@@ -1,32 +1,15 @@
 // Radix popper placement gate.
 //
-// Radix positions popper content in a wrapper it parks above the viewport
-// (`transform: translate(0, -200%)`, left/top 0) until its first measurement.
-// Two hazards live in that window, and both read as "the menu flashes in the
-// top-left corner before appearing":
+// Radix parks popper content above the viewport until its first measurement, and
+// that measurement can be wrong: under StrictMode the double mount resets its
+// anchor, so the content measures a zero rect and reports `translate(2px, 0px)` —
+// a real-looking position at the viewport's top-left corner, painted for one frame
+// by WebKitGTK while `isPositioned` is already true.
 //
-//   1. The parking transform is the ONLY thing hiding the unpositioned state.
-//      An engine that paints the insertion before applying it shows the menu at
-//      the viewport's corner (WebKitGTK does).
-//   2. The FIRST measurement can be wrong. With React StrictMode the double
-//      mount resets Radix's anchor point, so the content measures against a
-//      zero rectangle and reports a real-looking position at the origin —
-//      `translate(2px, 0px)`, i.e. the side offset applied to (0,0) — and one
-//      frame later the true anchor lands and it jumps to the cursor.
-//      `isPositioned` is already true in that frame, so gating on "unpositioned"
-//      alone never catches it. (Measured in WebKitGTK: that frame is painted at
-//      opacity ~0.08 — a brief flash in the corner.)
-//
-// Both are handled here: the content renders `invisible` until the placement has
-// SETTLED — the same transform on two consecutive samples — so a
-// wrong-but-plausible measurement never becomes visible, and a painted
-// unpositioned frame has nothing to paint. Cost: one frame (~16ms) between
-// Radix placing the menu and it appearing.
-//
-// The signal is the DOM itself, not a Radix prop: the popper chain
-// (context-menu → menu → popper) drops unknown props, and
-// `[data-radix-popper-content-wrapper]` is the one element whose style says
-// where the menu actually landed.
+// The content therefore stays `invisible` until the placement SETTLES: the same
+// wrapper transform on two consecutive samples. Cost: one frame (~16ms). The signal
+// is the DOM — Radix drops unknown props through the popper chain, and
+// `[data-radix-popper-content-wrapper]` carries the applied transform.
 
 import * as React from "react";
 

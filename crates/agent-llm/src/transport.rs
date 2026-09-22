@@ -84,22 +84,12 @@ impl Transport {
     }
 }
 
-/// Enforces the layer's terminal invariant — `chat_stream` yields `0..N`
-/// deltas then **exactly one `Done`**, even when a backend closes the SSE
-/// connection without a terminal event. Each wire signals completion
-/// differently ([DONE] sentinel, `response.completed`, `message_stop`,
-/// a trailing usage chunk), and several adapters once kept the flag as a
-/// `Copy` bool — the `async move` fallback then snapshotted `false` at
-/// construction and emitted a duplicate `Done` on every stream. The shared
-/// `AtomicBool` makes the bug impossible.
-///
-/// ```ignore
-/// let done = DoneGuard::new();
-/// let flag = done.clone();
-/// let stream = data.flat_map(move |res| /* map events,
-///     calling flag.observe(&chunk) on each emitted chunk */);
-/// let stream = done.finish(stream, move || StreamChunk::Done { ..usage.. });
-/// ```
+/// Enforces the layer's terminal invariant — `chat_stream` yields `0..N` deltas then
+/// exactly one `Done`, even when a backend closes the SSE connection without a
+/// terminal event ([DONE] sentinel, `response.completed`, `message_stop` and a
+/// trailing usage chunk all signal differently). The flag is a shared `AtomicBool`,
+/// not a `Copy` bool: an `async move` fallback closure would snapshot `false` at
+/// construction and emit a duplicate `Done` on every stream.
 #[derive(Clone, Default)]
 pub struct DoneGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
 

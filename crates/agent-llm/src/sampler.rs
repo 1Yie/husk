@@ -1,17 +1,16 @@
 //! `SamplerActor` — resilience policy wrapped around any `LlmProvider`.
 //!
-//! Policy table (llm-provider-layer.md §Resilience):
+//! | Policy         | Value                                                        |
+//! |----------------|--------------------------------------------------------------|
+//! | Idle timeout   | no chunk for 300 s → `IdleTimeout` error                     |
+//! | Doom-loop      | identical repeated generation → abort + resample, ≤3 retries |
+//! | Retry          | exponential backoff on transport errors + 429/5xx, never 4xx |
+//! | Mid-stream cut | salvage + `interrupted` marker → continuation retry (≤3)      |
+//! | Usage          | the last `Done` chunk's counts feed `SessionStats`            |
 //!
-//! | Policy          | Value                                                        |
-//! |-----------------|--------------------------------------------------------------|
-//! | Idle timeout    | no chunk for 300 s → `IdleTimeout` error                     |
-//! | Doom-loop       | identical repeated generation → abort + resample, ≤3 retries |
-//! | Retry           | exponential backoff on transport errors + 429/5xx; never 4xx |
-//! | Mid-stream cut  | salvage + `interrupted` marker → continuation retry (≤3)     |
-//! | Usage           | last `Done` chunk's counts feed `SessionStats`               |
-//!
-//! The sampler never owns a concrete provider — it wraps
-//! `Arc<dyn LlmProvider>` so hot-swap replaces the Arc, not the actor.
+//! The sampler never owns a concrete provider — it wraps `Arc<dyn LlmProvider>`,
+//! so a hot-swap replaces the Arc, not the actor.
+
 
 use std::collections::VecDeque;
 use std::sync::Arc;

@@ -1,11 +1,9 @@
 // useAgentEvents — kernel event stream → per-session `SessionView` map.
-// Owns the ~60fps event batching, the active-session pointer, and the
-// header git/model chips that refresh on session/turn edges.
+// Owns the ~60fps batching, the active-session pointer and the header chips.
 //
-// Views are keyed `${workspaceRoot}:${sessionId}` — session ids are
-// per-workspace, and a parked workspace's actors keep streaming after a
-// switch ("switching never kills the turn"), so the root in each event
-// envelope is what routes it to the right buffer.
+// Views are keyed `${workspaceRoot}:${sessionId}`: a parked workspace's actors keep
+// streaming after a switch, so the envelope's root routes each event to the right
+// buffer.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as agent from "../invoke/agent";

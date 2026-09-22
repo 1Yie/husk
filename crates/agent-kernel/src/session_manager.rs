@@ -1,14 +1,11 @@
 //! `session_manager` — multi-session kernel wiring, frontend-agnostic.
 //!
-//! Shared by the iced shell (`app-desktop`) and the Tauri shell
-//! (`husk`). Each session owns a `SessionActor` on its own `kernel-rt`
-//! thread — a background session's turn keeps running when you switch away
-//! (product rule: switching never kills the turn). Every actor's `UiEvent`
-//! stream is forwarded to ONE `std::sync::mpsc` tagged with its
-//! `SessionId`; the frontend drains it however its event loop prefers.
-//!
-//! Persistence: `SessionStore` (per-workspace) snapshots history at turn
-//! boundaries; `open_session` resumes a session from its last snapshot.
+//! Each session owns a `SessionActor` on its own `kernel-rt` thread, so a
+//! background turn keeps running when the user switches away. Every actor's
+//! `UiEvent` stream is forwarded into one channel tagged with its `SessionId`.
+//! `SessionStore` snapshots history at turn boundaries; `open_session` resumes
+//! from the last snapshot.
+
 
 use std::collections::HashMap;
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};

@@ -1,18 +1,13 @@
 //! `session_store` — per-workspace session persistence.
 //!
-//! Each workspace gets `~/.local/share/husk/sessions/<ws_hash>/`:
-//!   - `index.json`            — session metadata (title/preview/updated_at)
-//!   - `<id>.jsonl`            — history snapshots, one `Vec<ChatMessage>` per line
-//!                             (last line = latest state; crash-safe append)
+//! `~/.local/share/husk/sessions/<ws_hash>/`:
+//!   - `index.json`  — session metadata (title/preview/updated_at)
+//!   - `<id>.jsonl`  — one `Vec<ChatMessage>` per line, append-only; the last
+//!                     line wins, so a crash costs at most the current turn
 //!
-//! Design (contract §session persistence):
-//!   - Single-writer: the owning `SessionActor` dumps its `history` on a
-//!     turn boundary; the store never locks across turns.
-//!   - Resume = `SessionActor::resume(cfg, history)` — the LLM context is
-//!     exactly the prior history; workspace tree + memory refresh at spawn.
-//!   - Background turns keep their actor alive — the store only snapshots
-//!     at idle boundaries (after a turn finishes), so a running session's
-//!     file is always the last *completed* state.
+//! The owning `SessionActor` writes on turn boundaries only (single writer,
+//! never mid-turn), so a running session's file holds its last completed state.
+
 
 use std::path::{Path, PathBuf};
 

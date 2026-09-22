@@ -1,9 +1,7 @@
 //! `app-cli` — headless CLI frontend for the agent kernel.
 //!
-//! Contract (workspace-layout §4): a real binary from day one — thin
-//! adapter over `agent-ipc` events, sharing the same kernel as
-//! `app-desktop`. `--headless` prints `UiEvent`s to stdout; future remote
-//! worker mode pipes them over a socket.
+//! A thin adapter over `agent-ipc` events, sharing the same kernel as the desktop
+//! shell. `--headless` prints `UiEvent`s to stdout.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,8 +77,7 @@ async fn main() -> anyhow::Result<()> {
     let cmd_tx = actor.command_sender();
     let mut ev_rx = channels.event_rx;
 
-    // Event pump — print each UiEvent as a line (JSON for the future
-    // `--remote` worker mode to reuse verbatim).
+    // Event pump — one `UiEvent` per line, as JSON.
     let pump = tokio::spawn(async move {
         while let Some(ev) = ev_rx.recv().await {
             match &ev {
@@ -107,8 +104,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(p) = prompt {
         let _ = cmd_tx.send(UiCommand::Prompt { text: p }).await;
     }
-    // `--headless` without a prompt just idles until killed — the worker
-    // mode is a future socket server; for now the pump reports readiness.
+    // `--headless` without a prompt idles until killed; the pump reports readiness.
     let _ = tokio::signal::ctrl_c().await;
     run.abort();
     pump.abort();

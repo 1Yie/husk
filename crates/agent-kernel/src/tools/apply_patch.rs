@@ -1,18 +1,13 @@
-//! `apply_patch` — codex-style patch: `*** Add File`, `*** Delete File`,
-//! `*** Update File` with `@@` context hunks, all inside one
-//! `*** Begin Patch`/`*** End Patch` envelope.
+//! `apply_patch` — codex-style multi-file patch.
 //!
-//! Like `fuzzy_patch` the tool STAGES the change: it returns one
-//! `PendingWrite` per file op and never touches the filesystem, so the
-//! engine can show the full multi-file diff on the approval card and only
-//! commit after the permission decision.
+//! Like `fuzzy_patch` it stages the change: one `PendingWrite` per file op, so
+//! the engine can show the full diff on the approval card and write only after
+//! the decision. Grammar (tolerant subset of the codex format):
 //!
-//! Grammar (a tolerant subset of the codex apply_patch format):
 //! ```text
 //! *** Begin Patch
 //! *** Add File: path/to/new.rs
 //! +line one
-//! +line two
 //! *** Delete File: path/old.rs
 //! *** Update File: path/existing.rs
 //! @@ optional context marker text
@@ -21,6 +16,7 @@
 //! +line to add
 //! *** End Patch
 //! ```
+
 
 use std::sync::Arc;
 

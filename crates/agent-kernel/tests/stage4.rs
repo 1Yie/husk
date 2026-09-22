@@ -88,7 +88,6 @@ async fn headless_react_loop_drives_tool_then_answers() {
     // Final assistant text arrived.
     assert!(events.iter().any(|e| matches!(e, UiEvent::AssistantMessage(t) if t.contains("2 entries"))));
 
-    // Usage reported.
     assert!(events.iter().any(|e| matches!(e, UiEvent::Usage { completion_tokens: 8, .. })));
 
     // History now holds: system, user, assistant(tool_call), tool result, assistant(answer).

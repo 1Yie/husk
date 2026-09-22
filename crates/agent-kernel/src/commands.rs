@@ -1,22 +1,14 @@
-//! `commands.rs` — slash-command registry, phase 1 of the extension pipeline.
+//! `commands.rs` — slash-command registry.
 //!
-//! Contract (plugin-system.md §Commands): input starting with `/` is
-//! intercepted **before** the ReAct loop — zero tokens spent. Built-ins ship
-//! first; workspace skills (`.agents/skills/<name>/SKILL.md`) resolve to a
-//! `FeedToAgent` with the skill body inlined — the model follows the skill
-//! text as instructions, matching Claude-Code's `/{skill}` convention.
-//! MCP `prompts/*` and WASM `command_execute` register under `plugin_id:name`
-//! when those runtimes land.
+//! Input starting with `/` is intercepted before the ReAct loop, so a command
+//! costs no tokens. Skills resolve to a `FeedToAgent` with the body inlined;
+//! `try_run` returns `Some(result)` on a match and the session turns it into
+//! state changes or messages without touching the LLM.
 //!
-//! Dispatch order: `CommandRegistry::try_run` returns `Some(result)` when a
-//! `/x` matched a command — the session turns `ControlAction` into state
-//! changes and `Reply`/`FeedToAgent` into messages without touching the LLM.
-//!
-//! `@path` and mid-text `$skill` mentions are expanded here too
-//! (`expand_user_tokens`) — the composer leaves the literal `@src/main.rs`
-//! / `$review` in the text; the kernel inlines the file's fenced content /
-//! skill instructions before the prompt reaches history, so the model
-//! sees real context instead of bare tokens.
+//! `expand_user_tokens` also handles `@path` and mid-text `$skill` mentions: the
+//! composer leaves the literal token in the text and the kernel inlines the
+//! file's content or the skill's instructions before the prompt reaches history.
+
 
 use std::path::{Path, PathBuf};
 

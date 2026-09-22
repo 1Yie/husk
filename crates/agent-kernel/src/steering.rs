@@ -1,17 +1,11 @@
-//! `steering.rs` — mixed-initiative control (P1).
+//! `steering.rs` — mixed-initiative control.
 //!
-//! Contract (capability-roadmap.md §2):
-//! - `UiCommand::Steer` injects a user message **mid-turn** at the current
-//!   position — the state machine is hot-patched, not reset; completed tool
-//!   calls stay valid.
-//! - `AgentState` gains no new variant — `Reasoning` covers the re-plan; a
-//!   `steered` flag marks provenance.
-//! - Ambient probes (opt-in): `notify` watcher + diagnostics → idle-error
-//!   suggestion ("3 compile errors — fix now?"), never auto-starts, expires
-//!   60 s, caps 1/5 min.
-//!
-//! The channel plumbing (steer_tx/steer_rx, drain between tool calls) lives
-//! in engine/session — this module owns the probe + provenance flag.
+//! `UiCommand::Steer` injects a user message mid-turn: the state machine is
+//! patched in place, so completed tool calls stay valid and `Reasoning` covers
+//! the re-plan. The channel plumbing (`steer_tx`/`steer_rx`, drained between tool
+//! calls) lives in engine/session; this module owns the probes and the
+//! `steered` provenance flag.
+
 
 use std::time::{Duration, Instant};
 

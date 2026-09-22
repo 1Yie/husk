@@ -1,31 +1,27 @@
 //! `agent_cmd` — the single invoke for all `UiCommand`s.
 //!
-//! One command, the enum carries the intent: `Prompt` / `Steer` /
-//! `ToolDecision` / `Cancel` / `SetModel` / `UndoLastTurn`. `Cancel` and
-//! `Steer`/`ToolDecision` bypass the command pump (direct flag / channel)
-//! so they aren't queued behind a running `run_turn`.
+//! One command, the enum carries the intent. `Cancel`, `Steer` and `ToolDecision`
+//! bypass the command pump (direct flag / channel) so they are not queued behind a
+//! running turn.
 
 use agent_ipc::UiCommand;
 use tauri::State;
 
 use crate::kernel::KernelState;
 
-/// `paste_clipboard` — read the *system* clipboard from Rust, for the
-/// composer's Ctrl+V and its context menu.
+/// `paste_clipboard` — read the *system* clipboard from Rust, for the composer's
+/// Ctrl+V and its context menu.
 ///
-/// The webview's own `paste` event is not a dependable carrier for images on
-/// WebKitGTK: pasting into a plain `<textarea>` can deliver no `clipboardData`
-/// at all, which is why "copy a screenshot, Ctrl+V" silently did nothing. The
-/// bytes are reachable here regardless of what the DOM event chose to expose.
+/// WebKitGTK's own `paste` event is not a dependable carrier for images: pasting
+/// into a plain `<textarea>` can deliver no `clipboardData` at all. The bytes are
+/// reachable here regardless.
 ///
-/// `kind` = `"image"` (default) stages the clipboard image like a picked
-/// attachment; `"text"` returns the clipboard string for the menu's 粘贴 item.
-/// A clipboard holding no image is *not* an error — `null` tells the caller to
-/// leave the browser's own paste alone.
+/// `kind` = `"image"` (default) stages the clipboard image as an attachment;
+/// `"text"` returns the clipboard string. An image-less clipboard is `null`, not an
+/// error — the caller then leaves the browser's own paste alone.
 ///
-/// `async` on purpose: the plugin's `read_image` must not run on the main
-/// thread (arboard can deadlock on Linux when the clipboard holds data this
-/// app copied), and an async command is dispatched on the runtime instead.
+/// `async` so `read_image` does not run on the main thread (arboard can deadlock on
+/// Linux when the clipboard holds data this app copied).
 #[tauri::command]
 pub async fn paste_clipboard(
     app: tauri::AppHandle,

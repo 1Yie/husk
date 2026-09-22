@@ -1,18 +1,11 @@
-//! Bridge ownership: **one Serena server per workspace**, spawned lazily and
+//! Bridge ownership: one Serena server per workspace, spawned lazily and
 //! replaced when it dies.
 //!
-//! Scoping is the whole point of this module. Serena is started with
-//! `--project <root>` and indexes that project, so a bridge is only valid for
-//! the workspace it was spawned for — handing one workspace's bridge to
-//! another silently runs `find_symbol` / `replace_symbol_body` against the
-//! wrong tree. It is also *not* per session: several sessions in one workspace
-//! must share one server, or every session pays for its own index.
-//!
-//! ```text
-//! process
-//! └── workspace A → slot → bridge (+ its tool catalog)
-//! └── workspace B → slot → bridge
-//! ```
+//! Serena indexes the `--project` it was started with, so a bridge is valid only
+//! for its own workspace — handing it to another silently runs `find_symbol` /
+//! `replace_symbol_body` against the wrong tree. It is not per session either:
+//! sessions in one workspace share one server and one index.
+
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

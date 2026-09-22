@@ -1,22 +1,19 @@
-//! `mcp.rs` — full MCP JSON-RPC 2.0 client over stdio or streamable HTTP.
+//! `mcp.rs` — MCP JSON-RPC 2.0 client over stdio or streamable HTTP.
 //!
-//! Transport is picked per manifest `entry`: `{command, args}` spawns a
-//! child process (newline-framed stdio), `{url}` POSTs JSON-RPC to a
-//! streamable-HTTP endpoint (plain-JSON or SSE response, `Mcp-Session-Id`
-//! carried across calls).
+//! Transport comes from the manifest `entry`: `{command, args}` spawns a child
+//! (newline-framed stdio), `{url}` POSTs to a streamable-HTTP endpoint (plain JSON or
+//! SSE, `Mcp-Session-Id` carried across calls).
 //!
-//! Contract (plugin-system.md §MCP bridge): protocol `2024-11-05`, the
-//! **complete** lifecycle — anything less fails real community servers:
+//! Protocol `2024-11-05`, full lifecycle — anything less fails real servers:
 //!
 //! ```text
-//! spawn → initialize → notifications/initialized
-//!   → tools/list → (steady) tools/call + resources/prompts per caps
-//!   → notifications/tools/list_changed → re-list → shutdown: drain + kill
+//! spawn → initialize → notifications/initialized → tools/list
+//!   → (steady) tools/call + resources/prompts per caps
+//!   → notifications/tools/list_changed → re-list → drain + kill
 //! ```
 //!
-//! Demultiplexing: `id` → resolve pending oneshot; `method` → notification
-//! handler (`tools/list_changed` → re-list, `cancelled`/`progress` → step
-//! card). Per-call 30 s timeout. Non-text `content[]` → placeholder marker.
+//! `id` resolves pending oneshots, `method` dispatches notifications. Per-call 30s
+//! timeout; non-text `content[]` becomes a placeholder marker.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,8 +31,7 @@ use crate::manifest::PluginManifest;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Restarts allowed on transport failure (never mid-request) — Stage 9.5
-/// wires the backoff loop; kept as the documented cap constant.
+/// Restarts allowed on transport failure (never mid-request).
 #[allow(dead_code)]
 const MAX_RESTARTS: u8 = 3;
 
@@ -289,7 +285,7 @@ impl McpClient {
                 let _ = self.refresh_lists().await;
             }
             Some("notifications/cancelled") | Some("notifications/progress") => {
-                // Forward to the step card — Stage 9.5 wires UiEvent.
+                // Forward to the step card.
             }
             _ => {}
         }

@@ -1,9 +1,8 @@
 //! `bash` — sandboxed shell execution.
 //!
-//! Stage 8: runs through `ctx.sandbox` (`SandboxBackend::run_command`) —
-//! bwrap on Linux, loud `none` fallback elsewhere. The audit gate runs
-//! *before* dispatch and stamps the risk tier on the result; the permission
-//! layer (Stage 6) already gated the call through `AwaitingToolConfirmation`.
+//! Runs through `ctx.sandbox` (`SandboxBackend::run_command`) — bwrap on Linux, the
+//! loud `none` fallback elsewhere. The audit gate runs before dispatch and stamps the
+//! risk tier on the result; the permission layer already gated the call.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -92,7 +91,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         .unwrap_or(DEFAULT_TIMEOUT)
         .min(MAX_TIMEOUT);
 
-    // ---- Stage 8: audit before spawn → risk tier on the result ----
+    // Audit before spawn; its verdict becomes the result's risk tier.
     // Scoped to the workspace so out-of-scope writes flag ScopeViolation.
     let verdict = agent_sandbox::audit_command_scoped(
         &parsed.command,

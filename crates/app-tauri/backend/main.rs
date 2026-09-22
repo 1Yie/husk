@@ -1,9 +1,8 @@
 //! `husk` — Tauri 2 desktop shell over the shared kernel wiring.
 //!
-//! Rust side is deliberately thin: `KernelState` (agent-kernel's
-//! `SessionManager`) owns the session actors + tagged `UiEvent` queue;
-//! `ipc/` exposes that as `agent_cmd` / `agent_session` invokes and an
-//! `agent://event` forwarder. No business logic here.
+//! `KernelState` (agent-kernel's `SessionManager`) owns the session actors and the
+//! tagged `UiEvent` queue; `ipc/` exposes it as `agent_cmd` / `agent_session`
+//! invokes plus an `agent://event` forwarder.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

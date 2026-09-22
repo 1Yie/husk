@@ -1,21 +1,14 @@
-// Stream health chip — the kernel's UI-queue delivery counters, plus the
-// webview's own IPC event rate.
-//
-// Why it exists: the kernel merges deltas into ~120-char events and the
-// webview folds arrivals into one `setViews` per 16ms, so in the steady
-// state this whole pipeline is nearly free. When that stops being true
-// (a stalled consumer, a bursty provider, a backgrounded tab), the old
-// symptom was "the reply looks wrong / the pill never stops" with nothing
-// on screen to point at the cause. These counters make it visible:
+// Stream health chip — the kernel's UI-queue delivery counters plus the webview's
+// IPC event rate. Deltas are merged and folded at ~60fps, so this pipeline is
+// normally free; the counters show when it stops being:
 //
 //   sent       events enqueued as new entries
 //   coalesced  deltas merged into the queue tail — text preserved
-//   dropped    deltas actually discarded — text lost (control events are
-//              never dropped, so this is always a real defect signal)
+//   dropped    deltas discarded — text lost, and control events are never dropped,
+//              so a non-zero value here is always a defect signal
 //   depth_peak queue high-water mark, in events
 //
-// Production renders only the `dropped` warning; dev also shows the full
-// counter strip and the measured IPC rate.
+// Production renders only the `dropped` warning; dev adds the counter strip.
 
 import { useEffect, useRef, useState } from "react";
 import { Activity, TriangleAlert } from "lucide-react";

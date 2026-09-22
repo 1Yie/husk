@@ -1,34 +1,12 @@
-//! `batch_execute` — bounded parallel **observation** batch. The model
-//! packs up to 16 independent readonly calls into one round trip; the
-//! batch runs them at limited concurrency, preserves input order in the
-//! result, and reports per-item status (partial failure ≠ batch failure).
+//! `batch_execute` — parallel execution for independent read-only calls.
 //!
-//! Deliberately NOT an arbitrary parallel executor — eligibility keys
-//! off `ToolSpec::class`, not name lists:
-//!
-//! - **Observation-only.** `class == ToolClass::Observation` is the whole
-//!   rule: mutations (`WorkspaceMutation`/`Process`), session state
-//!   (`SessionMutation`), control signals (`Control`), human-blocking
-//!   calls (`HumanInteraction`), and orchestration (`Orchestration` —
-//!   `delegate`, `batch_execute` itself) are all rejected by class, so a
-//!   new tool can't slip in just by being `readonly`.
-//! - **Network sub-cap.** `spec.network` items (web_fetch) are
-//!   Observation but capped lower — a batch can't become a
-//!   16-way SSRF/rate-limit amplifier.
-//! - **Mode-scoped.** Dispatch resolves through the engine's live
-//!   `active_registry` slot — plan mode's readonly registry applies to
-//!   batches the same as single calls.
-//! - **Real cancellation.** Items run under a batch-scoped flag that a
-//!   watchdog sets on deadline OR parent cancel — tools that poll
-//!   `ctx.cancel` (grep, web_fetch, delegate) actually abort in-flight
-//!   work instead of merely being dropped by `timeout`.
-//! - **Visible.** Each item emits ToolCallStarted/Finished through
-//!   `ctx.ui_tx` — the UI shows 16 capsules, not a silent 30s batch.
-//!   Skipped where no channel exists (headless).
-//! - **No gate needed.** Only auto-allowed Observation specs ever run,
-//!   so the batch skips the permission gate by construction. Mutation
-//!   batching (transaction/rollback/conflict detection) is a different
-//!   feature — not this tool.
+//! Eligibility is by `ToolSpec::class`, not by name: only `Observation` tools
+//! qualify (`readonly` alone is not enough), and network items are capped lower
+//! than local ones. Results keep input order, per-item failures are reported
+//! rather than fatal, and cancellation is batch-scoped so tools that poll
+//! `ctx.cancel` actually abort. No permission gate runs: only auto-allowed
+//! specs are eligible by construction.
+
 
 use super::registry::{Args, ToolClass, ToolCtx, ToolError, ToolResult, ToolSpec};
 use futures::{FutureExt, StreamExt};

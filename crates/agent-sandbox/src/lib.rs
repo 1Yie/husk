@@ -1,11 +1,9 @@
 //! agent-sandbox — L2 process sandbox.
 //!
-//! Phase 1 (this stage): `traits.rs` + `linux_bwrap.rs` + `none.rs` +
-//! `audit.rs` + `env_sanitize.rs`. `detect_backend()` picks the best
-//! available: bwrap → landlock (Phase 2) → none (loud fallback).
-//!
-//! Every spawn gets env sanitization, resource limits, and tree-kill on
-//! timeout regardless of backend — containment may degrade, leakage never.
+//! `detect_backend()` picks the best implemented backend — bwrap on Linux — and
+//! otherwise returns the loud `none` backend. Every spawn gets env sanitization,
+//! resource limits and tree-kill on timeout regardless of backend.
+
 
 pub mod audit;
 pub mod env_sanitize;
@@ -21,8 +19,7 @@ pub use traits::{CommandOutput, SandboxBackend, SandboxConfig, SandboxTier, Snap
 
 /// Pick the best backend for this platform at startup.
 ///
-/// Linux → bwrap (if on PATH) → landlock (Phase 2) → none.
-/// macOS → sandbox-exec (Phase 2) → none. Windows → job-object (Phase 3).
+/// Linux → bwrap when it is on PATH, otherwise `none`.
 ///
 /// Returns the backend + a `loud` flag — `none` must surface the
 /// `UNSANDBOXED` chip and force-confirm every `bash` call.
@@ -32,7 +29,6 @@ pub fn detect_backend() -> (Box<dyn SandboxBackend>, bool) {
         if bwrap_on_path() {
             return (Box::new(LinuxBwrap), false);
         }
-        // Phase 2 adds landlock here (zero-dep kernel ≥5.13 fallback).
         return (Box::new(NoneBackend), true);
     }
     #[cfg(not(target_os = "linux"))]

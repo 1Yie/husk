@@ -83,14 +83,11 @@ const ContextMenuContent = React.forwardRef<
   <ContextMenuPrimitive.Portal>
     <ContextMenuPrimitive.Content
       ref={setRef}
-      // Radix hard-codes the *submenu* placement here (`side="right"`,
-      // `align="start"`, `sideOffset=2`) AFTER the caller's props, and omits
-      // those props from the public type — so placement is not ours to choose,
-      // and a click near a window edge gets clamped to the edge with 0px
-      // padding. `collisionPadding` is not overridden, so at least every
-      // context menu now keeps a gap from the window edges. (The composer,
-      // which sits at the very bottom of the window and must flip *up*, uses an
-      // anchored DropdownMenu instead — see ComposerMenu.)
+      // Radix hard-codes the submenu placement (`side="right"`, `align="start"`,
+      // `sideOffset=2`) after the caller's props and omits them from the type, so the
+      // placement is not ours to choose. `collisionPadding` is: this keeps context
+      // menus off the window edges. The composer menu uses an anchored DropdownMenu
+      // to flip up instead.
       collisionPadding={8}
       onCloseAutoFocus={(e) => {
         e.preventDefault();

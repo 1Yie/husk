@@ -1,29 +1,16 @@
-//! UI channel setup — one ordered event queue per session, plus the
-//! command channel between the shell and the actor.
-//!
-//! Actor topology (kernel-architecture.md):
+//! UI channel setup — one ordered event queue per session, plus the command
+//! channel between the shell and the actor.
 //!
 //! ```text
 //! UI ──UiCommand──▶ SessionActor ──sampling──▶ SamplerActor (agent-llm)
 //! UI ◀─UiEvent───── SessionActor ◀─chunks────
 //! ```
 //!
-//! The kernel→UI direction is a [`UiSink`]/[`UiReceiver`] pair rather than a
-//! plain `tokio::mpsc` because the two halves of the stream have opposite
-//! loss requirements:
-//!
-//! * **Deltas** (`TextDelta`/`ReasoningDelta`) are high-rate, idempotent in
-//!   the "newest text wins" sense, and already coalesced to ~120 chars by the
-//!   engine — they may be merged or dropped under pressure.
-//! * **Control events** (`StateChanged`, `ToolCall*`, `ApprovalRequested`,
-//!   `QuestionAsked`, `AssistantMessage`, `Usage`, `Error`, …) are the turn's
-//!   state machine. A dropped `StateChanged(Finished)` leaves the UI showing
-//!   "replying" forever; a dropped `AssistantMessage` strands the streaming
-//!   draft mid-turn. These are never dropped.
-//!
-//! One queue + one producer-thread ordering is what keeps the two kinds in
-//! order: deltas and control events are enqueued into the same `VecDeque`, so
-//! a tool capsule can never overtake the prose that preceded it.
+//! Deltas may be coalesced or dropped under pressure; control events
+//! (`StateChanged`, `ToolCall*`, `ApprovalRequested`, `AssistantMessage`, …)
+//! never are. Both kinds share one queue, so a tool capsule cannot overtake
+//! the prose that preceded it.
+
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -288,7 +275,7 @@ pub struct AgentChannels {
     pub event_rx: mpsc::Receiver<AgentEvent>,
 }
 
-/// Create the UI channel pair. The bridge (Stage 5) splits `UiChannels` into
+/// Create the UI channel pair. The bridge splits `UiChannels` into
 /// its command-sender and event-receiver halves.
 pub fn ui_channels() -> UiChannels {
     let (cmd_tx, cmd_rx) = mpsc::channel(CMD_CHANNEL_CAP);

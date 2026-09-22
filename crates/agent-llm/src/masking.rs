@@ -1,9 +1,10 @@
-//! `masking.rs` — egress secret masker (production-hardening §2).
+//! `masking.rs` — egress secret masker.
 //!
-//! Every outbound request body and every tool result passes through the
-//! replacer — secrets leak most often via `env`/`.env` reads landing in a
-//! prompt. Defense in depth: sandbox env sanitization is the first wall;
-//! this is the second. A match becomes `[REDACTED_<kind>]`.
+//! Every outbound request body and every tool result passes through the replacer:
+//! secrets leak most often via `env`/`.env` reads landing in a prompt. Sandbox env
+//! sanitization is the first wall, this is the second — a match becomes
+//! `[REDACTED_<kind>]`.
+
 
 /// Resolved secret values + the shapes that catch them.
 pub struct EgressMasker {
@@ -63,16 +64,13 @@ impl EgressMasker {
     }
 }
 
-/// Replace `shape`-prefixed tokens with `[REDACTED_<shape>]` — e.g. any
-/// `sk-…` run becomes `[REDACTED_API_KEY]`.
+/// Replace `shape`-prefixed tokens with `[REDACTED_<shape>]` — any `sk-…` run becomes
+/// `[REDACTED_API_KEY]`.
 ///
-/// Two correctness rules vs. the naive version:
-/// - **Word boundary** — a shape must be at a token start (preceded by
-///   whitespace/quote/punctuation or string start), else `task-force`,
-///   `disk-`, `risk-`, `msk-` get mangled by the `sk-` substring match.
-/// - **PEM block** — `-----BEGIN` opens a multi-line block; masking only the
-///   header line leaks the base64 key material. Redact the whole block
-///   through `-----END …-----` (or to end of text when unterminated).
+/// A shape must start at a word boundary, else `task-force`/`disk-`/`risk-` get
+/// mangled by the `sk-` match. `-----BEGIN` opens a PEM block and the whole block is
+/// redacted through `-----END …-----` — masking the header alone leaks the base64
+/// material.
 fn mask_shape(text: &str, shape: &str) -> Option<String> {
     let lower = text.to_lowercase();
     let needle = shape.to_lowercase();

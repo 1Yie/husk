@@ -65,16 +65,13 @@ pub struct ParsedManifest {
     pub body: String,
 }
 
-/// Parse a manifest's frontmatter. `name:`, `description:`, and `arguments:`
-/// are read; anything else is ignored and the body is passed through verbatim.
+/// Parse a manifest's frontmatter: `name:`, `description:` and `arguments:`;
+/// everything else is ignored and the body passes through verbatim.
 ///
-/// `description:` accepts YAML block scalars (`>-`, `>`, `|`, `|-`): reading
-/// only the indicator's own line is how a skill ends up advertised in the
-/// prompt as `>-`, which is exactly where the model decides whether to load it.
-///
-/// `arguments:` is a nested block of `name: description` lines — declared
-/// names are what let the `skill` tool validate a structured `args` object
-/// instead of passing an opaque string through.
+/// `description:` accepts YAML block scalars (`>-`, `>`, `|`, `|-`) — reading only
+/// the indicator's line is how a skill ends up advertised as `>-` in the prompt.
+/// `arguments:` is a nested block of `name: description` lines; the declared names
+/// are what the `skill` tool validates a structured `args` object against.
 pub fn parse_manifest(text: &str) -> ParsedManifest {
     let trimmed = text.trim_start();
     let Some(fm) = trimmed.strip_prefix("---") else {

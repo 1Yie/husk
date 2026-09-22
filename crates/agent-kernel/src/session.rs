@@ -416,16 +416,11 @@ impl SessionActor {
     }
 
     /// The actor's command pump — `run()` consumes `UiCommand`s until the
-    /// frontend's sender drops. Turns run in-line (a `Prompt`'s `run_turn`
-    /// `await`s to completion inside `handle`).
+    /// frontend's sender drops. A `Prompt` runs its turn inline.
     ///
-    /// Mid-turn `ToolDecision`/`Cancel`/`Steer` do **not** flow through this
-    /// pump — they'd block behind the running turn. Instead:
-    ///   - `ToolDecision` → the shared `decision_slot` (engine polls it in
-    ///     `wait_for_decision`); the bridge writes it directly.
-    ///   - `Cancel`      → `EngineIo::cancel` flag (checked between chunks).
-    ///   - `Steer`       → `steer_tx` → engine's `steer_rx` drain.
-    /// `handle()` stays for tests that drive the actor directly.
+    /// Mid-turn `ToolDecision`/`Cancel`/`Steer` do not flow through this pump —
+    /// they would block behind the running turn. They arrive via the shared
+    /// `decision_slot`, the `EngineIo::cancel` flag and `steer_tx` instead.
     pub async fn run(&mut self) {
         while let Some(cmd) = self.cmd_rx.recv().await {
             self.handle(cmd).await;

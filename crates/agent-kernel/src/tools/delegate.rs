@@ -1,14 +1,11 @@
 //! `delegate` — hand a scoped task to a fresh-context subagent.
 //!
-//! The child is a full `Engine` run in-process: its own history, its own
-//! system prompt, the same provider/model/workspace/sandbox as the parent,
-//! and a registry that does NOT carry `delegate` — a subagent cannot
-//! delegate further (recursion guard).
-//!
-//! Approval in a child would deadlock — nothing answers `Ask` — so it runs
-//! under a headless gate (`auto` baseline where escalations deny instead
-//! of pausing). The child's cancel flag is the parent's: cancelling the
-//! turn tears the delegation down with it.
+//! The child is a full in-process `Engine` run: its own history and system
+//! prompt, the parent's provider/model/workspace/sandbox, and a registry without
+//! `delegate` (no recursion). Approval would deadlock — nothing can answer an
+//! `Ask` — so it runs headless where escalations deny, and the parent's cancel
+//! flag tears the child down with it.
+
 
 use std::sync::Arc;
 

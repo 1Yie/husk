@@ -1,13 +1,10 @@
-//! `ask_question` — structured user input mid-turn. The model offers a
-//! question plus up to four labelled options; the UI renders a card
-//! (option buttons + free-text field) in the same slot as approval
-//! cards. The tool blocks until the user answers or the turn is
-//! cancelled — same wait-discipline as `wait_for_decision`.
+//! `ask_question` — structured user input mid-turn: a question plus up to four
+//! labelled options, rendered as a card in the approval slot. The call blocks
+//! until the user answers or the turn is cancelled.
 //!
-//! `readonly: true` — asking a question mutates nothing and needs no
-//! approval, so it auto-allows in every mode (plan included). In
-//! headless contexts (delegated subagents) the channel carries no UI
-//! sender and `exec` refuses fast instead of deadlocking.
+//! `readonly: true` — asking mutates nothing, so it auto-allows in every mode.
+//! Headless contexts carry no UI sender and refuse fast instead of deadlocking.
+
 
 use super::registry::{Args, ToolCtx, ToolError, ToolResult, ToolSpec};
 use futures::FutureExt;

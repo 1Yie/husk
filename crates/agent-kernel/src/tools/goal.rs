@@ -1,17 +1,12 @@
 //! `goal_complete` / `goal_blocked` — the goal-mode control protocol.
 //!
-//! These are NOT ordinary tools: they are lifecycle signals the model
-//! sends to the harness (`Agent → Engine`), not observations or mutations.
-//! Registered only in the goal-mode registry; the model declares the
-//! outcome through one of them instead of just going quiet.
-//!
-//! Semantics: a declaration is the model's CLAIM, not harness verification.
-//! `goal_complete` ends the turn with the model's stated result — wiring an
-//! acceptance/verification stage behind `GoalState::Complete` is the
-//! designed seam for a future Acceptance Engine, and the tool API won't
-//! change when it lands. `goal_blocked` doesn't fail the turn; it ends it
-//! with the blocker as the final report (ToolError vs GoalBlocked are
-//! different outcomes and must not be conflated).
+//! Lifecycle signals from the model to the harness, not observations or
+//! mutations; registered only in the goal-mode registry. A declaration is the
+//! model's claim, not harness verification: `goal_complete` ends the turn with
+//! the stated result (`GoalState::Complete` is the seam for an acceptance stage),
+//! `goal_blocked` ends it with the blocker as the report. `ToolError` and
+//! `GoalBlocked` are different outcomes and must not be conflated.
+
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};

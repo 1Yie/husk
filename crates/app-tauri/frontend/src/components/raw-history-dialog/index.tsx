@@ -1,9 +1,6 @@
-// Raw history viewer — opens from the title-bar chart icon and shows the
-// session exactly as persisted on the wire: role, content, tool_calls
-// (the model's sends + params), tool results, notices, timestamps.
-// Every message is a collapsed row; expanding renders its pretty-printed
-// JSON through the shared Prism highlighter — lazy so a 500-message dump
-// doesn't tokenize megabytes on open.
+// Raw history viewer — opens from the title-bar chart icon and shows the session as
+// persisted: role, content, tool_calls, tool results, notices, timestamps. Rows are
+// collapsed by default; JSON is highlighted lazily.
 import { memo, useMemo, useState } from "react";
 import {
   Dialog,

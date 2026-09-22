@@ -26,8 +26,7 @@ pub struct TurnRecord {
     pub steered_with: Option<String>,
 }
 
-/// Extract candidate facts from a turn — deterministic rules (the LLM
-/// summarize variant lands when a cheap model is configured):
+/// Extract candidate facts from a turn — deterministic rules:
 ///
 /// - A **user correction** (`deny_tool` reason or steering) → a fact at
 ///   `confidence: 0.6`.

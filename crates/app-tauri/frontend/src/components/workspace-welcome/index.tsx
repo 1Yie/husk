@@ -1,16 +1,9 @@
-// Workspace welcome — the app's initial page (no workspace open yet).
+// Workspace welcome — the app's initial page (no workspace open).
 //
-// This used to be one icon, one caption and one button in the middle of an
-// otherwise empty window. It now carries the primary action, the recent
-// workspaces (when there are any), a short list of what the agent can do, and
-// the composer's sigils as a preview of the input grammar.
-//
-// Copy stays plain on purpose: no brand mark, no tagline, no benefit clauses —
-// the audience here is the person who is about to open a repo, and every line
-// should say something they could act on or verify.
-//
-// All colors are theme tokens (`bg-card`, `border-hairline`, the inverted
-// `neutral-*` ramp), so light and dark need no `dark:` variants here.
+// Carries the primary action, recent workspaces, a short capability list and the
+// composer's sigils. Copy stays plain: no tagline, no benefit clauses — every line
+// should be something the reader can act on or verify. Colors are theme tokens, so
+// light and dark need no `dark:` variants here.
 
 import type { ComponentType } from "react";
 import {

@@ -1,7 +1,7 @@
-//! Built-in tool registry — the kernel's hands.
+//! Built-in tool registry.
 //!
-//! Phase 1 (native-tools.md): `smart_read`, `fuzzy_patch`,
-//! `smart_test_runner` plus `list_dir`, `smart_grep`, `bash`.
+//! `smart_read`, `fuzzy_patch`, `smart_test_runner`, `list_dir`, `smart_grep`,
+//! `bash` and the session/skill tools.
 
 pub mod apply_patch;
 pub mod ask;

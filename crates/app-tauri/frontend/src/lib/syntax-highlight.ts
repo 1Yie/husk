@@ -204,22 +204,13 @@ export function resolveTokenColor(type?: string, alias?: string | string[]): str
 }
 
 /**
- * Highlight cache — Prism tokenizes from scratch, so the same code string
- * was re-tokenized + re-walked on every render. Two things make that hurt:
+ * Highlight cache — Prism tokenizes from scratch, and the streaming tail's text
+ * changes on every delta while unrelated re-renders (usage tick, `expanded` toggle)
+ * used to build a fresh result object and break the code block's memo. Caching by
+ * content returns the identical object for identical input, so the memo holds.
  *
- *  * the streaming tail block's text changes on every delta, and Streamdown
- *    re-renders the whole block (memo only helps *sibling* blocks);
- *  * a re-render that does NOT change the text (usage meter tick, `expanded`
- *    toggle, parent state) still produced a fresh `HighlightResult` object,
- *    so `memo`'s shallow compare on the code block failed and the subtree
- *    was rebuilt for nothing.
- *
- * Caching by content fixes both: identical input returns the identical
- * object, so the code block's memo holds. Bounded by entries AND total
- * lines, because one entry can be a multi-thousand-token file.
- *
- * Results are treated as immutable by callers (Streamdown only maps
- * `tokens`) — the streaming plugin copies before appending.
+ * Bounded by entries and total lines, since one entry can be a whole file. Callers
+ * treat results as immutable — the streaming plugin copies before appending.
  */
 const CACHE_MAX_ENTRIES = 32;
 const CACHE_MAX_LINES = 20_000;
@@ -424,19 +415,14 @@ export const prismCodePlugin: StreamdownCodePlugin = {
 };
 
 /**
- * Streaming variant — used only for the message block that is still
- * arriving (`isAnimating`).
+ * Streaming variant — only for the block that is still arriving (`isAnimating`).
+ * Its last line is incomplete, and a half-typed string or comment re-tokenizes
+ * differently on every delta, so that line's colors flicker and the work is redone
+ * for text that is about to change anyway.
  *
- * The last line of an in-flight code block is by definition incomplete, and
- * an incomplete line is exactly where Prism is worst: a half-typed string,
- * raw string or block comment re-tokenizes differently on every delta, so
- * the visible colors of that line (and anything after it) flicker, and the
- * work is redone for text the user is about to see change anyway.
- *
- * So: highlight the *complete-line prefix* through the shared cache, and
- * render the trailing partial line as plain text. When the turn finishes,
- * `MemoStreamdown` swaps back to `prismCodePlugin` and the block gets its
- * exact final highlight in one pass.
+ * So the complete-line prefix is highlighted through the shared cache and the trailing
+ * partial line renders as plain text; the finished block switches back for its exact
+ * final highlight in one pass.
  */
 export const prismCodePluginStreaming: StreamdownCodePlugin = {
   name: "shiki",

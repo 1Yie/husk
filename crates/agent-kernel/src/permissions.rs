@@ -1,23 +1,17 @@
-//! `PermissionGate` — the policy engine between "model asked for a tool" and
-//! "tool executes".
+//! `PermissionGate` — policy between "model asked for a tool" and "tool runs".
 //!
-//! Contract (kernel-architecture.md §Permission modes):
+//! | Mode                | Behavior                                              |
+//! |---------------------|-------------------------------------------------------|
+//! | `default`           | ask for non-readonly tools; readonly auto-run         |
+//! | `acceptEdits`       | file edits auto-approve; shell still asks             |
+//! | `auto`              | auto-approve what passes safety checks; escalate rest |
+//! | `dontAsk`           | only pre-approved tools + readonly shell              |
+//! | `bypassPermissions` | approve all except `deny` rules + destructive `ask`   |
 //!
-//! | Mode                 | Behavior                                              |
-//! |----------------------|-------------------------------------------------------|
-//! | `default`            | ask for non-readonly tools; readonly auto-run         |
-//! | `acceptEdits`        | file edits auto-approve; shell still asks             |
-//! | `auto`               | auto-approve what passes safety checks; escalate rest |
-//! | `dontAsk`            | only pre-approved tools + readonly shell              |
-//! | `bypassPermissions`  | approve all except `deny` rules + destructive `ask`   |
-//!
-//! Precedence: `deny > ask > allow`. Rules come from CLI flags +
-//! `~/.config/<app>/config.toml` + `<repo>/.agent/config.toml` (Stage 6
-//! wires the repo-local file; global config lands with the CLI in Stage 7).
-//!
-//! The gate is *synchronous policy*, not a channel — the engine calls
-//! `decide()` and, on `Ask`, pauses in `AwaitingToolConfirmation` until the
-//! session's `ToolDecision` command resolves it.
+//! Precedence: `deny > ask > allow`, fed by CLI flags and `config.toml`. The
+//! gate is synchronous policy, not a channel: the engine calls `decide()` and on
+//! `Ask` pauses in `AwaitingToolConfirmation` until a `ToolDecision` arrives.
+
 
 use std::collections::HashSet;
 

@@ -1,24 +1,18 @@
 //! `serena` — Serena's semantic code tools behind one meta-tool.
 //!
 //! `serena start-mcp-server` runs as an MCP child over stdio (newline-delimited
-//! JSON-RPC — the MCP stdio transport, so the kernel keeps its "no reqwest"
-//! constraint), and the agent reaches its whole suite through a single `serena`
-//! tool instead of ~40 registered entries.
+//! JSON-RPC), so the kernel needs no HTTP client for it.
 //!
 //! ```text
 //! workspace  →  SerenaManager (one slot per root)
-//!                 └── SerenaBridge   — the child process + JSON-RPC plumbing
-//!                 └── SerenaToolCatalog — cached `tools/list`
+//!                 └── SerenaBridge       — child process + JSON-RPC plumbing
+//!                 └── SerenaToolCatalog  — cached `tools/list`
 //! ```
 //!
-//! Graceful degradation: `uvx`/serena missing, or the server failing to come
-//! up, errors only on that call — everything else keeps working, a failed call
-//! carries the child's stderr tail, and a dead child is replaced on the next
-//! call instead of being cached forever.
-//!
-//! Bootstrap vs execution: the first `uvx --from git+…` resolve fetches Serena
-//! and therefore needs network + `uvx`; the tool's `network: false` describes
-//! *execution* (local stdio), not that bootstrap.
+//! A missing `uvx`/serena or a failed start fails only that call and carries the
+//! child's stderr tail; a dead child is replaced on the next call. Bootstrap
+//! (`uvx --from git+…`) needs network — `network: false` describes execution.
+
 
 pub mod bridge;
 pub mod catalog;

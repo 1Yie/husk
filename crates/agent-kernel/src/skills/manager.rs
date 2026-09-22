@@ -1,15 +1,13 @@
 //! The skill backend every surface shares.
 //!
-//! Callers are: the system-prompt catalog, `$name` / `/{name}` expansion, the
-//! `skill` tool, the `/skills` command, and the app's composer picker. They all
-//! come through here so a skill discovered by one is discoverable by all, and
-//! so exactly one place decides what a "load" means (fresh body, shared frame).
+//! The prompt catalog, `$name` / `/{name}` expansion, the `skill` tool, `/skills`
+//! and the composer picker all come through here, so exactly one place decides
+//! what a load means (fresh body, shared frame).
 //!
-//! Caching policy, in one sentence: **the catalog is cached against a change
-//! stamp, the body never is.** The catalog is charged to every turn, so
-//! re-rendering it only when the skill tree actually moves keeps a large tree
-//! from being re-read per prompt; a body is read at the moment it is used, so
-//! an edited skill never serves stale instructions.
+//! Caching: the catalog is cached against a change stamp, the body never is. The
+//! catalog is charged to every turn, so it is re-rendered only when the skill tree
+//! moves; a body is read when used, so an edited skill never serves stale text.
+
 
 use std::path::{Path, PathBuf};
 

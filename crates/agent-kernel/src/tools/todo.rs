@@ -1,25 +1,15 @@
-//! `todo` — a persistent task list the agent manages while it works.
+//! `todo` — session-scoped task list the agent maintains while it works.
 //!
-//! Mirrors the pi-todo extension's model (list/add/toggle/clear) — and the
-//! mainstream convention (Claude Code's TodoWrite, pi's todo, Codex plan):
-//! the list is **session-scoped agent state**, not project data. It lives
-//! next to the session's history in the app state dir
-//! (`~/.local/share/husk/sessions/<ws>/<id>.todos.json`) — a new session
-//! starts clean, a resumed session keeps its list, and the user's repo is
-//! never polluted with agent scratch files.
+//! Stored beside the session's history
+//! (`~/.local/share/husk/sessions/<ws>/<id>.todos.json`): a new session starts
+//! clean, a resumed one keeps its list, and the user's repo stays free of agent
+//! scratch files. That is also why `readonly: true` is honest — it never touches
+//! the workspace, so it needs no approval.
 //!
-//! `readonly: true` here means **it does not touch the user's workspace** —
-//! not that it mutates nothing. It writes session state under the app data
-//! dir, which is why it can run autonomously (no approval, no permission
-//! gate) while `edit`/`write`/`bash` cannot.
-//!
-//! Two invariants the store must keep, because the model treats the list as
-//! ground truth for what it is doing:
-//!   * **No lost updates** — `exec` is load → mutate → save, so one
-//!     invocation at a time per store file (see `path_lock`).
-//!   * **Monotonic ids** — ids are never reused, not even across `clear`;
-//!     a recycled `#1` on a different task is exactly the aliasing that makes
-//!     the model mark the wrong item done.
+//! Two invariants: one load→mutate→save per store file at a time (`path_lock`),
+//! and ids are never reused, not even across `clear` — a recycled `#1` makes the
+//! model mark the wrong item done.
+
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

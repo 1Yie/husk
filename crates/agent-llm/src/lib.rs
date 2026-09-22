@@ -1,12 +1,9 @@
 //! agent-llm — pluggable LLM provider layer.
 //!
-//! Design goal (llm-provider-layer.md): **the kernel and UI never see vendor
-//! JSON.** Everything behind `Arc<dyn LlmProvider>` speaks the normalized
-//! `StreamChunk` protocol; adding a provider = adding one adapter file.
-//!
-//! Stage 2 scope: types, trait, adapters, config,
-//! factory, SSE helpers, sampler resilience. `masking`/`fallback` are stubbed
-//! for their Stage-11/2 completion.
+//! The kernel and UI never see vendor JSON: everything behind `Arc<dyn LlmProvider>`
+//! speaks the normalized `StreamChunk` protocol, so adding a provider means adding
+//! one adapter file.
+
 
 pub mod adapters;
 pub mod config;

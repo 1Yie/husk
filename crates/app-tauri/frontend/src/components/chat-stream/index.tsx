@@ -50,16 +50,11 @@ const streamdownIcons = {
   CopyIcon: Copy,
 };
 
-/** Streamdown wrapped in `memo` — finished turns' `text` strings are
- * stable references (applyEvent only concatenates the streaming tail),
- * so the whole transcript doesn't re-parse + re-highlight markdown on
- * every delta. Only the block whose text actually changed re-renders.
- *
- * `plugins` is memoized on `animating` on purpose: a fresh object every
- * render would defeat Streamdown's own per-block memo (its comparator
- * includes `plugins`) and re-render every code block in the message. While
- * this is the streaming tail it also selects the complete-lines-only
- * highlighter; the final render uses the full one. */
+/** Streamdown in `memo`: a finished turn's `text` reference is stable, so only the
+ * block whose text changed re-renders. `plugins` is memoized on `animating` — a
+ * fresh object would defeat Streamdown's own per-block memo (its comparator includes
+ * `plugins`) and re-render every code block; while streaming it also selects the
+ * complete-lines-only highlighter. */
 const MemoStreamdown = memo(function MemoStreamdown({
   text,
   animating,
@@ -698,18 +693,12 @@ function parseTurns(items: StreamItem[]): Turn[] {
   return turns;
 }
 
-/** Turns mount ALL at once — the user picked the upfront-load model:
- * one heavy commit on session open (behind the loading veil), then
- * `content-visibility: auto` on each turn skips offscreen layout/paint
- * so scrolling stays smooth with zero per-scroll mounting cost. */
+/** Turns mount all at once, behind the loading veil; `content-visibility: auto` then
+ *  skips offscreen layout and paint, so scrolling costs nothing per turn. */
 
-/** A single assistant text block can carry a giant payload (a pasted
- *  file, a huge table, a multi-thousand-line dump) — streamdown renders
- *  every block, so one message alone can mount tens of thousands of
- *  nodes and freeze the whole webview. Cap the rendered prefix; the
- *  full text expands on explicit click. Only applies to settled text —
- *  a live-streaming tail must stay visible, so animating text is never
- *  truncated. */
+/** One text block can carry a paste-sized payload and streamdown renders every
+ *  block, so a single message can mount tens of thousands of nodes. Cap the rendered
+ *  prefix behind an explicit expand — never while streaming. */
 const MAX_TEXT_CHARS = 15000;
 
 function sliceAtBoundary(text: string, max: number): string {
@@ -843,17 +832,12 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
   const turns = useMemo(() => parseTurns(view.items), [view.items]);
 
-  // Tail-first mount: a reopened session mounts only the last
-  // MOUNT_CHUNK turns in the unveiling commit — that's what the viewport
-  // actually shows — then backfills older turns in small macrotask
-  // slices. Every commit stays cheap so sidebar/settings input keeps
-  // dispatching; the growth happens above the pinned bottom, so it's
-  // invisible. A prepended page mounts in full (render-time adjust) so
-  // the scroll-restore delta measures the real added height.
-  // Sized so one commit ≈ <300ms in dev (StrictMode double-render
-  // doubles the real cost): the unveiling commit mounts 6 turns, then
-  // backfill ticks grow 4 per macrotask — each tick is a small freeze
-  // input can dispatch between, instead of one 1-2s lockup.
+  // Tail-first mount: the unveiling commit mounts only the last MOUNT_CHUNK turns
+  // (what the viewport shows), then backfills older turns in small macrotask slices,
+  // so no commit grows long enough to block input. Growth happens above the pinned
+  // bottom, so it stays invisible. A prepended page mounts in full so the
+  // scroll-restore delta measures the real added height. Sized for one commit
+  // ≈ <300ms in dev, where StrictMode double-renders.
   const MOUNT_CHUNK = 6;
   const BACKFILL_CHUNK = 4;
   // Leading turns kept unmounted — decremented by backfill ticks to 0.

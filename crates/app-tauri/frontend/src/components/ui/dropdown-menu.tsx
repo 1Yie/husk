@@ -5,10 +5,8 @@ import { Check, ChevronRight, Circle } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 import { usePopperPlacedRef } from "./use-popper-placed";
 
-// `modal` is removed from the public props: a modal menu makes Radix
-// scroll-lock <body> (scrollbar disappears + layout shifts). Every menu in
-// this app is a modeless popover — the wrapper enforces it, callers can't
-// accidentally re-enable it.
+// `modal` is removed from the public props: a modal menu makes Radix scroll-lock
+// <body> (scrollbar disappears, layout shifts), and every menu here is modeless.
 const DropdownMenu = (
   props: Omit<
     React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Root>,

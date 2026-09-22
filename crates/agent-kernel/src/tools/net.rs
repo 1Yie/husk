@@ -1,18 +1,18 @@
 //! Guarded outbound HTTP — the shared network boundary for fetch tools.
 //!
-//! `web_fetch` is `readonly`, but readonly ≠ harmless: it is a *network read
-//! capability* and its output is untrusted external input to the model. This
-//! module owns the policy every request must pass:
+//! `web_fetch` is readonly but still a network read whose output is untrusted
+//! input to the model, so every request passes:
 //!
 //! ```text
 //! URL → scheme check → DNS resolve → IP policy → request
 //!                          ↑──── re-checked per redirect hop
 //! ```
 //!
-//! Redirects are followed manually (reqwest's `redirect::Policy::none()`) so
-//! every hop re-runs scheme + DNS + IP validation — a public URL 302-ing to
-//! `169.254.169.254` or `127.0.0.1` is refused. Bodies stream through a byte
-//! cap, and the caller's cooperative cancel flag is polled per hop/chunk.
+//! Redirects are followed manually (`redirect::Policy::none()`) so each hop
+//! re-runs the checks — a public URL redirecting to `169.254.169.254` or
+//! `127.0.0.1` is refused. Bodies stream under a byte cap, and the caller's
+//! cancel flag is polled per hop and chunk.
+
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};

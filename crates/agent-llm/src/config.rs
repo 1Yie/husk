@@ -161,12 +161,9 @@ impl ProviderConfig {
 
 /// Feature compatibility flags — the full pi (`models.json`) `compat` surface.
 ///
-/// Every field is optional with `None` meaning "not declared" → the adapter's
-/// own default applies. Set at provider level to span all models, or per model
-/// (pi merges model-level over model-level, model wins).
-///
-/// Field names follow the Rust snake_case convention with the pi camelCase
-/// spelling accepted as an alias, so a hand-written `models.json` and a
+/// Every field is optional; `None` means "not declared" and the adapter's default
+/// applies. Set per provider or per model, the model winning. Rust snake_case names
+/// accept the pi camelCase spelling as an alias, so `models.json` and a
 /// settings-written `config.toml` both round-trip.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderCompat {

@@ -1587,14 +1587,11 @@ function ComposerTextarea({
 
 /** Composer right-click menu, anchored at the click point.
  *
- * Deliberately a DropdownMenu and not a Radix ContextMenu: ContextMenu's
- * content hard-codes the *submenu* placement (`side="right"`, `align="start"`,
- * `sideOffset=2`) after the caller's props, so it can't be asked to flip up. In
- * this bottom-anchored input that produced a menu whose bottom edge was clamped
- * flush against the window's bottom — measured in WebKitGTK: 0px gap. A
- * DropdownMenu anchored to a zero-size element at the pointer keeps the
- * conventional behaviour: below the pointer, flipping above when there is no
- * room, with `collisionPadding` keeping it off the window edges.
+ * Not a Radix ContextMenu: its content hard-codes the submenu placement
+ * (`side="right"`, `align="start"`) after the caller's props, so it cannot flip up —
+ * in this bottom-anchored input the menu was clamped flush against the window's
+ * bottom edge. An anchored DropdownMenu keeps "below the pointer, flip when cramped",
+ * with `collisionPadding` off the window edges.
  */
 function ComposerMenu({
   point,
