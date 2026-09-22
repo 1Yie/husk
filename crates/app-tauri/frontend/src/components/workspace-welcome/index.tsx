@@ -75,7 +75,7 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Pro
               打开工作区…
             </Button>
             {recents.length === 0 && (
-              <span className="text-[12px] text-neutral-400">
+              <span className="text-[12px] text-neutral-500">
                 或从左侧「项目」打开最近的工作区
               </span>
             )}
@@ -84,7 +84,7 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Pro
 
         {recents.length > 0 && (
           <div className="w-full flex flex-col gap-2">
-            <span className="flex items-center gap-1.5 px-1 text-[12px] text-neutral-400">
+            <span className="flex items-center gap-1.5 px-1 text-[12px] text-neutral-500">
               <Clock className="h-3.5 w-3.5" />
               最近打开
             </span>
@@ -97,16 +97,16 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Pro
                   onClick={() => onOpenRecent(r.path)}
                   className="group flex items-center gap-3 rounded-[14px] border border-hairline bg-card px-3 py-2.5 text-left cursor-pointer transition-colors hover:bg-hover"
                 >
-                  <FolderOpen className="h-4 w-4 shrink-0 text-neutral-400 group-hover:text-neutral-600" />
+                  <FolderOpen className="h-4 w-4 shrink-0 text-neutral-500 group-hover:text-neutral-600" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] text-neutral-800">
                       {r.name || r.path}
                     </span>
-                    <span className="block truncate text-[11px] text-neutral-400">
+                    <span className="block truncate text-[11px] text-neutral-500">
                       {r.path}
                     </span>
                   </span>
-                  <span className="shrink-0 text-[11px] text-neutral-400">
+                  <span className="shrink-0 text-[11px] text-neutral-500">
                     {timeAgo(r.last_opened)}
                   </span>
                 </button>
@@ -132,7 +132,7 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Pro
           ))}
         </div>
 
-        <div className="flex items-center gap-3 text-[12px] text-neutral-400">
+        <div className="flex items-center gap-3 text-[12px] text-neutral-500">
           <Sigil k="@" label="引用文件" />
           <Sigil k="/" label="命令" />
           <Sigil k="$" label="技能" />

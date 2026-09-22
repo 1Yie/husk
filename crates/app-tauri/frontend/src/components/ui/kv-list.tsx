@@ -163,7 +163,7 @@ export function ColorPill({
             "h-8 px-4 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-2xs transition-colors select-none border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)]",
             light
               ? "text-neutral-800 hover:bg-neutral-50"
-              : "text-white hover:opacity-90 hover:text-white border-white/20",
+              : "text-zinc-50 hover:opacity-90 hover:text-zinc-50 border-zinc-50/20",
             disabled && "opacity-50 cursor-not-allowed pointer-events-none",
             className
           )}
@@ -189,7 +189,7 @@ export function ColorPill({
         <div className="flex flex-col gap-2.5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-neutral-700">预设颜色</span>
-            <span className="text-[11px] font-mono text-neutral-400">{value}</span>
+            <span className="text-[11px] font-mono text-neutral-500">{value}</span>
           </div>
 
           <div className="grid grid-cols-5 gap-1.5">
@@ -214,7 +214,7 @@ export function ColorPill({
                     <Check
                       className={cn(
                         "w-3.5 h-3.5",
-                        isPresetLight ? "text-neutral-900" : "text-white"
+                        isPresetLight ? "text-neutral-900" : "text-zinc-50"
                       )}
                     />
                   )}

@@ -2,6 +2,12 @@ import * as React from "react";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 
 import { cn } from "@/lib/utils";
+import {
+  OVERLAY_DIVIDER,
+  SURFACE_OVERLAY,
+  SURFACE_OVERLAY_FOCUS,
+  SURFACE_OVERLAY_OPEN,
+} from "@/lib/theme";
 import { usePopperPlacedRef } from "./use-popper-placed";
 
 // Same visual contract as dropdown-menu.tsx — one menu look across the app.
@@ -40,7 +46,7 @@ const ContextMenuSubTrigger = React.forwardRef<
   <ContextMenuPrimitive.SubTrigger
     ref={ref}
     className={cn(
-      "flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none focus:bg-neutral-100 data-[state=open]:bg-neutral-100",
+      "flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none focus:bg-neutral-100 dark:focus:bg-[var(--husk-border)] data-[state=open]:bg-neutral-100 dark:data-[state=open]:bg-[#34343d]",
       inset && "pl-8",
       className
     )}
@@ -61,9 +67,10 @@ const ContextMenuSubContent = React.forwardRef<
   <ContextMenuPrimitive.SubContent
     ref={setRef}
     className={cn(
-      "z-50 min-w-[8rem] overflow-hidden rounded-xl border border-neutral-200 bg-white p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+      "z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
       // Radix parks unpositioned content above the viewport; an engine that
       // paints it first puts the menu in the corner. Never paint it.
+      SURFACE_OVERLAY,
       !placed && "invisible",
       className
     )}
@@ -94,7 +101,8 @@ const ContextMenuContent = React.forwardRef<
         onCloseAutoFocus?.(e);
       }}
       className={cn(
-        "z-50 min-w-[8rem] overflow-hidden rounded-xl border border-neutral-200 bg-white p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+        "z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+        SURFACE_OVERLAY,
         !placed && "invisible",
         className
       )}
@@ -114,7 +122,8 @@ const ContextMenuItem = React.forwardRef<
   <ContextMenuPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none transition-colors focus:bg-neutral-100 focus:text-neutral-900 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "relative flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none transition-colors  focus:text-neutral-900 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      SURFACE_OVERLAY_FOCUS  /* hmm */,
       inset && "pl-8",
       className
     )}
@@ -129,7 +138,7 @@ const ContextMenuSeparator = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <ContextMenuPrimitive.Separator
     ref={ref}
-    className={cn("-mx-1 my-1 h-px bg-neutral-100", className)}
+    className={cn("-mx-1 my-1 h-px bg-neutral-100 dark:bg-[var(--husk-border)]", className)}
     {...props}
   />
 ));

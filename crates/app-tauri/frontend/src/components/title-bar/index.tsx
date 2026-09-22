@@ -97,7 +97,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
               type="button"
               data-tauri-drag-region="false"
               onClick={onShowRaw}
-              className="ml-1 flex-none rounded p-1 text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+              className="ml-1 flex-none rounded p-1 text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
               aria-label="查看原始对话 JSON"
             >
               <BarChartHorizontalStart className="h-3.5 w-3.5" />
@@ -114,7 +114,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
        * the only conditional one: outside a repo there is no branch to show. */}
       {!noWorkspace && (
       <div
-        className="flex items-center gap-3 flex-none mr-2 text-[11px] font-mono text-neutral-400"
+        className="flex items-center gap-3 flex-none mr-2 text-[11px] font-mono text-neutral-600"
       >
         <StreamHealth />
         {gitInfo?.branch && (

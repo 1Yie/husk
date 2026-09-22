@@ -65,11 +65,11 @@ const MessageRow = memo(function MessageRow({
       >
         <ChevronRight
           className={cn(
-            "h-3 w-3 flex-none text-neutral-400 transition-transform",
+            "h-3 w-3 flex-none text-neutral-500 transition-transform",
             open && "rotate-90",
           )}
         />
-        <span className="w-10 flex-none font-mono text-[10px] text-neutral-400 tabular-nums">
+        <span className="w-10 flex-none font-mono text-[10px] text-neutral-500 tabular-nums">
           #{index}
         </span>
         <span
@@ -81,7 +81,7 @@ const MessageRow = memo(function MessageRow({
           {m.role}
         </span>
         {m.tool_call_id && (
-          <span className="flex-none font-mono text-[10px] text-neutral-400">
+          <span className="flex-none font-mono text-[10px] text-neutral-500">
             →{m.tool_call_id.slice(0, 12)}
           </span>
         )}
@@ -92,7 +92,7 @@ const MessageRow = memo(function MessageRow({
           role="button"
           tabIndex={-1}
           onClick={copyOne}
-          className="flex-none rounded p-1 text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200/60"
+          className="flex-none rounded p-1 text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200/60"
           title="复制此条 JSON"
         >
           {copied ? (
@@ -153,7 +153,7 @@ export function RawHistoryDialog({
                 </span>
               )}
               {title && (
-                <span className="min-w-0 truncate text-[11px] text-neutral-400">
+                <span className="min-w-0 truncate text-[11px] text-neutral-500">
                   {title}
                 </span>
               )}
@@ -187,11 +187,11 @@ export function RawHistoryDialog({
             // rows (that repaint is the visible flash on WebKitGTK).
             <div className="h-full" />
           ) : loading ? (
-            <div className="flex h-full items-center justify-center text-[12px] text-neutral-400">
+            <div className="flex h-full items-center justify-center text-[12px] text-neutral-500">
               正在读取…
             </div>
           ) : !messages || messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-[12px] text-neutral-400">
+            <div className="flex h-full items-center justify-center text-[12px] text-neutral-500">
               暂无记录
             </div>
           ) : (

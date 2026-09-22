@@ -101,7 +101,7 @@ function InstructionsPane() {
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-semibold text-neutral-900">{title}</span>
         {file?.path && (
-          <span className="text-[11px] text-neutral-400 font-mono truncate">
+          <span className="text-[11px] text-neutral-500 font-mono truncate">
             {file.path}
           </span>
         )}
@@ -433,7 +433,7 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
         {cfgPath && (
-          <span className="text-[11px] text-neutral-400 font-mono truncate">
+          <span className="text-[11px] text-neutral-500 font-mono truncate">
             {cfgPath}{fmt ? `（${fmt}）` : ""}
           </span>
         )}
@@ -457,7 +457,7 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                 <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-mono">
                   {p.kind ?? p.type ?? p.api ?? "openai_compat"}
                 </Badge>
-                <span className="text-[11px] text-neutral-400 font-mono truncate">
+                <span className="text-[11px] text-neutral-500 font-mono truncate">
                   {p.base_url ?? p.baseUrl ?? ""}
                 </span>
               </div>
@@ -529,7 +529,7 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                               </Badge>
                             )}
                             {m.context_window ? (
-                              <span className="text-[11px] text-neutral-400 font-mono tabular-nums">
+                              <span className="text-[11px] text-neutral-500 font-mono tabular-nums">
                                 {(m.context_window / 1000).toFixed(0)}k
                               </span>
                             ) : null}
@@ -544,7 +544,7 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                         </div>
                         {/* Meta line spanning the full card width. */}
                         {(m.id || segs.length > 0) && (
-                          <div className="mt-1.5 pl-7 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono text-neutral-400">
+                          <div className="mt-1.5 pl-7 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono text-neutral-500">
                             {m.id && <span>{m.id}</span>}
                             {segs.map((seg, j) => (
                               <span key={j} className="inline-flex items-center gap-1">
@@ -744,7 +744,7 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                 </Field>
               ))}
             </div>
-            <p className="text-[11px] text-neutral-400">
+            <p className="text-[11px] text-neutral-500">
               思考等级映射：留空 = 不映射（按提供商默认传参）
             </p>
           </div>
@@ -853,7 +853,7 @@ function SkillsPane({ ov, reload }: { ov: AgentOverview | null; reload: () => vo
                       全局
                     </Badge>
                   )}
-                  <span className="text-[11px] text-neutral-400 font-mono max-w-[220px] truncate">
+                  <span className="text-[11px] text-neutral-500 font-mono max-w-[220px] truncate">
                     {s.path}
                   </span>
                 </div>
@@ -1010,7 +1010,7 @@ function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void 
                   <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
                     {p.entry.url ? "http" : p.kind}
                   </Badge>
-                  <span className="text-[11px] text-neutral-400 tabular-nums">
+                  <span className="text-[11px] text-neutral-500 tabular-nums">
                     {p.tools} 工具
                   </span>
                 </div>
@@ -1180,7 +1180,7 @@ function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload: () => 
                       {a.global ? "全局" : "工作区"}
                     </Badge>
                     {a.path && (
-                      <span className="text-[11px] text-neutral-400 font-mono max-w-[200px] truncate">
+                      <span className="text-[11px] text-neutral-500 font-mono max-w-[200px] truncate">
                         {a.path}
                       </span>
                     )}

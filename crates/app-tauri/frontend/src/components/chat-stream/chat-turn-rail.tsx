@@ -100,7 +100,7 @@ export function ChatTurnRail({
           {[0, 1, 2, 3, 4, 5, 6].map((i) => (
             <div key={i} className="h-[11px] w-[20px] flex items-center justify-center">
               <div
-                className="w-[10px] h-[2px] rounded-full bg-neutral-300 dark:bg-[#40404a] animate-pulse"
+                className="w-[10px] h-[2px] rounded-full bg-neutral-300 dark:bg-[var(--husk-n300)] animate-pulse"
                 style={{ animationDelay: `${i * 90}ms` }}
               />
             </div>
@@ -181,7 +181,7 @@ export function ChatTurnRail({
                   <div
                     className={cn(
                       "rounded-full transition-all duration-150",
-                      "w-[3px] h-[3px] bg-neutral-300 dark:bg-[#4a4a55] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#6b6b78] group-hover/item:w-[4px] group-hover/item:h-[4px]"
+                      "w-[3px] h-[3px] bg-neutral-300 dark:bg-[var(--husk-n300)] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[var(--husk-n400)] group-hover/item:w-[4px] group-hover/item:h-[4px]"
                     )}
                   />
                 ) : mark.type === "user" ? (
@@ -191,7 +191,7 @@ export function ChatTurnRail({
                       "rounded-full transition-all duration-150",
                       isActive
                         ? "w-[14px] h-[3.5px] bg-neutral-900 shadow-[0_0_4px_rgba(255,255,255,0.35)]"
-                        : "w-[14px] h-[2px] bg-neutral-300 dark:bg-[#40404a] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#5c5c66] group-hover/item:w-[16px]"
+                        : "w-[14px] h-[2px] bg-neutral-300 dark:bg-[var(--husk-n300)] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[var(--husk-n400)] group-hover/item:w-[16px]"
                     )}
                   />
                 ) : (
@@ -201,17 +201,17 @@ export function ChatTurnRail({
                       "rounded-full transition-all duration-150",
                       isActive
                         ? "w-[9px] h-[3.5px] bg-neutral-900 shadow-[0_0_4px_rgba(255,255,255,0.35)]"
-                        : "w-[8px] h-[2px] bg-neutral-300 dark:bg-[#40404a] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[#5c5c66] group-hover/item:w-[10px]"
+                        : "w-[8px] h-[2px] bg-neutral-300 dark:bg-[var(--husk-n300)] group-hover/item:bg-neutral-500 dark:group-hover/item:bg-[var(--husk-n400)] group-hover/item:w-[10px]"
                     )}
                   />
                 )}
 
                 {isHovered && mark.type !== "placeholder" && (
-                  <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] dark:bg-[#232329]/95 text-white text-[11px] px-2.5 py-1.5 rounded-lg shadow-popup border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)] backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
-                    <div className="flex items-center gap-1.5 text-[10px] font-medium text-neutral-400">
+                  <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] dark:bg-[var(--husk-card)]/95 text-zinc-50 text-[11px] px-2.5 py-1.5 rounded-lg shadow-popup border border-zinc-700/60 backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
+                    <div className="flex items-center gap-1.5 text-[10px] font-medium text-neutral-500">
                       <span>{mark.previewTitle}</span>
                       <span className="text-neutral-500">•</span>
-                      <span className="text-neutral-400">点击跳转</span>
+                      <span className="text-neutral-500">点击跳转</span>
                     </div>
                     {mark.previewSnippet && (
                       <div className="text-neutral-200 truncate font-normal text-[12px] max-w-[260px]">

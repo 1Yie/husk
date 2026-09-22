@@ -83,7 +83,7 @@ export function TodoView({ content }: Props) {
             任务清单
           </span>
           {headerMessage && (
-            <span className="text-[11px] text-neutral-400 font-normal truncate">
+            <span className="text-[11px] text-neutral-500 font-normal truncate">
               · {headerMessage}
             </span>
           )}
@@ -108,7 +108,7 @@ export function TodoView({ content }: Props) {
             className={cn(
               "group flex items-start gap-2.5 py-1 px-1.5 rounded-lg transition-colors",
               item.done
-                ? "text-neutral-400"
+                ? "text-neutral-500"
                 : "text-neutral-800 hover:bg-[color-mix(in_srgb,var(--husk-n100)_60%,transparent)]"
             )}
           >
@@ -121,7 +121,7 @@ export function TodoView({ content }: Props) {
                 <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 group-hover:border-neutral-400 transition-colors" />
               )}
             </span>
-            <span className="flex h-5 items-center font-mono text-[11px] text-neutral-400 shrink-0 select-none">
+            <span className="flex h-5 items-center font-mono text-[11px] text-neutral-500 shrink-0 select-none">
               #{item.id}
             </span>
             <span

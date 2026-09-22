@@ -125,6 +125,83 @@ function batchChildren(rawArgs: string, content: string) {
   return items;
 }
 
+/** `delegate` args → `N tasks` chip text for the parent capsule. */
+function delegateCallCount(rawArgs: string): string {
+  try {
+    const parsed = JSON.parse(rawArgs);
+    if (Array.isArray(parsed?.tasks)) return `${parsed.tasks.length} tasks`;
+    return parsed?.task ? "1 task" : "";
+  } catch {
+    return "";
+  }
+}
+
+/** The label the kernel gives each child card — keep the two in step:
+ * `subagent` for one unnamed child, `<agent> #n` when a manifest was named. */
+function delegateChildLabel(agent: string | undefined, index: number, total: number): string {
+  if (agent) return `${agent} #${index + 1}`;
+  return total === 1 ? "subagent" : `subagent #${index + 1}`;
+}
+
+/** Rebuild a delegation's nested child items from the persisted args
+ * (`task`/`tasks`) and result text (`── [i] ok · 3s ──` sections for the
+ * parallel form; the bare report for a single child) — live-only events, so
+ * without this a reopened session would show the parent capsule alone. */
+function delegateChildren(rawArgs: string, content: string) {
+  let tasks: string[] = [];
+  let agent: string | undefined;
+  try {
+    const parsed = JSON.parse(rawArgs);
+    if (Array.isArray(parsed?.tasks)) tasks = parsed.tasks.map(String);
+    else if (typeof parsed?.task === "string") tasks = [parsed.task];
+    if (typeof parsed?.agent === "string") agent = parsed.agent;
+  } catch {
+    /* malformed args — the report below still carries the bodies */
+  }
+  const total = tasks.length;
+  const items: {
+    kind: "tool";
+    name: string;
+    args: string;
+    content?: string;
+    ok: boolean;
+    parent: string;
+  }[] = [];
+  if (total <= 1) {
+    // Single child: the report is the whole body, one card.
+    const body = content.trim();
+    if (!body) return items;
+    items.push({
+      kind: "tool" as const,
+      name: delegateChildLabel(agent, 0, 1),
+      args: tasks[0] ? extractArgsPreview(JSON.stringify(tasks[0])) : "",
+      content: body,
+      ok: true,
+      parent: "delegate",
+    });
+    return items;
+  }
+  // Parallel form: `── [i] ok · 3s ──` sections, input order.
+  const parts = content.split(/\n── \[(\d+)\] /);
+  for (let i = 1; i + 1 < parts.length; i += 2) {
+    const idx = Number(parts[i]);
+    const rest = parts[i + 1];
+    const nl = rest.indexOf("──");
+    if (nl < 0) continue;
+    const status = rest.slice(0, nl).trim();
+    const body = rest.slice(nl + 2).replace(/^\n/, "").trim();
+    items.push({
+      kind: "tool" as const,
+      name: delegateChildLabel(agent, idx, total),
+      args: tasks[idx] ? extractArgsPreview(JSON.stringify(tasks[idx])) : "",
+      content: body || undefined,
+      ok: status.startsWith("ok"),
+      parent: "delegate",
+    });
+  }
+  return items;
+}
+
 /** Rebuild a `SessionView`'s item list from persisted `ChatMessage`
  * history — used when switching to a session whose in-memory view was
  * never built (first open after launch) or dropped. Tool result messages
@@ -189,12 +266,14 @@ function indexToolCalls(idToTool: Map<string, ToolInfo>, m: ChatMessage) {
     const raw = c.function.arguments ?? "";
     idToTool.set(c.id, {
       name: c.function.name,
-      // batch_execute's own preview is the call count — the real
-      // per-item args live inside `calls[]`.
+      // batch_execute's / delegate's own preview is the call count — the
+      // real per-item args live inside `calls[]` / `tasks[]`.
       args:
         c.function.name === "batch_execute"
           ? batchCallCount(raw)
-          : extractArgsPreview(raw),
+          : c.function.name === "delegate"
+            ? delegateCallCount(raw)
+            : extractArgsPreview(raw),
       raw,
     });
   }
@@ -241,6 +320,12 @@ function foldMessage(
       // survives reload.
       if (toolInfo.name === "batch_execute") {
         for (const child of batchChildren(toolInfo.raw, m.content ?? "")) {
+          v.items.push({ ...child, hi });
+        }
+      }
+      // Same for a delegation: child cards are live-only events.
+      if (toolInfo.name === "delegate") {
+        for (const child of delegateChildren(toolInfo.raw, m.content ?? "")) {
           v.items.push({ ...child, hi });
         }
       }

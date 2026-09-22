@@ -205,7 +205,7 @@ export const chatMarkdownComponents = {
       className="flex cursor-pointer items-center gap-2 font-medium text-neutral-800 select-none list-none [&::-webkit-details-marker]:hidden"
       {...props}
     >
-      <ChevronDown className="h-3.5 w-3.5 text-neutral-400 transition-transform duration-250 ease-out group-open:rotate-0 -rotate-90 shrink-0" />
+      <ChevronDown className="h-3.5 w-3.5 text-neutral-500 transition-transform duration-250 ease-out group-open:rotate-0 -rotate-90 shrink-0" />
       <span>{renderWithTwemoji(children)}</span>
     </summary>
   ),

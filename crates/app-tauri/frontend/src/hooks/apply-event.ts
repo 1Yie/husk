@@ -31,6 +31,27 @@ function rateEstimate(rate: SessionView["rate"]): number {
   return rate.activeMs > 0 ? rate.chars / 4 / (rate.activeMs / 1000) : 0;
 }
 
+/** Append a delegated child's streamed text to its own capsule (matched by the
+ *  label the kernel tagged it with). Returns false when no such row is open —
+ *  the text is then dropped rather than misattributed to the turn's draft. */
+function appendChildText(
+  items: SessionView["items"],
+  parent: string,
+  text: string,
+  reasoning: boolean,
+): boolean {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "tool" && it.content === undefined && it.name === parent) {
+      items[i] = reasoning
+        ? { ...it, liveReasoning: (it.liveReasoning ?? "") + text }
+        : { ...it, live: (it.live ?? "") + text };
+      return true;
+    }
+  }
+  return false;
+}
+
 export function applyEvent(
   v: SessionView,
   ev: AgentEventEnvelope["event"]
@@ -75,17 +96,30 @@ export function applyEvent(
       rate: { chars: 0, activeMs: 0, lastAt: null },
     };
   }
+  // A delegated child's deltas carry its capsule label: they belong to that
+  // child's row, never to the turn's draft (three children would share one
+  // buffer), and they must not move the turn's tokens/sec meter.
+  if ("TextDelta" in ev && ev.TextDelta.parent) {
+    const { parent, text } = ev.TextDelta;
+    appendChildText(items, parent, text, false);
+    return { ...v, items };
+  }
+  if ("ReasoningDelta" in ev && ev.ReasoningDelta.parent) {
+    const { parent, text } = ev.ReasoningDelta;
+    appendChildText(items, parent, text, true);
+    return { ...v, items };
+  }
   if ("TextDelta" in ev) {
     closeOpenThinking(items);
-    const rate = bumpRate(v, ev.TextDelta);
+    const rate = bumpRate(v, ev.TextDelta.text);
     const l = last();
     if (l?.kind === "assistant")
-      items[items.length - 1] = { ...l, text: l.text + ev.TextDelta, streaming: true };
-    else items.push({ kind: "assistant", text: ev.TextDelta, streaming: true });
+      items[items.length - 1] = { ...l, text: l.text + ev.TextDelta.text, streaming: true };
+    else items.push({ kind: "assistant", text: ev.TextDelta.text, streaming: true });
     return { ...v, items, rate, toksPerSec: rateEstimate(rate) };
   }
   if ("ReasoningDelta" in ev) {
-    const rate = bumpRate(v, ev.ReasoningDelta);
+    const rate = bumpRate(v, ev.ReasoningDelta.text);
     const l = last();
     // The current reply's thinking block is either the tail item, or sits
     // immediately before the streaming assistant bubble — some backends
@@ -102,15 +136,15 @@ export function applyEvent(
     if (ti >= 0) {
       const it = items[ti];
       if (it.kind === "thinking")
-        items[ti] = { ...it, text: it.text + ev.ReasoningDelta, done: false };
+        items[ti] = { ...it, text: it.text + ev.ReasoningDelta.text, done: false };
     } else if (l?.kind === "assistant" && l.streaming) {
       items.splice(items.length - 1, 0, {
         kind: "thinking",
-        text: ev.ReasoningDelta,
+        text: ev.ReasoningDelta.text,
         done: false,
       });
     } else {
-      items.push({ kind: "thinking", text: ev.ReasoningDelta, done: false });
+      items.push({ kind: "thinking", text: ev.ReasoningDelta.text, done: false });
     }
     return { ...v, items, rate, toksPerSec: rateEstimate(rate) };
   }

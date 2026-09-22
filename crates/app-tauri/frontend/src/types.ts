@@ -34,8 +34,8 @@ export type UiEvent =
       };
     }
   | { UserPrompt: string }
-  | { TextDelta: string }
-  | { ReasoningDelta: string }
+  | { TextDelta: { text: string; parent?: string | null } }
+  | { ReasoningDelta: { text: string; parent?: string | null } }
   | { ToolCallStarted: { name: string; args_preview: string; parent?: string | null } }
   | {
       ToolCallFinished: {

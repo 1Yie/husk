@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:colors": "node scripts/check-theme-colors.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

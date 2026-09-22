@@ -37,13 +37,13 @@ export function StatusBar({ view }: { view: SessionView }) {
       <span className="flex-1" />
       {(view.usage.prompt > 0 || view.usage.completion > 0) && (
         <>
-          <span className="font-mono text-neutral-400">
+          <span className="font-mono text-neutral-500">
             {fmtK(view.usage.prompt)} in · {fmtK(view.usage.completion)} out
           </span>
           {pct !== null && (
             <>
               <Separator orientation="vertical" className="h-3" />
-              <span className="font-mono text-neutral-400">{pct}%</span>
+              <span className="font-mono text-neutral-500">{pct}%</span>
             </>
           )}
         </>

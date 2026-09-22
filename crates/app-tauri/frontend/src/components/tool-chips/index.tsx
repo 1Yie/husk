@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "@keyline-icons/react";
+import { Bot } from "lucide-react";
 import { DiffView } from "../diff-view";
 import { TodoView } from "../todo-view";
 import { highlightCodeToHtml } from "../../lib/syntax-highlight";
@@ -117,7 +118,7 @@ function renderHighlightedLines(
       const highlighted = highlightCodeToHtml(code, lang);
       return (
         <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-[color-mix(in_srgb,var(--husk-n200)_40%,transparent)] px-1 -mx-1 rounded-xs transition-colors">
-          <span className="text-neutral-400 select-none mr-2 inline-block min-w-[2.5rem] text-right font-mono">{prefix}</span>
+          <span className="text-neutral-500 select-none mr-2 inline-block min-w-[2.5rem] text-right font-mono">{prefix}</span>
           <span dangerouslySetInnerHTML={{ __html: highlighted }} />
         </div>
       );
@@ -242,6 +243,9 @@ export type ToolChipRow = {
   /** Calls emitted inside this one (`batch_execute` items) — rendered
    * nested under the row, not counted as top-level calls. */
   children?: ToolChipRow[];
+  /** A delegated subagent: rendered as an agent card — name, task, prose
+   * body — instead of a tool line, because it is a second agent, not a call. */
+  kind?: "agent";
   chip: string;
   detail?: string[];
   id: string;
@@ -285,7 +289,7 @@ function DetailLines({
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="w-full text-center font-mono text-[11px] text-neutral-400 hover:text-neutral-600 pt-1.5 mt-1 border-t border-neutral-200 select-none"
+          className="w-full text-center font-mono text-[11px] text-neutral-500 hover:text-neutral-600 pt-1.5 mt-1 border-t border-neutral-200 select-none"
         >
           … 还有 {lineCount - MAX_DETAIL_LINES} 行，点击展开全部
         </button>
@@ -322,7 +326,15 @@ function RowDetail({ open, children }: { open: boolean; children: React.ReactNod
   );
 }
 
-export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
+export function ToolChips({
+  rows,
+  renderProse,
+}: {
+  rows: ToolChipRow[];
+  /** Markdown renderer for an agent card's body (the child's streamed text and
+   * its final report read as prose, not as tool output). */
+  renderProse?: (text: string) => React.ReactNode;
+}) {
   const [open, setOpen] = useState(true);
   const [openRows, setOpenRows] = useState<Set<string>>(new Set());
   const [closedRows, setClosedRows] = useState<Set<string>>(new Set());
@@ -331,6 +343,10 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
   const isRowOpen = (row: ToolChipRow) => {
     if (closedRows.has(row.id)) return false;
     if (openRows.has(row.id)) return true;
+    // An agent card is open until the reader closes it: watching a subagent
+    // work is the point, and auto-collapsing when it finishes would yank the
+    // report away mid-read.
+    if (row.kind === "agent") return true;
     if (row.approval && !row.approval.resolved) return true;
     if (row.label === "todo" || row.uiType === "todo") return true;
     return false;
@@ -356,7 +372,82 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
 
   if (rows.length === 0) return null;
 
+  /** A subagent reads as a small card, not a tool line: agent name, the task
+   *  it was handed, then whatever it has streamed so far (or its report). */
+  function renderAgentRow(row: ToolChipRow) {
+    const rowOpen = isRowOpen(row);
+    const statusText =
+      row.status === "aborted" ? "已中断" : row.status === "running" ? "进行中" : "完成";
+    const body = row.detail ? row.detail.join("\n").trim() : "";
+    return (
+      <div key={row.id} className="w-full">
+        <div className="w-full overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n100)_45%,transparent)]">
+          <button
+            aria-expanded={rowOpen}
+            className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_45%,transparent)]"
+            onClick={() => toggleRow(row.id, rowOpen)}
+            type="button"
+          >
+            <Bot className="h-3.5 w-3.5 shrink-0 text-neutral-500" />
+            <span className="text-neutral-700 shrink-0 text-[12.5px] font-medium">
+              {row.label}
+            </span>
+            {row.chip ? (
+              <TooltipSimple
+                content={
+                  <div className="max-w-xl max-h-60 overflow-y-auto text-xs break-all whitespace-pre-wrap select-text leading-relaxed">
+                    {row.chip}
+                  </div>
+                }
+                side="top"
+                sideOffset={6}
+                className="max-w-xl p-2.5 shadow-xl select-text"
+              >
+                <span className="text-neutral-500 min-w-0 flex-1 cursor-pointer truncate text-[11.5px]">
+                  {row.chip}
+                </span>
+              </TooltipSimple>
+            ) : (
+              <span className="flex-1" />
+            )}
+            <span className="text-neutral-500 shrink-0 text-[11px]">
+              {statusText}
+              {row.children && row.children.length > 0 ? ` · ${row.children.length} 项` : ""}
+            </span>
+            <ChevronDown
+              className={cn(
+                "h-3 w-3 text-neutral-500 transition-transform duration-250 ease-out shrink-0",
+                rowOpen ? "rotate-0" : "-rotate-90"
+              )}
+            />
+          </button>
+          <RowDetail open={rowOpen}>
+            <div className="px-2.5 pb-2.5">
+              {body ? (
+                <div className="text-neutral-700 text-[12.5px] leading-relaxed select-text">
+                  {renderProse ? (
+                    renderProse(body)
+                  ) : (
+                    <div className="whitespace-pre-wrap">{body}</div>
+                  )}
+                </div>
+              ) : row.status === "running" ? (
+                <div className="text-neutral-500 text-[11.5px]">等待子代理输出…</div>
+              ) : null}
+              {row.children && row.children.length > 0 ? (
+                <div className="border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] mt-2 flex flex-col gap-1 border-l pl-2.5">
+                  {row.children.map((c) => renderRow(c, 1))}
+                </div>
+              ) : null}
+            </div>
+          </RowDetail>
+        </div>
+      </div>
+    );
+  }
+
   const renderRow = (row: ToolChipRow, depth = 0) => {
+    if (row.kind === "agent") return renderAgentRow(row);
     const rowOpen = isRowOpen(row);
     const statusText =
       row.approval && !row.approval.resolved
@@ -413,7 +504,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
               }
               side="top"
               sideOffset={6}
-              className="max-w-xl bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] backdrop-blur-sm border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)] p-2.5 shadow-xl select-text"
+              className="max-w-xl p-2.5 shadow-xl select-text"
             >
               <span
                 className="bg-neutral-100 text-neutral-600 inline-flex h-5 max-w-[280px] sm:max-w-[360px] md:max-w-[420px] items-center rounded-md px-1.5 font-mono text-[11px] shrink min-w-0 cursor-pointer"
@@ -422,14 +513,14 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
               </span>
             </TooltipSimple>
           ) : null}
-          <span className="text-neutral-400 shrink-0 text-[11px]">
+          <span className="text-neutral-500 shrink-0 text-[11px]">
             {statusText}
             {row.children && row.children.length > 0 ? ` · ${row.children.length} 项` : ""}
           </span>
           {hasDetail && (
             <ChevronDown
               className={cn(
-                "h-3 w-3 text-neutral-400 transition-transform duration-250 ease-out shrink-0",
+                "h-3 w-3 text-neutral-500 transition-transform duration-250 ease-out shrink-0",
                 rowOpen ? "rotate-0" : "-rotate-90"
               )}
             />
@@ -455,7 +546,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
         {/* Nested batch items — indented under the parent capsule,
             same row UI, not counted as top-level calls. */}
         {row.children && row.children.length > 0 ? (
-          <div className="ml-4 pl-2.5 border-l border-[color-mix(in_srgb,var(--husk-black)_12%,transparent)] flex flex-col gap-1 mt-1">
+          <div className="ml-4 pl-2.5 border-l border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] flex flex-col gap-1 mt-1">
             {row.children.map((c) => renderRow(c, depth + 1))}
           </div>
         ) : null}
@@ -475,7 +566,7 @@ export function ToolChips({ rows }: { rows: ToolChipRow[] }) {
       >
         <ChevronDown
           className={cn(
-            "h-3.5 w-3.5 text-neutral-400 transition-transform duration-250 ease-out",
+            "h-3.5 w-3.5 text-neutral-500 transition-transform duration-250 ease-out",
             open ? "rotate-0" : "-rotate-90"
           )}
         />

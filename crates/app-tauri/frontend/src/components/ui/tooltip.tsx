@@ -2,6 +2,7 @@ import * as React from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
 import { cn } from "@/lib/utils";
+import { BORDER_ON_BUBBLE, INK_ON_BUBBLE, SURFACE_BUBBLE } from "@/lib/theme";
 import { usePopperPlacedRef } from "./use-popper-placed";
 
 const TooltipProvider = TooltipPrimitive.Provider;
@@ -20,13 +21,18 @@ const TooltipContent = React.forwardRef<
       sideOffset={sideOffset}
       collisionPadding={collisionPadding}
       className={cn(
-        "z-50 overflow-hidden rounded-md bg-neutral-900 px-2.5 py-1 text-xs text-neutral-50 shadow-md",
+        // Always-dark bubble: `SURFACE_BUBBLE` carries the theme-aware surface,
+        // the ink stays literal (see lib/theme.ts).
+        "z-50 overflow-hidden rounded-md px-2.5 py-1 text-xs shadow-md",
+        SURFACE_BUBBLE,
+        INK_ON_BUBBLE,
         "animate-in fade-in-0 zoom-in-95",
         !placed && "invisible",
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
         "data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1",
         "data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1",
-        " border border-[color-mix(in_srgb,var(--husk-n700)_50%,transparent)] select-none",
+        BORDER_ON_BUBBLE,
+        "border select-none",
         className
       )}
       {...props}
@@ -174,7 +180,12 @@ export function GlobalTooltip() {
         top: pos ? `${pos.top}px` : "-9999px",
         opacity: pos ? 1 : 0,
       }}
-      className="pointer-events-none z-[9999] overflow-hidden rounded-md bg-neutral-900 px-2.5 py-1 text-xs text-neutral-50 shadow-md border border-[color-mix(in_srgb,var(--husk-n700)_50%,transparent)] select-none max-w-xs break-words transition-opacity duration-150 ease-out"
+      className={cn(
+        "pointer-events-none z-[9999] overflow-hidden rounded-md px-2.5 py-1 text-xs shadow-md border border-solid select-none max-w-xs break-words transition-opacity duration-150 ease-out",
+        SURFACE_BUBBLE,
+        INK_ON_BUBBLE,
+        BORDER_ON_BUBBLE,
+      )}
     >
       {target.text}
     </div>

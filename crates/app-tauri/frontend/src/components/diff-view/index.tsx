@@ -71,7 +71,7 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
                       ? "text-emerald-600 dark:text-emerald-400"
                       : l.kind === "del"
                       ? "text-rose-600 dark:text-rose-400"
-                      : "text-neutral-400"
+                      : "text-neutral-500"
                   }`}
                 >
                   {gutter(l.kind)}
@@ -86,7 +86,7 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
             <button
               type="button"
               onClick={() => setExpanded(true)}
-              className="w-full text-center font-mono text-[11px] text-neutral-400 hover:text-neutral-600 pt-1.5 mt-1 border-t border-neutral-200 select-none"
+              className="w-full text-center font-mono text-[11px] text-neutral-500 hover:text-neutral-600 pt-1.5 mt-1 border-t border-neutral-200 select-none"
             >
               … 还有 {lines.length - MAX_DIFF_LINES} 行，点击展开全部
             </button>
@@ -211,7 +211,7 @@ function fgClass(k: LineKind) {
     case "del":
       return "text-rose-800 dark:text-rose-300";
     case "meta":
-      return "text-neutral-400 italic";
+      return "text-neutral-500 italic";
     default:
       return "text-neutral-800";
   }

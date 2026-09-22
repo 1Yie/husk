@@ -18,6 +18,10 @@ export type StreamItem =
       content?: string;
       ok?: boolean;
       uiType?: string;
+      /** A delegated child's streamed answer text, before its report lands. */
+      live?: string;
+      /** The same child's streamed reasoning trace. */
+      liveReasoning?: string;
       /** Set on calls emitted inside another tool (`batch_execute`
        * items) — the stream nests them under the parent capsule. */
       parent?: string;

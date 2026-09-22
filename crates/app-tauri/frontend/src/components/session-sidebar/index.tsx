@@ -185,7 +185,7 @@ export function SessionSidebar({
               the full archive stays inside 项目. */}
           <div className="flex-none flex flex-col gap-0.5 px-2 pb-1">
             {recents.length === 0 ? (
-              <div className="pl-7 h-8 flex items-center shrink-0 flex-none text-[13px] text-neutral-400">
+              <div className="pl-7 h-8 flex items-center shrink-0 flex-none text-[13px] text-neutral-500">
                 暂无会话
               </div>
             ) : (
@@ -222,7 +222,7 @@ export function SessionSidebar({
                       data-tauri-drag-region="false"
                       onClick={onNew}
                       aria-label="新建会话"
-                      className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+                      className="h-5 w-5 rounded flex items-center justify-center text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
                     >
                       <Plus className="h-3.5 w-3.5" />
                     </button>
@@ -241,7 +241,7 @@ export function SessionSidebar({
                       data-tauri-drag-region="false"
                       onClick={onPickWorkspace}
                       aria-label="打开其他工作区"
-                      className="h-5 w-5 rounded flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+                      className="h-5 w-5 rounded flex items-center justify-center text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
                     >
                       <FolderPlus className="h-3.5 w-3.5" />
                     </button>
@@ -257,7 +257,7 @@ export function SessionSidebar({
           {/* Project list: the content area's only scroller. */}
           <div data-tauri-drag-region="false" className="flex-1 min-h-0 overflow-y-auto transform-gpu flex flex-col gap-0.5 px-2 pb-2">
             {projects.length === 0 ? (
-              <div className="pl-3 h-8 flex items-center text-[13px] text-neutral-400">
+              <div className="pl-3 h-8 flex items-center text-[13px] text-neutral-500">
                 暂无项目
               </div>
             ) : (
@@ -309,7 +309,7 @@ export function SessionSidebar({
                     >
                       <Bell className="h-4 w-4" />
                       {unreadCount > 0 && (
-                        <span className="absolute -top-0.5 -right-0.5 min-w-3.5 h-3.5 px-0.5 rounded-full bg-red-500 text-white dark:text-[#fafafa] text-[9px] font-semibold leading-[14px] text-center select-none">
+                        <span className="absolute -top-0.5 -right-0.5 min-w-3.5 h-3.5 px-0.5 rounded-full bg-red-500 text-zinc-50 text-[9px] font-semibold leading-[14px] text-center select-none">
                           {unreadCount > 99 ? "99+" : unreadCount}
                         </span>
                       )}
@@ -327,7 +327,7 @@ export function SessionSidebar({
                     <button
                       type="button"
                       onClick={() => markAllRead()}
-                      className="text-[11px] text-neutral-400 hover:text-neutral-700 transition-colors cursor-pointer"
+                      className="text-[11px] text-neutral-500 hover:text-neutral-700 transition-colors cursor-pointer"
                     >
                       全部已读
                     </button>
@@ -356,7 +356,7 @@ export function SessionSidebar({
                               {n.body}
                             </span>
                           )}
-                          <span className="block text-neutral-400 mt-0.5 text-[10.5px]">
+                          <span className="block text-neutral-500 mt-0.5 text-[10.5px]">
                             {new Date(n.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                           </span>
                         </span>
@@ -464,7 +464,7 @@ function SessionItem({
         <Bookmark className="h-3 w-3 flex-none fill-current text-amber-500 dark:text-amber-400" />
       )}
       {hint && (
-        <span className="flex-none max-w-[64px] truncate text-[11px] text-neutral-400">
+        <span className="flex-none max-w-[64px] truncate text-[11px] text-neutral-500">
           {hint}
         </span>
       )}
@@ -487,7 +487,7 @@ function SessionItem({
                 aria-label="会话操作"
                 onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => e.stopPropagation()}
-                className="absolute inset-0 rounded flex items-center justify-center text-neutral-400 invisible group-hover:visible group-focus-within:visible data-[state=open]:visible hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
+                className="absolute inset-0 rounded flex items-center justify-center text-neutral-500 invisible group-hover:visible group-focus-within:visible data-[state=open]:visible hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
               >
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </button>
@@ -569,7 +569,7 @@ function ProjectItem({
             }}
             className="group w-full flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] text-neutral-800 transition-colors text-left cursor-pointer hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
           >
-            <span className="text-neutral-400 shrink-0">
+            <span className="text-neutral-500 shrink-0">
               {open ? (
                 <ChevronDown className="h-3.5 w-3.5" />
               ) : (
@@ -591,7 +591,7 @@ function ProjectItem({
                   onSwitchWorkspace(project.root);
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
-                className="flex-none rounded p-0.5 text-neutral-400 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
+                className="flex-none rounded p-0.5 text-neutral-500 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
               >
                 <FolderOpen className="h-3.5 w-3.5" />
               </button>
@@ -607,13 +607,13 @@ function ProjectItem({
                   onRemoveWorkspace(project);
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
-                className="flex-none rounded p-0.5 text-neutral-400 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
+                className="flex-none rounded p-0.5 text-neutral-500 invisible group-hover:visible group-focus-within:visible hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
             )}
             {project.sessions.length > 0 && (
-              <span className="flex-none text-[11px] text-neutral-400 tabular-nums">
+              <span className="flex-none text-[11px] text-neutral-500 tabular-nums">
                 {project.sessions.length}
               </span>
             )}
@@ -627,7 +627,7 @@ function ProjectItem({
       {open && (
         <div className="flex flex-col gap-0.5">
           {project.sessions.length === 0 ? (
-            <div className="pl-7 h-7 flex items-center text-[12px] text-neutral-400">
+            <div className="pl-7 h-7 flex items-center text-[12px] text-neutral-500">
               暂无对话记录
             </div>
           ) : (

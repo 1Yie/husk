@@ -7,7 +7,7 @@ interface Props {
 
 export function ThinkingBlock({ text }: Props) {
   return (
-    <div className="text-neutral-400 text-[13px] leading-relaxed whitespace-pre-wrap select-text py-0.5">
+    <div className="text-neutral-500 text-[13px] leading-relaxed whitespace-pre-wrap select-text py-0.5">
       {text}
     </div>
   );

@@ -57,7 +57,7 @@ const PERMISSION_OPTIONS: SettingsCardOption[] = [
     badge: (
       <Badge
         variant="default"
-        className="text-[10px] px-1.5 py-0 font-medium h-4 bg-emerald-600 hover:bg-emerald-600 text-white dark:text-[#fafafa]"
+        className="text-[10px] px-1.5 py-0 font-medium h-4 bg-emerald-600 hover:bg-emerald-600 text-zinc-50"
       >
         完全信任
       </Badge>
@@ -235,7 +235,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
 
             {NAV_GROUPS.map((g) => (
               <div key={g.label} className="flex flex-col gap-1">
-                <span className="px-3 pb-1 text-[11px] font-medium text-neutral-400 tracking-wide">
+                <span className="px-3 pb-1 text-[11px] font-medium text-neutral-500 tracking-wide">
                   {g.label}
                 </span>
                 {g.items.map((item) => (

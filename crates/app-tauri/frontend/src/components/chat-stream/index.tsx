@@ -162,7 +162,7 @@ function UserTokenChip({ token }: { token: string }) {
             </div>
             {desc && <span className="text-[11.5px] text-neutral-300">{desc}</span>}
             {args && (
-              <div className="font-mono text-[11px] text-neutral-400 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
+              <div className="font-mono text-[11px] text-neutral-500 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
                 参数: {args}
               </div>
             )}
@@ -191,7 +191,7 @@ function UserTokenChip({ token }: { token: string }) {
               <span className="font-semibold text-neutral-100">技能 ${skillName}</span>
             </div>
             {args && (
-              <div className="font-mono text-[11px] text-neutral-400 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
+              <div className="font-mono text-[11px] text-neutral-500 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
                 参数: {args}
               </div>
             )}
@@ -310,7 +310,7 @@ function EmptyGreeting() {
         {label}
         {tail}
       </span>
-      <span className="text-[13px] text-neutral-400">
+      <span className="text-[13px] text-neutral-500">
         在下方输入框发送消息，开始新对话
       </span>
     </div>
@@ -437,7 +437,7 @@ function FooterBtn({
         type="button"
         aria-label={label}
         onClick={onClick}
-        className="h-5 w-5 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 transition-colors cursor-pointer"
+        className="h-5 w-5 flex items-center justify-center rounded-md text-neutral-500 hover:text-neutral-700 hover:bg-neutral-100 transition-colors cursor-pointer"
       >
         {children}
       </button>
@@ -472,7 +472,7 @@ function TurnFooter({
   return (
     <div
       className={cn(
-        "flex items-center gap-1.5 text-[11px] text-neutral-400 select-none",
+        "flex items-center gap-1.5 text-[11px] text-neutral-500 select-none",
         align === "end" ? "justify-end" : "justify-start"
       )}
     >
@@ -616,27 +616,47 @@ function parseTurns(items: StreamItem[]): Turn[] {
       if (item.kind === "tool" && item.parent) {
         const lastStep = t.steps[t.steps.length - 1];
         if (lastStep?.type === "tools") {
-          for (let j = lastStep.rows.length - 1; j >= 0; j--) {
-            if (lastStep.rows[j].label === item.parent) {
+          // Parent may be a top-level row (batch) or a nested agent card
+          // (a subagent's own tool calls) — search both, newest first.
+          const findParent = (rows: ToolChipRow[]): ToolChipRow | null => {
+            for (let j = rows.length - 1; j >= 0; j--) {
+              if (rows[j].label === item.parent) return rows[j];
+              const nested = rows[j].children ? findParent(rows[j].children!) : null;
+              if (nested) return nested;
+            }
+            return null;
+          };
+          const parentRow = findParent(lastStep.rows);
+          if (parentRow) {
               const child: ToolChipRow = {
                 id: `tool-${idx}`,
+                // A subagent is a second agent, not a tool call: give it its
+                // own card so it does not read as one more line in the list.
+                kind: item.parent === "delegate" ? "agent" : undefined,
                 label: item.name,
-                chip: item.args && item.args !== item.name ? item.args : "",
+                chip:
+                  item.parent === "delegate"
+                    ? (item.args ?? "")
+                    : item.args && item.args !== item.name
+                      ? item.args
+                      : "",
                 status:
                   item.content === undefined
                     ? "running"
                     : item.ok === false
                       ? "aborted"
                       : "done",
-                detail: item.content ? [item.content] : undefined,
+                // Finished → the report; still running → whatever it has
+                // streamed so far (reasoning first, then the answer).
+                detail: item.content
+                  ? [item.content]
+                  : item.live || item.liveReasoning
+                    ? [[item.liveReasoning, item.live].filter(Boolean).join("\n\n")]
+                    : undefined,
                 uiType: item.uiType,
               };
-              lastStep.rows[j].children = [
-                ...(lastStep.rows[j].children ?? []),
-                child,
-              ];
-              break;
-            }
+              parentRow.children = [...(parentRow.children ?? []), child];
+              continue;
           }
           continue;
         }
@@ -723,7 +743,7 @@ function CappedAssistantText({ text, animating }: { text: string; animating?: bo
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="mt-1 text-[12px] text-neutral-400 hover:text-neutral-600 select-none"
+          className="mt-1 text-[12px] text-neutral-500 hover:text-neutral-600 select-none"
         >
           … 还有 {text.length - shown.length} 字符，点击展开全部
         </button>
@@ -1395,7 +1415,12 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                               key={`step-${stepIdx}`}
                             >
                               {running && <AssistantStatus mode="tools" thinkingText="" />}
-                              <ToolChips rows={step.rows} />
+                              <ToolChips
+                                rows={step.rows}
+                                renderProse={(text) => (
+                                  <MemoStreamdown text={text} animating={running} />
+                                )}
+                              />
                             </div>
                           );
                         }
@@ -1404,7 +1429,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                           return (
                             <div
                               key={`step-${stepIdx}`}
-                              className="text-xs text-neutral-400 font-mono py-1 select-none"
+                              className="text-xs text-neutral-500 font-mono py-1 select-none"
                             >
                               {step.text}
                             </div>
@@ -1469,7 +1494,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             type="button"
             onClick={scrollToBottom}
             aria-label="回到底部"
-            className="w-8 h-8 rounded-full bg-white dark:bg-[#26262c] hover:bg-neutral-50 dark:hover:bg-[#2e2e36] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+            className="w-8 h-8 rounded-full bg-white dark:bg-[var(--husk-active)] hover:bg-neutral-50 dark:hover:bg-[var(--husk-hover)] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
           >
             <ArrowDown className="h-4 w-4" />
           </button>

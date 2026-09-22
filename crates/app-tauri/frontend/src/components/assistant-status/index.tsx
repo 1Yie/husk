@@ -74,7 +74,7 @@ const ElapsedLabel = memo(function ElapsedLabel({
   // Nothing worth showing during the first second.
   if (ms < 1000) return null;
   return (
-    <span className="whitespace-nowrap text-neutral-400 font-normal tabular-nums">
+    <span className="whitespace-nowrap text-neutral-500 font-normal tabular-nums">
       · {formatElapsed(ms)}
     </span>
   );
@@ -88,7 +88,7 @@ const ElapsedLabel = memo(function ElapsedLabel({
 const ThinkingBody = memo(function ThinkingBody({ text }: { text: string }) {
   return (
     <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
-      <div className="text-neutral-400 mt-1 w-full min-w-0 whitespace-pre-wrap text-[13px] leading-relaxed select-text font-normal pl-6">
+      <div className="text-neutral-500 mt-1 w-full min-w-0 whitespace-pre-wrap text-[13px] leading-relaxed select-text font-normal pl-6">
         {renderWithTwemoji(text)}
       </div>
     </CollapsibleContent>

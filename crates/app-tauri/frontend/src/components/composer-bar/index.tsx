@@ -90,6 +90,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, TooltipSimple } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { INK_MUTED, SURFACE_OVERLAY } from "@/lib/theme";
 
 const PERMISSION_MODES = [
   { value: "default", label: "默认", desc: "编辑与命令均需手动确认" },
@@ -712,7 +713,7 @@ export function ComposerBar({
               </span>
               <Button
                 size="sm"
-                className="shrink-0 h-6 px-2.5 text-[11px] bg-neutral-900 hover:bg-neutral-800 text-white dark:text-[#fafafa] cursor-pointer"
+                className="shrink-0 h-6 px-2.5 text-[11px] bg-neutral-900 hover:bg-neutral-800 text-white cursor-pointer"
                 onClick={() => void approvePlan()}
               >
                 批准并执行
@@ -761,12 +762,12 @@ export function ComposerBar({
                         }
                       }}
                       placeholder="自定义回答…"
-                      className="flex-1 min-w-0 h-7 px-2.5 rounded-lg border border-hairline bg-transparent text-[12px] text-neutral-800 placeholder:text-neutral-400 outline-none focus:border-[color-mix(in_srgb,var(--husk-black)_25%,transparent)]"
+                      className="flex-1 min-w-0 h-7 px-2.5 rounded-lg border border-hairline bg-transparent text-[12px] text-neutral-800 placeholder:text-neutral-500 outline-none focus:border-[color-mix(in_srgb,var(--husk-black)_25%,transparent)]"
                     />
                     <Button
                       size="sm"
                       disabled={!questionInput.trim()}
-                      className="shrink-0 h-7 px-2.5 text-[11px] bg-neutral-900 hover:bg-neutral-800 text-white dark:text-[#fafafa] cursor-pointer disabled:opacity-40"
+                      className="shrink-0 h-7 px-2.5 text-[11px] bg-neutral-900 hover:bg-neutral-800 text-white cursor-pointer disabled:opacity-40"
                       onClick={() => void answerQuestion(questionInput)}
                     >
                       回复
@@ -792,7 +793,7 @@ export function ComposerBar({
                     }
                     side="top"
                     sideOffset={8}
-                    className="max-w-xl bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] backdrop-blur-sm border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)] p-2.5 shadow-xl select-text"
+                    className="max-w-xl p-2.5 shadow-xl select-text"
                   >
                     <span
                       className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-2 py-0.5 rounded cursor-pointer hover:bg-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] transition-colors"
@@ -802,7 +803,7 @@ export function ComposerBar({
                   </TooltipSimple>
                   <Button
                     size="sm"
-                    className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white dark:text-[#fafafa] cursor-pointer"
+                    className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-zinc-50 cursor-pointer"
                     onClick={() => void decide(true)}
                   >
                     允许
@@ -846,7 +847,7 @@ export function ComposerBar({
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => setTodoCollapsed((prev) => !prev)}
-                        className="h-6 w-6 text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                        className="h-6 w-6 text-neutral-500 hover:text-neutral-700 cursor-pointer"
                       >
                         <ChevronDown
                           className={cn(
@@ -873,7 +874,7 @@ export function ComposerBar({
                             className={cn(
                               "group flex items-center gap-2 text-xs py-0.5 px-1 rounded transition-colors",
                               item.done
-                                ? "text-neutral-400"
+                                ? "text-neutral-500"
                                 : "text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-black)_3%,transparent)]",
                             )}
                           >
@@ -886,7 +887,7 @@ export function ComposerBar({
                                 <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 group-hover:border-neutral-400 transition-colors" />
                               )}
                             </span>
-                            <span className="font-mono text-[10.5px] text-neutral-400 shrink-0 select-none">
+                            <span className="font-mono text-[10.5px] text-neutral-500 shrink-0 select-none">
                               #{item.id}
                             </span>
                             <span className={cn("truncate flex-1 min-w-0", item.done && "line-through opacity-75")}>
@@ -946,7 +947,7 @@ export function ComposerBar({
                       <button
                         type="button"
                         aria-label="移除"
-                        className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200 transition-colors cursor-pointer"
+                        className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200 transition-colors cursor-pointer"
                         onClick={() => removeQueued(i)}
                       >
                         <X className="h-3 w-3" />
@@ -954,7 +955,7 @@ export function ComposerBar({
                     </div>
                   ))}
                   {queued.length > 4 && (
-                    <span className="pl-5 text-[11px] text-neutral-400">
+                    <span className="pl-5 text-[11px] text-neutral-500">
                       …还有 {queued.length - 4} 条
                     </span>
                   )}
@@ -1103,14 +1104,14 @@ function MentionPopup({
 
   if (rows.length === 0) {
     return (
-      <div className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-white shadow-popup px-3 py-2.5 text-xs text-neutral-400">
+      <div className={cn("absolute bottom-full left-2 right-2 mb-2 z-50 px-3 py-2.5 text-xs", INK_MUTED)}>
         无匹配项
       </div>
     );
   }
   return (
     <div
-      className="absolute bottom-full left-2 right-2 mb-2 z-50 rounded-xl border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-white shadow-popup overflow-hidden"
+      className={cn("absolute bottom-full left-2 right-2 mb-2 z-50 overflow-hidden", SURFACE_OVERLAY)}
       role="listbox"
     >
       <div ref={listRef} className="max-h-64 overflow-y-auto">
@@ -1131,7 +1132,7 @@ function MentionPopup({
                 : "hover:bg-neutral-50",
             )}
           >
-            <span className="shrink-0 text-neutral-400">
+            <span className="shrink-0 text-neutral-500">
               {r.icon === "file" ? (
                 <FileCode className="h-3.5 w-3.5" />
               ) : r.icon === "skill" ? (
@@ -1143,7 +1144,7 @@ function MentionPopup({
             <span className="font-mono font-medium text-neutral-800 shrink-0">
               {r.label}
             </span>
-            <span className="truncate text-[11px] text-neutral-400">
+            <span className="truncate text-[11px] text-neutral-500">
               {r.hint}
             </span>
           </button>
@@ -1223,7 +1224,7 @@ function AttachmentChips({
           title={a.path}
           className="inline-flex items-center gap-1.5 max-w-[240px] pl-1.5 pr-1 py-1 rounded-md bg-neutral-100 border border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] text-[11.5px] text-neutral-700"
         >
-          <span className="shrink-0 text-neutral-400">
+          <span className="shrink-0 text-neutral-500">
             {a.kind === "image" && a.data_url ? (
               <img
                 src={a.data_url}
@@ -1242,7 +1243,7 @@ function AttachmentChips({
           <button
             type="button"
             onClick={() => onRemove(a.path)}
-            className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200 cursor-pointer"
+            className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200 cursor-pointer"
             aria-label={`移除 ${a.name}`}
           >
             <X className="h-2.5 w-2.5" />
@@ -1723,7 +1724,10 @@ function ComposerToolbar({
               variant="ghost"
               size="icon-sm"
               aria-label="添加附件"
-              className="w-7 h-7 rounded-full text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 dark:text-[#9a9aa4] dark:hover:bg-[#2b2b32]"
+              className={cn(
+              "w-7 h-7 rounded-full hover:text-neutral-800 hover:bg-neutral-100 dark:hover:bg-[var(--husk-hover)]",
+              INK_MUTED,
+            )}
             >
               <Plus className="h-4 w-4" />
             </Button>
@@ -1761,7 +1765,7 @@ function ComposerToolbar({
             >
               <Bot className="h-3.5 w-3.5 text-neutral-500" />
               <span>{agentModeLabel}</span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
+              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="top" className="w-64">
@@ -1784,7 +1788,7 @@ function ComposerToolbar({
                       </span>
                       {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
                     </div>
-                    <span className="text-[11px] text-neutral-400 leading-tight">
+                    <span className="text-[11px] text-neutral-500 leading-tight">
                       {m.desc}
                     </span>
                   </DropdownMenuItem>
@@ -1802,7 +1806,7 @@ function ComposerToolbar({
             >
               <ShieldCheck className="h-3.5 w-3.5 text-neutral-500" />
               <span>{modeLabel}</span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
+              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="top" className="w-64">
@@ -1825,7 +1829,7 @@ function ComposerToolbar({
                       </span>
                       {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
                     </div>
-                    <span className="text-[11px] text-neutral-400 leading-tight">
+                    <span className="text-[11px] text-neutral-500 leading-tight">
                       {m.desc}
                     </span>
                   </DropdownMenuItem>
@@ -1846,14 +1850,14 @@ function ComposerToolbar({
                   className={cn(
                     "h-3.5 w-3.5 shrink-0",
                     activeThinkingLevel === "off"
-                      ? "text-neutral-400"
+                      ? "text-neutral-500"
                       : "text-purple-600 dark:text-purple-400",
                   )}
                 />
                 <span className="truncate max-w-[140px]">
                   {currentThinkingLabel}
                 </span>
-                <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
+                <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="top" className="w-48">
@@ -1874,7 +1878,7 @@ function ComposerToolbar({
                         <span className="font-medium text-neutral-800">
                           {lvl.label}（{thinkingSuffix(lvl.value, thinkingMap)}）
                         </span>
-                        <span className="text-[10.5px] text-neutral-400 truncate">
+                        <span className="text-[10.5px] text-neutral-500 truncate">
                           {lvl.desc}
                         </span>
                       </div>
@@ -1900,7 +1904,7 @@ function ComposerToolbar({
               <span className="truncate max-w-[140px] font-mono text-[11.5px]">
                 {activeModel || "选择模型"}
               </span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
+              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
           </DropdownMenuTrigger>
 
@@ -1924,7 +1928,7 @@ function ComposerToolbar({
                         <span className="font-mono font-medium truncate text-neutral-900">
                           {item.model}
                         </span>
-                        <span className="text-[10px] text-neutral-400">{item.provider}</span>
+                        <span className="text-[10px] text-neutral-500">{item.provider}</span>
                       </div>
                       {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
                     </DropdownMenuItem>
@@ -1932,7 +1936,7 @@ function ComposerToolbar({
                 })}
               </DropdownMenuGroup>
             ) : (
-              <div className="px-3 py-3 text-xs text-neutral-400 text-center">未检测到模型</div>
+              <div className="px-3 py-3 text-xs text-neutral-500 text-center">未检测到模型</div>
             )}
           </DropdownMenuContent>
         </DropdownMenu>
@@ -1944,7 +1948,7 @@ function ComposerToolbar({
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    className="w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[#2b2b32] dark:hover:bg-[#34343d] dark:border-[#3f3f49] dark:text-[#d4d4d8] flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
+                    className="w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)] dark:border-[var(--husk-n300)] flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
                     onClick={() => void submit()}
                     aria-label="排队发送"
                   >
@@ -1958,7 +1962,7 @@ function ComposerToolbar({
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="group relative w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[#2b2b32] dark:hover:bg-[#34343d] dark:border-[#3f3f49] flex items-center justify-center cursor-pointer transition-all shadow-xs"
+                className="group relative w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)] dark:border-[var(--husk-n300)] flex items-center justify-center cursor-pointer transition-all shadow-xs"
                 onClick={() => void cancel()}
                 aria-label="中断回复"
               >
@@ -1991,7 +1995,7 @@ function ComposerToolbar({
           <button
             type="button"
             disabled
-            className="w-8 h-8 rounded-full bg-neutral-100 text-neutral-300 flex items-center justify-center cursor-not-allowed border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] dark:bg-[#26262d] dark:text-[#5b5b66] dark:border-[#3a3a44] transition-all select-none"
+            className="w-8 h-8 rounded-full bg-neutral-100 text-neutral-300 flex items-center justify-center cursor-not-allowed border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] dark:bg-[var(--husk-active)] dark:text-[var(--husk-focus)] dark:border-[var(--husk-border)] transition-all select-none"
             aria-label="无法发送 (请输入内容)"
           >
             <ArrowUp className="h-4 w-4" />

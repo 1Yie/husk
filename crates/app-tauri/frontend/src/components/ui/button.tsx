@@ -12,7 +12,7 @@ const buttonVariants = cva(
         default:
           "bg-neutral-900 text-neutral-50 shadow hover:bg-[color-mix(in_srgb,var(--husk-n900)_90%,transparent)]",
         destructive:
-          "bg-red-600 text-neutral-50 dark:text-[#fafafa] shadow-sm hover:bg-red-600/90",
+          "bg-red-600 text-neutral-50 dark:text-[var(--husk-black)] shadow-sm hover:bg-red-600/90",
         outline:
           "border border-neutral-200 bg-white shadow-sm hover:bg-neutral-100 hover:text-neutral-900",
         secondary:
