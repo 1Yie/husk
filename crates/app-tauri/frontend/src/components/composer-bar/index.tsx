@@ -38,12 +38,12 @@ import { pendingApprovalOf } from "../../hooks/stream-view";
 import { onQuoteRequest } from "../../lib/selection-bus";
 import { toast } from "sonner";
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+  ClipboardPaste,
+  Copy,
+  Image as ImageIcon,
+  Scissors,
+  TextSelect,
+} from "lucide-react";
 
 export function extractLatestTodos(view: SessionView): {
   items: TodoItem[];
@@ -1379,6 +1379,8 @@ function ComposerTextarea({
   // Drives the menu's 剪切/复制 enabled state — the textarea has no other
   // reason to re-render on a selection change.
   const [hasSelection, setHasSelection] = useState(false);
+  // Viewport point of the right-click that opened the composer menu.
+  const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null);
   const open = mention !== null;
 
   /** Replace the current selection with `snippet` and put the caret after it —
@@ -1448,7 +1450,16 @@ function ComposerTextarea({
   }, [value]);
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onContextMenu={(e) => {
+        // Owning the right-click here means suppressing the native menu
+        // ourselves: the app-wide guard skips editable surfaces, because the
+        // other menus' triggers do this inside Radix.
+        e.preventDefault();
+        setMenuPoint({ x: e.clientX, y: e.clientY });
+      }}
+    >
       {open && <MentionPopup rows={mentionRows} active={mentionIndex} onPick={onAcceptMention} />}
       {/* Mirror layer — paints the token chips under the transparent-text
           textarea. Its box metrics (padding/font/line-height) must track
@@ -1461,8 +1472,6 @@ function ComposerTextarea({
         {highlightComposerTokens(value)}
         {"\u200B"}
       </div>
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
         <Textarea
           ref={taRef}
           data-composer
@@ -1559,27 +1568,103 @@ function ComposerTextarea({
           rows={1}
           className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent text-transparent caret-neutral-800 selection:bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)]"
         />
-        </ContextMenuTrigger>
-        {/* Right-click menu for the composer. The app-wide native-menu
-            suppressor would otherwise leave a right-click here doing nothing,
-            and the image entry is the discoverable form of Ctrl+V — the paste
-            event itself cannot be relied on for images (see `paste_clipboard`). */}
-        <ContextMenuContent className="min-w-[150px]">
-          <ContextMenuItem disabled={!hasSelection} onSelect={() => void cutSelection()}>
-            剪切
-          </ContextMenuItem>
-          <ContextMenuItem disabled={!hasSelection} onSelect={() => void copySelection()}>
-            复制
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => void pasteText()}>粘贴</ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem onSelect={() => onAttachClipboardImage(true)}>
-            粘贴图片
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => taRef.current?.select()}>全选</ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+      {menuPoint && (
+        <ComposerMenu
+          point={menuPoint}
+          onClose={() => setMenuPoint(null)}
+          taRef={taRef}
+          hasSelection={hasSelection}
+          onCut={cutSelection}
+          onCopy={copySelection}
+          onPaste={pasteText}
+          onSelectAll={() => taRef.current?.select()}
+          onPasteImage={() => onAttachClipboardImage(true)}
+        />
+      )}
     </div>
+  );
+}
+
+/** Composer right-click menu, anchored at the click point.
+ *
+ * Deliberately a DropdownMenu and not a Radix ContextMenu: ContextMenu's
+ * content hard-codes the *submenu* placement (`side="right"`, `align="start"`,
+ * `sideOffset=2`) after the caller's props, so it can't be asked to flip up. In
+ * this bottom-anchored input that produced a menu whose bottom edge was clamped
+ * flush against the window's bottom — measured in WebKitGTK: 0px gap. A
+ * DropdownMenu anchored to a zero-size element at the pointer keeps the
+ * conventional behaviour: below the pointer, flipping above when there is no
+ * room, with `collisionPadding` keeping it off the window edges.
+ */
+function ComposerMenu({
+  point,
+  onClose,
+  taRef,
+  hasSelection,
+  onCut,
+  onCopy,
+  onPaste,
+  onSelectAll,
+  onPasteImage,
+}: {
+  point: { x: number; y: number };
+  onClose: () => void;
+  taRef: React.RefObject<HTMLTextAreaElement | null>;
+  hasSelection: boolean;
+  onCut: () => void;
+  onCopy: () => void;
+  onPaste: () => void;
+  onSelectAll: () => void;
+  onPasteImage: () => void;
+}) {
+  return (
+    <DropdownMenu open onOpenChange={(next) => !next && onClose()}>
+      <DropdownMenuTrigger asChild>
+        <span className="fixed h-0 w-0" style={{ left: point.x, top: point.y }} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        side="bottom"
+        sideOffset={6}
+        collisionPadding={8}
+        className="min-w-[160px]"
+        onCloseAutoFocus={(e) => {
+          // Radix would focus the 0x0 anchor; the caret belongs in the input.
+          e.preventDefault();
+          taRef.current?.focus();
+        }}
+      >
+        <DropdownMenuItem
+          className="gap-2 text-xs cursor-pointer"
+          disabled={!hasSelection}
+          onSelect={onCut}
+        >
+          <Scissors className="h-3.5 w-3.5" />
+          剪切
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="gap-2 text-xs cursor-pointer"
+          disabled={!hasSelection}
+          onSelect={onCopy}
+        >
+          <Copy className="h-3.5 w-3.5" />
+          复制
+        </DropdownMenuItem>
+        <DropdownMenuItem className="gap-2 text-xs cursor-pointer" onSelect={onPaste}>
+          <ClipboardPaste className="h-3.5 w-3.5" />
+          粘贴
+        </DropdownMenuItem>
+        <DropdownMenuItem className="gap-2 text-xs cursor-pointer" onSelect={onSelectAll}>
+          <TextSelect className="h-3.5 w-3.5" />
+          全选
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem className="gap-2 text-xs cursor-pointer" onSelect={onPasteImage}>
+          <ImageIcon className="h-3.5 w-3.5" />
+          粘贴图片
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

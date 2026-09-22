@@ -2,6 +2,7 @@ import * as React from "react";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 
 import { cn } from "@/lib/utils";
+import { usePopperPlacedRef } from "./use-popper-placed";
 
 // Same visual contract as dropdown-menu.tsx — one menu look across the app.
 // modal={false}: Radix's modal branch mounts a focus trap + body scroll-lock
@@ -54,38 +55,57 @@ ContextMenuSubTrigger.displayName =
 const ContextMenuSubContent = React.forwardRef<
   React.ElementRef<typeof ContextMenuPrimitive.SubContent>,
   React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.SubContent>
->(({ className, ...props }, ref) => (
+>(({ className, ...props }, ref) => {
+  const { placed, setRef } = usePopperPlacedRef(ref);
+  return (
   <ContextMenuPrimitive.SubContent
-    ref={ref}
+    ref={setRef}
     className={cn(
-      "z-50 min-w-[8rem] overflow-hidden rounded-xl border border-neutral-200 bg-white p-1 text-neutral-900 shadow-popup duration-100 ease-out menu-in menu-out",
+      "z-50 min-w-[8rem] overflow-hidden rounded-xl border border-neutral-200 bg-white p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+      // Radix parks unpositioned content above the viewport; an engine that
+      // paints it first puts the menu in the corner. Never paint it.
+      !placed && "invisible",
       className
     )}
     {...props}
   />
-));
+  );
+});
 ContextMenuSubContent.displayName =
   ContextMenuPrimitive.SubContent.displayName;
 
 const ContextMenuContent = React.forwardRef<
   React.ElementRef<typeof ContextMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Content>
->(({ className, onCloseAutoFocus, ...props }, ref) => (
+>(({ className, onCloseAutoFocus, ...props }, ref) => {
+  const { placed, setRef } = usePopperPlacedRef(ref);
+  return (
   <ContextMenuPrimitive.Portal>
     <ContextMenuPrimitive.Content
-      ref={ref}
+      ref={setRef}
+      // Radix hard-codes the *submenu* placement here (`side="right"`,
+      // `align="start"`, `sideOffset=2`) AFTER the caller's props, and omits
+      // those props from the public type — so placement is not ours to choose,
+      // and a click near a window edge gets clamped to the edge with 0px
+      // padding. `collisionPadding` is not overridden, so at least every
+      // context menu now keeps a gap from the window edges. (The composer,
+      // which sits at the very bottom of the window and must flip *up*, uses an
+      // anchored DropdownMenu instead — see ComposerMenu.)
+      collisionPadding={8}
       onCloseAutoFocus={(e) => {
         e.preventDefault();
         onCloseAutoFocus?.(e);
       }}
       className={cn(
-        "z-50 min-w-[8rem] overflow-hidden rounded-xl border border-neutral-200 bg-white p-1 text-neutral-900 shadow-popup duration-100 ease-out menu-in menu-out",
+        "z-50 min-w-[8rem] overflow-hidden rounded-xl border border-neutral-200 bg-white p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+        !placed && "invisible",
         className
       )}
       {...props}
     />
   </ContextMenuPrimitive.Portal>
-));
+  );
+});
 ContextMenuContent.displayName = ContextMenuPrimitive.Content.displayName;
 
 const ContextMenuItem = React.forwardRef<

@@ -738,38 +738,6 @@ img.emoji {
   }
 }
 
-/* Popper surfaces (menu / popover / tooltip) open with an opacity fade ONLY.
- *
- * Radix positions those surfaces with an inline `transform: translate3d(x, y, 0)`
- * — and `tailwindcss-animate`'s `enter`/`exit` keyframes write a transform of
- * their own (`translate3d(var(--tw-enter-translate-x, 0), …, 0) scale3d(…)`).
- * A running animation outranks an inline style in the cascade, so `animate-in`
- * on a popper element replaces the positioning transform with `translate3d(0,0,0)`
- * for the length of the animation: the menu paints in the top-left corner and
- * then slides to where the cursor is (the "menu flashes at 0,0" bug).
- * `zoom-in`/`slide-in-from-*` cannot be rescued the same way — they need the
- * transform — so the fade is what these surfaces keep. Scale/translate
- * animations stay for centred, non-popper surfaces (dialogs), whose layout does
- * not depend on a JS-computed transform.
- *
- * From/to-less keyframes on purpose: the implicit keyframe is the element's own
- * computed value, so nothing here fights Radix's inline transform. */
-@keyframes menu-in {
-  from { opacity: 0; }
-}
-
-@keyframes menu-out {
-  to { opacity: 0; }
-}
-
-/* State-qualified on purpose: these are plain classes, and Tailwind only
- * generates variants for utilities it knows — `data-[state=open]:menu-in`
- * would silently compile to nothing. Same reason `.animate-collapsible-*`
- * spells its own `[data-state=…]` selectors out below. */
-[data-state="open"].menu-in {
-  animation: menu-in 120ms ease-out;
-}
-
 [data-state="closed"].menu-out {
   animation: menu-out 90ms ease-in forwards;
 }

@@ -2,6 +2,7 @@ import * as React from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
 import { cn } from "@/lib/utils";
+import { usePopperPlacedRef } from "./use-popper-placed";
 
 const TooltipProvider = TooltipPrimitive.Provider;
 const Tooltip = TooltipPrimitive.Root;
@@ -10,16 +11,19 @@ const TooltipTrigger = TooltipPrimitive.Trigger;
 const TooltipContent = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content>
->(({ className, sideOffset = 6, collisionPadding = 12, ...props }, ref) => (
+>(({ className, sideOffset = 6, collisionPadding = 12, ...props }, ref) => {
+  const { placed, setRef } = usePopperPlacedRef(ref);
+  return (
   <TooltipPrimitive.Portal>
     <TooltipPrimitive.Content
-      ref={ref}
+      ref={setRef}
       sideOffset={sideOffset}
       collisionPadding={collisionPadding}
       className={cn(
         "z-50 overflow-hidden rounded-md bg-neutral-900 px-2.5 py-1 text-xs text-neutral-50 shadow-md",
-        "menu-in",
-        "menu-out",
+        "animate-in fade-in-0 zoom-in-95",
+        !placed && "invisible",
+        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
         "data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1",
         "data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1",
         " border border-[color-mix(in_srgb,var(--husk-n700)_50%,transparent)] select-none",
@@ -28,7 +32,8 @@ const TooltipContent = React.forwardRef<
       {...props}
     />
   </TooltipPrimitive.Portal>
-));
+  );
+});
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;
 
 /**
