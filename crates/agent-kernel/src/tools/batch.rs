@@ -209,7 +209,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                         let item_ctx =
                             Arc::new(ctx.with_cancel(batch_cancel.clone()));
                         if let Some(ui) = &ctx.ui_tx {
-                            let _ = ui.try_send(agent_ipc::events::UiEvent::ToolCallStarted {
+                            let _ = ui.send(agent_ipc::events::UiEvent::ToolCallStarted {
                                 name: tool.clone(),
                                 // Nested — the UI renders this under the
                                 // batch_execute capsule, not top-level.
@@ -262,7 +262,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                 ItemStatus::Ok => (true, out.body.clone()),
                                 _ => (false, out.body.clone()),
                             };
-                            let _ = ui.try_send(agent_ipc::events::UiEvent::ToolCallFinished {
+                            let _ = ui.send(agent_ipc::events::UiEvent::ToolCallFinished {
                                 name: tool,
                                 ok,
                                 content,

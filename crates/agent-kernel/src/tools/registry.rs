@@ -32,13 +32,13 @@ pub type Args = serde_json::Value;
 pub struct AskChannel {
     /// The session's UI event channel — `None` where nobody can answer
     /// (delegated subagents, tests).
-    pub ui_tx: Option<tokio::sync::mpsc::Sender<agent_ipc::events::UiEvent>>,
+    pub ui_tx: Option<crate::channels::UiSink>,
     pending: std::sync::Mutex<Option<(u64, tokio::sync::oneshot::Sender<String>)>>,
     next_id: std::sync::atomic::AtomicU64,
 }
 
 impl AskChannel {
-    pub fn new(ui_tx: Option<tokio::sync::mpsc::Sender<agent_ipc::events::UiEvent>>) -> Self {
+    pub fn new(ui_tx: Option<crate::channels::UiSink>) -> Self {
         Self {
             ui_tx,
             pending: std::sync::Mutex::new(None),
@@ -69,7 +69,7 @@ impl AskChannel {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.pending.lock().unwrap() = Some((id, tx));
         if ui_tx
-            .try_send(agent_ipc::events::UiEvent::QuestionAsked {
+            .send(agent_ipc::events::UiEvent::QuestionAsked {
                 request_id: id,
                 question,
                 options,
@@ -143,7 +143,7 @@ pub struct ToolCtx {
     /// subagent progress) emit ToolCallStarted/Finished here so internal
     /// calls stay visible + auditable instead of running silently.
     /// `None` in headless contexts → those tools skip emitting.
-    pub ui_tx: Option<tokio::sync::mpsc::Sender<agent_ipc::events::UiEvent>>,
+    pub ui_tx: Option<crate::channels::UiSink>,
     /// Live view of the engine's active registry — refreshed on every
     /// `active_registry()` resolution so `batch_execute` dispatches through
     /// the same mode-scoped registry as single calls (plan mode can't be

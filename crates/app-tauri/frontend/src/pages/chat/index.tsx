@@ -5,6 +5,7 @@ import { FolderOpen } from "@keyline-icons/react";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/components/chat-stream";
 import { ComposerBar } from "@/components/composer-bar";
+import { WorkspaceWelcome, type RecentWorkspace } from "@/components/workspace-welcome";
 import type { SessionView } from "../../hooks/stream-view";
 import type { GitInfo } from "../../invoke/agent";
 
@@ -28,13 +29,17 @@ interface ChatPageProps {
   onLoadOlder?: () => Promise<boolean>;
   /** Opens the raw-JSON history viewer. */
   onShowRaw?: () => void;
-  /** No workspace open — the empty pane's "打开工作区" button. */
+  /** No workspace open — the welcome page's "打开工作区" button. */
   onOpenWorkspace?: () => void;
+  /** Recent workspaces for the welcome page's one-click reopen grid. */
+  recents?: RecentWorkspace[];
+  /** Reopen a recent workspace directly (parked projects keep their state). */
+  onOpenRecent?: (path: string) => void;
   /** Boot not resolved — keep the skeleton instead of the empty pane. */
   workspaceReady?: boolean;
 }
 
-export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, modelCost, loading, sessionKey, hasMore, onLoadOlder, onShowRaw, onOpenWorkspace, workspaceReady = true }: ChatPageProps) {
+export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHint, modelCost, loading, sessionKey, hasMore, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true }: ChatPageProps) {
   // The composer floats over the stream bottom — measure its real height
   // (card + pb-6 gap + the taller approval/todo banner variants) and feed
   // it to the stream as bottom padding, so the last message can always
@@ -61,7 +66,11 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
       <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} modelCost={modelCost} onShowRaw={onShowRaw} noWorkspace={!workspaceRoot} />
       {!workspaceRoot ? (
         workspaceReady ? (
-          <NoWorkspacePane onOpenWorkspace={onOpenWorkspace} />
+          <WorkspaceWelcome
+            recents={recents ?? []}
+            onOpenWorkspace={() => onOpenWorkspace?.()}
+            onOpenRecent={(path) => onOpenRecent?.(path)}
+          />
         ) : (
           <div className="flex-1 min-h-0" />
         )
@@ -96,25 +105,3 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
   );
 }
 
-function NoWorkspacePane({ onOpenWorkspace }: { onOpenWorkspace?: () => void }) {
-  return (
-    <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 select-none pb-16">
-      <FolderOpen className="h-8 w-8 text-neutral-300" />
-      <span className="text-[15px] font-medium text-neutral-700">
-        没有打开的工作区
-      </span>
-      <span className="text-[13px] text-neutral-400">
-        打开一个项目文件夹开始，或从左侧「项目」选择最近的工作区
-      </span>
-      {onOpenWorkspace && (
-        <button
-          type="button"
-          onClick={onOpenWorkspace}
-          className="mt-1 h-8 px-4 rounded-lg border border-neutral-200 text-[13px] text-neutral-700 hover:bg-neutral-50 transition-colors cursor-pointer"
-        >
-          打开工作区…
-        </button>
-      )}
-    </div>
-  );
-}

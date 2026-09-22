@@ -9,9 +9,72 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use futures::Stream;
 
+use crate::config::ProviderCompat;
 use crate::types::{ChatMessage, StreamChunk};
 
 pub type BoxStream<T> = Pin<Box<dyn Stream<Item = anyhow::Result<T>> + Send>>;
+
+/// Per-model wire settings resolved from config and carried on every request.
+///
+/// The provider instance owns *provider-level* configuration (base URL, key,
+/// provider-level `compat`, headers) because it is built once from
+/// `ProviderConfig`; these are the parts that vary per **model**, so they ride
+/// the request instead. `None`/empty means "the model declares nothing" — the
+/// adapter's own default applies, which is what keeps an unconfigured model
+/// behaving exactly as it did before this existed.
+#[derive(Debug, Clone, Default)]
+pub struct ModelParams {
+    /// Output-token cap (pi `maxTokens`). `None` → the adapter's default cap.
+    pub max_tokens: Option<u32>,
+    /// Sampling parameters merged verbatim into the request body *after* the
+    /// fields the adapter sets itself, so these keys win (pi `samplingParams`).
+    /// Only OpenAI-shaped APIs apply it.
+    pub sampling_params: Option<serde_json::Value>,
+    /// The model's `compat`, already merged over the provider's for the fields
+    /// it declares. Adapters consult this *instead of* their stored
+    /// provider-level compat wherever the value is model-specific.
+    pub compat: Option<ProviderCompat>,
+}
+
+impl ModelParams {
+    /// No per-model settings — the adapter's own defaults apply everywhere.
+    /// Used by tests and by any caller that has no config entry for the model.
+    pub const EMPTY: ModelParams = ModelParams {
+        max_tokens: None,
+        sampling_params: None,
+        compat: None,
+    };
+
+    /// The effective compat for this request — the provider's own values with
+    /// the model's merged over them.
+    pub fn compat_with(&self, provider: Option<&ProviderCompat>) -> ProviderCompat {
+        provider
+            .cloned()
+            .unwrap_or_default()
+            .merged_with(self.compat.as_ref())
+    }
+
+    /// Merge `samplingParams` into an assembled request body. Keys win over
+    /// anything the adapter set, matching pi ("its keys win").
+    pub fn apply_sampling_params(&self, body: &mut serde_json::Value) {
+        let Some(extra) = self.sampling_params.as_ref().and_then(|v| v.as_object()) else {
+            return;
+        };
+        if let Some(obj) = body.as_object_mut() {
+            for (k, v) in extra {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    /// Write the output-token cap into `body` under `field`, clamped to
+    /// `max_tokens.min(u32::MAX)`. No-op when the model declares no cap.
+    pub fn apply_max_tokens(&self, body: &mut serde_json::Value, field: &str) {
+        if let Some(max) = self.max_tokens {
+            body[field] = serde_json::json!(max);
+        }
+    }
+}
 
 /// What a wire protocol can actually express — declared by the adapter as
 /// a baseline, narrowed per-deployment by `ProviderCompat` config fields.
@@ -77,6 +140,8 @@ pub trait LlmProvider: Send + Sync {
     /// `tools` is a provider-agnostic JSON Schema array; the adapter maps it
     /// onto its wire shape. `temperature` is a soft hint — adapters may clamp.
     /// `reasoning_effort` is an optional hint ("low", "medium", "high", "max") for models supporting reasoning.
+    /// `params` carries the per-model wire settings (`maxTokens`,
+    /// `samplingParams`, model-level `compat`) resolved from config.
     async fn chat_stream(
         &self,
         model: &str,
@@ -84,6 +149,7 @@ pub trait LlmProvider: Send + Sync {
         tools: Option<serde_json::Value>,
         temperature: f32,
         reasoning_effort: Option<&str>,
+        params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>>;
 }
 
@@ -105,6 +171,7 @@ impl LlmProvider for UnconfiguredProvider {
         _tools: Option<serde_json::Value>,
         _temperature: f32,
         _reasoning_effort: Option<&str>,
+        _params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         anyhow::bail!("no provider configured — add one in Settings")
     }

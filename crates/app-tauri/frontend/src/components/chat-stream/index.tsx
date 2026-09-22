@@ -1,5 +1,5 @@
 
-import { memo, useEffect, useRef, useState, useCallback, useMemo, type ComponentType, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from "react";
 import { cjk } from "@streamdown/cjk";
 import { Streamdown } from "streamdown";
 import type { SessionView, StreamItem } from "../../hooks/stream-view";
@@ -10,24 +10,16 @@ import {
   Check,
   Copy,
   ArrowDown,
-  Moon,
-  MoonStar,
-  Sun,
-  SunDim,
-  SunMedium,
-  Sunrise,
-  Sunset,
   FileCode,
   Terminal,
   Sparkles,
   TextQuote,
   FileArrowRight,
   RotateCcw,
-  type IconProps,
 } from "@keyline-icons/react";
 import { chatMarkdownComponents } from "./markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
-import { prismCodePlugin } from "../../lib/syntax-highlight";
+import { prismCodePlugin, prismCodePluginStreaming } from "../../lib/syntax-highlight";
 import { ChatTurnRail, type RailMark } from "./chat-turn-rail";
 import {
   ContextMenu,
@@ -49,6 +41,7 @@ import { toast } from "sonner";
 import { requestQuote, selectionWithin } from "../../lib/selection-bus";
 import { cn } from "@/lib/utils";
 import { loadStamp } from "@/lib/load-probe";
+import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "../../invoke/agent/sessions";
 import { retryTurn } from "../../invoke/agent/commands";
 
@@ -60,7 +53,13 @@ const streamdownIcons = {
 /** Streamdown wrapped in `memo` — finished turns' `text` strings are
  * stable references (applyEvent only concatenates the streaming tail),
  * so the whole transcript doesn't re-parse + re-highlight markdown on
- * every delta. Only the block whose text actually changed re-renders. */
+ * every delta. Only the block whose text actually changed re-renders.
+ *
+ * `plugins` is memoized on `animating` on purpose: a fresh object every
+ * render would defeat Streamdown's own per-block memo (its comparator
+ * includes `plugins`) and re-render every code block in the message. While
+ * this is the streaming tail it also selects the complete-lines-only
+ * highlighter; the final render uses the full one. */
 const MemoStreamdown = memo(function MemoStreamdown({
   text,
   animating,
@@ -68,10 +67,14 @@ const MemoStreamdown = memo(function MemoStreamdown({
   text: string;
   animating?: boolean;
 }) {
+  const plugins = useMemo(
+    () => ({ cjk, code: (animating ? prismCodePluginStreaming : prismCodePlugin) as any }),
+    [animating],
+  );
   return (
     <Streamdown
       isAnimating={animating}
-      plugins={{ cjk, code: prismCodePlugin as any }}
+      plugins={plugins}
       shikiTheme={["github-dark", "github-dark"]}
       components={chatMarkdownComponents}
       icons={streamdownIcons}
@@ -301,32 +304,16 @@ function collapsePromptArtifacts(md: string): string {
   return res;
 }
 
-/** Time-of-day greeting + matching keyline icon for the empty-session
- * hero — the "今天想做点什么?" style of Claude/ChatGPT new chats. */
-function timeGreeting(): {
-  label: string;
-  Icon: ComponentType<IconProps>;
-  tone: string;
-} {
-  const h = new Date().getHours();
-  if (h < 5) return { label: "夜深了", Icon: MoonStar, tone: "text-indigo-400 dark:text-indigo-300" };
-  if (h < 9) return { label: "早上好", Icon: Sunrise, tone: "text-amber-500 dark:text-amber-400" };
-  if (h < 12) return { label: "上午好", Icon: Sun, tone: "text-amber-500 dark:text-amber-400" };
-  if (h < 14) return { label: "中午好", Icon: SunMedium, tone: "text-orange-500 dark:text-orange-400" };
-  if (h < 18) return { label: "下午好", Icon: SunDim, tone: "text-amber-600 dark:text-amber-500" };
-  if (h < 20) return { label: "傍晚好", Icon: Sunset, tone: "text-orange-500 dark:text-orange-400" };
-  return { label: "晚上好", Icon: Moon, tone: "text-indigo-400 dark:text-indigo-300" };
-}
-
 /** Empty state for a fresh session — a large centered greeting plus a
  * hint pointing at the composer, replacing the old one-line caption. */
 function EmptyGreeting() {
-  const { label, Icon, tone } = timeGreeting();
+  const { label, tail, Icon, tone } = timeGreeting();
   return (
     <div className="my-auto flex flex-col items-center gap-3 select-none pb-16">
       <span className="flex items-center gap-3 text-[26px] leading-snug font-medium tracking-tight text-neutral-800">
         <Icon size={24} className={tone} />
-        {label}，今天想做点什么？
+        {label}
+        {tail}
       </span>
       <span className="text-[13px] text-neutral-400">
         在下方输入框发送消息，开始新对话

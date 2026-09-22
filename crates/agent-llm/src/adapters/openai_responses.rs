@@ -27,7 +27,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::provider::{BoxStream, LlmProvider};
+use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
 use crate::types::{ChatMessage, Role, StreamChunk};
 
@@ -277,7 +277,10 @@ impl LlmProvider for OpenAiResponsesProvider {
         tools: Option<serde_json::Value>,
         temperature: f32,
         reasoning_effort: Option<&str>,
+        params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        // Model-level `compat` merged over the provider's for this request.
+        let compat = params.compat_with(self.compat.as_ref());
         let (input, instructions) = Self::build_input(messages);
         let mut body = json!({
             "model": model,
@@ -290,22 +293,22 @@ impl LlmProvider for OpenAiResponsesProvider {
         if temperature > 0.0 {
             body["temperature"] = json!(temperature);
         }
-        if let Some(compat) = &self.compat {
-            if let Some(store) = compat.supports_store {
-                body["store"] = json!(store);
-            }
+        if let Some(store) = compat.supports_store {
+            body["store"] = json!(store);
         }
+        // The Responses API caps output with `max_output_tokens` — the model's
+        // `maxTokens` under its native field name.
+        params.apply_max_tokens(&mut body, "max_output_tokens");
         if let Some(effort) = reasoning_effort {
-            let allowed = self
-                .capabilities()
-                .reasoning;
-            if allowed {
+            if compat.supports_reasoning_effort.unwrap_or(true) {
                 body["reasoning"] = json!({ "effort": effort });
             }
         }
         if let Some(t) = Self::build_tools(tools) {
             body["tools"] = t;
         }
+        // `samplingParams` merges last so its keys win.
+        params.apply_sampling_params(&mut body);
 
         let req = self
             .transport

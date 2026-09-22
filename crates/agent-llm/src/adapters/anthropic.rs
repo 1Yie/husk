@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 
-use crate::provider::{BoxStream, LlmProvider};
+use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
 use crate::types::{ChatMessage, Role, StreamChunk};
 
@@ -279,11 +279,15 @@ impl LlmProvider for AnthropicProvider {
         tools: Option<serde_json::Value>,
         temperature: f32,
         reasoning_effort: Option<&str>,
+        params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         let (system, wire_messages) = build_messages(messages);
+        // The model's `maxTokens` is the real output cap; the adapter's 32k
+        // constant is only the fallback for a model that declares none.
+        let cap = params.max_tokens.unwrap_or(MAX_TOKENS);
         let mut body = json!({
             "model": model,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": cap,
             "stream": true,
             "messages": wire_messages,
         });

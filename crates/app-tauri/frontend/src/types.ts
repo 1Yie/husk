@@ -137,4 +137,20 @@ export interface ChatMessage {
   notice?: "system" | "error" | "hidden";
   /** Creation time (epoch ms) — drives the `—— time ——` turn divider. */
   ts?: number | null;
+  /** Reasoning trace of this assistant round — replays as the same 思考过程
+   * block the live stream drew. Display-only: never sent to a provider.
+   * Absent on rounds without a trace and on sessions written before this
+   * was persisted. */
+  reasoning?: string | null;
+}
+
+/** Kernel UI-event queue counters (`agent_kernel::channels::UiStatsSnapshot`)
+ * aggregated over every live session. `dropped` counts *text* deltas the
+ * queue had to discard — control events (state machine, approvals, final
+ * messages) are never dropped. */
+export interface UiStats {
+  sent: number;
+  coalesced: number;
+  dropped: number;
+  depth_peak: number;
 }

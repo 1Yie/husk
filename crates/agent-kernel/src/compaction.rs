@@ -66,7 +66,9 @@ pub fn should_prefire(tokens: usize, window: usize) -> bool {
 ///    For a native provider, flattening would orphan every `Role::Tool`
 ///    result (its `tool_call_id` no longer has a matching `function_call`)
 ///    so the model loses all tool output (P1-b).
-/// 2. Strip reasoning blocks — `reasoning` deltas are transient, never sent.
+/// 2. Reasoning traces are deliberately left alone: they are display-only
+///    (no adapter puts them on the wire), and the persisted row is what a
+///    reopened session replays as its `思考过程` block.
 /// 3. Image refs: kept verbatim when the active model declares `"image"`
 ///    input; stripped when it's text-only (e.g. a mid-session downgrade) —
 ///    the marker text stays as provenance.
@@ -94,8 +96,11 @@ pub fn sanitize_for_sample(
             }
         }
     }
-    // (2) reasoning never persisted into ChatMessage — nothing to strip.
-    // (Reasoning deltas are a separate stream; they never enter history.)
+    // (2) reasoning stays on the message. It is a *display* field: the wire
+    // bodies are built from role/content/tool_calls only, and `openai_compat`
+    // (the one adapter that serializes the whole struct) strips it. Dropping
+    // it here would silently empty every replayed thinking block on the next
+    // snapshot — sanitize runs against the real history, not a copy.
 
     // (3) images ride the `images` field now — real parts for a vision
     // model, dropped for a text-only one (the `<attached-image>` marker
@@ -235,9 +240,10 @@ pub fn apply(history: &mut Vec<ChatMessage>, plan: &CompactionPlan, note_text: S
         tool_calls: None,
         tool_call_id: None,
         is_error: None,
-                        notice: None,
+        notice: None,
         ts: None,
-            images: Vec::new(),
+        images: Vec::new(),
+        reasoning: None,
     };
     // Splice from index 1 — `history[0]` is the rendered kernel system
     // prompt; compacting it away would strip the model's tool protocol and
@@ -305,7 +311,7 @@ mod tests {
     use super::*;
 
     fn msg(role: Role, text: &str) -> ChatMessage {
-        ChatMessage { role, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: None, images: Vec::new() }
+        ChatMessage { role, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: None, images: Vec::new(), reasoning: None }
     }
 
     #[test]
@@ -343,7 +349,8 @@ mod tests {
                         notice: None,
                 ts: None,
             images: Vec::new(),
-            },
+            
+            reasoning: None,},
         ];
         // text-protocol provider → tool_calls flattened into message text.
         sanitize_for_sample(&mut h, 100_000, /*native_tool_calls*/ false, true);
@@ -364,7 +371,8 @@ mod tests {
                         notice: None,
             ts: None,
             images: Vec::new(),
-        }];
+        
+        reasoning: None,}];
         sanitize_for_sample(&mut h2, 100_000, /*native_tool_calls*/ true, true);
         assert!(h2[1].tool_calls.is_some(), "native tool_calls must not flatten");
         assert!(!h2[1].content.as_deref().unwrap().contains("[call:"));
@@ -406,7 +414,8 @@ mod tests {
                 ]),
                 tool_call_id: None, is_error: None, notice: None, ts: None,
                 images: Vec::new(),
-            },
+            
+            reasoning: None,},
             {
                 let mut m = msg(Role::Tool, &"output_a ".repeat(500));
                 m.tool_call_id = Some("call_a".into());

@@ -12,8 +12,8 @@ use crate::adapters::{
     anthropic::AnthropicProvider, GenericOpenAiProvider,
     OpenAiResponsesProvider,
 };
-use crate::config::{ProviderConfig, ProviderKind, SecretResolution};
-use crate::provider::LlmProvider;
+use crate::config::{ModelConfig, ProviderConfig, ProviderKind, SecretResolution};
+use crate::provider::{LlmProvider, ModelParams};
 
 #[derive(Debug, Error)]
 pub enum FactoryError {
@@ -86,6 +86,33 @@ impl ProviderFactory {
                 }
                 Ok(Arc::new(p))
             }
+        }
+    }
+
+    /// The per-model wire settings for `model_id` under `cfg` — `maxTokens`,
+    /// `samplingParams`, and the model's `compat` merged over the provider's.
+    ///
+    /// Returns `ModelParams::EMPTY` for a model the config doesn't describe, so
+    /// an unconfigured model keeps every adapter default.
+    pub fn model_params(cfg: &ProviderConfig, model_id: &str) -> ModelParams {
+        if cfg.find_model(model_id).is_none() {
+            return ModelParams::EMPTY;
+        }
+        // `model_opts` folds in `modelOverrides`; a bare string entry yields a
+        // settings-free `ModelConfig`, which is exactly `EMPTY`.
+        Self::model_params_from(&cfg.model_opts(model_id))
+    }
+
+    /// Same, from an already-resolved [`ModelConfig`] (i.e. with
+    /// `modelOverrides` applied) — what the engine holds after a model switch.
+    pub fn model_params_from(model: &ModelConfig) -> ModelParams {
+        ModelParams {
+            max_tokens: model.max_tokens.map(|v| v.min(u32::MAX as u64) as u32),
+            sampling_params: model.sampling_params.clone(),
+            // The model's own `compat`; the provider's is merged in by the
+            // adapter at request time (`ModelParams::compat_with`), so a
+            // provider-level change still reaches a resolved model.
+            compat: model.compat.clone(),
         }
     }
 }

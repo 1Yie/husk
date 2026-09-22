@@ -76,6 +76,7 @@ impl LlmProvider for ScriptedProvider {
         tools: Option<serde_json::Value>,
         _temperature: f32,
         _reasoning_effort: Option<&str>,
+        _params: &agent_llm::ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         self.calls.lock().unwrap().push((
             model.to_string(),

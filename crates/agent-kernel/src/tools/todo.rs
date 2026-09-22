@@ -8,15 +8,27 @@
 //! starts clean, a resumed session keeps its list, and the user's repo is
 //! never polluted with agent scratch files.
 //!
-//! `readonly: true` — it manages internal agent state without touching
-//! project workspace files. It is not a code write tool and should execute
-//! autonomously based on the model's judgment without pausing for user
-//! confirmation or approval.
+//! `readonly: true` here means **it does not touch the user's workspace** —
+//! not that it mutates nothing. It writes session state under the app data
+//! dir, which is why it can run autonomously (no approval, no permission
+//! gate) while `edit`/`write`/`bash` cannot.
+//!
+//! Two invariants the store must keep, because the model treats the list as
+//! ground truth for what it is doing:
+//!   * **No lost updates** — `exec` is load → mutate → save, so one
+//!     invocation at a time per store file (see `path_lock`).
+//!   * **Monotonic ids** — ids are never reused, not even across `clear`;
+//!     a recycled `#1` on a different task is exactly the aliasing that makes
+//!     the model mark the wrong item done.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::{Mutex as StdMutex, OnceLock};
 
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 
 use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
 
@@ -74,41 +86,88 @@ fn store_path(ctx: &ToolCtx) -> std::path::PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("husk-todos.json"))
 }
 
-async fn load(ctx: &ToolCtx) -> Result<TodoStore, ToolError> {
-    let path = store_path(ctx);
-    match tokio::fs::read_to_string(&path).await {
+/// One async lock per store file, shared process-wide.
+///
+/// `exec` is a read-modify-write cycle, so two overlapping invocations can
+/// lose an update or hand the same id to two items. Today the engine
+/// dispatches a round's calls sequentially — this is insurance, not a fix for
+/// a reproducible bug — but the failure is *silent* (a todo just vanishes),
+/// and parallel dispatch is the direction the runtime is heading. Keyed by
+/// path rather than held in `ToolCtx` so it also covers a second `ToolCtx`
+/// over the same session (subagent, headless context).
+fn path_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+        OnceLock::new();
+    let locks = LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut locks = locks.lock().unwrap_or_else(|e| e.into_inner());
+    locks.entry(path.to_path_buf()).or_default().clone()
+}
+
+async fn load(path: &Path, workspace_root: &Path) -> Result<TodoStore, ToolError> {
+    match tokio::fs::read_to_string(path).await {
         Ok(s) => serde_json::from_str(&s)
             .map_err(|e| ToolError::Failed(format!("corrupt {}: {e}", path.display()))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // One-time migration: a legacy `{workspace}/.agent/todos.json`
             // becomes this session's list, then the repo file is removed so
             // the workspace stays clean.
-            let legacy = ctx.workspace_root.join(".agent").join("todos.json");
+            let legacy = workspace_root.join(".agent").join("todos.json");
             match tokio::fs::read_to_string(&legacy).await {
                 Ok(s) => {
-                    let store: TodoStore = serde_json::from_str(&s).unwrap_or_default();
+                    // Unreadable legacy state is NOT an empty list: treating
+                    // it as one would strand the user's tasks *and* the file
+                    // is deleted a line later. Surface it and leave it alone.
+                    let store: TodoStore = serde_json::from_str(&s).map_err(|e| {
+                        ToolError::Failed(format!(
+                            "legacy {} is not valid todo JSON: {e} — left in place; \
+                             fix or delete it and retry",
+                            legacy.display()
+                        ))
+                    })?;
+                    // Copy first, remove only after the new copy is durable —
+                    // a failed migration must not be a destructive one.
+                    save(path, &store).await?;
                     let _ = tokio::fs::remove_file(&legacy).await;
-                    let _ = save(ctx, &store).await;
                     Ok(store)
                 }
-                Err(_) => Ok(TodoStore {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TodoStore {
                     next_id: 1,
                     items: Vec::new(),
                 }),
+                Err(e) => Err(ToolError::Io(e)),
             }
         }
         Err(e) => Err(ToolError::Io(e)),
     }
 }
 
-async fn save(ctx: &ToolCtx, store: &TodoStore) -> Result<(), ToolError> {
-    let path = store_path(ctx);
+/// Atomic replace: write a temp file, fsync it, rename over the target.
+///
+/// `fs::write` truncates the real file and streams into it — a crash (or a
+/// full disk) mid-write leaves truncated JSON, which the next `load` reports
+/// as corrupt, costing the model the whole plan. `rename(2)` is atomic, so a
+/// reader sees either the old file or the new one.
+async fn save(path: &Path, store: &TodoStore) -> Result<(), ToolError> {
     if let Some(dir) = path.parent() {
         tokio::fs::create_dir_all(dir).await?;
     }
     let json = serde_json::to_string_pretty(store)
         .map_err(|e| ToolError::Failed(format!("serialize todos: {e}")))?;
-    tokio::fs::write(&path, json).await?;
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut f = tokio::fs::File::create(&tmp).await?;
+        f.write_all(json.as_bytes()).await?;
+        f.sync_all().await?;
+    }
+    tokio::fs::rename(&tmp, path).await?;
+    // Best-effort: fsync the directory so the rename itself survives a power
+    // loss. Fails on platforms where directories can't be opened — the data
+    // rename above is what matters for the corruption case.
+    if let Some(dir) = path.parent() {
+        if let Ok(d) = tokio::fs::File::open(dir).await {
+            let _ = d.sync_all().await;
+        }
+    }
     Ok(())
 }
 
@@ -128,12 +187,15 @@ fn render(items: &[TodoItem]) -> String {
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let a: TodoArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("todo args: {e}")))?;
-    let mut store = load(&ctx).await?;
-    // `next_id` defaults to 0 on a fresh deserialize — pin it past the max
-    // id so a hand-edited or first-run file can't collide.
-    if store.next_id == 0 {
-        store.next_id = store.items.iter().map(|t| t.id).max().unwrap_or(0) + 1;
-    }
+    let path = store_path(&ctx);
+    let lock = path_lock(&path);
+    let _guard = lock.lock().await;
+    let mut store = load(&path, &ctx.workspace_root).await?;
+    // `next_id` must clear the highest stored id — a file with `next_id: 2`
+    // sitting next to `#10` (hand-edited, partially migrated, older format)
+    // would otherwise hand out a duplicate id.
+    let max_id = store.items.iter().map(|t| t.id).max().unwrap_or(0);
+    store.next_id = store.next_id.max(max_id + 1);
 
     let out = match a.action.as_str() {
         "list" => render(&store.items),
@@ -147,7 +209,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             let item = TodoItem { id: store.next_id, text: text.into(), done: false };
             store.next_id += 1;
             store.items.push(item.clone());
-            save(&ctx, &store).await?;
+            save(&path, &store).await?;
             format!("Added #{} {}\n\n{}", item.id, item.text, render(&store.items))
         }
         "done" | "undone" => {
@@ -165,7 +227,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 })?;
             item.done = a.action == "done";
             let done = item.done;
-            save(&ctx, &store).await?;
+            save(&path, &store).await?;
             format!("#{} {}\n\n{}", id, if done { "done" } else { "reopened" }, render(&store.items))
         }
         "remove" => {
@@ -177,14 +239,14 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                     "todo #{id} not found — run `list` for live ids"
                 )));
             }
-            save(&ctx, &store).await?;
+            save(&path, &store).await?;
             format!("Removed #{id}\n\n{}", render(&store.items))
         }
         "clear" => {
             let n = store.items.len();
             store.items.clear();
-            store.next_id = 1;
-            save(&ctx, &store).await?;
+            // `next_id` deliberately survives a clear — see the module docs.
+            save(&path, &store).await?;
             format!("Cleared {n} todos.")
         }
         other => {
@@ -236,8 +298,120 @@ mod tests {
         assert!(r.content.contains("Removed #1"));
 
         // persisted across "sessions" (fresh load from the same dir)
-        let store = load(&ctx).await.unwrap();
+        let store = load(&store_path(&ctx), &ctx.workspace_root).await.unwrap();
         assert!(store.items.is_empty());
+    }
+
+    /// Ids never recycle — a fresh `#1` for a different task aliases with the
+    /// `#1` still in the model's context window (hence: monotonic across
+    /// `clear`, and derived from the highest stored id on load).
+    #[tokio::test]
+    async fn ids_stay_monotonic_across_clear() {
+        let ctx = ctx();
+        exec(serde_json::json!({"action":"add","text":"a"}), ctx.clone()).await.unwrap();
+        exec(serde_json::json!({"action":"add","text":"b"}), ctx.clone()).await.unwrap();
+        let r = exec(serde_json::json!({"action":"clear"}), ctx.clone()).await.unwrap();
+        assert!(r.content.contains("Cleared 2"));
+        let r = exec(serde_json::json!({"action":"add","text":"c"}), ctx.clone()).await.unwrap();
+        assert!(r.content.contains("#3"), "id recycled after clear: {}", r.content);
+    }
+
+    /// A hand-edited / older file can carry a `next_id` below the highest id.
+    #[tokio::test]
+    async fn next_id_clears_the_highest_stored_id() {
+        let ctx = ctx();
+        let path = store_path(&ctx);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let seeded = serde_json::json!({
+            "next_id": 2,
+            "items": [{"id": 10, "text": "old task", "done": false}],
+        });
+        std::fs::write(&path, serde_json::to_string(&seeded).unwrap()).unwrap();
+
+        let r = exec(serde_json::json!({"action":"add","text":"new"}), ctx.clone()).await.unwrap();
+        assert!(r.content.contains("#11"), "duplicate id handed out: {}", r.content);
+    }
+
+    /// Overlapping invocations must not lose an add. Without the per-store
+    /// lock this drops updates: every call would load the same snapshot and
+    /// the last save would win.
+    #[tokio::test]
+    async fn concurrent_adds_neither_collide_nor_vanish() {
+        let ctx = ctx();
+        let mut set = tokio::task::JoinSet::new();
+        for i in 0..8 {
+            let ctx = ctx.clone();
+            set.spawn(async move {
+                exec(serde_json::json!({"action":"add","text":format!("t{i}")}), ctx)
+                    .await
+                    .unwrap()
+            });
+        }
+        while set.join_next().await.is_some() {}
+
+        let store = load(&store_path(&ctx), &ctx.workspace_root).await.unwrap();
+        assert_eq!(store.items.len(), 8, "lost update: {:?}", store.items);
+        let mut ids: Vec<usize> = store.items.iter().map(|t| t.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=8).collect::<Vec<_>>(), "id collision: {ids:?}");
+    }
+
+    /// Corrupt legacy state must not be mistaken for "no todos" — that both
+    /// strands the user's tasks and (before this) deleted the only copy.
+    #[tokio::test]
+    async fn corrupt_legacy_migration_fails_loudly_and_keeps_the_file() {
+        let ctx = ctx();
+        let legacy = ctx.workspace_root.join(".agent").join("todos.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "{ this is not json").unwrap();
+
+        let err = exec(serde_json::json!({"action":"list"}), ctx.clone())
+            .await
+            .expect_err("a corrupt legacy file must surface, not read as empty");
+        assert!(matches!(err, ToolError::Failed(ref m) if m.contains("legacy")), "{err}");
+        assert!(legacy.exists(), "the only copy of the list was deleted");
+    }
+
+    #[tokio::test]
+    async fn legacy_migration_copies_before_removing() {
+        let ctx = ctx();
+        let legacy = ctx.workspace_root.join(".agent").join("todos.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let seeded = serde_json::json!({
+            "next_id": 4,
+            "items": [{"id": 3, "text": "old task", "done": true}],
+        });
+        std::fs::write(&legacy, serde_json::to_string(&seeded).unwrap()).unwrap();
+
+        let r = exec(serde_json::json!({"action":"list"}), ctx.clone()).await.unwrap();
+        assert!(r.content.contains("#3 old task"), "{}", r.content);
+        assert!(!legacy.exists(), "migration should clean the workspace copy");
+        // …and the new home holds it (ids included).
+        let r = exec(serde_json::json!({"action":"add","text":"next"}), ctx.clone()).await.unwrap();
+        assert!(r.content.contains("#4 next"), "{}", r.content);
+    }
+
+    /// `save` must replace atomically and leave no temp file behind.
+    #[tokio::test]
+    async fn save_is_atomic_and_leaves_no_temp_file() {
+        let ctx = ctx();
+        let path = store_path(&ctx);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        exec(serde_json::json!({"action":"add","text":"a"}), ctx.clone()).await.unwrap();
+        let dir = path.parent().unwrap();
+        let leftovers: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+
+        // The rename target is valid JSON, and re-saving over it works.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let store: TodoStore = serde_json::from_str(&raw).unwrap();
+        assert_eq!(store.items.len(), 1);
     }
 
     #[tokio::test]

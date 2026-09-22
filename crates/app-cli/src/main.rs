@@ -43,12 +43,23 @@ async fn main() -> anyhow::Result<()> {
         .as_ref()
         .and_then(|p| app_cfg.providers.get(p))
         .and_then(|p| p.find_model(&model));
-    let detailed = mentry.and_then(|m| m.detailed());
-    let thinking_level_map = detailed
+    // `modelOverrides` fold in here too — the CLI must run the same wire
+    // settings the desktop session would.
+    let resolved = mentry.is_some().then(|| {
+        app_cfg
+            .active_provider
+            .as_ref()
+            .and_then(|p| app_cfg.providers.get(p))
+            .map(|p| p.model_opts(&model))
+            .unwrap_or_default()
+    });
+    let model_params = resolved
         .as_ref()
-        .and_then(|d| d.thinking_level_map.clone());
-    let context_window = detailed.as_ref().and_then(|d| d.context_window);
-    let model_input = detailed.map(|d| d.input.clone()).unwrap_or_default();
+        .map(agent_llm::ProviderFactory::model_params_from)
+        .unwrap_or_default();
+    let thinking_level_map = resolved.as_ref().and_then(|d| d.thinking_level_map.clone());
+    let context_window = resolved.as_ref().and_then(|d| d.context_window);
+    let model_input = resolved.map(|d| d.input.clone()).unwrap_or_default();
     let cfg = SessionConfig {
         workspace_root: workspace,
         provider,
@@ -62,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         context_window,
         model_input,
         compact_at: None,
+        model_params: Some(model_params),
     };
     let (mut actor, channels) = SessionActor::spawn(cfg);
     let cmd_tx = actor.command_sender();

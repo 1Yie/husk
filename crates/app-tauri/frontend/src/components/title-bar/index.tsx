@@ -4,6 +4,7 @@ import { useCurrencySymbol } from "@/lib/appearance";
 import { GitBranch, ChartPie, Zap, BarChartHorizontalStart, Inbox } from "@keyline-icons/react";
 import { BrainCircuit } from "lucide-react";
 import { TooltipSimple } from "@/components/ui/tooltip";
+import { StreamHealth } from "@/components/stream-health";
 import type { SessionView } from "../../hooks/stream-view";
 import type { GitInfo, ModelItem } from "../../invoke/agent";
 
@@ -115,6 +116,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
       <div
         className="flex items-center gap-3 flex-none mr-2 text-[11px] font-mono text-neutral-400"
       >
+        <StreamHealth />
         {gitInfo?.branch && (
           <TooltipSimple content={`Git 分支: ${gitInfo.branch}${gitInfo.dirty > 0 ? ` (${gitInfo.dirty} 处未提交修改)` : ""}`} side="bottom">
             <span className="flex items-center gap-1 cursor-default">

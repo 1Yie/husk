@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 
-use crate::provider::{BoxStream, LlmProvider};
+use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
 use crate::types::{ChatMessage, Role, StreamChunk};
 
@@ -200,12 +200,16 @@ impl LlmProvider for GeminiProvider {
         tools: Option<serde_json::Value>,
         temperature: f32,
         reasoning_effort: Option<&str>,
+        params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         let (system, contents) = build_contents(messages);
         let mut gen_cfg = json!({});
         if temperature > 0.0 {
             gen_cfg["temperature"] = json!(temperature);
         }
+        // The model's `maxTokens` — Gemini caps output with
+        // `generationConfig.maxOutputTokens`.
+        params.apply_max_tokens(&mut gen_cfg, "maxOutputTokens");
         if let Some(effort) = reasoning_effort {
             if let Some(budget) = thinking_budget(effort) {
                 gen_cfg["thinkingConfig"] =

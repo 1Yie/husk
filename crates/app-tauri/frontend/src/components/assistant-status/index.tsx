@@ -1,10 +1,99 @@
-import { useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Orb } from "../agent-orb";
 import { ChevronDown } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { renderWithTwemoji } from "@/lib/twemoji";
+
+/** The live modes — i.e. the states the row is actively working in, as
+ *  opposed to the settled "思考过程" recap. */
+function liveMode(mode: "reply" | "thought" | "thinking" | "tools" | null): boolean {
+  return mode === "reply" || mode === "tools" || mode === "thinking";
+}
+
+/** Duration label — bare seconds under a minute ("20s"), then `m:ss`, and
+ *  `h:mm:ss` once an hour in (a stalled tool call can sit there a long while). */
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const mins = Math.floor(total / 60);
+  const secs = String(total % 60).padStart(2, "0");
+  if (mins < 60) return `${mins}:${secs}`;
+  return `${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, "0")}:${secs}`;
+}
+
+/** How long a status row has spent in its live modes: `banked` totals the
+ *  passes that already ended, `since` anchors the one in flight (`null` once
+ *  the row settles).
+ *
+ *  Time is BANKED across passes rather than restarted on each mode flip: some
+ *  backends emit reasoning deltas after answer text, which reopens the block
+ *  (`applyEvent`) and flips "思考过程" back to "思考中" mid-turn. A clock
+ *  anchored per-pass would blink to 0s every time that happens; this one keeps
+ *  counting, so the figure only ever grows. */
+interface Trace {
+  banked: number;
+  since: number | null;
+}
+
+/** The row's live time so far. */
+function traceMs(trace: Trace, now: number): number {
+  return trace.banked + (trace.since == null ? 0 : now - trace.since);
+}
+
+/** Move a row's clock onto a new mode. Entering a live mode opens a pass;
+ *  leaving one banks it. Returns null for a row that was never live — a
+ *  thinking block replayed into an already-settled view measured nothing, so
+ *  it must render no duration rather than a fake "· 0s". */
+function advanceClock(prev: Trace | null, live: boolean, now: number): Trace | null {
+  if (live) return { banked: prev?.banked ?? 0, since: now };
+  if (!prev || prev.since == null) return prev;
+  return { banked: prev.banked + (now - prev.since), since: null };
+}
+
+/** The ticking `· 20s` suffix. Owns the 1s re-render so the header's orbs and
+ *  label row don't re-render every second. The value is read straight off the
+ *  wall clock — a throttled interval in a background webview then can't leave
+ *  a drifted figure behind on wake. `live` false = settled row: the duration
+ *  stays put and no timer is kept alive. */
+const ElapsedLabel = memo(function ElapsedLabel({
+  trace,
+  live,
+}: {
+  trace: Trace;
+  live: boolean;
+}) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [live]);
+  const ms = traceMs(trace, Date.now());
+  // Nothing worth showing during the first second.
+  if (ms < 1000) return null;
+  return (
+    <span className="whitespace-nowrap text-neutral-400 font-normal tabular-nums">
+      · {formatElapsed(ms)}
+    </span>
+  );
+});
+
+/** Reasoning body. `memo`'d because the parent re-renders on every stream
+ *  event (ChatStream re-renders per delta), and without it every such render
+ *  would re-run the twemoji pass over a multi-thousand-char chain whose text
+ *  had not changed. Radix passes open/closed state through context, which
+ *  bypasses memo, so the collapse animation still works. */
+const ThinkingBody = memo(function ThinkingBody({ text }: { text: string }) {
+  return (
+    <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+      <div className="text-neutral-400 mt-1 w-full min-w-0 whitespace-pre-wrap text-[13px] leading-relaxed select-text font-normal pl-6">
+        {renderWithTwemoji(text)}
+      </div>
+    </CollapsibleContent>
+  );
+});
 
 export function AssistantStatus({
   mode,
@@ -13,15 +102,31 @@ export function AssistantStatus({
   mode: "reply" | "thought" | "thinking" | "tools" | null;
   thinkingText: string;
 }) {
-  const [open, setOpen] = useState(mode !== "thought");
+  // Collapsed by default in EVERY mode — the header row alone carries the
+  // state; reasoning body expands on explicit click. Previously the body
+  // auto-opened while streaming, which pushed the answer down the viewport.
+  const [open, setOpen] = useState(false);
+  // Live time for the row's header. A row that MOUNTS settled (a thinking
+  // block replayed from history, or one already finished when the turn
+  // scrolled into view) starts with no clock at all — nothing was measured,
+  // so nothing is shown.
+  const [trace, setTrace] = useState<Trace | null>(() =>
+    liveMode(mode) ? { banked: 0, since: Date.now() } : null,
+  );
   const [seenMode, setSeenMode] = useState(mode);
   if (mode !== seenMode) {
     setSeenMode(mode);
-    if (mode === "thought") setOpen(false);
+    // Read the clock OUT of the updater: React may invoke it twice
+    // (StrictMode), and both passes must agree on the timestamp.
+    const now = Date.now();
+    setTrace((prev) => advanceClock(prev, liveMode(mode), now));
   }
+
+  // Hooks must stay above the null-mode bail-out, so the mode-derived flag is
+  // computed here rather than next to the label below.
+  const live = liveMode(mode);
   if (!mode) return null;
 
-  const live = mode === "reply" || mode === "tools" || mode === "thinking";
   const label =
     mode === "reply"
       ? "正在回复"
@@ -31,16 +136,37 @@ export function AssistantStatus({
           ? "思考中"
           : "思考过程";
   const canToggle = Boolean(thinkingText);
+  /** Pinned while expanded — see the capsule note below. */
+  const pinned = open && canToggle;
 
   return (
     <Collapsible open={open} onOpenChange={canToggle ? setOpen : undefined} className="w-full min-w-0 select-none my-1">
-      <div className={open && thinkingText ? "bg-white" : ""}>
+      {/* Pins the header to the top of the stream viewport while the block is
+          expanded, so a long reasoning body can be read and collapsed without
+          chasing the header back up. Gated on `open` rather than applied
+          unconditionally because a sticky element costs a per-frame layout
+          recalc on WebKitGTK (see `markdown-components.tsx`) and a collapsed
+          row — just a chevron — has no body to scroll past it.
+
+          Pinned, the row becomes a self-contained capsule instead of a
+          full-width opaque bar: a mask only ever covers the strip it was
+          sized for, so whatever it misses (row margins, a taller neighbour)
+          reads as a half-covered gap — and a full-width sticky band also
+          swallows clicks aimed at the content underneath. The capsule is
+          opaque and `w-fit`, so it floats over the body, stays readable over
+          text or a diff, and only its own area is interactive. */}
+      <div className={cn(pinned && "sticky top-0 z-10 w-fit")}>
         <CollapsibleTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
             aria-expanded={canToggle ? open : undefined}
-            className="h-7 w-fit gap-1.5 px-1.5 text-xs font-medium text-neutral-500 hover:text-neutral-700"
+            className={cn(
+              "h-7 w-fit gap-1.5 text-xs font-medium text-neutral-500 hover:text-neutral-700",
+              pinned
+                ? "rounded-full border border-neutral-200 bg-white px-2.5 shadow-sm"
+                : "px-1.5"
+            )}
             disabled={!canToggle}
           >
             <span className="relative w-5 h-5 shrink-0 flex items-center justify-center">
@@ -97,16 +223,12 @@ export function AssistantStatus({
                 }
               )}
             </span>
+            {/* `正在回复 · 20s` — how long this state has been running. */}
+            {trace && <ElapsedLabel trace={trace} live={live} />}
           </Button>
         </CollapsibleTrigger>
       </div>
-      {thinkingText ? (
-        <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
-          <div className="text-neutral-400 mt-1 w-full min-w-0 whitespace-pre-wrap text-[13px] leading-relaxed select-text font-normal pl-6">
-            {renderWithTwemoji(thinkingText)}
-          </div>
-        </CollapsibleContent>
-      ) : null}
+      {thinkingText ? <ThinkingBody text={thinkingText} /> : null}
     </Collapsible>
   );
 }

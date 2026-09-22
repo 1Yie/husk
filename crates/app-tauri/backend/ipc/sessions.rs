@@ -1,5 +1,6 @@
 //! `agent_session` — session-list + switch/create commands for the sidebar.
 
+use base64::Engine as _;
 use tauri::{Manager, State};
 
 use crate::kernel::KernelState;
@@ -611,31 +612,14 @@ pub fn agent_session(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| p.to_string());
             let path = stage_attachment(&source, &mgr.workspace_root);
-            let staged = path.to_string_lossy().to_string();
-            if let Some(img) = agent_llm::types::ImageRef::for_path(path.clone()) {
-                return Ok(serde_json::json!({
-                    "path": staged, "name": name, "kind": "image",
-                    "data_url": img.data_url(),
-                }));
-            }
-            const MAX_BYTES: usize = 32 * 1024;
-            match std::fs::read(&path) {
-                Ok(bytes) if bytes.contains(&0) => Ok(serde_json::json!({
-                    "path": staged, "name": name, "kind": "binary",
-                })),
-                Ok(bytes) => {
-                    let truncated = bytes.len() > MAX_BYTES;
-                    let capped = if truncated { &bytes[..MAX_BYTES] } else { &bytes[..] };
-                    Ok(serde_json::json!({
-                        "path": staged,
-                        "name": name,
-                        "kind": "text",
-                        "content": String::from_utf8_lossy(capped),
-                        "truncated": truncated,
-                    }))
-                }
-                Err(e) => Err(format!("read {}: {e}", path.display())),
-            }
+            describe_attachment(&path, name)
+        }
+        // Clipboard paste — a pasted image/file has no path to hand over
+        // (the webview only ever gives us the bytes), so the frontend sends
+        // them base64-encoded and we stage them exactly like a picked file.
+        // Same chip JSON back, so paste and `+` feed one Attachment list.
+        "attach_bytes" => {
+            stage_clipboard_payload(payload.as_ref(), &mgr.workspace_root)
         }
         _ => Err(format!("unknown session op: {op}")),
     }
@@ -707,30 +691,166 @@ fn stage_attachment(
     if source.starts_with(workspace_root) {
         return source.to_path_buf();
     }
+    let Ok(bytes) = std::fs::read(source) else {
+        return source.to_path_buf();
+    };
+    let name = source
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    stage_bytes(&bytes, &name, workspace_root)
+}
+
+/// Stage raw bytes (a picked file's contents, or a clipboard paste) under
+/// `<workspace>/.husk/attachments/` and return the staged path.
+///
+/// Content-hash name — re-pasting the same image is idempotent, and two
+/// different files sharing a filename never collide.
+fn stage_bytes(
+    bytes: &[u8],
+    name: &str,
+    workspace_root: &std::path::Path,
+) -> std::path::PathBuf {
     let dir = workspace_root.join(".husk").join("attachments");
     let gitignore = workspace_root.join(".husk").join(".gitignore");
     if std::fs::create_dir_all(&dir).is_ok() && !gitignore.exists() {
         let _ = std::fs::write(&gitignore, "*\n");
     }
-    // Content-hash name — re-picking the same file is idempotent, and two
-    // different files sharing a filename never collide.
-    let Ok(bytes) = std::fs::read(source) else {
-        return source.to_path_buf();
-    };
-    let hash = xxhash_rust::xxh3::xxh3_64(&bytes);
-    let stem = source
+    let hash = xxhash_rust::xxh3::xxh3_64(bytes);
+    let as_path = std::path::Path::new(name);
+    let stem = as_path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".into());
-    let ext = source
+    let ext = as_path
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
     let staged = dir.join(format!("{stem}-{hash:016x}{ext}"));
-    if !staged.exists() && std::fs::write(&staged, &bytes).is_err() {
-        return source.to_path_buf();
+    if !staged.exists() && std::fs::write(&staged, bytes).is_err() {
+        // Unwritable workspace — hand back nothing rather than a path that
+        // does not exist (`describe_attachment` then reports the failure).
+        return staged;
     }
     staged
+}
+
+/// Stage a PNG read from the *system* clipboard (see `paste_clipboard`) and
+/// describe it as a chip — the Rust-side twin of the `attach_bytes` op, so a
+/// Ctrl+V image and a pasted blob land in the same list.
+pub(crate) fn stage_clipboard_image(
+    png: &[u8],
+    workspace_root: &std::path::Path,
+) -> Result<serde_json::Value, String> {
+    let path = stage_bytes(png, "clipboard.png", workspace_root);
+    describe_attachment(&path, "clipboard.png".into())
+}
+
+/// RGBA8 → PNG. Needed because the clipboard hands over raw pixels while every
+/// provider (and `ImageRef`) speaks a real image format.
+pub(crate) fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| format!("png encode: {e}"))?;
+        writer
+            .write_image_data(rgba)
+            .map_err(|e| format!("png encode: {e}"))?;
+    }
+    Ok(out)
+}
+
+/// The chip payload for one staged file — the single shape both
+/// `read_attachment` (picked path) and `attach_bytes` (clipboard paste)
+/// return, so the frontend keeps one `Attachment` list.
+/// `attach_bytes` body — split out of the command match so the wire contract
+/// (`name` / `mime` / base64 `data`) stays unit-testable without Tauri state.
+fn stage_clipboard_payload(
+    payload: Option<&serde_json::Value>,
+    workspace_root: &std::path::Path,
+) -> Result<serde_json::Value, String> {
+    let p = payload.ok_or("attach_bytes needs a payload")?;
+    let mut name = p
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("clipboard")
+        .to_string();
+    // A nameless clipboard blob (WebKit hands over `image/png` with an empty
+    // name in some paste paths) must still land with an extension — the image
+    // detection downstream is extension-based, and a bare `clipboard` file
+    // would be treated as opaque binary instead of an image.
+    if std::path::Path::new(&name).extension().is_none() {
+        if let Some(ext) = p.get("mime").and_then(|v| v.as_str()).and_then(mime_ext) {
+            name = format!("{name}.{ext}");
+        }
+    }
+    let data = p.get("data").and_then(|v| v.as_str()).ok_or("attach_bytes needs data")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("attach_bytes: bad base64: {e}"))?;
+    if bytes.is_empty() {
+        return Err("attach_bytes: empty payload".into());
+    }
+    const MAX_PASTE_BYTES: usize = 24 * 1024 * 1024;
+    if bytes.len() > MAX_PASTE_BYTES {
+        return Err(format!(
+            "粘贴内容过大（{} MB，上限 {} MB）",
+            bytes.len() / (1024 * 1024),
+            MAX_PASTE_BYTES / (1024 * 1024)
+        ));
+    }
+    let path = stage_bytes(&bytes, &name, workspace_root);
+    describe_attachment(&path, name)
+}
+
+/// Extension for a clipboard MIME type — only used when the pasted name
+/// carries none, so the staged file is still classifiable (image vs text vs
+/// binary) and vision providers accept it.
+fn mime_ext(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/bmp" => Some("bmp"),
+        "image/svg+xml" => Some("svg"),
+        "text/plain" => Some("txt"),
+        "application/json" => Some("json"),
+        _ => None,
+    }
+}
+
+fn describe_attachment(
+    path: &std::path::Path,
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let staged = path.to_string_lossy().to_string();
+    if let Some(img) = agent_llm::types::ImageRef::for_path(path.to_path_buf()) {
+        return Ok(serde_json::json!({
+            "path": staged, "name": name, "kind": "image",
+            "data_url": img.data_url(),
+        }));
+    }
+    const MAX_BYTES: usize = 32 * 1024;
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.contains(&0) => Ok(serde_json::json!({
+            "path": staged, "name": name, "kind": "binary",
+        })),
+        Ok(bytes) => {
+            let truncated = bytes.len() > MAX_BYTES;
+            let capped = if truncated { &bytes[..MAX_BYTES] } else { &bytes[..] };
+            Ok(serde_json::json!({
+                "path": staged,
+                "name": name,
+                "kind": "text",
+                "content": String::from_utf8_lossy(capped),
+                "truncated": truncated,
+            }))
+        }
+        Err(e) => Err(format!("read {}: {e}", path.display())),
+    }
 }
 
 
@@ -740,4 +860,109 @@ fn valid_slug(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal 1x1 PNG — enough for `ImageRef` (which is extension-based).
+    const PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0,
+    ];
+
+    #[test]
+    fn staged_bytes_are_idempotent_and_content_addressed() {
+        let ws = tempfile::tempdir().unwrap();
+        let a = stage_bytes(PNG, "clipboard.png", ws.path());
+        let b = stage_bytes(PNG, "clipboard.png", ws.path());
+        assert_eq!(a, b, "same bytes + name must reuse one staged file");
+        assert!(a.exists());
+        assert!(a.starts_with(ws.path().join(".husk/attachments")));
+
+        let other = stage_bytes(b"different", "clipboard.png", ws.path());
+        assert_ne!(a, other, "different content must not collide");
+        // Uploads never pollute `git status`.
+        assert!(ws.path().join(".husk/.gitignore").exists());
+    }
+
+    #[test]
+    fn describe_classifies_image_text_and_binary() {
+        let ws = tempfile::tempdir().unwrap();
+
+        let img = stage_bytes(PNG, "clipboard.png", ws.path());
+        let chip = describe_attachment(&img, "clipboard.png".into()).unwrap();
+        assert_eq!(chip["kind"], "image");
+        assert!(chip["data_url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+
+        let txt = stage_bytes(b"hello\n", "note.md", ws.path());
+        let chip = describe_attachment(&txt, "note.md".into()).unwrap();
+        assert_eq!(chip["kind"], "text");
+        assert_eq!(chip["content"], "hello\n");
+
+        let bin = stage_bytes(b"a\0b", "blob.bin", ws.path());
+        let chip = describe_attachment(&bin, "blob.bin".into()).unwrap();
+        assert_eq!(chip["kind"], "binary");
+    }
+
+    #[test]
+    fn nameless_pastes_get_an_extension_from_their_mime() {
+        assert_eq!(mime_ext("image/png"), Some("png"));
+        assert_eq!(mime_ext("image/jpeg"), Some("jpg"));
+        assert_eq!(mime_ext("application/pdf"), None);
+    }
+
+    /// Locks the frontend contract: op `attach_bytes` with
+    /// `{ name, mime, data }`, and a chip shaped exactly like the picked-file
+    /// path so both flows feed one `Attachment` list.
+    #[test]
+    fn clipboard_payload_round_trips_to_an_image_chip() {
+        let ws = tempfile::tempdir().unwrap();
+        let payload = serde_json::json!({
+            "name": "clipboard",
+            "mime": "image/png",
+            "data": base64::engine::general_purpose::STANDARD.encode(PNG),
+        });
+        let chip = stage_clipboard_payload(Some(&payload), ws.path()).unwrap();
+        assert_eq!(chip["kind"], "image");
+        assert_eq!(chip["name"], "clipboard.png");
+        // Staged name is `clipboard-<content-hash>.png`.
+        let staged = chip["path"].as_str().unwrap();
+        assert!(staged.ends_with(".png"), "extension from `mime` must reach the file: {staged}");
+        assert!(staged.contains("clipboard"), "stem survives: {staged}");
+        assert!(chip["data_url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    }
+
+    /// The system-clipboard path hands over raw RGBA; this is the only place
+    /// the pixels become an image a provider will accept.
+    #[test]
+    fn clipboard_pixels_encode_to_a_real_png() {
+        let rgba = vec![255u8, 0, 0, 255, 0, 255, 0, 255]; // 2x1: red, green
+        let png = encode_png(&rgba, 2, 1).unwrap();
+        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&png)).read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (2, 1));
+        assert_eq!(&buf[..4], &[255, 0, 0, 255], "pixels survive the round trip");
+
+        // …and it lands as an image chip, not opaque binary.
+        let ws = tempfile::tempdir().unwrap();
+        let chip = stage_clipboard_image(&png, ws.path()).unwrap();
+        assert_eq!(chip["kind"], "image");
+        assert!(chip["data_url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn clipboard_payload_rejects_missing_and_corrupt_input() {
+        let ws = tempfile::tempdir().unwrap();
+        assert!(stage_clipboard_payload(None, ws.path()).is_err());
+        let no_data = serde_json::json!({ "name": "x.png" });
+        assert!(stage_clipboard_payload(Some(&no_data), ws.path()).is_err());
+        let bad_b64 = serde_json::json!({ "name": "x.png", "data": "not base64!!" });
+        assert!(stage_clipboard_payload(Some(&bad_b64), ws.path()).is_err());
+        let empty = serde_json::json!({ "name": "x.png", "data": "" });
+        assert!(stage_clipboard_payload(Some(&empty), ws.path()).is_err());
+    }
 }

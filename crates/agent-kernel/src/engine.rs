@@ -29,7 +29,7 @@ use crate::tools::{ToolCtx, ToolRegistry};
 
 /// The engine's observable side — channels + sink for UI events.
 pub struct EngineIo {
-    pub ui_tx: mpsc::Sender<UiEvent>,
+    pub ui_tx: crate::channels::UiSink,
     /// Mid-turn steering texts — SessionActor forwards `UiCommand::Steer`
     /// into this channel; the engine drains it between tool calls.
     pub steer_rx: mpsc::Receiver<String>,
@@ -100,6 +100,10 @@ pub struct Engine {
     thinking_level: Arc<std::sync::RwLock<Option<String>>>,
     /// Model-specific thinking level mapping from pi-agent config schema.
     thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
+    /// Per-model wire settings from config (`maxTokens`, `samplingParams`,
+    /// model-level `compat`) — swapped alongside the model on a hot-swap so
+    /// the next request carries the new model's own caps.
+    model_params: agent_llm::ModelParams,
 }
 
 impl Engine {
@@ -139,7 +143,20 @@ impl Engine {
             plugin_router: None,
             thinking_level: Arc::new(std::sync::RwLock::new(None)),
             thinking_level_map: None,
+            model_params: agent_llm::ModelParams::EMPTY,
         }
+    }
+
+    /// Install the active model's per-model wire settings (`maxTokens`,
+    /// `samplingParams`, model-level `compat`) — the session actor resolves
+    /// these from config at spawn and on every model switch.
+    pub fn set_model_params(&mut self, params: agent_llm::ModelParams) {
+        self.model_params = params;
+    }
+
+    /// The active model's per-model wire settings.
+    pub fn model_params(&self) -> &agent_llm::ModelParams {
+        &self.model_params
     }
 
     /// Bound the tool loop per turn — default 128; delegated children
@@ -328,7 +345,7 @@ impl Engine {
         if !self.steer_queue.is_empty() {
             // Notify the UI the turn was steered (provenance marker).
             let line = "已插入引导指令".to_string();
-            let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+            let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
             history.push(ChatMessage::notice(line));
         }
     }
@@ -361,7 +378,7 @@ impl Engine {
                     self.model,
                     images.len()
                 );
-                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 history.push(ChatMessage::notice(line));
             }
         }
@@ -389,13 +406,13 @@ impl Engine {
                 Ok(()) => {
                     self.compaction_suppressor.on_success();
                     let line = format!("已压缩历史上下文（原约 {est} tokens）");
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                     history.push(ChatMessage::notice(line));
                 }
                 Err(e) => {
                     self.compaction_suppressor.on_failure();
                     let line = format!("上下文压缩失败: {e}");
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                     history.push(ChatMessage::notice(line));
                 }
             }
@@ -431,7 +448,7 @@ impl Engine {
             // if no chunk is flowing.
             if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
-                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
+                let _ = io.ui_tx.send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
                 history.push(ChatMessage::notice(CANCEL_TEXT));
                 return Err(CANCEL_ERR.into());
             }
@@ -441,7 +458,7 @@ impl Engine {
                 // Echo the steer as a user bubble — the live stream never
                 // showed it otherwise (the composer doesn't echo), while a
                 // reloaded view rebuilt it from history. One render path.
-                let _ = io.ui_tx.try_send(UiEvent::UserPrompt(steer.clone()));
+                let _ = io.ui_tx.send(UiEvent::UserPrompt(steer.clone()));
                 // Steering can carry `<attached-image>` markers too — same
                 // extraction as the turn-start path; a text-only model
                 // just keeps the path reference (no mid-turn notice spam).
@@ -464,6 +481,10 @@ impl Engine {
 
             let mut assembler = ToolCallAssembler::new();
             let mut round_text = String::new();
+            // This round's reasoning trace — accumulated for the *stored*
+            // assistant row (the live stream only ever saw the coalesced
+            // deltas), so a reopened session replays the same 思考过程 block.
+            let mut round_reasoning = String::new();
             let mut saw_done = false;
             // Delta coalescing — the UI doesn't need one event per SSE
             // chunk (often 1-5 chars). Buffer text/reasoning deltas and
@@ -495,6 +516,7 @@ impl Engine {
                 temperature: self.temperature,
                 tools: tools_opt,
                 reasoning_effort: effort.as_deref(),
+                params: &self.model_params,
             };
 
             // Race the sample against the cancel flag — a Cancel mid-stream
@@ -519,9 +541,10 @@ impl Engine {
                     |chunk| {
                         match chunk {
                             StreamChunk::ReasoningDelta(t) => {
+                                round_reasoning.push_str(t);
                                 pending_reasoning_delta.push_str(t);
                                 if pending_reasoning_delta.len() >= 120 {
-                                    let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(
+                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta(
                                         std::mem::take(&mut pending_reasoning_delta),
                                     ));
                                 }
@@ -530,7 +553,7 @@ impl Engine {
                                 round_text.push_str(t);
                                 pending_text_delta.push_str(t);
                                 if pending_text_delta.len() >= 120 {
-                                    let _ = io.ui_tx.try_send(UiEvent::TextDelta(
+                                    let _ = io.ui_tx.send(UiEvent::TextDelta(
                                         std::mem::take(&mut pending_text_delta),
                                     ));
                                 }
@@ -544,19 +567,19 @@ impl Engine {
                                 // terminal event lands so the UI never
                                 // renders trailing text after Finished.
                                 if !pending_text_delta.is_empty() {
-                                    let _ = io.ui_tx.try_send(UiEvent::TextDelta(
+                                    let _ = io.ui_tx.send(UiEvent::TextDelta(
                                         std::mem::take(&mut pending_text_delta),
                                     ));
                                 }
                                 if !pending_reasoning_delta.is_empty() {
-                                    let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(
+                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta(
                                         std::mem::take(&mut pending_reasoning_delta),
                                     ));
                                 }
                                 if let (Some(p), Some(c)) = (prompt_tokens, completion_tokens) {
                                     let cached = cached_tokens.unwrap_or(0);
                                     usage = Some((*p, *c, cached));
-                                    let _ = io.ui_tx.try_send(UiEvent::Usage {
+                                    let _ = io.ui_tx.send(UiEvent::Usage {
                                         prompt_tokens: *p,
                                         completion_tokens: *c,
                                         context_window: self.context_window as u32,
@@ -567,12 +590,12 @@ impl Engine {
                             StreamChunk::Error(e) => {
                                 stream_error = Some(e.clone());
                                 if !pending_text_delta.is_empty() {
-                                    let _ = io.ui_tx.try_send(UiEvent::TextDelta(
+                                    let _ = io.ui_tx.send(UiEvent::TextDelta(
                                         std::mem::take(&mut pending_text_delta),
                                     ));
                                 }
                                 if !pending_reasoning_delta.is_empty() {
-                                    let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(
+                                    let _ = io.ui_tx.send(UiEvent::ReasoningDelta(
                                         std::mem::take(&mut pending_reasoning_delta),
                                     ));
                                 }
@@ -584,7 +607,7 @@ impl Engine {
                     },
                     |ev| {
                         let t = format!("{ev:?}");
-                        let _ = io.ui_tx.try_send(UiEvent::SystemMessage(t.clone()));
+                        let _ = io.ui_tx.send(UiEvent::SystemMessage(t.clone()));
                         policy_notes.push(t);
                     },
                 ) => r,
@@ -594,12 +617,12 @@ impl Engine {
             // returned — a stream that ended cleanly before hitting 120
             // chars would otherwise strand its tail in the buffer.
             if !pending_text_delta.is_empty() {
-                let _ = io.ui_tx.try_send(UiEvent::TextDelta(
+                let _ = io.ui_tx.send(UiEvent::TextDelta(
                     std::mem::take(&mut pending_text_delta),
                 ));
             }
             if !pending_reasoning_delta.is_empty() {
-                let _ = io.ui_tx.try_send(UiEvent::ReasoningDelta(
+                let _ = io.ui_tx.send(UiEvent::ReasoningDelta(
                     std::mem::take(&mut pending_reasoning_delta),
                 ));
             }
@@ -616,11 +639,14 @@ impl Engine {
             // exactly what the live stream showed (text, then the notice).
             if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 if !round_text.is_empty() {
-                    history.push(ChatMessage::assistant(round_text.clone()));
+                    history.push(
+                        ChatMessage::assistant(round_text.clone())
+                            .with_reasoning(Some(std::mem::take(&mut round_reasoning))),
+                    );
                 }
                 history.push(ChatMessage::notice(CANCEL_TEXT));
                 self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
-                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
+                let _ = io.ui_tx.send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
                 return Err(CANCEL_ERR.into());
             }
 
@@ -629,13 +655,16 @@ impl Engine {
                 // line + error line all persist — replay matches the live
                 // stream line-for-line.
                 if !round_text.is_empty() {
-                    history.push(ChatMessage::assistant(round_text.clone()));
+                    history.push(
+                        ChatMessage::assistant(round_text.clone())
+                            .with_reasoning(Some(std::mem::take(&mut round_reasoning))),
+                    );
                     let line = "流传输中断 — 已保留部分内容";
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.into()));
+                    let _ = io.ui_tx.send(UiEvent::SystemMessage(line.into()));
                     history.push(ChatMessage::notice(line));
                 }
                 self.set_state(io, AgentState::Failed(e.to_string()));
-                let _ = io.ui_tx.try_send(UiEvent::Error(e.to_string()));
+                let _ = io.ui_tx.send(UiEvent::Error(e.to_string()));
                 history.push(ChatMessage::notice_error(e.to_string()));
                 return Err(e.to_string());
             }
@@ -645,16 +674,20 @@ impl Engine {
             // stream drew) so a reloaded view loses nothing.
             if let Some(e) = stream_error {
                 if !round_text.is_empty() {
-                    history.push(ChatMessage::assistant(round_text.clone()));
+                    history.push(
+                        ChatMessage::assistant(round_text.clone())
+                            .with_reasoning(Some(std::mem::take(&mut round_reasoning))),
+                    );
                 }
                 history.push(ChatMessage::notice_error(e.clone()));
                 self.set_state(io, AgentState::Failed(e.clone()));
-                let _ = io.ui_tx.try_send(UiEvent::Error(e.clone()));
+                let _ = io.ui_tx.send(UiEvent::Error(e.clone()));
                 return Err(e);
             }
             debug_assert!(saw_done, "sampler guarantees Done exactly once");
 
             text.push_str(&round_text);
+            let reasoning = std::mem::take(&mut round_reasoning);
             let mut calls = assembler.finish();
 
             // Degenerate calls — a truncated/announcement delta can produce
@@ -669,7 +702,7 @@ impl Engine {
             if bad_calls > 0 {
                 calls.retain(|c| !c.name.trim().is_empty());
                 let line = format!("已跳过 {bad_calls} 个格式异常的空工具调用");
-                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 history.push(ChatMessage::notice(line));
             }
 
@@ -698,11 +731,11 @@ impl Engine {
                 {
                     goal_followups += 1;
                     if !final_text.is_empty() {
-                        history.push(ChatMessage::assistant(final_text));
+                        history.push(ChatMessage::assistant(final_text).with_reasoning(Some(reasoning)));
                     }
                     let nudge = "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。";
                     history.push(ChatMessage::user_hidden(nudge));
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(nudge.into()));
+                    let _ = io.ui_tx.send(UiEvent::SystemMessage(nudge.into()));
                     continue;
                 }
 
@@ -715,9 +748,10 @@ impl Engine {
                         notice: None,
                     ts: Some(agent_llm::types::now_ms()),
                     images: Vec::new(),
+                    reasoning: Some(reasoning),
                 });
                 self.set_state(io, AgentState::Finished);
-                let _ = io.ui_tx.try_send(UiEvent::AssistantMessage(final_text));
+                let _ = io.ui_tx.send(UiEvent::AssistantMessage(final_text));
                 return Ok(TurnOutcome { text, usage, tool_calls_run });
             }
 
@@ -730,6 +764,7 @@ impl Engine {
                         notice: None,
                 ts: Some(agent_llm::types::now_ms()),
                 images: Vec::new(),
+                reasoning: Some(reasoning),
             });
 
             tool_rounds += 1;
@@ -750,7 +785,7 @@ impl Engine {
                     }
                     history.push(ChatMessage::notice(CANCEL_TEXT));
                     self.set_state(io, AgentState::Failed(CANCEL_ERR.into()));
-                    let _ = io.ui_tx.try_send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
+                    let _ = io.ui_tx.send(UiEvent::SystemMessage(CANCEL_TEXT.into()));
                     return Err(CANCEL_ERR.into());
                 }
                 // Skip degenerate calls — a text-protocol echo can produce an
@@ -762,7 +797,7 @@ impl Engine {
                     // tool row, or its `tool_calls` entry dangles and strict
                     // providers reject the next request (deepseek 400).
                     let msg = "skipped malformed empty tool call".to_string();
-                    let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                    let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                         name: call.name.clone(), ok: false,
                         content: msg.clone(), ui_type: None,
                         parent: None,
@@ -819,7 +854,7 @@ impl Engine {
                         }
                         String::new()
                     });
-                let _ = io.ui_tx.try_send(UiEvent::ToolCallStarted {
+                let _ = io.ui_tx.send(UiEvent::ToolCallStarted {
                     name: call.name.clone(),
                     args_preview,
                     parent: None,
@@ -832,7 +867,7 @@ impl Engine {
                 let mut call_mut = call.clone();
                 if !self.hooks.run_before_tool(&mut call_mut).await {
                     let msg = format!("tool `{}` vetoed by hook", call.name);
-                    let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                    let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                         name: call.name.clone(), ok: false,
                         content: msg.clone(), ui_type: None,
                         parent: None,
@@ -866,7 +901,7 @@ impl Engine {
                         Ok(res) => Some(res),
                         Err(e) => {
                             let msg = e.to_string();
-                            let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                            let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                                 name: call.name.clone(), ok: false,
                                 content: msg.clone(), ui_type: None,
                         parent: None,
@@ -891,7 +926,7 @@ impl Engine {
 
                 match decision {
                     Decision::Deny { reason } => {
-                        let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                        let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                             name: call.name.clone(), ok: false,
                             content: reason.clone(), ui_type: None,
                         parent: None,
@@ -913,7 +948,7 @@ impl Engine {
                         });
                         // P1-c: show the REAL diff + fuzzy flag the staged
                         // run produced — the card reflects what gets written.
-                        let _ = io.ui_tx.try_send(UiEvent::ApprovalRequested {
+                        let _ = io.ui_tx.send(UiEvent::ApprovalRequested {
                             request_id,
                             tool_name: call.name.clone(),
                             diff: real_diff.clone(),
@@ -925,7 +960,7 @@ impl Engine {
                         });
                         if !approved {
                             let msg = format!("user denied {call_name}", call_name = call.name);
-                            let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                            let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                                 name: call.name.clone(), ok: false,
                                 content: msg.clone(), ui_type: None,
                         parent: None,
@@ -1013,7 +1048,7 @@ impl Engine {
                 // after_tool hooks (may mutate output)
                 self.hooks.run_after_tool(&call, &mut content).await;
 
-                let _ = io.ui_tx.try_send(UiEvent::ToolCallFinished {
+                let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                     name: call.name.clone(),
                     ok,
                     content: content.clone(),
@@ -1034,7 +1069,7 @@ impl Engine {
             // If we have reached or exceeded the tool limit, force the next round to be a synthesis round without tools
             if tool_rounds >= max_tool_rounds && !force_no_tools {
                 let msg = format!("已达单轮工具调用上限 ({max_tool_rounds} 轮)，正在汇总已收集的信息生成最终回答...");
-                let _ = io.ui_tx.try_send(UiEvent::SystemMessage(msg.clone()));
+                let _ = io.ui_tx.send(UiEvent::SystemMessage(msg.clone()));
                 history.push(ChatMessage::notice(msg));
                 history.push(ChatMessage::user_hidden(
                     "You have reached the tool execution limit for this turn. Do NOT request any more tool calls. Please synthesize all your findings and provide your complete, detailed response/answer to the user now.",
@@ -1077,6 +1112,9 @@ impl Engine {
             temperature: 0.0,
             tools: None,
             reasoning_effort: None,
+            // Summarization is a real request on the same model — it must
+            // respect the same output cap and per-model compat.
+            params: &self.model_params,
         };
         self.sampler
             .sample(
@@ -1153,7 +1191,7 @@ impl Engine {
     }
 
     fn set_state(&self, io: &EngineIo, state: AgentState) {
-        let _ = io.ui_tx.try_send(UiEvent::StateChanged(state));
+        let _ = io.ui_tx.send(UiEvent::StateChanged(state));
     }
 }
 

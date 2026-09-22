@@ -446,3 +446,15 @@ export function readAttachment(path: string) {
     payload: { path },
   });
 }
+
+/** Stage clipboard bytes as an attachment. A pasted image has no path to
+ * hand over, so the webview sends the payload (`data` = base64, no data:
+ * prefix) and the backend writes it into `.husk/attachments/` exactly like
+ * a picked file — same `Attachment` shape back, so both flows feed one chip
+ * list. `mime` supplies the extension when the pasted blob has no name. */
+export function attachBytes(name: string, mime: string, data: string) {
+  return invoke<Attachment>("agent_session", {
+    op: "attach_bytes",
+    payload: { name, mime, data },
+  });
+}

@@ -68,6 +68,9 @@ pub struct SessionConfig {
     pub model_input: Vec<String>,
     /// Compaction trigger fraction — `None` → the engine's `COMPACT_AT`.
     pub compact_at: Option<f32>,
+    /// Per-model wire settings from config (`maxTokens`, `samplingParams`,
+    /// model-level `compat`). `None` → every adapter default applies.
+    pub model_params: Option<agent_llm::ModelParams>,
 }
 
 /// One live session: owns history + engine, consumes commands, emits events.
@@ -320,6 +323,7 @@ impl SessionActor {
         engine.set_context_window(cfg.context_window.unwrap_or(256_000) as usize);
         engine.set_compact_at(cfg.compact_at.unwrap_or(crate::compaction::COMPACT_AT));
         engine.set_model_input(cfg.model_input.clone());
+        engine.set_model_params(cfg.model_params.clone().unwrap_or_default());
         let decision_slot = engine.decision_slot();
         let ask_channel = engine.ask_channel();
         let permissions_slot = engine.permissions_writer();
@@ -477,7 +481,7 @@ impl SessionActor {
         // abort this one before it starts.
         self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
         self.state = AgentState::ScanningWorkspace;
-        let _ = self.io.ui_tx.try_send(UiEvent::UserPrompt(text.clone()));
+        let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
         let turn = self.hunks.begin_turn();
 
         // Refresh the `<memory>` block before the turn — it lives in the
@@ -650,7 +654,7 @@ impl SessionActor {
         };
         if ops.is_empty() && skipped.is_empty() {
             let line = "没有可回滚的修改".to_string();
-            let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+            let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
             self.history.push(ChatMessage::notice(line));
             return;
         }
@@ -659,7 +663,7 @@ impl SessionActor {
                 "已跳过 `{}` — 在 agent 写入后被外部修改（回滚会覆盖你的改动）",
                 path.display()
             );
-            let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+            let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
             self.history.push(ChatMessage::notice(line));
         }
         let mut reverted = 0usize;
@@ -685,8 +689,45 @@ impl SessionActor {
             }
         }
         let line = format!("已回滚第 {last} 轮修改的 {reverted} 个文件");
-        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+        let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
         self.history.push(ChatMessage::notice(line));
+    }
+
+    /// Point the engine at `provider`/`model` — rebuild the provider, then
+    /// re-resolve everything config declares per model (context window, input
+    /// modalities, thinking-level map, and the per-model wire settings).
+    ///
+    /// `modelOverrides` are folded in via `ProviderConfig::model_opts`, so an
+    /// override declared for this id applies to a hot-swap exactly as it does
+    /// at session spawn. A model the config doesn't describe resets to the
+    /// built-in defaults instead of leaking the previous model's caps.
+    fn apply_model_switch(&mut self, provider: &str, model: &str) {
+        if let Ok(cfg) = agent_llm::AppConfig::load(None) {
+            if let Some(pcfg) = cfg.providers.get(provider) {
+                if let Ok(p) = agent_llm::ProviderFactory::build(pcfg) {
+                    self.engine.set_provider(p);
+                }
+                let resolved = pcfg.find_model(model).is_some().then(|| pcfg.model_opts(model));
+                match resolved {
+                    Some(d) => {
+                        self.engine.set_thinking_level_map(d.thinking_level_map.clone());
+                        self.engine.set_context_window(
+                            d.context_window.unwrap_or(256_000) as usize,
+                        );
+                        self.engine.set_model_input(d.input.clone());
+                        self.engine
+                            .set_model_params(agent_llm::ProviderFactory::model_params_from(&d));
+                    }
+                    None => {
+                        self.engine.set_thinking_level_map(None);
+                        self.engine.set_context_window(256_000);
+                        self.engine.set_model_input(Vec::new());
+                        self.engine.set_model_params(agent_llm::ModelParams::EMPTY);
+                    }
+                }
+            }
+        }
+        self.engine.set_model(model.to_string());
     }
 
     /// Execute a `ControlOp` from a slash command — session state changes
@@ -696,7 +737,7 @@ impl SessionActor {
             ControlOp::ClearHistory => {
                 self.history.truncate(1); // keep the system prompt
                 let line = "会话历史已清空".to_string();
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
             }
             ControlOp::Compact => {
@@ -704,44 +745,20 @@ impl SessionActor {
                 let window = 256_000usize; // engine's context_window is the real bound
                 if crate::compaction::should_compact_at(est, window, self.engine.compact_at()) {
                     let line = "正在压缩历史上下文…".to_string();
-                    let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                     self.history.push(ChatMessage::notice(line));
                 } else {
                     let line = format!("历史约 {est} tokens — 未达压缩阈值");
-                    let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                     self.history.push(ChatMessage::notice(line));
                 }
             }
             ControlOp::UndoLastTurn => self.undo_last_turn().await,
             ControlOp::SetModel { provider, model } => {
                 info!(%provider, %model, "slash hot-swap");
-                if let Ok(cfg) = agent_llm::AppConfig::load(None) {
-                    if let Some(pcfg) = cfg.providers.get(&provider) {
-                        if let Ok(p) = agent_llm::ProviderFactory::build(pcfg) {
-                            self.engine.set_provider(p);
-                        }
-                        if let Some(mentry) = pcfg.find_model(&model) {
-                            if let Some(d) = mentry.detailed() {
-                                self.engine.set_thinking_level_map(d.thinking_level_map.clone());
-                                self.engine.set_context_window(
-                                    d.context_window.unwrap_or(256_000) as usize,
-                                );
-                                self.engine.set_model_input(d.input.clone());
-                            } else {
-                                self.engine.set_thinking_level_map(None);
-                                self.engine.set_context_window(256_000);
-                                self.engine.set_model_input(Vec::new());
-                            }
-                        } else {
-                            self.engine.set_thinking_level_map(None);
-                            self.engine.set_context_window(256_000);
-                            self.engine.set_model_input(Vec::new());
-                        }
-                    }
-                }
-                self.engine.set_model(model.clone());
+                self.apply_model_switch(&provider, &model);
                 let line = format!("已切换模型至: {model} ({provider}) — 下一轮生效");
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
             }
         }
@@ -765,7 +782,7 @@ impl SessionActor {
         }; // ctx dropped here — the history/ui_tx borrows end
         match cmd_result {
             Some(CommandResult::Reply(r)) => {
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(r.clone()));
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(r.clone()));
                 self.history.push(ChatMessage::notice(r));
             }
             Some(CommandResult::Control(op)) => {
@@ -778,7 +795,7 @@ impl SessionActor {
                 // Hook chain: on_user_input may block/rewrite.
                 match self.hooks.run_on_user_input(&text).await {
                     crate::hooks::HookAction::BlockTurn(reason) => {
-                        let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(reason.clone()));
+                        let _ = self.io.ui_tx.send(UiEvent::SystemMessage(reason.clone()));
                         self.history.push(ChatMessage::notice(reason));
                     }
                     crate::hooks::HookAction::InjectSystemNote(note) => {
@@ -836,7 +853,7 @@ impl SessionActor {
                     }
                     info!(history_idx = idx, "retry — rewinding to last user prompt");
                     self.history.truncate(idx);
-                    let _ = self.io.ui_tx.try_send(UiEvent::TurnRetry);
+                    let _ = self.io.ui_tx.send(UiEvent::TurnRetry);
                     self.handle_prompt(text).await;
                 }
             }
@@ -853,40 +870,16 @@ impl SessionActor {
             }
             UiCommand::SetModel { provider, model } => {
                 info!(%provider, %model, "hot-swap requested");
-                if let Ok(cfg) = agent_llm::AppConfig::load(None) {
-                    if let Some(pcfg) = cfg.providers.get(&provider) {
-                        if let Ok(p) = agent_llm::ProviderFactory::build(pcfg) {
-                            self.engine.set_provider(p);
-                        }
-                        if let Some(mentry) = pcfg.find_model(&model) {
-                            if let Some(d) = mentry.detailed() {
-                                self.engine.set_thinking_level_map(d.thinking_level_map.clone());
-                                self.engine.set_context_window(
-                                    d.context_window.unwrap_or(256_000) as usize,
-                                );
-                                self.engine.set_model_input(d.input.clone());
-                            } else {
-                                self.engine.set_thinking_level_map(None);
-                                self.engine.set_context_window(256_000);
-                                self.engine.set_model_input(Vec::new());
-                            }
-                        } else {
-                            self.engine.set_thinking_level_map(None);
-                            self.engine.set_context_window(256_000);
-                            self.engine.set_model_input(Vec::new());
-                        }
-                    }
-                }
-                self.engine.set_model(model.clone());
+                self.apply_model_switch(&provider, &model);
                 let line = format!("已切换模型至: {model} ({provider})");
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
             }
             UiCommand::SetThinkingLevel { level } => {
                 info!(%level, "thinking level change requested");
                 self.engine.set_thinking_level(if level.is_empty() { None } else { Some(level.clone()) });
                 let line = format!("已设置思考推理强度: {level}");
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
             }
             UiCommand::SetPermissionMode { mode } => {
@@ -897,7 +890,7 @@ impl SessionActor {
                 let _ = self
                     .io
                     .ui_tx
-                    .try_send(UiEvent::SystemMessage(format!("权限模式已切换为: {mode}")));
+                    .send(UiEvent::SystemMessage(format!("权限模式已切换为: {mode}")));
                 self.history.push(ChatMessage::notice(format!("权限模式已切换为: {mode}")));
             }
             UiCommand::SetAgentMode { mode } => {
@@ -921,7 +914,7 @@ impl SessionActor {
                     crate::mode::AgentMode::Goal => "目标",
                 };
                 let line = format!("模式已切换为: {label}");
-                let _ = self.io.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
             }
             UiCommand::Cancel => {
@@ -937,7 +930,7 @@ impl SessionActor {
                 let _ = self
                     .io
                     .ui_tx
-                    .try_send(UiEvent::SystemMessage("已被用户中断".into()));
+                    .send(UiEvent::SystemMessage("已被用户中断".into()));
                 self.history.push(ChatMessage::notice("已被用户中断"));
             }
             UiCommand::AnswerQuestion { request_id, answer } => {

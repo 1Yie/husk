@@ -52,3 +52,25 @@ export const undoLastTurn = () => send("UndoLastTurn");
 /** Regenerate the last turn — the kernel rewinds history to the last
  * user prompt and re-runs it (slash intercept + hooks included). */
 export const retryTurn = () => send("Retry");
+
+/** Kernel UI-event queue counters — one `get_ui_stats` read for the status
+ * chip. Cheap: atomics on the Rust side, no locking of session actors. */
+export function getUiStats() {
+  return invoke<import("../../types").UiStats>("get_ui_stats");
+}
+
+/** Stage the *system* clipboard's image as an attachment — the same chip shape
+ * as a picked file. `null` when the clipboard holds no image, which is not an
+ * error: the caller then leaves the browser's own text paste alone.
+ *
+ * The webview's `paste` event is not a dependable image carrier on WebKitGTK
+ * (a `<textarea>` paste can deliver no `clipboardData`), so this reads the
+ * clipboard from Rust instead. */
+export function pasteClipboardImage() {
+  return invoke<import("./sessions").Attachment | null>("paste_clipboard", { kind: "image" });
+}
+
+/** The clipboard's text, for the composer menu's 粘贴 item. `null` when empty. */
+export function pasteClipboardText() {
+  return invoke<{ kind: "text"; text: string } | null>("paste_clipboard", { kind: "text" });
+}

@@ -128,8 +128,9 @@ function batchChildren(rawArgs: string, content: string) {
 /** Rebuild a `SessionView`'s item list from persisted `ChatMessage`
  * history — used when switching to a session whose in-memory view was
  * never built (first open after launch) or dropped. Tool result messages
- * map to finished tool capsules; reasoning isn't persisted, so nothing
- * thinking-shaped is emitted. `usage` is the persisted last-turn meter —
+ * map to finished tool capsules; a persisted reasoning trace replays as the
+ * same 思考过程 block the live stream drew (its assistant row carries it).
+ * `usage` is the persisted last-turn meter —
  * seeds the header stats so a reopened session doesn't read zeros until
  * its next `Usage` event. */
 export function viewFromHistory(
@@ -267,6 +268,15 @@ function foldMessage(
       // live stream echoes the bare text, so strip the annotation.
       const steer = text.match(/^The user interrupted: ([\s\S]*)$/);
       if (steer) text = steer[1].trim();
+    }
+    // The round's reasoning trace, if it had one — drawn BEFORE its text and
+    // tool capsules, which is the order the live stream produced. Emitted
+    // even when the round contributed no visible text: a tool-calling round
+    // is usually exactly that shape, and dropping it here is what made
+    // reopened sessions lose their thinking blocks.
+    const reasoning = (m.reasoning ?? "").trim();
+    if (m.role === "assistant" && reasoning) {
+      v.items.push({ kind: "thinking", text: reasoning, done: true, hi });
     }
     // Assistant messages that only carry `tool_calls` have no visible text —
     // the matching `tool` result already renders the capsule.

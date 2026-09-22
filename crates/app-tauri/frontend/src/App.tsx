@@ -44,9 +44,12 @@ function useAppChromeGuards() {
       if (import.meta.env.DEV) return;
       // Radix ContextMenuTrigger calls preventDefault itself; letting the
       // event through to a trigger is what opens our custom menu.
-      if (isEditableTarget(e)) return;
+      // Order matters: our own triggers win even on editable surfaces (the
+      // composer textarea is one), so right-clicking the input opens the app
+      // menu instead of doubling up with the native one.
       const el = e.target as HTMLElement | null;
       if (el?.closest?.("[data-allow-contextmenu]")) return;
+      if (isEditableTarget(e)) return;
       // Radix context-menu triggers are inside our own menu surfaces —
       // the trigger fires the React handler, then this capture-phase
       // listener would still see the event. Distinguish by what the
@@ -175,7 +178,17 @@ export function App() {
   // Hold the skeleton until boot resume resolves — no empty-pane flash.
   const [wsReady, setWsReady] = useState(false);
   useEffect(() => {
-    void getWorkspaceInfo().then(() => setWsReady(true)).catch(() => setWsReady(true));
+    // Keep the recents list even when no workspace is open — the welcome page
+    // offers them as one-click reopen, and this is the only place that reads
+    // them before a project exists. `root`/`name` stay untouched: an
+    // already-active workspace is adopted through the normal open/switch
+    // flows, which also sync `activeId`.
+    void getWorkspaceInfo()
+      .then((ws) => {
+        setWorkspace((prev) => ({ ...prev, recents: ws.recents }));
+        setWsReady(true);
+      })
+      .catch(() => setWsReady(true));
   }, []);
 
   const handlePickWorkspace = async () => {
@@ -417,6 +430,8 @@ export function App() {
           onLoadOlder={handleLoadOlder}
           onShowRaw={handleShowRaw}
           onOpenWorkspace={handlePickWorkspace}
+          recents={workspace.recents}
+          onOpenRecent={(path) => void handleSwitchWorkspace(path)}
           workspaceReady={wsReady}
         />
       </MainLayout>

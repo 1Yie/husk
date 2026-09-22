@@ -36,6 +36,14 @@ import type { Attachment, FileItem, SkillItem } from "../../invoke/agent";
 import type { SessionView } from "../../hooks/stream-view";
 import { pendingApprovalOf } from "../../hooks/stream-view";
 import { onQuoteRequest } from "../../lib/selection-bus";
+import { toast } from "sonner";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 export function extractLatestTodos(view: SessionView): {
   items: TodoItem[];
@@ -437,6 +445,60 @@ export function ComposerBar({
       }
     } catch (e) {
       console.error("pick attachment failed:", e);
+    }
+  };
+
+  /** Clipboard paste — a copied image/screenshot arrives as a `File` with no
+   * path, so the bytes go to the kernel, which stages them next to picked
+   * files. Same chip list, same `<attached-image>` marker at send time. */
+  const attachPastedFiles = (files: File[]) => {
+    for (const file of files) {
+      void fileToBase64(file)
+        .then((data) => agent.attachBytes(file.name || "clipboard", file.type, data))
+        .then((a) => {
+          setAttachments((prev) =>
+            prev.some((x) => x.path === a.path) ? prev : [...prev, a],
+          );
+        })
+        .catch((e) => console.error("paste attachment failed:", e));
+    }
+  };
+
+  /** A pasted *path* to a real file (pi's `/tmp/pi-clipboard-*.png`, or a
+   * `file://` URI from a file manager) attaches the file instead of typing
+   * its path. Returns false when it isn't readable, so the caller can fall
+   * back to a plain text paste. */
+  const attachPastedPath = async (path: string): Promise<boolean> => {
+    try {
+      const a = await agent.readAttachment(path);
+      setAttachments((prev) =>
+        prev.some((x) => x.path === a.path) ? prev : [...prev, a],
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Ctrl+V (and the menu's 粘贴图片) — read the *system* clipboard from Rust.
+   * The webview's own paste event carries no image on WebKitGTK, so this is
+   * the path that actually works. `announce` is set for the explicit menu
+   * item: pressing it and seeing nothing would be worse than a hint.
+   * Never preventDefaults — a text clipboard still pastes natively. */
+  const attachClipboardImage = async (announce: boolean) => {
+    try {
+      const a = await agent.pasteClipboardImage();
+      if (!a) {
+        if (import.meta.env.DEV) console.debug("[paste] system clipboard has no image");
+        if (announce) toast.error("剪贴板里没有图片");
+        return;
+      }
+      setAttachments((prev) =>
+        prev.some((x) => x.path === a.path) ? prev : [...prev, a],
+      );
+    } catch (e) {
+      console.error("clipboard image paste failed:", e);
+      if (announce) toast.error("读取剪贴板图片失败");
     }
   };
 
@@ -911,6 +973,9 @@ export function ComposerBar({
                   onChange={setText}
                   onSubmit={() => void submit()}
                   streaming={streaming}
+                  onAttachFiles={attachPastedFiles}
+                  onAttachPath={attachPastedPath}
+                  onAttachClipboardImage={attachClipboardImage}
                   mention={mention}
                   mentionIndex={mentionIndex}
                   setMentionIndex={setMentionIndex}
@@ -960,6 +1025,9 @@ export function ComposerBar({
                 onChange={setText}
                 onSubmit={() => void submit()}
                 streaming={streaming}
+                onAttachFiles={attachPastedFiles}
+                onAttachPath={attachPastedPath}
+                onAttachClipboardImage={attachClipboardImage}
                 mention={mention}
                 mentionIndex={mentionIndex}
                 setMentionIndex={setMentionIndex}
@@ -1188,11 +1256,89 @@ function AttachmentChips({
 /** Textarea + mention popup — owns the `@`/`/`/`$` detection and keyboard
  * nav, reports the final text upward. Extracted so both composer layouts
  * (plain + with-banner) share one implementation. */
+/** Files carried by a paste. WebKit hands a clipboard image over as an
+ * `items` entry with `kind: "file"`; a file copied in a file manager may
+ * arrive as `files` instead. Anything else (plain text, `text/uri-list`)
+ * goes through the path fallback below. */
+function pastedFiles(dt: DataTransfer): File[] {
+  const out: File[] = [];
+  for (const item of Array.from(dt.items ?? [])) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (file) out.push(file);
+  }
+  if (out.length === 0) {
+    for (const file of Array.from(dt.files ?? [])) out.push(file);
+  }
+  return out;
+}
+
+/** Extensions worth intercepting — mirrors the `+` picker's filter lists so
+ * paste and pick accept the same kinds of file. */
+const ATTACHABLE_EXT =
+  /\.(png|jpe?g|gif|webp|bmp|svg|pdf|txt|md|markdown|json|ya?ml|toml|csv|log|rs|ts|tsx|js|jsx|py|go|c|cc|cpp|h|hpp|css|html|sh|sql|ini|conf)$/i;
+
+/** A pasted string that is *only* a path to an attachable file — not prose
+ * that happens to mention one, and not multi-line text. Absolute paths only:
+ * the kernel cannot expand `~`. */
+function loneAttachablePath(raw: string): string | null {
+  const text = raw.trim();
+  if (!text || text.length > 512 || /\s/.test(text)) return null;
+  const path = text.startsWith("file://")
+    ? decodeURIComponent(text.slice("file://".length))
+    : text;
+  if (!path.startsWith("/")) return null;
+  return ATTACHABLE_EXT.test(path) ? path : null;
+}
+
+/** File → base64 without the `data:` prefix. `readAsDataURL` lets the
+ * webview do the encoding — no chunked `String.fromCharCode` and no
+ * argument-limit risk on a multi-MB screenshot. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("clipboard read failed"));
+    reader.onload = () => {
+      const url = String(reader.result ?? "");
+      const comma = url.indexOf(",");
+      if (comma < 0) reject(new Error("clipboard read failed"));
+      else resolve(url.slice(comma + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Last-resort clipboard read for the paste path where the event advertises
+ * `Files` but exposes none — the async clipboard API is the only way to reach
+ * the bytes then. Quiet on failure: a denied/absent API is not a user-facing
+ * error, it just means this paste can't be attached. */
+async function clipboardImages(): Promise<File[]> {
+  if (!navigator.clipboard?.read) return [];
+  try {
+    const items = await navigator.clipboard.read();
+    const out: File[] = [];
+    for (const item of items) {
+      const type = item.types.find((t) => t.startsWith("image/"));
+      if (!type) continue;
+      const blob = await item.getType(type);
+      const ext = type.split("/")[1] || "png";
+      // `window.File` — the bare name is the keyline icon imported at the top.
+      out.push(new window.File([blob], `clipboard.${ext}`, { type }));
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 function ComposerTextarea({
   value,
   onChange,
   onSubmit,
   streaming,
+  onAttachFiles,
+  onAttachPath,
+  onAttachClipboardImage,
   mention,
   mentionIndex,
   setMentionIndex,
@@ -1205,6 +1351,15 @@ function ComposerTextarea({
   onChange: (v: string) => void;
   onSubmit: () => void;
   streaming: boolean;
+  /** Clipboard blobs (images, screenshots, copied files) — no path exists,
+   * so the parent stages the bytes. */
+  onAttachFiles: (files: File[]) => void;
+  /** A pasted path that may point at an attachable file; resolves false when
+   * it doesn't, and the paste is then inserted as plain text. */
+  onAttachPath: (path: string) => Promise<boolean>;
+  /** Read the system clipboard's image (Ctrl+V, menu) — `true` when invoked
+   * from the menu, where an empty clipboard deserves a hint. */
+  onAttachClipboardImage: (announce: boolean) => void;
   mention: { trigger: "@" | "/" | "$"; query: string; start: number } | null;
   mentionIndex: number;
   setMentionIndex: (i: number) => void;
@@ -1221,7 +1376,60 @@ function ComposerTextarea({
 }) {
   const mirrorRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  // Drives the menu's 剪切/复制 enabled state — the textarea has no other
+  // reason to re-render on a selection change.
+  const [hasSelection, setHasSelection] = useState(false);
   const open = mention !== null;
+
+  /** Replace the current selection with `snippet` and put the caret after it —
+   * the textarea is controlled, so this is the only way to insert. */
+  const insertAtCaret = (snippet: string) => {
+    const el = taRef.current;
+    const start = el?.selectionStart ?? value.length;
+    const end = el?.selectionEnd ?? start;
+    onChange(value.slice(0, start) + snippet + value.slice(end));
+    requestAnimationFrame(() => {
+      el?.focus();
+      const pos = start + snippet.length;
+      el?.setSelectionRange(pos, pos);
+    });
+  };
+
+  const cutSelection = async () => {
+    const el = taRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? start;
+    if (start === end) return;
+    try {
+      await navigator.clipboard.writeText(value.slice(start, end));
+    } catch {
+      // Clipboard unavailable — still cut, so the menu item isn't a no-op.
+    }
+    onChange(value.slice(0, start) + value.slice(end));
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(start, start);
+    });
+  };
+
+  const copySelection = async () => {
+    const el = taRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? start;
+    if (start === end) return;
+    try {
+      await navigator.clipboard.writeText(value.slice(start, end));
+    } catch (e) {
+      console.error("copy failed:", e);
+    }
+  };
+
+  const pasteText = async () => {
+    const clip = await agent.pasteClipboardText().catch(() => null);
+    if (clip?.text) insertAtCaret(clip.text);
+  };
 
   // Auto-grow — the textarea starts one line tall and stretches with
   // content up to 180px, then scrolls. The mirror is `absolute inset-0`
@@ -1253,58 +1461,124 @@ function ComposerTextarea({
         {highlightComposerTokens(value)}
         {"\u200B"}
       </div>
-      <Textarea
-        ref={taRef}
-        data-composer
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value);
-          onRefreshMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
-        }}
-        onScroll={(e) => {
-          if (mirrorRef.current) {
-            mirrorRef.current.scrollTop = e.currentTarget.scrollTop;
-          }
-        }}
-        onSelect={(e) => {
-          const el = e.currentTarget;
-          onRefreshMention(el.value, el.selectionStart ?? el.value.length);
-        }}
-        onKeyDown={(e) => {
-          if (open) {
-            if (e.key === "ArrowDown") {
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+        <Textarea
+          ref={taRef}
+          data-composer
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value);
+            onRefreshMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+          }}
+          onScroll={(e) => {
+            if (mirrorRef.current) {
+              mirrorRef.current.scrollTop = e.currentTarget.scrollTop;
+            }
+          }}
+          onSelect={(e) => {
+            const el = e.currentTarget;
+            onRefreshMention(el.value, el.selectionStart ?? el.value.length);
+            setHasSelection((el.selectionStart ?? 0) !== (el.selectionEnd ?? 0));
+          }}
+          onPaste={(e) => {
+            const dt = e.clipboardData;
+            if (import.meta.env.DEV) {
+              console.debug("[paste] types:", Array.from(dt?.types ?? []));
+            }
+            if (!dt) return;
+            const files = pastedFiles(dt);
+            if (files.length > 0) {
+              // The browser would otherwise drop the blob (or paste a stray
+              // filename) — the chip list is the destination.
               e.preventDefault();
-              setMentionIndex(Math.min(mentionIndex + 1, mentionRows.length - 1));
+              onAttachFiles(files);
               return;
             }
-            if (e.key === "ArrowUp") {
+            const text = dt.getData("text/plain");
+            // Some WebKit paths advertise `Files` yet expose nothing on the
+            // event (and no text either) — that paste would otherwise do
+            // nothing at all.
+            if (!text && Array.from(dt.types ?? []).includes("Files")) {
               e.preventDefault();
-              setMentionIndex(Math.max(mentionIndex - 1, 0));
+              void clipboardImages().then((imgs) => {
+                if (imgs.length > 0) onAttachFiles(imgs);
+              });
               return;
             }
-            if (e.key === "Enter" || e.key === "Tab") {
-              e.preventDefault();
-              const row = mentionRows[Math.min(mentionIndex, mentionRows.length - 1)];
-              if (row) onAcceptMention(row);
-              return;
-            }
-            if (e.key === "Escape") {
-              e.preventDefault();
-              onDismissMention();
-              return;
-            }
-          }
-          if (e.key === "Enter" && !e.shiftKey) {
+            const path = loneAttachablePath(text);
+            if (!path) return; // ordinary text paste — leave it to the browser
+            // A pasted path is usually a *reference* to a file the user just
+            // copied (screenshot tools, pi's `/tmp/pi-clipboard-*.png`). Attach
+            // it; if it turns out to be unreadable, type it as the user meant.
             e.preventDefault();
-            onSubmit();
+            const start = e.currentTarget.selectionStart ?? value.length;
+            const end = e.currentTarget.selectionEnd ?? start;
+            void onAttachPath(path).then((attached) => {
+              if (!attached) onChange(`${value.slice(0, start)}${text}${value.slice(end)}`);
+            });
+          }}
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) {
+              // WebKitGTK's paste event can carry no image at all, so the
+              // system clipboard is read from Rust. Text pastes are left to
+              // the browser (no preventDefault here).
+              onAttachClipboardImage(false);
+            }
+            if (open) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setMentionIndex(Math.min(mentionIndex + 1, mentionRows.length - 1));
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setMentionIndex(Math.max(mentionIndex - 1, 0));
+                return;
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                const row = mentionRows[Math.min(mentionIndex, mentionRows.length - 1)];
+                if (row) onAcceptMention(row);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                onDismissMention();
+                return;
+              }
+            }
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+          placeholder={
+            streaming ? "插入指示引导生成 (Steer)…" : "输入消息… @ 引用文件 · / 命令 · $ 技能"
           }
-        }}
-        placeholder={
-          streaming ? "插入指示引导生成 (Steer)…" : "输入消息… @ 引用文件 · / 命令 · $ 技能"
-        }
-        rows={1}
-        className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent text-transparent caret-neutral-800 selection:bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)]"
-      />
+          rows={1}
+          className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent text-transparent caret-neutral-800 selection:bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)]"
+        />
+        </ContextMenuTrigger>
+        {/* Right-click menu for the composer. The app-wide native-menu
+            suppressor would otherwise leave a right-click here doing nothing,
+            and the image entry is the discoverable form of Ctrl+V — the paste
+            event itself cannot be relied on for images (see `paste_clipboard`). */}
+        <ContextMenuContent className="min-w-[150px]">
+          <ContextMenuItem disabled={!hasSelection} onSelect={() => void cutSelection()}>
+            剪切
+          </ContextMenuItem>
+          <ContextMenuItem disabled={!hasSelection} onSelect={() => void copySelection()}>
+            复制
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void pasteText()}>粘贴</ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => onAttachClipboardImage(true)}>
+            粘贴图片
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => taRef.current?.select()}>全选</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </div>
   );
 }

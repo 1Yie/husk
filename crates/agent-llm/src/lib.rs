@@ -19,10 +19,12 @@ pub mod transport;
 pub mod types;
 
 pub use config::{
-    AppConfig, ModelConfig, ModelCost, ModelEntry, ProviderCompat, ProviderConfig, ProviderKind,
+    AppConfig, ConfigWarning, CostTier, ImageLimits, ImageResize, InputLimits, ModelConfig,
+    ModelCost, ModelEntry, ModelOverride, PromptCache, ProviderCompat, ProviderConfig, ProviderKind,
+    THINKING_LEVELS,
 };
 pub use factory::ProviderFactory;
 pub use masking::EgressMasker;
-pub use provider::{BoxStream, Capabilities, LlmProvider};
+pub use provider::{BoxStream, Capabilities, LlmProvider, ModelParams};
 pub use transport::{DoneGuard, Transport};
 pub use types::{ChatMessage, Role, StreamChunk, ToolCall};

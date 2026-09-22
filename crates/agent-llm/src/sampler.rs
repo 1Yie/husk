@@ -21,6 +21,7 @@ use futures::StreamExt;
 use thiserror::Error;
 
 use crate::provider::LlmProvider;
+use crate::provider::ModelParams;
 use crate::types::{ChatMessage, StreamChunk};
 
 /// No chunk for this long → the stream is wedged; retry.
@@ -71,6 +72,10 @@ pub struct SampleRequest<'a> {
     pub temperature: f32,
     pub tools: Option<&'a serde_json::Value>,
     pub reasoning_effort: Option<&'a str>,
+    /// Per-model wire settings (`maxTokens`, `samplingParams`, model-level
+    /// `compat`) — resolved from config by the caller, forwarded to the
+    /// adapter. Use [`ModelParams::EMPTY`] when the model declares nothing.
+    pub params: &'a ModelParams,
 }
 
 impl Sampler {
@@ -188,6 +193,7 @@ impl Sampler {
                 req.tools.cloned(),
                 req.temperature,
                 req.reasoning_effort,
+                req.params,
             )
             .await
             .map_err(|e| classify_transport_error(&e.to_string()))?;

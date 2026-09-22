@@ -127,6 +127,14 @@ pub struct ChatMessage {
     /// `"image"` in its `input` modalities; empty otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageRef>,
+    /// Reasoning/thinking trace of this assistant round — the persisted form
+    /// of the live `思考过程` block, so a reopened session replays what the
+    /// stream actually drew. Display-only: `reasoning` is a *separate*
+    /// reasoning-model input, never a transcript field, so every adapter must
+    /// keep it off the wire (`openai_compat` strips it like `is_error`).
+    /// `None` on old snapshots and on rounds that produced no trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 /// Wall-clock epoch millis — stamps every message at construction.
@@ -145,11 +153,18 @@ fn content_as_string<S: serde::Serializer>(
 }
 
 impl ChatMessage {
+    /// Attach this round's reasoning trace. Empty/whitespace traces are
+    /// dropped rather than persisted as an empty thought block.
+    pub fn with_reasoning(mut self, reasoning: Option<String>) -> Self {
+        self.reasoning = reasoning.filter(|r| !r.trim().is_empty());
+        self
+    }
+
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new() }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new() }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     /// Attach staged image refs — only call this when the active model
     /// declares `"image"` in its `input` modalities.
@@ -158,31 +173,31 @@ impl ChatMessage {
         self
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new() }
+        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     /// A user-facing system line the live stream emitted via
     /// `UiEvent::SystemMessage` — persisted so a reloaded view replays
     /// it exactly (vs `system()`, which is invisible internal context).
     pub fn notice(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System), ts: Some(now_ms()), images: Vec::new() }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     /// Same, for a `UiEvent::Error` line — replays with the `⚠` prefix.
     pub fn notice_error(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error), ts: Some(now_ms()), images: Vec::new() }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     /// A `Role::User` instruction the UI never showed (injected by the
     /// engine, e.g. the synthesis nudge) — kept for the provider,
     /// skipped on replay.
     pub fn user_hidden(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()), images: Vec::new() }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new() }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     /// Failed tool result — same wire shape, plus the persisted `is_error`
     /// flag the UI replays into the red capsule state.
     pub fn tool_result_err(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None, ts: Some(now_ms()), images: Vec::new() }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
 }
 
@@ -347,6 +362,26 @@ impl ToolCallAssembler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reasoning trace is what a reopened session replays as its
+    /// 思考过程 block, so it must survive the JSONL snapshot exactly — and a
+    /// trace-free row must not grow the file.
+    #[test]
+    fn reasoning_roundtrips_and_old_snapshots_default() {
+        let m = ChatMessage::assistant("答案").with_reasoning(Some("先想一下".into()));
+        let j = serde_json::to_string(&m).unwrap();
+        let back: ChatMessage = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.reasoning.as_deref(), Some("先想一下"));
+
+        // A row written before the field existed still loads.
+        let old = r#"{"role":"assistant","content":"hi"}"#;
+        let back: ChatMessage = serde_json::from_str(old).unwrap();
+        assert_eq!(back.reasoning, None);
+
+        // No trace → no key at all.
+        let plain = serde_json::to_string(&ChatMessage::assistant("x")).unwrap();
+        assert!(!plain.contains("reasoning"), "{plain}");
+    }
 
     #[test]
     fn assembler_collapses_sparse_output_indices() {

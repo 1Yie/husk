@@ -10,7 +10,6 @@ use agent_llm::config::{AppConfig, ProviderConfig, ProviderKind, SecretResolutio
 use agent_llm::factory::ProviderFactory;
 use agent_llm::sampler::{SampleRequest, Sampler};
 use agent_llm::types::{ChatMessage, StreamChunk, ToolCallAssembler};
-use agent_llm::LlmProvider;
 use futures::StreamExt;
 
 
@@ -147,7 +146,13 @@ async fn sampler_synthesizes_done_on_clean_close() {
     let mut chunks = Vec::new();
     sampler
         .sample(
-            SampleRequest { model: "m", temperature: 0.0, tools: None, reasoning_effort: None },
+            SampleRequest {
+                model: "m",
+                temperature: 0.0,
+                tools: None,
+                reasoning_effort: None,
+                params: &agent_llm::ModelParams::EMPTY,
+            },
             &[ChatMessage::user("x")],
             |c| chunks.push(c.clone()),
             |_| {},
@@ -173,7 +178,13 @@ async fn sampler_retries_retryable_then_fails() {
     let mut events = Vec::new();
     let res = sampler
         .sample(
-            SampleRequest { model: "m", temperature: 0.0, tools: None, reasoning_effort: None },
+            SampleRequest {
+                model: "m",
+                temperature: 0.0,
+                tools: None,
+                reasoning_effort: None,
+                params: &agent_llm::ModelParams::EMPTY,
+            },
             &[],
             |_| {},
             |e| events.push(format!("{e:?}")),
@@ -197,7 +208,13 @@ async fn sampler_detects_doom_loop() {
     let sampler = Sampler::new(Arc::new(stub));
     let res = sampler
         .sample(
-            SampleRequest { model: "m", temperature: 0.0, tools: None, reasoning_effort: None },
+            SampleRequest {
+                model: "m",
+                temperature: 0.0,
+                tools: None,
+                reasoning_effort: None,
+                params: &agent_llm::ModelParams::EMPTY,
+            },
             &[],
             |_| {},
             |_| {},

@@ -126,8 +126,10 @@ impl SubagentSpawner {
         engine.set_max_tool_rounds(SUBAGENT_TOOL_ROUNDS);
 
         // Dead UI channel — the child's progress is not streamed to the
-        // frontend in v1; try_send fails quietly on a dropped receiver.
-        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(64);
+        // frontend in v1. Dropping the receiver is what makes it dead:
+        // `UiSink::send` then fails without buffering anything.
+        let (ui_tx, ui_rx) = crate::channels::UiSink::channel();
+        drop(ui_rx);
         let (_steer_tx, steer_rx) = tokio::sync::mpsc::channel(1);
         let cancel = parent_ctx
             .cancel

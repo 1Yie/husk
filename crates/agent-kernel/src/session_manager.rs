@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
 use agent_ipc::UiEvent;
+use crate::channels::{UiSink, UiStatsSnapshot};
 use crate::session::{SessionActor, SessionConfig};
 use crate::session_store::{SessionMeta, SessionStore};
 use agent_llm::{AppConfig, ProviderFactory};
@@ -36,6 +37,10 @@ pub struct ModelDetails {
     /// engine's 256_000 default applies.
     #[serde(default)]
     pub context_window: Option<u64>,
+    /// Maximum output tokens (`maxTokens`) — `None` means the adapter's own
+    /// default cap applies. Shown in the model picker's detail line.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     /// Pricing ($/1M tokens) from the model's config entry — `None` means
     /// "cost unknown, don't render a meter". The frontend turns the last
     /// `Usage` event into a $ figure against these rates.
@@ -125,6 +130,10 @@ pub struct SessionHandle {
     pub preview: String,
     /// True while this session's actor is mid-turn (drives the ⟳ marker).
     pub running: bool,
+    /// This session's UI event queue — kept here so the shell can read the
+    /// delivery counters (coalesced/dropped deltas, queue high-water mark)
+    /// without reaching into the actor.
+    pub ui: UiSink,
 }
 
 /// The multi-session kernel manager — frontend-agnostic. Owns all live
@@ -418,6 +427,9 @@ impl SessionManager {
             }
         }
         crate::session_store::remove_recent_workspace(&canon);
+        // The workspace's Serena server (if any) goes with it — a closed
+        // project should not keep an indexed child process around.
+        crate::tools::serena::shutdown(&canon);
 
         let active_canon = self
             .workspace_root
@@ -549,15 +561,23 @@ impl SessionManager {
             .providers
             .get(&self.provider_name)
             .and_then(|p| p.find_model(&model));
-        let detailed = mentry.and_then(|m| m.detailed());
-        let thinking_level_map = detailed
+        // Resolved with `modelOverrides` folded in — the model the user picked
+        // is what `model_info` lists, so an override must apply here rather
+        // than only to a bare config entry.
+        let resolved = mentry.is_some().then(|| {
+            self.provider_cfg
+                .providers
+                .get(&self.provider_name)
+                .map(|p| p.model_opts(&model))
+                .unwrap_or_default()
+        });
+        let model_params = resolved
             .as_ref()
-            .and_then(|d| d.thinking_level_map.clone());
-        let model_input = detailed
-            .as_ref()
-            .map(|d| d.input.clone())
+            .map(ProviderFactory::model_params_from)
             .unwrap_or_default();
-        let context_window = detailed.and_then(|d| d.context_window);
+        let thinking_level_map = resolved.as_ref().and_then(|d| d.thinking_level_map.clone());
+        let model_input = resolved.as_ref().map(|d| d.input.clone()).unwrap_or_default();
+        let context_window = resolved.as_ref().and_then(|d| d.context_window);
 
         let cfg = SessionConfig {
             workspace_root: self.workspace_root.clone(),
@@ -572,6 +592,7 @@ impl SessionManager {
             context_window,
             model_input,
             compact_at: Some(self.compact_at),
+            model_params: Some(model_params),
         };
 
         let (mut actor, channels) = match self.store.load_history(id) {
@@ -605,6 +626,8 @@ impl SessionManager {
         // and parks its handle. Without the tag, a background session's
         // events would land in the active workspace's id space and
         // corrupt a different session's view.
+        // The same sink is kept on the handle for the delivery counters.
+        let ui = channels.event_tx.clone();
         {
             let mut rx = channels.event_rx;
             let tx = self.event_tx.clone();
@@ -642,6 +665,7 @@ impl SessionManager {
             cancel,
             preview,
             running: false,
+            ui,
         });
     }
 
@@ -810,6 +834,21 @@ impl SessionManager {
         std::fs::write(&path, content).map_err(|e| e.to_string())
     }
 
+    /// Delivery counters for every live session (active workspace + parked
+    /// workspaces) — the shell's status bar surfaces `dropped`/`coalesced`
+    /// so a lagging consumer stops being invisible.
+    pub fn ui_stats(&self) -> UiStatsSnapshot {
+        self.parked
+            .values()
+            .flat_map(|sessions| sessions.values())
+            .map(|h| h.ui.stats())
+            .chain(self.handles.values().map(|h| h.ui.stats()))
+            .fold(UiStatsSnapshot::default(), |mut acc, s| {
+                acc.add(&s);
+                acc
+            })
+    }
+
     /// The active session's handles (for UI commands).
     pub fn active(&self) -> Option<&SessionHandle> {
         self.handles.get(&self.active_id)
@@ -934,6 +973,7 @@ impl SessionManager {
                         thinking_level_map,
                         available_levels,
                         context_window: d.and_then(|x| x.context_window),
+                        max_tokens: d.and_then(|x| x.max_tokens).map(|v| v.min(u32::MAX as u64) as u32),
                         cost: d.and_then(|x| x.cost.clone()),
                     });
                 }
@@ -946,6 +986,7 @@ impl SessionManager {
                     thinking_level_map: None,
                     available_levels: Vec::new(),
                     context_window: None,
+                    max_tokens: None,
                     cost: None,
                 });
             } else {
@@ -957,6 +998,7 @@ impl SessionManager {
                     thinking_level_map: None,
                     available_levels: Vec::new(),
                     context_window: None,
+                    max_tokens: None,
                     cost: None,
                 });
             }
@@ -971,6 +1013,7 @@ impl SessionManager {
                 thinking_level_map: None,
                 available_levels: Vec::new(),
                 context_window: None,
+                max_tokens: None,
                 cost: None,
             });
         }

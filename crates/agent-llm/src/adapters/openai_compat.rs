@@ -18,7 +18,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::provider::{BoxStream, LlmProvider};
+use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
 use crate::types::{ChatMessage, Role, StreamChunk};
 
@@ -229,7 +229,7 @@ pub fn test_map_data(
 }
 
 /// Serialize one `ChatMessage` to its wire `Value` — replay-only fields
-/// (`is_error`, `notice`, `ts`, `images`) are stripped; a user message with
+/// (`is_error`, `notice`, `ts`, `images`, `reasoning`) are stripped; a user message with
 /// image refs becomes a content-parts array (text first, `image_url` parts
 /// after; unresolvable refs degrade to a text note).
 fn serialize_message(m: &ChatMessage) -> serde_json::Value {
@@ -238,6 +238,9 @@ fn serialize_message(m: &ChatMessage) -> serde_json::Value {
     });
     if let Some(obj) = v.as_object_mut() {
         obj.remove("is_error"); obj.remove("notice"); obj.remove("ts");
+        // The stored reasoning trace is ours to replay, not the provider's to
+        // read: strict backends reject unknown fields outright.
+        obj.remove("reasoning");
         if !m.images.is_empty() && matches!(m.role, Role::User) {
             let mut parts = vec![json!({
                 "type": "text",
@@ -282,28 +285,58 @@ fn serialize_message(m: &ChatMessage) -> serde_json::Value {
 ///    their assistant row, before whatever comes next.
 /// 3. `tool` rows with an unseen `tool_call_id` are dropped; a blank
 ///    `tool_call_id` pairs positionally with the earliest outstanding call.
+#[cfg(test)]
 fn build_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    build_messages_dev(messages, &crate::config::ProviderCompat::default())
+}
+
+/// Same pass, plus the `compat`-driven shapes pi documents for partial
+/// OpenAI compatibility:
+///
+/// * `requiresToolResultName` — add `name` to `role:"tool"` rows (backends
+///   that expect the function name alongside the id).
+/// * `requiresAssistantAfterToolResult` — insert an assistant message between
+///   a run of tool results and the following user message.
+/// * `requiresReasoningContentOnAssistantMessages` — replay `reasoning_content: ""`
+///   on assistant rows so a backend that requires the key doesn't 400.
+fn build_messages_dev(
+    messages: &[ChatMessage],
+    compat: &crate::config::ProviderCompat,
+) -> Vec<serde_json::Value> {
     let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
     // Call ids still awaiting their `tool` output, in call order.
     let mut expected: Vec<String> = Vec::new();
+    // id → function name, for `requiresToolResultName`.
+    let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut synth_seq = 0usize;
+    let result_name = compat.requires_tool_result_name.unwrap_or(false);
 
     // Missing outputs must be emitted directly after their assistant row —
     // any non-tool message boundary flushes them first.
     macro_rules! flush_missing {
         () => {
             for id in expected.drain(..) {
-                out.push(json!({
+                let mut row = json!({
                     "role": "tool",
                     "tool_call_id": id,
                     "content": "(tool result missing — the call was interrupted or dropped from history)",
-                }));
+                });
+                if result_name {
+                    row["name"] = json!(names.get(&id).cloned().unwrap_or_default());
+                }
+                out.push(row);
             }
         };
     }
 
     for m in messages {
         let mut v = serialize_message(m);
+        if m.role == Role::System && compat.developer_role() {
+            // pi: `supportsDeveloperRole: true` means the endpoint understands
+            // the newer `developer` role. Default is `system` — which every
+            // OpenAI-compatible shim accepts.
+            v["role"] = json!("developer");
+        }
         match m.role {
             Role::Assistant => {
                 flush_missing!();
@@ -312,15 +345,29 @@ fn build_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
                 if let Some(calls) = v.get_mut("tool_calls").and_then(|c| c.as_array_mut()) {
                     for c in calls.iter_mut() {
                         let id = c.get("id").and_then(|i| i.as_str()).unwrap_or_default();
+                        let fname = c
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or_default()
+                            .to_string();
                         if id.is_empty() {
                             synth_seq += 1;
                             let id = format!("call_synth_{synth_seq}");
                             c["id"] = json!(id);
+                            names.insert(id.clone(), fname);
                             expected.push(id);
                         } else {
+                            names.insert(id.to_string(), fname);
                             expected.push(id.to_string());
                         }
                     }
+                }
+                if compat.requires_reasoning_content_on_assistant_messages == Some(true) {
+                    // A backend that insists on the key present will reject an
+                    // assistant row that omits it — an empty string is the
+                    // shape it expects when there is nothing to replay.
+                    v["reasoning_content"] = json!("");
                 }
                 out.push(v);
             }
@@ -333,13 +380,32 @@ fn build_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
                         continue; // orphan — no call to pair with
                     }
                     call_id = expected.remove(0);
-                    v["tool_call_id"] = json!(call_id);
+                    v["tool_call_id"] = json!(call_id.clone());
+                    if result_name {
+                        v["name"] = json!(names.get(&call_id).cloned().unwrap_or_default());
+                    }
                     out.push(v);
                 } else if let Some(pos) = expected.iter().position(|id| *id == call_id) {
                     expected.remove(pos);
+                    if result_name {
+                        v["name"] = json!(names.get(&call_id).cloned().unwrap_or_default());
+                    }
                     out.push(v);
                 }
                 // else: orphan tool output — drop it.
+            }
+            Role::User => {
+                // Some backends require a non-tool message to be preceded by an
+                // assistant turn once tool results have been replayed.
+                if compat.requires_assistant_after_tool_result == Some(true) {
+                    if let Some(last) = out.last() {
+                        if last.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                            out.push(json!({ "role": "assistant", "content": "" }));
+                        }
+                    }
+                }
+                flush_missing!();
+                out.push(v);
             }
             _ => {
                 flush_missing!();
@@ -351,6 +417,128 @@ fn build_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
     // mid-tools (cancelled turn, crash before persist).
     flush_missing!();
     out
+}
+
+/// Write the thinking directive in the dialect the provider declares
+/// (`compat.thinkingFormat`). `openai` (the default) sends `reasoning_effort`;
+/// the others express the same intent through their provider-specific field.
+///
+/// Dialects not yet mapped here fall back to `reasoning_effort`, which is
+/// what every OpenAI-compatible shim that isn't one of the listed dialects
+/// accepts.
+fn apply_thinking(body: &mut serde_json::Value, compat: &crate::config::ProviderCompat, effort: &str) {
+    match compat.thinking_format_name() {
+        // `reasoning: { effort }` — OpenRouter's shape.
+        "openrouter" => {
+            body["reasoning"] = json!({ "effort": effort });
+        }
+        // `reasoning: { enabled }` — Together; `reasoning_effort` too when the
+        // provider also declares support for it.
+        "together" => {
+            body["reasoning"] = json!({ "enabled": effort != "none" && effort != "off" });
+            if compat.supports_reasoning_effort == Some(true) {
+                body["reasoning_effort"] = json!(effort);
+            }
+        }
+        // Top-level `enable_thinking` — Qwen / DashScope.
+        "qwen" => {
+            body["enable_thinking"] = json!(effort != "none" && effort != "off");
+        }
+        // `chat_template_kwargs` — local Qwen-compatible servers.
+        "qwen-chat-template" => {
+            body["chat_template_kwargs"] = json!({
+                "enable_thinking": effort != "none" && effort != "off",
+                "preserve_thinking": true,
+            });
+        }
+        // Configurable `chat_template_kwargs` (vLLM / HF chat templates).
+        "chat-template" => {
+            let mut kwargs = compat
+                .chat_template_kwargs
+                .as_ref()
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            for (_, v) in kwargs.iter_mut() {
+                resolve_thinking_var(v, effort, compat);
+            }
+            // `omitWhenOff` placeholders resolve to Null — drop the key rather
+            // than send an explicit null the template may not expect.
+            kwargs.retain(|_, v| !v.is_null());
+            body["chat_template_kwargs"] = serde_json::Value::Object(kwargs);
+        }
+        // `chat_template_args` — Baseten.
+        "baseten" => {
+            let mut args = compat
+                .chat_template_args
+                .as_ref()
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            for (_, v) in args.iter_mut() {
+                resolve_thinking_var(v, effort, compat);
+            }
+            // `omitWhenOff` placeholders resolve to Null — drop the key rather
+            // than send an explicit null the template may not expect.
+            args.retain(|_, v| !v.is_null());
+            body["chat_template_args"] = serde_json::Value::Object(args);
+        }
+        // DeepSeek's `thinking: { type: "enabled" | "disabled" }`.
+        "deepseek" => {
+            let enabled = effort != "none" && effort != "off";
+            body["thinking"] = json!({ "type": if enabled { "enabled" } else { "disabled" } });
+        }
+        // `thinking: { type: … }` — ZAI.
+        "zai" => {
+            let enabled = effort != "none" && effort != "off";
+            body["thinking"] = json!({ "type": if enabled { "enabled" } else { "disabled" } });
+        }
+        // `thinking: "…"` as a bare string.
+        "string-thinking" => {
+            body["thinking"] = json!(effort);
+        }
+        // `ant-ling` sends `thinking: { type: "enabled" }` like DeepSeek.
+        "ant-ling" => {
+            let enabled = effort != "none" && effort != "off";
+            body["thinking"] = json!({ "type": if enabled { "enabled" } else { "disabled" } });
+        }
+        // `openai` and anything unrecognised.
+        _ => {
+            body["reasoning_effort"] = json!(effort);
+        }
+    }
+}
+
+/// Substitute a `{ "$var": "thinking.…" }` placeholder with the value of that
+/// thinking knob (pi's `chatTemplateKwargs` / `chatTemplateArgs` syntax).
+/// Non-placeholder values pass through untouched.
+fn resolve_thinking_var(
+    v: &mut serde_json::Value,
+    effort: &str,
+    _compat: &crate::config::ProviderCompat,
+) {
+    let Some(obj) = v.as_object() else {
+        return;
+    };
+    let Some(var) = obj.get("$var").and_then(|x| x.as_str()) else {
+        return;
+    };
+    let enabled = effort != "none" && effort != "off";
+    // `omitWhenOff` drops the key entirely when thinking is disabled — the
+    // caller re-reads this sentinel and removes it.
+    let omit = obj.get("omitWhenOff").and_then(|x| x.as_bool()).unwrap_or(false);
+    if !enabled && omit {
+        *v = serde_json::Value::Null;
+        return;
+    }
+    *v = match var {
+        "thinking.enabled" => json!(enabled),
+        "thinking.effort" => json!(effort),
+        // The budget itself is the engine's `thinkingBudgets` concern; the
+        // dialect only needs a boolean/enum here.
+        "thinking.budget" => json!(effort),
+        _ => return,
+    };
 }
 
 #[async_trait]
@@ -380,7 +568,13 @@ impl LlmProvider for GenericOpenAiProvider {
         tools: Option<serde_json::Value>,
         temperature: f32,
         reasoning_effort: Option<&str>,
+        params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        // Model-level `compat` merged over the provider's for this request —
+        // `maxTokensField` and `supportsReasoningEffort` are commonly declared
+        // per model, so reading the provider's copy alone would silently
+        // ignore a model-level declaration.
+        let compat = params.compat_with(self.compat.as_ref());
         // `temperature` is optional — some OpenAI-compat backends reject
         // extreme values (verified: devin upstream-errors on temperature=0).
         // Only include it when the caller picked a non-default value; the
@@ -393,26 +587,28 @@ impl LlmProvider for GenericOpenAiProvider {
             // repairs tool-call pairing — a dangling `tool_calls` entry or
             // orphan tool row is a hard 400 on strict backends (deepseek:
             // "No tool output found for tool call …").
-            "messages": build_messages(messages),
+            "messages": build_messages_dev(messages, &compat),
             "stream": true,
         });
         if temperature > 0.0 {
             body["temperature"] = json!(temperature);
         }
-        if let Some(compat) = &self.compat {
-            if let Some(store) = compat.supports_store {
-                body["store"] = json!(store);
-            }
+        if let Some(store) = compat.supports_store {
+            body["store"] = json!(store);
         }
+        // Output cap — the model's `maxTokens`, under whichever field name the
+        // provider declares (`max_completion_tokens` by default, `max_tokens`
+        // for the many shims that never adopted the newer name).
+        params.apply_max_tokens(&mut body, compat.max_tokens_field_name());
         if let Some(effort) = reasoning_effort {
-            let allowed = self
-                .capabilities()
-                .reasoning;
-            if allowed {
-                body["reasoning_effort"] = json!(effort);
+            // Capability gate, then the dialect: `openai` sends
+            // `reasoning_effort`; other formats express the same intent
+            // through their own field (see `apply_thinking`).
+            if compat.supports_reasoning_effort.unwrap_or(true) {
+                apply_thinking(&mut body, &compat, effort);
             }
         }
-        // `stream_options.include_usage` is OpenAI/xAI-specific — some
+        // `stream_options.include_usage` is an OpenAI extension — some
         // OpenAI-compatible backends (devin, certain proxies) reject the
         // field outright instead of ignoring it, so we don't send it. Usage
         // still arrives on the final chunk when the backend provides it.
@@ -420,6 +616,9 @@ impl LlmProvider for GenericOpenAiProvider {
         if let Some(t) = tools {
             body["tools"] = t;
         }
+        // `samplingParams` merges last so its keys win over everything above
+        // (pi: "its keys win") — the single source of sampling truth.
+        params.apply_sampling_params(&mut body);
 
         let req = self
             .transport
@@ -477,13 +676,31 @@ mod tests {
     fn m(role: Role, text: &str) -> ChatMessage {
         ChatMessage {
             role, content: Some(text.into()), tool_calls: None,
-            tool_call_id: None, is_error: None, notice: None, ts: None,
+            tool_call_id: None, is_error: None, notice: None, ts: None, reasoning: None,
             images: Vec::new(),
         }
     }
 
     fn call(id: &str) -> ToolCall {
         ToolCall { id: id.into(), name: "bash".into(), arguments: "{}".into() }
+    }
+
+    /// The stored reasoning trace is ours to replay, not the provider's to
+    /// read — strict backends reject unknown fields outright, and no
+    /// reasoning-model wire accepts a transcript `reasoning` either.
+    #[test]
+    fn serialize_message_keeps_reasoning_off_the_wire() {
+        let msg = m(Role::Assistant, "hello").with_reasoning(Some("chain of thought".into()));
+        let v = serialize_message(&msg);
+        assert!(v.get("reasoning").is_none(), "reasoning leaked: {v}");
+        assert_eq!(v["content"], "hello");
+        assert_eq!(msg.reasoning.as_deref(), Some("chain of thought"), "still replayable");
+    }
+
+    /// An empty trace is not a thought block — it must not survive on the row.
+    #[test]
+    fn with_reasoning_drops_blank_traces() {
+        assert!(m(Role::Assistant, "x").with_reasoning(Some("  \n ".into())).reasoning.is_none());
     }
 
     #[test]

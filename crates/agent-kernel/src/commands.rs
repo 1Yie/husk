@@ -70,9 +70,9 @@ pub struct CommandCtx<'a> {
     pub history: &'a mut Vec<ChatMessage>,
     pub permission_mode: &'a str,
     pub workspace_root: &'a std::path::Path,
-    /// Emit a UI event (status/system message) — a `Sender` keeps the ctx
-    /// `Send` so `handle` futures can `tokio::spawn`.
-    pub ui_tx: &'a tokio::sync::mpsc::Sender<UiEvent>,
+    /// Emit a UI event (status/system message) — the shared sink keeps the
+    /// ctx `Send` so `handle` futures can `tokio::spawn`.
+    pub ui_tx: &'a crate::channels::UiSink,
 }
 
 /// The registry — built-ins first; plugin commands register under
@@ -103,7 +103,7 @@ impl CommandRegistry {
                 ));
             }
             let line = format!("`${skill_name}` 不是可用技能 — 已作为普通消息发送");
-            let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+            let _ = ctx.ui_tx.send(UiEvent::SystemMessage(line.clone()));
             ctx.history.push(ChatMessage::notice(line));
             return Some(CommandResult::FeedToAgent(
                 expand_user_tokens(t, ctx.workspace_root),
@@ -172,7 +172,7 @@ impl CommandRegistry {
                 } else {
                     // Unknown /x → hint + fall through as a normal prompt.
                     let line = format!("`/{name}` 不是命令或技能 — 已作为普通消息发送");
-                    let _ = ctx.ui_tx.try_send(UiEvent::SystemMessage(line.clone()));
+                    let _ = ctx.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                     ctx.history.push(ChatMessage::notice(line));
                     CommandResult::FeedToAgent(expand_user_tokens(&t_fallback(name, args), ctx.workspace_root))
                 }
@@ -497,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn slash_skill_feeds_agent_with_body() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let (tx, _rx) = crate::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -518,7 +518,7 @@ mod tests {
     #[tokio::test]
     async fn slash_skill_passes_args() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let (tx, _rx) = crate::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -536,7 +536,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_slash_falls_back_to_prompt() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let (tx, _rx) = crate::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -554,7 +554,7 @@ mod tests {
     #[tokio::test]
     async fn at_mention_inlines_file_content() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let (tx, _rx) = crate::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -601,7 +601,7 @@ mod tests {
     #[tokio::test]
     async fn at_mention_escapes_are_blocked() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let (tx, _rx) = crate::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -621,7 +621,7 @@ mod tests {
     #[tokio::test]
     async fn email_like_at_is_left_alone() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let (tx, _rx) = crate::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -657,7 +657,7 @@ mod tests {
     #[tokio::test]
     async fn dollar_trigger_dispatches_skill_only() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let (tx, _rx) = crate::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,

@@ -15,6 +15,8 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
+        // System clipboard access for image paste (see `paste_clipboard`).
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             // Boot the shared kernel manager, take its event receiver, and
             // forward it to the webview. `event_rx` is `std::sync::mpsc`
@@ -27,6 +29,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             ipc::commands::agent_cmd,
+            ipc::commands::get_ui_stats,
+            ipc::commands::paste_clipboard,
             ipc::sessions::agent_session,
         ])
         .run(tauri::generate_context!())

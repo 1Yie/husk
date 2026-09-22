@@ -204,28 +204,102 @@ export function resolveTokenColor(type?: string, alias?: string | string[]): str
 }
 
 /**
- * Tokenize pure code into HighlightResult (lines of tokens) compatible with Streamdown
+ * Highlight cache — Prism tokenizes from scratch, so the same code string
+ * was re-tokenized + re-walked on every render. Two things make that hurt:
+ *
+ *  * the streaming tail block's text changes on every delta, and Streamdown
+ *    re-renders the whole block (memo only helps *sibling* blocks);
+ *  * a re-render that does NOT change the text (usage meter tick, `expanded`
+ *    toggle, parent state) still produced a fresh `HighlightResult` object,
+ *    so `memo`'s shallow compare on the code block failed and the subtree
+ *    was rebuilt for nothing.
+ *
+ * Caching by content fixes both: identical input returns the identical
+ * object, so the code block's memo holds. Bounded by entries AND total
+ * lines, because one entry can be a multi-thousand-token file.
+ *
+ * Results are treated as immutable by callers (Streamdown only maps
+ * `tokens`) — the streaming plugin copies before appending.
  */
+const CACHE_MAX_ENTRIES = 32;
+const CACHE_MAX_LINES = 20_000;
+const cache = new Map<string, { value: unknown; lines: number }>();
+let cachedLines = 0;
+
+function cacheKey(mode: string, code: string, language: string): string {
+  return `${mode}\u0000${language}\u0000${code}`;
+}
+
+/** Newline count without materializing the split array. */
+function countLines(code: string): number {
+  let n = 1;
+  for (let i = 0; i < code.length; i++) {
+    if (code.charCodeAt(i) === 10) n += 1;
+  }
+  return n;
+}
+
+function cacheGet<T>(key: string): T | undefined {
+  const hit = cache.get(key);
+  if (!hit) return undefined;
+  // LRU touch — re-insert so the Map's insertion order stays recency-ordered.
+  cache.delete(key);
+  cache.set(key, hit);
+  return hit.value as T;
+}
+
+function cachePut<T>(key: string, value: T, lines: number): T {
+  const previous = cache.get(key);
+  if (previous) cachedLines -= previous.lines;
+  cache.set(key, { value, lines });
+  cachedLines += lines;
+  while ((cache.size > CACHE_MAX_ENTRIES || cachedLines > CACHE_MAX_LINES) && cache.size > 1) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    cachedLines -= cache.get(oldest)?.lines ?? 0;
+    cache.delete(oldest);
+  }
+  return value;
+}
+
+/** A single unstyled token line — the "no grammar / no highlight" shape the
+ * plugin contract expects. */
+function plainLine(content: string): HighlightToken[] {
+  return [
+    {
+      content,
+      color: "#e4e4e7",
+      bgColor: "transparent",
+      htmlStyle: {
+        color: "#e4e4e7",
+        "--sdm-c": "#e4e4e7",
+        "--shiki-dark": "#e4e4e7",
+      },
+      offset: 0,
+    },
+  ];
+}
+
 export function highlightCodeWithPrism(code: string, language: string): HighlightResult {
+  const key = cacheKey("tokens", code, language);
+  const hit = cacheGet<HighlightResult>(key);
+  if (hit) return hit;
+  const result = tokenizeWithoutCache(code, language);
+  return cachePut(key, result, result.tokens.length);
+}
+
+/**
+ * Tokenize pure code into HighlightResult (lines of tokens) compatible with
+ * Streamdown — the uncached worker behind `highlightCodeWithPrism`.
+ */
+function tokenizeWithoutCache(code: string, language: string): HighlightResult {
   const grammar = getPrismGrammar(language);
   if (!grammar) {
     const lines = code.split("\n");
     return {
       bg: "#141416",
       fg: "#e4e4e7",
-      tokens: lines.map((line) => [
-        {
-          content: line || "",
-          color: "#e4e4e7",
-          bgColor: "transparent",
-          htmlStyle: {
-            color: "#e4e4e7",
-            "--sdm-c": "#e4e4e7",
-            "--shiki-dark": "#e4e4e7",
-          },
-          offset: 0,
-        },
-      ]),
+      tokens: lines.map((line) => plainLine(line || "")),
     };
   }
 
@@ -284,17 +358,7 @@ export function highlightCodeWithPrism(code: string, language: string): Highligh
   // Ensure every line has at least one token
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].length === 0) {
-      lines[i].push({
-        content: "",
-        color: "#e4e4e7",
-        bgColor: "transparent",
-        htmlStyle: {
-          color: "#e4e4e7",
-          "--sdm-c": "#e4e4e7",
-          "--shiki-dark": "#e4e4e7",
-        },
-        offset: 0,
-      });
+      lines[i].push(...plainLine(""));
     }
   }
 
@@ -309,13 +373,17 @@ export function highlightCodeWithPrism(code: string, language: string): Highligh
  * Return highlighted HTML string for direct rendering
  */
 export function highlightCodeToHtml(code: string, language: string): string {
+  const key = cacheKey("html", code, language);
+  const hit = cacheGet<string>(key);
+  if (hit !== undefined) return hit;
   const grammar = getPrismGrammar(language);
   if (!grammar) {
     return escapeHtml(code);
   }
   const norm = normalizeLanguage(language);
   try {
-    return Prism.highlight(code, grammar, norm);
+    const html = Prism.highlight(code, grammar, norm);
+    return cachePut(key, html, countLines(code));
   } catch {
     return escapeHtml(code);
   }
@@ -348,6 +416,55 @@ export const prismCodePlugin: StreamdownCodePlugin = {
   },
   highlight(options, callback) {
     const result = highlightCodeWithPrism(options.code, options.language);
+    if (callback) {
+      callback(result);
+    }
+    return result;
+  },
+};
+
+/**
+ * Streaming variant — used only for the message block that is still
+ * arriving (`isAnimating`).
+ *
+ * The last line of an in-flight code block is by definition incomplete, and
+ * an incomplete line is exactly where Prism is worst: a half-typed string,
+ * raw string or block comment re-tokenizes differently on every delta, so
+ * the visible colors of that line (and anything after it) flicker, and the
+ * work is redone for text the user is about to see change anyway.
+ *
+ * So: highlight the *complete-line prefix* through the shared cache, and
+ * render the trailing partial line as plain text. When the turn finishes,
+ * `MemoStreamdown` swaps back to `prismCodePlugin` and the block gets its
+ * exact final highlight in one pass.
+ */
+export const prismCodePluginStreaming: StreamdownCodePlugin = {
+  name: "shiki",
+  type: "code-highlighter",
+  getSupportedLanguages() {
+    return Object.keys(Prism.languages);
+  },
+  getThemes() {
+    return ["github-dark", "github-dark"];
+  },
+  supportsLanguage(language: string) {
+    return Boolean(getPrismGrammar(language));
+  },
+  highlight(options, callback) {
+    const { code, language } = options;
+    const cut = code.lastIndexOf("\n");
+    let result: HighlightResult;
+    if (cut < 0) {
+      // Single unterminated line — nothing complete to tokenize yet.
+      result = { bg: "#141416", fg: "#e4e4e7", tokens: [plainLine(code)] };
+    } else {
+      const head = highlightCodeWithPrism(code.slice(0, cut + 1), language);
+      const tail = code.slice(cut + 1);
+      // Copy before appending: `head` may be a cache entry, and callers must
+      // never see a mutated cache value.
+      const tokens = tail ? [...head.tokens, plainLine(tail)] : head.tokens;
+      result = { ...head, tokens };
+    }
     if (callback) {
       callback(result);
     }
