@@ -8,7 +8,7 @@
 //! wrong tree. It is also *not* per session: several sessions in one workspace
 //! must share one server, or every session pays for its own index.
 //!
-//! ```
+//! ```text
 //! process
 //! └── workspace A → slot → bridge (+ its tool catalog)
 //! └── workspace B → slot → bridge

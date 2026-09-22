@@ -23,22 +23,6 @@ use std::path::{Path, PathBuf};
 use agent_ipc::UiEvent;
 use agent_llm::types::ChatMessage;
 
-/// Workspace-relative directories scanned for skill manifests, in priority
-/// order — first hit wins when a name is duplicated. `.agents/skills` is
-/// the canonical root (agentskills convention); `.claude/skills` and
-/// `.pi/skills` are the Claude-Code / pi aliases so existing skill trees
-/// register natively.
-const WORKSPACE_SKILL_DIRS: [&str; 5] =
-    [".agents/skills", ".agent/skills", ".skills", ".claude/skills", ".pi/skills"];
-
-/// User-level skill roots (under `dirs::home_dir()`) — scanned after the
-/// workspace dirs, so a project skill always shadows a global one with the
-/// same name. Matches the per-user dirs pi/Claude populate.
-const GLOBAL_SKILL_DIRS: [&str; 3] =
-    [".agents/skills", ".claude/skills", ".pi/agent/skills"];
-
-/// Cap on a single `@`-inlined file — keeps a pasted log / lockfile from
-/// eating the whole context window in one turn.
 const MAX_MENTION_BYTES: usize = 32 * 1024;
 
 /// What a command produced — the session maps it to side effects.
@@ -97,10 +81,12 @@ impl CommandRegistry {
         }
         // `$skill` — dollar trigger resolves ONLY against the skill dirs.
         if let Some(skill_name) = name.strip_prefix('$') {
-            if let Some(skill) = find_skill(ctx.workspace_root, skill_name) {
-                return Some(CommandResult::FeedToAgent(
-                    skill_prompt(&format!("${skill_name}"), &skill, args),
-                ));
+            let skills = crate::skills::SkillManager::new(ctx.workspace_root);
+            if let Ok(skill) = skills.load(skill_name, Some(args)) {
+                return Some(CommandResult::FeedToAgent(crate::skills::prompt::for_user(
+                    &skill,
+                    &format!("${skill_name}"),
+                )));
             }
             let line = format!("`${skill_name}` 不是可用技能 — 已作为普通消息发送");
             let _ = ctx.ui_tx.send(UiEvent::SystemMessage(line.clone()));
@@ -125,23 +111,16 @@ impl CommandRegistry {
             "compact" => CommandResult::Control(ControlOp::Compact),
             "undo" => CommandResult::Control(ControlOp::UndoLastTurn),
             "skills" => {
-                let skills = scan_all_skills(ctx.workspace_root);
-                if skills.is_empty() {
+                let skills = crate::skills::SkillManager::new(ctx.workspace_root);
+                // One catalog, one rendering — the same listing the `skill`
+                // tool's `list` action returns, and the same one the prompt
+                // catalog is built from.
+                if skills.list().is_empty() {
                     CommandResult::Reply(
                         "no skills found — add `.agents/skills/<name>/SKILL.md` to the workspace".into(),
                     )
                 } else {
-                    let mut out = String::from("workspace skills:\n");
-                    for s in skills {
-                        let scope = if s.global { " (user)" } else { "" };
-                        let hint = if s.description.is_empty() {
-                            s.path.to_string_lossy().into_owned()
-                        } else {
-                            s.description.clone()
-                        };
-                        out.push_str(&format!("  /{}{} — {}\n", s.name, scope, hint));
-                    }
-                    CommandResult::Reply(out)
+                    CommandResult::Reply(skills.catalog_listing())
                 }
             }
             "model" => {
@@ -167,8 +146,12 @@ impl CommandRegistry {
                 // Skill fallback — `/{name}` resolves against the workspace +
                 // user skill dirs; the skill body is inlined into the turn
                 // so the model follows it as instructions.
-                if let Some(skill) = find_skill(ctx.workspace_root, name) {
-                    CommandResult::FeedToAgent(skill_prompt(&format!("/{name}"), &skill, args))
+                let skills = crate::skills::SkillManager::new(ctx.workspace_root);
+                if let Ok(skill) = skills.load(name, Some(args)) {
+                    CommandResult::FeedToAgent(crate::skills::prompt::for_user(
+                        &skill,
+                        &format!("/{name}"),
+                    ))
                 } else {
                     // Unknown /x → hint + fall through as a normal prompt.
                     let line = format!("`/{name}` 不是命令或技能 — 已作为普通消息发送");
@@ -181,140 +164,9 @@ impl CommandRegistry {
     }
 }
 
-/// The prompt a skill invocation feeds to the agent — `trigger` is the
-/// literal the user typed (`/name` or `$name`) so the echo stays truthful.
-fn skill_prompt(trigger: &str, skill: &Skill, args: &str) -> String {
-    let mut prompt = format!(
-        "The user invoked the `{trigger}` skill. Follow its \
-         instructions exactly.\n\n---\n{}\n---",
-        skill.body
-    );
-    if !args.is_empty() {
-        prompt.push_str(&format!("\n\nSkill arguments: {args}"));
-    }
-    prompt
-}
-
 /// Reassemble the original `/x args` text for the unknown-command fallthrough.
 fn t_fallback<'a>(name: &'a str, args: &'a str) -> String {
     if args.is_empty() { format!("/{name}") } else { format!("/{name} {args}") }
-}
-
-/// A discovered skill — name, description, and the SKILL.md body with the
-/// front-matter stripped (the body is what gets inlined as instructions).
-#[derive(Debug)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    pub path: PathBuf,
-    pub body: String,
-    /// `true` when found under a user-level (home) dir rather than the
-    /// workspace — informational; workspace entries always win on dedup.
-    pub global: bool,
-}
-
-/// Workspace skills only — [`WORKSPACE_SKILL_DIRS`], deduped by name.
-/// Hermetic (no `$HOME` reads) so tests stay reproducible; callers wanting
-/// the full picker surface use [`scan_all_skills`].
-pub fn scan_skills(root: &Path) -> Vec<Skill> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    let dirs: Vec<PathBuf> = WORKSPACE_SKILL_DIRS.iter().map(|d| root.join(d)).collect();
-    scan_skill_dirs(&dirs, false, &mut seen, &mut out);
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
-}
-
-/// Workspace + user-level skills — workspace dirs first (they win dedup),
-/// then [`GLOBAL_SKILL_DIRS`] under the home dir flagged `global: true`.
-/// This is the surface `/skills`, `/{name}`/`${name}` dispatch, and the
-/// composer pickers all share.
-pub fn scan_all_skills(root: &Path) -> Vec<Skill> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    let ws_dirs: Vec<PathBuf> = WORKSPACE_SKILL_DIRS.iter().map(|d| root.join(d)).collect();
-    scan_skill_dirs(&ws_dirs, false, &mut seen, &mut out);
-    if let Some(home) = dirs::home_dir() {
-        let global_dirs: Vec<PathBuf> =
-            GLOBAL_SKILL_DIRS.iter().map(|d| home.join(d)).collect();
-        scan_skill_dirs(&global_dirs, true, &mut seen, &mut out);
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
-}
-
-/// One-level scan of `dirs` for `<name>/SKILL.md` or bare `<name>.md`
-/// manifests, appending to `out`/`seen` (dedup across batches — earlier
-/// dirs win).
-fn scan_skill_dirs(
-    dirs: &[PathBuf],
-    global: bool,
-    seen: &mut std::collections::HashSet<String>,
-    out: &mut Vec<Skill>,
-) {
-    for base in dirs {
-        let Ok(rd) = std::fs::read_dir(&base) else { continue };
-        for entry in rd.flatten() {
-            let p = entry.path();
-            let manifest = if p.is_dir() {
-                let m = p.join("SKILL.md");
-                if m.is_file() { m } else { continue }
-            } else if p.extension().is_some_and(|e| e == "md") {
-                p.clone()
-            } else {
-                continue;
-            };
-            let content = std::fs::read_to_string(&manifest).unwrap_or_default();
-            let (fm_name, fm_desc, body) = split_skill(&content);
-            let name = fm_name.unwrap_or_else(|| {
-                p.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .or_else(|| manifest.file_stem().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_default()
-            });
-            if name.is_empty() || !seen.insert(name.clone()) {
-                continue;
-            }
-            out.push(Skill {
-                name,
-                description: fm_desc.unwrap_or_default(),
-                path: manifest,
-                body,
-                global,
-            });
-        }
-    }
-}
-
-/// Look up a single skill by name (the `/{name}` / `${name}` dispatch
-/// path) — searches workspace AND user-level dirs.
-pub fn find_skill(root: &Path, name: &str) -> Option<Skill> {
-    let want = name.to_lowercase();
-    scan_all_skills(root).into_iter().find(|s| s.name.to_lowercase() == want)
-}
-
-/// Parse a SKILL.md into `(name, description, body)` — front-matter is a
-/// `---\n…\n---` YAML-ish block; only `name:`/`description:` are read, the
-/// rest is passed through verbatim as the instruction body.
-fn split_skill(content: &str) -> (Option<String>, Option<String>, String) {
-    let trimmed = content.trim_start();
-    let Some(fm) = trimmed.strip_prefix("---") else {
-        return (None, None, content.to_string());
-    };
-    let Some(end) = fm.find("\n---") else {
-        return (None, None, content.to_string());
-    };
-    let mut name = None;
-    let mut desc = None;
-    for line in fm[..end].lines() {
-        let line = line.trim();
-        if let Some(v) = line.strip_prefix("name:") {
-            name = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
-        } else if let Some(v) = line.strip_prefix("description:") {
-            desc = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
-        }
-    }
-    (name, desc, fm[end + 4..].trim().to_string())
 }
 
 /// Inline `@path` mentions — each `@rel/path` token is replaced by a fenced
@@ -435,11 +287,13 @@ fn expand_skill_refs(text: &str, root: &Path) -> String {
             .chars()
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_');
-        let resolved = looks_like_name.then(|| find_skill(root, token)).flatten();
+        let resolved = looks_like_name
+            .then(|| crate::skills::SkillManager::new(root).load(token, None).ok())
+            .flatten();
         if let Some(skill) = resolved {
             out.push_str(&format!(
                 "\n\n`<skill name=\"{token}\">`\n{}\n",
-                skill_prompt(&format!("${token}"), &skill, "")
+                crate::skills::prompt::for_user(&skill, &format!("${token}"))
             ));
             rest = &after[end..];
         } else {
@@ -480,18 +334,28 @@ mod tests {
         (dir, root)
     }
 
+    /// The scanner is metadata-only now — the body arrives from the loader,
+    /// frontmatter stripped. This asserts the split holds end to end.
     #[test]
-    fn scan_finds_skills_with_and_without_front_matter() {
+    fn metadata_carries_the_summary_and_the_loader_carries_the_body() {
         let (_d, root) = skill_ws();
-        let skills = scan_skills(&root);
+        let skills = crate::skills::scanner::scan_skills(&root);
         assert_eq!(skills.len(), 2);
-        let review = skills.iter().find(|s| s.name == "review").unwrap();
+
+        let manager = crate::skills::SkillManager::new(&root);
+        let review = manager.load("review", None).unwrap();
         assert_eq!(review.description, "review code carefully");
         assert!(review.body.contains("Look for bugs."));
-        // front-matter is stripped from the inlined body
-        assert!(!review.body.contains("name:"));
-        let deploy = skills.iter().find(|s| s.name == "deploy").unwrap();
+        assert!(!review.body.contains("name:"), "front-matter must not reach the body");
+
+        // A no-front-matter skill still loads (name from the directory).
+        let deploy = manager.load("deploy", None).unwrap();
         assert!(deploy.body.contains("ship it"));
+
+        // …and the metadata path never read either body.
+        let meta = skills.iter().find(|s| s.name == "deploy").unwrap();
+        assert_eq!(meta.description, "");
+        assert_eq!(meta.path.file_name().unwrap(), "SKILL.md");
     }
 
     #[tokio::test]
@@ -647,7 +511,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".pi/skills/harness")).unwrap();
         std::fs::write(root.join(".pi/skills/harness/SKILL.md"), "pi body\n").unwrap();
 
-        let skills = scan_skills(&root);
+        let skills = crate::skills::scanner::scan_skills(&root);
         assert!(skills.iter().any(|s| s.name == "claude-review"));
         // No front-matter → falls back to the directory name.
         assert!(skills.iter().any(|s| s.name == "harness"));

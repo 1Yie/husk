@@ -16,6 +16,7 @@ pub mod list_dir;
 pub(crate) mod net;
 pub mod registry;
 pub mod serena;
+pub mod skill;
 pub mod test_runner;
 pub mod todo;
 pub mod util;

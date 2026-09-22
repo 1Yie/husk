@@ -9,11 +9,18 @@
 //!    file creation by runtimes (bun, node, python, gcc, etc.).
 //! 4. System and user development environments (bun, volta, cargo, rustup, nvm, fnm, deno, pnpm,
 //!    python/pyenv, conda, go, sdkman, and tools from PATH) are discovered and mounted read-only.
-//! 5. Sensitive credentials and secrets (.ssh, .gnupg, .aws, .cargo/credentials*, .npmrc, etc.)
-//!    are masked with /dev/null or omitted entirely.
+//! 5. Sensitive credentials and secrets (.ssh, .gnupg, .aws, .cargo/credentials*, .npmrc,
+//!    agent-harness auth/session state, etc.) are masked with /dev/null or omitted entirely.
+//!    A masked path stays visible as a device node in listings — the content is what is
+//!    withheld, not the name.
 //! 6. Toolchain cache environment variables (BUN_INSTALL_CACHE_DIR, npm_config_cache, etc.) are
 //!    redirected to /tmp to prevent EROFS errors while keeping host caches immutable.
-//! 7. The workspace is mounted read-write last, ensuring workspace access takes precedence.
+//! 7. The agent's own user-level skill roots are mounted read-only (callers pass them in
+//!    `extra_ro_mounts`): skills live outside the workspace, so without them a sandboxed
+//!    command could not open the sibling files a skill references. A PATH entry's
+//!    `<root>/bin` expands to `<root>` only for real SDK roots — hidden HOME entries are
+//!    agent/tool state and get their `bin` alone.
+//! 8. The workspace is mounted read-write last, ensuring workspace access takes precedence.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -80,6 +87,14 @@ const SENSITIVE_NAMES: &[&str] = &[
     ".cargo/credentials.toml",
     ".npmrc",
     ".netrc",
+    // Agent-harness state: credentials (and, for pi, every session transcript)
+    // live next to the skills these sandboxes deliberately expose, so they are
+    // masked by name even when a discovery rule would have pulled the root in.
+    ".pi/agent/auth.json",
+    ".pi/agent/.env",
+    ".pi/agent/sessions",
+    ".claude/.credentials.json",
+    ".codex/auth.json",
 ];
 
 /// Common developer toolchain and runtime directories relative to HOME.
@@ -234,21 +249,43 @@ fn dev_environment_binds() -> Vec<PathBuf> {
                 if is_in_base_system(&entry) {
                     continue;
                 }
-                // `<parent>/bin` → mount the whole toolchain root (e.g. Flutter SDK).
-                if entry.file_name().map_or(false, |n| n == "bin") {
-                    if let Some(parent) = entry.parent() {
-                        if Some(parent) != home.as_deref() && parent.is_dir() {
-                            mounts.push(parent.to_path_buf());
-                            continue;
-                        }
-                    }
-                }
-                mounts.push(entry);
+                mounts.extend(bin_entry_mounts(&entry, home.as_deref()));
             }
         }
     }
 
     deduplicate_mount_paths(mounts, home.as_deref())
+}
+
+/// True when `p` sits under a hidden entry inside HOME — `~/.pi/agent`,
+/// `~/.cargo`, `~/.config/mise`. Such a subtree is either already mounted
+/// explicitly ([`HOME_DEV_DIRS`]/[`ENV_TOOLCHAIN_VARS`]) or agent/tool *state*
+/// that must be opened by name, never dragged in wholesale by the PATH rule.
+fn is_hidden_home_subtree(p: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else { return false };
+    let Ok(rel) = p.strip_prefix(home) else { return false };
+    rel.components()
+        .next()
+        .is_some_and(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+}
+
+/// One PATH entry → the directories to mount for it.
+///
+/// A `<root>/bin` entry normally expands to the whole `<root>`: that is how SDK
+/// roots register (Flutter, Android, a version manager's toolchain). Two
+/// exceptions, both falling back to the `bin` dir alone: HOME itself, and roots
+/// inside a hidden HOME entry. Without the latter, `~/.pi/agent/bin` on PATH
+/// mounted the entire agent state directory read-only — `auth.json`, `.env` and
+/// every session transcript included.
+fn bin_entry_mounts(entry: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    if entry.file_name().is_some_and(|n| n == "bin") {
+        if let Some(parent) = entry.parent() {
+            if parent.is_dir() && Some(parent) != home && !is_hidden_home_subtree(parent, home) {
+                return vec![parent.to_path_buf()];
+            }
+        }
+    }
+    vec![entry.to_path_buf()]
 }
 
 /// Collect sensitive files/directories that exist on host and must be masked.
@@ -510,5 +547,46 @@ impl SandboxBackend for LinuxBwrap {
             peak_memory_mb: None,
             elapsed_ms: elapsed,
         })
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PATH registration must expand to a real SDK root, but never to agent
+    /// state: `~/.pi/agent/bin` on PATH used to mount `~/.pi/agent` — auth.json,
+    /// .env and session transcripts included.
+    #[test]
+    fn bin_entries_expand_to_sdk_roots_but_not_hidden_home_state() {
+        let base = std::env::temp_dir().join(format!("sbx-bind-{}", std::process::id()));
+        let sdk_bin = base.join("Development/flutter/bin");
+        let agent_bin = base.join(".pi/agent/bin");
+        std::fs::create_dir_all(&sdk_bin).unwrap();
+        std::fs::create_dir_all(&agent_bin).unwrap();
+        let home = Some(base.as_path());
+
+        assert_eq!(
+            bin_entry_mounts(&sdk_bin, home),
+            vec![base.join("Development/flutter")]
+        );
+        assert_eq!(bin_entry_mounts(&agent_bin, home), vec![agent_bin.clone()]);
+        // HOME as the parent root is also refused (mount the bin dir only).
+        let home_bin = base.join("bin");
+        std::fs::create_dir_all(&home_bin).unwrap();
+        assert_eq!(bin_entry_mounts(&home_bin, home), vec![home_bin]);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn hidden_home_subtree_detection() {
+        let home = Path::new("/home/u");
+        assert!(is_hidden_home_subtree(Path::new("/home/u/.pi/agent"), Some(home)));
+        assert!(is_hidden_home_subtree(Path::new("/home/u/.cargo"), Some(home)));
+        assert!(!is_hidden_home_subtree(Path::new("/home/u/Development/flutter"), Some(home)));
+        assert!(!is_hidden_home_subtree(Path::new("/opt/tool"), Some(home)));
+        assert!(!is_hidden_home_subtree(Path::new("/home/u"), None));
     }
 }

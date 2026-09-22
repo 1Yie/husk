@@ -5,6 +5,7 @@
 //! *before* dispatch and stamps the risk tier on the result; the permission
 //! layer (Stage 6) already gated the call through `AwaitingToolConfirmation`.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,6 +45,44 @@ pub fn spec() -> ToolSpec {
     }
 }
 
+/// Audit verdict → sandbox configuration.
+///
+/// Policy → SandboxPlan → SandboxConfig: the plan derives network/fs limits
+/// from the audit's capabilities (Network/PackageInstall flips `allow_network`;
+/// High+ risk forces a CoW snapshot), and the L2 backend consumes the config.
+/// Split out from `exec` so the mount policy is assertable without spawning
+/// anything.
+fn sandbox_config(
+    verdict: &agent_sandbox::AuditResult,
+    workspace_root: &Path,
+    timeout: Duration,
+) -> agent_sandbox::SandboxConfig {
+    let plan = agent_sandbox::plan::SandboxPlan::from_audit(
+        verdict,
+        workspace_root.to_path_buf(),
+        std::env::temp_dir().join(format!("husk-{:x}", std::process::id())),
+    );
+    let mut cfg = agent_sandbox::SandboxConfig {
+        workspace_dir: workspace_root.to_path_buf(),
+        allow_network: !matches!(plan.network, agent_sandbox::plan::NetworkPolicy::Deny),
+        max_memory_mb: plan.processes.max_memory_mb,
+        max_processes: plan.processes.max_processes,
+        timeout_secs: timeout.as_secs(),
+        snapshot: plan.snapshot,
+        environment: plan.environment.clone(),
+        // The agent's own user-level skills, read-only. They live outside the
+        // workspace, so the mount whitelist would otherwise hide them and
+        // `bash`/`read` could not open a skill's sibling files. Read-only on
+        // purpose: a skill must never be able to rewrite its own instructions.
+        extra_ro_mounts: crate::skills::scanner::global_skill_roots(),
+        ..Default::default()
+    };
+    // User overrides from the settings UI fold in last — a forced network
+    // policy / memory / process cap beats the audit plan's defaults.
+    crate::sandbox_prefs::apply_to(&mut cfg);
+    cfg
+}
+
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let parsed: BashArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("bash args: {e}")))?;
@@ -60,28 +99,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         Some(ctx.workspace_root.as_ref()),
     );
 
-    // Policy → SandboxPlan → SandboxConfig. The plan derives network/fs
-    // limits from the audit's capabilities (Network/PackageInstall flips
-    // allow_network; High+ risk forces a CoW snapshot). The L2 backend still
-    // consumes SandboxConfig — the plan is its structured source.
-    let plan = agent_sandbox::plan::SandboxPlan::from_audit(
-        &verdict,
-        ctx.workspace_root.as_ref().to_path_buf(),
-        std::env::temp_dir().join(format!("husk-{:x}", std::process::id())),
-    );
-    let mut cfg = agent_sandbox::SandboxConfig {
-        workspace_dir: ctx.workspace_root.as_ref().to_path_buf(),
-        allow_network: !matches!(plan.network, agent_sandbox::plan::NetworkPolicy::Deny),
-        max_memory_mb: plan.processes.max_memory_mb,
-        max_processes: plan.processes.max_processes,
-        timeout_secs: timeout.as_secs(),
-        snapshot: plan.snapshot,
-        environment: plan.environment.clone(),
-        ..Default::default()
-    };
-    // User overrides from the settings UI fold in last — a forced network
-    // policy / memory / process cap beats the audit plan's defaults.
-    crate::sandbox_prefs::apply_to(&mut cfg);
+    let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), timeout);
 
     let output = ctx
         .sandbox
@@ -124,4 +142,24 @@ fn fold_output(raw: &str) -> String {
     out.push_str(&format!("\n… [truncated {omitted} bytes] …\n"));
     out.push_str(crate::tools::util::tail(raw, tail));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// User-level skills sit outside the workspace, so the mount whitelist has
+    /// to be widened for them, or a sandboxed command cannot read the files a
+    /// skill points at. Read-only: skills are not ours to rewrite.
+    #[test]
+    fn sandbox_config_mounts_global_skills_read_only() {
+        let root = Path::new("/tmp/ws");
+        let verdict = agent_sandbox::audit_command_scoped("ls", Some(root));
+        let cfg = sandbox_config(&verdict, root, Duration::from_secs(30));
+
+        assert_eq!(cfg.extra_ro_mounts, crate::skills::scanner::global_skill_roots());
+        assert!(!cfg.extra_ro_mounts.is_empty(), "no $HOME would hide every skill");
+        assert!(cfg.extra_rw_mounts.is_empty(), "skills must not be writable");
+        assert_eq!(cfg.workspace_dir, root);
+    }
 }

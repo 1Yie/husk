@@ -353,7 +353,8 @@ pub type ExecFn = Arc<
 pub enum ToolClass {
     /// Pure reads — filesystem, network fetch, git status. Batch-eligible.
     Observation,
-    /// Internal session state (todo) — serial semantics, never batched.
+    /// Internal session state (`todo`) or instructions loaded into it
+    /// (`skill`) — serial semantics, never batched.
     SessionMutation,
     /// Writes to the workspace (patches, file edits) — permission-gated.
     WorkspaceMutation,
@@ -406,6 +407,7 @@ impl ToolRegistry {
         r.register(crate::tools::test_runner::spec());
         r.register(crate::tools::bash::spec());
         r.register(crate::tools::todo::spec());
+        r.register(crate::tools::skill::spec());
         r.register(crate::tools::serena::spec());
         r.register(crate::tools::web_fetch::spec());
         r.register(crate::tools::web_fetch::spec_alias());

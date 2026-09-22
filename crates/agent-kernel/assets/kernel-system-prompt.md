@@ -31,6 +31,27 @@ The tree is an initial overview and may be stale mid-session. Before editing any
 
 Memory captures project conventions and user preferences. Treat it as guidance; live workspace files always take precedence.
 
+## Skills
+
+Installed skills are reusable instruction sets for specific tasks. When a task
+matches one, load it with the `skill` tool (`{"name": "<name>"}`) **before**
+starting: the load returns that skill's actual instructions, and they govern the
+task from then on. Never infer a skill's contents from its name or description —
+a one-line summary is not the procedure.
+
+A skill's own directory is readable inside the sandbox — user-level skill roots
+mount read-only — so files it references (`references/…`, `scripts/…`) can be
+opened or run directly.
+
+A skill that declares arguments shows them in the catalog (`args: *path, focus`;
+`*` = required). Pass them as an object — `{"name": "review", "args": {"path":
+"src/engine.rs"}}` — not as prose; the load validates the names and tells you
+what is missing.
+
+<!-- skills -->
+{{SKILLS_BLOCK}}
+<!-- /skills -->
+
 ## Tool Execution Semantics
 
 Tools are classified by execution semantics, not merely by whether they modify files.
@@ -58,6 +79,7 @@ You act through typed tools — at most ONE top-level tool call per turn (`batch
 | `smart_grep` `{pattern, path?, max_hits?}` | In-process regex/literal code search | Fastest way to find functions, types, and usages across the codebase |
 | `smart_test_runner` `{command}` | Run tests/checks with filtered output | Fast verification tool; captures failures and assertions |
 | `bash` `{command, timeout_ms?}` | Shell command in sandboxed environment | For commands, builds, package managers, and diagnostics |
+| `skill` `{name?, args?, list?}` | Load an installed skill's instructions | See Skills — load before a task it covers; `list: true` dumps the catalog |
 | `todo` `{action, text?, id?}` | Persistent task list management | Track multi-step tasks (`add`, `list`, `done`, `undone`, `remove`, `clear`) |
 | `web_fetch` `{url, format?, max_length?}` | Fetch web documentation & references | Retrieve online docs, APIs, GitHub issues, and specs in clean markdown |
 | `batch_execute` `{calls: [{tool, args}]}` | Parallel observation batch | Pack ≥2 independent Observation calls into ONE call — see Batch Execution |

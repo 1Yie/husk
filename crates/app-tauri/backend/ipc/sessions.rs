@@ -649,12 +649,12 @@ fn workspace_file_index(
         .collect()
 }
 
-/// A discovered skill — `agent_kernel::commands::scan_all_skills` does the
+/// A discovered skill — `agent_kernel::skills::scanner::scan_all_skills` does the
 /// real scan (`.agents/skills`, `.agent/skills`, `.skills`, `.claude/skills`,
 /// `.pi/skills` in the workspace, plus the user-level dirs under `$HOME`).
 /// `path` is workspace-relative, or `~/…` for user-level skills.
 fn scan_skills(root: &std::path::Path) -> Vec<serde_json::Value> {
-    agent_kernel::commands::scan_all_skills(root)
+    agent_kernel::skills::scanner::scan_all_skills(root)
         .into_iter()
         .map(|s| {
             let path = if let Ok(rel) = s.path.strip_prefix(root) {

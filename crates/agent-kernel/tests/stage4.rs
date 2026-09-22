@@ -235,3 +235,55 @@ async fn reasoning_traces_persist_for_replay() {
         "a round with no text must still carry its trace — otherwise its          thinking block vanishes on reload"
     );
 }
+
+/// Skills reach the model by progressive disclosure: the system prompt carries
+/// a catalog (name + description) so it can *choose*, and the `skill` tool
+/// fetches the body on demand. Without this the model never learned that any
+/// skill existed — the feature was user-only (`$name` / `/name`).
+#[tokio::test]
+async fn skills_catalog_is_in_the_prompt_and_refreshes() {
+    let dir = tempfile::tempdir().unwrap();
+    let write_skill = |name: &str, desc: &str| {
+        let p = dir.path().join(".agents/skills").join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(
+            p.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\n\nDo the {name} thing.\n"),
+        )
+        .unwrap();
+    };
+    write_skill("demo-skill", "a demo skill for the stage-4 suite");
+
+    let stub = ScriptedProvider::new();
+    stub.script_text("ok");
+    let (mut actor, _c) = SessionActor::spawn(SessionConfig {
+        workspace_root: dir.path().to_path_buf(),
+        provider: Arc::new(stub),
+        model: "m".into(),
+        temperature: 0.0,
+        permission_mode: "default".into(),
+        agent_mode: "build".into(),
+        track_dirty: false,
+        thinking_level: None,
+        thinking_level_map: None,
+        context_window: None,
+        compact_at: None,
+        model_input: Vec::new(),
+        model_params: None,
+    });
+
+    let system = actor.history()[0].content.clone().unwrap_or_default();
+    assert!(system.contains("## Skills"), "no Skills section:\n{system}");
+    assert!(system.contains("`demo-skill`"), "catalog misses the skill:\n{system}");
+    assert!(system.contains("a demo skill for the stage-4 suite"));
+    // The load-on-demand rule has to be stated, or the model may guess.
+    assert!(system.contains("skill` tool"), "{system}");
+
+    // A skill added mid-session shows up after the next turn: the block is
+    // re-rendered only when the skill dirs change (the stamp gate).
+    write_skill("later-skill", "added after the session started");
+    actor.handle(UiCommand::Prompt { text: "hi".into() }).await;
+    let system = actor.history()[0].content.clone().unwrap_or_default();
+    assert!(system.contains("`later-skill`"), "catalog did not refresh:\n{system}");
+    assert!(system.contains("`demo-skill`"), "{system}");
+}

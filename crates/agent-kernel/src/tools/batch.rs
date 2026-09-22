@@ -347,6 +347,8 @@ mod tests {
             ("fuzzy_patch", false),
             ("smart_test_runner", false),
             ("serena", false),
+            // A loaded skill's instructions must not arrive inside a batch blob.
+            ("skill", false),
             ("delegate", false),
             ("ask_question", false),
             ("todo", false),

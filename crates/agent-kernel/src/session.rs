@@ -29,6 +29,20 @@ pub const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../assets/kernel-system-p
 
 /// Append one instructions file to the rendered prompt as a `## User
 /// instructions` section — empty/missing files are no-ops.
+/// Replace the region between `<!-- name -->` and `<!-- /name -->` in the
+/// rendered system prompt. The template ships the markers, so a per-turn
+/// refresh can swap just its own block instead of rebuilding the whole prompt.
+fn replace_block(content: &str, name: &str, block: &str) -> String {
+    let open = format!("<!-- {name} -->");
+    let close = format!("<!-- /{name} -->");
+    let (Some(start), Some(end)) = (content.find(&open), content.rfind(&close)) else {
+        return content.to_string();
+    };
+    let head = &content[..start + open.len()];
+    let tail = &content[end..];
+    format!("{head}\n{block}\n{tail}")
+}
+
 fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return;
@@ -114,6 +128,9 @@ pub struct SessionActor {
     /// into `SessionMeta` so a reopened session's header meter shows real
     /// numbers before the next `Usage` event.
     last_usage: Option<(u32, u32, u32)>,
+    /// Skill backend — owns the cached prompt catalog and its change stamp, so
+    /// a large tree is not re-read on every prompt.
+    skills: crate::skills::SkillManager,
 }
 
 impl SessionActor {
@@ -231,6 +248,7 @@ impl SessionActor {
         // `hash(canonical_root)`. `{{MEMORY_BLOCK}}` is refreshed per-turn
         // (recall happens in `run_prompt`, not once at spawn — the block
         // must track the evolving store).
+        let mut skills = crate::skills::SkillManager::new(&cfg.workspace_root);
         let (memory, distiller, initial_memory_block) = {
             let db_dir = crate::session_store::app_data_dir();
             let store = db_dir.and_then(|d| {
@@ -247,7 +265,8 @@ impl SessionActor {
             }
         };
         let system_prompt = system_prompt
-            .replace("{{MEMORY_BLOCK}}", &initial_memory_block);
+            .replace("{{MEMORY_BLOCK}}", &initial_memory_block)
+            .replace("{{SKILLS_BLOCK}}", skills.catalog());
 
         // `~/.config/husk/AGENTS.md` (user-wide) then `<workspace>/AGENTS.md`
         // (project) append verbatim as dedicated sections — custom rules live
@@ -390,6 +409,7 @@ impl SessionActor {
                 session_id,
                 store,
                 last_usage: None,
+                skills,
             },
             channels,
         )
@@ -483,6 +503,18 @@ impl SessionActor {
         self.state = AgentState::ScanningWorkspace;
         let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
         let turn = self.hunks.begin_turn();
+
+        // Refresh the skills catalog when a skill was added, removed, or
+        // edited. `SkillManager::refresh` renders only when the tree's mtime
+        // stamp moved, so the common turn skips the scan entirely.
+        if let Some(block) = self.skills.refresh() {
+            let block = block.to_string();
+            if let Some(sys) = self.history.get_mut(0) {
+                if let Some(content) = sys.content.take() {
+                    sys.content = Some(replace_block(&content, "skills", &block));
+                }
+            }
+        }
 
         // Refresh the `<memory>` block before the turn — it lives in the
         // system message (history[0]); swap its placeholder region.

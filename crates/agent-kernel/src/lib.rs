@@ -19,6 +19,7 @@ pub mod sandbox_prefs;
 pub mod session;
 pub mod session_store;
 pub mod session_manager;
+pub mod skills;
 pub mod steering;
 pub mod tools;
 
