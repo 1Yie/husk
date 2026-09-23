@@ -82,6 +82,18 @@ fn emit_child(parent_ctx: &ToolCtx, label: &str, ok: Option<bool>, body: &str) {
     let _ = ui.send(event);
 }
 
+/// Sets the flag on drop. Both spawned helpers below exit only when their flag
+/// flips, and their owning future can be dropped mid-poll — a `join_all`
+/// timeout drops the child `run` futures without running their tail code.
+/// Without the guard, a detached poll loop spins on a dead queue forever.
+struct FlagOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for FlagOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Everything `delegate` needs to spawn a child engine — built once per
 /// session and carried on `ToolCtx` so the tool can clone it per call.
 #[derive(Clone)]
@@ -129,6 +141,11 @@ impl SubagentSpawner {
         agent_name: Option<String>,
     ) -> Result<String, String> {
         let batch_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Every exit from this fn — success, deadline, an early return — flips
+        // the flag, so the watcher spawned next cannot outlive the batch
+        // (on success nothing else ever sets it, and it would poll the parent
+        // flag at 20Hz until the session's next cancel).
+        let _batch_guard = FlagOnDrop(batch_cancel.clone());
         if let Some(parent) = parent_ctx.cancel.clone() {
             let flag = batch_cancel.clone();
             tokio::spawn(async move {
@@ -214,6 +231,12 @@ impl SubagentSpawner {
         // and so the forwarder stops deterministically once the child is torn
         // down (the engine holds a sink clone for as long as it lives).
         let forward_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // If THIS future is dropped mid-poll — a parallel batch timing out drops
+        // its child futures — the tail that sets `forward_stop` never runs, and
+        // `try_recv` has no disconnect signal: the forwarder would spin on the
+        // empty queue at ~200Hz for the process's life. The guard flips the
+        // flag on every exit, including the drop.
+        let _forward_guard = FlagOnDrop(forward_stop.clone());
         let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
         if let Some(parent_sink) = parent_ctx.ui_tx.clone() {
             let tag = label.to_string();

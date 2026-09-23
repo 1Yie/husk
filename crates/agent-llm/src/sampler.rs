@@ -5,7 +5,8 @@
 //! | Idle timeout   | no chunk for 300 s → `IdleTimeout` error                     |
 //! | Doom-loop      | identical repeated generation → abort + resample, ≤3 retries |
 //! | Retry          | exponential backoff on transport errors + 429/5xx, never 4xx |
-//! | Mid-stream cut | salvage + `interrupted` marker → continuation retry (≤3)      |
+//! | Mid-stream cut | retry resends the same messages → provider regenerates;      |
+//! |                | the caller drops attempt-scoped buffers on `Retrying`        |
 //! | Usage          | the last `Done` chunk's counts feed `SessionStats`            |
 //!
 //! The sampler never owns a concrete provider — it wraps `Arc<dyn LlmProvider>`,
@@ -25,8 +26,11 @@ use crate::types::{ChatMessage, StreamChunk};
 
 /// No chunk for this long → the stream is wedged; retry.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// Identical suffix repeated this many times → model is stuck.
-pub const DOOM_WINDOW: usize = 64;
+/// Identical generation repeated across this many recent BYTES → model is
+/// stuck. Byte-bounded, not chunk-bounded: providers chunk deltas anywhere
+/// from 1 char to whole paragraphs, so a fixed chunk count made the analysis
+/// window (and its period bounds) a function of the backend's segmentation.
+pub const DOOM_WINDOW_BYTES: usize = 512;
 /// Retry ceiling for doom loops and transport errors.
 pub const MAX_RETRIES: u32 = 3;
 /// Backoff base for transport/429/5xx retries.
@@ -197,7 +201,8 @@ impl Sampler {
             .await
             .map_err(|e| classify_transport_error(&e.to_string()))?;
 
-        let mut recent: VecDeque<String> = VecDeque::with_capacity(DOOM_WINDOW);
+        let mut recent: VecDeque<String> = VecDeque::with_capacity(64);
+        let mut recent_bytes = 0usize;
         let mut done_seen = false;
 
         loop {
@@ -222,13 +227,27 @@ impl Sampler {
 
             // Doom-loop: fold content deltas into a sliding window and check
             // for a repeated suffix period.
-            if let StreamChunk::ContentDelta(t) = &chunk {
-                recent.push_back(t.clone());
-                if recent.len() > DOOM_WINDOW {
-                    recent.pop_front();
-                }
+            // All three text-bearing variants count — a reasoning model can
+            // doom-loop inside its thinking trace, or inside streamed tool
+            // arguments, without a single ContentDelta ever arriving.
+            let doom_text = match &chunk {
+                StreamChunk::ContentDelta(t) | StreamChunk::ReasoningDelta(t) => Some(t.as_str()),
+                StreamChunk::ToolCallDelta { args_delta, .. } => Some(args_delta.as_str()),
+                _ => None,
+            };
+            if let Some(t) = doom_text {
+                recent_bytes += t.len();
+                recent.push_back(t.to_string());
+                // Detect BEFORE trimming — the just-pushed chunk is what fills
+                // the window past DOOM_WINDOW_BYTES; evicting first would
+                // leave `joined` under the gate and the check would never run.
                 if doom_detected(&recent) {
                     return Err(SampleError::DoomLoop);
+                }
+                while recent_bytes > DOOM_WINDOW_BYTES && recent.len() > 1 {
+                    if let Some(old) = recent.pop_front() {
+                        recent_bytes -= old.len();
+                    }
                 }
             }
 
@@ -258,12 +277,14 @@ impl Sampler {
 /// repetition of some period ≥4 chars. Catches "abababab…" and verbatim
 /// paragraph loops alike without needing cryptographic comparison.
 fn doom_detected(recent: &VecDeque<String>) -> bool {
-    if recent.len() < DOOM_WINDOW {
-        return false;
-    }
     let joined: String = recent.iter().cloned().collect();
     let b = joined.as_bytes();
     let n = b.len();
+    // Judge only a full window — the same bytes-per-window contract the old
+    // 64-chunk gate approximated.
+    if n < DOOM_WINDOW_BYTES {
+        return false;
+    }
     // Three equal tail slices alone isn't a doom loop — markdown lists,
     // repeated `className=` props, and `- ` bullets legitimately produce
     // identical 3× tails in a 64-char window on NORMAL output. A real doom
@@ -294,29 +315,58 @@ fn doom_detected(recent: &VecDeque<String>) -> bool {
 /// Decide retryability from an error string: 429/5xx and transport-level
 /// failures retry; other 4xx never do (spec: "never on other 4xx").
 fn classify_transport_error(msg: &str) -> SampleError {
-    let lower = msg.to_lowercase();
-    let retryable = lower.contains("429")
-        || lower.contains("500")
-        || lower.contains("502")
-        || lower.contains("503")
-        || lower.contains("504")
-        || lower.contains("timeout")
-        || lower.contains("connection")
-        || lower.contains("transport")
-        || lower.contains("eof")
-        || lower.contains("reset")
-        // Gateway-style 5xx bodies that don't carry the numeric code —
-        // devin reports `internal_server_error … upstream error`.
-        || lower.contains("internal_server_error")
-        || lower.contains("internal server error")
-        || lower.contains("upstream error")
-        || lower.contains("bad gateway")
-        || lower.contains("service unavailable")
-        || lower.contains("rate limit");
+    // `send_sse` prefixes real HTTP failures with `provider HTTP <code>` — a
+    // parsed status beats substring guessing. Without it, a body that merely
+    // CONTAINS a number ("max_tokens 15000", a request id with "500" in it)
+    // was retried as if it were a 5xx.
+    let code = msg
+        .strip_prefix("provider HTTP ")
+        .and_then(|s| s.split([':', ' ']).next())
+        .and_then(|s| s.parse::<u16>().ok());
+    let retryable = match code {
+        Some(c) => c == 429 || c >= 500,
+        // Fallback for failures that never carried a status — stream-chunk
+        // errors, transport drops, gateway prose. Keyword-only on purpose:
+        // bare digits in a free-text body are not a status code.
+        None => {
+            let lower = msg.to_lowercase();
+            lower.contains("timeout")
+                || lower.contains("connection")
+                || lower.contains("transport")
+                || lower.contains("eof")
+                || lower.contains("reset")
+                // Gateway-style 5xx bodies that don't carry the numeric code —
+                // devin reports `internal_server_error … upstream error`.
+                || lower.contains("internal_server_error")
+                || lower.contains("internal server error")
+                || lower.contains("upstream error")
+                || lower.contains("bad gateway")
+                || lower.contains("service unavailable")
+                || lower.contains("rate limit")
+                || lower.contains("http 429")
+                || lower.contains("http 5")
+        }
+    };
     if retryable {
         SampleError::Stream(format!("retryable: {msg}"))
     } else {
         SampleError::Stream(format!("fatal: {msg}"))
+    }
+}
+
+/// Human-facing text for policy events — the engine sends these to the UI as
+/// `SystemMessage` and persists them into history, so Debug output
+/// (`Retrying { attempt: 1, delay: 500ms, … }`) is not acceptable there.
+impl std::fmt::Display for SamplerEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SamplerEvent::Retrying { attempt, delay, reason } => write!(
+                f,
+                "上游响应中断 — {:.1}s 后重试（第 {attempt}/{MAX_RETRIES} 次）：{reason}",
+                delay.as_secs_f32()
+            ),
+            SamplerEvent::Failed(reason) => write!(f, "上游持续不可用：{reason}"),
+        }
     }
 }
 
@@ -328,5 +378,62 @@ impl SampleError {
             SampleError::Stream(s) => s.starts_with("retryable:"),
             SampleError::Exhausted { .. } => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 400 whose body contains "500" is not a 5xx — the structured
+    /// `provider HTTP <code>` prefix must beat body substring guessing,
+    /// else a permanent failure burns the whole retry budget with backoff.
+    #[test]
+    fn classify_prefers_the_real_status_over_body_text() {
+        // The reported false positive: a token-limit message containing 500.
+        let e = classify_transport_error(
+            "provider HTTP 400: {\"error\":\"max_tokens 15000 exceeds context\"}",
+        );
+        assert!(!e.retryable(), "a 400 must never retry: {e}");
+
+        for code in [429u16, 500, 502, 503, 504] {
+            let e = classify_transport_error(&format!("provider HTTP {code}: x"));
+            assert!(e.retryable(), "HTTP {code} should retry");
+        }
+        for code in [400u16, 401, 403, 404, 422] {
+            let e = classify_transport_error(&format!("provider HTTP {code}: x"));
+            assert!(!e.retryable(), "HTTP {code} must not retry");
+        }
+
+        // No prefix → keyword fallback (in-stream errors, transport drops).
+        assert!(
+            classify_transport_error("internal_server_error: upstream error").retryable()
+        );
+        assert!(classify_transport_error("connection reset by peer").retryable());
+        // A bare number in free text is still not a status code.
+        assert!(!classify_transport_error("model refused: 5000 tokens over budget").retryable());
+    }
+
+    /// The doom window is byte-bounded: providers chunk deltas anywhere from
+    /// one char to whole paragraphs, so the detector must see the same ~512B
+    /// regardless of segmentation.
+    #[test]
+    fn doom_window_is_byte_bounded() {
+        // One fat chunk can fill the window on its own.
+        let mut fat = VecDeque::new();
+        fat.push_back("x".repeat(DOOM_WINDOW_BYTES + 64));
+        assert!(doom_detected(&fat));
+
+        // Many tiny chunks of the same repeated pattern.
+        let mut many = VecDeque::new();
+        for _ in 0..256 {
+            many.push_back("ab".to_string());
+        }
+        assert!(doom_detected(&many));
+
+        // A short window never fires.
+        let mut small = VecDeque::new();
+        small.push_back("ab".repeat(30));
+        assert!(!doom_detected(&small));
     }
 }

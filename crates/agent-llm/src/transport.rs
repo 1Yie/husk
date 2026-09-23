@@ -58,7 +58,9 @@ impl Transport {
     /// `what`) so a silently-empty reply can be correlated to the exact
     /// request shape. A non-2xx carries the first 512 chars of the error
     /// body — enough for the upstream's own message, short of a leaked
-    /// HTML error page.
+    /// HTML error page. The status is emitted as a parseable
+    /// `provider HTTP <code>` prefix so the sampler classifies retries off
+    /// the real code instead of guessing from body text.
     pub async fn send_sse(
         &self,
         req: reqwest::RequestBuilder,
@@ -76,12 +78,25 @@ impl Transport {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!(
-                "provider returned {status}: {}",
-                &text[..text.len().min(512)]
+                "provider HTTP {}: {}",
+                status.as_u16(),
+                clip_chars(&text, 512)
             ));
         }
         Ok(crate::sse::data_lines(resp.bytes_stream()))
     }
+}
+
+/// First `max` CHARS of `s` — never a mid-character cut. A byte slice
+/// (`&s[..n]`) panics when the cut lands inside a multi-byte char, and this
+/// sits on the error path of every provider: a non-ASCII error page (中文
+/// upstream message, mojibake HTML) would take the whole process down under
+/// `panic = "abort"`.
+fn clip_chars(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    s.chars().take(max).collect()
 }
 
 /// Enforces the layer's terminal invariant — `chat_stream` yields `0..N` deltas then
@@ -175,5 +190,24 @@ mod tests {
             .count();
         assert_eq!(dones, 1);
         assert_eq!(out.len(), 2);
+    }
+
+    /// The error-body clip used to be `&text[..512]` — a byte cut that panics
+    /// when it lands inside a multi-byte char, and this runs on the error path
+    /// of every provider under `panic = "abort"`.
+    #[test]
+    fn clip_chars_never_cuts_mid_character() {
+        // '中' is 3 bytes: a byte slice at 512 would split it.
+        let s = "中".repeat(600);
+        let clipped = clip_chars(&s, 512);
+        assert_eq!(clipped.chars().count(), 512);
+        assert_eq!(clipped.len(), 512 * 3);
+
+        // Mixed widths — a CJK char sitting exactly on the boundary.
+        let mixed = format!("{}{}", "x".repeat(511), "中");
+        assert_eq!(clip_chars(&mixed, 512), mixed);
+
+        // Short strings pass through untouched.
+        assert_eq!(clip_chars("ok", 512), "ok");
     }
 }

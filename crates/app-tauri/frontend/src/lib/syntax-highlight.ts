@@ -1,38 +1,32 @@
-// Syntax Highlighting Engine using PrismJS for the Husk web frontend
+// Code highlighting — twinkleplop engine.
+//
+// Replaced PrismJS. Each language is a table-driven state machine
+// (`@twinkleplop/<language>`) that scans the source with `charCodeAt` and
+// returns a flat `Uint32Array` of `[type, start, end]` triplets, so
+// re-tokenizing a streaming tail is a linear scan instead of a full grammar
+// re-run over the block. Colours come from `@twinkleplop/theme-github`.
+//
+// Two consumers, one tokenizer:
+//   * the Streamdown plugin (chat code blocks) wants per-line token arrays,
+//   * `highlightCodeToHtml` (tool capsules, raw history) wants an HTML string.
 
-import Prism from "prismjs";
+import type { LanguageFactory, TokenizeResult } from "@twinkleplop/core";
+import { dark as themeDark } from "@twinkleplop/theme-github/tokens";
 
-// Import base grammars in topological dependency order
-import "prismjs/components/prism-clike";
-import "prismjs/components/prism-javascript";
-import "prismjs/components/prism-typescript";
-import "prismjs/components/prism-jsx";
-import "prismjs/components/prism-tsx";
-
-import "prismjs/components/prism-rust";
-import "prismjs/components/prism-python";
-import "prismjs/components/prism-go";
-import "prismjs/components/prism-bash";
-import "prismjs/components/prism-json";
-import "prismjs/components/prism-toml";
-import "prismjs/components/prism-yaml";
-import "prismjs/components/prism-markdown";
-import "prismjs/components/prism-sql";
-import "prismjs/components/prism-c";
-import "prismjs/components/prism-cpp";
-import "prismjs/components/prism-csharp";
-import "prismjs/components/prism-java";
-import "prismjs/components/prism-kotlin";
-import "prismjs/components/prism-swift";
-import "prismjs/components/prism-css";
-import "prismjs/components/prism-scss";
-import "prismjs/components/prism-docker";
-import "prismjs/components/prism-markup";
-import "prismjs/components/prism-diff";
-import "prismjs/components/prism-graphql";
-import "prismjs/components/prism-protobuf";
-import "prismjs/components/prism-ini";
-import "prismjs/components/prism-ruby";
+import { tokenize as bashGrammar } from "@twinkleplop/bash";
+import { tokenize as cssGrammar } from "@twinkleplop/css";
+import { tokenize as goGrammar } from "@twinkleplop/go";
+import { tokenize as htmlGrammar } from "@twinkleplop/html";
+import { tokenize as javascriptGrammar } from "@twinkleplop/javascript";
+import { tokenize as jsonGrammar } from "@twinkleplop/json";
+import { tokenize as markdownGrammar } from "@twinkleplop/markdown";
+import { tokenize as pythonGrammar } from "@twinkleplop/python";
+import { tokenize as rustGrammar } from "@twinkleplop/rust";
+import { tokenize as sqlGrammar } from "@twinkleplop/sql";
+import { tokenize as tomlGrammar } from "@twinkleplop/toml";
+import { tokenize as tsxGrammar } from "@twinkleplop/tsx";
+import { tokenize as typescriptGrammar } from "@twinkleplop/typescript";
+import { tokenize as yamlGrammar } from "@twinkleplop/yaml";
 
 export interface HighlightToken {
   bgColor?: string;
@@ -62,25 +56,40 @@ export interface StreamdownCodePlugin {
   type: "code-highlighter";
 }
 
+/** The block background/foreground Streamdown inherits — the stylesheet owns
+ *  the real ones, these just keep a result self-describing. */
+const CODE_BG = "#141416";
+const CODE_FG = "#e4e4e7";
+
+type Tokenizer = (code: string) => TokenizeResult;
+
+/**
+ * Fence language → grammar package key. A name that lands here with no package
+ * below (c/cpp/java/…) renders as plain text, exactly like a language no
+ * installed grammar ever claimed.
+ */
 const LANGUAGE_ALIASES: Record<string, string> = {
   ts: "typescript",
   typescript: "typescript",
-  tsx: "tsx",
   js: "javascript",
   javascript: "javascript",
-  jsx: "jsx",
   mjs: "javascript",
   cjs: "javascript",
+  jsx: "tsx",
+  tsx: "tsx",
   rs: "rust",
   rust: "rust",
   py: "python",
   python: "python",
+  pyi: "python",
   go: "go",
   golang: "go",
   sh: "bash",
   bash: "bash",
   zsh: "bash",
   shell: "bash",
+  console: "bash",
+  shellsession: "shellsession",
   json: "json",
   jsonc: "json",
   toml: "toml",
@@ -88,129 +97,273 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   yml: "yaml",
   md: "markdown",
   markdown: "markdown",
+  mdx: "markdown",
   sql: "sql",
-  c: "c",
-  h: "c",
-  cpp: "cpp",
-  hpp: "cpp",
-  cc: "cpp",
-  cxx: "cpp",
-  cs: "csharp",
-  csharp: "csharp",
-  java: "java",
-  kt: "kotlin",
-  kts: "kotlin",
-  kotlin: "kotlin",
-  swift: "swift",
+  html: "html",
+  htm: "html",
+  xml: "html",
+  svg: "html",
+  vue: "html",
   css: "css",
-  scss: "scss",
-  sass: "scss",
-  html: "markup",
-  xml: "markup",
-  svg: "markup",
-  docker: "docker",
-  dockerfile: "docker",
+  scss: "css",
+  sass: "css",
+  svelte: "svelte",
+  ini: "ini",
+  env: "dotenv",
+  dotenv: "dotenv",
+  http: "http",
   diff: "diff",
   patch: "diff",
-  graphql: "graphql",
-  gql: "graphql",
-  proto: "protobuf",
-  protobuf: "protobuf",
-  ini: "ini",
-  env: "bash",
 };
 
+/** Grammars the sync callers (tool capsules, raw history) can ask for, built
+ *  once at import — the package compiles its tables on import and the factory
+ *  only wires the reclassifier pipeline, so neither is per-block work. */
+const GRAMMARS: Record<string, LanguageFactory> = {
+  bash: bashGrammar,
+  css: cssGrammar,
+  go: goGrammar,
+  html: htmlGrammar,
+  javascript: javascriptGrammar,
+  json: jsonGrammar,
+  markdown: markdownGrammar,
+  python: pythonGrammar,
+  rust: rustGrammar,
+  sql: sqlGrammar,
+  toml: tomlGrammar,
+  tsx: tsxGrammar,
+  typescript: typescriptGrammar,
+  yaml: yamlGrammar,
+};
+
+/**
+ * Grammars fetched on first use rather than at startup: fences no sync caller
+ * can request. `diff` is only reachable from a chat fence (tool diffs render
+ * through DiffView, not `highlightCodeToHtml`), and the rest are rare fences —
+ * either way the block is coloured through the Streamdown plugin's callback, so
+ * startup only carries the languages tool output and chat actually use.
+ */
+const LAZY_GRAMMARS: Record<string, () => Promise<{ tokenize: LanguageFactory }>> = {
+  diff: () => import("@twinkleplop/diff"),
+  svelte: () => import("@twinkleplop/svelte"),
+  ini: () => import("@twinkleplop/ini"),
+  http: () => import("@twinkleplop/http"),
+  dotenv: () => import("@twinkleplop/dotenv"),
+  shellsession: () => import("@twinkleplop/shellsession"),
+};
+
+const tokenizers: Record<string, Tokenizer> = {};
+for (const [language, factory] of Object.entries(GRAMMARS)) {
+  tokenizers[language] = factory();
+}
+
+/** In-flight (or settled) lazy imports, so two blocks of the same rare
+ *  language share one fetch instead of racing it. */
+const lazyImports = new Map<string, Promise<Tokenizer | null>>();
+
+function loadLazy(language: string): Promise<Tokenizer | null> {
+  const pending = lazyImports.get(language);
+  if (pending) return pending;
+  const loader = LAZY_GRAMMARS[language];
+  if (!loader) return Promise.resolve(null);
+  const promise = loader()
+    .then((mod) => {
+      const tokenizer = mod.tokenize();
+      tokenizers[language] = tokenizer;
+      return tokenizer;
+    })
+    .catch(() => null);
+  lazyImports.set(language, promise);
+  return promise;
+}
+
+/** Fence language → grammar key (`typescript`, `bash`, …). Unknown languages
+ *  pass through unchanged and fail the lookup below. */
 export function normalizeLanguage(lang?: string): string {
   if (!lang) return "text";
   const clean = lang.toLowerCase().trim();
   return LANGUAGE_ALIASES[clean] || clean;
 }
 
-export function getPrismGrammar(lang: string): Prism.Grammar | null {
-  const normalized = normalizeLanguage(lang);
-  if (normalized === "text" || normalized === "plain") return null;
-  return Prism.languages[normalized] || null;
-}
-
-// GitHub Dark / Modern Code Palette
-export function getTokenColor(type: string): string {
-  switch (type) {
-    case "comment":
-    case "prolog":
-    case "doctype":
-    case "cdata":
-      return "#8b949e"; // Muted gray
-    case "keyword":
-    case "builtin":
-      return "#ff7b72"; // Vibrant coral red
-    case "tag":
-      return "#7ee787"; // Emerald green for HTML/JSX tags
-    case "string":
-    case "char":
-    case "attr-value":
-      return "#a5d6ff"; // Ice blue for strings
-    case "function":
-    case "function-variable":
-      return "#d2a8ff"; // Soft purple for functions
-    case "number":
-    case "boolean":
-      return "#79c0ff"; // Sky blue
-    case "class-name":
-    case "maybe-class-name":
-    case "type":
-      return "#ffa657"; // Warm amber for types/classes
-    case "operator":
-      return "#ff7b72"; // Operators
-    case "punctuation":
-      return "#8b949e"; // Subtle punctuation
-    case "attr-name":
-    case "property":
-      return "#79c0ff"; // Attributes / properties
-    case "regex":
-    case "important":
-      return "#f0883e"; // Orange
-    case "variable":
-    case "constant":
-      return "#79c0ff";
-    case "deleted":
-      return "#ffa198"; // Diff red
-    case "inserted":
-      return "#56d364"; // Diff green
-    default:
-      return "#e4e4e7"; // Default text color
-  }
+export function supportsLanguage(lang: string): boolean {
+  const key = normalizeLanguage(lang);
+  return Boolean(tokenizers[key] || LAZY_GRAMMARS[key]);
 }
 
 /**
- * Resolve token type and aliases to a color
+ * Twinkleplop token name → the Prism-style class bucket the stylesheets already
+ * colour (light/dark aware, `!important`). Tokens with no bucket keep the
+ * theme's colour inline, so nothing is left unpainted — the buckets exist to
+ * keep the app's hand-tuned palette, not to gate colour.
  */
-export function resolveTokenColor(type?: string, alias?: string | string[]): string {
-  if (type) {
-    const c = getTokenColor(type);
-    if (c !== "#e4e4e7") return c;
-  }
-  if (alias) {
-    if (typeof alias === "string") {
-      const c = getTokenColor(alias);
-      if (c !== "#e4e4e7") return c;
-    } else if (Array.isArray(alias)) {
-      for (const a of alias) {
-        const c = getTokenColor(a);
-        if (c !== "#e4e4e7") return c;
-      }
+const CLASS_BUCKETS: Record<string, string> = {
+  comment: "comment",
+  doc_marker: "comment",
+  directive: "comment",
+  keyword: "keyword",
+  string: "string",
+  template: "string",
+  string_escape: "string",
+  escape: "string",
+  format: "string",
+  regex: "regex",
+  number: "number",
+  hash: "number",
+  unit: "number",
+  datetime: "number",
+  boolean: "boolean",
+  constant: "constant",
+  null: "constant",
+  variant: "constant",
+  operator: "operator",
+  punctuation: "punctuation",
+  attr_sigil: "punctuation",
+  list_marker: "punctuation",
+  heading_marker: "punctuation",
+  blockquote_marker: "punctuation",
+  code_fence: "punctuation",
+  front_matter_marker: "punctuation",
+  function: "function",
+  decorator: "function",
+  property: "property",
+  attr_name: "attr-name",
+  attribute: "attr-name",
+  class_name: "class-name",
+  type: "class-name",
+  type_name: "class-name",
+  namespace: "class-name",
+  builtin: "builtin",
+  tag_name: "tag",
+  tag: "tag",
+  selector: "selector",
+  selector_class: "selector",
+  selector_id: "selector",
+  selector_pseudo: "selector",
+  css_variable: "variable",
+  variable: "variable",
+  parameter: "variable",
+  lifetime: "variable",
+  expression: "variable",
+  doctype: "doctype",
+  entity: "entity",
+  url: "url",
+  url_link: "url",
+  url_title: "url",
+  autolink: "url",
+  link_text: "url",
+  inserted: "inserted",
+  inserted_marker: "inserted",
+  changed: "inserted",
+  changed_marker: "inserted",
+  deleted: "deleted",
+  deleted_marker: "deleted",
+  heading: "class-name",
+  code: "string",
+  code_block: "string",
+  code_language: "class-name",
+  plain_scalar: "string",
+  block_scalar_header: "punctuation",
+  array_table_header: "punctuation",
+};
+
+/** Whitespace tokens are structural: they split lines and indent, and the
+ *  theme never colours them. */
+const UNPAINTED = new Set(["space", "tab", "newline", "carriage_return"]);
+
+interface Paint {
+  /** Becomes `color` / `--sdm-c` on the rendered span. */
+  color?: string;
+  className?: string;
+}
+
+const EMPTY_PAINT: Paint = {};
+
+/**
+ * Colour for a token type from the theme's GitHub Dark palette.
+ *
+ * Dark only, deliberately: the stylesheet pins every code block to the dark
+ * surface (`[data-streamdown="code-block-body"]`, no light variant), so a
+ * light-mode palette would paint types the stylesheet has no bucket for nearly
+ * invisible on it. `--shiki-dark` carries the same value, which is the hook the
+ * stylesheet already reads for dark mode.
+ */
+function paintOf(name: string | undefined): Paint {
+  if (!name || UNPAINTED.has(name)) return EMPTY_PAINT;
+  const dark = (themeDark as Record<string, string>)[name];
+  const bucket = CLASS_BUCKETS[name];
+  return {
+    color: dark,
+    className: bucket ? `token ${bucket}` : undefined,
+  };
+}
+
+function styledToken(content: string, paint: Paint): HighlightToken {
+  if (!paint.color) return { content, offset: 0 };
+  return {
+    content,
+    color: paint.color,
+    htmlStyle: { color: paint.color, "--shiki-dark": paint.color },
+    htmlAttrs: paint.className ? { className: paint.className } : undefined,
+    offset: 0,
+  };
+}
+
+/** Append `content` to `lines`, opening a new line per `\n` — a token that
+ *  spans lines (block comment, template literal) is split so every line owns
+ *  its own tokens. */
+function pushContent(lines: HighlightToken[][], content: string, paint: Paint) {
+  const parts = content.split("\n");
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) lines.push([]);
+    if (parts[i].length > 0) {
+      lines[lines.length - 1].push(styledToken(parts[i], paint));
     }
   }
-  return type ? getTokenColor(type) : "#e4e4e7";
+}
+
+/** Flat triplet stream → per-line tokens, keeping the gaps (whitespace the
+ *  grammar left as text) and the source order intact. */
+function tokensToResult(result: TokenizeResult, code: string): HighlightResult {
+  const lines: HighlightToken[][] = [[]];
+  const { tokens, token_types } = result;
+  let cursor = 0;
+  for (let i = 0; i < tokens.length; i += 3) {
+    const start = tokens[i + 1];
+    const end = tokens[i + 2];
+    if (start > cursor) {
+      pushContent(lines, code.slice(cursor, start), EMPTY_PAINT);
+    }
+    pushContent(lines, code.slice(start, end), paintOf(token_types[tokens[i]]));
+    cursor = end;
+  }
+  if (cursor < code.length) {
+    pushContent(lines, code.slice(cursor), EMPTY_PAINT);
+  }
+  return { bg: CODE_BG, fg: CODE_FG, tokens: lines };
+}
+
+/** A single unstyled line — the "no grammar" shape both consumers accept. */
+function plainLine(content: string): HighlightToken[] {
+  return [{ content, offset: 0 }];
+}
+
+function plainResult(code: string): HighlightResult {
+  return {
+    bg: CODE_BG,
+    fg: CODE_FG,
+    tokens: code.split("\n").map((line) => plainLine(line)),
+  };
 }
 
 /**
- * Highlight cache — Prism tokenizes from scratch, and the streaming tail's text
- * changes on every delta while unrelated re-renders (usage tick, `expanded` toggle)
- * used to build a fresh result object and break the code block's memo. Caching by
- * content returns the identical object for identical input, so the memo holds.
+ * Highlight cache — tokenizing from scratch on every re-render would redo work
+ * for content that did not change (a sibling row opening, a usage tick), and
+ * the streaming tail re-renders on every delta. Caching by content returns the
+ * identical object for identical input, so the code block's memo holds.
  *
- * Bounded by entries and total lines, since one entry can be a whole file. Callers
- * treat results as immutable — the streaming plugin copies before appending.
+ * Bounded by entries and total lines, since one entry can be a whole file.
+ * Callers treat results as immutable — the streaming plugin copies before
+ * appending.
  */
 const CACHE_MAX_ENTRIES = 32;
 const CACHE_MAX_LINES = 20_000;
@@ -253,131 +406,145 @@ function cachePut<T>(key: string, value: T, lines: number): T {
   return value;
 }
 
-/** A single unstyled token line — the "no grammar / no highlight" shape the
- * plugin contract expects. */
-function plainLine(content: string): HighlightToken[] {
-  return [
-    {
-      content,
-      color: "#e4e4e7",
-      bgColor: "transparent",
-      htmlStyle: {
-        color: "#e4e4e7",
-        "--sdm-c": "#e4e4e7",
-        "--shiki-dark": "#e4e4e7",
-      },
-      offset: 0,
-    },
-  ];
-}
-
-export function highlightCodeWithPrism(code: string, language: string): HighlightResult {
+function tokenizeWith(language: string, tokenizer: Tokenizer, code: string): HighlightResult {
   const key = cacheKey("tokens", code, language);
   const hit = cacheGet<HighlightResult>(key);
   if (hit) return hit;
-  const result = tokenizeWithoutCache(code, language);
+  const result = tokensToResult(tokenizer(code), code);
   return cachePut(key, result, result.tokens.length);
 }
 
 /**
- * Tokenize pure code into HighlightResult (lines of tokens) compatible with
- * Streamdown — the uncached worker behind `highlightCodeWithPrism`.
+ * Twinkleplop-backed Streamdown code highlighter.
  */
-function tokenizeWithoutCache(code: string, language: string): HighlightResult {
-  const grammar = getPrismGrammar(language);
-  if (!grammar) {
-    const lines = code.split("\n");
-    return {
-      bg: "#141416",
-      fg: "#e4e4e7",
-      tokens: lines.map((line) => plainLine(line || "")),
-    };
-  }
-
-  const prismTokens = Prism.tokenize(code, grammar);
-  const lines: HighlightToken[][] = [[]];
-
-  const addToken = (content: string, type?: string) => {
-    const parts = content.split("\n");
-    for (let i = 0; i < parts.length; i++) {
-      if (i > 0) {
-        lines.push([]);
+export const codeHighlightPlugin: StreamdownCodePlugin = {
+  name: "shiki",
+  type: "code-highlighter",
+  getSupportedLanguages() {
+    return [...Object.keys(tokenizers), ...Object.keys(LAZY_GRAMMARS)];
+  },
+  getThemes() {
+    return ["github-dark", "github-dark"];
+  },
+  supportsLanguage(language) {
+    return supportsLanguage(language);
+  },
+  highlight(options, callback) {
+    const { code, language } = options;
+    const norm = normalizeLanguage(language);
+    const tokenizer = tokenizers[norm];
+    if (tokenizer) {
+      const hit = cacheGet<HighlightResult>(cacheKey("tokens", code, norm));
+      if (hit) {
+        if (callback) callback(hit);
+        return hit;
       }
-      if (parts[i].length > 0) {
-        const color = type ? getTokenColor(type) : "#e4e4e7";
-        lines[lines.length - 1].push({
-          content: parts[i],
-          color,
-          bgColor: "transparent",
-          htmlStyle: {
-            color,
-            "--sdm-c": color,
-            "--shiki-dark": color,
-          },
-          htmlAttrs: type ? { className: `token ${type}`, "data-token": type } : undefined,
-          offset: 0,
-        });
-      }
+      if (!callback) return tokenizeWith(norm, tokenizer, code);
+      // Cold path — DEFER the tokenize: mount identical-height plain lines
+      // now, upgrade colours in idle time. A long session backfilling dozens
+      // of code blocks at once used to make that one commit the hotspot; the
+      // same line count means zero layout shift, colours just land a beat
+      // later.
+      const plain = plainResult(code);
+      scheduleIdle(() => callback(tokenizeWith(norm, tokenizer, code)));
+      return plain;
     }
-  };
-
-  const walk = (token: string | Prism.Token, parentType?: string) => {
-    if (typeof token === "string") {
-      addToken(token, parentType);
-    } else if (typeof token.content === "string") {
-      const type = token.type || (typeof token.alias === "string" ? token.alias : parentType);
-      addToken(token.content, type);
-    } else if (Array.isArray(token.content)) {
-      const type = token.type || (typeof token.alias === "string" ? token.alias : parentType);
-      for (const sub of token.content) {
-        if (typeof sub === "string") {
-          addToken(sub, type);
-        } else {
-          walk(sub, type);
-        }
-      }
-    } else if (typeof token.content === "object" && token.content) {
-      const type = token.type || (typeof token.alias === "string" ? token.alias : parentType);
-      walk(token.content as Prism.Token, type);
+    if (!LAZY_GRAMMARS[norm]) {
+      // No grammar claims this fence — plain lines, same as always.
+      const result = plainResult(code);
+      cachePut(cacheKey("tokens", code, norm), result, result.tokens.length);
+      if (callback) callback(result);
+      return result;
     }
-  };
+    // First use of a rare language: fetch its grammar and colour the block
+    // when it lands rather than blocking the commit on a network read.
+    const plain = plainResult(code);
+    void loadLazy(norm).then((loaded) => {
+      if (loaded && callback) callback(tokenizeWith(norm, loaded, code));
+    });
+    return plain;
+  },
+};
 
-  for (const token of prismTokens) {
-    walk(token);
+/**
+ * Streaming variant — only for the block that is still arriving (`isAnimating`).
+ * Its last line is incomplete, and a half-typed string, comment or regex
+ * tokenizes differently on every delta, so that line's colours would flicker and
+ * the work is redone for text that is about to change anyway.
+ *
+ * So the complete-line prefix is highlighted through the shared cache and the
+ * trailing partial line renders as plain text; the finished block switches back
+ * to this same tokenizer for its exact final colours.
+ */
+export const codeHighlightPluginStreaming: StreamdownCodePlugin = {
+  name: "shiki",
+  type: "code-highlighter",
+  getSupportedLanguages() {
+    return [...Object.keys(tokenizers), ...Object.keys(LAZY_GRAMMARS)];
+  },
+  getThemes() {
+    return ["github-dark", "github-dark"];
+  },
+  supportsLanguage(language) {
+    return supportsLanguage(language);
+  },
+  highlight(options, callback) {
+    const { code, language } = options;
+    const cut = code.lastIndexOf("\n");
+    let result: HighlightResult;
+    if (cut < 0) {
+      // Single unterminated line — nothing complete to tokenize yet.
+      result = { bg: CODE_BG, fg: CODE_FG, tokens: [plainLine(code)] };
+    } else {
+      const norm = normalizeLanguage(language);
+      const tokenizer = tokenizers[norm];
+      const head = code.slice(0, cut + 1);
+      const tail = code.slice(cut + 1);
+      const headResult = tokenizer ? tokenizeWith(norm, tokenizer, head) : plainResult(head);
+      // Copy before appending: `headResult` may be a cache entry, and callers
+      // must never see a mutated cache value.
+      const tokens = tail ? [...headResult.tokens, plainLine(tail)] : headResult.tokens;
+      result = { ...headResult, tokens };
+    }
+    if (callback) callback(result);
+    return result;
+  },
+};
+
+function scheduleIdle(fn: () => void) {
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(() => fn());
+    return;
   }
-
-  // Ensure every line has at least one token
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].length === 0) {
-      lines[i].push(...plainLine(""));
-    }
-  }
-
-  return {
-    bg: "#141416",
-    fg: "#e4e4e7",
-    tokens: lines,
-  };
+  setTimeout(fn, 0);
 }
 
 /**
- * Return highlighted HTML string for direct rendering
+ * Highlighted HTML string for direct rendering (tool capsules, raw history).
+ * Token colour comes from the same palette: the classed buckets are coloured by
+ * the stylesheet (light/dark aware), and a token type with no bucket keeps the
+ * container's colour rather than forcing a mode-blind inline colour.
  */
 export function highlightCodeToHtml(code: string, language: string): string {
-  const key = cacheKey("html", code, language);
+  const norm = normalizeLanguage(language);
+  const tokenizer = tokenizers[norm];
+  if (!tokenizer || !code) return escapeHtml(code);
+  const key = cacheKey("html", code, norm);
   const hit = cacheGet<string>(key);
   if (hit !== undefined) return hit;
-  const grammar = getPrismGrammar(language);
-  if (!grammar) {
-    return escapeHtml(code);
-  }
-  const norm = normalizeLanguage(language);
-  try {
-    const html = Prism.highlight(code, grammar, norm);
-    return cachePut(key, html, countLines(code));
-  } catch {
-    return escapeHtml(code);
-  }
+  const { tokens } = tokenizeWith(norm, tokenizer, code);
+  const html = tokens
+    .map((line) =>
+      line
+        .map((token) =>
+          token.htmlAttrs?.className
+            ? `<span class="${token.htmlAttrs.className}">${escapeHtml(token.content)}</span>`
+            : escapeHtml(token.content)
+        )
+        .join("")
+    )
+    .join("\n");
+  return cachePut(key, html, countLines(code));
 }
 
 function escapeHtml(str: string): string {
@@ -388,72 +555,3 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
-
-
-/**
- * Streamdown-compatible code highlighter plugin using PrismJS
- */
-export const prismCodePlugin: StreamdownCodePlugin = {
-  name: "shiki",
-  type: "code-highlighter",
-  getSupportedLanguages() {
-    return Object.keys(Prism.languages);
-  },
-  getThemes() {
-    return ["github-dark", "github-dark"];
-  },
-  supportsLanguage(language: string) {
-    return Boolean(getPrismGrammar(language));
-  },
-  highlight(options, callback) {
-    const result = highlightCodeWithPrism(options.code, options.language);
-    if (callback) {
-      callback(result);
-    }
-    return result;
-  },
-};
-
-/**
- * Streaming variant — only for the block that is still arriving (`isAnimating`).
- * Its last line is incomplete, and a half-typed string or comment re-tokenizes
- * differently on every delta, so that line's colors flicker and the work is redone
- * for text that is about to change anyway.
- *
- * So the complete-line prefix is highlighted through the shared cache and the trailing
- * partial line renders as plain text; the finished block switches back for its exact
- * final highlight in one pass.
- */
-export const prismCodePluginStreaming: StreamdownCodePlugin = {
-  name: "shiki",
-  type: "code-highlighter",
-  getSupportedLanguages() {
-    return Object.keys(Prism.languages);
-  },
-  getThemes() {
-    return ["github-dark", "github-dark"];
-  },
-  supportsLanguage(language: string) {
-    return Boolean(getPrismGrammar(language));
-  },
-  highlight(options, callback) {
-    const { code, language } = options;
-    const cut = code.lastIndexOf("\n");
-    let result: HighlightResult;
-    if (cut < 0) {
-      // Single unterminated line — nothing complete to tokenize yet.
-      result = { bg: "#141416", fg: "#e4e4e7", tokens: [plainLine(code)] };
-    } else {
-      const head = highlightCodeWithPrism(code.slice(0, cut + 1), language);
-      const tail = code.slice(cut + 1);
-      // Copy before appending: `head` may be a cache entry, and callers must
-      // never see a mutated cache value.
-      const tokens = tail ? [...head.tokens, plainLine(tail)] : head.tokens;
-      result = { ...head, tokens };
-    }
-    if (callback) {
-      callback(result);
-    }
-    return result;
-  },
-};

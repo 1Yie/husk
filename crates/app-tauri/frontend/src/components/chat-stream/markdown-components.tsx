@@ -210,3 +210,73 @@ export const chatMarkdownComponents = {
     </summary>
   ),
 };
+
+/** Reasoning-panel variant: identical block machinery (fenced code, tables,
+ *  images keep their real renderers) with secondary typography — expanded
+ *  thinking is a recap of how the answer was reached, so it reads smaller and
+ *  dimmer than the answer itself instead of competing with it. */
+export const thinkingMarkdownComponents = {
+  ...chatMarkdownComponents,
+
+  p: ({ children, ...props }: React.ComponentPropsWithoutRef<"p">) => (
+    <p className="my-2 leading-relaxed text-[13px] text-neutral-500" {...props}>
+      {renderWithTwemoji(children)}
+    </p>
+  ),
+
+  ul: ({ children, ...props }: React.ComponentPropsWithoutRef<"ul">) => (
+    <ul
+      className="my-2 pl-5 list-disc space-y-0.5 text-neutral-500 text-[13px] leading-relaxed"
+      {...props}
+    >
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }: React.ComponentPropsWithoutRef<"ol">) => (
+    <ol
+      className="my-2 pl-5 list-decimal space-y-0.5 text-neutral-500 text-[13px] leading-relaxed"
+      {...props}
+    >
+      {children}
+    </ol>
+  ),
+
+  h1: ({ children, ...props }: React.ComponentPropsWithoutRef<"h1">) => (
+    <h1 className="text-[15px] font-semibold text-neutral-700 mt-4 mb-2 tracking-tight" {...props}>
+      {renderWithTwemoji(children)}
+    </h1>
+  ),
+  h2: ({ children, ...props }: React.ComponentPropsWithoutRef<"h2">) => (
+    <h2 className="text-[14px] font-semibold text-neutral-700 mt-3.5 mb-1.5 tracking-tight" {...props}>
+      {renderWithTwemoji(children)}
+    </h2>
+  ),
+  h3: ({ children, ...props }: React.ComponentPropsWithoutRef<"h3">) => (
+    <h3 className="text-[13px] font-semibold text-neutral-700 mt-3 mb-1 tracking-tight" {...props}>
+      {renderWithTwemoji(children)}
+    </h3>
+  ),
+  h4: ({ children, ...props }: React.ComponentPropsWithoutRef<"h4">) => (
+    <h4 className="text-[13px] font-semibold text-neutral-600 mt-2.5 mb-1 tracking-tight" {...props}>
+      {renderWithTwemoji(children)}
+    </h4>
+  ),
+
+  inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => (
+    <code
+      className="bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] text-neutral-600 px-1.5 py-[1px] rounded-[4px] text-[11.5px] font-mono border border-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] font-normal mx-0.5 inline-block leading-snug align-baseline"
+      {...props}
+    >
+      {children}
+    </code>
+  ),
+
+  blockquote: ({ children, ...props }: React.ComponentPropsWithoutRef<"blockquote">) => (
+    <blockquote
+      className="my-2.5 border-l-2 border-neutral-300 bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] rounded-r-lg px-3.5 py-1.5 text-neutral-500 text-[13px] italic leading-relaxed"
+      {...props}
+    >
+      {renderWithTwemoji(children)}
+    </blockquote>
+  ),
+};

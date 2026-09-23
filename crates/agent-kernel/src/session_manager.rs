@@ -139,6 +139,9 @@ pub struct SessionHandle {
 pub struct SessionManager {
     store: Arc<SessionStore>,
     provider_cfg: AppConfig,
+    /// mtime of the config file at the last load. `None` means "reload on the
+    /// next check" — the file was missing, or a reload could not be delivered.
+    config_stamp: Option<std::time::SystemTime>,
     handles: HashMap<i64, SessionHandle>,
     /// Live actors of workspaces the user switched AWAY from — parked by
     /// canonical root so a background turn keeps running (and keeps its
@@ -242,6 +245,7 @@ impl SessionManager {
                 metas: Vec::new(),
                 store,
                 provider_cfg: cfg,
+                config_stamp: Self::config_stamp_now(),
                 handles: HashMap::new(),
                 parked: HashMap::new(),
                 event_tx,
@@ -316,6 +320,7 @@ impl SessionManager {
             metas: store.list(),
             store,
             provider_cfg: cfg,
+            config_stamp: Self::config_stamp_now(),
             handles: HashMap::new(),
             parked: HashMap::new(),
             event_tx,
@@ -856,8 +861,12 @@ impl SessionManager {
         self.store.load_history(id)
     }
 
-    /// Paged history — `(slice, total_len)`. `before` is an exclusive
-    /// end index into the full message list; `None` takes the tail page.
+    /// Paged history — `(slice, total_len, turn_total, turn_offset)`.
+    /// `before` is an exclusive end index into the full message list;
+    /// `None` takes the tail page. `turn_offset` is the ordinal (among
+    /// non-hidden user messages) of the first turn that lands *inside*
+    /// this slice, so the rail can name the unloaded turns below it
+    /// exactly instead of estimating from an average turn length.
     /// The webview mounts history in pages instead of all at once: a
     /// 65k-node session made every frame pathological on WebKitGTK, so
     /// `open` returns only the newest page and scroll-up fetches older
@@ -867,25 +876,24 @@ impl SessionManager {
         id: i64,
         before: Option<usize>,
         count: usize,
-    ) -> (Vec<agent_llm::types::ChatMessage>, usize, usize) {
+    ) -> (Vec<agent_llm::types::ChatMessage>, usize, usize, usize) {
         if !self.workspace_active {
-            return (Vec::new(), 0, 0);
+            return (Vec::new(), 0, 0, 0);
         }
         let hist = self.store.load_history(id).unwrap_or_default();
         let total = hist.len();
         // Visible turns ≈ non-hidden user messages — the rail sizes its
         // overview track against this so unloaded history still occupies
         // its true share of the strip.
-        let turn_total = hist
-            .iter()
-            .filter(|m| {
-                m.role == agent_llm::types::Role::User
-                    && m.notice != Some(agent_llm::types::NoticeKind::Hidden)
-            })
-            .count();
+        fn is_turn(m: &agent_llm::types::ChatMessage) -> bool {
+            m.role == agent_llm::types::Role::User
+                && m.notice != Some(agent_llm::types::NoticeKind::Hidden)
+        }
+        let turn_total = hist.iter().filter(|m| is_turn(m)).count();
         let end = before.map(|b| b.min(total)).unwrap_or(total);
         let start = end.saturating_sub(count);
-        (hist[start..end].to_vec(), total, turn_total)
+        let turn_offset = hist[..start].iter().filter(|m| is_turn(m)).count();
+        (hist[start..end].to_vec(), total, turn_total, turn_offset)
     }
 
     /// A session's persisted last-turn usage — seeds the header meter when
@@ -933,12 +941,101 @@ impl SessionManager {
         Ok(ok)
     }
 
+    /// mtime of the config file — the gate for a disk reload.
+    fn config_stamp_of(path: Option<&std::path::Path>) -> Option<std::time::SystemTime> {
+        path.map(|p| p.to_path_buf())
+            .or_else(AppConfig::default_path)
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+    }
+
+    fn config_stamp_now() -> Option<std::time::SystemTime> {
+        Self::config_stamp_of(None)
+    }
+
+    /// Re-read `config.toml` when it changed on disk and hot-apply it to every
+    /// live actor. Returns true when a reload happened.
+    ///
+    /// An actor keeps the provider instance and model parameters it was spawned
+    /// with, so an edit made in the settings used to surface only on restart.
+    pub fn reload_model_config(&mut self) -> bool {
+        self.reload_model_config_from(None)
+    }
+
+    /// `path` overrides the config file — tests drive the whole load path
+    /// against a temp file instead of the user's config.
+    pub fn reload_model_config_from(&mut self, path: Option<&std::path::Path>) -> bool {
+        let stamp = Self::config_stamp_of(path);
+        if stamp.is_none() || stamp == self.config_stamp {
+            return false;
+        }
+        let Ok(cfg) = AppConfig::load(path) else {
+            return false;
+        };
+        self.config_stamp = stamp;
+        let (notified, live) = self.apply_loaded_config(cfg);
+        // A full command queue drops the reload; forget the stamp so the next
+        // check retries instead of leaving that actor on the old parameters.
+        if notified < live {
+            self.config_stamp = None;
+        }
+        true
+    }
+
+    /// Rules for a freshly loaded config, split from the disk I/O so they are
+    /// testable without touching the user's config: refresh the cached copy,
+    /// re-resolve the active model when the edit removed it, and hand the pair
+    /// to every live actor. Returns `(notified, live)`.
+    pub fn apply_loaded_config(&mut self, cfg: AppConfig) -> (usize, usize) {
+        self.provider_cfg = cfg;
+        if !self.active_model_is_configured() {
+            let (_, model, provider) = resolve_provider(&self.provider_cfg);
+            self.provider_name = provider;
+            self.model_name = model;
+        }
+        self.notify_live_actors()
+    }
+
+    /// Whether the active model is still in the loaded config. A model deleted
+    /// in the settings would otherwise leave every turn pointed at a dead id.
+    fn active_model_is_configured(&self) -> bool {
+        let Some(pcfg) = self.provider_cfg.providers.get(&self.provider_name) else {
+            return false;
+        };
+        pcfg.find_model(&self.model_name).is_some()
+            // A provider that lists no models accepts any id.
+            || (pcfg.models.is_empty() && pcfg.default_model.is_none())
+            || pcfg.default_model.as_deref() == Some(self.model_name.as_str())
+    }
+
+    /// Push a reload into every live actor — the active session's and the parked
+    /// workspaces' (they keep running, and keep their endpoints, while switched
+    /// away). Returns `(notified, live)`.
+    fn notify_live_actors(&self) -> (usize, usize) {
+        let cmd = agent_ipc::UiCommand::ReloadModel {
+            provider: self.provider_name.clone(),
+            model: self.model_name.clone(),
+        };
+        let mut notified = 0;
+        let mut live = 0;
+        for h in self
+            .handles
+            .values()
+            .chain(self.parked.values().flat_map(|m| m.values()))
+        {
+            live += 1;
+            if h.cmd_tx.try_send(cmd.clone()).is_ok() {
+                notified += 1;
+            }
+        }
+        (notified, live)
+    }
+
     /// Model info (active provider, active model, active thinking level, configured models list, config path).
     pub fn model_info(&mut self) -> SessionModelInfo {
-        // Hot-reload config from disk to pick up any changes in config.toml
-        if let Ok(cfg) = AppConfig::load(None) {
-            self.provider_cfg = cfg;
-        }
+        // Pick up an edit in `config.toml` (and pass it on to live actors) so no
+        // change needs a restart.
+        self.reload_model_config();
 
         let mut models = Vec::new();
         for (pname, pcfg) in &self.provider_cfg.providers {
@@ -1033,7 +1130,7 @@ impl SessionManager {
         // session's actual gate/level, which may differ from the stored
         // defaults once the settings popup changes them (prefs only apply to
         // sessions spawned afterwards).
-        let (live_mode, live_level) = self
+        let (live_mode, live_level, live_agent_mode) = self
             .active()
             .map(|h| {
                 let m = h
@@ -1042,9 +1139,14 @@ impl SessionManager {
                     .ok()
                     .map(|g| g.mode().as_str().to_string());
                 let t = h.thinking_level.read().ok().and_then(|l| l.clone());
-                (m, t)
+                let a = h
+                    .agent_mode
+                    .read()
+                    .ok()
+                    .map(|mode| mode.as_str().to_string());
+                (m, t, a)
             })
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
 
         let path = AppConfig::default_path().map(|p| p.to_string_lossy().to_string());
         SessionModelInfo {
@@ -1052,7 +1154,12 @@ impl SessionManager {
             active_model: self.model_name.clone(),
             active_thinking_level: live_level.or_else(|| self.active_thinking_level.clone()),
             active_permission_mode: live_mode.or_else(|| Some(self.permission_mode.clone())),
-            active_agent_mode: Some(self.agent_mode.clone()),
+            // Same rule as the gate/level above. Reporting the manager-level
+            // default here made plan mode look workspace-wide: a plan ran in
+            // one session, and the "计划已就绪 / 批准并执行" strip then
+            // appeared in every other session that happened to end on an
+            // assistant block.
+            active_agent_mode: live_agent_mode.or_else(|| Some(self.agent_mode.clone())),
             config_path: path,
             models,
         }
@@ -1181,6 +1288,117 @@ fn resolve_provider(
 mod tests {
     use super::*;
 
+    /// A config edit must reach the actors that are already running — an actor
+    /// keeps the provider instance and model parameters it was spawned with, and
+    /// a model that the edit removed must not stay the session's target.
+    #[test]
+    fn config_reload_reaches_live_actors_and_re_resolves_a_removed_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+
+        // Stand-in for a live session actor — only its command queue matters.
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel(4);
+        let (ui, _ui_rx) = crate::channels::UiSink::channel();
+        mgr.handles.insert(
+            i64::MAX,
+            SessionHandle {
+                id: i64::MAX,
+                cmd_tx,
+                decision: Arc::new(Mutex::new(None)),
+                ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+                permissions: Arc::new(std::sync::RwLock::new(
+                    crate::permissions::PermissionGate::from_mode_str("default"),
+                )),
+                agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
+                thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                steer_tx: tokio::sync::mpsc::channel(1).0,
+                cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                preview: String::new(),
+                running: false,
+                ui,
+            },
+        );
+
+        // The edit keeps one provider but renames its only model.
+        let cfg: AppConfig = serde_json::from_value(serde_json::json!({
+            "active_provider": "devin",
+            "providers": {
+                "devin": {
+                    "kind": "openai_compat",
+                    "base_url": "https://example.invalid",
+                    "default_model": "devin/swe-3",
+                }
+            }
+        }))
+        .unwrap();
+
+        let (notified, live) = mgr.apply_loaded_config(cfg);
+        assert!(live >= 1, "the inserted handle is live");
+        assert_eq!(notified, live, "every live actor is notified");
+        assert_eq!(mgr.provider_name, "devin");
+        assert_eq!(mgr.model_name, "devin/swe-3");
+
+        let mut sent = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            if let agent_ipc::UiCommand::ReloadModel { provider, model } = cmd {
+                sent.push((provider, model));
+            }
+        }
+        assert_eq!(sent, vec![("devin".to_string(), "devin/swe-3".to_string())]);
+    }
+
+    /// One `config.toml` writer for the reload tests.
+    fn write_config(path: &std::path::Path, provider: &str, model: &str) {
+        std::fs::write(
+            path,
+            format!(
+                "active_provider = \"{provider}\"\n\
+                 [providers.{provider}]\n\
+                 kind = \"openai_compat\"\n\
+                 base_url = \"https://example.invalid\"\n\
+                 default_model = \"{model}\"\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// The whole load path: a config file that changed on disk is read once and
+    /// applied, and a model the edit removed re-resolves instead of leaving the
+    /// session pointed at a dead id.
+    #[test]
+    fn reload_model_config_reads_the_file_once_and_re_resolves_a_removed_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        write_config(&path, "devin", "devin/swe-2");
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+
+        assert!(mgr.reload_model_config_from(Some(&path)), "changed file loads");
+        assert_eq!(
+            (mgr.provider_name.as_str(), mgr.model_name.as_str()),
+            ("devin", "devin/swe-2")
+        );
+        assert!(
+            !mgr.reload_model_config_from(Some(&path)),
+            "unchanged file is not re-read"
+        );
+
+        write_config(&path, "other", "other/big");
+        // Recreating the file can land on the same mtime — move it forward.
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(1))
+            .unwrap();
+        drop(f);
+
+        assert!(
+            mgr.reload_model_config_from(Some(&path)),
+            "the rewrite is picked up"
+        );
+        assert_eq!(
+            (mgr.provider_name.as_str(), mgr.model_name.as_str()),
+            ("other", "other/big")
+        );
+    }
+
     #[test]
     fn test_model_info_with_devin_swe2() {
         let (mut mgr, _rx) = SessionManager::spawn();
@@ -1216,5 +1434,63 @@ mod tests {
         let info = mgr2.model_info();
         assert_eq!(info.active_permission_mode.as_deref(), Some("acceptEdits"));
         assert_eq!(info.active_thinking_level.as_deref(), Some("high"));
+    }
+
+    /// `model_info` answers for the ACTIVE session, not for the workspace. The
+    /// composer's plan hand-off keys off `active_agent_mode`, and reporting the
+    /// manager's workspace-wide default lit the "计划已就绪 / 批准并执行" strip
+    /// up in every session that happened to end on an assistant block.
+    #[test]
+    fn model_info_reports_the_active_sessions_agent_mode() {
+        use crate::mode::AgentMode;
+
+        /// A stand-in actor — only its agent-mode slot is read here.
+        fn fake_handle(
+            id: i64,
+            mode: AgentMode,
+        ) -> (SessionHandle, tokio::sync::mpsc::Receiver<agent_ipc::UiCommand>) {
+            let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(4);
+            let (ui, _ui_rx) = crate::channels::UiSink::channel();
+            (
+                SessionHandle {
+                    id,
+                    cmd_tx,
+                    decision: Arc::new(Mutex::new(None)),
+                    ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+                    permissions: Arc::new(std::sync::RwLock::new(
+                        crate::permissions::PermissionGate::from_mode_str("default"),
+                    )),
+                    agent_mode: Arc::new(std::sync::RwLock::new(mode)),
+                    thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                    steer_tx: tokio::sync::mpsc::channel(1).0,
+                    cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    preview: String::new(),
+                    running: false,
+                    ui,
+                },
+                cmd_rx,
+            )
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+        mgr.workspace_active = true;
+
+        // Receivers stay alive: a dropped one closes the queue the config
+        // reload pushes `ReloadModel` into.
+        let mut _live = Vec::new();
+        for (id, mode) in [(1, AgentMode::Plan), (2, AgentMode::Build)] {
+            let (handle, rx) = fake_handle(id, mode);
+            mgr.handles.insert(id, handle);
+            _live.push(rx);
+        }
+
+        // A stored default for NEW sessions — must not leak into the report.
+        mgr.agent_mode = "plan".into();
+
+        mgr.active_id = 2;
+        assert_eq!(mgr.model_info().active_agent_mode.as_deref(), Some("build"));
+        mgr.active_id = 1;
+        assert_eq!(mgr.model_info().active_agent_mode.as_deref(), Some("plan"));
     }
 }

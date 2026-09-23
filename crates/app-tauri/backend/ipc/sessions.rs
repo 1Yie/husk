@@ -1,7 +1,7 @@
 //! `agent_session` — session-list + switch/create commands for the sidebar.
 
 use base64::Engine as _;
-use tauri::{Manager, State};
+use tauri::State;
 
 use crate::kernel::KernelState;
 
@@ -12,7 +12,7 @@ const HISTORY_PAGE: usize = 80;
 
 #[tauri::command]
 pub fn agent_session(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     state: State<'_, KernelState>,
     op: String,
     id: Option<i64>,
@@ -40,7 +40,7 @@ pub fn agent_session(
             // Paged: only the newest slice mounts — older pages stream in
             // on scroll-up via `history_page`. `history_total` lets the
             // webview compute `loadedStart = total - history.len()`.
-            let (history, total, turns) = mgr.store_history_page(id, None, HISTORY_PAGE);
+            let (history, total, turns, turn_from) = mgr.store_history_page(id, None, HISTORY_PAGE);
             // `usage` is the persisted last-turn meter — seeds the header
             // stats so a reopened session doesn't read 0/… until the next
             // turn's `Usage` event.
@@ -49,6 +49,7 @@ pub fn agent_session(
                 "history": history,
                 "history_total": total,
                 "turn_total": turns,
+                "turn_offset": turn_from,
                 "usage": mgr.store_usage(id),
             }))
         }
@@ -68,8 +69,8 @@ pub fn agent_session(
                 .and_then(|p| p.get("before"))
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
-            let (history, total, turns) = mgr.store_history_page(id, before, HISTORY_PAGE);
-            Ok(serde_json::json!({ "history": history, "history_total": total, "turn_total": turns }))
+            let (history, total, turns, turn_from) = mgr.store_history_page(id, before, HISTORY_PAGE);
+            Ok(serde_json::json!({ "history": history, "history_total": total, "turn_total": turns, "turn_offset": turn_from }))
         }
         // `delete` mirrors `open` in returning the new active id + its
         // history so the webview can rebuild the stream when the deleted
@@ -77,9 +78,10 @@ pub fn agent_session(
         "delete" => {
             let id = id.ok_or("delete needs id")?;
             mgr.delete_session(id);
-            let (history, total, turns) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
+            let (history, total, turns, turn_from) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
             let usage = mgr.store_usage(mgr.active_id);
-            Ok(serde_json::json!({"active": mgr.active_id, "history": history, "history_total": total, "turn_total": turns, "usage": usage}))
+            Ok(serde_json::json!({"active": mgr.active_id, "history": history, "history_total": total, "turn_total": turns,
+                "turn_offset": turn_from, "usage": usage}))
         }
         // `fork` copies the source session's latest snapshot into a new
         // session and activates it — same return shape as `open`.
@@ -87,13 +89,14 @@ pub fn agent_session(
             let id = id.ok_or("fork needs id")?;
             match mgr.fork_session(id) {
                 Some(new_id) => {
-                    let (history, total, turns) = mgr.store_history_page(new_id, None, HISTORY_PAGE);
+                    let (history, total, turns, turn_from) = mgr.store_history_page(new_id, None, HISTORY_PAGE);
                     Ok(serde_json::json!({
                         "active": mgr.active_id,
                         "id": new_id,
                         "history": history,
                         "history_total": total,
                         "turn_total": turns,
+                "turn_offset": turn_from,
                         "usage": mgr.store_usage(new_id),
                     }))
                 }
@@ -152,7 +155,7 @@ pub fn agent_session(
             if let Some(target) = picked {
                 mgr.switch_workspace(target).map_err(|e| e.to_string())?;
                 let name = mgr.workspace_root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                let (history, total, turns) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
+                let (history, total, turns, turn_from) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
                 Ok(serde_json::json!({
                     "root": mgr.workspace_root.to_string_lossy(),
                     "name": name,
@@ -160,6 +163,7 @@ pub fn agent_session(
                     "history": history,
                     "history_total": total,
                     "turn_total": turns,
+                "turn_offset": turn_from,
                     "usage": mgr.store_usage(mgr.active_id),
                     "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
                         serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
@@ -173,7 +177,7 @@ pub fn agent_session(
             let p = path.ok_or("switch_workspace needs path")?;
             mgr.switch_workspace(std::path::PathBuf::from(p)).map_err(|e| e.to_string())?;
             let name = mgr.workspace_root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let (history, total, turns) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
+            let (history, total, turns, turn_from) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
             Ok(serde_json::json!({
                 "root": mgr.workspace_root.to_string_lossy(),
                 "name": name,
@@ -181,6 +185,7 @@ pub fn agent_session(
                 "history": history,
                 "history_total": total,
                 "turn_total": turns,
+                "turn_offset": turn_from,
                 "usage": mgr.store_usage(mgr.active_id),
                 "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
                     serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
@@ -533,7 +538,10 @@ pub fn agent_session(
                 serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?
             };
             std::fs::write(&path, text).map_err(|e| e.to_string())?;
-            let _ = mgr.model_info();
+            // Hand the edit to the running session — an actor keeps the provider
+            // instance and model parameters it was spawned with, so without this
+            // the change only surfaced after a restart.
+            let _ = mgr.reload_model_config();
             Ok(serde_json::json!({ "success": true }))
         }
         "get_sandbox_info" => {

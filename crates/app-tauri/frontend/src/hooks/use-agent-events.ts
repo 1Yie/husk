@@ -34,6 +34,7 @@ export function useAgentEvents(workspaceRoot: string) {
     historyStart?: number;
     historyTotal?: number;
     turnTotal?: number;
+    turnOffset?: number;
   }) => {
     setViews((m) => {
       const k = viewKey(root, id);
@@ -46,14 +47,28 @@ export function useAgentEvents(workspaceRoot: string) {
 
   /** Prepend an older-history page — `items` are folded StreamItems
    * already stamped with global `hi`s; `historyStart` is the new slice
-   * start (0 = history fully loaded). */
-  const prependItems = useCallback((root: string, id: number, items: StreamItem[], historyStart: number) => {
+   * start (0 = history fully loaded) and `turnOffset` the new boundary
+   * turn ordinal (undefined keeps the previous one). */
+  const prependItems = useCallback((root: string, id: number, items: StreamItem[], historyStart: number, turnOffset?: number) => {
     setViews((m) => {
       const k = viewKey(root, id);
       const v = m.get(k);
       if (!v) return m;
+      // Idempotent — a stale `before` (the placeholder seek loop calls
+      // onLoadOlder through the render it captured, and a scroll event
+      // can land between a fetch's resolution and the next commit)
+      // resolves to a page whose `historyStart` is no longer older than
+      // the loaded window's. Prepending it again would duplicate items
+      // AND their `hi` stamps → duplicate turn/mark ids → several rail
+      // marks matching `activeId` at once.
+      if (v.historyStart != null && historyStart >= v.historyStart) return m;
       const next = new Map(m);
-      next.set(k, { ...v, items: [...items, ...v.items], historyStart });
+      next.set(k, {
+        ...v,
+        items: [...items, ...v.items],
+        historyStart,
+        turnOffset: turnOffset ?? v.turnOffset,
+      });
       return next;
     });
   }, []);

@@ -62,6 +62,59 @@ function Field({
 
 /* ============================ 指令 ============================ */
 
+/** One instructions editor — defined at MODULE level, not inside the
+ * pane: a component declared in the render body is a new type every
+ * render, so React unmounted+remounted it (and its Textarea) on every
+ * keystroke — which is what made the input drop focus while typing. */
+function InstructionsBlock({
+  scope,
+  title,
+  file,
+  value,
+  saving,
+  onChange,
+  onSave,
+}: {
+  scope: "global" | "workspace";
+  title: string;
+  file?: { path: string | null };
+  value: string;
+  saving: boolean;
+  onChange: (v: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm font-semibold text-neutral-900">{title}</span>
+        {file?.path && (
+          <span className="text-[11px] text-neutral-500 font-mono truncate">
+            {file.path}
+          </span>
+        )}
+      </div>
+      <Textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={10}
+        className="font-mono text-[12px] leading-relaxed resize-y min-h-40"
+        placeholder="在此编写自定义指令，会追加到每个新会话的系统提示词末尾"
+      />
+      <div className="flex justify-end">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          disabled={saving}
+          onClick={onSave}
+        >
+          {saving ? "保存中…" : "保存"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function InstructionsPane() {
   const [data, setData] = useState<InstructionsSet | null>(null);
   const [drafts, setDrafts] = useState({ global: "", workspace: "" });
@@ -88,49 +141,26 @@ function InstructionsPane() {
     }
   };
 
-  const Block = ({
-    scope,
-    title,
-    file,
-  }: {
-    scope: "global" | "workspace";
-    title: string;
-    file?: { path: string | null };
-  }) => (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm font-semibold text-neutral-900">{title}</span>
-        {file?.path && (
-          <span className="text-[11px] text-neutral-500 font-mono truncate">
-            {file.path}
-          </span>
-        )}
-      </div>
-      <Textarea
-        value={drafts[scope]}
-        onChange={(e) => setDrafts((d) => ({ ...d, [scope]: e.target.value }))}
-        rows={10}
-        className="font-mono text-[12px] leading-relaxed resize-y min-h-40"
-        placeholder="在此编写自定义指令，会追加到每个新会话的系统提示词末尾"
-      />
-      <div className="flex justify-end">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs"
-          disabled={saving === scope}
-          onClick={() => void save(scope)}
-        >
-          {saving === scope ? "保存中…" : "保存"}
-        </Button>
-      </div>
-    </div>
-  );
-
   return (
     <div className="flex flex-col gap-8">
-      <Block scope="global" title="全局指令" file={data?.global} />
-      <Block scope="workspace" title="项目指令" file={data?.workspace} />
+      <InstructionsBlock
+        scope="global"
+        title="全局指令"
+        file={data?.global}
+        value={drafts.global}
+        saving={saving === "global"}
+        onChange={(v) => setDrafts((d) => ({ ...d, global: v }))}
+        onSave={() => void save("global")}
+      />
+      <InstructionsBlock
+        scope="workspace"
+        title="项目指令"
+        file={data?.workspace}
+        value={drafts.workspace}
+        saving={saving === "workspace"}
+        onChange={(v) => setDrafts((d) => ({ ...d, workspace: v }))}
+        onSave={() => void save("workspace")}
+      />
     </div>
   );
 }

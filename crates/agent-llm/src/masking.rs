@@ -72,16 +72,17 @@ impl EgressMasker {
 /// redacted through `-----END …-----` — masking the header alone leaks the base64
 /// material.
 fn mask_shape(text: &str, shape: &str) -> Option<String> {
-    let lower = text.to_lowercase();
     let needle = shape.to_lowercase();
-    if !lower.contains(&needle) {
-        return None;
-    }
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
+    let mut any = false;
     loop {
-        let lower_rest = rest.to_lowercase();
-        let Some(idx) = lower_rest.find(&needle) else { break };
+        // Offsets are measured on `rest` itself — never on a lowercased copy.
+        // `to_lowercase()` changes byte lengths (`ẞ`→`ß` shrinks, `İ`→`i̇`
+        // grows), so an index found in the folded string is NOT a valid index
+        // into the original: slicing `rest[..idx]` with it lands mid-char
+        // (panic) or silently checks the wrong boundary char.
+        let Some(idx) = find_ascii_ci(rest, &needle) else { break };
 
         // Word-boundary check: the char before the match must be a boundary
         // (start, whitespace, quote, or non-alphanumeric punctuation), else
@@ -106,16 +107,18 @@ fn mask_shape(text: &str, shape: &str) -> Option<String> {
         // PEM block: redact through the matching `-----END …-----` line so
         // the key material can't leak between BEGIN and END.
         if needle.starts_with("-----begin") {
-            if let Some(end_idx) = tail.to_lowercase().find("-----end") {
+            if let Some(end_idx) = find_ascii_ci(tail, "-----end") {
                 let after_end = &tail[end_idx..];
                 let line_end = after_end.find('\n').unwrap_or(after_end.len());
                 out.push_str("[REDACTED_PEM_BLOCK]\n");
                 rest = &after_end[line_end..];
+                any = true;
                 continue;
             }
             // Unterminated block — redact to end of text.
             out.push_str("[REDACTED_PEM_BLOCK]");
             rest = "";
+            any = true;
             break;
         }
 
@@ -125,9 +128,28 @@ fn mask_shape(text: &str, shape: &str) -> Option<String> {
             .unwrap_or(tail.len());
         out.push_str("[REDACTED_API_KEY]");
         rest = &tail[end..];
+        any = true;
     }
     out.push_str(rest);
-    Some(out)
+    any.then_some(out)
+}
+
+/// First offset of `needle` in `haystack`, ASCII-case-insensitive — every
+/// shape in `SECRET_SHAPES` is ASCII, so `eq_ignore_ascii_case` is the whole
+/// semantics (non-ASCII bytes can never equal the needle's). Returns a real
+/// char boundary of `haystack` because the scan only starts at boundaries.
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .char_indices()
+        .map(|(i, _)| i)
+        .find(|&i| {
+            haystack[i..]
+                .get(..needle.len())
+                .is_some_and(|w| w.eq_ignore_ascii_case(needle))
+        })
 }
 
 /// `"<field>": "<value>"` / `<field>=<value>` → scrub value when field is
@@ -165,6 +187,26 @@ mod tests {
         assert!(changed);
         assert!(out.contains("[REDACTED_SECRET]"));
         assert!(!out.contains("xai-real-key-123"));
+    }
+
+    /// `to_lowercase()` changes byte lengths (`ẞ`→`ß` shrinks one byte), so a
+    /// match offset taken in the lowercased copy is not a valid index into
+    /// the original string. Before the fix this either panicked (mid-char
+    /// slice, under `panic = "abort"` = process death) or skipped the shape —
+    /// here the drift makes the boundary check read `r` and jump past `sk-`.
+    #[test]
+    fn non_ascii_text_before_a_shape_neither_panics_nor_leaks() {
+        let m = EgressMasker::new(vec![]);
+        let (out, changed) = m.scrub("ẞẞ before sk-ant-secretkey999 after");
+        assert!(changed);
+        assert!(
+            !out.contains("sk-ant"),
+            "secret leaked through an offset-drifted boundary check: {out}"
+        );
+        // And a shape that sits inside a word must still NOT be masked.
+        let (out2, changed2) = m.scrub("the word task-force stays");
+        assert_eq!(out2, "the word task-force stays");
+        assert!(!changed2);
     }
 
     #[test]

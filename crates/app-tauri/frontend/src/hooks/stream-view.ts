@@ -62,6 +62,11 @@ export interface SessionView {
   /** Full turn count (non-hidden user messages) — drives the rail's
    * unloaded placeholder marks. */
   turnTotal?: number;
+  /** Ordinal (among non-hidden user turns) of the first turn inside the
+   * loaded slice — the exact position of the loaded/unloaded boundary on
+   * the rail. The unloaded dots are ordinals `0 .. turnOffset-1`, and a
+   * dot click seeks straight to its own ordinal. */
+  turnOffset?: number;
   state: AgentState | null;
   streaming: boolean;
   usage: {

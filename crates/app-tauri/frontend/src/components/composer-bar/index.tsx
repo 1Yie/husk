@@ -1,6 +1,6 @@
 // Composer — floating input bar with config.toml-based model selection & Orb-driven send button.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
   ChevronDown,
@@ -126,6 +126,69 @@ function thinkingSuffix(value: string, map?: Record<string, string | null>): str
     : value;
 }
 
+/** The model picker's primary label: the `name` set in settings, falling back
+ *  to the wire id when the config declares none. */
+function modelLabel(m: agent.ModelItem): string {
+  return m.name?.trim() || m.model;
+}
+
+/** The picker's small second line — provider first, then the raw model id
+ *  (what actually goes on the wire, and what `/model` expects). The id is
+ *  dropped when it equals the label, so a nameless model never prints its own
+ *  name twice. */
+function modelSubLabel(m: agent.ModelItem): string {
+  const parts = m.provider ? [m.provider] : [];
+  if (modelLabel(m) !== m.model) parts.push(m.model);
+  return parts.join(" · ");
+}
+
+/** A `truncate`d line that reveals the full text in a tooltip ONLY when it is
+ *  actually clipped — a row whose text fits stays quiet. The observer attaches
+ *  from a callback ref, not `useRef` + an effect, because React recreates the
+ *  span when it swaps between the bare and the tooltip-wrapped return.
+ *
+ *  Radix Tooltip rather than a native `title`: this renders inside a
+ *  DropdownMenu, whose `data-state` makes the app's `GlobalTooltip` bail out
+ *  (see `ui/tooltip.tsx`), so a bare `title` would leak the unstyled OS bubble
+ *  the rest of the app suppresses. */
+function TruncatedText({ text, className }: { text: string; className?: string }) {
+  const [clipped, setClipped] = useState(false);
+  const roRef = useRef<ResizeObserver | null>(null);
+  // Keyed to `text`: a rename arrives through a config re-fetch and swaps the
+  // string WITHOUT changing the box, which the observer below cannot see. A
+  // changed ref identity makes React detach/reattach, re-running `check`.
+  const measure = useCallback(
+    (el: HTMLSpanElement | null) => {
+      roRef.current?.disconnect();
+      roRef.current = null;
+      if (!el) return;
+      // `truncate` (overflow:hidden + nowrap) makes scrollWidth the full text
+      // width and clientWidth the visible box — +1 absorbs subpixel rounding.
+      const check = () => setClipped(el.scrollWidth > el.clientWidth + 1);
+      check();
+      const ro = new ResizeObserver(check);
+      ro.observe(el);
+      roRef.current = ro;
+    },
+    [text],
+  );
+
+  const line = (
+    <span ref={measure} className={className}>
+      {text}
+    </span>
+  );
+  if (!clipped) return line;
+  // `side="left"` aims the bubble sideways so it never covers the rows below
+  // the pointer. Radix flips it automatically (avoidCollisions defaults true)
+  // when the left edge runs out of room.
+  return (
+    <TooltipSimple content={text} side="left">
+      {line}
+    </TooltipSimple>
+  );
+}
+
 /** Tool name → icon for the approval strip. */
 function toolIcon(name: string) {
   const cls = "h-3.5 w-3.5";
@@ -195,9 +258,18 @@ export function ComposerBar({
     });
   }, []);
 
-  const fetchModels = async () => {
+  // Agent mode, permission gate and thinking level live on the SESSION actor,
+  // so the composer's copies are re-read whenever the visible session changes.
+  // `forSession` guards the race: a response that lost to a session switch must
+  // not write the previous session's mode back into the pickers (that stale
+  // mode is what made plan mode look workspace-wide).
+  const sessionKeyRef = useRef(sessionKey);
+  sessionKeyRef.current = sessionKey;
+
+  const fetchModels = async (forSession?: string) => {
     try {
       const info = await agent.getModelInfo();
+      if (forSession !== undefined && forSession !== sessionKeyRef.current) return;
       if (info) {
         if (info.active_model) setActiveModel(info.active_model);
         if (info.active_provider) setActiveProvider(info.active_provider);
@@ -214,8 +286,8 @@ export function ComposerBar({
   };
 
   useEffect(() => {
-    void fetchModels();
-  }, [workspaceRoot]);
+    void fetchModels(sessionKey);
+  }, [workspaceRoot, sessionKey]);
 
   // Settings saves broadcast CONFIG_CHANGED_EVENT — re-fetch so a
   // newly added/edited model appears in the picker without remount.
@@ -685,7 +757,9 @@ export function ComposerBar({
 
   // Plan → build handoff: a finished plan-mode turn ends on an assistant
   // block (the plan). Approving flips to build and feeds the plan back as
-  // the execution instruction — Claude Code's exit-plan-mode flow.
+  // the execution instruction — Claude Code's exit-plan-mode flow. `agentMode`
+  // is the ACTIVE session's mode (refreshed per session above), so the strip
+  // only exists in the session that actually ran the plan.
   const lastItem = view.items[view.items.length - 1];
   const planReady =
     agentMode === "plan" && !streaming && lastItem?.kind === "assistant";
@@ -705,24 +779,33 @@ export function ComposerBar({
           with the conversation stream. */}
       <div className="w-full px-4 pb-6 select-none pointer-events-none">
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
-          {planReady && (
-            <div className="w-full flex items-center gap-2 rounded-2xl border border-hairline bg-panel px-3.5 py-2.5 shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
-              <MapIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-              <span className="text-xs text-neutral-600 font-medium flex-1">
-                计划已就绪 — 审核上面的方案
-              </span>
-              <Button
-                size="sm"
-                className="shrink-0 h-6 px-2.5 text-[11px] bg-neutral-900 hover:bg-neutral-800 text-white cursor-pointer"
-                onClick={() => void approvePlan()}
-              >
-                批准并执行
-              </Button>
-            </div>
-          )}
-          {pending || question || hasActiveTodos || queued.length > 0 ? (
-            /* Outer container with attached banner: Approval (Priority 1) or Active Todo (Priority 2) */
+          {planReady || pending || question || hasActiveTodos || queued.length > 0 ? (
+            /* Outer container with attached banner: the plan handoff, approval
+               (Priority 1), ask_question and the active todo list (Priority 2)
+               all render as rows of this one panel, so the composer reads as a
+               single card with the session's outstanding work attached. */
             <div className="w-full bg-panel rounded-[24px] pt-2.5 flex flex-col gap-2 transition-all shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
+              {planReady ? (
+                /* Plan → build handoff — approval-strip row grammar
+                   (icon · label · detail · primary action). It leads the
+                   panel: it is the finished turn's only outstanding decision. */
+                <div className="flex items-center gap-2 px-3 pt-0.5 text-xs text-neutral-600 font-medium select-none">
+                  <MapIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+                  <span className="shrink-0 text-neutral-800 font-medium">
+                    计划已就绪
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-normal text-neutral-500">
+                    审核上面的方案，批准后切到构建模式执行
+                  </span>
+                  <Button
+                    size="sm"
+                    className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-zinc-50 cursor-pointer"
+                    onClick={() => void approvePlan()}
+                  >
+                    批准并执行
+                  </Button>
+                </div>
+              ) : null}
               {question ? (
                 /* ask_question card — option chips + free-text answer. */
                 <div className="flex flex-col gap-2 px-3.5 pt-0.5">
@@ -1716,6 +1799,13 @@ function ComposerToolbar({
   cancel: () => Promise<void>;
 }) {
   const canSubmit = text.trim().length > 0 || hasAttachments;
+  // The active model's config entry — supplies the display name for the
+  // trigger. `undefined` when the model isn't in the configured list (a
+  // hand-encoded `/model` target, or a config edited outside the app): the
+  // raw id is then the only thing we can show.
+  const activeItem =
+    models.find((m) => m.model === activeModel && m.provider === activeProvider) ||
+    models.find((m) => m.model === activeModel);
 
   return (
     <div className="flex items-center justify-between pt-1">
@@ -1900,17 +1990,24 @@ function ComposerToolbar({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
-              aria-label={`当前模型: ${activeModel || "未选择"} (${activeProvider})`}
+              aria-label={`当前模型: ${activeItem ? modelLabel(activeItem) : activeModel || "未选择"} (${activeProvider}/${activeModel})`}
               className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer"
             >
-              <span className="truncate max-w-[140px] font-mono text-[11.5px]">
-                {activeModel || "选择模型"}
+              <span
+                className={cn(
+                  "truncate max-w-[140px]",
+                  // No display name → the label IS the id; keep the old mono
+                  // look instead of re-styling an identifier as prose.
+                  (!activeItem || modelLabel(activeItem) === activeModel) && "font-mono text-[11.5px]",
+                )}
+              >
+                {activeItem ? modelLabel(activeItem) : activeModel || "选择模型"}
               </span>
               <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
           </DropdownMenuTrigger>
 
-          <DropdownMenuContent align="end" side="top" className="w-56">
+          <DropdownMenuContent align="end" side="top" className="w-64">
             <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
               模型
             </DropdownMenuLabel>
@@ -1927,10 +2024,14 @@ function ComposerToolbar({
                       className="flex items-center justify-between text-xs py-2 cursor-pointer"
                     >
                       <div className="flex flex-col min-w-0 pr-2">
-                        <span className="font-mono font-medium truncate text-neutral-900">
-                          {item.model}
-                        </span>
-                        <span className="text-[10px] text-neutral-500">{item.provider}</span>
+                        <TruncatedText
+                          text={modelLabel(item)}
+                          className="font-medium truncate text-neutral-900"
+                        />
+                        <TruncatedText
+                          text={modelSubLabel(item)}
+                          className="text-[10px] font-mono text-neutral-500 truncate"
+                        />
                       </div>
                       {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
                     </DropdownMenuItem>

@@ -1,0 +1,27 @@
+// Dev-build overlay — pass it explicitly:
+//
+//     cargo tauri dev -c tauri.dev.conf.json5
+//
+// Tauri 2 has no profile-aware configuration: the only files merged without a
+// flag are the per-PLATFORM ones (`tauri.<platform>.conf.json`). A build flavor
+// therefore has to come in through `-c`, which the CLI merges and then forwards
+// to BOTH the bundler and codegen (`TAURI_CONFIG`), so the identifier baked
+// into the binary always matches the one in the bundle metadata. That two-place
+// agreement is why this is a config overlay and not a `build.rs` trick — a
+// build script can set the compiled value, but the bundler never sees it.
+//
+// `tauri.conf.json` carries the PRODUCTION identifier (`husk.ingstar.im`), so a
+// plain `tauri build` ships correctly with no flag. Forgetting `-c` here only
+// costs a dev build its separate identity, whereas the reverse arrangement (a
+// release built on `dev.husk.app`) would be a shipped mistake — and on Linux
+// the identifier is inert at runtime (`enableGTKAppId` is off, and the app's
+// data dirs are hardcoded under `~/.local/share/husk`), so this default costs
+// nothing day to day.
+//
+// This file is JSON5 purely so these comments can live next to the value; the
+// CLI parses `-c` files as JSON5 regardless of the extension. Its name is
+// deliberately NOT shaped like `tauri.linux.conf.json`, since those exact names
+// are auto-merged and this overlay must never be picked up implicitly.
+{
+  "identifier": "dev.husk.app"
+}

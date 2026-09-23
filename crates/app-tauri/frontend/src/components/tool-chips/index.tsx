@@ -277,14 +277,22 @@ function DetailLines({
     [detailText],
   );
   const capped = !expanded && lineCount > MAX_DETAIL_LINES;
-  return (
-    <>
-      {renderHighlightedLines(
+  // Highlighting every line is the expensive part — memoize so a
+  // re-render triggered by a sibling (row open/close, parent re-render)
+  // doesn't redo it. `expanded` participates via `capped`.
+  const highlighted = useMemo(
+    () =>
+      renderHighlightedLines(
         detailText,
         label,
         chip,
         capped ? MAX_DETAIL_LINES : Number.MAX_SAFE_INTEGER,
-      )}
+      ),
+    [detailText, label, chip, capped],
+  );
+  return (
+    <>
+      {highlighted}
       {capped && (
         <button
           type="button"
@@ -301,7 +309,7 @@ function DetailLines({
 /** Detail body that mounts its children only after the row has been
  * opened once — the grid collapse is CSS-only (`0fr` + overflow-hidden),
  * so without this every collapsed row still paid a full DiffView /
- * DetailLines render at mount (hundreds of Prism-highlighted lines per
+ * DetailLines render at mount (hundreds of highlighted lines per
  * tool call — the actual ~50-160ms-per-turn mount cost). Once opened it
  * stays mounted so the collapse animation keeps working. */
 function RowDetail({ open, children }: { open: boolean; children: React.ReactNode }) {

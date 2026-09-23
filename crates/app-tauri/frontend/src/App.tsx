@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { useAgentEvents } from "./hooks/use-agent-events";
 import { useAgentSession } from "./hooks/use-agent-session";
@@ -93,6 +93,14 @@ export function App() {
     ctxWindow,
     modelCost,
   } = useAgentEvents(workspace.root);
+
+  // Fresh `active` view handle — `handleLoadOlder` and the rail's
+  // placeholder seek loop keep running through closures captured at an
+  // earlier render; reading historyStart off the stale view re-fetches
+  // the SAME page and duplicates it (→ duplicate `hi` → duplicate
+  // turn/mark ids → several black marks in the rail at once).
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const { projects, sessions, refresh, newSession, openSession } = useAgentSession();
   // True while a session/workspace switch is fetching history + rebuilding
   // the view — the stream renders a skeleton instead of a stale/empty pane.
@@ -104,7 +112,11 @@ export function App() {
   // the flag past the next paint boundary.
   const releaseLoading = useCallback(() => {
     requestAnimationFrame(() =>
-      requestAnimationFrame(() => setViewLoading(false)),
+      // The reveal commit mounts the real turn tree (Streamdown/Streamdown
+      // blocks) —
+      // a transition keeps its render interruptible so the page never
+      // goes dead to clicks while a long session opens.
+      requestAnimationFrame(() => startTransition(() => setViewLoading(false))),
     );
   }, []);
 
@@ -118,6 +130,7 @@ export function App() {
         history: Parameters<typeof viewFromHistory>[0];
         history_total?: number;
         turn_total?: number;
+        turn_offset?: number;
         usage?: Parameters<typeof viewFromHistory>[1];
       },
     ) => {
@@ -135,6 +148,7 @@ export function App() {
         historyStart: (r.history_total ?? r.history.length) - r.history.length,
         historyTotal: r.history_total,
         turnTotal: r.turn_total,
+        turnOffset: r.turn_offset,
       });
       releaseLoading();
     },
@@ -286,14 +300,23 @@ export function App() {
    * `hi` and turn keys stay stable across prepends. */
   const handleLoadOlder = useCallback(async () => {
     if (!workspace.root || !activeId) return false;
-    const start = active?.historyStart ?? 0;
+    // Read through the ref — this callback is re-invoked by the seek
+    // loop and by scroll events while older closure copies are still
+    // alive; the render-captured `active` would hand every call the
+    // same stale `before`.
+    const start = activeRef.current?.historyStart ?? 0;
     if (start <= 0) return false;
     const r = await historyPage(activeId, start);
     if (r.history.length === 0) return false;
     const folded = await viewFromHistoryChunked(r.history, undefined, start - r.history.length);
-    prependItems(workspace.root, activeId, folded.items, start - r.history.length);
+    // The prepend commit mounts the whole new page in one commit (the
+    // scroll-restore needs real heights) — a transition keeps its render
+    // interruptible so the stream stays clickable while it lands.
+    startTransition(() =>
+      prependItems(workspace.root, activeId, folded.items, start - r.history.length, r.turn_offset),
+    );
     return true;
-  }, [workspace.root, activeId, active?.historyStart, prependItems]);
+  }, [workspace.root, activeId, prependItems]);
 
   // First-load: the kernel resumed the most recent session at boot, but
   // the webview only sees *new* events — rebuild the stream from the

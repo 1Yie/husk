@@ -89,6 +89,10 @@ pub enum UiCommand {
     Cancel,
     /// Hot-swap the active provider/model for the *next* turn.
     SetModel { provider: String, model: String },
+    /// Kernel-internal: re-read the config and rebuild the running session's
+    /// provider and model parameters in place. Sent by `SessionManager` after a
+    /// config write — the UI never sends it.
+    ReloadModel { provider: String, model: String },
     /// Switch the permission mode for the *next* tool dispatch —
     /// `default` / `acceptEdits` / `auto` / `dontAsk` / `bypassPermissions`.
     /// The session rebuilds its `PermissionGate` from the label (same

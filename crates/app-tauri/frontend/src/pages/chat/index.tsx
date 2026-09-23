@@ -1,6 +1,6 @@
 // Chat page — the conversation column of the main window: window title
 // bar (with the git/usage meter), the scrollable stream, and the composer.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { FolderOpen } from "@keyline-icons/react";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/components/chat-stream";
@@ -44,11 +44,27 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
   // (card + pb-6 gap + the taller approval/todo banner variants) and feed
   // it to the stream as bottom padding, so the last message can always
   // scroll above the card instead of sliding under it.
+  //
+  // The observer attaches from a CALLBACK ref, not `useRef` + a one-shot
+  // effect. The measured node does not exist on the first render: boot opens
+  // on the welcome page (`workspaceRoot === ""`) and the composer branch only
+  // mounts once a workspace resolves. An effect grabbing `composerRef.current`
+  // ran while that ref was still null, bailed on the `!el` guard, and — with
+  // `[]` deps — never ran again, so the ResizeObserver stayed unattached for
+  // the whole session and `composerH` stayed pinned at its 160px initial
+  // value. Whenever a panel opened (approval / ask_question / task list /
+  // queued messages) the composer grew past that frozen reservation and the
+  // last message slid under it. Keying the observer to the node itself keeps
+  // it honest across mounts.
   const [composerH, setComposerH] = useState(160);
-  const composerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = composerRef.current;
+  const composerRoRef = useRef<ResizeObserver | null>(null);
+  const measureComposer = useCallback((el: HTMLDivElement | null) => {
+    composerRoRef.current?.disconnect();
+    composerRoRef.current = null;
     if (!el) return;
+    // Re-fires on every size change — the composer's height is live (textarea
+    // autogrow, panels opening/closing, todo list collapse), and the stream
+    // re-pins off the padding this feeds.
     const updateHeight = () => {
       const h = el.offsetHeight || el.getBoundingClientRect().height;
       if (h > 0) {
@@ -58,7 +74,7 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
     updateHeight();
     const ro = new ResizeObserver(updateHeight);
     ro.observe(el);
-    return () => ro.disconnect();
+    composerRoRef.current = ro;
   }, []);
 
   return (
@@ -96,7 +112,7 @@ export function ChatPage({ title, view, workspaceRoot, gitInfo, contextWindowHin
         aria-hidden="true"
       />
 
-      <div ref={composerRef} className="absolute inset-x-0 bottom-0 pointer-events-none z-20">
+      <div ref={measureComposer} className="absolute inset-x-0 bottom-0 pointer-events-none z-20">
         <ComposerBar view={view} workspaceRoot={workspaceRoot} sessionKey={sessionKey} />
       </div>
         </>

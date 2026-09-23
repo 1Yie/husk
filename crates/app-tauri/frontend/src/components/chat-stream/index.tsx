@@ -1,7 +1,8 @@
 
-import { memo, useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, useCallback, useMemo, startTransition, type ReactNode } from "react";
 import { cjk } from "@streamdown/cjk";
 import { Streamdown } from "streamdown";
+import { MemoStreamdown, streamdownIcons } from "./markdown-stream";
 import type { SessionView, StreamItem } from "../../hooks/stream-view";
 import { AssistantStatus } from "../assistant-status";
 import { ChatSkeleton, OlderPageSkeleton } from "../chat-skeleton";
@@ -19,7 +20,7 @@ import {
 } from "@keyline-icons/react";
 import { chatMarkdownComponents } from "./markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
-import { prismCodePlugin, prismCodePluginStreaming } from "../../lib/syntax-highlight";
+import { codeHighlightPlugin } from "../../lib/syntax-highlight";
 import { ChatTurnRail, type RailMark } from "./chat-turn-rail";
 import {
   ContextMenu,
@@ -44,40 +45,6 @@ import { loadStamp } from "@/lib/load-probe";
 import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "../../invoke/agent/sessions";
 import { retryTurn } from "../../invoke/agent/commands";
-
-const streamdownIcons = {
-  CheckIcon: Check,
-  CopyIcon: Copy,
-};
-
-/** Streamdown in `memo`: a finished turn's `text` reference is stable, so only the
- * block whose text changed re-renders. `plugins` is memoized on `animating` — a
- * fresh object would defeat Streamdown's own per-block memo (its comparator includes
- * `plugins`) and re-render every code block; while streaming it also selects the
- * complete-lines-only highlighter. */
-const MemoStreamdown = memo(function MemoStreamdown({
-  text,
-  animating,
-}: {
-  text: string;
-  animating?: boolean;
-}) {
-  const plugins = useMemo(
-    () => ({ cjk, code: (animating ? prismCodePluginStreaming : prismCodePlugin) as any }),
-    [animating],
-  );
-  return (
-    <Streamdown
-      isAnimating={animating}
-      plugins={plugins}
-      shikiTheme={["github-dark", "github-dark"]}
-      components={chatMarkdownComponents}
-      icons={streamdownIcons}
-    >
-      {text}
-    </Streamdown>
-  );
-});
 
 const BUILTIN_COMMANDS_DESC: Record<string, string> = {
   clear: "清空会话历史",
@@ -241,7 +208,7 @@ const UserMemoStreamdown = memo(function UserMemoStreamdown({
   return (
     <Streamdown
       isAnimating={false}
-      plugins={{ cjk, code: prismCodePlugin as any }}
+      plugins={{ cjk, code: codeHighlightPlugin as any }}
       shikiTheme={["github-dark", "github-dark"]}
       components={userMarkdownComponents}
       icons={streamdownIcons}
@@ -539,9 +506,27 @@ function assistantCopyText(turn: Turn): string {
     .trim();
 }
 
-function parseTurns(items: StreamItem[]): Turn[] {
-  const turns: Turn[] = [];
+/** A parsed turn plus the exact item slice it was folded from — the
+ * span lets the next render reuse the turn untouched when every item
+ * reference still matches (stream events only ever rewrite the tail). */
+interface TurnSpan {
+  turn: Turn;
+  span: StreamItem[];
+}
+
+/** Fold items[start..] into turn spans, appended to `out`. Identical
+ * output to the old single-pass `parseTurns`, just callable on a tail
+ * slice so untouched leading turns can be reused by reference. */
+function foldTurnSpans(items: StreamItem[], start: number, end: number, out: TurnSpan[]) {
   let currentTurn: Turn | null = null;
+  let turnStart = start;
+
+  const flush = (end: number) => {
+    if (currentTurn) {
+      out.push({ turn: currentTurn, span: items.slice(turnStart, end) });
+      currentTurn = null;
+    }
+  };
 
   // Stable id: `hi` (global history index) survives prepended pages;
   // `ts` (message timestamp) does too; index is the live-only fallback.
@@ -555,15 +540,16 @@ function parseTurns(items: StreamItem[]): Turn[] {
   const ensureTurn = (item: StreamItem, idx: number) => {
     if (!currentTurn) {
       currentTurn = { id: turnId(item, idx), hi: item.hi, steps: [] };
-      turns.push(currentTurn);
+      turnStart = idx;
     }
     return currentTurn;
   };
 
-  for (let idx = 0; idx < items.length; idx++) {
+  for (let idx = start; idx < end; idx++) {
     const item = items[idx];
 
     if (item.kind === "user") {
+      flush(idx);
       currentTurn = {
         id: turnId(item, idx),
         hi: item.hi,
@@ -571,7 +557,7 @@ function parseTurns(items: StreamItem[]): Turn[] {
         ts: item.ts,
         steps: [],
       };
-      turns.push(currentTurn);
+      turnStart = idx;
       continue;
     }
 
@@ -710,11 +696,66 @@ function parseTurns(items: StreamItem[]): Turn[] {
     }
   }
 
-  return turns;
+  flush(end);
 }
 
 /** Turns mount all at once, behind the loading veil; `content-visibility: auto` then
  *  skips offscreen layout and paint, so scrolling costs nothing per turn. */
+
+/** Per-turn preview strings — WeakMap'd on the cache-stable Turn so the
+ * regex-heavy collapse only runs once per turn instead of once per flush
+ * (every flush used to re-run it over EVERY user message). */
+const userPreviewCache = new WeakMap<Turn, string>();
+const assistantPreviewCache = new WeakMap<Turn, string>();
+
+function userPreviewOf(turn: Turn): string {
+  let s = userPreviewCache.get(turn);
+  if (s === undefined) {
+    s = getUserPreview(turn.userText);
+    userPreviewCache.set(turn, s);
+  }
+  return s;
+}
+
+function assistantPreviewOf(turn: Turn): string {
+  let s = assistantPreviewCache.get(turn);
+  if (s === undefined) {
+    s = getAssistantPreview(turn.steps);
+    assistantPreviewCache.set(turn, s);
+  }
+  return s;
+}
+
+/** Answer weight in characters — drives the rail's proportional dash length.
+ *  WeakMap'd on the cache-stable Turn for the same reason as the previews: the
+ *  marks list is rebuilt on every flush, and an uncached sum would walk every
+ *  step of every turn each time. Tool rows count a flat share, so a turn that
+ *  ran six commands still reads as substantial next to its one-line answer. */
+const assistantWeightCache = new WeakMap<Turn, number>();
+function assistantWeightOf(turn: Turn): number {
+  let n = assistantWeightCache.get(turn);
+  if (n === undefined) {
+    n = 0;
+    for (const step of turn.steps) {
+      if (step.type === "text" || step.type === "thinking") {
+        n += step.text.length;
+      } else if (step.type === "tools") {
+        for (const row of step.rows) {
+          // What makes an agent turn long to scroll is NOT its prose — it is
+          // the card body: the child's streamed text, its report, a diff or a
+          // log, all of which live in `detail`. Counting only 120 chars per
+          // row left a turn that takes ten screens to read looking like a stub.
+          n += row.label.length + 40;
+          if (row.detail) {
+            for (const line of row.detail) n += line.length + 1;
+          }
+        }
+      }
+    }
+    assistantWeightCache.set(turn, n);
+  }
+  return n;
+}
 
 /** One text block can carry a paste-sized payload and streamdown renders every
  *  block, so a single message can mount tens of thousands of nodes. Cap the rendered
@@ -752,6 +793,141 @@ function CappedAssistantText({ text, animating }: { text: string; animating?: bo
   );
 }
 
+/** One turn's full row — user bubble, assistant steps, turn-end footer.
+ * `memo` + the incremental parse cache mean a settled turn's `turn`
+ * object survives unchanged across flushes, so a streaming delta only
+ * re-renders the LAST turn instead of reconciling the whole history.
+ * `streaming` is `view.streaming && isLast` — folded in by the caller so
+ * a non-last turn's props stay stable while a turn runs. */
+const ChatTurn = memo(function ChatTurn({
+  turn,
+  isLast,
+  streaming,
+}: {
+  turn: Turn;
+  isLast: boolean;
+  streaming: boolean;
+}) {
+  // Regex-heavy collapse (workspace-file expansions, skill preambles) —
+  // once per turn, not once per flush.
+  const collapsedUser = useMemo(
+    () => (turn.userText ? collapsePromptArtifacts(turn.userText) : ""),
+    [turn],
+  );
+  const copyText = useMemo(() => assistantCopyText(turn), [turn]);
+  return (
+    <div
+      id={`chat-turn-${turn.id}`}
+      className="flex w-full flex-col gap-6"
+      // Every mounted turn lays out for real. `content-visibility: auto`
+      // was tried on this shell and reverted: skipping offscreen layout
+      // makes the browser substitute a 320px intrinsic guess for the real
+      // height, so (a) `getBoundingClientRect` on a block inside a skipped
+      // turn returns a zero rect — the rail's anchor table lost entries and
+      // the active mark stopped tracking the scroll — and (b) every
+      // estimate→real correction moved the content under the reader. The
+      // per-flush cost it was meant to save is already gone (memoized turns
+      // + span reuse), so real layout is the cheaper, correct option.
+    >
+      {turn.userText && (
+        <div
+          id={`chat-turn-${turn.id}-user`}
+          className="ms-auto flex w-fit max-w-[80%] flex-col items-end gap-1"
+        >
+          <div className="bg-neutral-100 text-neutral-900 flex w-fit flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]">
+            <div className="min-w-0 text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text [overflow-wrap:anywhere]">
+              <UserMemoStreamdown text={collapsedUser} />
+            </div>
+          </div>
+          {turn.ts != null && (
+            <TurnFooter align="end" ts={turn.ts} copyText={turn.userText} />
+          )}
+        </div>
+      )}
+
+      {turn.steps.length > 0 && (
+        <div
+          id={`chat-turn-${turn.id}-assistant`}
+          className="flex w-full flex-col items-start gap-4"
+        >
+          {turn.steps.map((step, stepIdx) => {
+            if (step.type === "thinking") {
+              const thinkingText = step.text.trim();
+              if (!step.done && !thinkingText) return null;
+              return (
+                <AssistantStatus
+                  key={`step-${stepIdx}`}
+                  mode={step.done ? "thought" : "thinking"}
+                  thinkingText={thinkingText}
+                />
+              );
+            }
+
+            if (step.type === "text") {
+              const isLastStep = stepIdx === turn.steps.length - 1;
+              const isAnimating = streaming && isLastStep;
+
+              return (
+                <div
+                  className="w-full min-w-0 text-[14px] text-neutral-900 [&_p]:max-w-none"
+                  key={`step-${stepIdx}`}
+                >
+                  <CappedAssistantText text={step.text} animating={isAnimating} />
+                </div>
+              );
+            }
+
+            if (step.type === "tools") {
+              const running = step.rows.some((r) => r.status === "running");
+              return (
+                <div
+                  className="flex w-full min-w-0 flex-col items-start gap-2"
+                  key={`step-${stepIdx}`}
+                >
+                  {running && <AssistantStatus mode="tools" thinkingText="" />}
+                  <ToolChips
+                    rows={step.rows}
+                    renderProse={(text) => (
+                      <MemoStreamdown text={text} animating={running} />
+                    )}
+                  />
+                </div>
+              );
+            }
+
+            if (step.type === "system") {
+              return (
+                <div
+                  key={`step-${stepIdx}`}
+                  className="text-xs text-neutral-500 font-mono py-1 select-none"
+                >
+                  {step.text}
+                </div>
+              );
+            }
+
+            return null;
+          })}
+        </div>
+      )}
+      {/* ts falls back to the prompt's for text-less turns;
+        * hidden while this turn streams. */}
+      {turn.steps.length > 0 &&
+        !streaming &&
+        (turn.assistantTs ?? turn.ts) != null && (
+          <div className="-mt-4">
+            <TurnFooter
+              align="start"
+              ts={(turn.assistantTs ?? turn.ts) as number}
+              copyText={copyText}
+              onRetry={isLast ? () => void retryTurn() : undefined}
+            />
+          </div>
+        )}
+    </div>
+  );
+});
+
 export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -761,6 +937,24 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // user just submitted, which always re-pins to the bottom.
   const lastUserIdxRef = useRef<unknown>(null);
 
+  // Last real scroll gesture (wheel/touch). A snap's own scroll event can
+  // be dispatched AFTER more content grew the column — `content-visibility`
+  // resolves its 320px intrinsic guesses into real heights, and WebKit has
+  // no scroll anchoring to absorb that growth — so the event reads "not at
+  // bottom" and used to strand the session mid-list. Rule: a bare scroll
+  // event may turn follow-mode ON (at bottom), but only a gesture may turn
+  // it OFF. A timer-based hold re-armed by every resize did the opposite —
+  // during backfill it never expired and fought the user's own scrolling.
+  const gestureAtRef = useRef(0);
+  const noteUserScroll = useCallback(() => {
+    gestureAtRef.current = performance.now();
+  }, []);
+  const snapBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+  }, []);
+
   useEffect(() => {
     // Session switch must land at the newest message — the scroll
     // container is reused across sessions, so its scrollTop and the
@@ -769,31 +963,37 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     pinnedRef.current = true;
     setIsAtBottom(true);
     lastUserIdxRef.current = null;
+    // Stale gestures must not veto the landing: a wheel that happened just
+    // before the click (or trackpad momentum) would otherwise let the first
+    // "not at bottom" event — caused by our own snap racing intrinsic-size
+    // growth — read as "the user is scrolling up", leaving the session
+    // stranded mid-list. Only a gesture made AFTER the mount counts.
+    gestureAtRef.current = 0;
     requestAnimationFrame(() => {
-      const el = scrollRef.current;
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+      snapBottom();
+      requestAnimationFrame(snapBottom);
     });
-  }, [sessionKey]);
+  }, [sessionKey, snapBottom]);
 
   // Land at the newest message once content actually mounts. The
   // sessionKey rAF above fires against the empty/skeleton container and
   // the [view.items] effect can't reach endRef while `loading` still
   // shows the skeleton — so neither reliably lands the scroll. This
-  // fires the moment loading clears with items present, then re-snaps
-  // across the next frames while shells settle into real heights (the
-  // column RO keeps re-pinning afterwards).
+  // fires the moment loading clears with items present — every mounted turn
+  // is laid out for real by then, so the snap lands on true heights (the
+  // column RO re-pins afterwards for growth added above).
   const [landed, setLanded] = useState(false);
   useEffect(() => {
     if (landed || loading || view.items.length === 0) return;
     setLanded(true);
     pinnedRef.current = true;
     setIsAtBottom(true);
-    // One snap — the mounted tail is already measured height, and the
-    // column RO re-pins on every backfill growth anyway. Extra rAF snaps
-    // just force full layouts of the fresh tree for nothing.
-    const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
-  }, [landed, loading, view.items]);
+    // The mounted tail is laid out for real by this commit, so the snap
+    // lands on the true height. One rAF re-snap catches fonts or images
+    // settling a frame later — nothing else to chase.
+    snapBottom();
+    requestAnimationFrame(snapBottom);
+  }, [landed, loading, view.items, snapBottom]);
 
   // ---------- older-history pagination ----------
   // Scroll-near-top fetches the next older page; the prepend grows the
@@ -804,9 +1004,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const [fetching, setFetching] = useState(false);
   const restoreRef = useRef<{ top: number; height: number } | null>(null);
 
-  const maybeLoadOlder = useCallback(async () => {
+  const maybeLoadOlder = useCallback(async (): Promise<boolean> => {
     const el = scrollRef.current;
-    if (!el || !onLoadOlder || !hasMore || fetchingRef.current) return;
+    // `!landed` gate: before the mount snap fires, programmatic scrolls
+    // (skeleton rAF snap, RO re-pins) can sit under 480px and trigger a
+    // fetch whose restore then lands AFTER the landing snap — committing
+    // in the same batch and overwriting it, so the session opened at a
+    // mid-list anchor instead of the newest message.
+    if (!el || !onLoadOlder || !hasMore || !landed || fetchingRef.current) return false;
     fetchingRef.current = true;
     setFetching(true);
     restoreRef.current = { top: el.scrollTop, height: el.scrollHeight };
@@ -821,7 +1026,10 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       fetchingRef.current = false;
       setFetching(false);
     }
-  }, [hasMore, onLoadOlder]);
+    // Return whether a page actually landed: callers must tell "loaded a
+    // page" from "bailed out" (no more history / nothing to do).
+    return prepended;
+  }, [hasMore, onLoadOlder, landed]);
 
   const scrollToBottom = () => {
     pinnedRef.current = true;
@@ -846,11 +1054,64 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       }, 500);
     }
     if (marks.length > 0) {
+      activeIdxRef.current = marks.length - 1;
       setActiveMarkId(marks[marks.length - 1].id);
     }
   };
 
-  const turns = useMemo(() => parseTurns(view.items), [view.items]);
+  // Span reuse: stream events only mutate the tail (append / rewrite the
+  // last items), and `applyEvent` keeps settled item references stable —
+  // `items[i] = {...it}` replaces, never edits in place. Leading spans
+  // whose item refs still match are reused wholesale; only the tail
+  // turn refolds. A prepend shifts indices but keeps refs — detected via
+  // `items[delta] === prev.items[0]`; fold just the new head (extending
+  // over the old orphan-head span when the splice lands mid-turn), then
+  // reuse every old span at its shifted offset so all existing Turn
+  // objects keep their identity — a full refold used to invalidate every
+  // ChatTurn memo, re-rendering the entire history on each page fetch.
+  const parseCacheRef = useRef<{ items: StreamItem[]; spans: TurnSpan[] } | null>(null);
+  const turns = useMemo(() => {
+    const items = view.items;
+    const spans: TurnSpan[] = [];
+    let cursor = 0;
+    const prev = parseCacheRef.current;
+    if (prev) {
+      const delta = items.length - prev.items.length;
+      // `delta === items.length` when the previous items were empty —
+      // `items[delta]` is out of bounds there, so read it once.
+      const boundary = delta > 0 && delta < items.length ? items[delta] : undefined;
+      // Pure prepend? `prev.items[0]` resurfacing at index `delta` means
+      // the old array shifted right wholesale. Fold only the new head —
+      // when the splice lands mid-turn (boundary isn't a `user` item),
+      // the head fold extends to swallow the old leading orphan span, so
+      // the merged turn refolds exactly as a full fold would produce it.
+      let spanIdx = 0;
+      if (boundary !== undefined && boundary === prev.items[0]) {
+        const headEnd =
+          boundary.kind === "user" ? delta : delta + prev.spans[0].span.length;
+        foldTurnSpans(items, 0, headEnd, spans);
+        cursor = headEnd;
+        spanIdx = boundary.kind === "user" ? 0 : 1;
+      }
+      for (; spanIdx < prev.spans.length; spanIdx++) {
+        const s = prev.spans[spanIdx];
+        if (cursor + s.span.length > items.length) break;
+        let same = true;
+        for (let j = 0; j < s.span.length; j++) {
+          if (items[cursor + j] !== s.span[j]) {
+            same = false;
+            break;
+          }
+        }
+        if (!same) break;
+        spans.push(s);
+        cursor += s.span.length;
+      }
+    }
+    foldTurnSpans(items, cursor, items.length, spans);
+    parseCacheRef.current = { items, spans };
+    return spans.map((s) => s.turn);
+  }, [view.items]);
 
   // Tail-first mount: the unveiling commit mounts only the last MOUNT_CHUNK turns
   // (what the viewport shows), then backfills older turns in small macrotask slices,
@@ -889,13 +1150,24 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
   useEffect(() => {
     if (hidden <= 0) return;
-    const t = setTimeout(
-      () => setHiddenTop((h) => Math.max(0, (h ?? hidden) - BACKFILL_CHUNK)),
-      0,
+    // Idle + transition: each chunk's mount is a Streamdown/highlighter-heavy
+    // commit — run it in idle time AND as an interruptible transition so
+    // a long session's backfill storm never holds the main thread hostage
+    // (previously: back-to-back synchronous commits, clicks queued dead).
+    const schedule =
+      window.requestIdleCallback ??
+      ((f: () => void) => window.setTimeout(f, 0));
+    const cancel =
+      window.cancelIdleCallback ?? ((id: number) => window.clearTimeout(id));
+    const id = schedule(() =>
+      startTransition(() =>
+        setHiddenTop((h) => Math.max(0, (h ?? hidden) - BACKFILL_CHUNK)),
+      ),
     );
     if (hidden - BACKFILL_CHUNK <= 0) loadStamp("backfill-done");
-    return () => clearTimeout(t);
+    return () => cancel(id as number);
   }, [hidden]);
+
   const visibleTurns = hidden > 0 ? turns.slice(hidden) : turns;
 
 
@@ -932,14 +1204,40 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
     // Unloaded-history placeholders — the rail is an overview of the
     // WHOLE session, so turns above the loaded page still occupy their
-    // share as faded dashes (click pages up to that region).
+    // share as faded dots (click pages up to that region). Two rows per
+    // unloaded turn: the loaded side spends a user mark AND an assistant
+    // mark per turn, so one row per unloaded turn made the unloaded share
+    // read as half its real length and put the load boundary in the wrong
+    // place on the strip.
     const loadedUserTurns = turns.reduce((n, t) => n + (t.userText ? 1 : 0), 0);
-    const unloaded = Math.max(0, (view.turnTotal ?? loadedUserTurns) - loadedUserTurns);
+    // Exact when the backend reported `turn_offset` — the ordinal of the
+    // first turn inside the loaded slice IS the unloaded count. The
+    // count-based figure stays as the fallback for views built before
+    // that field existed, or for live-only ones.
+    const unloaded = Math.max(
+      0,
+      view.turnOffset ?? (view.turnTotal ?? loadedUserTurns) - loadedUserTurns,
+    );
+    // The page is a slice of MESSAGES, so its first turn is usually a HALF
+    // turn: the cut landed mid-answer and `turnOffset` still counts that
+    // turn as wholly unloaded, while its answer already sits on screen as
+    // the first loaded mark. Crediting it two dots invented a whole extra
+    // turn in the unloaded share and dropped the load boundary one row too
+    // far — the rail then disagreed with the content about where the
+    // unloaded region ends. Only its prompt is missing, so it gets exactly
+    // ONE trailing dot, and that dot points at the answer it belongs to.
+    const boundaryTurn = turns[0] && !turns[0].userText ? turns[0] : null;
+    const openTurns = Math.max(0, unloaded - (boundaryTurn ? 1 : 0));
     const PH_CAP = 120;
-    const phCount = Math.min(unloaded, PH_CAP);
-    for (let i = 0; i < phCount; i++) {
-      // Even mapping back onto the real ordinal range when capped.
-      const phIndex = Math.round((i / Math.max(1, phCount - 1)) * Math.max(0, unloaded - 1));
+    const boundaryRows = boundaryTurn ? 1 : 0;
+    const openRows = Math.max(0, Math.min(openTurns * 2, PH_CAP - boundaryRows));
+    for (let i = 0; i < openRows; i++) {
+      // Exact two-rows-per-turn pairing while the range fits; even mapping
+      // back onto the real ordinal range once the cap compresses it.
+      const phIndex =
+        openRows === openTurns * 2
+          ? Math.floor(i / 2)
+          : Math.round((i / Math.max(1, openRows - 1)) * Math.max(0, openTurns - 1));
       list.push({
         id: `mark-ph-${i}`,
         type: "placeholder",
@@ -949,17 +1247,43 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         previewSnippet: "",
       });
     }
+    if (boundaryTurn) {
+      list.push({
+        id: "mark-ph-boundary",
+        type: "placeholder",
+        // Its prompt is ordinal `unloaded - 1`; clicking lands on the
+        // answer below because that is the half that is actually loaded.
+        phIndex: Math.max(0, unloaded - 1),
+        targetId:
+          boundaryTurn.steps.length > 0
+            ? `chat-turn-${boundaryTurn.id}-assistant`
+            : "",
+        previewTitle: "",
+        previewSnippet: "",
+      });
+    }
 
+    // Turn numbers are GLOBAL ordinals, not loaded indices: on a reopened
+    // session the first loaded turn is turn `unloaded + 1` — or `unloaded`
+    // when the page cut it in half — so "#1" was naming a turn the reader
+    // was not looking at.
+    const firstTurnNum = unloaded + (boundaryTurn ? 0 : 1);
     turns.forEach((turn, idx) => {
-      const turnNum = idx + 1;
+      const turnNum = firstTurnNum + idx;
       if (turn.userText) {
+        // Length from the COLLAPSED preview, not the raw text: a `/skill` or
+        // `@file` mention expands into a multi-kilobyte preamble that the
+        // bubble never shows, and measuring that would peg every such prompt
+        // at full width.
+        const userPreview = userPreviewOf(turn);
         list.push({
           id: `mark-${turn.id}-user`,
           type: "user",
           turnId: turn.id,
           targetId: `chat-turn-${turn.id}-user`,
           previewTitle: `用户提问 #${turnNum}`,
-          previewSnippet: getUserPreview(turn.userText),
+          previewSnippet: userPreview,
+          len: userPreview.length,
         });
       }
 
@@ -972,7 +1296,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           turnId: turn.id,
           targetId: `chat-turn-${turn.id}-assistant`,
           previewTitle: `助手回复 #${turnNum}${isStreaming ? " (生成中)" : ""}`,
-          previewSnippet: getAssistantPreview(turn.steps),
+          previewSnippet: assistantPreviewOf(turn),
+          len: assistantWeightOf(turn),
           isStreaming,
         });
       } else if (idx === turns.length - 1 && (view.streaming || showReplyWait)) {
@@ -989,7 +1314,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     });
 
     return list;
-  }, [turns, view.streaming, showReplyWait]);
+  }, [turns, view.streaming, showReplyWait, view.turnOffset, view.turnTotal]);
 
   // Windowed shells change scrollHeight whenever they mount, unmount,
   // or measure real heights. While pinned, follow the bottom; while not
@@ -1002,12 +1327,23 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const containerTop = el.getBoundingClientRect().top;
     const base = el.scrollTop - containerTop;
     const tops: { id: string; top: number }[] = [];
+    let prev = -Infinity;
     for (const mark of marks) {
       if (mark.type === "top") continue;
       const target = document.getElementById(mark.targetId);
-      if (target) {
-        tops.push({ id: mark.id, top: target.getBoundingClientRect().top + base });
-      }
+      if (!target) continue;
+      const rect = target.getBoundingClientRect();
+      // A block inside a `content-visibility: auto` subtree that is
+      // currently skipped has NO layout box — its rect is all zeros, which
+      // would land in `tops` as a bogus ≈scrollTop value and break the
+      // monotonic order the active-mark binary search depends on (that is
+      // exactly how the rail ended up highlighting the wrong mark).
+      if (rect.width === 0 && rect.height === 0) continue;
+      // Windowed rebuilds can still measure marginally out of order; clamp
+      // so the array stays sorted no matter what.
+      const top = Math.max(rect.top + base, prev);
+      prev = top;
+      tops.push({ id: mark.id, top });
     }
     markTopsRef.current = tops;
   }, [marks]);
@@ -1023,32 +1359,19 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const r = restoreRef.current;
     const el = scrollRef.current;
     restoreRef.current = null;
-    if (!r || !el) return;
+    // `!landed`: a restore captured off the skeleton would overwrite the
+    // landing snap — this effect runs AFTER the landing effect in a
+    // batched commit, and the newest message is the right anchor until
+    // the user has actually landed anyway. Consume + drop it instead.
+    if (!r || !el || !landed) return;
     el.scrollTop = r.top + (el.scrollHeight - r.height);
     measureMarks();
-  }, [view.historyStart, view.items, measureMarks]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    const col = el?.firstElementChild;
-    if (!el || !col) return;
-    let debounce = 0;
-    const ro = new ResizeObserver(() => {
-      if (pinnedRef.current) {
-        el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
-      }
-      window.clearTimeout(debounce);
-      debounce = window.setTimeout(measureMarks, 250);
-    });
-    ro.observe(col);
-    return () => {
-      window.clearTimeout(debounce);
-      ro.disconnect();
-    };
-  }, [measureMarks]);
-
+  }, [view.historyStart, view.items, measureMarks, landed]);
 
   const [activeMarkId, setActiveMarkId] = useState<string>("mark-top");
+  /** Index of `activeMarkId` inside `marks` — `updateActiveMark` starts its
+   *  walk here, so a scroll frame measures one or two marks instead of all. */
+  const activeIdxRef = useRef(0);
 
   const isSmoothScrollingRef = useRef(false);
 
@@ -1063,11 +1386,6 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   viewRef.current = view;
   const turnsRef = useRef(turns);
   turnsRef.current = turns;
-  // Offset of each marked block inside its turn shell — refreshed while
-  useEffect(() => {
-    measureMarks();
-  }, [measureMarks, view.items, hidden]);
-
   const updateActiveMark = useCallback(() => {
     if (isSmoothScrollingRef.current) return;
     const el = scrollRef.current;
@@ -1075,29 +1393,109 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
     const { scrollTop, scrollHeight, clientHeight } = el;
 
-    if (scrollTop < 32) {
-      setActiveMarkId(marks[0].id);
-      return;
-    }
-
+    // Bottom first: when the loaded slice roughly fits the viewport both
+    // branches match, and the newest message is the honest description of
+    // what is on screen — "top" was highlighting the first mark there.
     if (scrollHeight - scrollTop - clientHeight < 48) {
+      activeIdxRef.current = marks.length - 1;
       setActiveMarkId(marks[marks.length - 1].id);
       return;
     }
 
-    // Binary search the last mark above the trigger line — cached
-    // positions, zero layout reads.
-    const trigger = scrollTop + 100;
-    const tops = markTopsRef.current;
-    let lo = 0, hi = tops.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (tops[mid].top <= trigger) lo = mid + 1;
-      else hi = mid;
+    if (scrollTop < 32) {
+      // Very top of the loaded slice. When the history above it is still
+      // unloaded, that boundary IS the last placeholder dot — pointing at
+      // "回到顶部" there read as "scrolled into the load region and the
+      // rail jumped to the top".
+      const firstLoaded = marks.findIndex(
+        (m) => m.type !== "top" && m.type !== "placeholder",
+      );
+      const hasPlaceholders = marks.some((m) => m.type === "placeholder");
+      const idx = hasPlaceholders && firstLoaded > 0 ? firstLoaded - 1 : 0;
+      activeIdxRef.current = idx;
+      setActiveMarkId(marks[idx].id);
+      return;
     }
-    const currentId = lo > 0 ? tops[lo - 1].id : marks[0].id;
-    setActiveMarkId(currentId);
+
+    // Walk out from the mark highlighted last, measuring as we go, and stop
+    // on the last mark whose top sits above the trigger line. Positions are
+    // read HERE, in the scroll frame, not from a cached table: a turn's height
+    // changes outside an items update all the time (an expanded tool row, a
+    // late image, a font swap), and a cached table then points at the wrong
+    // mark — or at marks that no longer exist — so the rail sat on a highlight
+    // that had nothing to do with the viewport. A couple of layout reads per
+    // frame is the price of always being right.
+    const trigger = scrollTop + 100;
+    const containerTop = el.getBoundingClientRect().top;
+    const topOf = (m: RailMark): number | null => {
+      if (!m.targetId) return null; // placeholder — never in the DOM
+      const node = document.getElementById(m.targetId);
+      if (!node) return null; // windowed out
+      const rect = node.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return null;
+      return rect.top - containerTop + scrollTop;
+    };
+    let idx = Math.min(Math.max(activeIdxRef.current, 0), marks.length - 1);
+    while (idx + 1 < marks.length) {
+      const next = topOf(marks[idx + 1]);
+      if (next === null) {
+        idx++; // no box to compare (a placeholder) — step over it
+        continue;
+      }
+      if (next <= trigger) idx++;
+      else break;
+    }
+    while (idx > 0) {
+      const cur = topOf(marks[idx]);
+      if (cur === null) {
+        idx--;
+        continue;
+      }
+      if (cur > trigger) idx--;
+      else break;
+    }
+    activeIdxRef.current = idx;
+    setActiveMarkId(marks[idx].id);
   }, [marks]);
+
+  // Re-measure after every layout change (items, window slice) AND
+  // re-derive the active mark from those fresh positions: measuring alone
+  // left the rail pointing at a stale mark (its initial "mark-top") until
+  // the user happened to scroll.
+  useEffect(() => {
+    measureMarks();
+    updateActiveMark();
+    // `loading` matters: the reveal commit is what first renders real turns,
+    // and the effect above it ran against the skeleton (nothing to measure).
+  }, [measureMarks, updateActiveMark, view.items, hidden, loading]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    const col = el?.firstElementChild;
+    if (!el || !col) return;
+    let debounce = 0;
+    const ro = new ResizeObserver(() => {
+      // Growth below the viewport → re-anchor the bottom while following.
+      // The pin's own scroll events can't clear follow-mode anymore (only
+      // a real gesture can), so the landing converges frame by frame.
+      if (pinnedRef.current) {
+        el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+      }
+      // A layout change moves every mark below it: re-measure AND re-derive
+      // the highlight, otherwise the rail keeps pointing at offsets that no
+      // longer exist until the reader happens to scroll again.
+      window.clearTimeout(debounce);
+      debounce = window.setTimeout(() => {
+        measureMarks();
+        updateActiveMark();
+      }, 250);
+    });
+    ro.observe(col);
+    return () => {
+      window.clearTimeout(debounce);
+      ro.disconnect();
+    };
+  }, [measureMarks, updateActiveMark]);
 
   useEffect(() => {
     // Own-message jump: a new `kind:"user"` item means the user just
@@ -1122,6 +1520,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       endRef.current?.scrollIntoView({ block: "end" });
       setIsAtBottom(true);
       if (marks.length > 0) {
+        activeIdxRef.current = marks.length - 1;
         setActiveMarkId(marks[marks.length - 1].id);
       }
     } else {
@@ -1143,9 +1542,13 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     // animation, and content growth during the animation then strands
     // the scroll short of the new bottom with the pin dead.
     if (!isSmoothScrollingRef.current) {
-      pinnedRef.current = atBottom;
+      if (atBottom) pinnedRef.current = true;
+      else if (performance.now() - gestureAtRef.current < 400) {
+        // A wheel/touch just happened → the user is really scrolling up.
+        pinnedRef.current = false;
+      }
     }
-    setIsAtBottom(atBottom);
+    setIsAtBottom(pinnedRef.current);
     // One mark update per frame max — scroll events fire faster than
     // frames, and the rail highlight doesn't need event-rate precision.
     if (!markRafRef.current) {
@@ -1160,6 +1563,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     if (mark.type === "top") {
       pinnedRef.current = false;
       setIsAtBottom(false);
+      activeIdxRef.current = 0;
       setActiveMarkId(mark.id);
       isSmoothScrollingRef.current = true;
       scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
@@ -1170,24 +1574,84 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     }
 
     if (mark.type === "placeholder") {
-      // Page up until the estimated history index is loaded, then scroll
-      // to the turn that covers it. `viewRef` tracks the freshest view
-      // because `onLoadOlder` resolves before the prop does.
+      // Show the pick immediately: paging up takes a moment per page, and
+      // without this the rail kept highlighting whatever mark was active while
+      // the click looked like it had done nothing at all.
+      pinnedRef.current = false;
+      setIsAtBottom(false);
+      activeIdxRef.current = marks.indexOf(mark);
+      setActiveMarkId(mark.id);
+      // The boundary dot's own prompt sits above the slice, but the answer
+      // it belongs to is already mounted right below it — land there
+      // instead of paging up to a turn whose tail is what this dot stands
+      // for (paging would also be wrong: the prompt it names can only
+      // arrive together with the answer that is already here).
+      if (mark.targetId) {
+        const mounted = document.getElementById(mark.targetId);
+        if (mounted) {
+          isSmoothScrollingRef.current = true;
+          mounted.scrollIntoView({ behavior: "smooth", block: "start" });
+          setTimeout(() => {
+            isSmoothScrollingRef.current = false;
+          }, 500);
+          return;
+        }
+      }
+      // Page up until the dot's OWN turn is loaded, then scroll to it.
+      // With `turnOffset` the ordinal is exact: an accumulated slice's
+      // user turns are ordinals `turnOffset, turnOffset+1, …` in order, so
+      // the target is the `phIndex − turnOffset`-th user turn. Without the
+      // field (a view built before it existed) this falls back to
+      // estimating a message index from the average turn length.
+      const ordinal = mark.phIndex ?? 0;
       const loadedUser = turnsRef.current.reduce((n, t) => n + (t.userText ? 1 : 0), 0);
       const unloadedNow = Math.max(0, (viewRef.current.turnTotal ?? loadedUser) - loadedUser);
       const start = viewRef.current.historyStart ?? 0;
-      const approx = Math.round(((mark.phIndex ?? 0) + 0.5) * (start / Math.max(1, unloadedNow)));
+      const approx = Math.round((ordinal + 0.5) * (start / Math.max(1, unloadedNow)));
       void (async () => {
-        let guard = 0;
-        while (guard++ < 12 && (viewRef.current.historyStart ?? 0) > approx) {
+        // Page up until the dot's region is actually in. The old loop had
+        // two traps: a blind 12-iteration cap that gave up mid-way — after
+        // which the target lookup fell back to the topmost loaded turn,
+        // reading as "clicked an unloaded dot, jumped to the top" — and a
+        // bare `setTimeout(0)` wait that burned those iterations in
+        // milliseconds whenever a page was already in flight. Now it waits
+        // out an in-flight page, stops only at real end conditions, and
+        // lets the prepend's transition commit before picking the target.
+        const nextFrame = () =>
+          new Promise<void>((r) => {
+            const t = window.setTimeout(r, 60);
+            requestAnimationFrame(() => {
+              window.clearTimeout(t);
+              r();
+            });
+          });
+        for (let i = 0; i < 400; i++) {
+          const cur = viewRef.current;
+          const hs = cur.historyStart ?? 0;
+          const inYet = cur.turnOffset != null ? cur.turnOffset <= ordinal : hs <= approx;
+          if (inYet || hs <= 0) break; // region in / session start reached
+          if (fetchingRef.current) {
+            await nextFrame(); // a page is already loading — let it land
+            continue;
+          }
           // maybeLoadOlder carries the fetching guard + scroll-restore
           // bookkeeping — calling onLoadOlder directly could double-fetch.
-          await maybeLoadOlder();
-          await new Promise((r) => setTimeout(r, 0));
+          const prepended = await maybeLoadOlder();
+          if (!prepended && !fetchingRef.current) break; // history ended
+          await nextFrame();
         }
+        await nextFrame();
         const loaded = turnsRef.current;
-        const target = loaded.find((t) => t.hi != null && t.hi >= approx)
-          ?? loaded[loaded.length - 1];
+        let target: (typeof loaded)[number] | undefined;
+        const off = viewRef.current.turnOffset;
+        if (off != null) {
+          const userTurns = loaded.filter((t) => t.userText);
+          const idx = Math.min(Math.max(ordinal - off, 0), userTurns.length - 1);
+          target = userTurns[idx] ?? loaded[0];
+        } else {
+          target = loaded.find((t) => t.hi != null && t.hi >= approx)
+            ?? loaded[loaded.length - 1];
+        }
         const el = target ? document.getElementById(`chat-turn-${target.id}`) : null;
         if (el) {
           pinnedRef.current = false;
@@ -1205,6 +1669,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const isLast = marks[marks.length - 1]?.id === mark.id;
     pinnedRef.current = isLast;
     setIsAtBottom(isLast);
+    activeIdxRef.current = marks.indexOf(mark);
     setActiveMarkId(mark.id);
 
     if (isLast) {
@@ -1212,6 +1677,10 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       setTimeout(() => {
         isSmoothScrollingRef.current = false;
+        // Growth during the animation (intrinsic-size guesses resolving)
+        // can leave the smooth scroll short of the real bottom — snap the
+        // remainder, same as the scroll-to-bottom button does.
+        snapBottom();
       }, 500);
       return;
     }
@@ -1327,7 +1796,13 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         loading={loading}
       />
 
-      <div className="stream-scroll" ref={scrollRef} onScroll={onScroll}>
+      <div
+        className="stream-scroll"
+        ref={scrollRef}
+        onScroll={onScroll}
+        onWheel={noteUserScroll}
+        onTouchStart={noteUserScroll}
+      >
         <div className="max-w-3xl w-full mx-auto px-4 pt-6 flex flex-col gap-6 min-h-full">
           {loading ? (
             // Loading = skeleton INSTEAD of content — the old
@@ -1352,114 +1827,17 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                   </div>
                 ))}
 
-              {visibleTurns.map((turn, turnIdx) => (
-                <div
-                  key={turn.id}
-                  id={`chat-turn-${turn.id}`}
-                  className="flex w-full flex-col gap-6"
-                >
-                  {turn.userText && (
-                    <div
-                      id={`chat-turn-${turn.id}-user`}
-                      className="ms-auto flex w-fit max-w-[80%] flex-col items-end gap-1"
-                    >
-                      <div className="bg-neutral-100 text-neutral-900 flex w-fit flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]">
-                        <div className="min-w-0 text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text [overflow-wrap:anywhere]">
-                          <UserMemoStreamdown text={collapsePromptArtifacts(turn.userText)} />
-                        </div>
-                      </div>
-                      {turn.ts != null && (
-                        <TurnFooter align="end" ts={turn.ts} copyText={turn.userText} />
-                      )}
-                    </div>
-                  )}
-
-                  {turn.steps.length > 0 && (
-                    <div
-                      id={`chat-turn-${turn.id}-assistant`}
-                      className="flex w-full flex-col items-start gap-4"
-                    >
-                      {turn.steps.map((step, stepIdx) => {
-                        if (step.type === "thinking") {
-                          const thinkingText = step.text.trim();
-                          if (!step.done && !thinkingText) return null;
-                          return (
-                            <AssistantStatus
-                              key={`step-${stepIdx}`}
-                              mode={step.done ? "thought" : "thinking"}
-                              thinkingText={thinkingText}
-                            />
-                          );
-                        }
-
-                        if (step.type === "text") {
-                          const isLastTurn = turnIdx === visibleTurns.length - 1;
-                          const isLastStep = stepIdx === turn.steps.length - 1;
-                          const isAnimating = view.streaming && isLastTurn && isLastStep;
-
-                          return (
-                            <div
-                              className="w-full min-w-0 text-[14px] text-neutral-900 [&_p]:max-w-none"
-                              key={`step-${stepIdx}`}
-                            >
-                              <CappedAssistantText text={step.text} animating={isAnimating} />
-                            </div>
-                          );
-                        }
-
-                        if (step.type === "tools") {
-                          const running = step.rows.some((r) => r.status === "running");
-                          return (
-                            <div
-                              className="flex w-full min-w-0 flex-col items-start gap-2"
-                              key={`step-${stepIdx}`}
-                            >
-                              {running && <AssistantStatus mode="tools" thinkingText="" />}
-                              <ToolChips
-                                rows={step.rows}
-                                renderProse={(text) => (
-                                  <MemoStreamdown text={text} animating={running} />
-                                )}
-                              />
-                            </div>
-                          );
-                        }
-
-                        if (step.type === "system") {
-                          return (
-                            <div
-                              key={`step-${stepIdx}`}
-                              className="text-xs text-neutral-500 font-mono py-1 select-none"
-                            >
-                              {step.text}
-                            </div>
-                          );
-                        }
-
-                        return null;
-                      })}
-                    </div>
-                  )}
-                  {/* ts falls back to the prompt's for text-less turns;
-                    * hidden while this turn streams. */}
-                  {turn.steps.length > 0 &&
-                    (!view.streaming || turnIdx !== visibleTurns.length - 1) &&
-                    (turn.assistantTs ?? turn.ts) != null && (
-                      <div className="-mt-4">
-                        <TurnFooter
-                          align="start"
-                          ts={(turn.assistantTs ?? turn.ts) as number}
-                          copyText={assistantCopyText(turn)}
-                          onRetry={
-                            turnIdx === visibleTurns.length - 1
-                              ? () => void retryTurn()
-                              : undefined
-                          }
-                        />
-                      </div>
-                    )}
-                </div>
-              ))}
+              {visibleTurns.map((turn, turnIdx) => {
+                const isLast = turnIdx === visibleTurns.length - 1;
+                return (
+                  <ChatTurn
+                    key={turn.id}
+                    turn={turn}
+                    isLast={isLast}
+                    streaming={view.streaming && isLast}
+                  />
+                );
+              })}
 
             {showReplyWait && (
               <div id="chat-reply-wait">

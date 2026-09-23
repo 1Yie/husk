@@ -4,7 +4,8 @@ import { ChevronDown } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { renderWithTwemoji } from "@/lib/twemoji";
+import { MemoStreamdown } from "../chat-stream/markdown-stream";
+import { thinkingMarkdownComponents } from "../chat-stream/markdown-components";
 
 /** The live modes — i.e. the states the row is actively working in, as
  *  opposed to the settled "思考过程" recap. */
@@ -82,14 +83,28 @@ const ElapsedLabel = memo(function ElapsedLabel({
 
 /** Reasoning body. `memo`'d because the parent re-renders on every stream
  *  event (ChatStream re-renders per delta), and without it every such render
- *  would re-run the twemoji pass over a multi-thousand-char chain whose text
- *  had not changed. Radix passes open/closed state through context, which
- *  bypasses memo, so the collapse animation still works. */
-const ThinkingBody = memo(function ThinkingBody({ text }: { text: string }) {
+ *  would re-run the whole markdown pipeline over a multi-thousand-char chain
+ *  whose text had not changed. Radix passes open/closed state through context,
+ *  which bypasses memo, so the collapse animation still works.
+ *
+ *  Rendered through the same Streamdown pipeline as the answer — reasoning is
+ *  markdown too (fenced code, inline code, lists, emphasis); it used to be
+ *  `whitespace-pre-wrap` plain text, so those fences showed up literally. */
+const ThinkingBody = memo(function ThinkingBody({
+  text,
+  animating,
+}: {
+  text: string;
+  animating?: boolean;
+}) {
   return (
     <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
-      <div className="text-neutral-500 mt-1 w-full min-w-0 whitespace-pre-wrap text-[13px] leading-relaxed select-text font-normal pl-6">
-        {renderWithTwemoji(text)}
+      <div className="text-neutral-500 mt-1 w-full min-w-0 text-[13px] leading-relaxed select-text font-normal pl-6">
+        <MemoStreamdown
+          text={text}
+          animating={animating}
+          components={thinkingMarkdownComponents}
+        />
       </div>
     </CollapsibleContent>
   );
@@ -170,7 +185,11 @@ export function AssistantStatus({
             disabled={!canToggle}
           >
             <span className="relative w-5 h-5 shrink-0 flex items-center justify-center">
-              {(
+              {/* Orbs mount only while the row is live — each one is a
+               *  few hundred infinitely-animating spans, and opacity:0
+               *  does NOT stop the animation engine, so a long session
+               *  was paying N_rows × 3 × infinite keyframes forever. */}
+              {live && (
                 [
                   ["reply", "B3"],
                   ["thinking", "S1"],
@@ -179,10 +198,10 @@ export function AssistantStatus({
               ).map(([item, variant]) => (
                 <span
                   key={item}
-                  aria-hidden={!(live && mode === item)}
+                  aria-hidden={mode !== item}
                   className={cn(
                     "absolute inset-0 flex items-center justify-center transition-opacity duration-300 ease-out",
-                    live && mode === item ? "opacity-100" : "opacity-0 pointer-events-none"
+                    mode === item ? "opacity-100" : "opacity-0 pointer-events-none"
                   )}
                 >
                   <Orb label={label} variant={variant} size={14} className="text-neutral-800" />
@@ -228,7 +247,11 @@ export function AssistantStatus({
           </Button>
         </CollapsibleTrigger>
       </div>
-      {thinkingText ? <ThinkingBody text={thinkingText} /> : null}
+      {thinkingText ? (
+        // `thinking` = the reasoning is still arriving → the streaming
+        // highlighter, same as the answer text uses.
+        <ThinkingBody text={thinkingText} animating={mode === "thinking"} />
+      ) : null}
     </Collapsible>
   );
 }

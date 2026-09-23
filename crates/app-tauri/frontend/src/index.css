@@ -558,7 +558,8 @@ img.emoji {
 }
 
 /* ==========================================================================
-   Syntax Highlighting (Prism — Light & Dark Modes)
+   Syntax Highlighting — token classes the twinkleplop adapter emits
+   (token buckets + inline palette, Light & Dark Modes)
    ========================================================================== */
 
 /* Light Mode (default) */

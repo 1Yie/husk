@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use agent_ipc::{AgentState, UiEvent};
-use agent_llm::sampler::{SampleRequest, Sampler};
+use agent_llm::sampler::{SampleRequest, Sampler, SamplerEvent};
 use agent_llm::types::{ChatMessage, StreamChunk, ToolCallAssembler};
 use tokio::sync::mpsc;
 use tracing::instrument;
@@ -499,6 +499,17 @@ impl Engine {
             // collected here and persisted after the sample so a reloaded
             // view replays them too.
             let mut policy_notes: Vec<String> = Vec::new();
+            // Set by `on_event` on `Retrying`, consumed by `on_chunk` on the
+            // retried attempt's first chunk. A retry resends the SAME messages
+            // and the provider regenerates from scratch, so every per-attempt
+            // accumulator must drop the dead attempt: otherwise history
+            // persists `partial + regenerated` text, `assembler` finishes
+            // attempt-1's half-written tool calls inside attempt 2, and a
+            // stale `stream_error` fails a turn whose retry actually
+            // succeeded. Lazily (not at event time) so a retry that never
+            // produces a chunk still keeps the partial as salvage. Atomic
+            // rather than Cell: the boxed future needs Send.
+            let retry_reset = std::sync::atomic::AtomicBool::new(false);
 
             let effort = self.resolve_reasoning_effort();
             let schema = self.active_registry().request_schema();
@@ -535,6 +546,16 @@ impl Engine {
                     req,
                     history,
                     |chunk| {
+                        if retry_reset.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                            round_text.clear();
+                            round_reasoning.clear();
+                            pending_text_delta.clear();
+                            pending_reasoning_delta.clear();
+                            assembler = ToolCallAssembler::new();
+                            saw_done = false;
+                            stream_error = None;
+                            usage = None;
+                        }
                         match chunk {
                             StreamChunk::ReasoningDelta(t) => {
                                 round_reasoning.push_str(t);
@@ -608,7 +629,10 @@ impl Engine {
                         }
                     },
                     |ev| {
-                        let t = format!("{ev:?}");
+                        if matches!(ev, SamplerEvent::Retrying { .. }) {
+                            retry_reset.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        let t = ev.to_string();
                         let _ = io.ui_tx.send(UiEvent::SystemMessage(t.clone()));
                         policy_notes.push(t);
                     },
@@ -1111,6 +1135,10 @@ impl Engine {
         ];
 
         let mut note = String::new();
+        // Same retry-reset rule as the main loop: a retry regenerates the
+        // summary from scratch, so the dead attempt's text must not survive
+        // into `note`.
+        let retry_reset = std::sync::atomic::AtomicBool::new(false);
         let req = SampleRequest {
             model: &self.model,
             temperature: 0.0,
@@ -1125,11 +1153,18 @@ impl Engine {
                 req,
                 &mut summarize_history,
                 |chunk| {
+                    if retry_reset.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        note.clear();
+                    }
                     if let StreamChunk::ContentDelta(t) = chunk {
                         note.push_str(t);
                     }
                 },
-                |_| {},
+                |ev| {
+                    if matches!(ev, SamplerEvent::Retrying { .. }) {
+                        retry_reset.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                },
             )
             .await
             .map_err(|e| e.to_string())?;

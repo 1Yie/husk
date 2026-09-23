@@ -138,10 +138,41 @@ impl SessionStore {
     }
 
     /// Load the latest history snapshot for a session.
+    ///
+    /// The file is append-only full snapshots, so it grows roughly with
+    /// `turns × history size` while only the tail line is ever read. Read
+    /// backward in 64 KiB blocks until the last line's leading newline is
+    /// found instead of pulling the whole file into memory — a 100 MB
+    /// history file then costs one snapshot's worth of I/O, not the whole
+    /// file, on every `history_page` fetch.
     pub fn load_history(&self, id: i64) -> Option<Vec<ChatMessage>> {
-        let text = std::fs::read_to_string(self.history_path(id)).ok()?;
-        let last = text.lines().rev().find(|l| !l.trim().is_empty())?;
-        serde_json::from_str(last).ok()
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(self.history_path(id)).ok()?;
+        let mut pos = f.metadata().ok()?.len();
+        const BLOCK: u64 = 64 * 1024;
+        // `tail` holds the file's trailing bytes read so far and grows
+        // toward the head until the final non-blank line is complete.
+        let mut tail: Vec<u8> = Vec::new();
+        loop {
+            let step = pos.min(BLOCK);
+            pos -= step;
+            f.seek(SeekFrom::Start(pos)).ok()?;
+            let mut buf = vec![0u8; step as usize];
+            f.read_exact(&mut buf).ok()?;
+            buf.extend_from_slice(&tail);
+            tail = buf;
+            if let Some(start) = last_line_start(&tail) {
+                return serde_json::from_slice(&tail[start..]).ok();
+            }
+            if pos == 0 {
+                // The whole file is one unterminated line (or all blank).
+                let line = trim_ascii_end(&tail);
+                if line.is_empty() {
+                    return None;
+                }
+                return serde_json::from_slice(line).ok();
+            }
+        }
     }
 
     /// Append a full history snapshot (one line). Called at turn boundaries.
@@ -207,6 +238,28 @@ impl SessionStore {
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default()
     }
+}
+
+/// Byte offset where `buf`'s final non-blank line begins — i.e. just past
+/// the last `'\n'` that precedes real content. `None` when `buf` holds no
+/// newline before its last content byte (the line may extend beyond what
+/// has been read so far — the caller keeps reading toward the head).
+fn last_line_start(buf: &[u8]) -> Option<usize> {
+    let end = trim_ascii_end(buf).len();
+    if end == 0 {
+        return None;
+    }
+    buf[..end].iter().rposition(|&b| b == b'\n').map(|nl| nl + 1)
+}
+
+/// `buf` minus trailing ASCII whitespace/newlines — the final snapshot
+/// line may be followed by nothing but `'\n'` padding.
+fn trim_ascii_end(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    while end > 0 && buf[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &buf[..end]
 }
 
 /// Stable per-workspace key — xxh3 of the canonical root.
@@ -522,5 +575,49 @@ pub fn remove_recent_workspace(workspace_root: &Path) {
     });
     if let Ok(json) = serde_json::to_string_pretty(&list) {
         let _ = std::fs::write(path, json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_llm::types::ChatMessage;
+
+    /// The reader must pick the LAST non-blank line even when earlier
+    /// snapshots push it more than one 64 KiB read block from the EOF —
+    /// this is what keeps `history_page` O(snapshot) instead of O(file).
+    #[test]
+    fn load_history_finds_last_line_across_block_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore { dir: dir.path().to_path_buf() };
+
+        store.snapshot(7, &[ChatMessage::user("first")]).unwrap();
+        // A mid-file snapshot inflated past the 64 KiB block size, so the
+        // final small line lands >1 block from the start and the backward
+        // reader must assemble it across reads.
+        let big = ChatMessage::user("x".repeat(200 * 1024));
+        store.snapshot(7, &[big, ChatMessage::assistant("mid")]).unwrap();
+        store
+            .snapshot(7, &[ChatMessage::user("final"), ChatMessage::assistant("answer")])
+            .unwrap();
+        // Trailing blank lines must not hide the real last line.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("7.jsonl"))
+            .map(|mut f| {
+                use std::io::Write;
+                let _ = f.write_all(b"\n\n");
+            })
+            .unwrap();
+
+        let hist = store.load_history(7).expect("history");
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].content.as_deref(), Some("final"));
+        assert_eq!(hist[1].content.as_deref(), Some("answer"));
+
+        // Missing file → None; empty file → None.
+        assert!(store.load_history(9).is_none());
+        std::fs::write(dir.path().join("8.jsonl"), b"\n\n").unwrap();
+        assert!(store.load_history(8).is_none());
     }
 }
