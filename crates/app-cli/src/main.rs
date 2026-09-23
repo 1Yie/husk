@@ -61,6 +61,10 @@ async fn main() -> anyhow::Result<()> {
     let cfg = SessionConfig {
         workspace_root: workspace,
         provider,
+        provider_name: app_cfg
+            .active_provider
+            .clone()
+            .unwrap_or_else(|| "cli".into()),
         model,
         temperature: 1.0,
         permission_mode: "auto".into(),
@@ -72,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         model_input,
         compact_at: None,
         model_params: Some(model_params),
+        plugins: None,
     };
     let (mut actor, channels) = SessionActor::spawn(cfg);
     let cmd_tx = actor.command_sender();

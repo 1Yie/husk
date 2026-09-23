@@ -56,6 +56,8 @@ async fn headless_react_loop_drives_tool_then_answers() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        plugins: None,
+        provider_name: "test".into(),
     });
 
     // Drive one prompt through the actor.
@@ -115,6 +117,8 @@ async fn system_prompt_is_rendered_with_workspace_and_git() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        plugins: None,
+        provider_name: "test".into(),
     });
     actor.handle(UiCommand::Prompt { text: "hi".into() }).await;
     // Spawn rendered the skeleton into the system message — history[0] must
@@ -144,6 +148,8 @@ async fn steer_between_turns_becomes_a_prompt() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        plugins: None,
+        provider_name: "test".into(),
     });
 
     actor.handle(UiCommand::Prompt { text: "one".into() }).await;
@@ -209,6 +215,8 @@ async fn reasoning_traces_persist_for_replay() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        plugins: None,
+        provider_name: "test".into(),
     });
     actor.handle(UiCommand::Prompt { text: "list files".into() }).await;
 
@@ -269,6 +277,8 @@ async fn subagent_catalog_is_in_the_prompt_and_refreshes() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        plugins: None,
+        provider_name: "test".into(),
     });
 
     let system = actor.history()[0].content.clone().unwrap_or_default();
@@ -315,6 +325,8 @@ async fn subagent_catalog_is_in_the_prompt() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        plugins: None,
+        provider_name: "test".into(),
     });
 
     let system = actor.history()[0].content.clone().unwrap_or_default();
