@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { TooltipSimple } from "@/components/ui/tooltip";
 
 /** Row height; the strip slides in whole rows. */
 const ROW_H = 11;
@@ -26,18 +27,6 @@ export interface RailMark {
   /** Weight of the block this mark stands for, in characters (tool cards included). */
   len?: number;
   isStreaming?: boolean;
-}
-
-/** Hover card: one label line plus the block's own text. */
-function RailTip({ title, detail }: { title: string; detail?: string }) {
-  return (
-    <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] dark:bg-[var(--husk-card)]/95 text-zinc-50 px-2.5 py-1.5 rounded-lg shadow-popup border border-zinc-700/60 backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
-      <div className="text-[11px] font-medium text-zinc-100">{title}</div>
-      {detail && (
-        <div className="truncate text-[12px] font-normal text-neutral-400 max-w-[260px]">{detail}</div>
-      )}
-    </div>
-  );
 }
 
 interface ChatTurnRailProps {
@@ -70,7 +59,6 @@ export function ChatTurnRail({
   const trackRef = useRef<HTMLDivElement>(null);
   const activeElRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [hoveredMarkId, setHoveredMarkId] = useState<string | null>(null);
   const [rowBudget, setRowBudget] = useState(rowsThatFit);
   /** Rows the wheel/drag slid the window by; reset when the conversation scrolls. */
   const [browseShift, setBrowseShift] = useState(0);
@@ -213,22 +201,34 @@ export function ChatTurnRail({
 
   const renderMark = (mark: RailMark) => {
     const isActive = mark.id === activeId;
-    const isHovered = mark.id === hoveredMarkId && !isDragging;
 
     return (
-      <div
+      <TooltipSimple
         key={mark.id}
-        ref={isActive ? activeElRef : undefined}
-        onMouseEnter={() => setHoveredMarkId(mark.id)}
-        onMouseLeave={() => setHoveredMarkId(null)}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (!hasDraggedRef.current) {
-            onSelectMark(mark);
-          }
-        }}
-        className="h-[11px] w-[20px] flex items-center justify-center group/item relative cursor-pointer"
+        side="right"
+        sideOffset={10}
+        className="max-w-[280px]"
+        content={
+          <div className="flex max-w-[260px] flex-col gap-0.5">
+            <div className="text-[11px] font-medium">{mark.previewTitle}</div>
+            {mark.previewSnippet && (
+              <div className="truncate text-[12px] font-normal text-zinc-300">
+                {mark.previewSnippet}
+              </div>
+            )}
+          </div>
+        }
       >
+        <div
+          ref={isActive ? activeElRef : undefined}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!hasDraggedRef.current) {
+              onSelectMark(mark);
+            }
+          }}
+          className="h-[11px] w-[20px] flex items-center justify-center group/item relative cursor-pointer"
+        >
         {mark.type === "top" || mark.type === "end" ? (
           // The two handles — 4 dashed dots at either end of the strip
           <div
@@ -280,18 +280,16 @@ export function ChatTurnRail({
           />
         )}
 
-        {isHovered && <RailTip title={mark.previewTitle} detail={mark.previewSnippet} />}
-      </div>
+        </div>
+      </TooltipSimple>
     );
   };
 
   const renderGap = (count: number, side: "above" | "below") => {
     const label = side === "above" ? "上方" : "下方";
     return (
+      <TooltipSimple key={`gap-${side}`} side="right" sideOffset={10} content={`${label}还有 ${count} 个标记`}>
       <div
-        key={`gap-${side}`}
-        onMouseEnter={() => setHoveredMarkId(`gap-${side}`)}
-        onMouseLeave={() => setHoveredMarkId(null)}
         onClick={(e) => {
           e.stopPropagation();
           if (!hasDraggedRef.current) {
@@ -307,10 +305,8 @@ export function ChatTurnRail({
         <span className="select-none text-[11px] leading-none font-medium text-neutral-400 transition-colors group-hover/item:text-neutral-700 dark:text-[var(--husk-n400)] dark:group-hover/item:text-[var(--husk-n200)]">
           ~
         </span>
-        {hoveredMarkId === `gap-${side}` && !isDragging && (
-          <RailTip title={`${label}还有 ${count} 个标记`} />
-        )}
       </div>
+      </TooltipSimple>
     );
   };
 
