@@ -14,16 +14,18 @@ import {
   SlidersHorizontal,
   Sparkles,
   Wrench,
+  ChartColumn,
 } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 import { WindowControls } from "@/components/window-controls";
 import { isMac } from "@/lib/platform";
 import { GeneralPane } from "@/features/settings/pages/general/index";
 import { AppearanceSettings } from "@/features/settings/pages/appearance/index";
+import { StatsPane } from "@/features/settings/pages/stats/index";
 import { AboutSettings } from "@/features/settings/pages/about/index";
 import { AgentSettings, type AgentTab } from "@/features/settings/pages/agent/index";
 
-type SettingsTab = "general" | "appearance" | AgentTab | "about";
+type SettingsTab = "general" | "appearance" | "stats" | AgentTab | "about";
 
 const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; icon: React.ReactNode }[] }[] = [
   {
@@ -46,6 +48,7 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
   {
     label: "系统",
     items: [
+      { key: "stats", label: "统计", icon: <ChartColumn className="h-4 w-4 shrink-0" /> },
       { key: "about", label: "关于", icon: <Info className="h-4 w-4 shrink-0" /> },
     ],
   },
@@ -141,6 +144,8 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
 
             {activeTab === "general" ? (
               <GeneralPane />
+            ) : activeTab === "stats" ? (
+              <StatsPane />
             ) : activeTab === "appearance" ? (
               <AppearanceSettings />
             ) : activeTab === "about" ? (

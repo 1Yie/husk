@@ -166,6 +166,8 @@ export function getModelInfo() {
 export interface PluginItem {
   id: string;
   name: string;
+  /** Manifest version — "" for servers added through the UI (a remote server
+   *  has no such version; the live one is `serverVersion`). */
   version: string;
   kind: string;
   entry: {
@@ -175,10 +177,17 @@ export interface PluginItem {
     /** Present for HTTP servers added with custom headers. */
     headers?: Record<string, string>;
   };
-  tools: number;
+  /** Tool names from the connection the app loaded at BOOT — reading this does
+   *  not reconnect. Empty when the plugin is not loaded. */
+  tools: string[];
   commands: number;
   sandboxed: boolean;
   dir: string;
+  /** Registered at boot. `false` means it failed to load (`error` explains),
+   *  or the app started before the manifest existed. */
+  connected: boolean;
+  serverVersion?: string;
+  error?: string;
 }
 
 /** One subagent type the kernel can spawn. */
@@ -242,6 +251,26 @@ export function createSkill(p: {
   });
 }
 
+/** One session's last recorded usage — the raw material for the 统计 pane.
+ *  Bucketing by day is the frontend's job: only it knows the reader's timezone. */
+export interface UsageRecord {
+  session: number;
+  title: string;
+  workspace: string;
+  /** Unix seconds of the session's last activity. */
+  ts: number;
+  prompt: number;
+  completion: number;
+  cached: number;
+  context_window: number;
+  model?: string | null;
+  provider?: string | null;
+}
+
+export function getUsageStats() {
+  return invoke<{ sessions: UsageRecord[] }>("agent_session", { op: "usage_stats" });
+}
+
 export function addMcp(p: {
   id: string;
   name: string;
@@ -260,7 +289,6 @@ export function addMcp(p: {
 /** Live answer from `mcp_probe` — the server's own name/version + tool names. */
 export interface McpProbe {
   ok: boolean;
-  serverName?: string;
   serverVersion?: string;
   tools?: string[];
   error?: string;
@@ -273,6 +301,13 @@ export function probeMcp(id: string) {
 }
 
 /** Drop a plugin directory — the settings card's delete action. */
+/** Re-read the plugin dirs and swap the live router. Sessions share the handle
+ *  the engine reads per request, so a server added in settings reaches the agent
+ *  on the next turn — no restart. */
+export function reloadMcp() {
+  return invoke<{ plugins: unknown[] }>("agent_session", { op: "reload_mcp" });
+}
+
 export function removeMcp(id: string) {
   return invoke<{ success: boolean }>("agent_session", { op: "remove_mcp", payload: { id } });
 }

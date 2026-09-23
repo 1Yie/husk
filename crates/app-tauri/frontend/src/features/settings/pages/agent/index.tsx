@@ -26,7 +26,7 @@ export function AgentSettings({ tab }: { tab: AgentTab }) {
       {tab === "instructions" && <InstructionsPane />}
       {tab === "model" && <ModelPane ov={ov} reload={reload} />}
       {tab === "skills" && <SkillsPane ov={ov} reload={reload} />}
-      {tab === "mcp" && <McpPane ov={ov} reload={reload} />}
+      {tab === "mcp" && <McpPane ov={ov} onReload={reload} />}
       {tab === "subagent" && <SubagentPane ov={ov} reload={reload} />}
     </div>
   );

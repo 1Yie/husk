@@ -41,6 +41,9 @@
   --husk-fg-muted: #71717a;
   --husk-fg-dim: #a1a1aa;
   --husk-bubble-user: #e3e3e8;
+  /* 活跃度（统计热力图）— the one place the app needs a "more is better"
+     ramp; kept out of the neutral ramp so it reads as data, not chrome. */
+  --husk-activity: #10b981;
   --husk-contrast: 0;
   --husk-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --husk-code-font: ui-monospace, "SFMono-Regular", monospace;
@@ -75,6 +78,7 @@
   --husk-fg-muted: #7a7a84;
   --husk-fg-dim: #5b5b66;
   --husk-bubble-user: #2c2c34;
+  --husk-activity: #34d399;
   /* Inverted ramp — n50 becomes the darkest, n950 the lightest, so
      `bg-neutral-100` (a light surface in light mode) reads as the matching
      dark surface, and `text-neutral-900` (darkest text) reads as the

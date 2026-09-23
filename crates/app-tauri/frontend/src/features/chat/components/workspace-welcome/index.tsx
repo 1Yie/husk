@@ -1,9 +1,11 @@
 // Workspace welcome — the app's initial page (no workspace open).
 //
-// Carries the primary action, recent workspaces, a short capability list and the
-// composer's sigils. Copy stays plain: no tagline, no benefit clauses — every line
-// should be something the reader can act on or verify. Colors are theme tokens, so
-// light and dark need no `dark:` variants here.
+// Doubles as the 活跃窗口: the primary action, recent workspaces, a capability
+// list, and — when the agent has any history — the same activity heatmap and
+// token totals the settings 统计 pane shows, so opening the app answers "what
+// have I been doing" without a click. Copy stays plain: no tagline, no benefit
+// clauses — every line should be something the reader can act on or verify.
+// Colors are theme tokens, so light and dark need no `dark:` variants here.
 
 import type { ComponentType } from "react";
 import {
@@ -14,8 +16,12 @@ import {
   ShieldCheck,
   Terminal,
 } from "@keyline-icons/react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { timeGreeting } from "@/lib/greeting";
+import { getUsageStats, type UsageRecord } from "@/lib/agent-ipc/sessions";
+import { aggregate, fmtTokens } from "@/features/settings/usage";
+import { ActivityHeatmap } from "@/features/settings/components/activity-heatmap";
 
 export interface RecentWorkspace {
   path: string;
@@ -58,6 +64,19 @@ function timeAgo(seconds: number): string {
 
 export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Props) {
   const { label, tail, Icon, tone } = timeGreeting();
+  // Activity is read here too (not only in settings): the empty workspace is the
+  // one screen with room for it. Best-effort — a failure just hides the block.
+  const [records, setRecords] = useState<UsageRecord[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void getUsageStats()
+      .then((r) => alive && setRecords(r.sessions ?? []))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const stats = useMemo(() => (records ? aggregate(records) : null), [records]);
   return (
     <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto px-6 py-10 select-none">
       <div className="w-full max-w-[720px] flex flex-col items-center gap-8">
@@ -112,6 +131,29 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Pro
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Always rendered, like GitHub's contribution graph on an empty
+            profile: with no records the grid is all zero-level cells plus a
+            line saying so, rather than the whole block disappearing (which read
+            as "this app has no stats"). The numbers are TOTALS across every
+            project — the empty workspace has no project to scope them to. */}
+        {stats && (
+          <div className="w-full rounded-[14px] border border-hairline bg-card px-4 py-3.5">
+            <header className="mb-3 flex items-baseline justify-between">
+              <span className="text-[13px] font-medium text-neutral-800">活跃对话</span>
+              <span className="text-[11px] text-neutral-500">
+                {fmtTokens(stats.totals.prompt + stats.totals.completion)} tokens ·{" "}
+                {stats.totals.sessions} 个会话 · 连续 {stats.streak} 天
+              </span>
+            </header>
+            <ActivityHeatmap daily={stats.daily} />
+            {stats.totals.sessions === 0 && (
+              <p className="mt-2 text-[11px] text-neutral-500">
+                还没有用量记录 —— 完成一轮对话后这里会累计 token 与活跃度。
+              </p>
+            )}
           </div>
         )}
 

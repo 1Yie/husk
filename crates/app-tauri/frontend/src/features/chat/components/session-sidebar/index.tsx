@@ -257,7 +257,9 @@ export function SessionSidebar({
           {/* Project list: the content area's only scroller. */}
           <div data-tauri-drag-region="false" className="flex-1 min-h-0 overflow-y-auto transform-gpu flex flex-col gap-0.5 px-2 pb-2">
             {projects.length === 0 ? (
-              <div className="pl-3 h-8 flex items-center text-[13px] text-neutral-500">
+              // Same inset as 暂无会话 — the two empty states are the same kind
+              // of thing, so they read at the same level.
+              <div className="pl-7 h-8 flex items-center text-[13px] text-neutral-500">
                 暂无项目
               </div>
             ) : (

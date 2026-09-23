@@ -1,12 +1,15 @@
-// MCP pane — discovered servers, live probe, add / edit / delete.
+// MCP pane — discovered servers and the state of the connections the app
+// already holds, plus add / edit / delete and an explicit reconnect.
 
 import { toast } from "sonner";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Plus,
+  RefreshCw,
   SquarePen,
   Wrench,
 } from "@keyline-icons/react";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
@@ -16,19 +19,22 @@ import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
-import { addMcp, probeMcp, removeMcp, type AgentOverview, type McpProbe, type PluginItem } from "@/lib/agent-ipc/sessions";
+import { addMcp, probeMcp, reloadMcp, removeMcp, type AgentOverview, type McpProbe, type PluginItem } from "@/lib/agent-ipc/sessions";
 import { Field } from "@/features/settings/pages/agent/shared/index";
 
 /* ============================ MCP ============================ */
 
-export function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
+export function McpPane({
+  ov,
+  onReload,
+}: {
+  ov: AgentOverview | null;
+  onReload: () => void;
+}) {
   const [open, setOpen] = useState(false);
   /** Set while the dialog edits an existing plugin — the id names the plugin's
    *  directory, so it stays locked and saving overwrites that manifest. */
   const [editId, setEditId] = useState<string | null>(null);
-  /** Live probe per plugin id: the server's own version + tool names, or the
-   *  reason the connection failed. */
-  const [probes, setProbes] = useState<Record<string, McpProbe>>({});
   /** Which card is expanded — clicking a row reveals the tools it serves. */
   const [expanded, setExpanded] = useState<string | null>(null);
   const [id, setId] = useState("");
@@ -40,21 +46,44 @@ export function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () =
   const [headers, setHeaders] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const plugins = ov?.plugins ?? [];
-  useEffect(() => {
-    let alive = true;
-    for (const p of plugins) {
-      if (p.kind !== "mcp") continue;
-      void probeMcp(p.id)
-        .then((r) => alive && setProbes((m) => ({ ...m, [p.id]: r })))
-        .catch(
-          (e) => alive && setProbes((m) => ({ ...m, [p.id]: { ok: false, error: String(e) } }))
-        );
+  /** Results of a MANUAL reconnect, keyed by plugin id. Nothing here is
+   *  fetched on mount: the app loads every server once at boot and the overview
+   *  carries that live state, so visiting this pane opens no new MCP session.
+   *  (It used to probe every plugin on every mount — a fresh handshake per
+   *  visit, which tripped the server's rate limit.) */
+  const [reconnected, setReconnected] = useState<Record<string, McpProbe>>({});
+  const [reconnecting, setReconnecting] = useState<string | null>(null);
+  /** Full reload in flight — re-reads every manifest and swaps the live router
+   *  so the agent sees servers added/changed since boot. */
+  const [reloading, setReloading] = useState(false);
+
+  const reload = async () => {
+    setReloading(true);
+    try {
+      const r = await reloadMcp();
+      toast.success(`已重新加载 ${(r.plugins ?? []).length} 个插件`);
+      setReconnected({});
+      onReload();
+    } catch (e) {
+      toast.error("重新加载失败", { description: String(e) });
+    } finally {
+      setReloading(false);
     }
-    return () => {
-      alive = false;
-    };
-  }, [ov]);
+  };
+
+  const reconnect = async (pluginId: string) => {
+    setReconnecting(pluginId);
+    try {
+      const r = await probeMcp(pluginId);
+      setReconnected((m) => ({ ...m, [pluginId]: r }));
+      if (r.ok) toast.success(`已重连 ${pluginId}`);
+      else toast.error("连接失败", { description: r.error });
+    } catch (e) {
+      toast.error("连接失败", { description: String(e) });
+    } finally {
+      setReconnecting(null);
+    }
+  };
 
   /** Prefill the dialog from the stored manifest and remember which plugin is
    *  being edited (its id is the directory name, so it cannot change). */
@@ -133,7 +162,18 @@ export function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () =
       <KvList>
         <KvListContent>
           {ov?.plugins.length ? (
-            ov.plugins.map((p) => (
+            ov.plugins.map((p) => {
+              // Boot state from the overview; a manual reconnect overrides it.
+              const re = reconnected[p.id];
+              const live = re
+                ? { ok: re.ok, version: re.serverVersion ?? "", tools: re.tools ?? [], error: re.error ?? "" }
+                : {
+                    ok: p.connected,
+                    version: p.serverVersion ?? "",
+                    tools: p.tools ?? [],
+                    error: p.error ?? "",
+                  };
+              return (
               <Collapsible
                 key={p.id}
                 open={expanded === p.id}
@@ -141,9 +181,7 @@ export function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () =
               >
                 <CollapsibleTrigger asChild>
                   <KvRow
-                label={`${p.name}${
-                  probes[p.id]?.serverVersion ? ` v${probes[p.id]?.serverVersion}` : ""
-                }`}
+                label={`${p.name}${live.version ? ` v${live.version}` : ""}`}
                 description={
                   p.entry.url ??
                   (p.entry.command
@@ -156,26 +194,33 @@ export function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () =
                   <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
                     {p.entry.url ? "http" : p.kind}
                   </Badge>
-                  {(() => {
-                    const probe = probes[p.id];
-                    if (!probe)
-                      return <span className="text-[11px] text-neutral-400">连接中…</span>;
-                    if (!probe.ok)
-                      return (
-                        <span
-                          className="max-w-[240px] truncate text-[11px] text-red-500"
-                          title={probe.error}
-                        >
-                          连接失败：{probe.error}
-                        </span>
-                      );
-                    const names = probe.tools ?? [];
-                    return (
-                      <span className="text-[11px] text-neutral-500 tabular-nums">
-                        {names.length} 工具
-                      </span>
-                    );
-                  })()}
+                  {live.ok ? (
+                    <span className="text-[11px] text-neutral-500 tabular-nums">
+                      {live.tools.length} 工具
+                    </span>
+                  ) : (
+                    <span
+                      className="max-w-[240px] truncate text-[11px] text-red-500"
+                      title={live.error}
+                    >
+                      {live.error || "未连接"}
+                    </span>
+                  )}
+                  {!(live.ok && live.tools.length) && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      title="重连"
+                      disabled={reconnecting === p.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void reconnect(p.id);
+                      }}
+                    >
+                      <RefreshCw className={cn("h-3.5 w-3.5", reconnecting === p.id && "animate-spin")} />
+                    </Button>
+                  )}
                   <Button variant="ghost" size="icon" className="h-6 w-6" title="编辑"
                     onClick={(e) => { e.stopPropagation(); startEdit(p); }}>
                     <SquarePen className="h-3.5 w-3.5" />
@@ -187,8 +232,8 @@ export function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () =
                 </CollapsibleTrigger>
                 <CollapsibleContent>
                   <div className="flex flex-wrap gap-1.5 px-5 pb-3.5">
-                    {(probes[p.id]?.tools ?? []).length ? (
-                      (probes[p.id]?.tools ?? []).map((tool) => (
+                    {live.tools.length ? (
+                      live.tools.map((tool) => (
                         <Badge
                           key={tool}
                           variant="secondary"
@@ -198,12 +243,15 @@ export function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () =
                         </Badge>
                       ))
                     ) : (
-                      <span className="text-[11px] text-neutral-500">没有可用工具</span>
+                      <span className="text-[11px] text-neutral-500">
+                        {live.ok ? "没有可用工具" : "尚未连接，点右侧重连"}
+                      </span>
                     )}
                   </div>
                 </CollapsibleContent>
               </Collapsible>
-            ))
+              );
+            })
           ) : (
             <KvRow label="暂无插件" description="plugins 目录下未发现 manifest.json" />
           )}
