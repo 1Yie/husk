@@ -4,9 +4,9 @@ import { useCurrencySymbol } from "@/lib/appearance";
 import { GitBranch, ChartPie, Zap, BarChartHorizontalStart, Inbox } from "@keyline-icons/react";
 import { BrainCircuit } from "lucide-react";
 import { TooltipSimple } from "@/components/ui/tooltip";
-import { StreamHealth } from "@/components/stream-health";
-import type { SessionView } from "../../hooks/stream-view";
-import type { GitInfo, ModelItem } from "../../invoke/agent";
+import { StreamHealth } from "@/features/chat/components/stream-health";
+import type { SessionView } from "@/features/chat/hooks/stream-view";
+import type { GitInfo, ModelItem } from "@/lib/agent-ipc/index";
 
 interface TitleBarProps {
   title?: string;

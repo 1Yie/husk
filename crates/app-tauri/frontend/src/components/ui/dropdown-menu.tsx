@@ -9,7 +9,7 @@ import {
   SURFACE_OVERLAY_FOCUS,
   SURFACE_OVERLAY_OPEN,
 } from "@/lib/theme";
-import { usePopperPlacedRef } from "./use-popper-placed";
+import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
 // `modal` is removed from the public props: a modal menu makes Radix scroll-lock
 // <body> (scrollbar disappears, layout shifts), and every menu here is modeless.

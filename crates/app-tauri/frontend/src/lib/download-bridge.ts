@@ -3,7 +3,7 @@
 // went nowhere; this reads the blob and hands the bytes to the save dialog.
 
 import { toast } from "sonner";
-import { saveDownload } from "../invoke/agent/sessions";
+import { saveDownload } from "@/lib/agent-ipc/sessions";
 
 /** streamdown revokes the URL in the same tick it clicks — these lives are extended. */
 const held = new Set<string>();

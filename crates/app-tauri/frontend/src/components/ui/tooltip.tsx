@@ -3,7 +3,7 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
 import { cn } from "@/lib/utils";
 import { BORDER_ON_BUBBLE, INK_ON_BUBBLE, SURFACE_BUBBLE } from "@/lib/theme";
-import { usePopperPlacedRef } from "./use-popper-placed";
+import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
 const TooltipProvider = TooltipPrimitive.Provider;
 const Tooltip = TooltipPrimitive.Root;

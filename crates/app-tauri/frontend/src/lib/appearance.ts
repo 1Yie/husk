@@ -6,8 +6,8 @@
 
 import { emit, listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
-import type { AppearanceConfig } from "../invoke/agent";
-import { getAppearance } from "../invoke/agent";
+import type { AppearanceConfig } from "@/lib/agent-ipc/index";
+import { getAppearance } from "@/lib/agent-ipc/index";
 
 const mq = window.matchMedia("(prefers-color-scheme: dark)");
 const APPEARANCE_CHANGED = "appearance://changed";

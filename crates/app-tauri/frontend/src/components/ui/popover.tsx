@@ -3,7 +3,7 @@ import * as PopoverPrimitive from "@radix-ui/react-popover";
 
 import { cn } from "@/lib/utils";
 import { SURFACE_OVERLAY } from "@/lib/theme";
-import { usePopperPlacedRef } from "./use-popper-placed";
+import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
 const Popover = PopoverPrimitive.Root;
 
