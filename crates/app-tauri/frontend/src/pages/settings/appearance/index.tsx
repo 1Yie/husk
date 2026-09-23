@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { getAppearance, setAppearance, type AppearanceConfig } from "../../invoke/agent/sessions";
-import { applyAppearance, broadcastAppearance } from "../../lib/appearance";
+import { getAppearance, setAppearance, type AppearanceConfig } from "../../../invoke/agent/sessions";
+import { applyAppearance, broadcastAppearance } from "../../../lib/appearance";
 
 /** Appearance settings — just the light/dark/system mode cards. The full
  *  config still round-trips through `cfgRef` (applyAppearance needs the

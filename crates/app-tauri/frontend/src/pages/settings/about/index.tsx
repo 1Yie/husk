@@ -12,8 +12,8 @@ import {
 } from "@keyline-icons/react";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { Button } from "@/components/ui/button";
-import { openUrl } from "../../invoke/agent/sessions";
-import iconUrl from "../../assets/husk-icon.png";
+import { openUrl } from "../../../invoke/agent/sessions";
+import iconUrl from "../../../assets/husk-icon.png";
 
 const REPO_URL = "https://github.com/1Yie/husk";
 const AUTHOR_URL = "https://github.com/1Yie";

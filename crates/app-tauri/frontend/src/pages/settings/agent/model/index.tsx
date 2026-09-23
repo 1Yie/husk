@@ -1,169 +1,24 @@
-// 智能体 panes — one page per nav item under the "智能体" group. Read +
-// write surfaces: instructions editing, model list (+add), skills (+add),
-// MCP plugins (+add), subagents (builtin + custom, +add).
+// 模型 pane — providers and their models (add / edit / delete).
+
+import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import {
-  Cpu,
-  Sparkles,
-  Wrench,
-  Bot,
-  Plus,
-  SquarePen,
-  Layers,
   Brain,
   Coins,
+  Cpu,
+  Layers,
+  Plus,
+  SquarePen,
 } from "@keyline-icons/react";
-import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { toast } from "sonner";
-import { cn } from "@/lib/utils";
-import { SettingSelect } from "../../components/settings";
-import {
-  getAgentOverview,
-  getInstructions,
-  setInstructions,
-  createSkill,
-  addMcp,
-  createSubagent,
-  getAppConfig,
-  saveAppConfig,
-  type AgentOverview,
-  type InstructionsSet,
-} from "../../invoke/agent/sessions";
-
-export type AgentTab = "instructions" | "model" | "skills" | "mcp" | "subagent";
-
-/** Field label + control, dialog rows. */
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label className="text-xs text-neutral-600">{label}</Label>
-      {children}
-    </div>
-  );
-}
-
-/* ============================ 指令 ============================ */
-
-/** One instructions editor — defined at MODULE level, not inside the
- * pane: a component declared in the render body is a new type every
- * render, so React unmounted+remounted it (and its Textarea) on every
- * keystroke — which is what made the input drop focus while typing. */
-function InstructionsBlock({
-  scope,
-  title,
-  file,
-  value,
-  saving,
-  onChange,
-  onSave,
-}: {
-  scope: "global" | "workspace";
-  title: string;
-  file?: { path: string | null };
-  value: string;
-  saving: boolean;
-  onChange: (v: string) => void;
-  onSave: () => void;
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm font-semibold text-neutral-900">{title}</span>
-        {file?.path && (
-          <span className="text-[11px] text-neutral-500 font-mono truncate">
-            {file.path}
-          </span>
-        )}
-      </div>
-      <Textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        rows={10}
-        className="font-mono text-[12px] leading-relaxed resize-y min-h-40"
-        placeholder="在此编写自定义指令，会追加到每个新会话的系统提示词末尾"
-      />
-      <div className="flex justify-end">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs"
-          disabled={saving}
-          onClick={onSave}
-        >
-          {saving ? "保存中…" : "保存"}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function InstructionsPane() {
-  const [data, setData] = useState<InstructionsSet | null>(null);
-  const [drafts, setDrafts] = useState({ global: "", workspace: "" });
-  const [saving, setSaving] = useState<string | null>(null);
-
-  useEffect(() => {
-    void getInstructions()
-      .then((d) => {
-        setData(d);
-        setDrafts({ global: d.global.content, workspace: d.workspace.content });
-      })
-      .catch(() => {});
-  }, []);
-
-  const save = async (scope: "global" | "workspace") => {
-    setSaving(scope);
-    try {
-      await setInstructions(scope, drafts[scope]);
-      toast.success("已保存");
-    } catch (e) {
-      toast.error("保存失败", { description: String(e) });
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-8">
-      <InstructionsBlock
-        scope="global"
-        title="全局指令"
-        file={data?.global}
-        value={drafts.global}
-        saving={saving === "global"}
-        onChange={(v) => setDrafts((d) => ({ ...d, global: v }))}
-        onSave={() => void save("global")}
-      />
-      <InstructionsBlock
-        scope="workspace"
-        title="项目指令"
-        file={data?.workspace}
-        value={drafts.workspace}
-        saving={saving === "workspace"}
-        onChange={(v) => setDrafts((d) => ({ ...d, workspace: v }))}
-        onSave={() => void save("workspace")}
-      />
-    </div>
-  );
-}
+import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
+import { SettingSelect } from "../../../../components/settings";
+import { ArmedDeleteButton } from "@/components/settings/armed-delete";
+import { FormDialog } from "@/components/settings/form-dialog";
+import { getAppConfig, saveAppConfig, type AgentOverview } from "../../../../invoke/agent/sessions";
+import { Field } from "../shared";
 
 /* ============================ 模型 ============================ */
 
@@ -205,21 +60,17 @@ const THINK_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 const triOr = (v: string) =>
   v === "true" ? true : v === "false" ? false : undefined;
 
-function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
+/** Arm a destructive button for a few seconds.
+ *
+ *  The label flips to a confirm on the first click; if the second one never
+ *  comes the button flips back on its own. Left armed, the row reads as a
+ *  broken button and the next click deletes without asking.
+ */
+
+export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
   const [cfg, setCfg] = useState<Record<string, any> | null>(null);
   const [cfgPath, setCfgPath] = useState("");
   const [busy, setBusy] = useState(false);
-  // Armed-delete — destructive buttons need a second click within 3s.
-  const [delArmed, setDelArmed] = useState(false);
-  const armThenRun = (fn: () => void) => () => {
-    if (!delArmed) {
-      setDelArmed(true);
-      window.setTimeout(() => setDelArmed(false), 3000);
-      return;
-    }
-    setDelArmed(false);
-    fn();
-  };
 
   // ---- add-provider dialog ----
   const [provOpen, setProvOpen] = useState(false);
@@ -334,7 +185,6 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
     setEEffort(tri(c.supports_reasoning_effort ?? c.supportsReasoningEffort));
     setEMaxTok(c.max_tokens_field ?? c.maxTokensField ?? "");
     setEHeaders(p.headers ? JSON.stringify(p.headers) : "");
-    setDelArmed(false);
   };
 
   const submitEditProv = async () => {
@@ -604,11 +454,15 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
       )}
 
       {/* ======== 添加 API ======== */}
-      <Dialog open={provOpen} onOpenChange={setProvOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>添加 API</DialogTitle>
-          </DialogHeader>
+      <FormDialog
+        open={provOpen}
+        onOpenChange={setProvOpen}
+        title="添加 API"
+        submitLabel="添加"
+        busy={busy}
+        disabled={!provKey.trim() || !provBase.trim()}
+        onSubmit={() => void submitAddProvider()}
+      >
           <div className="flex flex-col gap-3 py-1">
             <div className="grid grid-cols-2 gap-3">
               <Field label="名称（唯一标识）">
@@ -662,22 +516,25 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                 placeholder='{"X-Title": "my-app"}' className="h-8 text-xs font-mono" />
             </Field>
           </div>
-          <DialogFooter>
-            <Button size="sm" className="h-8 text-xs"
-              disabled={!provKey.trim() || !provBase.trim() || busy}
-              onClick={() => void submitAddProvider()}>
-              {busy ? "保存中…" : "添加"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      </FormDialog>
 
       {/* ======== 编辑提供商 ======== */}
-      <Dialog open={editProv !== null} onOpenChange={(o) => !o && setEditProv(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>编辑提供商 · {editProv}</DialogTitle>
-          </DialogHeader>
+      <FormDialog
+        open={editProv !== null}
+        onOpenChange={(o: boolean) => !o && setEditProv(null)}
+        title={`编辑提供商 · ${editProv ?? ""}`}
+        submitLabel="保存"
+        busy={busy}
+        onSubmit={() => void submitEditProv()}
+        secondary={
+          <ArmedDeleteButton
+            variant="text"
+            label="删除提供商"
+            busy={busy}
+            onConfirm={() => void deleteProv()}
+          />
+        }
+      >
           <div className="flex flex-col gap-3 py-1">
             <Field label="Base URL">
               <Input value={eBase} onChange={(e) => setEBase(e.target.value)} className="h-8 text-xs font-mono" />
@@ -708,28 +565,28 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
                 placeholder='{"X-Title": "my-app"}' className="h-8 text-xs font-mono" />
             </Field>
           </div>
-          <DialogFooter className="flex justify-between sm:justify-between">
-            <Button size="sm" variant="ghost"
-              className={delArmed
-                ? "h-8 text-xs text-red-600 bg-red-50 hover:bg-red-100 hover:text-red-600"
-                : "h-8 text-xs text-red-600 hover:text-red-600"}
-              disabled={busy} onClick={armThenRun(() => void deleteProv())}>
-              {delArmed ? "确认删除？再点一次" : "删除提供商"}
-            </Button>
-            <Button size="sm" className="h-8 text-xs" disabled={busy}
-              onClick={() => void submitEditProv()}>
-              {busy ? "保存中…" : "保存"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      </FormDialog>
 
       {/* ======== 编辑模型 ======== */}
-      <Dialog open={editModel !== null} onOpenChange={(o) => !o && setEditModel(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{isNewModel ? "新建模型" : "编辑模型"} · {editModel?.provider}</DialogTitle>
-          </DialogHeader>
+      <FormDialog
+        open={editModel !== null}
+        onOpenChange={(o: boolean) => !o && setEditModel(null)}
+        title={`${isNewModel ? "新建模型" : "编辑模型"} · ${editModel?.provider ?? ""}`}
+        submitLabel={isNewModel ? "添加" : "保存"}
+        busy={busy}
+        disabled={!mId.trim()}
+        onSubmit={() => void submitEditModel()}
+        secondary={
+          isNewModel ? undefined : (
+            <ArmedDeleteButton
+              variant="text"
+              label="删除模型"
+              busy={busy}
+              onConfirm={() => void deleteModel()}
+            />
+          )
+        }
+      >
           <div className="flex flex-col gap-3 py-1">
             <div className="grid grid-cols-2 gap-3">
               <Field label="模型 ID">
@@ -778,529 +635,7 @@ function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => voi
               思考等级映射：留空 = 不映射（按提供商默认传参）
             </p>
           </div>
-          <DialogFooter className={isNewModel ? "flex justify-end" : "flex justify-between sm:justify-between"}>
-            {!isNewModel && (
-              <Button size="sm" variant="ghost"
-                className={delArmed
-                  ? "h-8 text-xs text-red-600 bg-red-50 hover:bg-red-100 hover:text-red-600"
-                  : "h-8 text-xs text-red-600 hover:text-red-600"}
-                disabled={busy} onClick={armThenRun(() => void deleteModel())}>
-                {delArmed ? "确认删除？再点一次" : "删除模型"}
-              </Button>
-            )}
-            <Button size="sm" className="h-8 text-xs" disabled={busy || !mId.trim()}
-              onClick={() => void submitEditModel()}>
-              {busy ? "保存中…" : isNewModel ? "添加" : "保存"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-/* ============================ 技能 ============================ */
-
-function SkillsPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
-  const [scope, setScope] = useState<"all" | "workspace" | "global">("all");
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [desc, setDesc] = useState("");
-  const [target, setTarget] = useState<"workspace" | "global">("workspace");
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const filtered = (ov?.skills ?? []).filter(
-    (s) => scope === "all" || (scope === "global" ? s.global : !s.global),
-  );
-
-  const submit = async () => {
-    if (!name.trim()) return;
-    setBusy(true);
-    try {
-      await createSkill({
-        name: name.trim(),
-        description: desc.trim(),
-        scope: target,
-        body: body.trim() || `# ${name.trim()}\n`,
-      });
-      toast.success("已创建技能");
-      setOpen(false);
-      setName(""); setDesc(""); setBody("");
-      reload();
-    } catch (e) {
-      toast.error("创建失败", { description: String(e) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1">
-          {(["all", "workspace", "global"] as const).map((v) => (
-            <button
-              key={v}
-              onClick={() => setScope(v)}
-              className={cn(
-                "h-7 px-2.5 rounded-md text-xs transition-colors cursor-pointer",
-                scope === v
-                  ? "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
-                  : "text-neutral-500 hover:text-neutral-900",
-              )}
-            >
-              {v === "all" ? "全部" : v === "workspace" ? "工作区" : "全局"}
-            </button>
-          ))}
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs gap-1"
-          onClick={() => setOpen(true)}
-        >
-          <Plus className="h-3.5 w-3.5" /> 添加
-        </Button>
-      </div>
-      <KvList>
-        <KvListContent>
-          {filtered.length ? (
-            filtered.map((s) => (
-              <KvRow
-                key={s.path}
-                label={s.name}
-                description={
-                  s.description ? (
-                    <span className="line-clamp-3">{s.description}</span>
-                  ) : undefined
-                }
-                icon={<Sparkles className="h-4 w-4" />}
-              >
-                <div className="flex items-center gap-2">
-                  {s.global && (
-                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                      全局
-                    </Badge>
-                  )}
-                  <span className="text-[11px] text-neutral-500 font-mono max-w-[220px] truncate">
-                    {s.path}
-                  </span>
-                </div>
-              </KvRow>
-            ))
-          ) : (
-            <KvRow
-              label={
-                scope === "workspace"
-                  ? "工作区暂无技能"
-                  : scope === "global"
-                    ? "全局暂无技能"
-                    : "暂无技能"
-              }
-              description="点右上角「添加」创建一个，或切换其他范围查看"
-            />
-          )}
-        </KvListContent>
-      </KvList>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>添加技能</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 py-1">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="名称（小写 slug）">
-                <Input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="my-skill"
-                  className="h-8 text-xs font-mono"
-                />
-              </Field>
-              <Field label="位置">
-                <SettingSelect
-                  value={target}
-                  onChange={(v) => setTarget(v as "workspace" | "global")}
-                  options={[
-                    { value: "workspace", label: "工作区" },
-                    { value: "global", label: "全局" },
-                  ]}
-                />
-              </Field>
-            </div>
-            <Field label="描述">
-              <Input
-                value={desc}
-                onChange={(e) => setDesc(e.target.value)}
-                placeholder="什么时候用这个技能"
-                className="h-8 text-xs"
-              />
-            </Field>
-            <Field label="内容（SKILL.md 正文）">
-              <Textarea
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                rows={6}
-                placeholder="# 技能说明与步骤…"
-                className="font-mono text-[12px] leading-relaxed"
-              />
-            </Field>
-          </div>
-          <DialogFooter>
-            <Button
-              size="sm"
-              className="h-8 text-xs"
-              disabled={!name.trim() || busy}
-              onClick={() => void submit()}
-            >
-              {busy ? "创建中…" : "创建"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-/* ============================ MCP ============================ */
-
-function McpPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [id, setId] = useState("");
-  const [name, setName] = useState("");
-  const [transport, setTransport] = useState<"stdio" | "http">("stdio");
-  const [command, setCommand] = useState("");
-  const [args, setArgs] = useState("");
-  const [url, setUrl] = useState("");
-  const [headers, setHeaders] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    const isHttp = transport === "http";
-    if (!id.trim() || (!isHttp && !command.trim()) || (isHttp && !url.trim())) return;
-    setBusy(true);
-    try {
-      const hdrs: Record<string, string> = {};
-      if (isHttp && headers.trim()) {
-        for (const line of headers.split("\n")) {
-          const i = line.indexOf(":");
-          if (i > 0) hdrs[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-        }
-      }
-      await addMcp({
-        id: id.trim(),
-        name: name.trim() || id.trim(),
-        transport,
-        command: isHttp ? undefined : command.trim(),
-        args: isHttp ? undefined : args.trim() ? args.trim().split(/\s+/) : [],
-        url: isHttp ? url.trim() : undefined,
-        headers: isHttp && Object.keys(hdrs).length ? hdrs : undefined,
-      });
-      toast.success("已添加 MCP 插件");
-      setOpen(false);
-      setId(""); setName(""); setCommand(""); setArgs(""); setUrl(""); setHeaders("");
-      reload();
-    } catch (e) {
-      toast.error("添加失败", { description: String(e) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-end">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs gap-1"
-          onClick={() => setOpen(true)}
-        >
-          <Plus className="h-3.5 w-3.5" /> 添加
-        </Button>
-      </div>
-      <KvList>
-        <KvListContent>
-          {ov?.plugins.length ? (
-            ov.plugins.map((p) => (
-              <KvRow
-                key={p.id}
-                label={`${p.name} v${p.version}`}
-                description={
-                  p.entry.url ??
-                  (p.entry.command
-                    ? `${p.entry.command} ${(p.entry.args ?? []).join(" ")}`
-                    : p.id)
-                }
-                icon={<Wrench className="h-4 w-4" />}
-              >
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                    {p.entry.url ? "http" : p.kind}
-                  </Badge>
-                  <span className="text-[11px] text-neutral-500 tabular-nums">
-                    {p.tools} 工具
-                  </span>
-                </div>
-              </KvRow>
-            ))
-          ) : (
-            <KvRow label="暂无插件" description="plugins 目录下未发现 manifest.json" />
-          )}
-        </KvListContent>
-      </KvList>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>添加 MCP 插件</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 py-1">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="ID（小写 slug）">
-                <Input
-                  value={id}
-                  onChange={(e) => setId(e.target.value)}
-                  placeholder="my-server"
-                  className="h-8 text-xs font-mono"
-                />
-              </Field>
-              <Field label="显示名">
-                <Input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="默认同 ID"
-                  className="h-8 text-xs"
-                />
-              </Field>
-            </div>
-            <Field label="传输">
-              <SettingSelect
-                value={transport}
-                onChange={(v) => setTransport(v as "stdio" | "http")}
-                options={[
-                  { value: "stdio", label: "stdio（本地进程）" },
-                  { value: "http", label: "HTTP(S)（远程端点）" },
-                ]}
-              />
-            </Field>
-            {transport === "stdio" ? (
-              <>
-                <Field label="命令">
-                  <Input
-                    value={command}
-                    onChange={(e) => setCommand(e.target.value)}
-                    placeholder="npx / uvx / node …"
-                    className="h-8 text-xs font-mono"
-                  />
-                </Field>
-                <Field label="参数（空格分隔）">
-                  <Input
-                    value={args}
-                    onChange={(e) => setArgs(e.target.value)}
-                    placeholder="-y @modelcontextprotocol/server-xxx"
-                    className="h-8 text-xs font-mono"
-                  />
-                </Field>
-              </>
-            ) : (
-              <>
-                <Field label="端点 URL">
-                  <Input
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                    placeholder="https://mcp.example.com/mcp"
-                    className="h-8 text-xs font-mono"
-                  />
-                </Field>
-                <Field label="请求头（每行一个 Key: value，可选）">
-                  <Textarea
-                    value={headers}
-                    onChange={(e) => setHeaders(e.target.value)}
-                    rows={3}
-                    placeholder={"Authorization: Bearer …\nX-Tenant: acme"}
-                    className="font-mono text-[12px] leading-relaxed"
-                  />
-                </Field>
-              </>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              size="sm"
-              className="h-8 text-xs"
-              disabled={
-                !id.trim() ||
-                busy ||
-                (transport === "stdio" ? !command.trim() : !url.trim())
-              }
-              onClick={() => void submit()}
-            >
-              {busy ? "保存中…" : "添加"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-/* ============================ SubAgent ============================ */
-
-function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [desc, setDesc] = useState("");
-  const [scope, setScope] = useState<"workspace" | "global">("workspace");
-  const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    if (!name.trim() || !prompt.trim()) return;
-    setBusy(true);
-    try {
-      await createSubagent({
-        name: name.trim(),
-        description: desc.trim(),
-        scope,
-        prompt: prompt.trim(),
-      });
-      toast.success("已创建子代理");
-      setOpen(false);
-      setName(""); setDesc(""); setPrompt("");
-      reload();
-    } catch (e) {
-      toast.error("创建失败", { description: String(e) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-end">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs gap-1"
-          onClick={() => setOpen(true)}
-        >
-          <Plus className="h-3.5 w-3.5" /> 添加
-        </Button>
-      </div>
-      <KvList>
-        <KvListContent>
-          {ov?.subagents.map((a) => (
-            <KvRow
-              key={a.name}
-              label={a.name}
-              description={a.description || undefined}
-              icon={<Bot className="h-4 w-4" />}
-            >
-              <div className="flex items-center gap-2">
-                {a.builtin ? (
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                    内置
-                  </Badge>
-                ) : (
-                  <>
-                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                      {a.global ? "全局" : "工作区"}
-                    </Badge>
-                    {a.path && (
-                      <span className="text-[11px] text-neutral-500 font-mono max-w-[200px] truncate">
-                        {a.path}
-                      </span>
-                    )}
-                  </>
-                )}
-              </div>
-            </KvRow>
-          ))}
-        </KvListContent>
-      </KvList>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>添加子代理</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 py-1">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="名称（小写 slug）">
-                <Input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="reviewer"
-                  className="h-8 text-xs font-mono"
-                />
-              </Field>
-              <Field label="位置">
-                <SettingSelect
-                  value={scope}
-                  onChange={(v) => setScope(v as "workspace" | "global")}
-                  options={[
-                    { value: "workspace", label: "工作区" },
-                    { value: "global", label: "全局" },
-                  ]}
-                />
-              </Field>
-            </div>
-            <Field label="描述">
-              <Input
-                value={desc}
-                onChange={(e) => setDesc(e.target.value)}
-                placeholder="这个子代理擅长什么"
-                className="h-8 text-xs"
-              />
-            </Field>
-            <Field label="系统提示词（子代理的行为指令）">
-              <Textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                rows={7}
-                placeholder="你是一个代码审查专家，专注于…"
-                className="font-mono text-[12px] leading-relaxed"
-              />
-            </Field>
-          </div>
-          <DialogFooter>
-            <Button
-              size="sm"
-              className="h-8 text-xs"
-              disabled={!name.trim() || !prompt.trim() || busy}
-              onClick={() => void submit()}
-            >
-              {busy ? "创建中…" : "创建"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-/* ============================ 入口 ============================ */
-
-export function AgentSettings({ tab }: { tab: AgentTab }) {
-  const [ov, setOv] = useState<AgentOverview | null>(null);
-
-  const reload = () => {
-    void getAgentOverview()
-      .then(setOv)
-      .catch(() => {});
-  };
-  useEffect(reload, []);
-
-  return (
-    <div className="flex flex-col gap-8 w-full">
-      {tab === "instructions" && <InstructionsPane />}
-      {tab === "model" && <ModelPane ov={ov} reload={reload} />}
-      {tab === "skills" && <SkillsPane ov={ov} reload={reload} />}
-      {tab === "mcp" && <McpPane ov={ov} reload={reload} />}
-      {tab === "subagent" && <SubagentPane ov={ov} reload={reload} />}
+      </FormDialog>
     </div>
   );
 }
