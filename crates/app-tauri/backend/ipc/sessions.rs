@@ -19,9 +19,8 @@ pub fn agent_session(
     path: Option<String>,
     payload: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    // Handled BEFORE the kernel lock: a native save dialog stays up until the
-    // user answers it, and everything else on this IPC (plus a running turn)
-    // must keep flowing while it does.
+    // Before the kernel lock: the dialog stays up until the user answers, and the rest
+        // of this IPC must keep flowing.
     if op == "save_download" {
         return save_download(payload);
     }
@@ -821,11 +820,9 @@ fn stage_clipboard_payload(
     describe_attachment(&path, name)
 }
 
-/// Write a frontend-made export (diagram SVG/PNG, table CSV, image bytes) to a
-/// path the user picks. The webview's own `<a download>` never reaches the
-/// filesystem — Tauri wires no download handler — so every export streamdown
-/// builds from a blob went nowhere until this existed. `data` is base64, the
-/// same envelope `attach_bytes` takes.
+/// Base64 bytes → an `rfd` save dialog → `std::fs::write`. The webview's own
+/// `<a download>` never reaches the filesystem (Tauri wires no handler); `data` is
+/// the envelope `attach_bytes` takes.
 fn save_download(payload: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let p = payload.ok_or("save_download needs a payload")?;
     let name = p
@@ -843,14 +840,13 @@ fn save_download(payload: Option<serde_json::Value>) -> Result<serde_json::Value
     if bytes.is_empty() {
         return Err("save_download: empty payload".into());
     }
-    // The suggested name keeps whatever extension the caller chose; the dialog
-    // is what decides the real destination.
+    // The extension comes from the caller; the dialog decides the real path.
     let Some(target) = rfd::FileDialog::new()
         .set_title("保存文件")
         .set_file_name(name)
         .save_file()
     else {
-        // Cancelled — not an error, and nothing was written.
+        // Cancelled — not an error, nothing written.
         return Ok(serde_json::json!({ "saved": false }));
     };
     std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;

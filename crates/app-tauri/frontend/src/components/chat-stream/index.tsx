@@ -202,8 +202,7 @@ const UserMemoStreamdown = memo(function UserMemoStreamdown({
 }: {
   text: string;
 }) {
-  // Same chrome as the answer text (Chinese labels, no download button, diff
-  // fences through DiffView) — only the block styling differs.
+  // Same chrome as the answer text; only the block styling differs.
   return <MemoStreamdown text={text} components={userMarkdownComponents} />;
 });
 
@@ -713,28 +712,22 @@ const STEP_LABEL: Record<AssistantStep["type"], string> = {
   system: "提示",
 };
 
-/** One-line rail preview for a step. Truncated before the whitespace collapse
- *  so a paste-sized block cannot make the string work dominate a rebuild. */
+/** One-line rail preview; clipped before the whitespace collapse. */
 function stepPreview(step: AssistantStep): string {
   const raw = getAssistantPreview([step]);
   const cut = clipPreview(raw);
-  // `getAssistantPreview` prefixes thinking/tool blocks to stand alone ("思考:
-  // …"); the mark's own label already says which block this is, so the prefix
-  // is dropped rather than printed twice.
+  // The mark's own label names the block, so the "思考: " prefix is dropped.
   return cut.replace(/^(思考|工具):\s*/, "").replace(/\s+/g, " ").trim();
 }
 
-/** Rail tooltips get one line: a paste-sized prompt or a screenful of answer
- *  has to be cut long before it reaches the hover card. */
+/** Rail tooltips get one line: 160 characters, then an ellipsis. */
 function clipPreview(text: string, max = 160): string {
   return text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 }
 
-/** Weight in characters of the block a step draws. Prose counts its text; a
- *  tool step counts its cards, because what makes a turn long to scroll is the
- *  card body — the child's streamed text, its report, a diff or a log, all of
- *  which live in `detail`. Counting 40 per row left a turn that ran six
- *  commands reading like a stub. */
+/** Block weight in characters. A tool step counts its cards: the card body
+ *  (`detail` — streamed text, report, diff, log) is what makes a turn long to
+ *  scroll, not its prose. */
 function stepWeight(step: AssistantStep): number {
   if (step.type !== "tools") return step.text.length;
   let n = 0;
@@ -1095,16 +1088,11 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       }
       for (; spanIdx < prev.spans.length; spanIdx++) {
         const s = prev.spans[spanIdx];
-        // The last span of the previous fold is the one still being written:
-        // its item list keeps growing (an appended tool row, an assistant item
-        // whose text was rewritten in place), so its recorded length and item
-        // identities no longer describe it. Reusing it handed the tail fold a
-        // run of non-user items, `foldTurnSpans` opened a fresh turn for them
-        // with no `userText` — and every flush of a live turn minted one more
-        // prompt-less turn: the rail grew a run of short marks nobody asked for
-        // and the turn numbers counted those phantoms. Refold it from its own
-        // start instead; a turn always begins at a user item, so the tail fold
-        // rebuilds the whole thing.
+        // The last span of the previous fold is the one still growing (appended
+        // rows, an assistant item rewritten in place), so its length and item
+        // identities no longer describe it. Reusing it handed the tail fold a run
+        // of non-user items, and every flush minted another prompt-less turn;
+        // refold it from its own start — a turn begins at a user item.
         if (spanIdx === prev.spans.length - 1) break;
 
         if (cursor + s.span.length > items.length) break;
@@ -1271,10 +1259,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             ? `chat-turn-${boundaryTurn.id}-assistant`
             : "",
         previewTitle: "未加载的历史",
-        // `turnOffset` counts the boundary turn as wholly unloaded, so its
-        // prompt is ordinal `unloaded - 1` — 1-based, that is `unloaded`. The
-        // 0-based value leaked into the tooltip as "第 0 个回合" whenever the
-        // page started at the top of the session.
+        // `turnOffset` counts the boundary turn as unloaded, so its prompt is
+        // 1-based `unloaded`.
         previewSnippet: `第 ${Math.max(1, unloaded)} 个回合的提问`,
       });
     }
@@ -1305,13 +1291,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
       if (turn.steps.length > 0) {
         const isLastTurn = idx === turns.length - 1;
-        // One mark per STEP, not per turn. A turn is the prompt plus however
-        // many blocks the answer arrived in — thinking, a tool batch, prose,
-        // another tool batch — and the rail is the only place that structure
-        // shows at a glance. One dash per turn collapsed every agentic turn
-        // into a single stub, so a reopened session (whose steps were folded
-        // from the replay) drew `长短长短长短` where the live one drew
-        // `长短短短短长短短短`.
+        // One mark per step, not per turn: a turn is the prompt plus every block
+        // the answer arrived in (thinking / tools / prose), and a single dash per
+        // turn flattened agentic turns into stubs.
         turn.steps.forEach((step, stepIdx) => {
           const isStreaming =
             view.streaming && isLastTurn && stepIdx === turn.steps.length - 1;
@@ -1341,8 +1323,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       }
     });
 
-    // The far handle. It sits last, so `handleSelectMark`'s is-last branch
-    // scrolls to the newest message and re-pins — the mirror of the top mark.
+    // Last mark: `handleSelectMark`'s is-last branch jumps to the newest message.
     list.push({
       id: "mark-end",
       type: "end",

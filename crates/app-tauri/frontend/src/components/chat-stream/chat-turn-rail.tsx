@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
-/** One mark's row height — the unit the strip scrolls in. */
+/** Row height; the strip slides in whole rows. */
 const ROW_H = 11;
 
-/** Rows the track can draw before it has to fold: the shell's own
- *  `calc(100vh - 220px)` cap, minus its 16px of vertical padding, at 11px a
- *  row. Recomputed on resize — a shorter window shows a shorter strip. */
+/** Rows that fit the shell's `calc(100vh - 220px)` cap: 16px padding, 11px a row. */
 function rowsThatFit(): number {
   const vh = typeof window === "undefined" ? 900 : window.innerHeight;
   return Math.max(9, Math.floor((vh - 220 - 16) / ROW_H));
@@ -14,8 +12,7 @@ function rowsThatFit(): number {
 
 export interface RailMark {
   id: string;
-  /** `top` / `end` are the two handles (start and end of the session);
-   *  `placeholder` is an unloaded turn, drawn as a dot. */
+  /** `top` / `end` = the pinned handles; `placeholder` = an unloaded turn (a dot). */
   type: "top" | "end" | "user" | "assistant" | "placeholder";
   /** Ordinal within the unloaded range — click-seek uses it to estimate
    * which history index this placeholder stands for. */
@@ -26,15 +23,12 @@ export interface RailMark {
   targetId: string;
   previewTitle: string;
   previewSnippet: string;
-  /** Weight of the block this mark stands for (characters, tool cards
-   *  included) — carried for a future proportional dash; the renderer sizes
-   *  marks by role alone today. */
+  /** Weight of the block this mark stands for, in characters (tool cards included). */
   len?: number;
   isStreaming?: boolean;
 }
 
-/** Hover card shared by the marks and the `~` folds: one label line plus the
- *  block's own text. */
+/** Hover card: one label line plus the block's own text. */
 function RailTip({ title, detail }: { title: string; detail?: string }) {
   return (
     <div className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-0.5 whitespace-nowrap bg-[color-mix(in_srgb,var(--husk-n900)_95%,transparent)] dark:bg-[var(--husk-card)]/95 text-zinc-50 px-2.5 py-1.5 rounded-lg shadow-popup border border-zinc-700/60 backdrop-blur-xs max-w-[280px] animate-in fade-in-0 zoom-in-95 duration-100">
@@ -57,14 +51,11 @@ interface ChatTurnRailProps {
 }
 
 /**
- * The turn rail: a minimap of the session down the left edge.
+ * The turn rail: a session minimap down the left edge.
  *
- * The strip draws a WINDOW of turns — as many rows as the window has room for,
- * with the rest folded behind a `~` on either side — and its own wheel slides
- * that window, so the rail is browsed where the pointer is instead of by
- * scrolling the conversation. The two handles (start / end) stay pinned; a
- * click jumps the conversation to the mark under it; the window follows the
- * active mark whenever the conversation itself moves.
+ * Draws a window of rows around the active mark, with a `~` (its count) on
+ * either side; wheel and drag slide that window, a click jumps the conversation,
+ * and the window follows the active mark.
  */
 export function ChatTurnRail({
   marks,
@@ -73,30 +64,25 @@ export function ChatTurnRail({
   className,
   loading,
 }: ChatTurnRailProps) {
-  /** The rail's root node, as STATE: the wheel listener has to re-attach when
-   *  the node appears or is replaced (skeleton → strip, session switch), and a
-   *  plain ref gives the effect nothing to watch — it ran once while the
-   *  skeleton was mounted, found no node, and never ran again because
-   *  `collapsed` had not changed. */
+  /** Root node as state: the wheel effect must re-attach whenever the node
+   *  (re)mounts — a ref leaves the effect with nothing to depend on. */
   const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const activeElRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [hoveredMarkId, setHoveredMarkId] = useState<string | null>(null);
   const [rowBudget, setRowBudget] = useState(rowsThatFit);
-  /** Rows the wheel has slid the window by — browsing the folded regions.
-   *  Reset whenever the conversation's own scroll moves the active mark, so
-   *  the window snaps back to following the reader. */
+  /** Rows the wheel/drag slid the window by; reset when the conversation scrolls. */
   const [browseShift, setBrowseShift] = useState(0);
   const hasDraggedRef = useRef(false);
   const startYRef = useRef(0);
-  /** Browse position the current drag started from. */
+    /** Shift at drag start. */
   const startShiftRef = useRef(0);
-  /** Pointer capture is taken only once a drag is under way (see below). */
+    /** Set once the drag is real; the capture waits for it. */
   const capturedRef = useRef(false);
   /** Wheel pixels not yet converted into whole rows. */
   const wheelAccRef = useRef(0);
-  /** Latest applied shift, so a drag can move relative to it. */
+    /** Latest applied shift (a drag moves relative to it). */
   const browseShiftRef = useRef(0);
 
   useEffect(() => {
@@ -110,40 +96,28 @@ export function ChatTurnRail({
     setBrowseShift(0);
   }, [activeId]);
 
-  // Window shape: the two handles stay pinned, everything between them is a
-  // window. The budget keeps room for both handles and a `~` row per side, so
-  // the tallest arrangement still fits the shell's cap.
+  // Handles pinned, a window between them: the budget leaves room for both handles and a `~` row per side.
   const innerCount = Math.max(0, marks.length - 2);
   const innerSize = Math.max(3, rowBudget - 4);
   const collapsed = innerCount > innerSize;
 
-  /** Slide the strip's own window by whole rows. One mechanism behind both the
-   *  press-and-drag and the wheel: the strip moves under the pointer, the
-   *  conversation stays where it is. */
+  /** Slide the window by whole rows — the one gesture behind drag and wheel. */
   const slideRows = (rows: number) => {
     browseShiftRef.current += rows;
     setBrowseShift(browseShiftRef.current);
   };
 
-  // Wheel over the strip slides the strip's own window. A native non-passive
-  // listener, not `onWheel`: React registers wheel passively, so the event
-  // would reach whatever scroll container sits behind the rail. Gated on
-  // `collapsed` — with every mark already drawn there is nothing to slide, and
-  // swallowing the event would only hide that.
+  // Native and non-passive on the ROOT (capture): React's `onWheel` is passive,
+  // and capture runs before any handler that could swallow the event. Gated on
+  // `collapsed` — with nothing folded there is nothing to slide.
   useEffect(() => {
-    // On the rail's ROOT in the capture phase: the strip's own rows, the `~`
-    // folds and the hover cards all sit under it, and a listener further in
-    // only sees the events that survive whatever else is listening. Capture
-    // also runs before any bubble-phase handler can swallow it.
     const root = rootEl;
     if (!root) return;
     const onWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.deltaY === 0 || !collapsed) return;
       e.preventDefault();
       e.stopPropagation();
-      // WebKitGTK reports a mouse notch in LINES (deltaMode 1, deltaY ≈ 3),
-      // Chromium in pixels. Converting each to pixels is what makes one notch
-      // move the strip in either engine.
+      // WebKitGTK reports a notch in lines (deltaMode 1, deltaY ≈ 3), Chromium in pixels — one notch has to move the strip in both.
       const perUnit = e.deltaMode === 1 ? 32 : e.deltaMode === 2 ? root.clientHeight : 1;
       wheelAccRef.current += e.deltaY * perUnit;
       const rows = Math.trunc(wheelAccRef.current / ROW_H);
@@ -162,9 +136,8 @@ export function ChatTurnRail({
     startYRef.current = e.clientY;
     startShiftRef.current = browseShift;
     setIsDragging(true);
-    // No capture yet: capturing on pointerdown makes the browser dispatch the
-    // CLICK to the capture target (the track) instead of the row, so a plain
-    // click never reached the mark it was on.
+    // No capture yet: capturing on pointerdown sends the CLICK to the track
+    // instead of the mark's row.
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -179,9 +152,7 @@ export function ChatTurnRail({
       } catch {}
     }
     if (!hasDraggedRef.current) return;
-    // Grabbing the strip and pulling down walks back through the session, the
-    // way dragging a list does — the wheel is the same gesture in discrete
-    // steps.
+    // Grab-and-pull walks back through the session; the wheel is the same gesture in steps.
     const wanted = startShiftRef.current - Math.round(dy / ROW_H);
     slideRows(wanted - browseShiftRef.current);
     browseShiftRef.current = wanted;
@@ -231,10 +202,8 @@ export function ChatTurnRail({
   );
   const inner = collapsed ? marks.slice(1, marks.length - 1) : [];
   const activeInner = Math.min(Math.max(activeIdx - 1, 0), Math.max(0, innerCount - 1));
-  // Centre on the active mark FIRST, then apply the wheel's shift. Shifting
-  // before the clamp swallowed the scroll whenever the active mark sat near an
-  // end: the centred window was already pinned there, so a nudge landed on the
-  // same clamped value and the strip looked frozen.
+  // Centre first, then shift: shifting before the clamp is swallowed near the
+  // ends, where the centred window is already pinned.
   const lastStart = Math.max(0, innerCount - innerSize);
   const centredStart = Math.min(Math.max(activeInner - Math.floor(innerSize / 2), 0), lastStart);
   const winStart = collapsed ? Math.min(Math.max(centredStart + browseShift, 0), lastStart) : 0;

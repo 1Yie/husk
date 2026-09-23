@@ -147,11 +147,8 @@ function modelSubLabel(m: agent.ModelItem): string {
  *  from a callback ref, not `useRef` + an effect, because React recreates the
  *  span when it swaps between the bare and the tooltip-wrapped return.
  *
- *  Radix Tooltip rather than a native `title`: the bubble must appear only when
- *  the row is actually clipped, and Radix positions it against the row. (The
- *  app's `GlobalTooltip` fallback would now catch a bare `title` here too — its
- *  bail-out test was narrowed from "inside any `data-state` subtree" to "is a
- *  Radix trigger", see `ui/tooltip.tsx`.) */
+ *  Radix Tooltip, not a native `title`: the bubble appears only when the row is
+ *  actually clipped, and Radix can position it against the row. */
 function TruncatedText({ text, className }: { text: string; className?: string }) {
   const [clipped, setClipped] = useState(false);
   const roRef = useRef<ResizeObserver | null>(null);

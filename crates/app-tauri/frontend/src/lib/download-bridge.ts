@@ -1,24 +1,18 @@
-// Exports streamdown draws itself — diagram SVG/PNG/MMD, table CSV/Markdown/TSV,
-// image files — are built as a Blob, turned into an object URL and clicked
-// through an `<a download>`. Inside Tauri that anchor never reaches the
-// filesystem (the webview wires no download handler), so every one of those
-// buttons silently did nothing. Catch the click, read the blob the anchor
-// points at, and hand the bytes to the native save dialog instead.
+// streamdown's exports (diagram SVG/PNG/MMD, table CSV, image files) are Blob →
+// object URL → `<a download>`. Tauri wires no download handler, so those clicks
+// went nowhere; this reads the blob and hands the bytes to the save dialog.
 
 import { toast } from "sonner";
 import { saveDownload } from "../invoke/agent/sessions";
 
-/** Blob URLs headed for the save dialog. streamdown revokes the URL in the same
- *  tick it clicks the anchor, while the bytes are read asynchronously — those
- *  lives are extended here. */
+/** streamdown revokes the URL in the same tick it clicks — these lives are extended. */
 const held = new Set<string>();
 const originalRevoke = URL.revokeObjectURL.bind(URL);
 
 async function bytesToBase64(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = "";
-  // Chunked: `String.fromCharCode(...bytes)` would blow the argument limit on a
-  // multi-MB export.
+  // Chunked: a spread of a multi-MB buffer blows the argument limit.
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
     binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
@@ -26,16 +20,13 @@ async function bytesToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
-/** Installed once, from `main.tsx`. A plain browser (vite dev harness, preview)
- *  already saves `<a download>` natively, so the bridge stays out of the way
- *  there. */
+/** Tauri only: a plain browser already saves `<a download>` natively. */
 export function installDownloadBridge() {
   if (!("__TAURI_INTERNALS__" in window)) return;
 
   URL.revokeObjectURL = (url: string) => {
     if (!held.delete(url)) return originalRevoke(url);
-    // Release well after the save round-trip; a missed release costs one blob's
-    // memory, never correctness.
+    // Released long after the round-trip; a miss costs one blob's memory.
     window.setTimeout(() => originalRevoke(url), 60_000);
   };
 
@@ -45,8 +36,7 @@ export function installDownloadBridge() {
       const anchor = (event.target as Element | null)?.closest?.("a[download]");
       const href = anchor?.getAttribute("href") ?? "";
       if (!anchor || !href.startsWith("blob:")) return;
-      // Capturing phase: this runs before the click finishes dispatching, so the
-      // URL is in `held` by the time streamdown revokes it.
+      // Capture phase: the URL is in `held` before streamdown revokes it.
       event.preventDefault();
       event.stopPropagation();
       held.add(href);

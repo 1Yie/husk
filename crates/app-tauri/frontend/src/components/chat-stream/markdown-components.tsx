@@ -5,19 +5,10 @@ import { renderWithTwemoji } from "@/lib/twemoji";
 /**
  * Props sized for a DOM element.
  *
- * Two things every renderer here has to survive:
- *   * streamdown runs the JSX runtime with `passNode`, so each component gets
- *     the hast `node` — spreading it paints `node="[object Object]"` into the
- *     DOM (23 times in one short answer);
- *   * the pipeline attaches its own classes (`contains-task-list`,
- *     `task-list-item`, …). A plain `className="…"` followed by `{...props}`
- *     silently loses ours to theirs — which is exactly how task lists ended up
- *     with no list styling at all.
- *
- * So: drop `node`, merge classes with ours first and the pipeline's second
- * (plain concatenation — `cn()`/tailwind-merge is deliberately NOT used here:
- * Tailwind's `text-<size>` also sets line-height, so twMerge silently drops a
- * `leading-*` that precedes it, and these strings are full of that pair).
+ * Drops the hast `node` the JSX runtime hands every component (spreading it
+ * paints `node="[object Object]"` into the DOM) and merges classNames with ours
+ * first. Plain concatenation, not `cn()`: tailwind-merge drops a `leading-*`
+ * that precedes a `text-<size>` (which sets line-height too).
  */
 function domProps<T extends { node?: unknown; className?: string }>(
   props: T,
@@ -27,8 +18,7 @@ function domProps<T extends { node?: unknown; className?: string }>(
   return { ...rest, className: [ours, className].filter(Boolean).join(" ") };
 }
 
-/** GFM task lists come as `<ul class="contains-task-list">`; the bullet has to
- *  step aside or every row shows a dot next to its checkbox. */
+/** `<ul class="contains-task-list">` — the bullet has to step aside for the checkbox. */
 function listClasses(className: string | undefined, base: string): string {
   const markers = className?.includes("contains-task-list") ? "pl-1 list-none" : "pl-5 list-disc";
   // Ours last so `pl-*`/`list-*` win; the pipeline's own class is appended by
@@ -37,15 +27,10 @@ function listClasses(className: string | undefined, base: string): string {
 }
 
 /**
- * Drop the streaming fade's wrappers inside code.
- *
- * The fade splits text into `<span data-sd-animate>` nodes that start at
- * opacity 0 and resolve on a stagger, which is what makes prose arrive smoothly.
- * Code is drawn as a styled element — inline code is a pill with a background
- * and border — so an animated pill paints its box immediately and sits there
- * EMPTY while the text fades in a beat later. Fenced code is spared by the
- * plugin itself (it skips `pre`); inline `code` is not, so the wrappers are
- * unwrapped here. Code is read, not watched.
+ * Unwrap the fade's `<span data-sd-animate>` nodes inside code: an inline pill
+ * paints its box immediately, so a faded one sits there empty while its text
+ * fades in. Fenced code is spared by the plugin (`pre` is skipped), inline
+ * `code` is not.
  */
 function unfaded(children: React.ReactNode): React.ReactNode {
   return React.Children.map(children, (child) => {
@@ -204,10 +189,7 @@ export const chatMarkdownComponents = {
     </li>
   ),
 
-  /** Task-list checkboxes are `disabled` inputs the markdown pipeline injects
-   *  (nothing in the fence controls them) — give them an accent colour and a
-   *  baseline that lines up with the 14px prose instead of the browser default.
-   *  Every other input passes through untouched. */
+  /** The pipeline injects these `disabled` checkboxes — give them an accent colour. */
   input: ({ type, ...props }: React.ComponentPropsWithoutRef<"input">) =>
     type === "checkbox" ? (
       <input type="checkbox" {...domProps(props, "mr-1.5 size-3.5 translate-y-[1px] accent-emerald-600 cursor-default")} />

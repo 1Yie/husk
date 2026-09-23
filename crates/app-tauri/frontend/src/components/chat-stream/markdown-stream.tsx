@@ -21,9 +21,7 @@ export const streamdownIcons = {
   CopyIcon: Copy,
 };
 
-/** Streamdown ships English labels for everything it draws itself — copy and
- *  download buttons, the table export menu, diagram controls, the external-link
- *  confirmation. Untranslated they leak English into an otherwise Chinese UI. */
+/** streamdown's own labels are English (copy/download, table export, diagram controls) — untranslated they leak into a Chinese UI. */
 export const streamdownTranslations: Partial<StreamdownTranslations> = {
   close: "关闭",
   copied: "已复制",
@@ -59,17 +57,14 @@ export const streamdownTranslations: Partial<StreamdownTranslations> = {
   zoomOut: "缩小",
 };
 
-/** The download button is not wanted on chat code blocks (the patch/output is
- *  the conversation, not a file to save) — expressed here instead of hiding the
- *  rendered button from CSS, so it never mounts in the first place. */
+/** Code blocks get no download button — expressed here so it never mounts. */
 const streamdownControls = { code: { download: false } } as const;
 
-/** `diff` fences are the one fence the app renders better than a coloured code
- *  block: the same `DiffView` the approval cards use, plus the copy affordance
- *  `DiffView` itself does not carry (a patch in an answer is usually there to be
- *  copied). While the fence is still arriving it stays a plain preview — a patch
- *  cut mid-hunk would parse to nothing and `DiffView` renders `null` for that,
- *  leaving a hole in the answer's layout. */
+/**
+ * ```diff/```patch render through the approval cards' `DiffView`, plus the copy
+ * affordance `DiffView` lacks. A half-arrived fence stays a plain preview: it
+ * would parse to nothing and `DiffView` renders `null` for that.
+ */
 function DiffFence({ code, isIncomplete }: CustomRendererProps) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
@@ -109,56 +104,31 @@ function DiffFence({ code, isIncomplete }: CustomRendererProps) {
   );
 }
 
-/** Fence-language → React component, for fences that are not code. `patch` is
- *  the same payload under the other common spelling. */
+/** Fence language → component, for fences that are not code. */
 export const streamdownRenderers: CustomRenderer[] = [
   { language: ["diff", "patch"], component: DiffFence },
 ];
 
-/** LaTeX: `$$…$$` blocks always render; `$…$` inline is enabled because the
- *  models here emit inline math far more often than they write prices — with it
- *  off every `$x^2$` stayed literal (the reported symptom). */
+/** `$$…$$` always renders; `$…$` is on because these models write inline math far more often than prices. */
 const streamdownMath = createMathPlugin({ singleDollarTextMath: true });
 
-/** Mermaid is the one plugin worth withholding: its engine is ~1 MB of diagram
- *  code for fences most answers never contain. It is fetched on idle the first
- *  time a fence looks like a diagram, and streamdown's block memo compares
- *  `plugins`, so a diagram that rendered as a code block upgrades in place the
- *  moment the chunk lands. */
+/** Lazy: ~1 MB of diagram engine for fences most answers never contain (fetched on idle, first diagram-looking fence). */
 const MERMAID_FENCE = /^[ \t]*(?:```|~~~)[ \t]*mermaid\b/m;
 let mermaidPluginPromise: Promise<DiagramPlugin> | null = null;
 function loadMermaidPlugin(): Promise<DiagramPlugin> {
-  // Theme baked in at plugin creation. Passing it as the `mermaid` prop instead
-  // made the plugin re-`initialize` mermaid's global config on every diagram
-  // render (`getMermaid(config)` calls `initialize`), which is exactly the kind
-  // of shared-state churn a second render (the fullscreen stage) does not need.
-  //
-  // mermaid's own default palette is pastel (pale yellow/blue boxes) and clashes
-  // with the app's neutral surfaces; `neutral` is grayscale, which also survives
-  // the dark card because the diagram surface is pinned light.
+  // Theme baked into the plugin: passing it as the `mermaid` prop re-runs mermaid's global `initialize` on every render.
   mermaidPluginPromise ??= import("@streamdown/mermaid").then((m) =>
     m.createMermaidPlugin({ config: { theme: "neutral" } }),
   );
   return mermaidPluginPromise;
 }
 
-/** The streaming fade (inert unless `isAnimating`). `blurIn` is the docs' pick
- *  for fast models — blur hides batch arrivals better than plain opacity. `sep`
- *  stays at the default `"word"`: `"char"` was measured on this app's stream
- *  shape and is not affordable (a 3.2k-char block already cost **16.4ms per
- *  commit** against a 16.7ms frame budget, with 2.1k spans and 1.7k of them
- *  queued >400ms animating *after* their text had arrived). `maxBacklogMs: 120`
- *  is what keeps a word-level fade in step with a fast model: at 16k chars,
- *  9.2ms avg / 16.3ms worst with **no** span left animating more than 400ms late
- *  (the default backlog budget left 558 of them). Spans are stripped the moment
- *  streaming ends, so a settled block pays nothing.
- *
- *  `streamFx` decides which surface may pay for it, because the fade is only
- *  affordable where the reader is watching text arrive. A reasoning trace
- *  re-parses on every delta inside a clipped, collapsible panel; animated, the
- *  same 16k chars cost 18ms per commit over 12k DOM nodes (vs 7ms / 1.3k nodes)
- *  and 8.8k spans queued behind the stream. No caret: the block cursor at the
- *  end of the stream read as a stray glyph rather than a cursor. */
+/**
+ * Streaming fade (inert unless `isAnimating`): `blurIn`, 200 ms, word-level with
+ * `maxBacklogMs: 120` — char-level measured 16.4 ms per commit against a 16.7 ms
+ * frame budget. `streamFx` picks the surface: the answer opts in, a reasoning
+ * trace stays static (18 ms/commit over 12k nodes when animated). No caret.
+ */
 const streamdownAnimate = {
   animation: "blurIn",
   duration: 200,

@@ -96,13 +96,9 @@ export function GlobalTooltip() {
         return;
       }
 
-      // If it's already handled by Radix Tooltip, skip the fallback. Radix
-      // stamps `data-state` on the TRIGGER element itself — testing an
-      // ancestor instead disabled the fallback for every subtree a Radix
-      // primitive wraps: the whole chat stream sits inside a
-      // `ContextMenuTrigger` (data-state="closed"), so streamdown's copy
-      // button, table menus and image controls all leaked the native OS
-      // tooltip while every `title` outside those subtrees was converted.
+      // Radix stamps `data-state` on the TRIGGER itself — testing an ancestor disabled
+            // the fallback for every Radix-wrapped subtree (the whole chat stream sits in
+            // a ContextMenuTrigger, so streamdown's buttons leaked the native bubble).
       if (el.hasAttribute("data-state")) {
         return;
       }

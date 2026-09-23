@@ -1,7 +1,4 @@
-/** @type {import('tailwindcss').Config} */
-/** A theme colour that still takes a Tailwind alpha modifier. Tailwind cannot
- *  build `/80` out of a bare `var()`, so the value folds through `color-mix`
- *  with the substituted `<alpha-value>` (100% when no modifier is written). */
+/** A theme colour that still takes a Tailwind alpha modifier: Tailwind cannot build `/80` from a bare `var()`, so the value folds through `color-mix` with `<alpha-value>`. */
 const alpha = (varName) =>
   `color-mix(in srgb, ${varName} calc(<alpha-value> * 100%), transparent)`;
 
@@ -10,10 +7,7 @@ export default {
   content: [
     "./index.html",
     "./src/**/*.{ts,tsx}",
-    // streamdown draws its own chrome (mermaid cards, diagram controls, the
-    // fullscreen overlay, table menus) with utility classes that live in the
-    // package, not in this repo — unscanned, Tailwind emits no rule for them and
-    // those blocks render unstyled however the theme is configured.
+    // streamdown draws its own chrome with classes that live in the package — unscanned, Tailwind emits no rule for them.
     "./node_modules/streamdown/dist/*.js",
     "./node_modules/@streamdown/*/dist/*.js",
   ],
@@ -36,14 +30,9 @@ export default {
         "bubble-user": "var(--husk-bubble-user)",
         accent: "var(--husk-accent)",
 
-        // shadcn-style names that streamdown's OWN chrome is written against
-        // (`border-border`, `bg-sidebar`, `bg-background/95`,
-        // `text-muted-foreground`, `bg-primary`, …). The app palette above uses
-        // its own names, so without these Tailwind emits no rule at all and
-        // everything streamdown draws itself — mermaid cards, diagram controls,
-        // the fullscreen overlay, table chrome — renders unstyled. The overlay
-        // was the visible one: `bg-background/95` painted nothing, so fullscreen
-        // showed the diagram floating over an undimmed page.
+        // shadcn-style names streamdown's chrome is written against (`border-border`,
+                // `bg-background/95`, `bg-sidebar`, …); the app palette uses its own names,
+                // so without these nothing streamdown draws is styled.
         background: alpha("var(--husk-bg)"),
         foreground: "var(--husk-fg)",
         border: alpha("var(--husk-border)"),
