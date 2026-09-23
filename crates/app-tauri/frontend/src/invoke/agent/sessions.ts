@@ -458,3 +458,15 @@ export function attachBytes(name: string, mime: string, data: string) {
     payload: { name, mime, data },
   });
 }
+
+/** Write a frontend-made export (diagram SVG/PNG, table CSV, image bytes) to a
+ *  path the user picks. `data` is base64 — the same envelope `attachBytes`
+ *  sends. Exports streamdown builds from a blob reach the filesystem only
+ *  through here: the webview's own `<a download>` has no handler under Tauri
+ *  (see `lib/download-bridge.ts`). */
+export function saveDownload(name: string, data: string) {
+  return invoke<{ saved: boolean; path?: string; bytes?: number }>("agent_session", {
+    op: "save_download",
+    payload: { name, data },
+  });
+}

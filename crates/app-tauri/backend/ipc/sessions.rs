@@ -19,6 +19,12 @@ pub fn agent_session(
     path: Option<String>,
     payload: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    // Handled BEFORE the kernel lock: a native save dialog stays up until the
+    // user answers it, and everything else on this IPC (plus a running turn)
+    // must keep flowing while it does.
+    if op == "save_download" {
+        return save_download(payload);
+    }
     let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
     match op.as_str() {
         "list" => Ok(serde_json::json!(mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
@@ -813,6 +819,46 @@ fn stage_clipboard_payload(
     }
     let path = stage_bytes(&bytes, &name, workspace_root);
     describe_attachment(&path, name)
+}
+
+/// Write a frontend-made export (diagram SVG/PNG, table CSV, image bytes) to a
+/// path the user picks. The webview's own `<a download>` never reaches the
+/// filesystem — Tauri wires no download handler — so every export streamdown
+/// builds from a blob went nowhere until this existed. `data` is base64, the
+/// same envelope `attach_bytes` takes.
+fn save_download(payload: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let p = payload.ok_or("save_download needs a payload")?;
+    let name = p
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or("download");
+    let data = p
+        .get("data")
+        .and_then(|v| v.as_str())
+        .ok_or("save_download needs payload.data")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("save_download: bad base64: {e}"))?;
+    if bytes.is_empty() {
+        return Err("save_download: empty payload".into());
+    }
+    // The suggested name keeps whatever extension the caller chose; the dialog
+    // is what decides the real destination.
+    let Some(target) = rfd::FileDialog::new()
+        .set_title("保存文件")
+        .set_file_name(name)
+        .save_file()
+    else {
+        // Cancelled — not an error, and nothing was written.
+        return Ok(serde_json::json!({ "saved": false }));
+    };
+    std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "saved": true,
+        "path": target.to_string_lossy(),
+        "bytes": bytes.len(),
+    }))
 }
 
 /// Extension for a clipboard MIME type — only used when the pasted name
