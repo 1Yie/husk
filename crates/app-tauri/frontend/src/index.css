@@ -1,4 +1,8 @@
 @import "streamdown/styles.css";
+/* KaTeX's stylesheet for @streamdown/math — streamdown's math plugin only
+   advertises the path via `getStyles()`, it does not load it itself. Fonts are
+   referenced from here and the browser fetches only the ones actually used. */
+@import "katex/dist/katex.min.css";
 
 @font-face {
   font-family: "MiSans";
@@ -292,11 +296,9 @@ img.emoji {
   color: inherit !important;
 }
 
-/* Hide download button — the chat header shows its own copy action */
-[data-streamdown="code-block-download-button"] {
-  display: none !important;
-}
-
+/* The code-block download button is not wanted at all — `controls` on the
+   Streamdown instance keeps it from mounting (see markdown-stream.tsx), so
+   there is no rule to hide it here. */
 [data-streamdown="code-block-body"] {
   background-color: #16161a !important;
   color: #e4e4e7 !important;
@@ -444,6 +446,63 @@ img.emoji {
 }
 [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:hover {
   background: #52525b;
+}
+
+/* ---------------------------------------------------------------------------
+   Mermaid blocks
+   ---------------------------------------------------------------------------
+   streamdown draws diagram chrome with its own theme tokens (`bg-sidebar`,
+   `border-border`, `bg-background/80`, `text-muted-foreground`) — those come
+   from the shadcn-style names added to tailwind.config.js, and the diagram
+   itself is themed through the plugin config (see markdown-stream.tsx). */
+
+/* The block's top row is the fence-language slot, and streamdown hardcodes
+   "mermaid" into it — noise above a diagram that already names itself. The row
+   is kept (the actions cluster is pulled up over it with a negative margin) and
+   relabelled instead. */
+[data-streamdown="mermaid-block"] > div:first-child > span {
+  visibility: hidden;
+}
+[data-streamdown="mermaid-block"] > div:first-child::before {
+  content: "图表";
+  margin-left: 0.25rem;
+  font-size: 12px;
+}
+
+/* The zoom/reset cluster floats on the diagram; without a surface its icons
+   read as smudges over the graph. */
+[data-streamdown="mermaid-block"] .absolute.bottom-2,
+[data-streamdown="mermaid-block"] .absolute.bottom-4 {
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
+}
+
+/* Diagram surfaces stay LIGHT in both app themes. mermaid bakes its palette in
+   at `initialize` and draws black label text, so on the dark card the labels
+   ended up black-on-near-black — the same call the code blocks make in the
+   other direction (they are pinned dark even in light mode). */
+[data-streamdown="mermaid-block"] > div:last-child,
+[data-streamdown="mermaid-fullscreen"] > div:last-child,
+[data-streamdown="mermaid-fullscreen"] > div:last-child > div {
+  background-color: #ffffff !important;
+}
+/* Fullscreen deliberately keeps streamdown's own geometry — a viewport-sized
+   flex stage that centres the diagram. An earlier version of this file added
+   `max-width`/`max-height`/`overflow` here to make it read as a lightbox, and
+   the diagram stopped rendering in the app's engine (WebKitGTK) while still
+   rendering in Chromium; the extra properties were fighting the flex sizing the
+   stage depends on. Surface colour only. */
+
+/* The fullscreen stage hands the diagram `width: auto` (streamdown's
+   `[&_svg]:w-auto`). Chromium sizes that from the viewBox; WebKitGTK resolves it
+   to a **0×0** box on some layout passes, so the fullscreen stage shows a blank
+   lightbox while the inline copy — which never gets `w-auto` — is fine. Giving
+   the SVG a definite width and letting `max-height` cap it keeps it laid out;
+   `preserveAspectRatio` letterboxes rather than distorting. */
+[data-streamdown="mermaid-fullscreen"] > div:last-child svg[viewBox] {
+  width: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  height: auto !important;
 }
 
 [data-streamdown="table-wrapper"] table,

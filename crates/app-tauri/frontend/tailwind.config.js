@@ -1,7 +1,22 @@
 /** @type {import('tailwindcss').Config} */
+/** A theme colour that still takes a Tailwind alpha modifier. Tailwind cannot
+ *  build `/80` out of a bare `var()`, so the value folds through `color-mix`
+ *  with the substituted `<alpha-value>` (100% when no modifier is written). */
+const alpha = (varName) =>
+  `color-mix(in srgb, ${varName} calc(<alpha-value> * 100%), transparent)`;
+
 export default {
   darkMode: "class",
-  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  content: [
+    "./index.html",
+    "./src/**/*.{ts,tsx}",
+    // streamdown draws its own chrome (mermaid cards, diagram controls, the
+    // fullscreen overlay, table menus) with utility classes that live in the
+    // package, not in this repo — unscanned, Tailwind emits no rule for them and
+    // those blocks render unstyled however the theme is configured.
+    "./node_modules/streamdown/dist/*.js",
+    "./node_modules/@streamdown/*/dist/*.js",
+  ],
   theme: {
     extend: {
       colors: {
@@ -20,6 +35,30 @@ export default {
         "text-dim": "var(--husk-fg-dim)",
         "bubble-user": "var(--husk-bubble-user)",
         accent: "var(--husk-accent)",
+
+        // shadcn-style names that streamdown's OWN chrome is written against
+        // (`border-border`, `bg-sidebar`, `bg-background/95`,
+        // `text-muted-foreground`, `bg-primary`, …). The app palette above uses
+        // its own names, so without these Tailwind emits no rule at all and
+        // everything streamdown draws itself — mermaid cards, diagram controls,
+        // the fullscreen overlay, table chrome — renders unstyled. The overlay
+        // was the visible one: `bg-background/95` painted nothing, so fullscreen
+        // showed the diagram floating over an undimmed page.
+        background: alpha("var(--husk-bg)"),
+        foreground: "var(--husk-fg)",
+        border: alpha("var(--husk-border)"),
+        muted: {
+          DEFAULT: alpha("var(--husk-n100)"),
+          foreground: "var(--husk-fg-muted)",
+        },
+        sidebar: {
+          DEFAULT: alpha("var(--husk-panel)"),
+          foreground: "var(--husk-fg)",
+        },
+        primary: {
+          DEFAULT: alpha("var(--husk-n900)"),
+          foreground: "var(--husk-white)",
+        },
         "diff-add": "#16a34a",
         "diff-add-surface": "#f0fdf4",
         "diff-del": "#dc2626",
