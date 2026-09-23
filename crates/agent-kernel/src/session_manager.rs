@@ -155,6 +155,10 @@ pub struct SessionManager {
     /// workspace's events from colliding with a same-numbered session in
     /// the active one.
     event_tx: std_mpsc::Sender<(String, i64, UiEvent)>,
+    /// MCP servers registered once at boot (`agent_plugin::load_all`) — every
+    /// session's engine gets this router, so plugin tools are advertised and
+    /// dispatchable in the ReAct loop. `None` = no manifest discovered.
+    plugins: Option<Arc<agent_plugin::PluginManager>>,
     /// Sidebar metadata (persisted index + live preview overrides).
     pub metas: Vec<SessionMeta>,
     /// The session the stream is showing.
@@ -223,6 +227,22 @@ impl SessionManager {
         let (event_tx, event_rx) = std_mpsc::channel();
         let (_p, default_model, default_pname) = resolve_provider(&cfg);
 
+        // MCP servers: registered once, before any session exists, so the
+        // session resumed below is built with the router. `load_all` bounds
+        // each registration (8 s) and skips failures, and an empty plugin dir
+        // is skipped without even creating a runtime.
+        let plugins = cwd.as_ref().and_then(|root| {
+            if agent_plugin::discover(root).is_empty() {
+                return None;
+            }
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let mgr = rt.block_on(agent_plugin::load_all(root));
+            let tools = mgr.exported_tools().len();
+            tracing::info!(plugins = tools, "MCP plugins loaded");
+            Some(Arc::new(mgr))
+        });
+        let plugins_for_manager = plugins;
+
         // Empty boot: inert store, no actors, no metas.
         let Some(cwd) = cwd else {
             let store = Arc::new(
@@ -242,6 +262,7 @@ impl SessionManager {
                 });
             }
             let mgr = Self {
+                plugins: plugins_for_manager.clone(),
                 metas: Vec::new(),
                 store,
                 provider_cfg: cfg,
@@ -317,6 +338,7 @@ impl SessionManager {
         }
 
         let mut mgr = Self {
+            plugins: plugins_for_manager,
             metas: store.list(),
             store,
             provider_cfg: cfg,
@@ -583,6 +605,7 @@ impl SessionManager {
 
         let cfg = SessionConfig {
             workspace_root: self.workspace_root.clone(),
+            plugins: self.plugins.clone(),
             provider,
             model,
             temperature: 1.0,
@@ -765,6 +788,54 @@ impl SessionManager {
         self.active_id = new_id;
         let _ = self.store.set_last_active(new_id);
         Some(new_id)
+    }
+
+    /// Connect one MCP server and report what it actually is: the server's own
+    /// name/version plus its tool names.
+    ///
+    /// The settings card used to show the manifest's `version` — written as
+    /// "1.0.0" for anything added through the UI — and a count read from the
+    /// manifest's declared capabilities, which is empty for a server reached
+    /// over HTTP, so a working two-tool server read as "0 工具". Nothing ever
+    /// connected a plugin, so there was no live number to show. Failures come
+    /// back as data (`ok: false`) so the card can print the reason.
+    pub async fn mcp_probe(workspace_root: &std::path::Path, id: &str) -> serde_json::Value {
+        let Some(mpath) = agent_plugin::discover(workspace_root).into_iter().find(|p| {
+            p.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str()) == Some(id)
+        }) else {
+            return serde_json::json!({ "ok": false, "error": format!("找不到插件 {id}") });
+        };
+        let Ok(text) = std::fs::read_to_string(&mpath) else {
+            return serde_json::json!({ "ok": false, "error": "manifest 读取失败" });
+        };
+        let Ok(manifest) = serde_json::from_str::<agent_plugin::PluginManifest>(&text) else {
+            return serde_json::json!({ "ok": false, "error": "manifest 解析失败" });
+        };
+        match agent_plugin::McpClient::start(&manifest).await {
+            Ok(client) => {
+                let (name, version) = client.server_info();
+                serde_json::json!({
+                    "ok": true,
+                    "serverName": name,
+                    "serverVersion": version,
+                    "tools": client.tool_names().await,
+                })
+            }
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+        }
+    }
+
+    /// Delete a discovered plugin's directory (settings UI). The path comes
+    /// from discovery, so an id can never point outside the plugins dirs.
+    pub fn remove_plugin(workspace_root: &std::path::Path, id: &str) -> Result<(), String> {
+        let mpath = agent_plugin::discover(workspace_root)
+            .into_iter()
+            .find(|p| {
+                p.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str()) == Some(id)
+            })
+            .ok_or_else(|| format!("找不到插件 {id}"))?;
+        let dir = mpath.parent().ok_or("插件目录异常")?;
+        std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
     }
 
     /// Discovered MCP/plugin manifests for the settings UI — reads

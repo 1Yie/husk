@@ -24,6 +24,26 @@ pub fn agent_session(
     if op == "save_download" {
         return save_download(payload);
     }
+    // Same reason: filesystem work that has nothing to do with the running
+    // session must not block behind the kernel lock.
+    if op == "remove_mcp" {
+        let id = payload
+            .as_ref()
+            .and_then(|p| p.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
+        if !valid_slug(&id) {
+            return Err("插件 ID 只能是小写字母/数字/-/ _".into());
+        }
+        let root = {
+            let m = state.0.lock().map_err(|e| e.to_string())?;
+            m.workspace_root.clone()
+        };
+        agent_kernel::session_manager::SessionManager::remove_plugin(&root, &id)?;
+        return Ok(serde_json::json!({ "success": true }));
+    }
     let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
     match op.as_str() {
         "list" => Ok(serde_json::json!(mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
@@ -275,6 +295,56 @@ pub fn agent_session(
             .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true, "path": path.to_string_lossy() }))
         }
+        // `read_skill` / `delete_skill` — skills live in pi's dirs: global
+        // `~/.pi/agent/skills/<name>/SKILL.md`, workspace
+        // `<ws>/.pi/skills/<name>/SKILL.md`. Only those two are writable;
+        // anything else the scanner finds (installed packs, other roots) is
+        // read-only and has no delete path here.
+        "read_skill" => {
+            let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+            let skill = agent_kernel::skills::scanner::find_skill(&mgr.workspace_root, &name)
+                .ok_or_else(|| format!("找不到技能 {name}"))?;
+            let text = std::fs::read_to_string(&skill.path).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({
+                "name": skill.name,
+                "description": skill.description,
+                "body": strip_front_matter(&text),
+                "scope": if skill.global { "global" } else { "workspace" },
+                "writable": skill_is_writable(&mgr.workspace_root, &skill.path),
+            }))
+        }
+        "delete_skill" => {
+            let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+            let skill = agent_kernel::skills::scanner::find_skill(&mgr.workspace_root, &name)
+                .ok_or_else(|| format!("找不到技能 {name}"))?;
+            if !skill_is_writable(&mgr.workspace_root, &skill.path) {
+                return Err("该技能不属于可写目录，不能删除".into());
+            }
+            let dir = skill.path.parent().ok_or("技能路径异常")?;
+            std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "success": true }))
+        }
+        // Same shape for subagents: `read_subagent` / `delete_subagent`. A
+        // builtin has no file, so deleting one fails with that message rather
+        // than silently doing nothing.
+        "read_subagent" => {
+            let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+            let path = subagent_file(&mgr.workspace_root, &name).ok_or_else(|| format!("找不到子代理 {name}"))?;
+            let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let (_, desc, body) = agent_kernel::tools::delegate::split_agent(&text);
+            Ok(serde_json::json!({
+                "name": name,
+                "description": desc.unwrap_or_default(),
+                "prompt": body,
+                "scope": if path.starts_with(mgr.workspace_root.join(".husk/agents")) { "workspace" } else { "global" },
+            }))
+        }
+        "delete_subagent" => {
+            let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+            let path = subagent_file(&mgr.workspace_root, &name).ok_or("内置子代理不可删除")?;
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "success": true }))
+        }
         // `add_mcp` — write `~/.config/husk/plugins/<id>/manifest.json`
         // (kind: mcp, entry {command, args}); the plugin loads on next
         // session spawn.
@@ -320,10 +390,12 @@ pub fn agent_session(
                 .map(|d| d.join("husk/plugins").join(&id))
                 .ok_or("no config dir")?;
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            // No `version`: the manifest's is a placeholder that means nothing
+            // for a remote server, and the card shows the server's own version
+            // (`mcp_probe`). The struct default keeps old files parsing.
             let manifest = serde_json::json!({
                 "id": id,
                 "name": name,
-                "version": "1.0.0",
                 "kind": "mcp",
                 "entry": entry,
             });
@@ -687,6 +759,9 @@ fn scan_skills(root: &std::path::Path) -> Vec<serde_json::Value> {
                 "description": s.description,
                 "path": path,
                 "global": s.global,
+                // Only the two pi roots the app writes are editable; installed
+                // packs and other discovered roots are read-only here.
+                "writable": skill_is_writable(root, &s.path),
             })
         })
         .collect()
@@ -906,6 +981,48 @@ fn describe_attachment(
 }
 
 
+/// The two skill roots the app writes to (`create_skill`), so anything else
+/// the scanner finds is read-only here.
+fn skill_is_writable(workspace_root: &std::path::Path, path: &std::path::Path) -> bool {
+    let Ok(dir) = path.strip_prefix(path.parent().and_then(|p| p.parent()).unwrap_or(path)) else {
+        return false;
+    };
+    let _ = dir;
+    let name_dir = match path.parent() {
+        Some(d) => d,
+        None => return false,
+    };
+    let ws = workspace_root.join(".pi/skills");
+    let gl = dirs::home_dir().map(|h| h.join(".pi/agent/skills"));
+    [Some(ws), gl]
+        .into_iter()
+        .flatten()
+        .any(|base| name_dir.parent() == Some(base.as_path()))
+}
+
+/// `<name>.md` in the workspace or global agent dir — `None` for a builtin,
+/// which has no file to edit or delete.
+fn subagent_file(workspace_root: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    if !valid_slug(name) {
+        return None;
+    }
+    let ws = agent_kernel::tools::delegate::workspace_agent_dir(workspace_root).join(format!("{name}.md"));
+    if ws.is_file() {
+        return Some(ws);
+    }
+    let gl = agent_kernel::tools::delegate::global_agent_dir()?.join(format!("{name}.md"));
+    gl.is_file().then_some(gl)
+}
+
+/// Everything after the `---` front-matter block, for the edit dialogs.
+fn strip_front_matter(text: &str) -> String {
+    let trimmed = text.strip_prefix("---").unwrap_or(text);
+    match trimmed.find("\n---") {
+        Some(i) => trimmed[i + 4..].trim_start().to_string(),
+        None => text.trim_start().to_string(),
+    }
+}
+
 /// Slug check for user-created ids (skill names, plugin ids, subagent
 /// names) — lowercase alnum + `-`/`_` only, so names stay path-safe.
 fn valid_slug(s: &str) -> bool {
@@ -1017,4 +1134,18 @@ mod tests {
         let empty = serde_json::json!({ "name": "x.png", "data": "" });
         assert!(stage_clipboard_payload(Some(&empty), ws.path()).is_err());
     }
+}
+
+/// Connect one MCP server and report what it actually is (live name/version +
+/// tool names, or the reason it failed). See `SessionManager::mcp_probe`.
+#[tauri::command]
+pub async fn mcp_probe(
+    state: State<'_, KernelState>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let root = {
+        let m = state.0.lock().map_err(|e| e.to_string())?;
+        m.workspace_root.clone()
+    };
+    Ok(agent_kernel::session_manager::SessionManager::mcp_probe(&root, &id).await)
 }

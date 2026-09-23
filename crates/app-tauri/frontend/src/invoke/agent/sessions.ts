@@ -172,7 +172,13 @@ export interface PluginItem {
   name: string;
   version: string;
   kind: string;
-  entry: { command?: string; args?: string[]; url?: string };
+  entry: {
+    command?: string;
+    args?: string[];
+    url?: string;
+    /** Present for HTTP servers added with custom headers. */
+    headers?: Record<string, string>;
+  };
   tools: number;
   commands: number;
   sandboxed: boolean;
@@ -253,6 +259,26 @@ export function addMcp(p: {
     op: "add_mcp",
     payload: p,
   });
+}
+
+/** Live answer from `mcp_probe` — the server's own name/version + tool names. */
+export interface McpProbe {
+  ok: boolean;
+  serverName?: string;
+  serverVersion?: string;
+  tools?: string[];
+  error?: string;
+}
+
+/** Connect one MCP server on demand and report what it actually serves. The
+ *  stored manifest says nothing useful (version "1.0.0", no tool list). */
+export function probeMcp(id: string) {
+  return invoke<McpProbe>("mcp_probe", { id });
+}
+
+/** Drop a plugin directory — the settings card's delete action. */
+export function removeMcp(id: string) {
+  return invoke<{ success: boolean }>("agent_session", { op: "remove_mcp", payload: { id } });
 }
 
 export function createSubagent(p: {
@@ -395,12 +421,50 @@ export interface FileItem {
 }
 
 /** A workspace skill (`.agents/skills/<name>/SKILL.md`) for the `/$` picker. */
+export interface SkillDetail {
+  name: string;
+  description: string;
+  body: string;
+  scope: "workspace" | "global";
+  writable: boolean;
+}
+
+/** `SKILL.md` body + scope for the edit dialog. */
+export function readSkill(name: string) {
+  return invoke<SkillDetail>("agent_session", { op: "read_skill", payload: { name } });
+}
+
+export function deleteSkill(name: string) {
+  return invoke<{ success: boolean }>("agent_session", { op: "delete_skill", payload: { name } });
+}
+
+export interface SubagentDetail {
+  name: string;
+  description: string;
+  prompt: string;
+  scope: "workspace" | "global";
+}
+
+/** `*.md` body + scope for the edit dialog. */
+export function readSubagent(name: string) {
+  return invoke<SubagentDetail>("agent_session", { op: "read_subagent", payload: { name } });
+}
+
+export function deleteSubagent(name: string) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "delete_subagent",
+    payload: { name },
+  });
+}
+
 export interface SkillItem {
   name: string;
   description: string;
   path: string;
   /** Lives in a global skills dir rather than the workspace. */
   global: boolean;
+  /** False for skills outside the two writable pi roots (installed packs). */
+  writable: boolean;
 }
 
 /** Fuzzy file index for the `@` picker — `query` is a lowercase substring. */

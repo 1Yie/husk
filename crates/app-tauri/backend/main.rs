@@ -31,6 +31,7 @@ fn main() {
             ipc::commands::get_ui_stats,
             ipc::commands::paste_clipboard,
             ipc::sessions::agent_session,
+            ipc::sessions::mcp_probe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Husk");

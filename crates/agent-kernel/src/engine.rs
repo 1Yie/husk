@@ -221,6 +221,25 @@ impl Engine {
         self.plugin_router = Some(mgr);
     }
 
+    /// The request's `tools` array: built-ins, plus every enabled plugin's
+    /// exports as `plugin_id:tool`. Plan mode is read-only, so plugins sit it
+    /// out there — the permission gate treats an unknown tool name as a write,
+    /// which is the behaviour we want for MCP calls in every other mode.
+    fn request_tools_schema(&self) -> serde_json::Value {
+        let builtin = self.active_registry().request_schema();
+        if self.plan_mode() {
+            return builtin;
+        }
+        let Some(mgr) = &self.plugin_router else {
+            return builtin;
+        };
+        let serde_json::Value::Array(mut tools) = builtin else {
+            return builtin;
+        };
+        tools.extend(mgr.exported_tools());
+        serde_json::Value::Array(tools)
+    }
+
     /// SessionActor installs the hook chain (registered plugins/built-ins).
     pub fn set_hooks(&mut self, chain: crate::hooks::HookChain) {
         self.hooks = chain;
@@ -269,6 +288,15 @@ impl Engine {
 
     /// Shared mode slot — the actor polls it in `run_turn` (a mid-turn
     /// `SetAgentMode` writes the slot without needing `&mut Engine`).
+    /// True in plan mode — plugins are advertised and dispatched everywhere
+    /// else (their calls are treated as writes by the permission gate).
+    fn plan_mode(&self) -> bool {
+        self.agent_mode
+            .read()
+            .map(|m| matches!(*m, crate::mode::AgentMode::Plan))
+            .unwrap_or(false)
+    }
+
     pub fn agent_mode_writer(&self) -> Arc<std::sync::RwLock<crate::mode::AgentMode>> {
         self.agent_mode.clone()
     }
@@ -512,7 +540,7 @@ impl Engine {
             let retry_reset = std::sync::atomic::AtomicBool::new(false);
 
             let effort = self.resolve_reasoning_effort();
-            let schema = self.active_registry().request_schema();
+            let schema = self.request_tools_schema();
             let tools_opt = if force_no_tools {
                 None
             } else {
@@ -1023,7 +1051,10 @@ impl Engine {
                             // Built-in miss → try the plugin router (built-in
                             // names are reserved and can't be shadowed).
                             // Plugins never stage deferred writes → empty vec.
-                            if let Some(mgr) = &self.plugin_router {
+                            // Plan mode dispatches read-only built-ins only.
+                            if self.plan_mode() {
+                                (e.to_string(), None, false, Vec::new())
+                            } else if let Some(mgr) = &self.plugin_router {
                                 match mgr.dispatch_tool_call(&call.name, args).await {
                                     Ok(out) => (out, None, true, Vec::new()),
                                     Err(_) => (e.to_string(), None, false, Vec::new()),

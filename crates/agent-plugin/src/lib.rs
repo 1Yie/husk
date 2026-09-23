@@ -16,7 +16,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value;
 
-pub use manager::{discover, PluginInfo, PluginManager, TrustStore};
+pub use manager::{discover, load_all, PluginInfo, PluginManager, TrustStore};
 pub use manifest::{McpServerEntry, PluginKind, PluginManifest};
 pub use mcp::McpClient;
 

@@ -60,6 +60,9 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
 /// SessionActor configuration for one workspace.
 pub struct SessionConfig {
     pub workspace_root: PathBuf,
+    /// Enabled plugin router (MCP servers registered at boot). `None` = the
+    /// app found no plugins; the engine then advertises built-ins only.
+    pub plugins: Option<std::sync::Arc<agent_plugin::PluginManager>>,
     pub provider: Arc<dyn agent_llm::LlmProvider>,
     pub model: String,
     pub temperature: f32,
@@ -347,6 +350,9 @@ impl SessionActor {
         engine.set_compact_at(cfg.compact_at.unwrap_or(crate::compaction::COMPACT_AT));
         engine.set_model_input(cfg.model_input.clone());
         engine.set_model_params(cfg.model_params.clone().unwrap_or_default());
+        if let Some(plugins) = cfg.plugins.clone() {
+            engine.set_plugins(plugins);
+        }
         let decision_slot = engine.decision_slot();
         let ask_channel = engine.ask_channel();
         let permissions_slot = engine.permissions_writer();

@@ -71,6 +71,10 @@ pub struct McpClient {
     pub caps: std::sync::Mutex<ServerCaps>,
     /// tool name → JSON schema (from `tools/list`).
     pub tools: Mutex<Vec<Value>>,
+    /// `serverInfo` from the handshake — the server's own name/version. The
+    /// manifest's `version` says nothing for a server added from the UI (it is
+    /// written as "1.0.0"), so the live value is what the settings card shows.
+    pub server_info: std::sync::Mutex<Value>,
     /// prompt name → description (from `prompts/list`, when declared).
     pub prompts: Mutex<Vec<Value>>,
     /// resource uri → metadata (from `resources/list`, when declared).
@@ -115,6 +119,7 @@ impl McpClient {
                 prompts: Mutex::new(Vec::new()),
                 resources: Mutex::new(Vec::new()),
                 stderr_log: Arc::new(Mutex::new(Vec::new())),
+                server_info: std::sync::Mutex::new(Value::Null),
             });
             return client.handshake().await;
         }
@@ -187,6 +192,7 @@ impl McpClient {
                 stdin: Arc::new(Mutex::new(stdin)),
                 _child: Mutex::new(child),
             },
+            server_info: std::sync::Mutex::new(Value::Null),
             req_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             caps: std::sync::Mutex::new(ServerCaps::default()),
@@ -242,6 +248,8 @@ impl McpClient {
             }))
             .await
             .context("MCP initialize")?;
+
+        *self.server_info.lock().unwrap() = init.get("serverInfo").cloned().unwrap_or(Value::Null);
 
         // Capture declared caps — gate every later call on them.
         let caps = init.get("capabilities").cloned().unwrap_or_default();
@@ -432,6 +440,23 @@ impl McpClient {
     }
 
     /// `tools/call` — concatenate `type=="text"` content; mark non-text.
+    /// `(name, version)` the server reported at `initialize`.
+    pub fn server_info(&self) -> (String, String) {
+        let v = self.server_info.lock().unwrap();
+        let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        (get("name"), get("version"))
+    }
+
+    /// Tool names advertised by `tools/list`.
+    pub async fn tool_names(&self) -> Vec<String> {
+        self.tools
+            .lock()
+            .await
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
+            .collect()
+    }
+
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<String> {
         let r = self
             .call_rpc("tools/call", json!({"name": name, "arguments": args}))

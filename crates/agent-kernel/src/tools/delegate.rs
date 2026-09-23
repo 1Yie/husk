@@ -573,7 +573,9 @@ fn find_subagent(root: &Path, name: &str) -> Option<SubagentInfo> {
 }
 
 /// `name`/`description` frontmatter split — same `---` convention skills use.
-fn split_agent(content: &str) -> (Option<String>, Option<String>, String) {
+/// Split a `*.md` subagent manifest into `(name, description, prompt)`.
+/// Public so the settings page can hand the body back to its edit dialog.
+pub fn split_agent(content: &str) -> (Option<String>, Option<String>, String) {
     let trimmed = content.trim_start();
     let Some(fm) = trimmed.strip_prefix("---") else {
         return (None, None, content.to_string());

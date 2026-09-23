@@ -56,6 +56,46 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
+    /// Empty manager. `load_all` is the usual entry point.
+    pub fn new() -> Self {
+        Self {
+            plugins: HashMap::new(),
+            tool_router: HashMap::new(),
+            enabled: HashMap::new(),
+            trust: TrustStore {
+                trusted: HashMap::new(),
+            },
+        }
+    }
+
+    /// Every enabled plugin's tools, named `plugin_id:tool` — exactly what the
+    /// engine advertises to the model. The dispatcher resolves both spellings,
+    /// so a bare name still works when it was unique at registration.
+    pub fn exported_tools(&self) -> Vec<Value> {
+        let mut out = Vec::new();
+        for (id, plugin) in &self.plugins {
+            if !self.enabled.get(id).copied().unwrap_or(false) {
+                continue;
+            }
+            for mut tool in plugin.export_tools() {
+                let Some(name) = tool
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(String::from)
+                else {
+                    continue;
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                tool["function"]["name"] = Value::String(format!("{id}:{name}"));
+                out.push(tool);
+            }
+        }
+        out
+    }
+
     /// Register one manifest — validates, builds its runtime, exports tools.
     /// `repo` is the workspace root for repo-local trust scoping.
     pub async fn register_plugin(
@@ -226,4 +266,36 @@ fn truncate(s: &str, n: usize) -> String {
         }
         format!("{}\n… [truncated {} bytes]", &s[..end], s.len() - end)
     }
+}
+
+/// Discover the standard plugin dirs and register every MCP server.
+///
+/// Bounded on purpose: a dead endpoint is logged and skipped, so one broken
+/// server can neither stall the app's boot nor keep the other plugins from
+/// loading. Called once at startup (see `SessionManager::spawn_at`).
+pub async fn load_all(repo: &Path) -> PluginManager {
+    let mut mgr = PluginManager::new();
+    for mpath in discover(repo) {
+        let Ok(text) = std::fs::read_to_string(&mpath) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_str::<PluginManifest>(&text) else {
+            continue;
+        };
+        if !matches!(manifest.kind, PluginKind::Mcp) {
+            continue;
+        }
+        let id = manifest.id.clone();
+        let registered = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            mgr.register_plugin(manifest, repo),
+        )
+        .await;
+        match registered {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(plugin = %id, "MCP registration failed: {e}"),
+            Err(_) => warn!(plugin = %id, "MCP registration timed out (8s)"),
+        }
+    }
+    mgr
 }
