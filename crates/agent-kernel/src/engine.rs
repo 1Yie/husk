@@ -238,7 +238,10 @@ impl Engine {
     }
 
     /// The request's `tools` array: built-ins, plus every enabled plugin's
-    /// exports as `plugin_id:tool`. Plan mode is read-only, so plugins sit it
+    /// exports as `plugin_id__tool`. The names are sanitized by the plugin
+    /// layer into the wire's `function.name` charset — an illegal character
+    /// here (`:` in the old spelling) makes a strict upstream reject the whole
+    /// request as `invalid_argument`. Plan mode is read-only, so plugins sit it
     /// out there — the permission gate treats an unknown tool name as a write,
     /// which is the behaviour we want for MCP calls in every other mode.
     fn request_tools_schema(&self) -> serde_json::Value {

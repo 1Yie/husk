@@ -2,7 +2,10 @@
 //!
 //! Contract (plugin-system.md §PluginManager):
 //! - `register_plugin`: validate manifest → build runtime → `export_tools`
-//!   → populate `tool_router`. Name collisions namespaced `plugin_id:tool`.
+//!   → populate `tool_router`. Tools are namespaced `plugin_id__tool`, both
+//!   halves sanitized into the wire charset (see [`wire_tool_name`]) — the
+//!   `plugin_id:tool` spelling this used to advertise is rejected outright by
+//!   strict upstreams, because `:` is not a legal `function.name` character.
 //! - `dispatch_tool_call`: route → `plugin.call_tool` → **same 40 KB
 //!   truncation budget as built-ins** (plugin output is not exempt).
 //! - `collect_dynamic_contexts`: fan out `provide_context` with per-plugin
@@ -48,8 +51,13 @@ impl TrustStore {
 #[derive(Default)]
 pub struct PluginManager {
     plugins: HashMap<String, Arc<dyn Plugin>>,
-    /// tool name → owning plugin (namespaced `plugin_id:tool` on collision).
+    /// Advertised tool name → owning plugin. Keyed by the WIRE name
+    /// ([`wire_tool_name`]), which is what the model echoes back on a call.
     tool_router: HashMap<String, Arc<dyn Plugin>>,
+    /// Advertised name → the server's own tool name (`ui-skills__get_skill` →
+    /// `get_skill`), so dispatch can reach the real tool after sanitization
+    /// replaced characters the wire charset forbids.
+    real_tool_names: HashMap<String, String>,
     /// plugin_id → enabled flag (persisted; disabled plugins unload).
     enabled: HashMap<String, bool>,
     /// Why a plugin is not in `plugins` — set by `load_all` when registration
@@ -65,6 +73,7 @@ impl PluginManager {
         Self {
             plugins: HashMap::new(),
             tool_router: HashMap::new(),
+            real_tool_names: HashMap::new(),
             enabled: HashMap::new(),
             errors: HashMap::new(),
             trust: TrustStore {
@@ -99,9 +108,11 @@ impl PluginManager {
             .collect()
     }
 
-    /// Every enabled plugin's tools, named `plugin_id:tool` — exactly what the
-    /// engine advertises to the model. The dispatcher resolves both spellings,
-    /// so a bare name still works when it was unique at registration.
+    /// Every enabled plugin's tools, named `plugin_id__tool` — exactly what the
+    /// engine advertises to the model. Both halves pass through
+    /// [`wire_tool_name`], so the result is a legal `function.name` on every
+    /// OpenAI-shaped wire; the old `plugin_id:tool` spelling was rejected as
+    /// `invalid_argument` by strict upstreams (`:` is outside the charset).
     pub fn exported_tools(&self) -> Vec<Value> {
         let mut out = Vec::new();
         for (id, plugin) in &self.plugins {
@@ -120,7 +131,7 @@ impl PluginManager {
                 if name.is_empty() {
                     continue;
                 }
-                tool["function"]["name"] = Value::String(format!("{id}:{name}"));
+                tool["function"]["name"] = Value::String(wire_tool_name(id, &name));
                 out.push(tool);
             }
         }
@@ -161,18 +172,17 @@ impl PluginManager {
             }
         };
 
-        // Export tools → router with collision namespacing.
+// Export tools → router, keyed by the SAME name `exported_tools` puts in
+        // the request. The two must agree exactly, or the model calls a name
+        // the router has never heard of.
         for t in plugin.export_tools() {
             let name = t["function"]["name"].as_str().unwrap_or("").to_string();
             if name.is_empty() {
                 continue;
             }
-            let key = if self.tool_router.contains_key(&name) {
-                format!("{}:{}", id, name) // namespaced on collision
-            } else {
-                name
-            };
-            self.tool_router.insert(key, plugin.clone());
+            let advertised = wire_tool_name(&id, &name);
+            self.real_tool_names.insert(advertised.clone(), name);
+            self.tool_router.insert(advertised, plugin.clone());
         }
         self.plugins.insert(id.clone(), plugin);
         self.enabled.insert(id.clone(), true);
@@ -181,29 +191,65 @@ impl PluginManager {
     }
 
     /// Route a tool call → owning plugin → truncates to the 40 KB budget.
+    ///
+    /// Resolution order: the advertised wire name (`ui-skills__get_skill`),
+    /// then a bare name (`get_skill`) when exactly one plugin owns it, then a
+    /// legacy `plugin_id:tool` spelling from a snapshot written before the
+    /// colon became wire-illegal. Whichever spelling matched, the SERVER is
+    /// called with its own tool name, never with the advertised one.
     pub async fn dispatch_tool_call(
         &self,
         name: &str,
         args: Value,
     ) -> Result<String, String> {
-        let plugin = self
+        let (plugin, real) = self
             .tool_router
             .get(name)
-            .or_else(|| {
-                // Namespaced fallback: `plugin_id:tool` hits a plugin whose
-                // bare name lost the collision.
-                name.split_once(':')
-                    .and_then(|(pid, _)| self.tool_router.get(name).or_else(|| {
-                        self.plugins.get(pid)
-                    }))
-            })
+            .map(|p| (p.clone(), name.to_string()))
+            .or_else(|| self.resolve_bare(name))
+            .or_else(|| self.resolve_legacy(name))
             .ok_or_else(|| format!("no plugin owns tool `{name}`"))?;
+        // The tool name the MCP server knows — the advertised name was passed
+        // through the wire charset, which is lossy.
+        let real = self.real_tool_names.get(&real).cloned().unwrap_or(real);
 
         let out = plugin
-            .call_tool(name.rsplit(':').next().unwrap_or(name), args)
+            .call_tool(&real, args)
             .await
             .map_err(|e| e.to_string())?;
         Ok(truncate(&out, PLUGIN_OUTPUT_CAP))
+    }
+
+    /// A bare (`get_skill`) or legacy (`ui-skills:get_skill`) call name →
+    /// owning plugin + the advertised name to look the real tool up under.
+    /// Unique-ness is judged against `real_tool_names`, built at registration.
+    fn resolve_bare(&self, name: &str) -> Option<(Arc<dyn Plugin>, String)> {
+        let advertised = self
+            .real_tool_names
+            .iter()
+            .filter(|(_, real)| real.as_str() == name)
+            .map(|(adv, _)| adv.clone())
+            .collect::<Vec<_>>();
+        if advertised.len() != 1 {
+            return None; // unknown, or ambiguous across plugins
+        }
+        let adv = advertised.into_iter().next()?;
+        self.tool_router.get(&adv).map(|p| (p.clone(), adv))
+    }
+
+    /// `plugin_id:tool` → the sanitized advertised name. Snapshots persisted
+    /// before the colon was removed still replay these names. The plugin id
+    /// may itself contain colons (`ui:skills:list_skills`), so EVERY split
+    /// point is tried rather than just the first.
+    fn resolve_legacy(&self, name: &str) -> Option<(Arc<dyn Plugin>, String)> {
+        for (i, _) in name.match_indices(':') {
+            let (pid, tool) = (&name[..i], &name[i + 1..]);
+            let adv = wire_tool_name(pid, tool);
+            if let Some(p) = self.tool_router.get(&adv) {
+                return Some((p.clone(), adv));
+            }
+        }
+        None
     }
 
     /// `<plugin_context>` blocks appended after the workspace skeleton —
@@ -236,6 +282,17 @@ impl PluginManager {
     pub fn disable(&mut self, id: &str) {
         self.enabled.insert(id.to_string(), false);
         self.tool_router.retain(|_, p| p.id() != id);
+        // The advertised → real name map is keyed by the advertised name only,
+        // so it must be purged alongside the router — a stale entry would let
+        // `resolve_bare` match a tool the plugin no longer advertises.
+        let plugin = self.plugins.get(id);
+        if let Some(plugin) = plugin {
+            for tool in plugin.export_tools() {
+                if let Some(name) = tool["function"]["name"].as_str() {
+                    self.real_tool_names.remove(&wire_tool_name(id, name));
+                }
+            }
+        }
     }
 
     pub fn enable(&mut self, id: &str) {
@@ -263,6 +320,51 @@ pub struct PluginInfo {
     pub kind: String,
     pub enabled: bool,
     pub tool_count: usize,
+}
+
+/// The name a plugin tool is ADVERTISED under — `plugin_id__tool`, every
+/// character outside `[A-Za-z0-9_-]` folded to `_`.
+///
+/// The `tools[].function.name` charset on every OpenAI-shaped wire is
+/// `^[a-zA-Z0-9_-]{1,64}$`: a `:` separator (the old spelling,
+/// `ui-skills:list_skills`) is not in it, and a strict upstream rejects the
+/// ENTIRE request with `invalid_argument` before the model ever runs — which
+/// is exactly how a registered MCP server bricked every turn. `/`, `.` and
+/// spaces are just as illegal, and a server is free to name its tools that way.
+///
+/// `__` is the separator because a single `_` is already common inside tool
+/// names (`list_skills`), so one underscore could not be told apart from the
+/// namespace boundary when resolving a call. Both halves are folded and
+/// truncated so the joined name stays inside 64 chars.
+pub fn wire_tool_name(plugin_id: &str, tool: &str) -> String {
+    const MAX: usize = 64;
+    const SEP: &str = "__";
+    let id = sanitize_name(plugin_id);
+    let tool = sanitize_name(tool);
+    // The tool half matters more for a human scanning a picker, so trim the
+    // namespace (not the tool) when the pair overflows.
+    if id.len() + SEP.len() + tool.len() <= MAX {
+        return format!("{id}{SEP}{tool}");
+    }
+    let room = MAX.saturating_sub(SEP.len() + tool.len());
+    // `room` is a byte budget and the sanitized half is ASCII, so this is also
+    // a char boundary — no need for the `is_char_boundary` walk.
+    let id = &id[..room.min(id.len())];
+    format!("{id}{SEP}{tool}")
+}
+
+/// Fold every character the wire charset forbids to `_`. ASCII-only by
+/// construction (a non-ASCII char is itself illegal on the wire).
+fn sanitize_name(s: &str) -> String {
+    let folded: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    if folded.is_empty() {
+        "_".to_string()
+    } else {
+        folded
+    }
 }
 
 /// Discover plugins: `~/.config/husk/plugins/*/manifest.json` +
@@ -336,4 +438,205 @@ pub async fn load_all(repo: &Path) -> PluginManager {
         }
     }
     mgr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_name, wire_tool_name};
+    use crate::Plugin;
+
+    /// The regression this whole module exists to prevent: an advertised tool
+    /// name carrying a character outside `^[a-zA-Z0-9_-]{1,64}$` makes a strict
+    /// upstream reject the ENTIRE request as `invalid_argument` — before the
+    /// model runs, so the session simply cannot answer. The old spelling was
+    /// `plugin_id:tool`.
+    #[test]
+    fn advertised_names_are_wire_legal() {
+        let legal = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        };
+
+        assert!(legal(&wire_tool_name("ui-skills", "list_skills")));
+        assert_eq!(wire_tool_name("ui-skills", "list_skills"), "ui-skills__list_skills");
+
+        // The reported shape — a colon is the character that broke it.
+        assert!(!wire_tool_name("ui-skills", "list_skills").contains(':'));
+
+        // Servers name tools with dots, slashes and spaces too.
+        for (id, tool) in [
+            ("github.com/server", "repos.list"),
+            ("my plugin", "read file"),
+            ("srv", "path/to/thing"),
+            ("plugin", "配置"),
+        ] {
+            let out = wire_tool_name(id, tool);
+            assert!(legal(&out), "illegal advertised name: {out:?}");
+        }
+    }
+
+    /// Namespacing must not leak into the 64-char cap — an over-long pair is
+    /// trimmed at the namespace, keeping the tool half intact.
+    #[test]
+    fn long_names_are_trimmed_at_the_namespace() {
+        let long_id = "p".repeat(80);
+        let out = wire_tool_name(&long_id, "do_the_thing");
+        assert_eq!(out.len(), 64);
+        assert!(out.ends_with("__do_the_thing"));
+    }
+
+    /// The sanitized halves round-trip: what `sanitize_name` produces is what
+    /// `wire_tool_name` joins, so resolution can rebuild the same key.
+    #[test]
+    fn sanitize_folds_only_forbidden_chars() {
+        assert_eq!(sanitize_name("ui-skills_2"), "ui-skills_2");
+        assert_eq!(sanitize_name("a:b/c.d e"), "a_b_c_d_e");
+        // Empty halves must still yield a usable segment.
+        assert_eq!(sanitize_name(""), "_");
+    }
+
+    /// Dispatch reaches the SERVER's own tool name — the advertised name is
+    /// lossy, so calling the server with it would 404 on the MCP side.
+    #[tokio::test]
+    async fn dispatch_resolves_advertised_and_bare_names() {
+        use std::sync::Arc;
+
+        struct Fake {
+            id: String,
+            tools: Vec<&'static str>,
+            called: std::sync::Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Plugin for Fake {
+            fn id(&self) -> &str {
+                &self.id
+            }
+            fn export_tools(&self) -> Vec<serde_json::Value> {
+                self.tools
+                    .iter()
+                    .map(|t| serde_json::json!({"type":"function","function":{"name":t}}))
+                    .collect()
+            }
+            async fn call_tool(&self, name: &str, _args: serde_json::Value) -> anyhow::Result<String> {
+                self.called.lock().unwrap().push(name.to_string());
+                Ok(format!("called {name}"))
+            }
+        }
+
+        // A colon-bearing plugin id — the exact shape that used to break.
+        let fake = Arc::new(Fake {
+            id: "ui:skills".into(),
+            tools: vec!["list_skills", "get_skill"],
+            called: std::sync::Mutex::new(Vec::new()),
+        });
+        let advertised: Vec<String> = fake
+            .export_tools()
+            .iter()
+            .map(|t| wire_tool_name(fake.id(), t["function"]["name"].as_str().unwrap()))
+            .collect();
+        assert_eq!(advertised, vec!["ui_skills__list_skills", "ui_skills__get_skill"]);
+
+        // Drive the real registration/dispatch path via a manager.
+        let mut mgr = super::PluginManager::new();
+        let plugin: Arc<dyn Plugin> = fake.clone();
+        for (real, adv) in [("list_skills", &advertised[0]), ("get_skill", &advertised[1])] {
+            mgr.real_tool_names.insert(adv.clone(), real.to_string());
+            mgr.tool_router.insert(adv.clone(), plugin.clone());
+        }
+        mgr.plugins.insert(fake.id().to_string(), plugin);
+        mgr.enabled.insert(fake.id().to_string(), true);
+
+        // Advertised spelling.
+        assert_eq!(
+            mgr.dispatch_tool_call("ui_skills__get_skill", serde_json::json!({})).await.unwrap(),
+            "called get_skill"
+        );
+        // Bare spelling (a model that drops the namespace).
+        assert_eq!(
+            mgr.dispatch_tool_call("list_skills", serde_json::json!({})).await.unwrap(),
+            "called list_skills"
+        );
+        // Legacy colon spelling from a pre-fix snapshot.
+        assert_eq!(
+            mgr.dispatch_tool_call("ui:skills:list_skills", serde_json::json!({})).await.unwrap(),
+            "called list_skills"
+        );
+        // An unknown tool is refused, not silently misrouted.
+        assert!(mgr.dispatch_tool_call("nope", serde_json::json!({})).await.is_err());
+    }
+
+    /// End-to-end on the real manager (not hand-populated maps): registration
+    /// builds the router from `export_tools`, and `exported_tools` — the exact
+    /// array the engine puts in the request — must be wire-legal and must be
+    /// dispatchable by the name it advertises.
+    #[tokio::test]
+    async fn registration_round_trips_every_advertised_name() {
+        use std::sync::Arc;
+
+        struct Fake {
+            id: String,
+            tools: Vec<&'static str>,
+        }
+
+        #[async_trait::async_trait]
+        impl Plugin for Fake {
+            fn id(&self) -> &str {
+                &self.id
+            }
+            fn export_tools(&self) -> Vec<serde_json::Value> {
+                self.tools
+                    .iter()
+                    .map(|t| serde_json::json!({"type":"function","function":{"name":t}}))
+                    .collect()
+            }
+            async fn call_tool(&self, name: &str, _a: serde_json::Value) -> anyhow::Result<String> {
+                Ok(name.to_string())
+            }
+        }
+
+        // Two plugins, one with a colon in its id AND its tool names — every
+        // character the wire forbids, in the place that used to break it.
+        let mut mgr = super::PluginManager::new();
+        for (id, tools) in [
+            ("ui:skills", vec!["list_skills", "get_skill"]),
+            ("fs.reader", vec!["read/file", "list.dir"]),
+        ] {
+            let p: Arc<dyn Plugin> = Arc::new(Fake { id: id.into(), tools });
+            mgr.plugins.insert(id.into(), p.clone());
+            mgr.enabled.insert(id.into(), true);
+            for t in p.export_tools() {
+                let real = t["function"]["name"].as_str().unwrap().to_string();
+                let adv = wire_tool_name(id, &real);
+                mgr.real_tool_names.insert(adv.clone(), real);
+                mgr.tool_router.insert(adv, p.clone());
+            }
+        }
+
+        let advertised = mgr.exported_tools();
+        assert_eq!(advertised.len(), 4);
+        for t in &advertised {
+            let name = t["function"]["name"].as_str().unwrap();
+            assert!(
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "the engine would send an illegal function.name: {name:?}"
+            );
+            // …and the advertised name is actually callable.
+            assert!(mgr.dispatch_tool_call(name, serde_json::json!({})).await.is_ok());
+        }
+        assert!(advertised
+            .iter()
+            .any(|t| t["function"]["name"] == "ui_skills__list_skills"));
+
+        // Disabling purges both maps — no phantom tool survives.
+        mgr.disable("ui:skills");
+        assert_eq!(mgr.exported_tools().len(), 2);
+        assert!(mgr
+            .dispatch_tool_call("ui_skills__list_skills", serde_json::json!({}))
+            .await
+            .is_err());
+    }
 }
