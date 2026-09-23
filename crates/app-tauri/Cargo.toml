@@ -17,7 +17,7 @@ agent-llm = { path = "../agent-llm" }
 agent-sandbox = { path = "../agent-sandbox" }
 dirs.workspace = true
 base64.workspace = true
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -25,10 +25,21 @@ tokio.workspace = true
 rfd = "0.15"
 png = "0.17"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
 xxhash-rust.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+
+# Linux trays go through a raw StatusNotifierItem: the libappindicator backend
+# behind Tauri's tray icon cannot tell left from right click (both open the
+# menu). `ksni` exposes `Activate` — left click — separately from the DBusMenu
+# the shell opens on right click.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", features = ["blocking"] }
+# Dev builds SIGTERM leftover instances of their own binary (see
+# `retire_previous_dev_instances` in main.rs).
+libc = "0.2"
 
 [features]
 default = []
