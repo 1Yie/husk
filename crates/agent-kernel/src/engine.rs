@@ -47,6 +47,11 @@ pub struct TurnOutcome {
     pub tool_calls_run: usize,
 }
 
+/// Handle to the live plugin router. `None` = no plugin dir discovered; `Some`
+/// with an inner `None` = a plugin manager existed but failed to load, which a
+/// later reload can still fill in.
+pub type PluginHandle = Arc<std::sync::RwLock<Option<Arc<agent_plugin::PluginManager>>>>;
+
 pub struct Engine {
     sampler: Sampler,
     /// Mode-scoped registries — `set_agent_mode` swaps `registry` between
@@ -89,7 +94,10 @@ pub struct Engine {
     /// Ordered hook chain (veto/mutate before+after tools).
     hooks: crate::hooks::HookChain,
     /// Plugin tool router — built-in names win; plugins fill the rest.
-    plugin_router: Option<Arc<agent_plugin::PluginManager>>,
+    /// Shared with the `SessionManager`, which can REPLACE the manager at
+    /// runtime (a plugin added in settings). Read per request, never cached, so
+    /// a live session picks up a reload without being restarted.
+    plugin_router: Option<PluginHandle>,
     /// Thinking / reasoning intensity level (e.g. "off", "low", "medium",
     /// "high", "max"). Shared slot like `permissions` — the bridge reads it
     /// to report a session's live level back to the UI.
@@ -217,8 +225,16 @@ impl Engine {
     }
 
     /// SessionActor installs the plugin manager once plugins register.
-    pub fn set_plugins(&mut self, mgr: Arc<agent_plugin::PluginManager>) {
-        self.plugin_router = Some(mgr);
+    pub fn set_plugins(&mut self, handle: PluginHandle) {
+        self.plugin_router = Some(handle);
+    }
+
+    /// The manager currently installed, if any. A read lock, cloned out — the
+    /// handle outlives any single reload.
+    fn plugins(&self) -> Option<Arc<agent_plugin::PluginManager>> {
+        self.plugin_router
+            .as_ref()
+            .and_then(|h| h.read().ok().and_then(|g| g.clone()))
     }
 
     /// The request's `tools` array: built-ins, plus every enabled plugin's
@@ -230,7 +246,7 @@ impl Engine {
         if self.plan_mode() {
             return builtin;
         }
-        let Some(mgr) = &self.plugin_router else {
+        let Some(mgr) = self.plugins() else {
             return builtin;
         };
         let serde_json::Value::Array(mut tools) = builtin else {
@@ -1054,7 +1070,7 @@ impl Engine {
                             // Plan mode dispatches read-only built-ins only.
                             if self.plan_mode() {
                                 (e.to_string(), None, false, Vec::new())
-                            } else if let Some(mgr) = &self.plugin_router {
+                            } else if let Some(mgr) = self.plugins() {
                                 match mgr.dispatch_tool_call(&call.name, args).await {
                                     Ok(out) => (out, None, true, Vec::new()),
                                     Err(_) => (e.to_string(), None, false, Vec::new()),

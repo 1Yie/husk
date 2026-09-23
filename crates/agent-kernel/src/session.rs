@@ -60,10 +60,14 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
 /// SessionActor configuration for one workspace.
 pub struct SessionConfig {
     pub workspace_root: PathBuf,
-    /// Enabled plugin router (MCP servers registered at boot). `None` = the
-    /// app found no plugins; the engine then advertises built-ins only.
-    pub plugins: Option<std::sync::Arc<agent_plugin::PluginManager>>,
+    /// Live plugin router — shared with the manager so a reload swaps what the
+    /// engine advertises without rebuilding the session.
+    pub plugins: Option<crate::engine::PluginHandle>,
     pub provider: Arc<dyn agent_llm::LlmProvider>,
+    /// Config-level provider key (`deepseek`, `anthropic`, …). The adapter's own
+    /// `id()` names the wire protocol, not the deployment, so stats group by
+    /// this instead.
+    pub provider_name: String,
     pub model: String,
     pub temperature: f32,
     /// Permission mode label substituted into the prompt.
@@ -94,6 +98,10 @@ pub struct SessionConfig {
 pub struct SessionActor {
     history: Vec<ChatMessage>,
     engine: Engine,
+    /// Model + provider key this session runs — stamped into the store's meta
+    /// with every usage write so the stats pane can group spend by model.
+    model: String,
+    provider_name: String,
     state: AgentState,
     io: EngineIo,
     cmd_tx: mpsc::Sender<UiCommand>,
@@ -350,8 +358,8 @@ impl SessionActor {
         engine.set_compact_at(cfg.compact_at.unwrap_or(crate::compaction::COMPACT_AT));
         engine.set_model_input(cfg.model_input.clone());
         engine.set_model_params(cfg.model_params.clone().unwrap_or_default());
-        if let Some(plugins) = cfg.plugins.clone() {
-            engine.set_plugins(plugins);
+        if let Some(handle) = cfg.plugins.clone() {
+            engine.set_plugins(handle);
         }
         let decision_slot = engine.decision_slot();
         let ask_channel = engine.ask_channel();
@@ -401,6 +409,8 @@ impl SessionActor {
             Self {
                 history,
                 engine,
+                model: cfg.model.clone(),
+                provider_name: cfg.provider_name.clone(),
                 state: AgentState::Idle,
                 io,
                 cmd_tx,
@@ -658,6 +668,9 @@ impl SessionActor {
             .find(|m| m.id == id)
             .map(|m| m.pinned)
             .unwrap_or(false);
+        // Stamp the model alongside the usage: a turn's spend is only
+        // attributable while we know who served it.
+        let (model, provider) = (self.model.clone(), self.provider_name.clone());
         let _ = store.upsert_meta(crate::session_store::SessionMeta {
             id,
             title,
@@ -665,6 +678,8 @@ impl SessionActor {
             updated_at: now,
             pinned,
             usage,
+            model: (!model.is_empty()).then_some(model),
+            provider: (!provider.is_empty()).then_some(provider),
         });
     }
 

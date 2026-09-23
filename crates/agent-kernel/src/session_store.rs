@@ -32,6 +32,12 @@ pub struct SessionMeta {
     /// event arrives (history alone can't reconstruct token counts).
     #[serde(default)]
     pub usage: Option<SessionUsage>,
+    /// Model that produced `usage` — the settings 统计 pane groups spend by
+    /// model, which the token counts alone cannot tell apart.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 /// A session's last-known token usage, persisted inside `SessionMeta`.
@@ -69,7 +75,10 @@ impl SessionStore {
             .join("sessions")
             .join(workspace_key(workspace_root));
         std::fs::create_dir_all(&base)?;
-        Ok(Self { dir: base })
+        let store = Self { dir: base };
+        // Remember which project this dir belongs to, while the root is known.
+        store.record_root(workspace_root);
+        Ok(store)
     }
 
     /// Open an *existing* store without creating the directory — `None`
@@ -81,7 +90,83 @@ impl SessionStore {
         let base = app_data_dir()?
             .join("sessions")
             .join(workspace_key(workspace_root));
-        base.is_dir().then_some(Self { dir: base })
+        if !base.is_dir() {
+            return None;
+        }
+        let store = Self { dir: base };
+        store.record_root(workspace_root);
+        Some(store)
+    }
+
+    /// Every workspace store on disk (`sessions/*`). The 统计 pane aggregates
+    /// across ALL of them: recents only remembers the projects the user opened
+    /// through this install, so anything older — or any project whose recent
+    /// entry was pruned — was invisible in the totals.
+    pub fn all_workspaces() -> Vec<Self> {
+        let Some(base) = app_data_dir().map(|d| d.join("sessions")) else {
+            return Vec::new();
+        };
+        let Ok(rd) = std::fs::read_dir(&base) else {
+            return Vec::new();
+        };
+        rd.flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| Self { dir: e.path() })
+            .collect()
+    }
+
+    /// This store's directory name (the workspace key hash).
+    pub fn dir_name(&self) -> Option<String> {
+        self.dir.file_name().map(|n| n.to_string_lossy().into_owned())
+    }
+
+    /// The workspace root this store belongs to, if it was ever recorded.
+    pub fn recorded_root(&self) -> Option<PathBuf> {
+        let text = std::fs::read_to_string(self.dir.join("workspace.json")).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        v.get("root").and_then(|r| r.as_str()).map(PathBuf::from)
+    }
+
+    /// Remember which project a session dir belongs to — the dir name is a
+    /// hash, so without this a per-workspace breakdown can only show ids.
+    /// Write-once: the value never changes for a given key.
+    pub fn record_root(&self, root: &Path) {
+        if self.recorded_root().is_some() {
+            return;
+        }
+        let body = serde_json::json!({ "root": root.to_string_lossy() });
+        let _ = std::fs::write(
+            self.dir.join("workspace.json"),
+            serde_json::to_string(&body).unwrap_or_default(),
+        );
+    }
+
+    /// Last resort for dirs written before roots were recorded: the session's
+    /// system prompt names the workspace (`Workspace root: <path>`), and it sits
+    /// in the first line of the smallest history file. Bounded read — a few KB.
+    pub fn recover_root_from_history(&self) -> Option<PathBuf> {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&self.dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .collect();
+        files.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX));
+        for f in files.iter().take(4) {
+            let Ok(mut fh) = std::fs::File::open(f) else { continue };
+            let mut head = vec![0u8; 32 * 1024];
+            use std::io::Read as _;
+            let n = fh.read(&mut head).unwrap_or(0);
+            head.truncate(n);
+            let text = String::from_utf8_lossy(&head);
+            if let Some(rest) = text.split("Workspace root: ").nth(1) {
+                let path = rest.split(&['\\', '"', '\n'][..]).next()?.trim();
+                if !path.is_empty() {
+                    return Some(PathBuf::from(path));
+                }
+            }
+        }
+        None
     }
 
     /// Path to a session's history file.
@@ -263,7 +348,7 @@ fn trim_ascii_end(buf: &[u8]) -> &[u8] {
 }
 
 /// Stable per-workspace key — xxh3 of the canonical root.
-fn workspace_key(root: &Path) -> String {
+pub fn workspace_key(root: &Path) -> String {
     let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let h = xxhash_rust::xxh3::xxh3_64(canon.to_string_lossy().as_bytes());
     format!("{h:016x}")

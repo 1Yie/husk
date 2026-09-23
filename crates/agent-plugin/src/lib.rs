@@ -27,6 +27,15 @@ pub trait Plugin: Send + Sync {
     fn id(&self) -> &str;
     /// JSON Schema array for the LLM `tools` request.
     fn export_tools(&self) -> Vec<Value>;
+    /// `(name, version)` the server reported at `initialize` — read from the
+    /// live connection the app loaded at boot, never by reconnecting.
+    fn server_info(&self) -> (String, String) {
+        (String::new(), String::new())
+    }
+    /// Tool names advertised by `tools/list`, from the same cached handshake.
+    fn tool_names(&self) -> Vec<String> {
+        Vec::new()
+    }
     async fn call_tool(&self, name: &str, args: Value) -> Result<String>;
     /// Context-provider hook — injects `<plugin_context>` after the
     /// workspace skeleton.
@@ -65,6 +74,24 @@ impl Plugin for McpPlugin {
                 })
             })
             .collect()
+    }
+
+    fn server_info(&self) -> (String, String) {
+        self.client.server_info()
+    }
+
+    fn tool_names(&self) -> Vec<String> {
+        // `try_lock`, not `lock`: this runs on the settings UI's read path and
+        // must never wait on an in-flight request.
+        self.client
+            .tools
+            .try_lock()
+            .map(|g| {
+                g.iter()
+                    .filter_map(|t| t["name"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<String> {

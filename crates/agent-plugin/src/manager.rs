@@ -52,6 +52,10 @@ pub struct PluginManager {
     tool_router: HashMap<String, Arc<dyn Plugin>>,
     /// plugin_id → enabled flag (persisted; disabled plugins unload).
     enabled: HashMap<String, bool>,
+    /// Why a plugin is not in `plugins` — set by `load_all` when registration
+    /// fails (dead endpoint, timeout). Reported to the settings UI so a broken
+    /// server can explain itself without a reconnect attempt.
+    errors: HashMap<String, String>,
     pub trust: TrustStore,
 }
 
@@ -62,10 +66,37 @@ impl PluginManager {
             plugins: HashMap::new(),
             tool_router: HashMap::new(),
             enabled: HashMap::new(),
+            errors: HashMap::new(),
             trust: TrustStore {
                 trusted: HashMap::new(),
             },
         }
+    }
+
+    /// Live status per plugin — identity and tool names captured during the
+    /// boot handshake, plus the reason for any plugin that failed to load.
+    /// Reads memory only: the settings pane polls this instead of reconnecting,
+    /// which used to open a fresh MCP session on every visit (and trip the
+    /// provider's rate limit).
+    pub fn status(&self) -> Vec<Value> {
+        let mut ids: Vec<&String> = self.plugins.keys().chain(self.errors.keys()).collect();
+        ids.sort();
+        ids.dedup();
+        ids.into_iter()
+            .map(|id| {
+                let plugin = self.plugins.get(id);
+                let (name, version) = plugin.map(|p| p.server_info()).unwrap_or_default();
+                serde_json::json!({
+                    "id": id,
+                    "connected": plugin.is_some(),
+                    "enabled": self.enabled.get(id).copied().unwrap_or(false),
+                    "serverName": name,
+                    "serverVersion": version,
+                    "tools": plugin.map(|p| p.tool_names()).unwrap_or_default(),
+                    "error": self.errors.get(id).cloned().unwrap_or_default(),
+                })
+            })
+            .collect()
     }
 
     /// Every enabled plugin's tools, named `plugin_id:tool` — exactly what the
@@ -293,8 +324,15 @@ pub async fn load_all(repo: &Path) -> PluginManager {
         .await;
         match registered {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => warn!(plugin = %id, "MCP registration failed: {e}"),
-            Err(_) => warn!(plugin = %id, "MCP registration timed out (8s)"),
+            Ok(Err(e)) => {
+                warn!(plugin = %id, "MCP registration failed: {e}");
+                mgr.errors.insert(id, e);
+            }
+            Err(_) => {
+                warn!(plugin = %id, "MCP registration timed out (8s)");
+                mgr.errors
+                    .insert(id, "连接超时（8 秒）— 端点无响应".to_string());
+            }
         }
     }
     mgr

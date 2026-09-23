@@ -158,7 +158,7 @@ pub struct SessionManager {
     /// MCP servers registered once at boot (`agent_plugin::load_all`) — every
     /// session's engine gets this router, so plugin tools are advertised and
     /// dispatchable in the ReAct loop. `None` = no manifest discovered.
-    plugins: Option<Arc<agent_plugin::PluginManager>>,
+    plugins: Option<crate::engine::PluginHandle>,
     /// Sidebar metadata (persisted index + live preview overrides).
     pub metas: Vec<SessionMeta>,
     /// The session the stream is showing.
@@ -231,15 +231,11 @@ impl SessionManager {
         // session resumed below is built with the router. `load_all` bounds
         // each registration (8 s) and skips failures, and an empty plugin dir
         // is skipped without even creating a runtime.
-        let plugins = cwd.as_ref().and_then(|root| {
-            if agent_plugin::discover(root).is_empty() {
-                return None;
-            }
-            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-            let mgr = rt.block_on(agent_plugin::load_all(root));
-            let tools = mgr.exported_tools().len();
-            tracing::info!(plugins = tools, "MCP plugins loaded");
-            Some(Arc::new(mgr))
+        let plugins = cwd.as_ref().map(|root| {
+            let handle: crate::engine::PluginHandle =
+                Arc::new(std::sync::RwLock::new(None));
+            *handle.write().unwrap() = Self::load_plugins(root);
+            handle
         });
         let plugins_for_manager = plugins;
 
@@ -545,6 +541,77 @@ impl SessionManager {
         out
     }
 
+    /// Per-session usage records across every known workspace — the settings
+    /// 统计 pane's raw material. Deliberately the RAW rows: bucketing by day
+    /// needs the reader's timezone, and the frontend already has it, so
+    /// aggregating here would only get the dates wrong.
+    ///
+    /// One entry per session that ever recorded usage (a session with no tokens
+    /// yet contributes nothing but noise). `workspace` is the project's display
+    /// name, for the per-project breakdown.
+    pub fn usage_stats(&self) -> Vec<serde_json::Value> {
+        // Recents give nicer names for the projects the user opened through this
+        // install; everything else recovers its root from the stored manifest or
+        // the history head (see `SessionStore`).
+        let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for w in self.recent_workspaces() {
+            names.insert(
+                crate::session_store::workspace_key(&w.path),
+                w.name.clone(),
+            );
+        }
+
+        let mut out = Vec::new();
+        for store in SessionStore::all_workspaces() {
+            // Skip a store with nothing recorded before doing any IO heavy work
+            // on its metadata.
+            let sessions = store.list();
+            if !sessions.iter().any(|m| m.usage.is_some()) {
+                continue;
+            }
+            let root = store.recorded_root().or_else(|| {
+                let r = store.recover_root_from_history();
+                // Cache it so the next call skips the history read.
+                if let Some(p) = &r {
+                    store.record_root(p);
+                }
+                r
+            });
+            // A temp root is a test artefact, not a project: the kernel's own
+            // tests open a store under `tempfile::tempdir()`, which lands here
+            // as `/tmp/.tmpXXXX` and would otherwise dominate the breakdown
+            // with dozens of one-session, 28-token entries.
+            let tmp = std::env::temp_dir();
+            if root.as_ref().is_some_and(|r| r.starts_with(&tmp)) {
+                continue;
+            }
+            let key = store
+                .dir_name()
+                .unwrap_or_else(|| "unknown".to_string());
+            let name = root
+                .as_ref()
+                .and_then(|r| names.get(&crate::session_store::workspace_key(r)).cloned())
+                .or_else(|| root.as_ref().map(|r| project_name(r)))
+                .unwrap_or_else(|| format!("项目 {}", &key[..key.len().min(6)]));
+            for m in sessions {
+                let Some(u) = m.usage else { continue };
+                out.push(serde_json::json!({
+                    "session": m.id,
+                    "title": m.title,
+                    "workspace": name,
+                    "ts": m.updated_at,
+                    "prompt": u.prompt,
+                    "completion": u.completion,
+                    "cached": u.cached,
+                    "context_window": u.context_window,
+                    "model": m.model,
+                    "provider": m.provider,
+                }));
+            }
+        }
+        out
+    }
+
     /// The active workspace's rows, newest first — persisted meta overlaid
     /// with the live preview / running / active flags.
     fn current_workspace_rows(&self) -> Vec<ProjectSessionRow> {
@@ -607,6 +674,7 @@ impl SessionManager {
             workspace_root: self.workspace_root.clone(),
             plugins: self.plugins.clone(),
             provider,
+            provider_name: self.provider_name.clone(),
             model,
             temperature: 1.0,
             permission_mode: self.permission_mode.clone(),
@@ -712,6 +780,8 @@ impl SessionManager {
             updated_at: now,
             pinned: false,
             usage: None,
+            model: None,
+            provider: None,
         });
         self.metas = self.store.list();
         self.spawn_actor(id);
@@ -782,12 +852,47 @@ impl SessionManager {
             // re-samples the same history, so the number is a fair stand-in
             // until that turn's real `Usage` lands.
             usage: src.as_ref().and_then(|m| m.usage),
+            model: src.as_ref().and_then(|m| m.model.clone()),
+            provider: src.as_ref().and_then(|m| m.provider.clone()),
         });
         self.metas = self.store.list();
         self.spawn_actor(new_id);
         self.active_id = new_id;
         let _ = self.store.set_last_active(new_id);
         Some(new_id)
+    }
+
+    /// Discover + register every MCP server for `root`. `None` when there is
+    /// nothing to load, so an empty plugin dir costs no runtime.
+    fn load_plugins(root: &std::path::Path) -> Option<Arc<agent_plugin::PluginManager>> {
+        if agent_plugin::discover(root).is_empty() {
+            return None;
+        }
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let mgr = rt.block_on(agent_plugin::load_all(root));
+        tracing::info!(tools = mgr.exported_tools().len(), "MCP plugins loaded");
+        Some(Arc::new(mgr))
+    }
+
+    /// Re-read the plugin dirs and swap the live router.
+    ///
+    /// Plugins are otherwise loaded once at boot, so a server added in settings
+    /// stayed invisible to every running (and future) session until the app was
+    /// restarted. Sessions hold the same handle the engine reads per request,
+    /// so the swap takes effect on the next turn — nothing is restarted.
+    pub fn reload_plugins(&self) -> Vec<serde_json::Value> {
+        match &self.plugins {
+            Some(handle) => {
+                let loaded = Self::load_plugins(&self.workspace_root);
+                let summary = loaded
+                    .as_ref()
+                    .map(|m| m.status())
+                    .unwrap_or_default();
+                *handle.write().unwrap() = loaded;
+                summary
+            }
+            None => Vec::new(),
+        }
     }
 
     /// Connect one MCP server and report what it actually is: the server's own
@@ -842,6 +947,23 @@ impl SessionManager {
     /// `manifest.json` files under `~/.config/husk/plugins/` and
     /// `<repo>/.agent/plugins/`. Listing only: this never spawns a server.
     pub fn plugin_overview(&self) -> Vec<serde_json::Value> {
+        // Live state of the connections loaded at boot (`spawn_at`) — memory
+        // only. Reconnecting here would open a fresh MCP session per plugin on
+        // every visit to the settings pane, which is what tripped rate limits.
+        let live: std::collections::HashMap<String, serde_json::Value> = self
+            .plugins
+            .as_ref()
+            .and_then(|h| h.read().ok().and_then(|g| g.clone()))
+            .map(|m| {
+                m.status()
+                    .into_iter()
+                    .map(|v| {
+                        let id = v["id"].as_str().unwrap_or_default().to_string();
+                        (id, v)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut out = Vec::new();
         for mpath in agent_plugin::discover(&self.workspace_root) {
             let Ok(text) = std::fs::read_to_string(&mpath) else {
@@ -850,8 +972,11 @@ impl SessionManager {
             let Ok(m) = serde_json::from_str::<agent_plugin::PluginManifest>(&text) else {
                 continue;
             };
+            let id = m.id.clone();
+            let st = live.get(&id);
+            let field = |k: &str| st.map(|v| v[k].clone()).unwrap_or(serde_json::Value::Null);
             out.push(serde_json::json!({
-                "id": m.id,
+                "id": id,
                 "name": m.name,
                 "version": m.version,
                 "kind": match m.kind {
@@ -859,10 +984,15 @@ impl SessionManager {
                     agent_plugin::PluginKind::Wasm => "wasm",
                 },
                 "entry": m.entry,
-                "tools": m.capabilities.tools.len(),
+                // Live tool names from the loaded handshake (the manifest's
+                // own `capabilities.tools` is empty for HTTP servers).
+                "tools": field("tools"),
                 "commands": m.capabilities.commands.len(),
                 "sandboxed": m.sandboxed,
                 "dir": m.dir.to_string_lossy(),
+                "connected": field("connected"),
+                "serverVersion": field("serverVersion"),
+                "error": field("error"),
             }));
         }
         out

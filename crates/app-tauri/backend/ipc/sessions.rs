@@ -224,6 +224,11 @@ pub fn agent_session(
         // Agent overview — the settings page's read-only display of the
         // agent's configuration surfaces: system-prompt template, live
         // model info, skills, discovered MCP plugins, and the subagent spec.
+        // `reload_mcp` — re-read the plugin dirs and swap the live router, so a
+        // server added or fixed in settings reaches the agent without a restart.
+        "reload_mcp" => Ok(serde_json::json!({ "plugins": mgr.reload_plugins() })),
+        // `usage_stats` — raw per-session token records across workspaces.
+        "usage_stats" => Ok(serde_json::json!({ "sessions": mgr.usage_stats() })),
         "agent_overview" => {
             let info = mgr.model_info();
             Ok(serde_json::json!({
