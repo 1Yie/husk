@@ -10,8 +10,3 @@ const platform = navigator.platform ?? "";
 
 export const isMac =
   /Macintosh|Mac OS X/.test(ua) || /^Mac/.test(platform);
-
-export const isWindows =
-  /Windows/.test(ua) || /^Win/.test(platform);
-
-export const isLinux = !isMac && !isWindows;

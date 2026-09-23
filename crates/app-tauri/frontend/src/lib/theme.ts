@@ -37,14 +37,8 @@ export const SURFACE_BUBBLE = "bg-neutral-900 dark:bg-[var(--husk-card)]";
 export const INK_ON_BUBBLE = "text-zinc-50";
 export const BORDER_ON_BUBBLE = "border-zinc-700/60";
 
-/** Literal ink for any surface painted with a non-themed colour (emerald, red…). */
-export const INK_ON_COLOR = "text-zinc-50";
-
 /** Muted label ink that stays legible on both themes' panels. */
 export const INK_MUTED = "text-neutral-500 dark:text-[#9a9aa4]";
-
-/** Hover fill for a bordered control (composer chips, icon buttons). */
-export const SURFACE_CONTROL_HOVER = "hover:bg-neutral-100 dark:hover:bg-[var(--husk-hover)]";
 
 /** Form controls (input, textarea, quiet buttons): a visible well on both themes.
  *  `bg-transparent` left them identical to the page background in dark mode. */

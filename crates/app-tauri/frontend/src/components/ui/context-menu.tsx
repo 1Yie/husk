@@ -3,12 +3,10 @@ import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 
 import { cn } from "@/lib/utils";
 import {
-  OVERLAY_DIVIDER,
   SURFACE_OVERLAY,
   SURFACE_OVERLAY_FOCUS,
-  SURFACE_OVERLAY_OPEN,
 } from "@/lib/theme";
-import { usePopperPlacedRef } from "./use-popper-placed";
+import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
 // Same visual contract as dropdown-menu.tsx — one menu look across the app.
 // modal={false}: Radix's modal branch mounts a focus trap + body scroll-lock

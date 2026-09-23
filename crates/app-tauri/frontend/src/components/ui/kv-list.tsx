@@ -251,8 +251,3 @@ export function ColorPill({
     </Popover>
   );
 }
-
-export const SettingsList = KvList;
-export const SettingsListHeader = KvListHeader;
-export const SettingsListContent = KvListContent;
-export const SettingsRow = KvRow;
