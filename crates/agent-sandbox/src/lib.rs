@@ -38,6 +38,7 @@ pub fn detect_backend() -> (Box<dyn SandboxBackend>, bool) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn bwrap_on_path() -> bool {
     std::process::Command::new("bwrap")
         .arg("--version")

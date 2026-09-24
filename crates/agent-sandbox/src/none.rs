@@ -47,17 +47,26 @@ impl SandboxBackend for NoneBackend {
             &denied,
         );
 
-        let mut command = tokio::process::Command::new("sh");
+        // Windows has no `sh` and no process groups — `cmd /C` plus
+        // `kill_on_drop` (real tree-kill needs a job object; that lands with
+        // the dedicated Windows backend). Unix keeps sh + group-kill.
+        #[cfg(unix)]
+        let (shell, shell_flag) = ("sh", "-c");
+        #[cfg(windows)]
+        let (shell, shell_flag) = ("cmd", "/C");
+
+        let mut command = tokio::process::Command::new(shell);
         command
-            .arg("-c")
+            .arg(shell_flag)
             .arg(cmd)
             .current_dir(&cfg.workspace_dir)
             .env_clear()
             .envs(envs)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0); // own process group → group-kill on timeout
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0); // own process group → group-kill on timeout
 
         // Linux: PR_SET_PDEATHSIG — the child gets SIGKILL the instant the
         // parent dies, so a GUI crash can't orphan a `sleep 600`.
