@@ -1,5 +1,7 @@
-// MCP pane — discovered servers and the state of the connections the app
-// already holds, plus add / edit / delete and an explicit reconnect.
+// MCP pane — the protocol bridges: every manifest that declares an `entry`
+// (a server to connect to), their connection state, plus add / edit / delete
+// and an explicit reconnect. Host-side capabilities (hooks) are plugins —
+// they live on the 插件 page.
 
 import { toast } from "sonner";
 import { useState } from "react";
@@ -19,7 +21,8 @@ import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
-import { addMcp, probeMcp, reloadMcp, removeMcp, type AgentOverview, type McpProbe, type PluginItem } from "@/lib/agent-ipc/sessions";
+import { addMcp, probeMcp, reloadMcp, removeMcp, setPluginEnabled, trustMcp, type AgentOverview, type McpProbe, type PluginItem } from "@/lib/agent-ipc/sessions";
+import { Switch } from "@/components/ui/switch";
 import { Field } from "@/features/settings/pages/agent/shared/index";
 
 /* ============================ MCP ============================ */
@@ -57,6 +60,41 @@ export function McpPane({
    *  so the agent sees servers added/changed since boot. */
   const [reloading, setReloading] = useState(false);
 
+  /** Repo-local plugin awaiting consent — the trust gate is load-level, so an
+   *  untrusted repo-local MCP service can't even connect until this passes. */
+  const [trusting, setTrusting] = useState<string | null>(null);
+  const [toggling, setToggling] = useState<string | null>(null);
+
+  /** Enable/disable — persisted (plugin-state.json), reloads so the bridge's
+   *  tools actually stop/start advertising on the next turn. */
+  const toggle = async (pluginId: string, enabled: boolean) => {
+    setToggling(pluginId);
+    try {
+      await setPluginEnabled(pluginId, enabled);
+      toast.success(enabled ? `已启用 ${pluginId}` : `已禁用 ${pluginId}`);
+      setReconnected({});
+      onReload();
+    } catch (e) {
+      toast.error("切换失败", { description: String(e) });
+    } finally {
+      setToggling(null);
+    }
+  };
+
+  const trust = async (pluginId: string) => {
+    setTrusting(pluginId);
+    try {
+      await trustMcp(pluginId);
+      toast.success(`已信任 ${pluginId}`);
+      setReconnected({});
+      onReload();
+    } catch (e) {
+      toast.error("信任失败", { description: String(e) });
+    } finally {
+      setTrusting(null);
+    }
+  };
+
   const reload = async () => {
     setReloading(true);
     try {
@@ -88,16 +126,16 @@ export function McpPane({
   /** Prefill the dialog from the stored manifest and remember which plugin is
    *  being edited (its id is the directory name, so it cannot change). */
   const startEdit = (p: PluginItem) => {
-    const http = !!p.entry.url;
+    const http = !!p.entry?.url;
     setEditId(p.id);
     setId(p.id);
     setName(p.name);
     setTransport(http ? "http" : "stdio");
-    setUrl(p.entry.url ?? "");
-    setCommand(p.entry.command ?? "");
-    setArgs((p.entry.args ?? []).join(" "));
+    setUrl(p.entry?.url ?? "");
+    setCommand(p.entry?.command ?? "");
+    setArgs((p.entry?.args ?? []).join(" "));
     setHeaders(
-      Object.entries(p.entry.headers ?? {})
+      Object.entries(p.entry?.headers ?? {})
         .map(([k, v]) => `${k}: ${v}`)
         .join("\n")
     );
@@ -161,8 +199,8 @@ export function McpPane({
       </div>
       <KvList>
         <KvListContent>
-          {ov?.plugins.length ? (
-            ov.plugins.map((p) => {
+          {ov?.plugins.filter((p) => p.entry?.command || p.entry?.url).length ? (
+            ov.plugins.filter((p) => p.entry?.command || p.entry?.url).map((p) => {
               // Boot state from the overview; a manual reconnect overrides it.
               const re = reconnected[p.id];
               const live = re
@@ -183,16 +221,16 @@ export function McpPane({
                   <KvRow
                 label={`${p.name}${live.version ? ` v${live.version}` : ""}`}
                 description={
-                  p.entry.url ??
-                  (p.entry.command
-                    ? `${p.entry.command} ${(p.entry.args ?? []).join(" ")}`
+                  p.entry?.url ??
+                  (p.entry?.command
+                    ? `${p.entry.command} ${(p.entry?.args ?? []).join(" ")}`
                     : p.id)
                 }
                 icon={<Wrench className="h-4 w-4" />}
               >
                 <div className="flex items-center gap-2">
                   <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                    {p.entry.url ? "http" : p.kind}
+                    {p.entry?.url ? "http" : "stdio"}
                   </Badge>
                   {live.ok ? (
                     <span className="text-[11px] text-neutral-500 tabular-nums">
@@ -206,6 +244,33 @@ export function McpPane({
                       {live.error || "未连接"}
                     </span>
                   )}
+                  {p.repoLocal && !p.trusted && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-[11px] text-amber-600"
+                      title="仓库内插件在信任前不会加载"
+                      disabled={trusting === p.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void trust(p.id);
+                      }}
+                    >
+                      信任
+                    </Button>
+                  )}
+                  {p.enabled === false && (
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
+                      已禁用
+                    </Badge>
+                  )}
+                  <Switch
+                    checked={p.enabled ?? true}
+                    disabled={toggling === p.id}
+                    title="禁用后该服务的工具不再提供给模型（持久化）"
+                    onClick={(e) => e.stopPropagation()}
+                    onCheckedChange={(v) => void toggle(p.id, v)}
+                  />
                   {!(live.ok && live.tools.length) && (
                     <Button
                       variant="ghost"
@@ -253,7 +318,7 @@ export function McpPane({
               );
             })
           ) : (
-            <KvRow label="暂无插件" description="plugins 目录下未发现 manifest.json" />
+            <KvRow label="暂无 MCP 配置" description="" />
           )}
         </KvListContent>
       </KvList>

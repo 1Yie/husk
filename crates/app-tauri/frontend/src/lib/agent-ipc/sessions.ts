@@ -173,17 +173,33 @@ export interface PluginItem {
   /** Manifest version — "" for servers added through the UI (a remote server
    *  has no such version; the live one is `serverVersion`). */
   version: string;
-  kind: string;
-  entry: {
+  /** Runtime kind — present only when `entry` exists (a pure plugin has no
+   *  runtime to describe). The UI never filters on this: what a manifest IS
+   *  is decided by its shape — `entry` makes a bridge, `hooks` make a plugin. */
+  kind?: string | null;
+  /** The bridge to a server — absent entirely for a pure plugin. */
+  entry?: {
     command?: string;
     args?: string[];
     url?: string;
     /** Present for HTTP servers added with custom headers. */
     headers?: Record<string, string>;
-  };
+  } | null;
   /** Tool names from the connection the app loaded at BOOT — reading this does
    *  not reconnect. Empty when the plugin is not loaded. */
   tools: string[];
+  /** Lifecycle hooks the plugin declares — a local command per event name
+   *  (`before_tool_execute`, `on_user_input`, …). Present even when the plugin
+   *  never loaded, so an untrusted manifest still shows what it would run. */
+  hooks?: { event: string; command: string }[];
+  /** Consent state for a repo-local manifest. Untrusted repo-local plugins
+   *  never load (their hooks are local code), so the card offers to trust one. */
+  trusted?: boolean;
+  repoLocal?: boolean;
+  /** The user's persisted on/off intent — `plugin-state.json`. NOT the live
+   *  load state: a failed or untrusted plugin still reads `enabled: true`
+   *  (it would run once the blocker clears). */
+  enabled?: boolean;
   commands: number;
   sandboxed: boolean;
   dir: string;
@@ -310,6 +326,25 @@ export function probeMcp(id: string) {
  *  on the next turn — no restart. */
 export function reloadMcp() {
   return invoke<{ plugins: unknown[] }>("agent_session", { op: "reload_mcp" });
+}
+
+/** Grant a repo-local plugin consent to load, then reload the router so it
+ *  comes up without a restart. A plugin hook runs a local command, so this is
+ *  the gate between a cloned repo and code execution. */
+export function trustMcp(id: string) {
+  return invoke<{ plugins: PluginItem[] }>("agent_session", {
+    op: "trust_mcp",
+    payload: { id },
+  });
+}
+
+/** Persist a plugin/MCP's on/off toggle (`plugin-state.json`) and reload —
+ *  hooks stop firing / tools stop advertising on the next turn. */
+export function setPluginEnabled(id: string, enabled: boolean) {
+  return invoke<{ plugins: PluginItem[] }>("agent_session", {
+    op: "set_plugin_enabled",
+    payload: { id, enabled },
+  });
 }
 
 export function removeMcp(id: string) {

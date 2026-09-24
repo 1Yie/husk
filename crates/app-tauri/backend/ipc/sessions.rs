@@ -233,6 +233,42 @@ pub fn agent_session(
         // `reload_mcp` — re-read the plugin dirs and swap the live router, so a
         // server added or fixed in settings reaches the agent without a restart.
         "reload_mcp" => Ok(serde_json::json!({ "plugins": mgr.reload_plugins() })),
+        // `trust_mcp` — record consent for a repo-local plugin, then reload so
+        // it loads without an app restart. Its hooks run local commands, so
+        // this is the gate that stands between a cloned repo and code exec.
+        "trust_mcp" => {
+            let id = payload
+                .as_ref()
+                .and_then(|p| p.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            if !valid_slug(&id) {
+                return Err("插件 ID 只能是小写字母/数字/-/ _".into());
+            }
+            Ok(serde_json::json!({ "plugins": mgr.trust_plugin(&id)? }))
+        }
+        // `set_plugin_enabled` — persist the toggle (plugin-state.json) and
+        // reload: hooks stop firing / tools stop advertising on the next turn.
+        "set_plugin_enabled" => {
+            let id = payload
+                .as_ref()
+                .and_then(|p| p.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            let enabled = payload
+                .as_ref()
+                .and_then(|p| p.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if !valid_slug(&id) {
+                return Err("插件 ID 只能是小写字母/数字/-/ _".into());
+            }
+            Ok(serde_json::json!({ "plugins": mgr.set_plugin_enabled(&id, enabled)? }))
+        }
         // `usage_stats` — raw per-session token records across workspaces.
         "usage_stats" => Ok(serde_json::json!({ "sessions": mgr.usage_stats() })),
         "agent_overview" => {
@@ -356,9 +392,9 @@ pub fn agent_session(
             std::fs::remove_file(&path).map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true }))
         }
-        // `add_mcp` — write `~/.config/husk/plugins/<id>/manifest.json`
-        // (kind: mcp, entry {command, args}); the plugin loads on next
-        // session spawn.
+        // `add_mcp` — write `~/.config/husk/mcp/<id>/manifest.json`
+        // (entry {command, args}|{url}); the bridge loads on next session
+        // spawn. MCP lives in its own tree, separate from plugins/.
         "add_mcp" => {
             let id = payload.as_ref().and_then(|p| p.get("id")).and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
             let name = payload.as_ref().and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or(&id).to_string();
@@ -398,7 +434,7 @@ pub fn agent_session(
                 serde_json::json!({ "command": command, "args": args })
             };
             let dir = dirs::config_dir()
-                .map(|d| d.join("husk/plugins").join(&id))
+                .map(|d| d.join("husk/mcp").join(&id))
                 .ok_or("no config dir")?;
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             // No `version`: the manifest's is a placeholder that means nothing
