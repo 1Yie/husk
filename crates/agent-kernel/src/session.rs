@@ -802,16 +802,40 @@ impl SessionActor {
                 self.history.push(ChatMessage::notice(line));
             }
             ControlOp::Compact => {
-                let est = crate::compaction::estimate_tokens(&self.history);
-                let window = 256_000usize; // engine's context_window is the real bound
-                if crate::compaction::should_compact_at(est, window, self.engine.compact_at()) {
-                    let line = "正在压缩历史上下文…".to_string();
-                    let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                    self.history.push(ChatMessage::notice(line));
-                } else {
-                    let line = format!("历史约 {est} tokens — 未达压缩阈值");
-                    let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                    self.history.push(ChatMessage::notice(line));
+                // `/compact` bypasses the threshold AND the suppressor —
+                // the user asked for it now. (The old arm only *reported* a
+                // threshold and never compacted, which read as "the button
+                // does nothing".)
+                match self
+                    .engine
+                    .compact_now(&mut self.io, &mut self.history)
+                    .await
+                {
+                    Ok(outcome) => {
+                        // The engine already emitted the card event and
+                        // pushed the persisted display row. Re-base the
+                        // persisted meter on the post-splice figure, then
+                        // snapshot NOW — without this the raw-JSON viewer
+                        // and a reopened session both replayed the
+                        // pre-compaction history, so compaction read as a
+                        // no-op until the next turn happened to land.
+                        // Cached prompt tokens describe the pre-compaction
+                        // request body — zero them with it, or the reopened
+                        // meter shows a cache reading for a context that no
+                        // longer exists.
+                        self.last_usage = Some(match self.last_usage {
+                            Some((_, completion, _)) => {
+                                (outcome.after_tokens as u32, completion, 0)
+                            }
+                            None => (outcome.after_tokens as u32, 0, 0),
+                        });
+                        self.persist_turn("已压缩上下文");
+                    }
+                    Err(e) => {
+                        let line = format!("上下文压缩失败: {e}");
+                        let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+                        self.history.push(ChatMessage::notice(line));
+                    }
                 }
             }
             ControlOp::UndoLastTurn => self.undo_last_turn().await,

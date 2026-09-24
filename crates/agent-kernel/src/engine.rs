@@ -9,7 +9,6 @@
 //! returned tool calls, appends their results as `tool` messages and re-samples
 //! until a turn ends with none pending.
 
-
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -91,6 +90,11 @@ pub struct Engine {
     model_input: Vec<String>,
     /// Compaction retry-storm suppression.
     compaction_suppressor: CompactionSuppressor,
+    /// Last `prompt_tokens` the provider actually reported — a real count
+    /// that corrects the chars-based estimate (which under-reads CJK and
+    /// tool-call payloads). Reset to the post-compaction estimate after a
+    /// successful compact so the stale pre-compact figure can't retrigger.
+    last_prompt_tokens: usize,
     /// Ordered hook chain (veto/mutate before+after tools).
     hooks: crate::hooks::HookChain,
     /// Plugin tool router — built-in names win; plugins fill the rest.
@@ -135,7 +139,9 @@ impl Engine {
             temperature,
             agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
             steer_queue: VecDeque::new(),
-            permissions: Arc::new(std::sync::RwLock::new(PermissionGate::from_mode_str("default"))),
+            permissions: Arc::new(std::sync::RwLock::new(PermissionGate::from_mode_str(
+                "default",
+            ))),
             decision: Arc::new(std::sync::Mutex::new(None)),
             next_request_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             context_window: 256_000,
@@ -143,6 +149,7 @@ impl Engine {
             max_tool_rounds: 128,
             model_input: Vec::new(),
             compaction_suppressor: CompactionSuppressor::default(),
+            last_prompt_tokens: 0,
             hooks: crate::hooks::HookChain::new(),
             plugin_router: None,
             thinking_level: Arc::new(std::sync::RwLock::new(None)),
@@ -323,10 +330,7 @@ impl Engine {
     /// Current agent mode — the actor reads this for the prompt swap and
     /// the goal contract.
     pub fn agent_mode(&self) -> crate::mode::AgentMode {
-        self.agent_mode
-            .read()
-            .map(|m| *m)
-            .unwrap_or_default()
+        self.agent_mode.read().map(|m| *m).unwrap_or_default()
     }
 
     /// The registry for the mode currently in the slot — resolved per call
@@ -376,7 +380,9 @@ impl Engine {
     /// a missing/empty list means text-only (the honest default; config
     /// authors mark vision explicitly).
     fn supports_images(&self) -> bool {
-        self.model_input.iter().any(|i| i.eq_ignore_ascii_case("image"))
+        self.model_input
+            .iter()
+            .any(|i| i.eq_ignore_ascii_case("image"))
     }
 
     /// Drain any pending steering texts between tool calls — marks the
@@ -441,16 +447,20 @@ impl Engine {
             self.supports_images(),
         );
         let est = compaction::estimate_tokens(history);
+        // The provider's reported prompt_tokens is the better signal when
+        // present — the chars-based estimate under-reads CJK history.
+        let est = est.max(self.last_prompt_tokens);
+        let fill = est as f32 / self.context_window as f32;
         if compaction::should_compact_at(est, self.context_window, self.compact_at)
-            && self.compaction_suppressor.check()
+            && self.compaction_suppressor.check_at_fill(fill)
         {
             self.set_state(io, AgentState::Compacting);
             match self.compact_history(io, history).await {
-                Ok(()) => {
+                Ok(_) => {
+                    // The card row + `UiEvent::Compacted` already went out
+                    // from `compact_history` — no second system line here
+                    // (that duplicate was the whole visible feedback before).
                     self.compaction_suppressor.on_success();
-                    let line = format!("已压缩历史上下文（原约 {est} tokens）");
-                    let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                    history.push(ChatMessage::notice(line));
                 }
                 Err(e) => {
                     self.compaction_suppressor.on_failure();
@@ -506,8 +516,7 @@ impl Engine {
                 // extraction as the turn-start path; a text-only model
                 // just keeps the path reference (no mid-turn notice spam).
                 let steer_images = extract_attached_images(&steer);
-                let mut steer_msg =
-                    ChatMessage::user(format!("The user interrupted: {steer}"));
+                let mut steer_msg = ChatMessage::user(format!("The user interrupted: {steer}"));
                 if !steer_images.is_empty() && self.supports_images() {
                     steer_msg = steer_msg.with_images(steer_images);
                 }
@@ -560,11 +569,7 @@ impl Engine {
 
             let effort = self.resolve_reasoning_effort();
             let schema = self.request_tools_schema();
-            let tools_opt = if force_no_tools {
-                None
-            } else {
-                Some(&schema)
-            };
+            let tools_opt = if force_no_tools { None } else { Some(&schema) };
             let req = SampleRequest {
                 model: &self.model,
                 temperature: self.temperature,
@@ -647,6 +652,10 @@ impl Engine {
                                 if let (Some(p), Some(c)) = (prompt_tokens, completion_tokens) {
                                     let cached = cached_tokens.unwrap_or(0);
                                     usage = Some((*p, *c, cached));
+                                    // Real count from the wire — feeds the
+                                    // compaction trigger next turn so the
+                                    // estimate stops being the only signal.
+                                    self.last_prompt_tokens = *p as usize;
                                     let _ = io.ui_tx.send(UiEvent::Usage {
                                         prompt_tokens: *p,
                                         completion_tokens: *c,
@@ -806,9 +815,12 @@ impl Engine {
                 {
                     goal_followups += 1;
                     if !final_text.is_empty() {
-                        history.push(ChatMessage::assistant(final_text).with_reasoning(Some(reasoning)));
+                        history.push(
+                            ChatMessage::assistant(final_text).with_reasoning(Some(reasoning)),
+                        );
                     }
-                    let nudge = "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。";
+                    let nudge =
+                        "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。";
                     history.push(ChatMessage::user_hidden(nudge));
                     let _ = io.ui_tx.send(UiEvent::SystemMessage(nudge.into()));
                     continue;
@@ -816,27 +828,39 @@ impl Engine {
 
                 history.push(ChatMessage {
                     role: agent_llm::Role::Assistant,
-                    content: if final_text.is_empty() { None } else { Some(final_text.clone()) },
+                    content: if final_text.is_empty() {
+                        None
+                    } else {
+                        Some(final_text.clone())
+                    },
                     tool_calls: None,
                     tool_call_id: None,
                     is_error: None,
-                        notice: None,
+                    notice: None,
                     ts: Some(agent_llm::types::now_ms()),
                     images: Vec::new(),
                     reasoning: Some(reasoning),
                 });
                 self.set_state(io, AgentState::Finished);
                 let _ = io.ui_tx.send(UiEvent::AssistantMessage(final_text));
-                return Ok(TurnOutcome { text, usage, tool_calls_run });
+                return Ok(TurnOutcome {
+                    text,
+                    usage,
+                    tool_calls_run,
+                });
             }
 
             history.push(ChatMessage {
                 role: agent_llm::Role::Assistant,
-                content: if round_text.is_empty() { None } else { Some(round_text.clone()) },
+                content: if round_text.is_empty() {
+                    None
+                } else {
+                    Some(round_text.clone())
+                },
                 tool_calls: Some(calls.clone()),
                 tool_call_id: None,
                 is_error: None,
-                        notice: None,
+                notice: None,
                 ts: Some(agent_llm::types::now_ms()),
                 images: Vec::new(),
                 reasoning: Some(reasoning),
@@ -873,8 +897,10 @@ impl Engine {
                     // providers reject the next request (deepseek 400).
                     let msg = "skipped malformed empty tool call".to_string();
                     let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
-                        name: call.name.clone(), ok: false,
-                        content: msg.clone(), ui_type: None,
+                        name: call.name.clone(),
+                        ok: false,
+                        content: msg.clone(),
+                        ui_type: None,
                         parent: None,
                     });
                     history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
@@ -882,10 +908,8 @@ impl Engine {
                 }
                 tool_calls_run += 1;
 
-                let args: serde_json::Value =
-                    serde_json::from_str(&call.arguments).unwrap_or_else(|_| {
-                        serde_json::json!({ "_malformed": call.arguments })
-                    });
+                let args: serde_json::Value = serde_json::from_str(&call.arguments)
+                    .unwrap_or_else(|_| serde_json::json!({ "_malformed": call.arguments }));
 
                 // Primary locator (path/command/pattern) for the tool call —
                 // preserved in full so audit/confirmation tooltips can display
@@ -918,7 +942,8 @@ impl Engine {
                                     if !s.is_empty() {
                                         if s.chars().count() > 4096 {
                                             let mut chars = s.chars();
-                                            let prefix: String = chars.by_ref().take(4096).collect();
+                                            let prefix: String =
+                                                chars.by_ref().take(4096).collect();
                                             return format!("{prefix}...");
                                         } else {
                                             return s.to_string();
@@ -934,17 +959,22 @@ impl Engine {
                     args_preview,
                     parent: None,
                 });
-                self.set_state(io, AgentState::ExecutingTool {
-                    tool_name: call.name.clone(),
-                });
+                self.set_state(
+                    io,
+                    AgentState::ExecutingTool {
+                        tool_name: call.name.clone(),
+                    },
+                );
 
                 // before_tool hooks (veto/mutate, pre-gate)
                 let mut call_mut = call.clone();
                 if !self.hooks.run_before_tool(&mut call_mut).await {
                     let msg = format!("tool `{}` vetoed by hook", call.name);
                     let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
-                        name: call.name.clone(), ok: false,
-                        content: msg.clone(), ui_type: None,
+                        name: call.name.clone(),
+                        ok: false,
+                        content: msg.clone(),
+                        ui_type: None,
                         parent: None,
                     });
                     history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
@@ -955,8 +985,11 @@ impl Engine {
                 // Permission gate before dispatch
                 let is_readonly = self.active_registry().is_readonly(&call.name);
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
-                let diff_summary = args.get("path").and_then(|v| v.as_str())
-                    .map(|p| format!("{p}")).unwrap_or_else(|| call.name.clone());
+                let diff_summary = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|p| format!("{p}"))
+                    .unwrap_or_else(|| call.name.clone());
 
                 // P1-c: write tools (fuzzy_patch/apply_patch/write_file) are
                 // dispatched EARLY — they return a `PendingWrite` instead of
@@ -965,21 +998,29 @@ impl Engine {
                 // after the user approves. Read-only/bash tools keep the
                 // classic gate→dispatch flow (they have side effects we
                 // can't dry-run).
-                let is_write = matches!(call.name.as_str(),
-                    "fuzzy_patch" | "apply_patch" | "write_file");
+                let is_write = matches!(
+                    call.name.as_str(),
+                    "fuzzy_patch" | "apply_patch" | "write_file"
+                );
 
                 // Dry-run a write tool to harvest diff/fuzzy/pending_write.
                 // `dispatch` on these tools is side-effect-free (returns
                 // PendingWrite), so it's safe to run pre-approval.
                 let staged: Option<crate::tools::registry::ToolResult> = if is_write {
-                    match self.active_registry().dispatch(&call.name, args.clone(), self.ctx.clone()).await {
+                    match self
+                        .active_registry()
+                        .dispatch(&call.name, args.clone(), self.ctx.clone())
+                        .await
+                    {
                         Ok(res) => Some(res),
                         Err(e) => {
                             let msg = e.to_string();
                             let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
-                                name: call.name.clone(), ok: false,
-                                content: msg.clone(), ui_type: None,
-                        parent: None,
+                                name: call.name.clone(),
+                                ok: false,
+                                content: msg.clone(),
+                                ui_type: None,
+                                parent: None,
                             });
                             history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                             continue;
@@ -988,9 +1029,15 @@ impl Engine {
                 } else {
                     None
                 };
-                let real_diff = staged.as_ref()
+                let real_diff = staged
+                    .as_ref()
                     .map(|r| r.content.clone())
-                    .unwrap_or_else(|| args.get("replace").and_then(|v| v.as_str()).unwrap_or("").to_string());
+                    .unwrap_or_else(|| {
+                        args.get("replace")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string()
+                    });
                 let real_fuzzy = staged.as_ref().map(|r| r.fuzzy).unwrap_or(false);
 
                 let decision = self
@@ -1002,9 +1049,11 @@ impl Engine {
                 match decision {
                     Decision::Deny { reason } => {
                         let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
-                            name: call.name.clone(), ok: false,
-                            content: reason.clone(), ui_type: None,
-                        parent: None,
+                            name: call.name.clone(),
+                            ok: false,
+                            content: reason.clone(),
+                            ui_type: None,
+                            parent: None,
                         });
                         history.push(ChatMessage::tool_result_err(call.id.clone(), reason));
                         continue;
@@ -1015,12 +1064,16 @@ impl Engine {
                         // decision_slot(). P1-a: a fresh request_id ties
                         // this pending approval to its verdict — a stale
                         // decision can't approve this tool.
-                        let request_id = self.next_request_id
+                        let request_id = self
+                            .next_request_id
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        self.set_state(io, AgentState::AwaitingToolConfirmation {
-                            tool_name: call.name.clone(),
-                            diff_summary: diff_summary.clone(),
-                        });
+                        self.set_state(
+                            io,
+                            AgentState::AwaitingToolConfirmation {
+                                tool_name: call.name.clone(),
+                                diff_summary: diff_summary.clone(),
+                            },
+                        );
                         // P1-c: show the REAL diff + fuzzy flag the staged
                         // run produced — the card reflects what gets written.
                         let _ = io.ui_tx.send(UiEvent::ApprovalRequested {
@@ -1030,15 +1083,20 @@ impl Engine {
                             fuzzy: real_fuzzy,
                         });
                         let approved = self.wait_for_decision(request_id, &io.cancel).await;
-                        self.set_state(io, AgentState::ExecutingTool {
-                            tool_name: call.name.clone(),
-                        });
+                        self.set_state(
+                            io,
+                            AgentState::ExecutingTool {
+                                tool_name: call.name.clone(),
+                            },
+                        );
                         if !approved {
                             let msg = format!("user denied {call_name}", call_name = call.name);
                             let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
-                                name: call.name.clone(), ok: false,
-                                content: msg.clone(), ui_type: None,
-                        parent: None,
+                                name: call.name.clone(),
+                                ok: false,
+                                content: msg.clone(),
+                                ui_type: None,
+                                parent: None,
                             });
                             history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                             continue;
@@ -1046,8 +1104,6 @@ impl Engine {
                     }
                     Decision::Allow => {}
                 }
-
-
 
                 // Staged write tools already hold their result; dispatch the
                 // rest now (read-only/bash).
@@ -1096,11 +1152,17 @@ impl Engine {
                         crate::tools::registry::WriteOp::Delete => {
                             match tokio::fs::remove_file(&pw.path).await {
                                 Ok(()) => {
-                                    hunks.record_write(pw.path.clone(), old_content, Vec::new(), "agent");
+                                    hunks.record_write(
+                                        pw.path.clone(),
+                                        old_content,
+                                        Vec::new(),
+                                        "agent",
+                                    );
                                 }
                                 Err(e) => {
                                     ok = false;
-                                    content = format!("delete failed for {}: {e}", pw.path.display());
+                                    content =
+                                        format!("delete failed for {}: {e}", pw.path.display());
                                 }
                             }
                         }
@@ -1112,11 +1174,17 @@ impl Engine {
                             }
                             match tokio::fs::write(&pw.path, &pw.content).await {
                                 Ok(()) => {
-                                    hunks.record_write(pw.path.clone(), old_content, pw.content, "agent");
+                                    hunks.record_write(
+                                        pw.path.clone(),
+                                        old_content,
+                                        pw.content,
+                                        "agent",
+                                    );
                                 }
                                 Err(e) => {
                                     ok = false;
-                                    content = format!("write failed for {}: {e}", pw.path.display());
+                                    content =
+                                        format!("write failed for {}: {e}", pw.path.display());
                                 }
                             }
                         }
@@ -1131,7 +1199,7 @@ impl Engine {
                     ok,
                     content: content.clone(),
                     ui_type,
-                        parent: None,
+                    parent: None,
                 });
 
                 // `ok` survives into the snapshot via `is_error` so a
@@ -1159,28 +1227,38 @@ impl Engine {
         }
     }
 
-    /// Two-pass compaction: split history at ~75% suffix → summarize the
-    /// prefix into a dense `NOTE` via the current provider → splice the note
-    /// in place of the prefix. Pass 2 (condense NOTE + suffix) is implicit —
-    /// the note is already compact enough that the suffix fits.
+    /// Compaction: split history keeping ~25% as the verbatim suffix →
+    /// summarize the prefix into a dense `NOTE` via the current provider →
+    /// splice the note in place of the prefix. A prior NOTE folds into the
+    /// new one (the compactor is told to merge, not stack).
     async fn compact_history(
         &mut self,
-        _io: &mut EngineIo,
+        io: &mut EngineIo,
         history: &mut Vec<ChatMessage>,
-    ) -> Result<(), String> {
-        let plan = compaction::plan(history, self.context_window)
-            .ok_or("history too small to compact")?;
+    ) -> Result<compaction::CompactionOutcome, String> {
+        let before_tokens = compaction::estimate_tokens(history);
+        let plan =
+            compaction::plan(history, self.context_window).ok_or("history too small to compact")?;
 
-        let prefix_text: String = history[..plan.prefix_end]
+        // `history[0]` is the rendered kernel system prompt — it survives
+        // compaction verbatim, so feeding it to the compactor only burns
+        // input tokens and risks protocol language leaking into the note.
+        // `NoticeKind::Compacted` rows are UI cards, not conversation —
+        // feeding their JSON payload to the compactor is pure noise.
+        let prefix_text: String = history[1..plan.prefix_end]
             .iter()
-            .filter_map(|m| m.content.as_deref())
+            .filter(|m| m.notice != Some(agent_llm::types::NoticeKind::Compacted))
+            .map(compaction::render_for_summary)
             .collect::<Vec<_>>()
             .join("\n---\n");
-        let mut summarize_history = vec![
+        let summarize_history = vec![
             ChatMessage::system(
                 "You are a context compactor. Compress the conversation below into a dense \
                  note (facts, decisions, file:line touched, tool outcomes) that preserves \
-                 everything needed to continue the task. Output only the note."),
+                 everything needed to continue the task. If the input already contains a \
+                 [BEGIN COMPACTED CONTEXT] note, merge its content into the new note — do \
+                 not stack summaries. Output only the note.",
+            ),
             ChatMessage::user(prefix_text),
         ];
 
@@ -1201,7 +1279,7 @@ impl Engine {
         self.sampler
             .sample(
                 req,
-                &mut summarize_history,
+                &summarize_history,
                 |chunk| {
                     if retry_reset.swap(false, std::sync::atomic::Ordering::Relaxed) {
                         note.clear();
@@ -1222,8 +1300,58 @@ impl Engine {
         if note.trim().is_empty() {
             return Err("compactor returned empty note".into());
         }
-        compaction::apply(history, &plan, note);
-        Ok(())
+        let removed_messages = plan.prefix_end.saturating_sub(1);
+        compaction::apply(history, &plan, note.clone());
+        // The pre-compact `prompt_tokens` is stale — reseed the actual-usage
+        // signal with the post-splice estimate or the trigger would
+        // immediately re-fire on the stale (large) figure.
+        let after_tokens = compaction::estimate_tokens(history);
+        self.last_prompt_tokens = after_tokens;
+        // Persist the display row at the point in the stream where the
+        // compaction happened (mid-turn: right after the live user turn) —
+        // replay then draws the card in the same place the live event did.
+        history.push(ChatMessage::compaction(
+            before_tokens as u32,
+            after_tokens as u32,
+            removed_messages as u32,
+            &note,
+        ));
+        // Card + meter in one event: the stream gets the summary, the
+        // title-bar fill drops to the post-splice figure now instead of at
+        // the next sample's `Usage`.
+        let _ = io.ui_tx.send(UiEvent::Compacted {
+            before_tokens: before_tokens as u32,
+            after_tokens: after_tokens as u32,
+            removed_messages: removed_messages as u32,
+            context_window: self.context_window as u32,
+            note: note.clone(),
+        });
+        Ok(compaction::CompactionOutcome {
+            before_tokens,
+            after_tokens,
+            removed_messages,
+            note,
+        })
+    }
+
+    /// Manual `/compact` — bypasses the threshold AND the suppressor (the
+    /// user asked for it now), but a result still updates the suppression
+    /// state so a failed manual attempt doesn't leave the storm guard off.
+    pub async fn compact_now(
+        &mut self,
+        io: &mut EngineIo,
+        history: &mut Vec<ChatMessage>,
+    ) -> Result<compaction::CompactionOutcome, String> {
+        match self.compact_history(io, history).await {
+            Ok(outcome) => {
+                self.compaction_suppressor.on_success();
+                Ok(outcome)
+            }
+            Err(e) => {
+                self.compaction_suppressor.on_failure();
+                Err(e)
+            }
+        }
     }
 
     /// Poll the shared decision slot until SessionActor writes a verdict
@@ -1247,10 +1375,7 @@ impl Engine {
             // Take the verdict out of the slot in a short scope so the
             // MutexGuard is never held across `.await` (not `Send`).
             let verdict = {
-                let mut slot = self
-                    .decision
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let mut slot = self.decision.lock().unwrap_or_else(|e| e.into_inner());
                 match *slot {
                     // This request's verdict — consume and return it.
                     Some((id, approved)) if id == request_id => {
@@ -1283,7 +1408,6 @@ impl Engine {
         let _ = io.ui_tx.send(UiEvent::StateChanged(state));
     }
 }
-
 
 /// Pull `<attached-image path="…"/>` markers out of a prompt — the
 /// composer's image-attachment channel, mirroring `<attached-file>`.

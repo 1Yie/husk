@@ -119,7 +119,7 @@ The `bash` tool NEVER calls `Command` directly — always through `SandboxBacken
 
 ## Compaction (kernel/compaction.rs)
 
-Two-pass: split history into prefix/suffix → summarize prefix to `NOTE₁` → condense `NOTE₁` + suffix. Optional prefire: start Pass 1 in background at `PREFIRE_LEAD_PERCENT` (e.g. 70%) so compaction latency is hidden. Sticky suppression (`SUPPRESS_STICKY`, `SUPPRESS_UNTIL_SUCCESS`) prevents compaction retry storms. Sanitize pipeline before sampling: flatten tool calls, strip reasoning blocks, replace images with placeholders, `fit_conversation_to_budget`.
+Single summarization pass: split history into prefix/suffix (~75/25 of the window) → summarize prefix to one `NOTE` → splice in place of the prefix; a prior `NOTE` folds into the new one (merge, not stack). `PREFIRE_LEAD_PERCENT` (70%) exists as a threshold for a background Pass-1 but the prefire is NOT wired yet. Sticky suppression (`SUPPRESS_STICKY`, `SUPPRESS_UNTIL_SUCCESS`) prevents compaction retry storms, with a 95% emergency escape (`EMERGENCY_COMPACT_AT`). The `NOTE` is `Role::System` + `NoticeKind::CompactedMemory` — adapters emit it at user privilege (never `system`/`instructions`). Each pass also emits `UiEvent::Compacted` (before/after tokens, removed count, note) and pushes a `NoticeKind::Compacted` card row — dropped by every adapter, replayed by the frontend as the compaction card; `/compact` snapshots the rewritten history immediately (`persist_turn`) so the raw-JSON viewer and a reopen see it. Sanitize pipeline before sampling: flatten tool calls (text-protocol providers only), strip reasoning blocks, replace images with placeholders, `fit_conversation_to_budget`.
 
 ## Bridge throttling (crates/app-desktop/src/throttler.rs)
 

@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
-use crate::types::{ChatMessage, Role, StreamChunk};
+use crate::types::{ChatMessage, NoticeKind, Role, StreamChunk};
 
 /// `reasoning_effort` → `thinkingConfig.thinkingBudget` — `-1` lets the
 /// model pick dynamically.
@@ -87,6 +87,16 @@ fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serd
     while i < messages.len() {
         let m = &messages[i];
         match m.role {
+            // UI-only compaction card row — render metadata, never context.
+            Role::System if m.notice == Some(NoticeKind::Compacted) => {}
+            // The compaction memory note is historical context, not a
+            // live instruction — emit it as a user message instead of a
+            // system part. `push_user` merges it into a preceding user
+            // row so roles keep alternating.
+            Role::System if m.notice == Some(NoticeKind::CompactedMemory) => {
+                let text = m.content.clone().unwrap_or_default();
+                push_user(&mut out, vec![json!({"text": text})]);
+            }
             Role::System => {
                 if let Some(t) = &m.content {
                     if !t.is_empty() {
@@ -111,7 +121,7 @@ fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serd
                         })),
                     }
                 }
-                out.push(json!({"role": "user", "parts": parts}));
+                push_user(&mut out, parts);
             }
             Role::Assistant => {
                 let mut parts = Vec::new();
@@ -153,13 +163,29 @@ fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serd
                     }));
                     i += 1;
                 }
-                out.push(json!({"role": "user", "parts": parts}));
+                push_user(&mut out, parts);
                 continue;
             }
         }
         i += 1;
     }
     (system, out)
+}
+
+/// Push a `user`-role message, merging into the previous one when the
+/// last emitted row is already `user` — Gemini requires user/model
+/// alternation, and a compaction note or a tool-result run following a
+/// user turn would otherwise produce two consecutive `user` entries.
+fn push_user(out: &mut Vec<serde_json::Value>, parts: Vec<serde_json::Value>) {
+    if let Some(last) = out.last_mut() {
+        if last["role"] == "user" {
+            if let Some(arr) = last["parts"].as_array_mut() {
+                arr.extend(parts);
+                return;
+            }
+        }
+    }
+    out.push(json!({"role": "user", "parts": parts}));
 }
 
 /// OpenAI `[{type:"function",function:{…}}]` → Gemini
@@ -353,5 +379,27 @@ mod tests {
         let r = ChatMessage::tool_result("search", "out");
         let (_sys, contents) = build_contents(&[r]);
         assert_eq!(contents[0]["parts"][0]["functionResponse"]["name"], "search");
+    }
+
+    #[test]
+    fn compacted_memory_lands_in_user_not_system() {
+        // The note is historical context — it must not concatenate into
+        // the system parts beside the kernel instructions.
+        let (system, contents) = build_contents(&[
+            ChatMessage::system("kernel"),
+            ChatMessage::compacted_memory("prior summary"),
+            ChatMessage::user("q"),
+        ]);
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["text"].as_str().unwrap(), "kernel");
+        // Note + user turn merge into ONE user entry — Gemini requires
+        // user/model alternation.
+        let users: Vec<_> = contents.iter().filter(|c| c["role"] == "user").collect();
+        assert_eq!(users.len(), 1);
+        let texts: Vec<_> = users[0]["parts"].as_array().unwrap().iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("prior summary")));
+        assert!(texts.iter().any(|t| t.contains("q")));
     }
 }

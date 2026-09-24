@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 
 use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
-use crate::types::{ChatMessage, Role, StreamChunk};
+use crate::types::{ChatMessage, NoticeKind, Role, StreamChunk};
 
 /// `/v1/responses` provider — shares the `GenericOpenAiProvider` HTTP/auth
 /// shell but speaks the Responses protocol.
@@ -106,6 +106,20 @@ impl OpenAiResponsesProvider {
         for m in messages {
             let text = m.content.clone().unwrap_or_default();
             match m.role {
+                // UI-only compaction card row — render metadata, never context.
+                Role::System if m.notice == Some(NoticeKind::Compacted) => {}
+                // The compaction memory note is historical context, not a
+                // live instruction — it occupies a user `input` position
+                // rather than folding into `instructions`. It still flushes
+                // `expected` like any user boundary (it sits before the
+                // first tool block in practice, so this is a no-op).
+                Role::System if m.notice == Some(NoticeKind::CompactedMemory) => {
+                    flush_missing!();
+                    input.push(json!({
+                        "role": "user",
+                        "content": [{ "type": "input_text", "text": text }],
+                    }));
+                }
                 // System rows fold into `instructions` — they never occupy
                 // an `input` position, so they must NOT flush `expected`
                 // (a mid-block notice would otherwise synthesize outputs
@@ -835,6 +849,24 @@ mod tests {
             .collect();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["output"], "real output");
+    }
+
+    #[test]
+    fn build_input_routes_compacted_memory_to_user_not_instructions() {
+        // The compaction note must not fold into `instructions` — it is
+        // historical context at user privilege.
+        let (input, instructions) = OpenAiResponsesProvider::build_input(&[
+            ChatMessage::system("kernel"),
+            ChatMessage::compacted_memory("prior summary"),
+            ChatMessage::user("q"),
+        ]);
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["role"].as_str().unwrap(), "user");
+        assert!(input[0]["content"][0]["text"]
+            .as_str().unwrap().contains("prior summary"));
+        let ins = instructions.unwrap_or_default();
+        assert!(ins.contains("kernel"));
+        assert!(!ins.contains("prior summary"));
     }
 
     #[test]

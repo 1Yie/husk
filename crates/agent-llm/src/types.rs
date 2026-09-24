@@ -79,6 +79,17 @@ pub enum NoticeKind {
     /// Persisted for the provider but never drawn — injected
     /// instructions like the tool-limit nudge.
     Hidden,
+    /// Compacted-context memory note — a summary of earlier turns. Still
+    /// `Role::System` internally (hidden on replay like the kernel
+    /// prompt), but adapters MUST NOT fold it into `system`/`instructions`
+    /// like a plain system row: it is historical context, not a live
+    /// instruction. Each adapter emits it at user privilege instead.
+    CompactedMemory,
+    /// UI-only compaction card row (`ChatMessage::compaction`) — the
+    /// persisted before/after accounting the frontend replays as a
+    /// compaction card. Dropped from every provider wire body: it is
+    /// render metadata, never context for the model.
+    Compacted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +200,26 @@ impl ChatMessage {
     /// skipped on replay.
     pub fn user_hidden(text: impl Into<String>) -> Self {
         Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+    }
+    /// The compaction memory note — kept as `Role::System` so replay
+    /// stays hidden, but tagged so adapters route it to user privilege
+    /// instead of folding it into `system`/`instructions`.
+    pub fn compacted_memory(text: impl Into<String>) -> Self {
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::CompactedMemory), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+    }
+    /// The persisted compaction card — a JSON payload (`before_tokens`,
+    /// `after_tokens`, `removed_messages`, `note`) the frontend renders as
+    /// the compaction card on replay. `NoticeKind::Compacted` rows are
+    /// dropped by every adapter, so the note here never costs wire tokens;
+    /// the model sees the summary through the `compacted_memory` row.
+    pub fn compaction(before_tokens: u32, after_tokens: u32, removed_messages: u32, note: &str) -> Self {
+        let payload = serde_json::json!({
+            "before_tokens": before_tokens,
+            "after_tokens": after_tokens,
+            "removed_messages": removed_messages,
+            "note": note,
+        });
+        Self { role: Role::System, content: Some(payload.to_string()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Compacted), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
@@ -359,6 +390,26 @@ impl ToolCallAssembler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compaction_card_roundtrips_the_frontend_payload() {
+        // The card row is persisted verbatim and parsed by the webview —
+        // field names are part of the frontend contract.
+        let m = ChatMessage::compaction(126_995, 64_019, 77, "merged summary");
+        assert_eq!(m.role, Role::System);
+        assert_eq!(m.notice, Some(NoticeKind::Compacted));
+        let payload: serde_json::Value =
+            serde_json::from_str(m.content.as_deref().unwrap()).unwrap();
+        assert_eq!(payload["before_tokens"], 126_995);
+        assert_eq!(payload["after_tokens"], 64_019);
+        assert_eq!(payload["removed_messages"], 77);
+        assert_eq!(payload["note"], "merged summary");
+
+        // Notice kind serializes to the snake_case string the TS union
+        // matches on.
+        let j = serde_json::to_string(&m).unwrap();
+        assert!(j.contains("\"compacted\""), "{j}");
+    }
 
     /// The reasoning trace is what a reopened session replays as its
     /// 思考过程 block, so it must survive the JSONL snapshot exactly — and a

@@ -44,7 +44,20 @@ export type StreamItem =
       approved?: boolean;
       hi?: number;
     }
-  | { kind: "system"; text: string; hi?: number };
+  | { kind: "system"; text: string; hi?: number }
+  | {
+      kind: "compaction";
+      /** Context estimate before the pass, in tokens. */
+      before: number;
+      /** Context estimate after the splice. */
+      after: number;
+      /** Messages folded into the summary note. */
+      removed: number;
+      /** The compactor's summary — expanded in the card on demand. */
+      note: string;
+      ts?: number;
+      hi?: number;
+    };
 
 /** How a file landed in the changes panel (add/update/delete). */
 export type ChangeKind = "add" | "update" | "delete";
