@@ -13,7 +13,7 @@ use agent_ipc::{AgentState, UiCommand, UiEvent};
 use agent_kernel::compaction::estimate_tokens;
 use agent_kernel::session::{SessionActor, SessionConfig};
 use agent_kernel::session_store::SessionStore;
-use agent_llm::types::{ChatMessage, NoticeKind};
+use agent_llm::types::{ChatMessage, NoticeKind, StreamChunk};
 
 #[allow(dead_code)] // Shared harness — this binary uses only part of it.
 mod common;
@@ -239,4 +239,128 @@ async fn compact_on_a_short_history_is_a_neutral_noop() {
     assert!(events
         .iter()
         .all(|e| !matches!(e, UiEvent::Compacted { .. })));
+}
+
+/// A long agentic turn (tool → result → tool …) grows the context without
+/// ever returning to a prompt. The trigger must fire between tool rounds —
+/// otherwise the only guard left is `fit_conversation_to_budget` silently
+/// dropping the oldest messages at 90%.
+#[tokio::test]
+async fn auto_compaction_fires_between_tool_rounds_mid_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    // Reading this file pushes the estimate past the 80% trigger.
+    let body: String = (0..200)
+        .map(|i| format!("line {i}: {}\n", "x".repeat(9)))
+        .collect();
+    std::fs::write(dir.path().join("big.txt"), body).unwrap();
+
+    let stub = Arc::new(ScriptedProvider::new());
+    let done = |p: u32, c: u32| StreamChunk::Done {
+        prompt_tokens: Some(p),
+        completion_tokens: Some(c),
+        cached_tokens: None,
+    };
+    // Round 1: the model reads the file.
+    let tool_args = serde_json::json!({"path": "big.txt"}).to_string();
+    stub.push_script(vec![
+        StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: Some("call_1".into()),
+            name: Some("smart_read".into()),
+            args_delta: tool_args,
+        },
+        done(3_000, 20),
+    ]);
+    // The compactor's own sample. If the mid-turn trigger never fired, the
+    // next round would consume THIS script as the answer — the assertion on
+    // the final text below is what proves the pass ran.
+    stub.push_script(vec![
+        StreamChunk::ContentDelta(SUMMARY.into()),
+        done(1_500, 20),
+    ]);
+    // Round 2: the final answer.
+    stub.push_script(vec![
+        StreamChunk::ContentDelta("final answer after compaction".into()),
+        done(900, 10),
+    ]);
+
+    let (mut actor, mut channels) = SessionActor::resume(
+        SessionConfig {
+            workspace_root: dir.path().to_path_buf(),
+            provider: stub,
+            model: "test-model".into(),
+            temperature: 0.0,
+            permission_mode: "default".into(),
+            agent_mode: "build".into(),
+            track_dirty: false,
+            thinking_level: None,
+            thinking_level_map: None,
+            // 80% trigger = 3200; the seeded prefix sits just below it, and
+            // the tool result is what crosses it.
+            context_window: Some(4_000),
+            compact_at: None,
+            model_input: Vec::new(),
+            model_params: None,
+            queued_prompts: Vec::new(),
+            plugins: None,
+            provider_name: "test".into(),
+        },
+        SESSION_ID,
+        vec![
+            ChatMessage::system("kernel"),
+            ChatMessage::user("q1"),
+            ChatMessage::assistant("A".repeat(12_000)), // ≈3000 tokens
+        ],
+    );
+
+    actor
+        .handle(UiCommand::Prompt {
+            text: "read big.txt".into(),
+        })
+        .await;
+
+    channels.event_rx.close();
+    let mut events = Vec::new();
+    while let Some(ev) = channels.event_rx.recv().await {
+        events.push(ev);
+    }
+
+    // The turn finished with the round-2 answer — not with the summary the
+    // compactor produced.
+    let final_text = events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            UiEvent::AssistantMessage(t) => Some(t.clone()),
+            _ => None,
+        })
+        .expect("turn must produce an assistant message");
+    assert_eq!(
+        final_text, "final answer after compaction",
+        "the compactor script leaked into the answer — the mid-turn pass did not run"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "the mid-turn pass must emit the card"
+    );
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::StateChanged(AgentState::Compacting))));
+
+    // The rewritten history keeps the note + card row, and the tool result
+    // (with its call) survives in the verbatim suffix — never orphaned.
+    assert!(actor
+        .history()
+        .iter()
+        .any(|m| m.notice == Some(NoticeKind::CompactedMemory)));
+    assert!(actor
+        .history()
+        .iter()
+        .any(|m| m.notice == Some(NoticeKind::Compacted)));
+    assert!(actor
+        .history()
+        .iter()
+        .any(|m| m.role == agent_llm::types::Role::Tool));
 }

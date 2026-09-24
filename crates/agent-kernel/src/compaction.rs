@@ -261,7 +261,23 @@ pub fn plan(history: &[ChatMessage], window: usize) -> Option<CompactionPlan> {
         cut += 1;
     }
     if cut >= history.len() {
-        return None; // the tail is one tool block — nothing to summarize past
+        // The fold would consume the WHOLE tail — the trailing tool block
+        // alone is bigger than the suffix budget. Folding it away would
+        // leave the model with no recent context, and returning `None` here
+        // would disable compaction for the rest of the session while the
+        // 90% budget-fit silently truncates the oldest turns round after
+        // round. Keep that block (with the assistant call that owns it)
+        // verbatim instead, and summarize what precedes it.
+        let mut j = cut;
+        while j > 1 && history[j - 1].role == Role::Tool {
+            j -= 1;
+        }
+        // `j` is the block's first result row; its owning `tool_calls` row
+        // sits directly before it.
+        cut = j.saturating_sub(1);
+        if cut <= 1 {
+            return None; // nothing before the block — nothing to summarize
+        }
     }
     let prefix_tokens = estimate_tokens(&history[..cut]);
     Some(CompactionPlan {
@@ -570,6 +586,40 @@ mod tests {
         assert!(p.prefix_end > 1 && p.prefix_end < h.len());
         // suffix stays under its ~250-token budget
         assert!(estimate_tokens(&h[p.prefix_end..]) <= 300);
+    }
+
+    #[test]
+    fn plan_keeps_an_over_budget_trailing_tool_block() {
+        // A trailing tool block bigger than the whole suffix budget used to
+        // make `plan` bail (`None`): compaction then stayed disabled for the
+        // rest of the session while the 90% budget-fit silently truncated
+        // the oldest turns round after round. The block stays verbatim (with
+        // its owning call row) and everything before it is compacted.
+        let mut h = vec![msg(Role::System, "sys")];
+        h.push(msg(Role::User, &"u".repeat(8_000))); // ≈2000 prefix tokens
+        h.push(ChatMessage {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: Some(vec![agent_llm::types::ToolCall {
+                id: "call_big".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            }]),
+            tool_call_id: None,
+            is_error: None,
+            notice: None,
+            ts: None,
+            images: Vec::new(),
+            reasoning: None,
+        });
+        h.push(msg(Role::Tool, &"T".repeat(20_000))); // ≈5000 tokens ≫ 25%
+
+        let p = plan(&h, 4_000).expect("an over-budget trailing tool block must still compact");
+        assert!(p.prefix_end > 1 && p.prefix_end < h.len());
+        // The kept tail starts at the owning call, so the pair never orphans.
+        assert_eq!(h[p.prefix_end].role, Role::Assistant);
+        assert_eq!(h[p.prefix_end + 1].role, Role::Tool);
+        assert!(estimate_tokens(&h[p.prefix_end..]) > 4_000 / 4);
     }
 
     #[test]

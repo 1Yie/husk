@@ -446,44 +446,8 @@ impl Engine {
         history.push(user_msg);
         self.set_state(io, AgentState::Reasoning);
 
-        // Sanitize every turn (flatten tool calls, strip reasoning,
-        // budget-fit); compact only when the estimate crosses `compact_at`.
-        // P1-b: only flatten tool_calls into text for a text-protocol
-        // provider — native function-calling needs the structured array
-        // intact or every Role::Tool result orphans.
-        let native_tc = self.sampler.provider().native_tool_calls();
-        compaction::sanitize_for_sample(
-            history,
-            self.context_window.saturating_mul(9) / 10,
-            native_tc,
-            self.supports_images(),
-        );
-        let est = compaction::estimate_tokens(history);
-        // The provider's reported prompt_tokens is the better signal when
-        // present — the chars-based estimate under-reads CJK history.
-        let est = est.max(self.last_prompt_tokens);
-        let fill = est as f32 / self.context_window as f32;
-        if compaction::should_compact_at(est, self.context_window, self.compact_at)
-            && self.compaction_suppressor.check_at_fill(fill)
-        {
-            self.set_state(io, AgentState::Compacting);
-            match self.compact_history(io, history).await {
-                Ok(_) => {
-                    // The card row + `UiEvent::Compacted` already went out
-                    // from `compact_history` — no second system line here
-                    // (that duplicate was the whole visible feedback before).
-                    self.compaction_suppressor.on_success();
-                }
-                Err(e) => {
-                    self.compaction_suppressor.on_failure();
-                    let line = format!("上下文压缩失败: {e}");
-                    let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                    history.push(ChatMessage::notice(line));
-                }
-            }
-            self.set_state(io, AgentState::Reasoning);
-        }
-
+        // The per-round sanitize + compaction check below own both the
+        // turn-start pass and every mid-turn tool round (one code path).
         let mut text = String::new();
         let mut usage = None;
         let mut tool_calls_run = 0usize;
@@ -536,6 +500,24 @@ impl Engine {
             }
 
             let native_tc = self.sampler.provider().native_tool_calls();
+            // Compact BEFORE the budget-fit: a single bulky tool result can
+            // jump the estimate past the 90% budget in one round, and
+            // `fit_conversation_to_budget` would silently drop the oldest
+            // messages (taking the just-returned tool output with them)
+            // before the trigger ever saw an over-threshold fill. The check
+            // works on the raw history — flattening is only needed for the
+            // wire, not the estimate.
+            // The same trigger at the TOP OF EVERY ROUND, not just at turn
+            // start: a long agentic turn (tool → result → tool …) grows the
+            // context without ever returning to a prompt, and the only other
+            // guard is `fit_conversation_to_budget` silently dropping the
+            // oldest messages at 90%. Compacting here keeps the summary (and
+            // the card) instead of losing history to truncation.
+            self.auto_compact_if_needed(io, history).await;
+            // Sanitize every round (flatten tool calls, strip reasoning,
+            // budget-fit). P1-b: only flatten tool_calls into text for a
+            // text-protocol provider — native function-calling needs the
+            // structured array intact or every Role::Tool result orphans.
             compaction::sanitize_for_sample(
                 history,
                 self.context_window.saturating_mul(9) / 10,
@@ -1237,6 +1219,38 @@ impl Engine {
 
             self.set_state(io, AgentState::Reasoning);
         }
+    }
+
+    /// Auto-compaction check — the turn-start pass and every mid-turn tool
+    /// round share this. Fires when the estimated fill crosses `compact_at`
+    /// (the user-settable 70/80/90% of the window); the suppressor prevents
+    /// a retry storm after a failure, with a 95% emergency escape.
+    async fn auto_compact_if_needed(&mut self, io: &mut EngineIo, history: &mut Vec<ChatMessage>) {
+        // The provider's reported `prompt_tokens` is the better signal when
+        // present — the chars-based estimate under-reads CJK history.
+        let est = compaction::estimate_tokens(history).max(self.last_prompt_tokens);
+        let fill = est as f32 / self.context_window as f32;
+        if !compaction::should_compact_at(est, self.context_window, self.compact_at)
+            || !self.compaction_suppressor.check_at_fill(fill)
+        {
+            return;
+        }
+        self.set_state(io, AgentState::Compacting);
+        match self.compact_history(io, history).await {
+            Ok(_) => {
+                // The card row + `UiEvent::Compacted` already went out from
+                // `compact_history` — no second system line here (that
+                // duplicate was the whole visible feedback before).
+                self.compaction_suppressor.on_success();
+            }
+            Err(e) => {
+                self.compaction_suppressor.on_failure();
+                let line = format!("上下文压缩失败: {e}");
+                let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+                history.push(ChatMessage::notice(line));
+            }
+        }
+        self.set_state(io, AgentState::Reasoning);
     }
 
     /// Compaction: split history keeping ~25% as the verbatim suffix →
