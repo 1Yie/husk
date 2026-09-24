@@ -4,9 +4,149 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Husk</title>
+    <style>
+      /* Splash — the first paint WebKitGTK produces is this markup, so the
+         boot window is never a bare frame. On mount main.tsx fades it out
+         (transition, not removal) and lifts it above the app, so the handoff
+         is a cross-fade instead of a cut. Mirrors --husk-* palette; theme
+         corrections arrive via the boot script below + get_appearance. */
+      #husk-splash {
+        position: fixed; inset: 0; z-index: 9999;
+        display: flex; align-items: center; justify-content: center;
+        flex-direction: column; gap: 16px;
+        /* Boot overlay, sibling of #root — never re-parented, so its style
+           and animation lifecycle are computed once. No background here:
+           <html> carries the themed colour (boot script sets it before
+           first paint). */
+        background: transparent; color: #1a1c1f;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        opacity: 1;
+        transition: opacity 320ms ease, color 200ms ease, background-color 200ms ease;
+        pointer-events: none;
+      }
+      #husk-splash.dark { color: #e4e4e7; }
+      #husk-splash.leaving { opacity: 0; }
+      /* Bare PNG icon — no card, no animation of its own: the whole splash
+         breathes as one unit. It stays hidden until decode() confirms the
+         bitmap is renderable, so it never pops in mid-fade. */
+      #husk-splash .icon {
+        width: 84px; height: 84px; display: block;
+        opacity: 0; transition: opacity 200ms ease;
+      }
+      #husk-splash .icon.ready { opacity: 1; }
+      #husk-splash .bar {
+        margin-top: 6px;
+        width: 160px; height: 4px; border-radius: 2px; overflow: hidden;
+        background: rgba(0,0,0,.10);
+      }
+      #husk-splash.dark .bar { background: rgba(255,255,255,.14); }
+      #husk-splash .bar::after {
+        content: ""; display: block; width: 42%; height: 100%;
+        /* Pinned to the theme ink — never reads the accent var, so the
+           get_appearance correction can't recolour it mid-boot. */
+        background: currentColor; border-radius: 2px;
+        animation: husk-splash-slide 1.15s ease-in-out infinite;
+      }
+      /* Frameless window (decorations:false): the splash covers the whole
+         viewport while booting, so without this strip there's no
+         data-tauri-drag-region to grab until React mounts. Same 36px as
+         the app's title bar. */
+      #husk-splash .drag {
+        position: absolute; top: 0; left: 0; right: 0; height: 36px;
+        pointer-events: auto;
+      }
+      /* Dies with the fade — otherwise it outlives the removal window and
+         swallows clicks meant for the real WindowControls underneath. */
+      #husk-splash.leaving .drag { pointer-events: none; }
+      @keyframes husk-splash-slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(310%); } }
+      @media (prefers-reduced-motion: reduce) {
+        #husk-splash .bar::after { animation: none; }
+      }
+    </style>
+    <script>
+      // Boot theme — runs synchronously before first paint. Default follows
+      // prefers-color-scheme; the stored appearance.json correction lands a
+      // few ms later via get_appearance (same script path).
+      (function () {
+        var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        // Paint BEFORE body exists — a stylesheet that only colors #husk-splash
+        // still leaves the html/body behind it white until DOMContentLoaded,
+        // which on a slow dev-server round-trip flashes. Colouring <html> now
+        // makes even the pre-markup frame match the resolved theme.
+        var root = document.documentElement;
+        root.classList.toggle("dark", dark);
+        root.style.background = dark ? "#16161a" : "#fafafa";
+        function paint(dark2, bg, fg, accent) {
+          var el = document.getElementById("husk-splash");
+          if (!el) return;
+          el.classList.toggle("dark", dark2);
+          if (bg) el.style.background = bg;
+          if (fg) el.style.color = fg;
+          if (accent) el.style.setProperty("--husk-splash-accent", accent);
+          root.classList.toggle("dark", dark2);
+          root.style.background = bg || (dark2 ? "#16161a" : "#fafafa");
+          if (document.body) document.body.style.backgroundColor = bg || (dark2 ? "#16161a" : "#fafafa");
+        }
+        // Exposed for the bootstrap correction below — main.tsx's own
+        // appearance applier takes over after React mounts.
+        window.__huskSplashPaint = paint;
+        document.addEventListener("DOMContentLoaded", function () { paint(dark); });
+      })();
+    </script>
   </head>
   <body>
+    <!-- Boot overlay — sibling of #root, NEVER inside it. React only owns
+         #root's subtree; this node keeps one parent and one stacking
+         context for its whole life, so nothing can restart its animation
+         or re-resolve its styles at handoff. -->
+    <div id="husk-splash">
+      <!-- drag-region lives on a real element — the splash root is
+           pointer-events:none. -->
+      <div class="drag" data-tauri-drag-region></div>
+      <img class="icon" src="/src/assets/husk-icon.png" alt="" />
+      <div class="bar"></div>
+    </div>
     <div id="root"></div>
+    <script>
+      // Reveal the icon only once its bitmap is renderable — otherwise it
+      // pops in halfway through the splash's own fade-in and reads as a flash.
+      (function () {
+        var img = document.querySelector("#husk-splash .icon");
+        if (!img) return;
+        var done = function () { img.classList.add("ready"); };
+        if (img.decode) img.decode().then(done).catch(done);
+        else if (img.complete) done();
+        else img.addEventListener("load", done, { once: true });
+      })();
+    </script>
+    <script type="module">
+      // Splash theme correction — the synchronous guess in <head> only knows
+      // the OS scheme; the stored appearance.json may pin light/dark or carry
+      // a custom bg/accent. The IPC bridge is already up when this module
+      // runs, so one round-trip lands the true theme on the splash (and
+      // pre-applies the same CSS vars provider.tsx sets, so React's mount
+      // doesn't shift colours on the first committed frame).
+      import { invoke } from "@tauri-apps/api/core";
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      invoke("agent_session", { op: "get_appearance" })
+        .then((cfg) => {
+          const dark =
+            cfg.theme_mode === "dark" ? true :
+            cfg.theme_mode === "light" ? false : mq.matches;
+          const bg = dark ? (cfg.dark_background || cfg.background) : cfg.background;
+          const fg = dark ? (cfg.dark_foreground || cfg.foreground) : cfg.foreground;
+          const accent = (dark && cfg.dark_accent) || cfg.accent;
+          window.__huskSplashPaint?.(dark, bg, fg, accent);
+          // Pre-apply the root tokens React's applier writes — without this,
+          // mounting swaps the splash for an app that renders in the default
+          // palette for a frame until getAppearance() resolves again.
+          const root = document.documentElement;
+          root.style.setProperty("--husk-accent", accent);
+          if (bg) root.style.setProperty("--husk-bg", bg);
+          if (fg) root.style.setProperty("--husk-fg", fg);
+        })
+        .catch(() => {});
+    </script>
     <script type="module" src="/src/app/main.tsx"></script>
   </body>
 </html>

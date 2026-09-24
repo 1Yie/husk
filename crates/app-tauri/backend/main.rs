@@ -160,7 +160,48 @@ impl ksni::Tray for HuskTray {
     }
 }
 
+/// Exempt the app's own origins from a proxy inherited from the shell env.
+///
+/// WebKitGTK resolves page loads through libsoup → libproxy: when the user
+/// runs `cargo tauri dev` (or launches a release build) from a shell with
+/// `http_proxy` set but no localhost exemption, the webview sends
+/// `http://localhost:1420` — and in release `tauri.localhost` plus the IPC
+/// bridge `ipc.localhost` — to the proxy, which tunnels them nowhere. The
+/// page never arrives and the window renders blank with zero diagnostics.
+///
+/// Merging into `no_proxy`/`NO_PROXY` (the names libproxy actually reads)
+/// fixes all proxy consumers without unsetting the user's proxy — env fetches
+/// and IPC traffic that legitimately need it still go through.
+#[cfg(target_os = "linux")]
+fn exempt_self_from_proxy() {
+    const EXEMPT: &[&str] = &[
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "tauri.localhost",
+        "ipc.localhost",
+    ];
+    for var in ["no_proxy", "NO_PROXY"] {
+        let existing = std::env::var(var).unwrap_or_default();
+        let mut hosts: Vec<String> = existing
+            .split(',')
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+            .collect();
+        for h in EXEMPT {
+            if !hosts.iter().any(|e| e.eq_ignore_ascii_case(h)) {
+                hosts.push((*h).to_string());
+            }
+        }
+        std::env::set_var(var, hosts.join(","));
+    }
+}
+
 fn main() {
+    // Must run before GTK/libsoup init reads the env.
+    #[cfg(target_os = "linux")]
+    exempt_self_from_proxy();
+
     // Dev builds never inherit a previous run's process — see the function.
     #[cfg(all(debug_assertions, target_os = "linux"))]
     retire_previous_dev_instances();
