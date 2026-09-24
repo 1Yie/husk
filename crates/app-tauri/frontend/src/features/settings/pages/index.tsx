@@ -3,7 +3,7 @@
 // its own left nav + scrollable content, same window, same session running
 // underneath. Esc or "返回工作区" goes back.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bot,
@@ -56,6 +56,7 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+  const contentRef = useRef<HTMLDivElement>(null);
   // Esc goes back to the workspace — same reflex as every full-screen pane.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -64,6 +65,11 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Each tab opens at the top — the container keeps its scrollTop otherwise.
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [activeTab]);
 
   const tabMeta = NAV_GROUPS.flatMap((g) => g.items).find((i) => i.key === activeTab);
 
@@ -136,7 +142,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
       </aside>
 
         {/* Content — big page title + grouped setting rows. */}
-        <div className="flex-1 min-h-0 overflow-y-auto bg-white no-scrollbar">
+        <div ref={contentRef} className="flex-1 min-h-0 overflow-y-auto bg-white no-scrollbar">
           <div className="w-full max-w-3xl mx-auto px-6 sm:px-10 py-8 pb-16">
             <h1 className="text-xl font-semibold text-neutral-900 mb-6 tracking-tight">
               {tabMeta?.label}
