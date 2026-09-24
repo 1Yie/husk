@@ -92,7 +92,7 @@ Readonly shell whitelist: `ls cat head tail grep rg find git{status,diff,log,sho
 Three interception surfaces wrap the ReAct loop (full spec: `plugin-system.md` §Extension points):
 
 - **Commands** (`commands.rs`): input starting with `/` is intercepted by `CommandRegistry` **before** the LLM loop — zero tokens. `CommandResult::{Reply, ControlAction, FeedToAgent}`. MCP `prompts/*` and WASM `command_execute` both register here under `plugin_id:name`.
-- **Hooks** (`hooks.rs`): ordered `AgentHook` chain — `on_user_input` → `before_tool_execute` (veto/rewrite, runs *before* the permission gate and cannot approve) → `after_tool_execute` → `on_state_transition`. Per-hook 2 s timeout, degradation = `Continue`. WASM/built-in only.
+- **Hooks** (`hooks.rs`): ordered `AgentHook` chain — `on_user_input` → `before_tool_execute` (veto/rewrite, runs *before* the permission gate and cannot approve) → `after_tool_execute` → `on_state_transition`. Per-hook 2 s timeout, degradation = `Continue`. The chain is shared (`Arc<RwLock<…>>`) so `reload_plugins` hot-swaps it; hook implementations come from plugins declaring a local `run` command (JSON on stdin/stdout — `plugin-system.md` §Hook wire contract) or from built-ins.
 - **Providers** (`agent-context/src/providers.rs`): `ContextProvider` trait returns `ContextChunk{priority, title, content, tokens}`; built-ins (workspace/git/memory) are ordinary registrations. Assembly sorts by priority, fills budget, drops the rest with UI-visible badges. MCP `resources/*` maps here.
 
 ## Execution sandbox (`crates/agent-sandbox/`)

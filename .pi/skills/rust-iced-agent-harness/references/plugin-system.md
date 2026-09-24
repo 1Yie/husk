@@ -4,15 +4,15 @@ Design goal: **the kernel stays minimal and fast; capability growth happens in p
 
 ## Plugin contract
 
-A plugin = `manifest.json` (self-describing) + entry artifact (`.wasm` or MCP server command).
+A plugin = `manifest.json` (self-describing). Two independent halves: `entry` bridges to a server (`.wasm` or MCP server command), `capabilities` extends the kernel in the host. Either may be absent — a manifest that is only `capabilities.hooks` is a pure plugin that never connects anywhere.
 
 ```json
 {
   "id": "github-workflow-tools",
   "name": "GitHub Actions Assistant",
   "version": "1.0.0",
-  "kind": "wasm",                       // "wasm" | "mcp"
-  "entry": "plugin.wasm",               // wasm: file path; mcp: { "command": "npx", "args": [...] }
+  "kind": "wasm",                       // optional: which runtime `entry` uses ("wasm" | "mcp", default mcp)
+  "entry": "plugin.wasm",               // optional: the bridge — wasm: file path; mcp: { "command": "npx", "args": [...] }
   "permissions": {
     "network": ["api.github.com"],      // host allowlist; empty = no network
     "filesystem": ["read:./.github/workflows"]
@@ -30,7 +30,7 @@ A plugin = `manifest.json` (self-describing) + entry artifact (`.wasm` or MCP se
     "commands": [                          // slash commands → CommandRegistry
       { "name": "ci", "description": "Show latest CI status", "action": "tool:fetch_ci_status" }
     ],
-    "hooks": [                             // WASM-only; MCP can't hook
+    "hooks": [                             // local commands run by the host — work with or without `entry`
       { "event": "before_tool_execute", "filter": { "tool": "bash" } },
       { "event": "after_tool_execute" }
     ]
@@ -40,7 +40,7 @@ A plugin = `manifest.json` (self-describing) + entry artifact (`.wasm` or MCP se
 
 Manifest rules:
 - `permissions` are **capability-granting and exhaustive** — anything not declared is denied by the sandbox, not merely filtered at runtime.
-- `kind` selects the runtime; the kernel maps both onto one `Plugin` trait.
+- `kind` selects the runtime for `entry` only; the kernel maps both onto one `Plugin` trait. A manifest needs `entry` or at least one capability — a manifest with neither is refused.
 - Tool `parameters` must be valid JSON Schema — validated at `register_plugin`, rejected plugins surface as load errors in the settings panel (never silently dropped).
 
 ## Plugin trait (`crates/agent-plugin/src/lib.rs`)
@@ -185,7 +185,7 @@ pub struct PluginManager {
 - `register_plugin`: validate manifest → build runtime → `export_tools` → populate `tool_router`. Name collisions: namespaced as `plugin_id:tool_name` when two plugins claim the same bare name.
 - `dispatch_tool_call(&ToolCall)`: route → `plugin.call_tool` → truncate output through the **same `TruncationConfig` as built-ins** (plugin output is not exempt from budgets).
 - `collect_dynamic_contexts(workspace)`: fan out `provide_context` with per-plugin 2 s timeout; each result tagged `<plugin_context id="...">` and appended after the workspace skeleton in the prompt.
-- Discovery: scan `~/.config/<app>/plugins/*/manifest.json` + `<repo>/.agent/plugins/*/` at startup; repo-local plugins require per-repo trust consent.
+- Discovery: scan `~/.config/<app>/plugins/*/manifest.json` + `<repo>/.husk/plugins/*/` at startup; repo-local plugins require per-repo trust consent.
 - Lifecycle: enable/disable persisted in config; disable = drop `Arc`, purge `tool_router` entries, kill MCP child. Hot-reload on manifest file change (debounced 500 ms).
 
 ## Extension points beyond tools (Hooks / Commands / Providers)
@@ -223,7 +223,89 @@ Pipeline rules:
 - Hooks run as an **ordered chain** (registration order); each gets a bounded timeout (default 2 s) — a slow hook degrades to `Continue`, never stalls the turn.
 - `before_tool_execute` runs **before** the permission/audit gate — a hook can veto or rewrite args, but cannot *approve* (safety stays with permissions).
 - `after_tool_execute` output mutation is capped by the same TruncationConfig; hook output is marked in UI (`⚡ hook <id>` line under the step card).
-- WASM plugins export hook fns by convention (`agent_on_input`, `agent_before_tool`, `agent_after_tool`); MCP servers can't be hooks (stdio latency + no interception semantics) — hooks are WASM/built-in only.
+- A plugin hook is a **local command** (`manifest.capabilities.hooks[].run`): the kernel spawns it per intercepted event with a JSON payload on stdin and reads a JSON verdict from stdout, bounded by the hook's own timeout. Interception happens in the host, so an MCP plugin can declare hooks too (its MCP connection is irrelevant to them) — WASM plugins export `agent_*` fns instead once that runtime lands, mapping onto the same `AgentHook` trait.
+- A hook is arbitrary local code, so it inherits the plugin's trust gate and the MCP child-process posture: `env_clear` + declared env only, secret-shaped `env:VAR` refused, `kill_on_drop`, Linux `PR_SET_PDEATHSIG`.
+
+#### Hook wire contract (`crates/agent-plugin/src/hooks.rs`)
+
+```jsonc
+// manifest.json
+"capabilities": {
+  "hooks": [{
+    "event": "before_tool_execute",  // on_user_input | before_tool_execute
+                                     // | after_tool_execute | on_state_transition
+    "filter": { "tool": "bash" },    // optional: tool events match `tool`,
+                                     // transitions match `state`
+    "run": { "command": "./guard.sh", "args": [], "env": {} },  // relative → plugin dir
+    "timeout_ms": 2000               // optional, default 2000, capped 10000
+  }]
+}
+```
+
+| event | stdin | stdout verdict |
+|---|---|---|
+| `on_user_input` | `{event, input}` | `{"action":"continue"}` / `{"action":"block","reason"}` / `{"action":"inject","note"}` |
+| `before_tool_execute` | `{event, tool, args}` | `{"action":"continue"}` / `{"action":"veto","reason"}` / `{"action":"rewrite","args"}` |
+| `after_tool_execute` | `{event, tool, args, output}` | `{"action":"continue"}` / `{"action":"rewrite_output","output"}` |
+| `on_state_transition` | `{event, old, new}` | ignored — fire-and-forget |
+| `on_response` | `{event, text}` | `{"action":"rewrite","text":"..."}` — the assistant's final answer, mutable before it lands |
+
+- Degrade rule is the in-process contract: non-zero exit, timeout, unparsable JSON, or an unknown `action` → `Continue`. A hook can never approve; `before_tool_execute` still runs ahead of the permission gate.
+- `MutateMessages` has no wire spelling in v1 — serializing the whole outbound context across a process boundary is a bigger contract than the interception is worth today. Built-in `AgentHook`s still have it.
+- Chain order = plugin discovery order, then declaration order within one manifest. Timeout is per hook, not per event.
+- A repo-local manifest (`<repo>/.husk/plugins/*`) stays inert — hooks included — until trusted (`trust_mcp` → `plugin-trust.json`), because a hook is local code and `git clone` + open must not run it.
+- Command resolution: a bare name (`python3`) goes to `PATH`; a path-shaped one (`./guard.sh`, `scripts/guard.sh`) resolves against the plugin's own directory, which is also the child's cwd. There is no shell layer — a `\|`, `&&` or `$VAR` in `command` is an argument, not syntax (wrap it in `sh -c "…"` yourself if you want one).
+- **Not yet enforced:** `sandboxed: true` is declared, surfaced in the settings card, and otherwise ignored — hook commands (like MCP children) run as plain children today. Wiring them through `SandboxBackend` is the next hardening step.
+
+#### Writing one
+
+`~/.config/husk/plugins/git-guard/manifest.json` + `guard.sh` next to it (chmod `+x`):
+
+```jsonc
+{
+  "id": "git-guard",
+  "name": "Git Guard",
+  "capabilities": {
+    "hooks": [{
+      "event": "before_tool_execute",
+      "filter": { "tool": "bash" },
+      "run": { "command": "./guard.sh" },
+      "timeout_ms": 1000
+    }]
+  }
+}
+```
+
+```sh
+#!/bin/sh
+# stdin: {"event":"before_tool_execute","tool":"bash","args":{"command":"git push --force"}}
+payload=$(cat)
+case "$payload" in
+  *"push --force"*) echo '{"action":"veto","reason":"force-push needs a human"}';;
+  *)                echo '{"action":"continue"}';;
+esac
+```
+
+The same script can rewrite in place instead: `{"action":"rewrite","args":{"command":"git push"}}` — the permission gate and the tool both see the rewritten arguments (the step card still previews what the model asked for).
+
+#### SDKs (`sdks/`)
+
+`run.command` is language-agnostic — anything the kernel can spawn works. `sdks/python/husk_hooks.py` and `sdks/ts/husk-hooks.ts` are zero-dep single files to vendor next to the manifest; they wrap stdin → handler → verdict:
+
+```python
+from husk_hooks import on, run, veto
+
+@on("before_tool_execute")
+def guard(p):
+    if "push --force" in p["args"].get("command", ""):
+        return veto("force-push needs a human")
+
+run()
+```
+
+```jsonc
+"run": { "command": "python3", "args": ["guard.py"] }   // or "bun", ["guard.ts"]
+```
 
 ### Commands — deterministic slash control (`agent-kernel/src/commands.rs`)
 
@@ -279,7 +361,7 @@ pub struct ContextChunk {
 | Tools | `export_tools` | `tools/call` | registry |
 | Providers | `provide_context` | `resources/*` | workspace/git/memory |
 | Commands | `command_execute` | `prompts/*` | `/clear` `/diff` `/model`… |
-| Hooks | `agent_*` fns | ❌ (no interception semantics) | masking, audit, distill |
+| Hooks | `agent_*` fns (with the WASM runtime) | `run` command ✅ | masking, audit, distill |
 
 With this matrix the harness consumes **all three MCP primitives** (tools + resources + prompts), not just tools.
 
@@ -287,7 +369,7 @@ With this matrix the harness consumes **all three MCP primitives** (tools + reso
 
 1. **Commands first** — cheapest, immediate UX win; built-ins only, then open to plugins.
 2. **Providers second** — refactor existing injection into the trait; plugin `provide_context` already exists.
-3. **Hooks last** — add when a concrete need appears (output formatting, secret pre-filter, auto-fix); the chain is cheap to add but every hook is a per-turn latency + failure surface.
+3. **Hooks** — landed as the local-command transport (above). WASM `agent_*` exports stay pending the WASM runtime; every hook is still a per-turn latency + failure surface, so keep the chain short.
 
 ## Kernel integration points
 
