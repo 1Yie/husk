@@ -1,0 +1,119 @@
+name: release
+
+# Tag push (`git tag v0.1.9 && git push --tags`) or manual dispatch builds all
+# four targets and publishes a GitHub Release with a generated changelog.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.1.9 (created on this commit if absent)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  changelog:
+    name: Generate changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.sha }}
+
+      - name: Install git-cliff
+        run: |
+          tag=$(curl -fsSL https://api.github.com/repos/orhun/git-cliff/releases/latest | jq -r .tag_name)
+          curl -fsSL "https://github.com/orhun/git-cliff/releases/download/${tag}/git-cliff-${tag#v}-x86_64-unknown-linux-musl.tar.gz" | tar xz
+          sudo install -m755 "git-cliff-${tag#v}/git-cliff" /usr/local/bin/git-cliff
+
+      - name: Generate changelog for the release
+        run: git cliff --latest -o changelog.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: changelog.md
+          if-no-files-found: error
+
+  build:
+    name: Build (${{ matrix.label }})
+    needs: changelog
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            target: aarch64-apple-darwin
+            label: macOS Apple Silicon
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            label: macOS Intel
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/app-tauri/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix crates/app-tauri/frontend
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libdbus-1-dev libssl-dev patchelf rpm
+
+      - name: Build and attach artifacts to the draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/app-tauri
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "Husk ${{ env.RELEASE_TAG }}"
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  release:
+    name: Publish release
+    needs: [changelog, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: changelog
+
+      - name: Fill release notes and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: gh release edit "$TAG" --notes-file changelog.md --draft=false --latest
