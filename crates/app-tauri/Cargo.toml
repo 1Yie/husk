@@ -3,6 +3,7 @@ name = "husk"
 version = "0.1.8"
 edition = "2021"
 description = "Husk — Tauri desktop shell: React + Tailwind frontend over the shared kernel wiring"
+license = "MIT"
 build = "build.rs"
 
 [[bin]]
