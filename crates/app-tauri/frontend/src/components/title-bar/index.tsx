@@ -176,7 +176,8 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
             {fmtRate(toks)} tok/s
           </span>
         </TooltipSimple>
-        {onToggleChanges && (
+        {/* Hidden when the list is empty — nothing to show. */}
+        {onToggleChanges && changesCount > 0 && (
           <TooltipSimple
             content={changesOpen ? "关闭改动面板" : `查看改动${changesCount > 0 ? ` (${changesCount} 个文件)` : ""}`}
             side="bottom"

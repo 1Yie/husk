@@ -81,6 +81,8 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
   // Auto-open the panel once per session on the first file change; a
   // manual close (dismissedRef) suppresses the auto-open afterwards.
   const changeCount = view.changes.length;
+  // `changesOpen` alone isn't enough — an empty list hides the panel too.
+  const changesVisible = !!changesOpen && changeCount > 0;
   const dismissedRef = useRef(false);
   const autoOpenedRef = useRef(false);
   useEffect(() => {
@@ -109,7 +111,7 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
         modelCost={modelCost}
         onShowRaw={onShowRaw}
         noWorkspace={!workspaceRoot}
-        changesOpen={changesOpen}
+        changesOpen={changesVisible}
         changesCount={changeCount}
         onToggleChanges={workspaceRoot ? handleToggleChanges : undefined}
       />
@@ -160,14 +162,14 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
           <div
             className={cn(
               "flex-none overflow-hidden transition-[width] duration-300 ease-out",
-              changesOpen ? "w-[300px]" : "w-0",
+              changesVisible ? "w-[300px]" : "w-0",
             )}
-            aria-hidden={!changesOpen}
+            aria-hidden={!changesVisible}
           >
             <div
               className={cn(
                 "h-full w-[300px] transition-transform duration-300 ease-out",
-                changesOpen ? "translate-x-0" : "translate-x-full",
+                changesVisible ? "translate-x-0" : "translate-x-full",
               )}
             >
               <ChangesPanel changes={view.changes} onClose={handleToggleChanges} />
