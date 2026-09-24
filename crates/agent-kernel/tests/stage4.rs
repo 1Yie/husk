@@ -289,10 +289,10 @@ async fn reasoning_traces_persist_for_replay() {
     );
 }
 
-/// Skills reach the model by progressive disclosure: the system prompt carries
-/// a catalog (name + description) so it can *choose*, and the `skill` tool
-/// fetches the body on demand. Without this the model never learned that any
-/// skill existed — the feature was user-only (`$name` / `/name`).
+/// Subagents reach the model the same way skills do: a catalog row per
+/// manifest (name, description, scope), rendered from the live directory so a
+/// manifest added mid-session appears after the next turn. Without it
+/// `agent: "<name>"` could only target names the model guessed.
 #[tokio::test]
 async fn subagent_catalog_is_in_the_prompt_and_refreshes() {
     let dir = tempfile::tempdir().unwrap();
@@ -352,7 +352,12 @@ async fn subagent_catalog_is_in_the_prompt_and_refreshes() {
     assert!(system.contains("`helper`"), "{system}");
 }
 
-async fn subagent_catalog_is_in_the_prompt() {
+/// Skills reach the model by progressive disclosure: the system prompt carries
+/// a catalog (name + description) so it can *choose*, and the `skill` tool
+/// fetches the body on demand. Without this the model never learned that any
+/// skill existed — the feature was user-only (`$name` / `/name`).
+#[tokio::test]
+async fn skill_catalog_is_in_the_prompt_and_refreshes() {
     let dir = tempfile::tempdir().unwrap();
     let write_skill = |name: &str, desc: &str| {
         let p = dir.path().join(".agents/skills").join(name);

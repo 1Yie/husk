@@ -44,6 +44,10 @@ pub struct TurnOutcome {
     pub usage: Option<(u32, u32, u32)>,
     /// Tool calls executed this turn (for hunk attribution / UI list).
     pub tool_calls_run: usize,
+    /// Steering texts injected mid-turn, in order. Provenance for the memory
+    /// distiller — a mid-turn correction is the highest-value fact seed, and
+    /// without this the `TurnRecord.steered_with` branch was dead code.
+    pub steers: Vec<String>,
 }
 
 /// Result of a manual `/compact` — `NothingToDo` is deliberately NOT an
@@ -78,6 +82,10 @@ pub struct Engine {
     agent_mode: Arc<std::sync::RwLock<crate::mode::AgentMode>>,
     /// Pending mid-turn steering text drained from `io.steer_rx`.
     steer_queue: VecDeque<String>,
+    /// Steers actually injected into this turn — reset per `run_turn`, and the
+    /// source for `TurnOutcome::steers` (the error paths keep the record too,
+    /// so a cancelled-after-steering turn still reaches the distiller).
+    steers_this_turn: Vec<String>,
     /// Permission gate consulted before every tool dispatch.
     permissions: Arc<std::sync::RwLock<PermissionGate>>,
     /// Decision slot shared with SessionActor — the engine can't hold a
@@ -155,6 +163,7 @@ impl Engine {
             temperature,
             agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
             steer_queue: VecDeque::new(),
+            steers_this_turn: Vec::new(),
             permissions: Arc::new(std::sync::RwLock::new(PermissionGate::from_mode_str(
                 "default",
             ))),
@@ -415,6 +424,13 @@ impl Engine {
         }
     }
 
+    /// Steers injected into the turn that just ran. Read after an `Err` return
+    /// too — a steer followed by a cancel is exactly the correction the memory
+    /// distiller most wants.
+    pub fn steers_this_turn(&self) -> &[String] {
+        &self.steers_this_turn
+    }
+
     /// Run one full user turn: prompt → sample → tools → re-sample … → done.
     ///
     /// `history` is the session's conversation; the engine appends the user
@@ -433,6 +449,8 @@ impl Engine {
         // vision, else degrade to path references plus a notice so the
         // user knows the attachment was dropped.
         let images = extract_attached_images(&user_text);
+        // Fresh provenance record for this turn — see `TurnOutcome::steers`.
+        self.steers_this_turn.clear();
         let mut user_msg = ChatMessage::user(user_text);
         if !images.is_empty() {
             if self.supports_images() {
@@ -495,6 +513,8 @@ impl Engine {
 
             self.drain_steering(io, history);
             while let Some(steer) = self.steer_queue.pop_front() {
+                // Provenance: this steer is being injected into THIS turn.
+                self.steers_this_turn.push(steer.clone());
                 // Echo the steer as a user bubble — the live stream never
                 // showed it otherwise (the composer doesn't echo), while a
                 // reloaded view rebuilt it from history. One render path.
@@ -907,6 +927,7 @@ impl Engine {
                     text,
                     usage,
                     tool_calls_run,
+                    steers: self.steers_this_turn.clone(),
                 });
             }
 
@@ -1044,7 +1065,12 @@ impl Engine {
                 let call = &call_mut; // hooks may have rewritten args
 
                 // Permission gate before dispatch
-                let is_readonly = self.active_registry().is_readonly(&call.name);
+                let registry = self.active_registry();
+                let is_readonly = registry.is_readonly(&call.name);
+                // Metadata-driven file-edit detection: a write tool declares
+                // `WorkspaceMutation`, so the gate does not depend on
+                // `is_file_edit`'s name table learning about it.
+                let class = registry.spec(&call.name).map(|s| s.class);
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
                 let diff_summary = args
                     .get("path")
@@ -1105,7 +1131,7 @@ impl Engine {
                     .permissions
                     .read()
                     .unwrap_or_else(|e| e.into_inner())
-                    .decide(&call.name, is_readonly, shell_cmd, diff_summary);
+                    .decide(&call.name, class, is_readonly, shell_cmd, diff_summary);
 
                 match decision {
                     Decision::Deny { reason } => {

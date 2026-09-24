@@ -40,6 +40,11 @@ export const BORDER_ON_BUBBLE = "border-zinc-700/60";
 /** Muted label ink that stays legible on both themes' panels. */
 export const INK_MUTED = "text-neutral-500 dark:text-[#9a9aa4]";
 
+/** The activity heat-map's "nothing happened" cell — a flat neutral in BOTH
+ *  themes. `--husk-n800` belongs to the inverted dark ramp, so it would paint
+ *  a near-white square on the dark card. */
+export const SURFACE_ACTIVITY_EMPTY = "bg-neutral-100 dark:bg-[#26262c]";
+
 /** Form controls (input, textarea, quiet buttons): a visible well on both themes.
  *  `bg-transparent` left them identical to the page background in dark mode. */
 export const SURFACE_INPUT = "bg-white dark:bg-[var(--husk-card)] border-hairline";

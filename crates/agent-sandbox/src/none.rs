@@ -124,3 +124,61 @@ fn libc_kill_group(_pgid: u32) {}
 /// so the negative pid reaps the whole tree on timeout.
 #[cfg(target_family = "unix")]
 fn _assert_process_group_is_used() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::{SandboxBackend, SandboxConfig};
+
+    fn cfg(dir: &std::path::Path, secs: u64) -> SandboxConfig {
+        SandboxConfig {
+            workspace_dir: dir.to_path_buf(),
+            timeout_secs: secs,
+            ..Default::default()
+        }
+    }
+
+    /// The timeout must kill the whole PROCESS GROUP, not just drop the
+    /// future: `smart_test_runner`/`bash` rely on this to avoid leaving an
+    /// orphaned `cargo test` behind. The child here backgrounds a grandchild
+    /// so a shallow kill would leave it running.
+    #[tokio::test]
+    async fn timeout_kills_the_process_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("grandchild-alive");
+        // Background grandchild writes its marker only if it gets to run; the
+        // foreground sleep keeps the group alive past the timeout.
+        let cmd = format!(
+            "sh -c 'sleep 2; touch {}' & sleep 300",
+            marker.display()
+        );
+        let out = NoneBackend
+            .run_command(&cmd, &[], &cfg(dir.path(), 1))
+            .await
+            .unwrap();
+        assert!(out.is_timeout, "expected the wall timeout to fire");
+        assert_eq!(out.status, -1);
+
+        // Well past the grandchild's own 2 s sleep: if the group survived the
+        // timeout it would have created the marker by now.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        assert!(
+            !marker.exists(),
+            "grandchild survived the timeout — the group was not killed"
+        );
+    }
+
+    /// A command that finishes inside the budget reports success, not a
+    /// timeout — the kill path must not fire early.
+    #[tokio::test]
+    async fn fast_command_is_not_a_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = NoneBackend
+            .run_command("echo ready", &[], &cfg(dir.path(), 30))
+            .await
+            .unwrap();
+        assert!(!out.is_timeout);
+        assert_eq!(out.status, 0);
+        assert!(out.stdout.contains("ready"));
+    }
+}

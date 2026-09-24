@@ -2,8 +2,11 @@
 //!
 //! `~/.local/share/husk/sessions/<ws_hash>/`:
 //!   - `index.json`  — session metadata (title/preview/updated_at)
-//!   - `<id>.jsonl`  — one `Vec<ChatMessage>` per line, append-only; the last
-//!                     line wins, so a crash costs at most the current turn
+//!   - `<id>.jsonl`  — one `Vec<ChatMessage>` per line, appended per turn;
+//!                     the last line wins, so a crash costs at most the
+//!                     current turn. Rotated to that last line once the file
+//!                     passes [`MAX_HISTORY_BYTES`] (earlier lines are never
+//!                     read).
 //!
 //! The owning `SessionActor` writes on turn boundaries only (single writer,
 //! never mid-turn), so a running session's file holds its last completed state.
@@ -12,6 +15,13 @@ use std::path::{Path, PathBuf};
 
 use agent_llm::types::ChatMessage;
 use serde::{Deserialize, Serialize};
+
+/// Rotate the history file once it passes this size: only the LAST snapshot
+/// line is ever read, so the earlier ones are pure overhead. Without rotation
+/// the file grows with `turns × history size` (quadratic) and never shrinks —
+/// a long session reaches hundreds of MB while `load_history` still reads one
+/// line's worth.
+const MAX_HISTORY_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One session's sidebar metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,15 +296,32 @@ impl SessionStore {
     }
 
     /// Append a full history snapshot (one line). Called at turn boundaries.
+    ///
+    /// Past [`MAX_HISTORY_BYTES`] the file is rewritten to just this snapshot —
+    /// atomically, via a temp file + rename, so a crash mid-rotation leaves the
+    /// original intact (the reader only ever wants the last line anyway).
     pub fn snapshot(&self, id: i64, history: &[ChatMessage]) -> std::io::Result<()> {
         use std::io::Write;
         let line = serde_json::to_string(history)?;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.history_path(id))?;
-        f.write_all(line.as_bytes())?;
-        f.write_all(b"\n")?;
+        let path = self.history_path(id);
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
+            f.write_all(line.as_bytes())?;
+            f.write_all(b"\n")?;
+        }
+        if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_HISTORY_BYTES {
+            let tmp = path.with_extension("jsonl.tmp");
+            {
+                let mut t = std::fs::File::create(&tmp)?;
+                t.write_all(line.as_bytes())?;
+                t.write_all(b"\n")?;
+                t.sync_all()?;
+            }
+            std::fs::rename(&tmp, &path)?;
+        }
         Ok(())
     }
 
@@ -772,5 +799,39 @@ mod tests {
         assert!(store.load_history(9).is_none());
         std::fs::write(dir.path().join("8.jsonl"), b"\n\n").unwrap();
         assert!(store.load_history(8).is_none());
+    }
+
+    /// Snapshots are full copies, so the file grew with `turns × history` and
+    /// never shrank. Past the cap only the last line survives, and the reader
+    /// still returns that newest snapshot.
+    #[test]
+    fn snapshot_rotation_keeps_only_the_newest_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore {
+            dir: dir.path().to_path_buf(),
+        };
+        let path = dir.path().join("7.jsonl");
+        let lines = || {
+            std::fs::read_to_string(&path)
+                .map(|t| t.lines().count())
+                .unwrap_or(0)
+        };
+
+        // A single oversized snapshot trips the cap immediately.
+        let big = ChatMessage::user("x".repeat(MAX_HISTORY_BYTES as usize + 4096));
+        store.snapshot(7, std::slice::from_ref(&big)).unwrap();
+        assert_eq!(lines(), 1);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("xxx"));
+
+        // The next snapshot exceeds the cap again → the huge line is dropped.
+        store.snapshot(7, &[ChatMessage::user("after")]).unwrap();
+        assert_eq!(lines(), 1, "rotation must keep exactly one line");
+        assert!(
+            !std::fs::read_to_string(&path).unwrap().contains("xxx"),
+            "the pre-rotation line must be gone"
+        );
+        let hist = store.load_history(7).expect("history after rotation");
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].content.as_deref(), Some("after"));
     }
 }

@@ -67,10 +67,15 @@ pub struct McpClient {
     pub plugin_id: String,
     transport: Transport,
     req_id: AtomicU64,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
+    pending: Arc<std::sync::Mutex<PendingMap>>,
     pub caps: std::sync::Mutex<ServerCaps>,
-    /// tool name → JSON schema (from `tools/list`).
-    pub tools: Mutex<Vec<Value>>,
+    /// Last successfully listed tool table (`tools/list`), for the SYNC read
+    /// paths — `Plugin::export_tools`/`tool_names` run on the request path and
+    /// used a `try_lock` on the async store, which reported "0 tools" to the
+    /// model whenever a refresh happened to hold it. A failed refresh leaves
+    /// the previous table in place; a successful one (even an empty list from
+    /// a server that declares none) replaces it.
+    tool_cache: std::sync::RwLock<Arc<Vec<Value>>>,
     /// `serverInfo` from the handshake — the server's own name/version. The
     /// manifest's `version` says nothing for a server added from the UI (it is
     /// written as "1.0.0"), so the live value is what the settings card shows.
@@ -82,6 +87,44 @@ pub struct McpClient {
     /// stderr ring buffer (surfaced on error cards) — stdio only.
 
     pub stderr_log: Arc<Mutex<Vec<String>>>,
+}
+
+/// JSON-RPC id → pending oneshot sender.
+type PendingMap = HashMap<u64, oneshot::Sender<Result<Value, String>>>;
+
+/// Clears a pending RPC slot on the way out of a call.
+///
+/// The slot is inserted before the request is written; the reader task only
+/// removes it when a response actually arrives. A timeout — or a cancelled
+/// caller — used to return without removing it, so a server that never answers
+/// leaked one entry per call, forever. `std::sync::Mutex` (not the tokio one)
+/// keeps this removal synchronous in `Drop`; the map is only ever touched in
+/// short, await-free critical sections.
+struct PendingSlot {
+    map: Arc<std::sync::Mutex<PendingMap>>,
+    id: u64,
+}
+
+impl Drop for PendingSlot {
+    fn drop(&mut self) {
+        self.map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
+    }
+}
+
+/// Numeric id of a JSON-RPC response.
+///
+/// Our ids go out as numbers, but some servers echo them stringified; the old
+/// `v["id"].as_u64()` returned `None` for those, which collapsed to key `0`
+/// and never matched — the caller then waited out its full timeout.
+fn response_id(v: &Value) -> Option<u64> {
+    match v.get("id")? {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    }
 }
 
 impl McpClient {
@@ -113,9 +156,9 @@ impl McpClient {
                     headers,
                 },
                 req_id: AtomicU64::new(1),
-                pending: Arc::new(Mutex::new(HashMap::new())),
+                pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 caps: std::sync::Mutex::new(ServerCaps::default()),
-                tools: Mutex::new(Vec::new()),
+                tool_cache: std::sync::RwLock::new(Arc::new(Vec::new())),
                 prompts: Mutex::new(Vec::new()),
                 resources: Mutex::new(Vec::new()),
                 stderr_log: Arc::new(Mutex::new(Vec::new())),
@@ -194,9 +237,9 @@ impl McpClient {
             },
             server_info: std::sync::Mutex::new(Value::Null),
             req_id: AtomicU64::new(1),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
             caps: std::sync::Mutex::new(ServerCaps::default()),
-            tools: Mutex::new(Vec::new()),
+            tool_cache: std::sync::RwLock::new(Arc::new(Vec::new())),
             prompts: Mutex::new(Vec::new()),
             resources: Mutex::new(Vec::new()),
             stderr_log,
@@ -213,9 +256,14 @@ impl McpClient {
                         continue;
                     };
                     if v.get("id").is_some() && (v.get("result").is_some() || v.get("error").is_some()) {
-                        // Response → resolve the pending oneshot.
-                        let id = v["id"].as_u64().unwrap_or(0);
-                        let tx = pending.lock().await.remove(&id);
+                        // Response → resolve the pending oneshot. The lock is
+                        // dropped before sending (the send is synchronous).
+                        let tx = response_id(&v).and_then(|id| {
+                            pending
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .remove(&id)
+                        });
                         if let Some(tx) = tx {
                             let res = if let Some(err) = v.get("error") {
                                 Err(err["message"].as_str().unwrap_or("rpc error").to_string())
@@ -271,7 +319,12 @@ impl McpClient {
         if caps.tools {
             let r = self.call_rpc("tools/list", json!({})).await?;
             let tools = r["tools"].as_array().cloned().unwrap_or_default();
-            *self.tools.lock().await = tools;
+            // Publish the table the model-visible read paths consult. Written
+            // only on success, so a failed refresh keeps the previous listing.
+            *self
+                .tool_cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = Arc::new(tools);
         }
         if caps.resources {
             let r = self.call_rpc("resources/list", json!({})).await?;
@@ -306,7 +359,18 @@ impl McpClient {
             Transport::Stdio { stdin, .. } => {
                 let id = self.req_id.fetch_add(1, Ordering::SeqCst);
                 let (tx, rx) = oneshot::channel();
-                self.pending.lock().await.insert(id, tx);
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(id, tx);
+                // Clear the slot on every exit — timeout, cancelled caller,
+                // dropped receiver. The reader clears it only when a response
+                // actually arrives, so without this a silent server leaks one
+                // entry per call, forever.
+                let _slot = PendingSlot {
+                    map: self.pending.clone(),
+                    id,
+                };
 
                 let line = serde_json::to_string(&json!({
                     "jsonrpc": "2.0", "id": id, "method": method, "params": params,
@@ -402,7 +466,7 @@ impl McpClient {
                 let Ok(v) = serde_json::from_str::<Value>(d.trim()) else {
                     continue;
                 };
-                if want_id.is_none() || v["id"].as_u64() == want_id {
+                if want_id.is_none() || response_id(&v) == want_id {
                     return Ok(v);
                 }
             }
@@ -449,12 +513,19 @@ impl McpClient {
 
     /// Tool names advertised by `tools/list`.
     pub async fn tool_names(&self) -> Vec<String> {
-        self.tools
-            .lock()
-            .await
+        self.tool_snapshot()
             .iter()
             .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
             .collect()
+    }
+
+    /// Last successfully listed tool table — the sync read path. Never empty
+    /// merely because a refresh is in flight.
+    pub fn tool_snapshot(&self) -> Arc<Vec<Value>> {
+        self.tool_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<String> {
@@ -548,4 +619,42 @@ fn host_env_is_secret(name: &str) -> bool {
     ];
     SECRET_EXACT.contains(&u.as_str())
         || SECRET_SUFFIXES.iter().any(|s| u.ends_with(s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Servers echo the id they were sent; our ids are numbers, but a
+    /// stringified echo must still resolve (the old `as_u64()` missed it and
+    /// the call waited out its full timeout).
+    #[test]
+    fn response_id_accepts_numbers_and_numeric_strings() {
+        assert_eq!(response_id(&json!({"id": 7})), Some(7));
+        assert_eq!(response_id(&json!({"id": "7"})), Some(7));
+        assert_eq!(response_id(&json!({"id": " 42 "})), Some(42));
+        // Non-numeric / absent ids stay unmatched rather than collapsing to 0.
+        assert_eq!(response_id(&json!({"id": "req-1"})), None);
+        assert_eq!(response_id(&json!({"id": null})), None);
+        assert_eq!(response_id(&json!({"result": {}})), None);
+    }
+
+    /// A timed-out or cancelled call must not leave its sender parked in the
+    /// pending map — the reader only removes a slot when a reply arrives.
+    #[test]
+    fn pending_slot_is_removed_on_drop() {
+        let map: Arc<std::sync::Mutex<PendingMap>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let (tx, _rx) = oneshot::channel();
+        map.lock().unwrap().insert(1, tx);
+
+        let slot = PendingSlot { map: map.clone(), id: 1 };
+        assert!(map.lock().unwrap().contains_key(&1));
+        drop(slot);
+        assert!(!map.lock().unwrap().contains_key(&1));
+
+        // Dropping an already-resolved slot is a no-op, not an error.
+        drop(PendingSlot { map: map.clone(), id: 99 });
+        assert!(map.lock().unwrap().is_empty());
+    }
 }

@@ -43,6 +43,30 @@ fn replace_block(content: &str, name: &str, block: &str) -> String {
     format!("{head}\n{block}\n{tail}")
 }
 
+/// Swap the recalled-memory region of a system prompt.
+///
+/// New prompts carry `<!-- memory -->` / `<!-- /memory -->` markers, so the
+/// region is replaced verbatim at spawn AND on every turn (`run_prompt`) —
+/// the store keeps changing while the session lives. Prompts persisted before
+/// the markers existed fall back to the old literal swap, which only fires
+/// when the store-failure string is present, i.e. the pre-marker behaviour.
+fn set_memory_block(content: &str, block: &str) -> String {
+    if content.contains("<!-- memory -->") {
+        return replace_block(content, "memory", block);
+    }
+    content.replace("(no memory)", block)
+}
+
+/// Join a turn's injected steers into the single correction string the
+/// distiller turns into a `user steered: …` fact — `None` when the turn ran
+/// without steering.
+fn steered_with(steers: &[String]) -> Option<String> {
+    if steers.is_empty() {
+        return None;
+    }
+    Some(steers.join("; "))
+}
+
 fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return;
@@ -295,8 +319,7 @@ impl SessionActor {
                 None => (None, None, "(no memory)".to_string()),
             }
         };
-        let system_prompt = system_prompt
-            .replace("{{MEMORY_BLOCK}}", &initial_memory_block)
+        let system_prompt = set_memory_block(&system_prompt, &initial_memory_block)
             .replace("{{SKILLS_BLOCK}}", skills.catalog())
             .replace(
                 "{{SUBAGENTS_BLOCK}}",
@@ -568,8 +591,7 @@ impl SessionActor {
                 if !block.trim().is_empty() {
                     if let Some(sys) = self.history.get_mut(0) {
                         if let Some(c) = &sys.content {
-                            let new = c.replace("(no memory)", &block);
-                            sys.content = Some(new);
+                            sys.content = Some(set_memory_block(c, &block));
                         }
                     }
                 }
@@ -600,7 +622,7 @@ impl SessionActor {
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect(),
                     correction: None,
-                    steered_with: None,
+                    steered_with: steered_with(&outcome.steers),
                 });
             }
             Err(e) => {
@@ -621,7 +643,10 @@ impl SessionActor {
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect(),
                     correction: None,
-                    steered_with: None,
+                    // The engine keeps the turn's steer record across the error
+                    // return — a steer followed by a cancel is exactly the
+                    // correction the distiller seeds a fact from.
+                    steered_with: steered_with(self.engine.steers_this_turn()),
                 });
             }
         }
@@ -854,6 +879,12 @@ impl SessionActor {
     /// each touched file to its pre-turn state (or deletes it if created).
     async fn undo_last_turn(&mut self) {
         let last = self.hunks.current_turn();
+        // Verify-on-undo: nothing feeds the watcher path in production, so
+        // compare the turn's files against the agent's last recorded write
+        // before building the plan — otherwise a user edit made after the
+        // agent's write is silently overwritten.
+        self.hunks
+            .mark_external_if_drifted(last, |path| std::fs::read(path).ok());
         // P0-C2: undo_plan now refuses when a target file was modified
         // externally after the agent's last write — undoing would silently
         // clobber the user's own edits. Fall back to partial undo so the
@@ -1302,4 +1333,67 @@ fn strip_call_echo(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bundled template must keep the markers — without them the per-turn
+    /// refresh silently degrades to the legacy literal swap (this is exactly
+    /// the bug these tests guard).
+    #[test]
+    fn template_carries_the_memory_markers() {
+        assert!(SYSTEM_PROMPT_TEMPLATE.contains("<!-- memory -->"));
+        assert!(SYSTEM_PROMPT_TEMPLATE.contains("<!-- /memory -->"));
+    }
+
+    /// Spawn and per-turn both route through this: the region is swapped
+    /// verbatim, the rest of the prompt is untouched, and the placeholder
+    /// never survives.
+    #[test]
+    fn refreshes_the_marked_region() {
+        let prompt = "head\n<!-- memory -->\n{{MEMORY_BLOCK}}\n<!-- /memory -->\ntail";
+        let first = set_memory_block(prompt, "── recent episodes ──\n• did a thing [ok]");
+        assert!(!first.contains("{{MEMORY_BLOCK}}"), "{first}");
+        assert!(first.contains("• did a thing [ok]"), "{first}");
+        assert!(first.starts_with("head\n<!-- memory -->"), "{first}");
+        assert!(first.ends_with("<!-- /memory -->\ntail"), "{first}");
+
+        // A later turn replaces the previous block, not appends.
+        let second = set_memory_block(&first, "── relevant facts ──\n• newer fact (confidence 0.90)");
+        assert!(!second.contains("did a thing"), "{second}");
+        assert!(second.contains("• newer fact"), "{second}");
+    }
+
+    /// A prompt persisted before the markers existed only has the
+    /// store-failure literal — the old swap still applies.
+    #[test]
+    fn falls_back_to_the_legacy_literal() {
+        let legacy = "head\n```\n(no memory)\n```\ntail";
+        let out = set_memory_block(legacy, "── persona ──\nlang: zh");
+        assert!(out.contains("lang: zh"), "{out}");
+        assert!(!out.contains("(no memory)"), "{out}");
+        assert!(out.starts_with("head"), "{out}");
+        assert!(out.ends_with("tail"), "{out}");
+    }
+
+    /// Neither markers nor the literal: leave it alone (never corrupt a
+    /// replayed prompt).
+    #[test]
+    fn leaves_unrelated_prompts_alone() {
+        let other = "head\nrecalled memory lives here\ntail";
+        assert_eq!(set_memory_block(other, "block"), other);
+    }
+
+    /// A steered turn reaches the distiller as one correction string; an
+    /// unsteered turn stays `None` (no fact is seeded).
+    #[test]
+    fn steers_join_into_one_correction_string() {
+        assert_eq!(steered_with(&[]), None);
+        assert_eq!(
+            steered_with(&["use X".to_string(), "never Y".to_string()]),
+            Some("use X; never Y".to_string())
+        );
+    }
 }

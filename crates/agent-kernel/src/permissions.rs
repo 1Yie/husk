@@ -14,6 +14,8 @@
 
 use std::collections::HashSet;
 
+use crate::tools::registry::ToolClass;
+
 /// The five modes — `from_str` accepts the labels the prompt/config use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionMode {
@@ -158,16 +160,19 @@ impl PermissionGate {
     /// Decide one tool call. `tool_name` + `is_readonly` come from the
     /// registry; `command` is the shell text for `bash`/`pty` calls (empty
     /// for file tools); `diff_summary` is pre-computed for `Ask` cards.
+    /// `class` is the registry's execution class — the metadata-driven half of
+    /// the file-edit test (`None` when the caller has no spec).
     ///
     /// Precedence: deny > ask > allow > mode default.
     pub fn decide(
         &self,
         tool_name: &str,
+        class: Option<ToolClass>,
         is_readonly: bool,
         command: Option<&str>,
         diff_summary: impl Into<String>,
     ) -> Decision {
-        let d = self.decide_inner(tool_name, is_readonly, command, diff_summary);
+        let d = self.decide_inner(tool_name, class, is_readonly, command, diff_summary);
         if self.headless {
             match d {
                 Decision::Ask { .. } => Decision::Deny {
@@ -184,6 +189,7 @@ impl PermissionGate {
     fn decide_inner(
         &self,
         tool_name: &str,
+        class: Option<ToolClass>,
         is_readonly: bool,
         command: Option<&str>,
         diff_summary: impl Into<String>,
@@ -233,7 +239,7 @@ impl PermissionGate {
             }
             PermissionMode::AcceptEdits => {
                 // Auto-approve readonly tools + readonly shell + file edits; mutating shell asks.
-                if is_readonly || is_file_edit(tool_name) {
+                if is_readonly || is_file_edit(tool_name, class) {
                     Decision::Allow
                 } else if command.map(is_readonly_shell).unwrap_or(false) {
                     Decision::Allow
@@ -270,12 +276,19 @@ impl PermissionGate {
     }
 }
 
-/// File-edit tools — `acceptEdits`/`auto` approve these without asking.
-fn is_file_edit(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "fuzzy_patch" | "apply_patch" | "write_file" | "fs_patch"
-    )
+/// File-edit tools — `acceptEdits` approves these without asking.
+///
+/// `ToolClass::WorkspaceMutation` is the metadata-driven answer: a new write
+/// tool is gated the moment it declares itself, instead of silently degrading
+/// to "ask every time" because this table was not updated. The name table
+/// stays as the fallback for callers without a spec (and for the stale
+/// `fs_patch`/`write_file` aliases older callers may still use).
+fn is_file_edit(tool_name: &str, class: Option<ToolClass>) -> bool {
+    class == Some(ToolClass::WorkspaceMutation)
+        || matches!(
+            tool_name,
+            "fuzzy_patch" | "apply_patch" | "write_file" | "fs_patch"
+        )
 }
 
 /// Command is a PURE readonly-shell call? Starts with a readonly verb AND
@@ -366,11 +379,11 @@ mod tests {
     fn default_asks_for_writes_not_reads() {
         let g = gate("default");
         assert!(matches!(
-            g.decide("smart_read", true, None, ""),
+            g.decide("smart_read", None, true, None, ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("fuzzy_patch", false, None, "engine.rs +5"),
+            g.decide("fuzzy_patch", None, false, None, "engine.rs +5"),
             Decision::Ask { .. }
         ));
     }
@@ -380,28 +393,28 @@ mod tests {
         let g = gate("default");
         // readonly shell verbs auto-run — ls/cat/git status/cargo test…
         assert!(matches!(
-            g.decide("bash", false, Some("ls -la"), ""),
+            g.decide("bash", None, false, Some("ls -la"), ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("git status"), ""),
+            g.decide("bash", None, false, Some("git status"), ""),
             Decision::Allow
         ));
         // …but writes, installs, builds, and chains still ask.
         assert!(matches!(
-            g.decide("bash", false, Some("cargo test"), ""),
+            g.decide("bash", None, false, Some("cargo test"), ""),
             Decision::Ask { .. }
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("mkdir demo"), ""),
+            g.decide("bash", None, false, Some("mkdir demo"), ""),
             Decision::Ask { .. }
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("cat a > b.txt"), ""),
+            g.decide("bash", None, false, Some("cat a > b.txt"), ""),
             Decision::Ask { .. }
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("ls && rm -rf x"), ""),
+            g.decide("bash", None, false, Some("ls && rm -rf x"), ""),
             Decision::Ask { .. }
         ));
     }
@@ -409,7 +422,7 @@ mod tests {
     #[test]
     fn default_allows_todo_without_asking() {
         let g = gate("default");
-        assert!(matches!(g.decide("todo", true, None, ""), Decision::Allow));
+        assert!(matches!(g.decide("todo", None, true, None, ""), Decision::Allow));
     }
 
     #[test]
@@ -420,7 +433,7 @@ mod tests {
             ..Default::default()
         });
         assert!(matches!(
-            g.decide("bash", false, Some("ls"), ""),
+            g.decide("bash", None, false, Some("ls"), ""),
             Decision::Deny { .. }
         ));
     }
@@ -429,7 +442,7 @@ mod tests {
     fn destructive_shell_asks_even_in_bypass() {
         let g = gate("bypassPermissions");
         assert!(matches!(
-            g.decide("bash", false, Some("rm -rf target"), ""),
+            g.decide("bash", None, false, Some("rm -rf target"), ""),
             Decision::Ask { .. }
         ));
     }
@@ -438,12 +451,41 @@ mod tests {
     fn accept_edits_skips_patch_asks_shell() {
         let g = gate("acceptEdits");
         assert!(matches!(
-            g.decide("fuzzy_patch", false, None, ""),
+            g.decide("fuzzy_patch", None, false, None, ""),
             Decision::Allow
         ));
         // non-readonly shell (an install) still asks even in acceptEdits.
         assert!(matches!(
-            g.decide("bash", false, Some("npm install foo"), ""),
+            g.decide("bash", None, false, Some("npm install foo"), ""),
+            Decision::Ask { .. }
+        ));
+    }
+
+    /// The class is the contract: a write tool the name table has never heard
+    /// of is auto-approved in `acceptEdits` because it declares
+    /// `WorkspaceMutation`. The table stays as the fallback, and a non-write
+    /// class does not widen the gate.
+    #[test]
+    fn accept_edits_trusts_the_tool_class() {
+        let g = gate("acceptEdits");
+        assert!(matches!(
+            g.decide(
+                "brand_new_writer",
+                Some(ToolClass::WorkspaceMutation),
+                false,
+                None,
+                ""
+            ),
+            Decision::Allow
+        ));
+        // No class, but the legacy name table knows it → allowed.
+        assert!(matches!(
+            g.decide("fs_patch", None, false, None, ""),
+            Decision::Allow
+        ));
+        // A classed non-writer still asks — metadata must not widen the gate.
+        assert!(matches!(
+            g.decide("some_process", Some(ToolClass::Process), false, None, ""),
             Decision::Ask { .. }
         ));
     }
@@ -452,12 +494,12 @@ mod tests {
     fn dont_ask_allows_readonly_shell_denies_write() {
         let g = gate("dontAsk");
         assert!(matches!(
-            g.decide("bash", false, Some("git status"), ""),
+            g.decide("bash", None, false, Some("git status"), ""),
             Decision::Allow
         ));
         // a build writes artifacts → not readonly → denied in dontAsk.
         assert!(matches!(
-            g.decide("bash", false, Some("mkdir out"), ""),
+            g.decide("bash", None, false, Some("mkdir out"), ""),
             Decision::Deny { .. }
         ));
     }
@@ -467,47 +509,47 @@ mod tests {
         let g = gate("auto");
         // file edits auto-run in auto
         assert!(matches!(
-            g.decide("fuzzy_patch", false, None, ""),
+            g.decide("fuzzy_patch", None, false, None, ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("apply_patch", false, None, ""),
+            g.decide("apply_patch", None, false, None, ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("write_file", false, None, ""),
+            g.decide("write_file", None, false, None, ""),
             Decision::Allow
         ));
 
         // safe non-readonly shell commands auto-run in auto
         assert!(matches!(
-            g.decide("bash", false, Some("cargo test"), ""),
+            g.decide("bash", None, false, Some("cargo test"), ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("git add ."), ""),
+            g.decide("bash", None, false, Some("git add ."), ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("npm run build"), ""),
+            g.decide("bash", None, false, Some("npm run build"), ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("mkdir demo"), ""),
+            g.decide("bash", None, false, Some("mkdir demo"), ""),
             Decision::Allow
         ));
 
         // destructive shell commands escalate to Ask even in auto
         assert!(matches!(
-            g.decide("bash", false, Some("rm -rf target"), ""),
+            g.decide("bash", None, false, Some("rm -rf target"), ""),
             Decision::Ask { .. }
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("git reset --hard HEAD~1"), ""),
+            g.decide("bash", None, false, Some("git reset --hard HEAD~1"), ""),
             Decision::Ask { .. }
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("sudo rm -f secret.txt"), ""),
+            g.decide("bash", None, false, Some("sudo rm -f secret.txt"), ""),
             Decision::Ask { .. }
         ));
     }
@@ -536,15 +578,15 @@ mod tests {
     fn accept_edits_allows_readonly_shell() {
         let g = gate("acceptEdits");
         assert!(matches!(
-            g.decide("bash", false, Some("ls -la"), ""),
+            g.decide("bash", None, false, Some("ls -la"), ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("git status"), ""),
+            g.decide("bash", None, false, Some("git status"), ""),
             Decision::Allow
         ));
         assert!(matches!(
-            g.decide("bash", false, Some("cat file.txt"), ""),
+            g.decide("bash", None, false, Some("cat file.txt"), ""),
             Decision::Allow
         ));
     }

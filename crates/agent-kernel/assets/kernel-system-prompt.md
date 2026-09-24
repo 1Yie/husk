@@ -25,9 +25,9 @@ The tree is an initial overview and may be stale mid-session. Before editing any
 
 ### Recalled memory
 
-```
+<!-- memory -->
 {{MEMORY_BLOCK}}
-```
+<!-- /memory -->
 
 Memory captures project conventions and user preferences. Treat it as guidance; live workspace files always take precedence.
 

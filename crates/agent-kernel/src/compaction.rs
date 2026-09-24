@@ -2,9 +2,7 @@
 //!
 //! - Trigger: estimated tokens ≈80% of `context_window` (user-settable
 //!   70/80/90%), corrected upward by the provider's last reported
-//!   `prompt_tokens` when available. A `PREFIRE_LEAD_PERCENT` threshold
-//!   (70%) exists for a background Pass-1, but the prefire itself is not
-//!   wired yet — compaction currently runs inline at trigger time.
+//!   `prompt_tokens` when available. Compaction runs inline at trigger time.
 //! - One summarization pass: the prefix (everything before the ~25%
 //!   suffix) compresses into a single `NOTE`; a prior NOTE folds into the
 //!   new one rather than stacking.
@@ -35,9 +33,6 @@ pub struct CompactionOutcome {
 
 /// Fraction of `context_window` that triggers compaction.
 pub const COMPACT_AT: f32 = 0.80;
-/// Fraction at which a *prefire* Pass-1 summary may start (hidden latency).
-/// NOTE: threshold only — the prefire pass is not wired yet.
-pub const PREFIRE_LEAD_PERCENT: f32 = 0.70;
 /// Fill fraction at which a latched `UntilSuccess` suppression is
 /// overridden — a transient compactor error must not strand the session
 /// in silent truncation when the window is nearly full.
@@ -87,11 +82,6 @@ pub fn should_compact_at(tokens: usize, window: usize, frac: f32) -> bool {
 /// model's context size.
 pub fn should_compact(tokens: usize, window: usize) -> bool {
     should_compact_at(tokens, window, COMPACT_AT)
-}
-
-/// Should the *prefire* Pass-1 start early (hide the latency)?
-pub fn should_prefire(tokens: usize, window: usize) -> bool {
-    tokens >= (window as f32 * PREFIRE_LEAD_PERCENT) as usize
 }
 
 /// Sanitize + budget-fit the history in place; runs before every sample.
@@ -430,12 +420,6 @@ mod tests {
     fn trigger_at_80_percent() {
         assert!(should_compact(80_000, 100_000));
         assert!(!should_compact(79_000, 100_000));
-    }
-
-    #[test]
-    fn prefire_at_70_percent() {
-        assert!(should_prefire(70_000, 100_000));
-        assert!(!should_prefire(69_000, 100_000));
     }
 
     #[test]

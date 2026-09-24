@@ -16,6 +16,7 @@ pub mod grep;
 pub mod list_dir;
 pub(crate) mod net;
 pub mod registry;
+pub(crate) mod sandbox_cfg;
 pub mod serena;
 pub mod skill;
 pub mod test_runner;

@@ -14,21 +14,25 @@ import {
   Search,
   ListCheck,
   Wrench,
-  ShieldCheck,
   Check,
-  Brain,
-  Sparkles,
-  FileCode,
   Image,
-  File,
   Paperclip,
   X,
-  Bot,
   Map as MapIcon,
   Clock,
   GripVertical,
   CirclePen,
   ListPlus, MessagesSquare } from "@keyline-icons/react";
+import { MentionPopup } from "@/features/chat/components/composer-bar/mention-popup";
+import { AttachmentChips } from "@/features/chat/components/composer-bar/attachment-chips";
+import { TokenMirror } from "@/features/chat/components/composer-bar/token-mirror";
+import {
+  ModePicker,
+  PERMISSION_MODES,
+  AGENT_MODES,
+  THINKING_LEVELS,
+  thinkingSuffix,
+} from "@/features/chat/components/composer-bar/mode-picker";
 import { Orb } from "@/features/chat/components/agent-orb/index";
 import { parseTodos, type TodoItem } from "@/features/chat/components/todo-view/index";
 import * as agent from "@/lib/agent-ipc/index";
@@ -93,40 +97,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, TooltipSimple } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { INK_MUTED, SURFACE_OVERLAY } from "@/lib/theme";
-
-const PERMISSION_MODES = [
-  { value: "default", label: "默认", desc: "编辑与命令均需手动确认" },
-  { value: "acceptEdits", label: "接受编辑", desc: "自动允许文件修改，终端命令仍需确认" },
-  { value: "auto", label: "自动", desc: "自动执行修改与常规命令，仅高危指令确认" },
-  { value: "dontAsk", label: "不询问", desc: "仅允许只读操作，拒绝所有修改与命令" },
-  { value: "bypassPermissions", label: "跳过权限", desc: "完全信任，自动跳过所有确认" },
-] as const;
-
-const AGENT_MODES = [
-  { value: "build", label: "构建", desc: "完整工具集 — 读写、执行、验证" },
-  { value: "plan", label: "计划", desc: "只读分析，产出实施方案，批准后执行" },
-  { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
-] as const;
-
-const THINKING_LEVELS = [
-  { value: "off", label: "关闭思考", desc: "不使用推理计算" },
-  { value: "minimal", label: "最小推理", desc: "最轻量推理深度" },
-  { value: "low", label: "轻度思考", desc: "快速简短的分析" },
-  { value: "medium", label: "中等思考", desc: "标准平衡思考" },
-  { value: "high", label: "深度思考", desc: "深度推演与设计" },
-  { value: "xhigh", label: "超高思考", desc: "超深层推演" },
-  { value: "max", label: "最大推理", desc: "最大算力深度推演" },
-] as const;
-
-/** Suffix shown after a level's label — the raw wire value, or
- *  `value→mapped` when the active model's thinking_level_map rewrites it
- *  (e.g. low→max means picking low sends `max` to the model). */
-function thinkingSuffix(value: string, map?: Record<string, string | null>): string {
-  const mapped = map?.[value];
-  return typeof mapped === "string" && mapped && mapped !== value
-    ? `${value}→${mapped}`
-    : value;
-}
 
 /** The model picker's primary label: the `name` set in settings, falling back
  *  to the wire id when the config declares none. */
@@ -1290,190 +1260,6 @@ export function ComposerBar({
   );
 }
 
-/** The mention popup — absolutely positioned above the textarea, driven by
- * the `mention`/`mentionIndex` state the parent keeps in sync with the
- * caret. Mouse-down (not click) so the textarea keeps focus. */
-function MentionPopup({
-  rows,
-  active,
-  onPick,
-}: {
-  rows: {
-    key: string;
-    label: string;
-    hint: string;
-    icon: "file" | "cmd" | "skill";
-    insert: string;
-  }[];
-  active: number;
-  onPick: (row: { insert: string }) => void;
-}) {
-  const listRef = useRef<HTMLDivElement | null>(null);
-  // Keep the active row visible on ↑/↓ — done manually instead of
-  // scrollIntoView so ancestor scrollers (the chat stream) never move.
-  useEffect(() => {
-    const list = listRef.current;
-    const row = list?.children[active] as HTMLElement | undefined;
-    if (!list || !row) return;
-    if (row.offsetTop < list.scrollTop) {
-      list.scrollTop = row.offsetTop;
-    } else if (row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight) {
-      list.scrollTop = row.offsetTop + row.offsetHeight - list.clientHeight;
-    }
-  }, [active]);
-
-  if (rows.length === 0) {
-    return (
-      <div className={cn("absolute bottom-full left-2 right-2 mb-2 z-50 px-3 py-2.5 text-xs", INK_MUTED)}>
-        无匹配项
-      </div>
-    );
-  }
-  return (
-    <div
-      className={cn("absolute bottom-full left-2 right-2 mb-2 z-50 overflow-hidden", SURFACE_OVERLAY)}
-      role="listbox"
-    >
-      <div ref={listRef} className="max-h-64 overflow-y-auto">
-        {rows.map((r, i) => (
-          <button
-            key={r.key}
-            type="button"
-            role="option"
-            aria-selected={i === active}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              onPick(r);
-            }}
-            className={cn(
-              "w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12.5px] transition-colors",
-              i === active
-                ? "bg-neutral-100"
-                : "hover:bg-neutral-50",
-            )}
-          >
-            <span className="shrink-0 text-neutral-500">
-              {r.icon === "file" ? (
-                <FileCode className="h-3.5 w-3.5" />
-              ) : r.icon === "skill" ? (
-                <Sparkles className="h-3.5 w-3.5" />
-              ) : (
-                <Terminal className="h-3.5 w-3.5" />
-              )}
-            </span>
-            <span className="font-mono font-medium text-neutral-800 shrink-0">
-              {r.label}
-            </span>
-            <span className="truncate text-[11px] text-neutral-500">
-              {r.hint}
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/** Chip background per token kind — painted by the composer mirror layer.
- * No horizontal padding: any extra width would desync the mirror from the
- * textarea glyphs underneath. */
-const TOKEN_CHIP_CLS = {
-  file: "rounded-[4px] bg-blue-500/15 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300",
-  cmd: "rounded-[4px] bg-violet-500/15 text-violet-700 dark:bg-violet-400/15 dark:text-violet-300",
-  skill: "rounded-[4px] bg-amber-500/15 text-amber-700 dark:bg-amber-400/15 dark:text-amber-300",
-} as const;
-
-/** Render composer text with `@file`/`/cmd`/`$skill` tokens as chips.
- * Mirrors the kernel's `expand_user_tokens` rules: `@` and `$` tokens
- * anywhere (whitespace/start bounded — mid-text `$name` inlines the
- * skill body), `/` only at position 0 where it's a real command. */
-function highlightComposerTokens(text: string) {
-  const nodes: (string | JSX.Element)[] = [];
-  // `\S+` tokens — the kernel's `@`/`/`/`$` tokens run to the next
-  // whitespace, so paths containing `/`, `$`, or even `@` mid-token
-  // stay one chip. `(?!x)` rejects doubled triggers (`@@`, `//`, `$$`),
-  // matching the kernel which re-scans past the literal first char.
-  const re = /@(?!@)\S+|\$(?!\$)\S+|\/(?!\/)\S+/g;
-  let m: RegExpExecArray | null;
-  let last = 0;
-  let key = 0;
-  while ((m = re.exec(text))) {
-    const token = m[0];
-    const ch = token[0];
-    const start = m.index;
-    if (ch === "@" || ch === "$") {
-      // `a@b.com` / `x$HOME` stay literal — need a whitespace/start
-      // boundary, or a doubled trigger the kernel re-scans (`@@`, `$$`).
-      if (start > 0 && !/\s/.test(text[start - 1]) && text[start - 1] !== ch)
-        continue;
-      // `$5`/`$(x)` can't be skill names — the kernel skips the lookup.
-      if (ch === "$" && !/^[A-Za-z_]/.test(token.slice(1))) continue;
-    } else if (start !== 0) {
-      continue;
-    }
-    if (token.length <= 1) continue; // bare trigger char
-    nodes.push(text.slice(last, start));
-    const kind = ch === "@" ? "file" : ch === "$" ? "skill" : "cmd";
-    nodes.push(
-      <span key={key++} className={TOKEN_CHIP_CLS[kind]}>
-        {token}
-      </span>,
-    );
-    last = start + token.length;
-  }
-  nodes.push(text.slice(last));
-  return nodes;
-}
-
-/** Attached-file chips above the textarea — icon by kind, ✕ removes.
- * Content itself never enters the textarea; it's inlined into the
- * prompt at submit time. */
-function AttachmentChips({
-  items,
-  onRemove,
-}: {
-  items: Attachment[];
-  onRemove: (path: string) => void;
-}) {
-  if (items.length === 0) return null;
-  return (
-    <div className="flex flex-wrap gap-1.5 pb-1">
-      {items.map((a) => (
-        <span
-          key={a.path}
-          title={a.path}
-          className="inline-flex items-center gap-1.5 max-w-[240px] pl-1.5 pr-1 py-1 rounded-md bg-neutral-100 border border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] text-[11.5px] text-neutral-700"
-        >
-          <span className="shrink-0 text-neutral-500">
-            {a.kind === "image" && a.data_url ? (
-              <img
-                src={a.data_url}
-                alt={a.name}
-                className="h-4 w-4 rounded-sm object-cover"
-              />
-            ) : a.kind === "image" ? (
-              <Image className="h-3.5 w-3.5" />
-            ) : a.kind === "text" ? (
-              <FileText className="h-3.5 w-3.5" />
-            ) : (
-              <File className="h-3.5 w-3.5" />
-            )}
-          </span>
-          <span className="truncate">{a.name}</span>
-          <button
-            type="button"
-            onClick={() => onRemove(a.path)}
-            className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200 cursor-pointer"
-            aria-label={`移除 ${a.name}`}
-          >
-            <X className="h-2.5 w-2.5" />
-          </button>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 /** Textarea + mention popup — owns the `@`/`/`/`$` detection and keyboard
  * nav, reports the final text upward. Extracted so both composer layouts
  * (plain + with-banner) share one implementation. */
@@ -1599,7 +1385,7 @@ function ComposerTextarea({
    *  draft — returns its text (null when the queue is empty). */
   onPopQueued: () => string | null;
 }) {
-  const mirrorRef = useRef<HTMLDivElement | null>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   // Drives the menu's 剪切/复制 enabled state — the textarea has no other
   // reason to re-render on a selection change.
@@ -1686,17 +1472,9 @@ function ComposerTextarea({
       }}
     >
       {open && <MentionPopup rows={mentionRows} active={mentionIndex} onPick={onAcceptMention} />}
-      {/* Mirror layer — paints the token chips under the transparent-text
-          textarea. Its box metrics (padding/font/line-height) must track
-          the Textarea's exactly or the chips drift off the glyphs. */}
-      <div
-        ref={mirrorRef}
-        aria-hidden
-        className="pointer-events-none select-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-2 pt-1 pb-2 text-[14px] leading-relaxed text-neutral-900"
-      >
-        {highlightComposerTokens(value)}
-        {"\u200B"}
-      </div>
+      {/* Mirror layer — see TokenMirror; its box metrics must track the
+          Textarea's exactly or the chips drift off the glyphs. */}
+      <TokenMirror value={value} mirrorRef={mirrorRef} />
         <Textarea
           ref={taRef}
           data-composer
@@ -2000,141 +1778,20 @@ function ComposerToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label="代理模式"
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
-            >
-              <Bot className="h-3.5 w-3.5 text-neutral-500" />
-              <span>{agentModeLabel}</span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" side="top" className="w-64">
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
-              代理模式
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              {AGENT_MODES.map((m) => {
-                const active = m.value === agentMode;
-                return (
-                  <DropdownMenuItem
-                    key={m.value}
-                    onClick={() => void switchAgentMode(m.value)}
-                    className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className="font-medium text-xs text-neutral-800">
-                        {m.label}
-                      </span>
-                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                    </div>
-                    <span className="text-[11px] text-neutral-500 leading-tight">
-                      {m.desc}
-                    </span>
-                  </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label="权限模式"
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
-            >
-              <ShieldCheck className="h-3.5 w-3.5 text-neutral-500" />
-              <span>{modeLabel}</span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" side="top" className="w-64">
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
-              权限模式
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              {PERMISSION_MODES.map((m) => {
-                const active = m.value === mode;
-                return (
-                  <DropdownMenuItem
-                    key={m.value}
-                    onClick={() => void switchMode(m.value)}
-                    className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className="font-medium text-xs text-neutral-800">
-                        {m.label}
-                      </span>
-                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                    </div>
-                    <span className="text-[11px] text-neutral-500 leading-tight">
-                      {m.desc}
-                    </span>
-                  </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        {hasReasoning && effectiveThinkingLevels.length > 0 && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label={`思考推理强度: ${currentThinkingLabel}`}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
-              >
-                <Brain
-                  className={cn(
-                    "h-3.5 w-3.5 shrink-0",
-                    activeThinkingLevel === "off"
-                      ? "text-neutral-500"
-                      : "text-purple-600 dark:text-purple-400",
-                  )}
-                />
-                <span className="truncate max-w-[140px]">
-                  {currentThinkingLabel}
-                </span>
-                <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top" className="w-48">
-              <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
-                思考推理强度
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                {effectiveThinkingLevels.map((lvl) => {
-                  const active = lvl.value === activeThinkingLevel;
-                  return (
-                    <DropdownMenuItem
-                      key={lvl.value}
-                      onClick={() => void onSelectThinkingLevel(lvl.value)}
-                      className="flex items-center justify-between text-xs py-2 cursor-pointer"
-                    >
-                      <div className="flex flex-col gap-0.5 min-w-0 pr-2">
-                        <span className="font-medium text-neutral-800">
-                          {lvl.label}（{thinkingSuffix(lvl.value, thinkingMap)}）
-                        </span>
-                        <span className="text-[10.5px] text-neutral-500 truncate">
-                          {lvl.desc}
-                        </span>
-                      </div>
-                      {active && (
-                        <Check className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
-                      )}
-                    </DropdownMenuItem>
-                  );
-                })}
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+        <ModePicker
+          agentMode={agentMode}
+          agentModeLabel={agentModeLabel}
+          switchAgentMode={switchAgentMode}
+          mode={mode}
+          modeLabel={modeLabel}
+          switchMode={switchMode}
+          hasReasoning={hasReasoning}
+          activeThinkingLevel={activeThinkingLevel}
+          currentThinkingLabel={currentThinkingLabel}
+          thinkingMap={thinkingMap}
+          effectiveThinkingLevels={effectiveThinkingLevels}
+          onSelectThinkingLevel={onSelectThinkingLevel}
+        />
       </div>
 
       <div className="flex items-center gap-2">

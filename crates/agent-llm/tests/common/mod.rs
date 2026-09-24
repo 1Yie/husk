@@ -3,6 +3,10 @@
 //! Queue scripts of `StreamChunk`s, one script per `chat_stream` call
 //! (FIFO). When scripts run out the call errors, so test bugs are loud.
 
+// Shared by several test targets — each compiles this module separately, so
+// "unused in THIS target" is not a defect.
+#![allow(dead_code)]
+
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;

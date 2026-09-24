@@ -57,12 +57,11 @@ impl Plugin for McpPlugin {
     }
 
     fn export_tools(&self) -> Vec<Value> {
-        // Cache from tools/list — block briefly; export is on the sync path.
-        let tools = self.client.tools.try_lock()
-            .map(|g| g.clone())
-            .unwrap_or_default();
-        tools
-            .into_iter()
+        // The client's cached listing — a plain read, so a refresh holding the
+        // request lock can no longer hand the model "0 tools".
+        self.client
+            .tool_snapshot()
+            .iter()
             .map(|t| {
                 serde_json::json!({
                     "type": "function",
@@ -81,17 +80,12 @@ impl Plugin for McpPlugin {
     }
 
     fn tool_names(&self) -> Vec<String> {
-        // `try_lock`, not `lock`: this runs on the settings UI's read path and
-        // must never wait on an in-flight request.
+        // Settings-UI read path: never waits on an in-flight request.
         self.client
-            .tools
-            .try_lock()
-            .map(|g| {
-                g.iter()
-                    .filter_map(|t| t["name"].as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .tool_snapshot()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(String::from))
+            .collect()
     }
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<String> {

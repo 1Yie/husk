@@ -20,7 +20,6 @@ pub mod session;
 pub mod session_manager;
 pub mod session_store;
 pub mod skills;
-pub mod steering;
 pub mod tools;
 
 pub use session_store::{

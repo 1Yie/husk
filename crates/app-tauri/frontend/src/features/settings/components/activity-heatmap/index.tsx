@@ -9,6 +9,7 @@
 
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
+import { SURFACE_ACTIVITY_EMPTY } from "@/lib/theme";
 import type { DayBucket } from "@/features/settings/usage";
 
 /** 53 weeks, the span the contribution graph uses. */
@@ -17,9 +18,8 @@ const WEEKS = 53;
 /** Shading steps. Level 0 is the neutral "nothing happened" square; 1-4 ramp
  *  the activity colour, the way GitHub ramps its greens. */
 const LEVELS = [
-  // Empty cells are a flat neutral in BOTH themes. `--husk-n800` is part of the
-  // inverted dark ramp, so it would paint a near-white square on the dark card.
-  "bg-neutral-100 dark:bg-[#26262c]",
+  // Empty cells are a flat neutral in BOTH themes — see SURFACE_ACTIVITY_EMPTY.
+  SURFACE_ACTIVITY_EMPTY,
   "bg-[color-mix(in_srgb,var(--husk-activity)_22%,transparent)]",
   "bg-[color-mix(in_srgb,var(--husk-activity)_45%,transparent)]",
   "bg-[color-mix(in_srgb,var(--husk-activity)_70%,transparent)]",

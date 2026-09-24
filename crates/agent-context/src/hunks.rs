@@ -219,6 +219,54 @@ impl HunkTracker {
         }
     }
 
+    /// Verify-on-undo: flag files whose on-disk bytes drifted from the agent's
+    /// last recorded write.
+    ///
+    /// No watcher feeds `handle_external_change`, so the flag is otherwise
+    /// never set and undo would silently clobber a user edit made after the
+    /// agent's write. This is the live path: for every file touched in `turn`,
+    /// compare the bytes `read` returns against the file's LAST hunk (`new` is
+    /// what the agent wrote, so any difference arrived after us) and route a
+    /// mismatch through `handle_external_change`.
+    ///
+    /// Conservative by construction: an unreadable file (`None` — deleted,
+    /// permissions) and a hunk whose content was evicted for size are not
+    /// judged — undo's own `content_dropped` rule already covers the latter.
+    pub fn mark_external_if_drifted<F>(&mut self, turn: u32, read: F)
+    where
+        F: Fn(&Path) -> Option<Vec<u8>>,
+    {
+        let paths: Vec<PathBuf> = self
+            .files_in_turn(turn)
+            .into_iter()
+            .map(Path::to_path_buf)
+            .collect();
+        let mut drifted = Vec::new();
+        for path in paths {
+            let Some(st) = self.file_states.get(&path) else {
+                continue;
+            };
+            if st.external_after_last_write {
+                continue; // already flagged
+            }
+            let Some(last) = st.hunks.last() else {
+                continue;
+            };
+            if last.content_dropped {
+                continue; // no bytes recorded to compare against
+            }
+            let Some(disk) = read(&path) else {
+                continue; // can't read → can't judge
+            };
+            if disk != last.new {
+                drifted.push(path);
+            }
+        }
+        for path in drifted {
+            self.handle_external_change(path);
+        }
+    }
+
     /// Files written during `turn` (the per-turn "files changed" list).
     pub fn files_in_turn(&self, turn: u32) -> Vec<&Path> {
         let mut out: Vec<&Path> = self
@@ -439,5 +487,77 @@ mod tests {
         t.record_write_str("a.rs", Some("vX".into()), "v3".into(), "agent");
         let plan = t.undo_plan(1).unwrap();
         assert_eq!(plan[0].restore_to.as_deref(), Some(b"v1".as_slice()));
+    }
+
+    /// The live drift check: disk no longer matches the agent's last write,
+    /// so undo must refuse (and the partial variant must skip) instead of
+    /// silently clobbering the user's edit.
+    #[test]
+    fn drifted_file_refuses_undo() {
+        let mut t = HunkTracker::new(TrackingMode::AgentOnly);
+        t.begin_turn();
+        t.record_write_str("a.rs", Some("v1".into()), "v2".into(), "agent");
+        t.record_write_str("b.rs", Some("x".into()), "y".into(), "agent");
+
+        // a.rs matches what the agent wrote; b.rs was edited afterwards.
+        t.mark_external_if_drifted(1, |p| {
+            Some(if p == Path::new("a.rs") {
+                b"v2".to_vec()
+            } else {
+                b"user edit".to_vec()
+            })
+        });
+
+        let err = t.undo_plan(1).unwrap_err();
+        assert_eq!(
+            err,
+            UndoError::ExternalChange {
+                path: PathBuf::from("b.rs")
+            }
+        );
+        let (ops, skipped) = t.undo_plan_partial(1);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].path, Path::new("a.rs"));
+        assert_eq!(skipped, vec![PathBuf::from("b.rs")]);
+    }
+
+    /// Matching bytes and unreadable files (deleted, permissions) are not
+    /// drift — undo proceeds.
+    #[test]
+    fn matching_or_unreadable_files_are_not_flagged() {
+        let mut t = HunkTracker::new(TrackingMode::AgentOnly);
+        t.begin_turn();
+        t.record_write_str("a.rs", Some("v1".into()), "v2".into(), "agent");
+        t.record_write_str("b.rs", Some("x".into()), "y".into(), "agent");
+
+        t.mark_external_if_drifted(1, |p| {
+            if p == Path::new("a.rs") {
+                Some(b"v2".to_vec()) // exactly the agent's write
+            } else {
+                None // can't read → can't judge
+            }
+        });
+
+        assert!(t.undo_plan(1).is_ok());
+    }
+
+    /// The comparison is against the file's LAST write (any turn) — a newer
+    /// agent write re-baselines, so its own content is what must match.
+    #[test]
+    fn drift_compares_against_the_newest_write() {
+        let mut t = HunkTracker::new(TrackingMode::AgentOnly);
+        t.begin_turn();
+        t.record_write_str("a.rs", Some("v1".into()), "v2".into(), "agent");
+        t.begin_turn();
+        t.record_write_str("a.rs", Some("v2".into()), "v3".into(), "agent");
+
+        // Disk holds the newest write — no drift even though it differs
+        // from turn 1's hunk.
+        t.mark_external_if_drifted(2, |_| Some(b"v3".to_vec()));
+        assert!(t.undo_plan(2).is_ok());
+
+        // Disk holds the OLD content → drift.
+        t.mark_external_if_drifted(2, |_| Some(b"v2".to_vec()));
+        assert!(t.undo_plan(2).is_err());
     }
 }

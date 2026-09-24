@@ -39,7 +39,6 @@ pub enum AgentEvent {
 /// lags that far behind has bigger problems than this queue.
 pub const UI_CHANNEL_CAP: usize = 8192;
 pub const CMD_CHANNEL_CAP: usize = 32;
-pub const AGENT_CHANNEL_CAP: usize = 1024;
 
 /// Delivery counters for one session's UI queue. Cheap atomics only — the
 /// engine sits on the hot path, so nothing here allocates or locks.
@@ -306,12 +305,6 @@ pub struct UiChannels {
     pub event_rx: UiReceiver,
 }
 
-/// Kernel-internal sampling channel.
-pub struct AgentChannels {
-    pub event_tx: mpsc::Sender<AgentEvent>,
-    pub event_rx: mpsc::Receiver<AgentEvent>,
-}
-
 /// Create the UI channel pair. The bridge splits `UiChannels` into
 /// its command-sender and event-receiver halves.
 pub fn ui_channels() -> UiChannels {
@@ -323,12 +316,6 @@ pub fn ui_channels() -> UiChannels {
         cmd_tx,
         event_rx,
     }
-}
-
-/// Create the sampler→session channel.
-pub fn agent_channels() -> AgentChannels {
-    let (event_tx, event_rx) = mpsc::channel(AGENT_CHANNEL_CAP);
-    AgentChannels { event_tx, event_rx }
 }
 
 #[cfg(test)]

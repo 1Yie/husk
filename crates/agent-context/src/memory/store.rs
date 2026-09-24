@@ -9,7 +9,6 @@
 //! embed prompt → top-8 facts + last 3 episodes → a `<memory>` block ≤2 KB.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
@@ -21,6 +20,10 @@ const EPISODES: TableDefinition<u64, &[u8]> = TableDefinition::new("episodes");
 const PERSONA: TableDefinition<&str, &[u8]> = TableDefinition::new("persona");
 /// meta table: `key -> value` — `schema_version` and migration stamps.
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+
+/// META key holding the next id to hand out — the cross-instance authority for
+/// fact/episode ids.
+const NEXT_ID_KEY: &str = "next_id";
 
 /// Current schema version — bump when a table changes; the open path runs
 /// additive-or-transform migrations (never destructive) and backs up the
@@ -70,8 +73,6 @@ pub struct MemoryStore {
     db: Database,
     /// `hash(canonical_root)` — partitions facts/episodes per workspace.
     workspace_id: u64,
-    /// Monotonic id counter — redb has no auto-increment.
-    next_id: Mutex<u64>,
     /// Embedding dim for the hash-embedder.
     embed_dim: usize,
 }
@@ -97,31 +98,24 @@ impl MemoryStore {
                     meta.insert("schema_version", SCHEMA_VERSION.to_string().as_bytes())
                         .map_err(|e| e.to_string())?;
                 }
+                // Migration: a DB written before the counter row existed has
+                // none — seed it above the max persisted id so the first
+                // allocation can't collide with existing facts/episodes.
+                let has_counter = meta
+                    .get(NEXT_ID_KEY)
+                    .map_err(|e| e.to_string())?
+                    .is_some();
+                if !has_counter {
+                    let seed = max_persisted_id(&w)? + 1;
+                    meta.insert(NEXT_ID_KEY, seed.to_le_bytes().as_slice())
+                        .map_err(|e| e.to_string())?;
+                }
             }
             w.commit().map_err(|e| e.to_string())?;
         }
-        let workspace_id = workspace_id(workspace_root);
-        // Seed `next_id` above the max persisted id — redb has no
-        // auto-increment, and restarting at 1 would silently overwrite
-        // existing facts/episodes via `insert`.
-        let next_id = {
-            let r = db.begin_read().map_err(|e| e.to_string())?;
-            let mut max_id = 0u64;
-            for def in [FACTS, EPISODES] {
-                let t = r.open_table(def).map_err(|e| e.to_string())?;
-                for item in t.iter().map_err(|e| e.to_string())? {
-                    let (k, _) = item.map_err(|e| e.to_string())?;
-                    if k.value() > max_id {
-                        max_id = k.value();
-                    }
-                }
-            }
-            max_id + 1
-        };
         Ok(Self {
             db,
-            workspace_id,
-            next_id: Mutex::new(next_id),
+            workspace_id: workspace_id(workspace_root),
             embed_dim: 256,
         })
     }
@@ -133,52 +127,69 @@ impl MemoryStore {
 
     /// Insert a fact — dedupes vs. existing by `cosine > 0.92` (merge =
     /// bump confidence, else insert). Returns the fact's id.
+    ///
+    /// Scan, decision and write share ONE write transaction: with the old
+    /// split (read txn for the scan, then a separate write txn) two
+    /// back-to-back upserts could both pass the 0.92 gate and land duplicate
+    /// facts.
     pub fn upsert_fact(&self, text: impl Into<String>, confidence: f32) -> Result<u64, String> {
         let text = text.into();
         let emb = self.embed(&text);
-        if let Some((id, existing)) = self.find_similar(&emb, 0.92)? {
-            let mut f = existing;
-            f.confidence = (f.confidence + confidence).min(1.0);
-            self.write_fact(&f)?;
-            return Ok(id);
-        }
-        let id = self.alloc_id()?;
-        let f = Fact {
-            id,
-            workspace_id: self.workspace_id,
-            text,
-            embedding: emb,
-            confidence,
-            created_at: now(),
-        };
-        self.write_fact(&f)?;
-        Ok(id)
-    }
-
-    fn write_fact(&self, f: &Fact) -> Result<(), String> {
-        let bytes = serde_json::to_vec(f).map_err(|e| e.to_string())?;
         let w = self.db.begin_write().map_err(|e| e.to_string())?;
-        w.open_table(FACTS)
-            .map_err(|e| e.to_string())?
-            .insert(f.id, bytes.as_slice())
-            .map_err(|e| e.to_string())?;
-        w.commit().map_err(|e| e.to_string())
-    }
 
-    /// Find the fact closest to `emb` above `threshold` cosine — scans the
-    /// workspace's facts (small N; a proper ANN lands with FastEmbed).
-    fn find_similar(&self, emb: &[f32], threshold: f32) -> Result<Option<(u64, Fact)>, String> {
-        let mut best: Option<(f32, u64, Fact)> = None;
-        for f in self.all_facts()? {
-            if f.workspace_id != self.workspace_id {
-                continue;
+        // Nearest fact above the merge threshold — scans the workspace's facts
+        // (small N; a proper ANN lands with FastEmbed), inside this txn.
+        let merged: Option<(u64, Fact)> = {
+            let facts = w.open_table(FACTS).map_err(|e| e.to_string())?;
+            let mut best: Option<(f32, u64, Fact)> = None;
+            for item in facts.iter().map_err(|e| e.to_string())? {
+                let (_, v) = item.map_err(|e| e.to_string())?;
+                let Ok(f) = serde_json::from_slice::<Fact>(v.value()) else {
+                    continue;
+                };
+                if f.workspace_id != self.workspace_id {
+                    continue;
+                }
+                let sim = cosine(&f.embedding, &emb);
+                if sim >= 0.92 && best.as_ref().map(|(s, _, _)| sim > *s).unwrap_or(true) {
+                    best = Some((sim, f.id, f));
+                }
             }
-            let sim = cosine(&f.embedding, emb);
-            if sim >= threshold && best.as_ref().map(|(s, _, _)| sim > *s).unwrap_or(true) {
-                best = Some((sim, f.id, f));
+            best.map(|(_, id, mut f)| {
+                f.confidence = (f.confidence + confidence).min(1.0);
+                (id, f)
+            })
+        };
+
+        let id = match merged {
+            Some((id, f)) => {
+                let bytes = serde_json::to_vec(&f).map_err(|e| e.to_string())?;
+                w.open_table(FACTS)
+                    .map_err(|e| e.to_string())?
+                    .insert(id, bytes.as_slice())
+                    .map_err(|e| e.to_string())?;
+                id
             }
-        }
-        Ok(best.map(|(_, id, f)| (id, f)))
+            None => {
+                let id = take_next_id(&w)?;
+                let f = Fact {
+                    id,
+                    workspace_id: self.workspace_id,
+                    text,
+                    embedding: emb,
+                    confidence,
+                    created_at: now(),
+                };
+                let bytes = serde_json::to_vec(&f).map_err(|e| e.to_string())?;
+                w.open_table(FACTS)
+                    .map_err(|e| e.to_string())?
+                    .insert(id, bytes.as_slice())
+                    .map_err(|e| e.to_string())?;
+                id
+            }
+        };
+        w.commit().map_err(|e| e.to_string())?;
+        Ok(id)
     }
 
     /// Top-k recall: facts for this workspace ranked by `cosine(prompt_emb)`.
@@ -209,12 +220,12 @@ impl MemoryStore {
 
     /// Append an episode.
     pub fn add_episode(&self, e: Episode) -> Result<u64, String> {
-        let id = self.alloc_id()?;
+        let w = self.db.begin_write().map_err(|e| e.to_string())?;
+        let id = take_next_id(&w)?;
         let mut e = e;
         e.id = id;
         e.workspace_id = self.workspace_id;
         let bytes = serde_json::to_vec(&e).map_err(|e| e.to_string())?;
-        let w = self.db.begin_write().map_err(|e| e.to_string())?;
         w.open_table(EPISODES)
             .map_err(|e| e.to_string())?
             .insert(id, bytes.as_slice())
@@ -271,14 +282,6 @@ impl MemoryStore {
             });
         }
         Ok(out)
-    }
-
-    fn alloc_id(&self) -> Result<u64, String> {
-        // Poison-safe: a panicked writer must not poison every later alloc.
-        let mut g = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
-        let id = *g;
-        *g += 1;
-        Ok(id)
     }
 
     /// Deterministic hash-embedding — a bag-of-hashed-tokens vector.
@@ -343,6 +346,56 @@ fn workspace_id(root: &Path) -> u64 {
     xxhash_rust::xxh3::xxh3_64(root.to_string_lossy().as_bytes())
 }
 
+/// Highest id persisted in the id-keyed tables — the migration seed for
+/// [`NEXT_ID_KEY`].
+fn max_persisted_id(w: &redb::WriteTransaction) -> Result<u64, String> {
+    let mut max_id = 0u64;
+    {
+        let t = w.open_table(FACTS).map_err(|e| e.to_string())?;
+        for item in t.iter().map_err(|e| e.to_string())? {
+            let (k, _) = item.map_err(|e| e.to_string())?;
+            max_id = max_id.max(k.value());
+        }
+    }
+    {
+        let t = w.open_table(EPISODES).map_err(|e| e.to_string())?;
+        for item in t.iter().map_err(|e| e.to_string())? {
+            let (k, _) = item.map_err(|e| e.to_string())?;
+            max_id = max_id.max(k.value());
+        }
+    }
+    Ok(max_id)
+}
+
+/// Allocate the next id inside the caller's write transaction.
+///
+/// The counter lives in META instead of an in-process `Mutex`: two
+/// `MemoryStore`s on one workspace each used to seed their own counter from
+/// max+1, so concurrent inserts minted the same id and silently overwrote each
+/// other. Reading + incrementing in the same txn as the insert makes the
+/// database's writer lock the serialization point.
+fn take_next_id(w: &redb::WriteTransaction) -> Result<u64, String> {
+    let mut meta = w.open_table(META).map_err(|e| e.to_string())?;
+    let seeded = match meta.get(NEXT_ID_KEY).map_err(|e| e.to_string())? {
+        Some(v) if v.value().len() == 8 => {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(v.value());
+            u64::from_le_bytes(buf)
+        }
+        _ => 0,
+    };
+    // `open` seeds the row; zero means a DB it could not seed or one written
+    // without the row — re-derive from the tables inside this same txn.
+    let id = if seeded == 0 {
+        max_persisted_id(w)? + 1
+    } else {
+        seeded
+    };
+    meta.insert(NEXT_ID_KEY, (id + 1).to_le_bytes().as_slice())
+        .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -370,6 +423,126 @@ mod tests {
 
     fn store(dir: &Path) -> MemoryStore {
         MemoryStore::open(&dir.join("m.db"), dir).unwrap()
+    }
+
+    /// Read the counter through the live store — a second `Database` on the
+    /// same file is refused (`DatabaseAlreadyOpen`).
+    fn read_counter(s: &MemoryStore) -> Option<u64> {
+        let r = s.db.begin_read().unwrap();
+        let t = r.open_table(META).unwrap();
+        let v = t.get(NEXT_ID_KEY).unwrap().map(|v| {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(v.value());
+            u64::from_le_bytes(buf)
+        });
+        v
+    }
+
+    /// The counter row is seeded at open and advanced inside the write txn —
+    /// the authority that keeps a reopen from re-minting live ids.
+    #[test]
+    fn counter_row_is_seeded_and_advances() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        let s = MemoryStore::open(&path, dir.path()).unwrap();
+        assert_eq!(read_counter(&s), Some(1)); // fresh DB: next id is 1
+
+        let f1 = s.upsert_fact("errors via AppError", 0.6).unwrap();
+        let e1 = s.add_episode(Episode {
+            id: 0,
+            workspace_id: 0,
+            task: "a".into(),
+            outcome: "success".into(),
+            files: vec![],
+            correction: None,
+            created_at: 1,
+        })
+        .unwrap();
+        assert_eq!((f1, e1), (1, 2));
+        assert_eq!(read_counter(&s), Some(3));
+    }
+
+    /// Two stores on one workspace must never mint the same id. redb's default
+    /// `ExclusiveWriter` mode forbids them living at once, so the overlapping
+    /// case is a reopen: the counter row — not a max-scan — must carry over.
+    #[test]
+    fn reopened_store_continues_above_everything_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        let a = MemoryStore::open(&path, dir.path()).unwrap();
+        let f1 = a.upsert_fact("first", 0.5).unwrap();
+        let e1 = a.add_episode(Episode {
+            id: 0,
+            workspace_id: 0,
+            task: "one".into(),
+            outcome: "success".into(),
+            files: vec![],
+            correction: None,
+            created_at: 1,
+        })
+        .unwrap();
+        drop(a);
+
+        let b = MemoryStore::open(&path, dir.path()).unwrap();
+        let f2 = b.upsert_fact("second completely different text", 0.5).unwrap();
+        let e2 = b.add_episode(Episode {
+            id: 0,
+            workspace_id: 0,
+            task: "two".into(),
+            outcome: "success".into(),
+            files: vec![],
+            correction: None,
+            created_at: 2,
+        })
+        .unwrap();
+        assert!(f2 > f1 && f2 > e1, "fact id reused: {f1}/{e1} → {f2}");
+        assert!(e2 > e1 && e2 > f2, "episode id reused: {e1}/{f2} → {e2}");
+    }
+
+    /// Migration: a DB written before the counter existed has no row — open
+    /// seeds it from the highest persisted id, so nothing collides.
+    #[test]
+    fn open_seeds_a_missing_counter_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        let s = MemoryStore::open(&path, dir.path()).unwrap();
+        s.upsert_fact("first", 0.5).unwrap();
+        let e1 = s.add_episode(Episode {
+            id: 0,
+            workspace_id: 0,
+            task: "one".into(),
+            outcome: "success".into(),
+            files: vec![],
+            correction: None,
+            created_at: 1,
+        })
+        .unwrap();
+        drop(s);
+
+        // Simulate the pre-counter schema.
+        {
+            let db = Database::create(&path).unwrap();
+            let w = db.begin_write().unwrap();
+            {
+                let mut meta = w.open_table(META).unwrap();
+                meta.remove(NEXT_ID_KEY).unwrap();
+            }
+            w.commit().unwrap();
+        }
+
+        let reopened = MemoryStore::open(&path, dir.path()).unwrap();
+        let e2 = reopened
+            .add_episode(Episode {
+                id: 0,
+                workspace_id: 0,
+                task: "two".into(),
+                outcome: "success".into(),
+                files: vec![],
+                correction: None,
+                created_at: 2,
+            })
+            .unwrap();
+        assert!(e2 > e1, "seeded counter collided with persisted id {e1}");
     }
 
     #[test]
@@ -417,3 +590,4 @@ mod tests {
         assert_eq!(s.persona("style").unwrap().as_deref(), Some("no comments"));
     }
 }
+

@@ -4,9 +4,11 @@
 //! drop `passed`/progress noise, keep only failed test names + assertion
 //! locations + panic backtrace frames. 20k-line log → ≤300 tok diagnostic.
 //!
-//! Stage 3 runs the command via `tokio::process` (the same path `bash`
-//! uses); the Stage-8 sandbox backend will wrap this unchanged — the tool's
-//! contract is the *filter*, not the spawn.
+//! Spawning goes through `ctx.sandbox` exactly like `bash`
+//! (`sandbox_cfg::sandbox_config` + `SandboxBackend::run_command`), so a test
+//! run gets the same audit-derived network/fs policy, env sanitization and
+//! timeout tree-kill instead of a bare `sh -c` with a discarded child. The
+//! tool's contract is the *filter*, not the spawn.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +17,7 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use super::sandbox_cfg::sandbox_config;
 
 /// Failure-diagnostic budget (≤~300 tokens ≈ 1.2 KB of dense signal).
 const MAX_DIAGNOSTIC_CHARS: usize = 4 * 1024;
@@ -49,27 +52,43 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let parsed: TestRunnerArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("smart_test_runner args: {e}")))?;
 
-    let out = tokio::time::timeout(
-        TIMEOUT,
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&parsed.command)
-            .current_dir(&*ctx.workspace_root)
-            .output(),
-    )
-    .await
-    .map_err(|_| ToolError::Failed(format!("test run exceeded {}s", TIMEOUT.as_secs())))?
-    .map_err(ToolError::Io)?;
+    // Same dispatch as `bash`: audit first, derive the config, run through the
+    // backend (which owns env sanitization, limits and timeout tree-kill).
+    let verdict =
+        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.workspace_root.as_ref()));
+    let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), TIMEOUT);
+
+    let out = ctx
+        .sandbox
+        .run_command(&parsed.command, &[], &cfg)
+        .await
+        .map_err(|e| ToolError::Failed(e.to_string()))?;
 
     let mut raw = String::new();
-    raw.push_str(&String::from_utf8_lossy(&out.stdout));
+    raw.push_str(&out.stdout);
     if !out.stderr.is_empty() {
-        raw.push_str(&String::from_utf8_lossy(&out.stderr));
+        if !raw.is_empty() {
+            raw.push_str("\n── stderr ──\n");
+        }
+        raw.push_str(&out.stderr);
     }
 
     let distilled = distill(&raw, parsed.focus.as_deref());
-    let status = if out.status.success() { "PASS" } else { "FAIL" };
+    let status = if out.status == 0 { "PASS" } else { "FAIL" };
     let mut content = format!("── {status} `{}` ──\n", parsed.command);
+    if verdict.level > agent_sandbox::AuditLevel::Normal {
+        content.push_str(&format!(
+            "[audit {:?}: {}]\n",
+            verdict.level,
+            verdict.reasons.join("; ")
+        ));
+    }
+    if out.is_timeout {
+        content.push_str(&format!(
+            "[timeout {}s — tree killed]\n",
+            TIMEOUT.as_secs()
+        ));
+    }
     content.push_str(&distilled);
     if distilled.len() >= MAX_DIAGNOSTIC_CHARS {
         content.push_str("\n… [diagnostic truncated — rerun with a narrower test filter] …\n");
@@ -179,4 +198,126 @@ fn distill(raw: &str, focus: Option<&str>) -> String {
         crate::tools::util::truncate(&mut out, MAX_DIAGNOSTIC_CHARS);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_sandbox::{CommandOutput, SandboxBackend, SandboxConfig, SandboxTier};
+    use std::sync::Mutex;
+
+    /// Answers with a canned `CommandOutput` and records what it was asked to
+    /// run — the record is the proof that the tool dispatches through
+    /// `ctx.sandbox` rather than spawning `sh` itself.
+    struct FakeBackend {
+        calls: Mutex<Vec<String>>,
+        status: i32,
+        stdout: &'static str,
+        stderr: &'static str,
+        is_timeout: bool,
+    }
+
+    impl FakeBackend {
+        fn new(
+            status: i32,
+            stdout: &'static str,
+            stderr: &'static str,
+            is_timeout: bool,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                status,
+                stdout,
+                stderr,
+                is_timeout,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SandboxBackend for FakeBackend {
+        fn id(&self) -> &'static str {
+            "fake"
+        }
+        fn tier(&self) -> SandboxTier {
+            SandboxTier::L2
+        }
+        async fn run_command(
+            &self,
+            cmd: &str,
+            _args: &[&str],
+            _cfg: &SandboxConfig,
+        ) -> anyhow::Result<CommandOutput> {
+            self.calls.lock().unwrap().push(cmd.to_string());
+            Ok(CommandOutput {
+                status: self.status,
+                stdout: self.stdout.to_string(),
+                stderr: self.stderr.to_string(),
+                is_timeout: self.is_timeout,
+                peak_memory_mb: None,
+                elapsed_ms: 3,
+            })
+        }
+    }
+
+    /// The command reaches the backend (not a private `sh -c`), stderr is
+    /// merged into the distilled log, and passing noise is dropped.
+    #[tokio::test]
+    async fn dispatches_through_sandbox_and_keeps_only_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FakeBackend::new(
+            1,
+            "running 3 tests\ntest ok_one ... ok\ntest boom ... FAILED\nassertion `left == right` failed\n",
+            "error: could not compile `demo`\n",
+            false,
+        );
+        let ctx = Arc::new(ToolCtx::with_sandbox(dir.path(), backend.clone()));
+        let out = exec(serde_json::json!({"command": "cargo test -p demo"}), ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            backend.calls.lock().unwrap().as_slice(),
+            ["cargo test -p demo"]
+        );
+        assert!(
+            out.content.starts_with("── FAIL `cargo test -p demo` ──"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("assertion `left == right` failed"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("error: could not compile `demo`"),
+            "stderr not merged into the filter: {}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("ok_one"),
+            "passing noise survived: {}",
+            out.content
+        );
+    }
+
+    /// A timed-out run is reported as a killed tree — the old bare
+    /// `tokio::time::timeout` dropped the future and left the child running.
+    #[tokio::test]
+    async fn timeout_is_reported_as_tree_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FakeBackend::new(-1, "", "[timeout — process tree killed]", true);
+        let ctx = Arc::new(ToolCtx::with_sandbox(dir.path(), backend));
+        let out = exec(serde_json::json!({"command": "sleep 600"}), ctx)
+            .await
+            .unwrap();
+
+        assert!(out.content.contains("── FAIL"), "{}", out.content);
+        assert!(
+            out.content.contains("[timeout 600s — tree killed]"),
+            "{}",
+            out.content
+        );
+    }
 }
