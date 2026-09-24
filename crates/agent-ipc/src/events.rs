@@ -104,10 +104,13 @@ pub enum UiCommand {
     Cancel,
     /// Hot-swap the active provider/model for the *next* turn.
     SetModel { provider: String, model: String },
-    /// Kernel-internal: re-read the config and rebuild the running session's
-    /// provider and model parameters in place. Sent by `SessionManager` after a
-    /// config write — the UI never sends it.
-    ReloadModel { provider: String, model: String },
+    /// Kernel-internal: `config.toml` changed on disk — each live session
+    /// re-reads it and rebuilds ITS OWN provider/model parameters in place.
+    /// Sent by `SessionManager` after a config write — the UI never sends it.
+    /// No payload: broadcasting the manager's mirrored pair used to re-point
+    /// every actor at the ACTIVE session's model, and the next `persist_*`
+    /// stamped that hijack into their metas.
+    ReloadModel,
     /// Switch the permission mode for the *next* tool dispatch —
     /// `default` / `acceptEdits` / `auto` / `dontAsk` / `bypassPermissions`.
     /// The session rebuilds its `PermissionGate` from the label (same
@@ -260,6 +263,12 @@ pub enum UiEvent {
     /// sample so the UI can draw the running card while the (potentially
     /// slow) pass runs. `manual` mirrors `Compacted`; no accounting yet.
     CompactionStarted { manual: bool },
+    /// The model called `submit_plan` — `plan` is the contract payload as a
+    /// JSON string (`summary`, `steps`, `verification`, `risks`). Emitted
+    /// after the turn's final `AssistantMessage` so the plan card lands last
+    /// and the composer can offer the approve/revise/discard strip off the
+    /// last item.
+    PlanSubmitted { plan: String },
     /// A `Retry` command rewound the session to the last user prompt —
     /// the UI drops the retried turn's items before the fresh
     /// `UserPrompt` echo lands on the same stream.

@@ -90,6 +90,11 @@ pub enum NoticeKind {
     /// compaction card. Dropped from every provider wire body: it is
     /// render metadata, never context for the model.
     Compacted,
+    /// UI-only plan card row (`ChatMessage::plan`) — the persisted
+    /// `submit_plan` payload the frontend replays as the plan card. The
+    /// model already has the plan in its own `submit_plan` tool call, so
+    /// adapters drop it from the wire like [`NoticeKind::Compacted`].
+    Plan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +150,14 @@ pub struct ChatMessage {
     /// `None` on old snapshots and on rounds that produced no trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Wall-clock duration (ms) of the activity this message records —
+    /// `role=tool`: the call's dispatch-to-result span; `role=assistant`:
+    /// the reasoning block's first→last delta span. Persisted so a replayed
+    /// view can re-render the `思考过程 · 20s` / `工具调用 · 3s` elapsed
+    /// labels the live stream drew. Display-only like `reasoning` — every
+    /// adapter must keep it off the wire (`openai_compat` strips it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
 }
 
 /// Wall-clock epoch millis — stamps every message at construction.
@@ -170,11 +183,18 @@ impl ChatMessage {
         self
     }
 
+    /// Stamp the activity duration — reasoning span on assistant rows,
+    /// dispatch span on tool results.
+    pub fn with_duration_ms(mut self, ms: Option<i64>) -> Self {
+        self.duration_ms = ms;
+        self
+    }
+
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     /// Attach staged image refs — only call this when the active model
     /// declares `"image"` in its `input` modalities.
@@ -183,29 +203,29 @@ impl ChatMessage {
         self
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     /// A user-facing system line the live stream emitted via
     /// `UiEvent::SystemMessage` — persisted so a reloaded view replays
     /// it exactly (vs `system()`, which is invisible internal context).
     pub fn notice(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     /// Same, for a `UiEvent::Error` line — replays with the `⚠` prefix.
     pub fn notice_error(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     /// A `Role::User` instruction the UI never showed (injected by the
     /// engine, e.g. the synthesis nudge) — kept for the provider,
     /// skipped on replay.
     pub fn user_hidden(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     /// The compaction memory note — kept as `Role::System` so replay
     /// stays hidden, but tagged so adapters route it to user privilege
     /// instead of folding it into `system`/`instructions`.
     pub fn compacted_memory(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::CompactedMemory), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::CompactedMemory), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     /// The persisted compaction card — a JSON payload (`before_tokens`,
     /// `after_tokens`, `removed_messages`, `manual`, `note`) the frontend
@@ -222,15 +242,22 @@ impl ChatMessage {
             "manual": manual,
             "note": note,
         });
-        Self { role: Role::System, content: Some(payload.to_string()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Compacted), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::System, content: Some(payload.to_string()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Compacted), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+    }
+    /// The persisted plan card — the `submit_plan` payload as a JSON string
+    /// (`summary`, `steps`, `verification`, `risks`) the frontend renders as
+    /// the plan card on replay. `NoticeKind::Plan` rows are dropped by every
+    /// adapter — the model sees the plan through its own `submit_plan` call.
+    pub fn plan(payload: String) -> Self {
+        Self { role: Role::System, content: Some(payload), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Plan), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
     /// Failed tool result — same wire shape, plus the persisted `is_error`
     /// flag the UI replays into the red capsule state.
     pub fn tool_result_err(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
 }
 

@@ -105,6 +105,118 @@ const SHAPE_HINT: &str = "`{calls: [{tool, args}]}` — e.g. \
 {\"calls\":[{\"tool\":\"smart_read\",\"args\":{\"path\":\"src/lib.rs\"}}]} \
 (`args` may be omitted and its keys written inline next to `tool`)";
 
+/// Hoist the function-call shapes models actually emit onto `{tool, args}`
+/// before the strict derive runs: the OpenAI wire spelling
+/// (`{"function": "x"}` / `{"function": {"name","arguments"}}`), a nested
+/// `{"tool": {"name": "x"}}`, and the `call`/`command`/`action` aliases.
+/// Without this each becomes a `(unnamed)` Bad item — parseable intent
+/// rejected on a label technicality.
+fn normalize_shape(mut item: serde_json::Value) -> serde_json::Value {
+    let Some(obj) = item.as_object_mut() else {
+        return item;
+    };
+    let named = ["tool", "name", "tool_name"]
+        .iter()
+        .any(|k| obj.get(*k).is_some_and(|v| v.is_string()));
+    if named {
+        return item;
+    }
+    // `{"tool": {"name": "x"}}` — the name nested one level down.
+    if let Some(n) = obj
+        .get("tool")
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("name"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    {
+        obj.insert("tool".into(), n.into());
+        return item;
+    }
+    // `{"function": "x"}` or `{"function": {"name", "arguments"}}` —
+    // `arguments` folds into `args` when no explicit `args` exists.
+    let hoisted: Option<(Option<String>, Option<serde_json::Value>)> =
+        match obj.get("function") {
+            Some(serde_json::Value::String(s)) => Some((Some(s.clone()), None)),
+            Some(serde_json::Value::Object(f)) => Some((
+                f.get("name").and_then(|v| v.as_str()).map(str::to_string),
+                f.get("arguments").cloned(),
+            )),
+            _ => None,
+        };
+    let args_missing = obj.get("args").is_none();
+    if let Some((name, fargs)) = hoisted {
+        if let Some(n) = name {
+            obj.insert("tool".into(), n.into());
+        }
+        if args_missing {
+            if let Some(a) = fargs {
+                obj.insert("args".into(), a);
+            }
+        }
+    }
+    for key in ["call", "command", "action"] {
+        if obj.get("tool").is_some_and(|v| v.is_string()) {
+            break;
+        }
+        if let Some(s) = obj.get(key).and_then(|v| v.as_str()).map(str::to_string) {
+            obj.insert("tool".into(), s.into());
+        }
+    }
+    // No name anywhere — infer from the args signature when it's
+    // unambiguous (`{"args":{"max_hits":…,"path":…}}` is smart_grep's
+    // shape, `{"url":…}` is web_fetch's). A guessed read-only tool beats a
+    // rejected row: worst case it reads the wrong thing once.
+    if obj.get("tool").is_none() {
+        let args_obj = obj
+            .get("args")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_else(|| {
+                // Inline args — the item itself is the args object.
+                obj.iter()
+                    .filter(|(k, _)| {
+                        ![
+                            "args", "arguments", "type", "call", "command", "action",
+                            "function", "name", "tool_name",
+                        ]
+                        .contains(&k.as_str())
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            });
+        let has = |k: &str| args_obj.contains_key(k);
+        let inferred = if has("url") {
+            Some("web_fetch")
+        } else if has("pattern") || has("regex") || has("max_hits") {
+            Some("smart_grep")
+        } else if has("command") {
+            Some("bash")
+        } else {
+            None
+        };
+        if let Some(t) = inferred {
+            obj.insert("tool".into(), t.into());
+            // Inline keys carry the args — make them the args object too so
+            // `{"max_hits":…,"path":…}` doesn't reach the tool as `args:null`.
+            if obj.get("args").is_none() && obj.get("arguments").is_none() {
+                let inline: serde_json::Map<String, serde_json::Value> = obj
+                    .iter()
+                    .filter(|(k, _)| {
+                        ![
+                            "tool", "type", "call", "command", "action", "function",
+                            "name", "tool_name",
+                        ]
+                        .contains(&k.as_str())
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                obj.insert("args".into(), serde_json::Value::Object(inline));
+            }
+        }
+    }
+    item
+}
+
 fn json_kind(v: &serde_json::Value) -> &'static str {
     match v {
         serde_json::Value::Null => "null",
@@ -117,13 +229,29 @@ fn json_kind(v: &serde_json::Value) -> &'static str {
 }
 
 /// Parse `{calls: […]}` leniently: the strict derive first, and anything it
-/// rejects becomes a per-item failure that quotes what arrived.
+/// rejects becomes a per-item failure that quotes what arrived. The
+/// envelope itself is flexible — models also send a bare array, a single
+/// `{"tool","args"}` object, or the array under `items`/`tool_calls`/
+/// `batch`/`requests`/`operations`; each unwraps to the same calls list.
 fn parse_items(args: serde_json::Value) -> Result<Vec<ParsedItem>, ToolError> {
-    let raw = args.get("calls").cloned().ok_or_else(|| {
-        ToolError::Args(format!(
+    let raw = if let Some(c) = args.get("calls") {
+        c.clone()
+    } else if let Some(alt) = ["items", "tool_calls", "batch", "requests", "operations"]
+        .iter()
+        .find_map(|k| args.get(*k))
+    {
+        alt.clone()
+    } else if let Some(arr) = args.as_array() {
+        // A bare `[{tool,args},…]` — the envelope key omitted entirely.
+        serde_json::Value::Array(arr.clone())
+    } else if args.get("tool").is_some() || args.get("function").is_some() {
+        // A single call object — wrap it as a one-item batch.
+        serde_json::Value::Array(vec![args])
+    } else {
+        return Err(ToolError::Args(format!(
             "batch_execute args: missing field `calls`\nExpected {SHAPE_HINT}"
-        ))
-    })?;
+        )));
+    };
     let items = raw.as_array().cloned().ok_or_else(|| {
         ToolError::Args(format!(
             "batch_execute args: `calls` must be an array, got {}\nExpected {SHAPE_HINT}",
@@ -133,7 +261,7 @@ fn parse_items(args: serde_json::Value) -> Result<Vec<ParsedItem>, ToolError> {
     Ok(items
         .into_iter()
         .map(
-            |item| match serde_json::from_value::<BatchCall>(item.clone()) {
+            |item| match serde_json::from_value::<BatchCall>(normalize_shape(item.clone())) {
                 Ok(call) => ParsedItem::Call(call.normalized()),
                 Err(e) => {
                     let name = ["tool", "name", "tool_name"]
@@ -176,6 +304,10 @@ pub fn spec() -> ToolSpec {
             "The DEFAULT way to issue 2+ INDEPENDENT observation calls \
              (smart_read, list_dir, smart_grep, web_fetch…) — pack them into \
              ONE round trip instead of firing read-only tools back to back. \
+             Args shape is always an object with a `calls` array, and every \
+             item MUST carry a `tool` string: \
+             {\"calls\":[{\"tool\":\"smart_read\",\"args\":{\"path\":\"src/lib.rs\"}},\
+             {\"tool\":\"smart_grep\",\"args\":{\"pattern\":\"TODO\"}}]}. \
              Known-target rule: if the targets are already known (e.g. three \
              file paths, a dir listing plus a grep), batch them now — never \
              read A → reason → read B when A and B were both known up front. \
@@ -290,12 +422,34 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             async move {
                 let t0 = Instant::now();
                 let out = match flag {
-                    Err(reason) => ItemOut {
-                        tool,
-                        status: ItemStatus::Rejected,
-                        body: reason,
-                        duration_ms: 0,
-                    },
+                    Err(reason) => {
+                        // Rejected items still surface as child rows — the
+                        // live stream should show the same `── [i] ──`
+                        // children the result text replays, not silently
+                        // drop the ones the batch refused.
+                        if let Some(ui) = &ctx.ui_tx {
+                            let _ = ui.send(agent_ipc::events::UiEvent::ToolCallStarted {
+                                name: tool.clone(),
+                                parent: Some("batch_execute".into()),
+                                args_preview: String::new(),
+                            });
+                            let _ = ui.send(agent_ipc::events::UiEvent::ToolCallFinished {
+                                name: tool.clone(),
+                                ok: false,
+                                content: reason.clone(),
+                                // `rejected` ui_type — the row renders 已拒绝,
+                                // not 已中断: the call never ran.
+                                ui_type: Some("rejected".into()),
+                                parent: Some("batch_execute".into()),
+                            });
+                        }
+                        ItemOut {
+                            tool,
+                            status: ItemStatus::Rejected,
+                            body: reason,
+                            duration_ms: 0,
+                        }
+                    }
                     Ok(spec) => {
                         // Item ctx carries the batch flag — tools that poll
                         // cancel abort their own blocking work too.
@@ -481,6 +635,63 @@ mod tests {
             unreachable!()
         };
         assert_eq!(grep.args["pattern"], "TODO", "inline keys must survive");
+    }
+
+    #[test]
+    fn nameless_items_recover_by_signature() {
+        let items = parse_items(serde_json::json!({"calls": [
+            // The real-world miss: args only, no tool key anywhere.
+            {"args": {"max_hits": 40, "path": "src"}},
+            {"function": "smart_read", "args": {"path": "a.rs"}},
+            {"function": {"name": "list_dir", "arguments": {"path": "."}}},
+            {"type": "function", "function": {"name": "web_fetch", "arguments": {"url": "https://x"}}},
+            {"tool": {"name": "smart_read"}, "args": {"path": "b.rs"}},
+            // Genuinely ambiguous — `path` alone could be read or list.
+            {"path": "orphan.rs"}
+        ]}))
+        .unwrap();
+        let name_of = |i: &ParsedItem| -> String {
+            match i {
+                ParsedItem::Call(c) => c.tool.clone(),
+                ParsedItem::Bad { name, .. } => name.clone(),
+            }
+        };
+        assert_eq!(name_of(&items[0]), "smart_grep");
+        assert_eq!(name_of(&items[1]), "smart_read");
+        assert_eq!(name_of(&items[2]), "list_dir");
+        assert_eq!(name_of(&items[3]), "web_fetch");
+        assert_eq!(name_of(&items[4]), "smart_read");
+        assert_eq!(name_of(&items[5]), "(unnamed)");
+        // The hoisted args reach the call, not a null.
+        let ParsedItem::Call(c) = &items[3] else { unreachable!() };
+        assert_eq!(c.args["url"], "https://x");
+    }
+
+    #[test]
+    fn envelope_variants_all_unwrap_to_calls() {
+        // Bare array — the `calls` key omitted entirely.
+        let items = parse_items(serde_json::json!([
+            {"tool": "list_dir", "args": {"path": "."}}
+        ]))
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        // Alternate envelope keys.
+        for key in ["items", "tool_calls", "batch", "requests", "operations"] {
+            let items =
+                parse_items(serde_json::json!({key: [{"tool": "list_dir"}]})).unwrap();
+            assert_eq!(items.len(), 1, "{key}");
+        }
+        // A single call object — the model forgot it was batching.
+        let items =
+            parse_items(serde_json::json!({"tool": "smart_read", "args": {"path": "a"}}))
+                .unwrap();
+        assert_eq!(items.len(), 1);
+        // `function` alone still counts as a call-shaped object.
+        let items = parse_items(serde_json::json!({"function": "smart_read"})).unwrap();
+        assert_eq!(items.len(), 1);
+        // Truly unrecognised envelopes still name the shape.
+        let e = format!("{}", parse_items(serde_json::json!({"nope": 1})).unwrap_err());
+        assert!(e.contains("missing field `calls`"), "{e}");
     }
 
     #[test]

@@ -24,6 +24,21 @@ export interface AskOption {
   description?: string;
 }
 
+/** The `submit_plan` contract payload — one step of the plan. */
+export interface PlanStep {
+  title: string;
+  detail?: string;
+  files?: string[];
+}
+
+/** The structured plan the plan-mode turn delivers via `submit_plan`. */
+export interface PlanPayload {
+  summary: string;
+  steps: PlanStep[];
+  verification?: string[];
+  risks?: string[];
+}
+
 export type UiEvent =
   | { StateChanged: AgentState }
   | {
@@ -70,6 +85,7 @@ export type UiEvent =
       };
     }
   | { CompactionStarted: { manual: boolean } }
+  | { PlanSubmitted: { plan: string } }
   | "TurnRetry"
   | { QueuedPrompts: { items: string[] } };
 
@@ -152,7 +168,7 @@ export interface ChatMessage {
    * `compacted_memory` is the model-facing summary note (hidden).
    * Absent means internal context (system prompt, hook injections) —
    * stays hidden. */
-  notice?: "system" | "error" | "hidden" | "compacted_memory" | "compacted";
+  notice?: "system" | "error" | "hidden" | "compacted_memory" | "compacted" | "plan";
   /** Creation time (epoch ms) — drives the `—— time ——` turn divider. */
   ts?: number | null;
   /** Reasoning trace of this assistant round — replays as the same 思考过程
@@ -160,6 +176,11 @@ export interface ChatMessage {
    * Absent on rounds without a trace and on sessions written before this
    * was persisted. */
   reasoning?: string | null;
+  /** Wall-clock duration (ms) of this message's activity — a tool result
+   * carries the call's dispatch span; an assistant row carries its reasoning
+   * span. Lets a replayed view re-render the `· 20s` labels the live stream
+   * drew. Absent on pre-existing snapshots. */
+  duration_ms?: number | null;
 }
 
 /** Kernel UI-event queue counters (`agent_kernel::channels::UiStatsSnapshot`)

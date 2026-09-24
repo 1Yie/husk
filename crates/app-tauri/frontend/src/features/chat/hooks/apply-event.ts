@@ -129,7 +129,9 @@ function closeOpenThinking(items: StreamItem[]) {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (it.kind === "thinking" && !it.done) {
-      items[i] = { ...it, done: true };
+      // Stamp the close time — the settled row's span is `ts - startedAt`,
+      // so a remount/cached-view reuse doesn't lose the clock.
+      items[i] = { ...it, done: true, ts: Date.now() };
     }
   }
 }
@@ -276,7 +278,7 @@ export function applyEvent(
     const l = last();
     if (l?.kind === "assistant")
       items[items.length - 1] = { ...l, text: l.text + ev.TextDelta.text, streaming: true };
-    else items.push({ kind: "assistant", text: ev.TextDelta.text, streaming: true });
+    else items.push({ kind: "assistant", text: ev.TextDelta.text, streaming: true, startedAt: Date.now() });
     return { ...v, items, rate, toksPerSec: rateEstimate(rate) };
   }
   if ("ReasoningDelta" in ev) {
@@ -365,6 +367,9 @@ export function applyEvent(
           content: t.content,
           ok: t.ok,
           uiType: t.ui_type,
+          // Result stamp — the step's settled span is `ts - startedAt`,
+          // same shape a replayed row carries.
+          ts: Date.now(),
           approval: it.approval
             ? { ...it.approval, resolved: true, approved: t.ok }
             : undefined,
@@ -460,7 +465,7 @@ export function applyEvent(
   }
   if ("SystemMessage" in ev) {
     closeOpenThinking(items);
-    items.push({ kind: "system", text: ev.SystemMessage, standalone: !v.turnOpen });
+    items.push({ kind: "system", text: ev.SystemMessage, standalone: !v.turnOpen, ts: Date.now() });
     return { ...v, items };
   }
   if ("Usage" in ev) {
@@ -527,8 +532,21 @@ export function applyEvent(
   }
   if ("Error" in ev) {
     closeOpenThinking(items);
-    items.push({ kind: "system", text: `⚠ ${ev.Error}`, standalone: !v.turnOpen });
+    items.push({ kind: "system", text: `⚠ ${ev.Error}`, standalone: !v.turnOpen, ts: Date.now() });
     return { ...v, items, streaming: false };
+  }
+  if ("PlanSubmitted" in ev) {
+    // The plan card IS the deliverable — it lands after the turn's final
+    // assistant text so it folds into this turn and closes it.
+    closeOpenThinking(items);
+    try {
+      const plan = JSON.parse(ev.PlanSubmitted.plan);
+      items.push({ kind: "plan", plan, ts: Date.now() });
+    } catch {
+      // A malformed payload degrades to a system line, not a dropped turn.
+      items.push({ kind: "system", text: "计划已提交（解析失败）", hi: undefined, ts: Date.now() });
+    }
+    return { ...v, items };
   }
   if ("QueuedPrompts" in ev) {
     // The kernel's parked list is the single source of truth — every

@@ -11,6 +11,7 @@ pub mod delegate;
 pub mod fs_patch;
 pub mod fs_read;
 pub mod goal;
+pub mod plan;
 pub mod grep;
 pub mod list_dir;
 pub(crate) mod net;

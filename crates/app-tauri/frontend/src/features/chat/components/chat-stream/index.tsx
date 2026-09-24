@@ -2,7 +2,10 @@
 import { memo, useEffect, useRef, useState, useCallback, useMemo, startTransition, type ReactNode } from "react";
 import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
 import type { SessionView, StreamItem } from "@/features/chat/hooks/stream-view";
-import { AssistantStatus } from "@/features/chat/components/assistant-status/index";
+import {
+  AssistantStatus,
+  formatElapsed,
+} from "@/features/chat/components/assistant-status/index";
 import { ChatSkeleton, OlderPageSkeleton } from "@/features/chat/components/chat-skeleton/index";
 import { ToolChips, type ToolChipRow } from "@/features/chat/components/tool-chips/index";
 import {
@@ -43,6 +46,8 @@ import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "@/lib/agent-ipc/sessions";
 import { retryTurn } from "@/lib/agent-ipc/commands";
 import { CompactionCard } from "@/features/chat/components/chat-stream/compaction-card";
+import { PlanCard } from "@/features/chat/components/chat-stream/plan-card";
+import type { PlanPayload } from "@/types";
 
 const BUILTIN_COMMANDS_DESC: Record<string, string> = {
   clear: "清空会话历史",
@@ -281,12 +286,15 @@ function getUserPreview(userText?: string): string {
 function getAssistantPreview(steps: AssistantStep[]): string {
   for (const step of steps) {
     if (step.type === "text" && step.text.trim()) {
-      return step.text.trim().replace(/\s+/g, " ");
+      // Slice before collapsing — the whitespace regex is O(text) and a
+      // thinking trace can run to hundreds of KB; 2k chars still collapse
+      // well past the 160-char clip.
+      return step.text.slice(0, 2048).trim().replace(/\s+/g, " ");
     }
   }
   for (const step of steps) {
     if (step.type === "thinking" && step.text.trim()) {
-      return `思考: ${step.text.trim().replace(/\s+/g, " ")}`;
+      return `思考: ${step.text.slice(0, 2048).trim().replace(/\s+/g, " ")}`;
     }
   }
   for (const step of steps) {
@@ -297,6 +305,11 @@ function getAssistantPreview(steps: AssistantStep[]): string {
   for (const step of steps) {
     if (step.type === "compaction")
       return step.pending ? "正在压缩上下文" : "上下文已压缩";
+  }
+  for (const step of steps) {
+    if (step.type === "plan") {
+      return step.plan.summary.trim() || "计划已提交";
+    }
   }
   for (const step of steps) {
     if (step.type === "system" && step.text.trim()) {
@@ -330,9 +343,28 @@ interface Props {
 }
 
 type AssistantStep =
-  | { type: "thinking"; text: string; done: boolean; startedAt?: number }
+  | {
+      type: "thinking";
+      text: string;
+      done: boolean;
+      startedAt?: number;
+      /** Persisted block span (ms) — the settled row's `· 20s` on replay. */
+      elapsedMs?: number;
+    }
   | { type: "text"; text: string; streaming: boolean }
-  | { type: "tools"; rows: ToolChipRow[]; startedAt?: number }
+  | {
+      type: "tools";
+      rows: ToolChipRow[];
+      startedAt?: number;
+      /** Latest tool-result stamp (epoch ms) — the fallback phase end when
+       *  nothing followed the step (turn ended right on the tools). */
+      endedAt?: number;
+      /** First NON-tool item's arrival after this step — the true phase end.
+       *  The tools phase includes the model-wait between/after calls, so
+       *  `phaseEnd ?? endedAt` is the settled span; endedAt alone measures
+       *  only up to the last dispatch's finish. */
+      phaseEnd?: number;
+    }
   | {
       type: "compaction";
       before: number;
@@ -344,7 +376,8 @@ type AssistantStep =
       /** `true` = the user ran `/compact`; renders as its own block. */
       manual?: boolean;
     }
-  | { type: "system"; text: string };
+  | { type: "system"; text: string }
+  | { type: "plan"; plan: PlanPayload };
 
 interface Turn {
   id: string;
@@ -422,11 +455,14 @@ function TurnFooter({
   copyText,
   onRetry,
   align,
+  durationMs,
 }: {
   ts: number;
   copyText?: string;
   onRetry?: () => void;
   align: "start" | "end";
+  /** Turn wall time (end stamp − user stamp) — rendered as `耗时 Xs`. */
+  durationMs?: number;
 }) {
   const [copied, setCopied] = useState(false);
   const [retryOpen, setRetryOpen] = useState(false);
@@ -497,6 +533,11 @@ function TurnFooter({
       >
         {formatTurnTime(ts)}
       </span>
+      {durationMs != null && durationMs >= 1000 && (
+        <span className="cursor-default tabular-nums text-neutral-400">
+          耗时 {formatElapsed(durationMs)}
+        </span>
+      )}
     </div>
   );
 }
@@ -606,12 +647,35 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
     const t = ensureTurn(item, idx);
     const lastStep = t.steps[t.steps.length - 1];
 
+    // A non-tool item landing after a tools step marks the phase's END —
+    // the span covers the whole phase (call → model-wait → next call), not
+    // just the last dispatch. FIRST follower wins: the assistant commit `ts`
+    // arriving later must not stretch it into the answer's write time.
+    if (
+      item.kind !== "tool" &&
+      item.kind !== "approval" &&
+      lastStep?.type === "tools" &&
+      lastStep.phaseEnd == null
+    ) {
+      const stamp =
+        ("startedAt" in item ? item.startedAt : undefined) ??
+        ("ts" in item ? item.ts : undefined);
+      if (stamp != null) lastStep.phaseEnd = stamp;
+    }
+
     if (item.kind === "thinking") {
       t.steps.push({
         type: "thinking",
         text: item.text,
         done: item.done,
         startedAt: item.startedAt,
+          // Settled span — `ts` is stamped when the block closes (live:
+          // `closeOpenThinking`; replay: persisted `m.ts`), so the figure
+          // survives a session switch that reuses the cached view.
+          elapsedMs:
+            item.done && item.ts != null && item.startedAt != null
+              ? item.ts - item.startedAt
+              : undefined,
       });
       continue;
     }
@@ -636,6 +700,12 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
         type: "system",
         text: item.text,
       });
+      continue;
+    }
+
+    if (item.kind === "plan") {
+      // The submitted plan is turn content — the card that ends it.
+      t.steps.push({ type: "plan", plan: item.plan });
       continue;
     }
 
@@ -670,11 +740,13 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
                       ? item.args
                       : "",
                 status:
-                  item.content === undefined
-                    ? "running"
-                    : item.ok === false
-                      ? "aborted"
-                      : "done",
+                  item.uiType === "rejected"
+                    ? "rejected"
+                    : item.content === undefined
+                      ? "running"
+                      : item.ok === false
+                        ? "aborted"
+                        : "done",
                 // Finished → the report; still running → whatever it has
                 // streamed so far (reasoning first, then the answer).
                 detail: item.content
@@ -697,7 +769,13 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
               label: item.name,
               chip: item.args && item.args !== item.name ? item.args : "",
               status:
-                item.content === undefined ? "running" : item.ok === false ? "aborted" : "done",
+                item.uiType === "rejected"
+                  ? "rejected"
+                  : item.content === undefined
+                    ? "running"
+                    : item.ok === false
+                      ? "aborted"
+                      : "done",
               detail: item.content
                 ? [item.content]
                 : item.approval?.diff
@@ -735,11 +813,17 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
         if (lastStep.startedAt == null && item.kind === "tool") {
           lastStep.startedAt = item.startedAt;
         }
+        // The step's END anchors on its latest tool result — persisted rows
+        // carry `ts`, live ones stamp it on `ToolCallFinished`.
+        if (item.kind === "tool" && item.ts != null) {
+          lastStep.endedAt = Math.max(lastStep.endedAt ?? 0, item.ts);
+        }
       } else {
         t.steps.push({
           type: "tools",
           rows: [row],
           startedAt: item.kind === "tool" ? item.startedAt : undefined,
+          endedAt: item.kind === "tool" ? item.ts : undefined,
         });
       }
     }
@@ -772,6 +856,7 @@ const STEP_LABEL: Record<AssistantStep["type"], string> = {
   tools: "工具",
   compaction: "压缩",
   system: "提示",
+  plan: "计划",
 };
 
 /** One-line rail preview; clipped before the whitespace collapse. */
@@ -794,6 +879,9 @@ function stepWeight(step: AssistantStep): number {
   // The compaction card is a fixed-height header; the expandable summary
   // counts only once its own toggle opens (not part of the collapse weight).
   if (step.type === "compaction") return 160;
+  // The plan card is a fixed-height block too — its content is reviewed
+  // on the card, not weighed for collapse.
+  if (step.type === "plan") return 200;
   if (step.type !== "tools") return step.text.length;
   let n = 0;
   for (const row of step.rows) {
@@ -918,6 +1006,7 @@ const ChatTurn = memo(function ChatTurn({
                     mode={step.done ? "thought" : "thinking"}
                     thinkingText={thinkingText}
                     startedAt={step.startedAt}
+                    elapsedMs={step.elapsedMs}
                   />
                 </div>
               );
@@ -939,22 +1028,44 @@ const ChatTurn = memo(function ChatTurn({
             }
 
             if (step.type === "tools") {
-              const running = step.rows.some((r) => r.status === "running");
+              const isLastStep = stepIdx === turn.steps.length - 1;
+              // The tools phase is CONTINUOUS — call 1, call 2, call 3 with
+              // model-wait gaps between them. Gating the orb on an in-flight
+              // row flashed settled between calls; instead the step stays
+              // live while it's the turn's tail (same model as thinking:
+              // "live until the next phase's item lands").
+              const toolsLive = streaming && isLastStep;
+              // Settled span — replayed rows carry ts + rewound startedAt;
+              // live rows bank startedAt and stamp ts on finish.
+              const elapsedMs =
+                !toolsLive && step.startedAt != null && (step.phaseEnd ?? step.endedAt) != null
+                  ? (step.phaseEnd ?? step.endedAt)! - step.startedAt
+                  : undefined;
               return (
                 <div
                   id={`chat-turn-${turn.id}-step-${stepIdx}`}
                   className="flex w-full min-w-0 flex-col items-start gap-2"
                   key={`step-${stepIdx}`}
                 >
-                  {running && (
-                    <AssistantStatus mode="tools" thinkingText="" startedAt={step.startedAt} />
-                  )}
-                  <ToolChips
-                    rows={step.rows}
-                    renderProse={(text) => (
-                      <MemoStreamdown text={text} animating={running} />
-                    )}
-                  />
+                  {/* ONE row across the whole phase — mode flips tools →
+                   *  tools_done only when the next step lands (or the turn
+                   *  ends), so the orb rides through consecutive calls. The
+                   *  settled label carries the count and the row IS the
+                   *  collapse toggle — expanding reveals the chip list. */}
+                  <AssistantStatus
+                    mode={toolsLive ? "tools" : "tools_done"}
+                    thinkingText=""
+                    startedAt={step.startedAt}
+                    elapsedMs={elapsedMs}
+                    doneLabel={`${step.rows.length} 次工具调用`}
+                  >
+                    <ToolChips
+                      rows={step.rows}
+                      renderProse={(text) => (
+                        <MemoStreamdown text={text} animating={toolsLive} />
+                      )}
+                    />
+                  </AssistantStatus>
                 </div>
               );
             }
@@ -990,6 +1101,18 @@ const ChatTurn = memo(function ChatTurn({
               );
             }
 
+            if (step.type === "plan") {
+              return (
+                <div
+                  key={`step-${stepIdx}`}
+                  id={`chat-turn-${turn.id}-step-${stepIdx}`}
+                  className="w-full min-w-0"
+                >
+                  <PlanCard plan={step.plan} />
+                </div>
+              );
+            }
+
             return null;
           })}
         </div>
@@ -1004,6 +1127,11 @@ const ChatTurn = memo(function ChatTurn({
               align="start"
               ts={(turn.assistantTs ?? turn.ts) as number}
               copyText={copyText}
+              durationMs={
+                turn.assistantTs != null && turn.ts != null && turn.assistantTs > turn.ts
+                  ? turn.assistantTs - turn.ts
+                  : undefined
+              }
               onRetry={retryable ? () => void retryTurn() : undefined}
             />
           </div>

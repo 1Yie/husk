@@ -134,7 +134,11 @@ impl Engine {
         model: impl Into<String>,
         temperature: f32,
     ) -> Self {
-        let registry_plan = Arc::new(registry.readonly_only());
+        // Plan mode = readonly set + the `submit_plan` contract — the model
+        // declares its deliverable as structured data, not prose.
+        let mut plan_reg = registry.readonly_only();
+        plan_reg.register(crate::tools::plan::spec_submit());
+        let registry_plan = Arc::new(plan_reg);
         // Goal mode = full set + the completion contract — the model
         // declares `goal_complete`/`goal_blocked` to end its run.
         let mut goal_reg = (*registry).clone();
@@ -460,10 +464,17 @@ impl Engine {
         // quiet without declaring `goal_complete`/`goal_blocked`.
         let mut goal_followups = 0usize;
         const MAX_GOAL_FOLLOWUPS: usize = 8;
+        // Plan-mode nudge — one reminder when a working turn goes quiet
+        // without `submit_plan`; a plain question must not pay a second.
+        let mut plan_followups = 0usize;
+        const MAX_PLAN_FOLLOWUPS: usize = 1;
         // A fresh turn starts with a clean goal signal — a leftover
         // `goal_complete` from an earlier turn must not short-circuit this
         // one (the contract is per-turn: each goal prompt ends declared).
         self.ctx.goal.reset();
+        // Same per-turn contract for plan mode — a stale `submit_plan` must
+        // not surface as this turn's deliverable.
+        self.ctx.plan.reset();
         /// Cancel sentinel — the `Err` value and `Failed` reason (never
         /// rendered verbatim; the status bar localizes `Failed`). The
         /// user-facing line is `CANCEL_TEXT`.
@@ -531,6 +542,11 @@ impl Engine {
             // assistant row (the live stream only ever saw the coalesced
             // deltas), so a reopened session replays the same 思考过程 block.
             let mut round_reasoning = String::new();
+            // First/last reasoning-delta stamps — the block's true span
+            // persists on the assistant row as `duration_ms` so a replayed
+            // view shows the real `· 20s` instead of nothing.
+            let mut reasoning_first: Option<i64> = None;
+            let mut reasoning_last = 0i64;
             let mut saw_done = false;
             // Delta coalescing — the UI doesn't need one event per SSE
             // chunk (often 1-5 chars). Buffer text/reasoning deltas and
@@ -595,6 +611,8 @@ impl Engine {
                         if retry_reset.swap(false, std::sync::atomic::Ordering::Relaxed) {
                             round_text.clear();
                             round_reasoning.clear();
+                            reasoning_first = None;
+                            reasoning_last = 0;
                             pending_text_delta.clear();
                             pending_reasoning_delta.clear();
                             assembler = ToolCallAssembler::new();
@@ -606,6 +624,11 @@ impl Engine {
                             StreamChunk::ReasoningDelta(t) => {
                                 round_reasoning.push_str(t);
                                 pending_reasoning_delta.push_str(t);
+                                let now = agent_llm::types::now_ms();
+                                if reasoning_first.is_none() {
+                                    reasoning_first = Some(now);
+                                }
+                                reasoning_last = now;
                                 if pending_reasoning_delta.len() >= 120 {
                                     let _ = io.ui_tx.send(UiEvent::ReasoningDelta {
                                         text: std::mem::take(&mut pending_reasoning_delta),
@@ -719,7 +742,8 @@ impl Engine {
                 if !round_text.is_empty() {
                     history.push(
                         ChatMessage::assistant(round_text.clone())
-                            .with_reasoning(Some(std::mem::take(&mut round_reasoning))),
+                            .with_reasoning(Some(std::mem::take(&mut round_reasoning)))
+                            .with_duration_ms(reasoning_first.map(|f| reasoning_last - f)),
                     );
                 }
                 history.push(ChatMessage::notice(CANCEL_TEXT));
@@ -735,7 +759,8 @@ impl Engine {
                 if !round_text.is_empty() {
                     history.push(
                         ChatMessage::assistant(round_text.clone())
-                            .with_reasoning(Some(std::mem::take(&mut round_reasoning))),
+                            .with_reasoning(Some(std::mem::take(&mut round_reasoning)))
+                            .with_duration_ms(reasoning_first.map(|f| reasoning_last - f)),
                     );
                     let line = "流传输中断 — 已保留部分内容";
                     let _ = io.ui_tx.send(UiEvent::SystemMessage(line.into()));
@@ -754,7 +779,8 @@ impl Engine {
                 if !round_text.is_empty() {
                     history.push(
                         ChatMessage::assistant(round_text.clone())
-                            .with_reasoning(Some(std::mem::take(&mut round_reasoning))),
+                            .with_reasoning(Some(std::mem::take(&mut round_reasoning)))
+                            .with_duration_ms(reasoning_first.map(|f| reasoning_last - f)),
                     );
                 }
                 history.push(ChatMessage::notice_error(e.clone()));
@@ -766,6 +792,9 @@ impl Engine {
 
             text.push_str(&round_text);
             let reasoning = std::mem::take(&mut round_reasoning);
+            // The block's real span — first to last reasoning delta. `None`
+            // when the round produced no trace.
+            let reasoning_ms = reasoning_first.map(|f| reasoning_last - f);
             let mut calls = assembler.finish();
 
             // Degenerate calls — a truncated/announcement delta can produce
@@ -799,6 +828,34 @@ impl Engine {
                     continue;
                 }
 
+                // Plan contract — in `plan` mode a working turn's deliverable
+                // is the structured plan, not prose. A submitted plan is taken
+                // here so the card lands after the final assistant text; a
+                // turn that did tool work but never submitted gets ONE nudge —
+                // capped so a plain question can't be pushed twice.
+                let submitted_plan = if self.agent_mode() == crate::mode::AgentMode::Plan {
+                    self.ctx.plan.take_signal()
+                } else {
+                    None
+                };
+                if self.agent_mode() == crate::mode::AgentMode::Plan
+                    && submitted_plan.is_none()
+                    && tool_calls_run > 0
+                    && plan_followups < MAX_PLAN_FOLLOWUPS
+                {
+                    plan_followups += 1;
+                    if !final_text.is_empty() {
+                        history.push(
+                            ChatMessage::assistant(final_text)
+                                .with_reasoning(Some(reasoning))
+                                .with_duration_ms(reasoning_ms),
+                        );
+                    }
+                    let nudge = "若方案已成型，请调用 `submit_plan` 提交结构化计划（summary/steps/verification/risks）；若本轮只是回答问题、没有方案要交付，直接结束即可。";
+                    history.push(ChatMessage::user_hidden(nudge));
+                    continue;
+                }
+
                 // Goal contract — in `goal` mode going quiet undeclared is
                 // not a finish: the model must call `goal_complete` /
                 // `goal_blocked`. Push it back to work (capped — a model
@@ -810,13 +867,14 @@ impl Engine {
                     goal_followups += 1;
                     if !final_text.is_empty() {
                         history.push(
-                            ChatMessage::assistant(final_text).with_reasoning(Some(reasoning)),
+                            ChatMessage::assistant(final_text)
+                                .with_reasoning(Some(reasoning))
+                                .with_duration_ms(reasoning_ms),
                         );
                     }
                     let nudge =
                         "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。";
                     history.push(ChatMessage::user_hidden(nudge));
-                    let _ = io.ui_tx.send(UiEvent::SystemMessage(nudge.into()));
                     continue;
                 }
 
@@ -834,9 +892,17 @@ impl Engine {
                     ts: Some(agent_llm::types::now_ms()),
                     images: Vec::new(),
                     reasoning: Some(reasoning),
+                    duration_ms: reasoning_ms,
                 });
                 self.set_state(io, AgentState::Finished);
                 let _ = io.ui_tx.send(UiEvent::AssistantMessage(final_text));
+                // The plan card lands last — it IS the turn's deliverable and
+                // the composer's action strip keys off it being the last item.
+                if let Some(plan) = submitted_plan {
+                    let payload = serde_json::to_string(&plan).unwrap_or_default();
+                    history.push(ChatMessage::plan(payload.clone()));
+                    let _ = io.ui_tx.send(UiEvent::PlanSubmitted { plan: payload });
+                }
                 return Ok(TurnOutcome {
                     text,
                     usage,
@@ -858,6 +924,7 @@ impl Engine {
                 ts: Some(agent_llm::types::now_ms()),
                 images: Vec::new(),
                 reasoning: Some(reasoning),
+                    duration_ms: reasoning_ms,
             });
 
             tool_rounds += 1;
@@ -1100,7 +1167,10 @@ impl Engine {
                 }
 
                 // Staged write tools already hold their result; dispatch the
-                // rest now (read-only/bash).
+                // rest now (read-only/bash). The clock starts here — it
+                // covers dispatch + deferred-write commits + after_tool
+                // hooks, i.e. everything the row's `· 3s` label meant live.
+                let call_started = std::time::Instant::now();
                 let (mut content, ui_type, mut ok, pending_write) = if let Some(res) = staged {
                     let ui_type = res.ui_type.map(|s| s.to_string());
                     (res.content, ui_type, true, res.pending_write)
@@ -1199,11 +1269,16 @@ impl Engine {
                 // `ok` survives into the snapshot via `is_error` so a
                 // reloaded view replays the red capsule instead of a green
                 // one — the live `ToolCallFinished.ok` carried it.
-                history.push(if ok {
+                let result_msg = if ok {
                     ChatMessage::tool_result(call.id.clone(), content)
                 } else {
                     ChatMessage::tool_result_err(call.id.clone(), content)
-                });
+                };
+                // The call's wall time persists with the row — a replayed
+                // tools step re-derives its span from `ts - duration_ms`.
+                history.push(result_msg.with_duration_ms(Some(
+                    call_started.elapsed().as_millis() as i64,
+                )));
             }
 
             // If we have reached or exceeded the tool limit, force the next round to be a synthesis round without tools

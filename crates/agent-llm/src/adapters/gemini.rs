@@ -87,8 +87,8 @@ fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serd
     while i < messages.len() {
         let m = &messages[i];
         match m.role {
-            // UI-only compaction card row — render metadata, never context.
-            Role::System if m.notice == Some(NoticeKind::Compacted) => {}
+            // UI-only compaction/plan card rows — render metadata, never context.
+            Role::System if matches!(m.notice, Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)) => {}
             // The compaction memory note is historical context, not a
             // live instruction — emit it as a user message instead of a
             // system part. `push_user` merges it into a preceding user

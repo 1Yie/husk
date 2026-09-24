@@ -87,8 +87,32 @@ function batchCallCount(rawArgs: string): string {
  * and result text (`── [i] tool (status) ──` sections — written to be
  * machine-parseable for exactly this replay). Section names/status are
  * authoritative; `calls[i].args` only supplies the chip preview. */
+/** Recover a call's tool name when the persisted section header says
+ * `(unnamed)` — older sessions have the malformed item in `calls[]` (e.g.
+ * `{"function": {"name": …}}`), so the real name is still recoverable. */
+function batchToolName(call: Record<string, unknown>): string | undefined {
+  for (const key of ["tool", "name", "tool_name", "call", "command", "action", "function"]) {
+    const v = call[key];
+    if (typeof v === "string") return v;
+    if (v && typeof v === "object") {
+      const n = (v as { name?: unknown }).name;
+      if (typeof n === "string") return n;
+    }
+  }
+  // No name key at all — infer from the args signature the way the kernel's
+  // normalize_shape does (old persisted rows carry the raw item).
+  const args =
+    call.args && typeof call.args === "object"
+      ? (call.args as Record<string, unknown>)
+      : call;
+  if ("url" in args) return "web_fetch";
+  if ("pattern" in args || "regex" in args || "max_hits" in args) return "smart_grep";
+  if ("command" in args) return "bash";
+  return undefined;
+}
+
 function batchChildren(rawArgs: string, content: string) {
-  let calls: { tool?: string; args?: unknown }[] = [];
+  let calls: Record<string, unknown>[] = [];
   try {
     const parsed = JSON.parse(rawArgs);
     if (Array.isArray(parsed?.calls)) calls = parsed.calls;
@@ -111,15 +135,30 @@ function batchChildren(rawArgs: string, content: string) {
       .trim();
     const ok = status.startsWith("ok");
     const callArgs = calls[idx]?.args;
+    // `(unnamed)` = the kernel couldn't recover a label — try the raw call
+    // shape once more before showing the placeholder to the user.
+    const recovered =
+      tool === "(unnamed)" && calls[idx] ? batchToolName(calls[idx]) : undefined;
     items.push({
       kind: "tool" as const,
-      name: tool,
+      name: recovered ?? tool,
       args:
         callArgs === undefined
-          ? ""
+          ? // OpenAI wire shape carries `function.arguments`, not `args`.
+            (() => {
+              const f = calls[idx]?.function;
+              const fa =
+                f && typeof f === "object"
+                  ? (f as { arguments?: unknown }).arguments
+                  : undefined;
+              return fa === undefined ? "" : extractArgsPreview(JSON.stringify(fa));
+            })()
           : extractArgsPreview(JSON.stringify(callArgs)),
       content: body || undefined,
       ok,
+      // The batch's own status word — "rejected" means it never ran; the
+      // chips render 已拒绝 instead of the misleading 已中断.
+      uiType: status === "rejected" ? "rejected" : undefined,
       parent: "batch_execute",
     });
   }
@@ -330,6 +369,15 @@ function foldMessage(
         // `Compacted` event drew it — numbers, summary, position.
         const card = parseCompactionCard(m.content ?? "");
         if (card) v.items.push({ ...card, ts: m.ts ?? undefined, hi });
+      } else if (m.notice === "plan") {
+        // The `submit_plan` payload replays as the same plan card the live
+        // `PlanSubmitted` event drew — inside the turn it ended.
+        try {
+          const plan = JSON.parse(m.content ?? "");
+          v.items.push({ kind: "plan", plan, ts: m.ts ?? undefined, hi });
+        } catch {
+          /* malformed row — skip rather than break the whole replay */
+        }
       }
       return;
     }
@@ -349,6 +397,14 @@ function foldMessage(
         // error/cancelled dispatch) — replay the failed capsule the live
         // `ToolCallFinished.ok` showed instead of a green one.
         ok: m.is_error !== true,
+        // The persisted span (`duration_ms` = dispatch→result) rewinds the
+        // row's start stamp so the step can re-derive its elapsed label —
+        // `ts` alone is only the END.
+        ts: m.ts ?? undefined,
+        startedAt:
+          m.ts != null && m.duration_ms != null
+            ? m.ts - m.duration_ms
+            : undefined,
       });
       // Rebuild the changes panel from the persisted write-tool result.
       if (m.is_error !== true && m.content) {
@@ -401,7 +457,20 @@ function foldMessage(
     // reopened sessions lose their thinking blocks.
     const reasoning = (m.reasoning ?? "").trim();
     if (m.role === "assistant" && reasoning) {
-      v.items.push({ kind: "thinking", text: reasoning, done: true, hi });
+      v.items.push({
+        kind: "thinking",
+        text: reasoning,
+        done: true,
+        hi,
+        // Persisted span (`duration_ms` = first→last reasoning delta) rewinds
+        // the start stamp — `ts - startedAt` replays the settled `· 20s`,
+        // identical formula to a live-closed block.
+        ts: m.ts ?? undefined,
+        startedAt:
+          m.ts != null && m.duration_ms != null
+            ? m.ts - m.duration_ms
+            : undefined,
+      });
     }
     // Assistant messages that only carry `tool_calls` have no visible text —
     // the matching `tool` result already renders the capsule.
@@ -412,7 +481,18 @@ function foldMessage(
     if (m.role === "user") {
       v.items.push({ kind: "user", text, ts: m.ts ?? undefined, hi });
     } else {
-      v.items.push({ kind: "assistant", text, streaming: false, ts: m.ts ?? undefined, hi });
+      v.items.push({
+        kind: "assistant",
+        text,
+        streaming: false,
+        // Arrival stamp for the tools-phase end — `m.ts − duration_ms` is
+        // the reasoning start ≈ first model output after the tools; without
+        // it the commit `ts` is the fallback (slightly late, old snapshots).
+        startedAt:
+          m.ts != null && m.duration_ms != null ? m.ts - m.duration_ms : undefined,
+        ts: m.ts ?? undefined,
+        hi,
+      });
       if (markerLine) v.items.push({ kind: "system", text: markerLine, hi });
     }
 }

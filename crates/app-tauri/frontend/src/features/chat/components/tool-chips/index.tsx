@@ -250,7 +250,7 @@ export type ToolChipRow = {
   detail?: string[];
   id: string;
   label: string;
-  status: "aborted" | "done" | "running";
+  status: "aborted" | "done" | "running" | "rejected";
   uiType?: string;
   approval?: {
     requestId: number;
@@ -343,10 +343,8 @@ export function ToolChips({
    * its final report read as prose, not as tool output). */
   renderProse?: (text: string) => React.ReactNode;
 }) {
-  const [open, setOpen] = useState(true);
   const [openRows, setOpenRows] = useState<Set<string>>(new Set());
   const [closedRows, setClosedRows] = useState<Set<string>>(new Set());
-  const running = rows.filter((row) => row.status === "running").length;
 
   const isRowOpen = (row: ToolChipRow) => {
     if (closedRows.has(row.id)) return false;
@@ -460,7 +458,9 @@ export function ToolChips({
     const statusText =
       row.approval && !row.approval.resolved
         ? "待批准"
-        : row.status === "aborted" || (row.approval?.resolved && !row.approval?.approved)
+        : row.status === "rejected"
+          ? "已拒绝"
+          : row.status === "aborted" || (row.approval?.resolved && !row.approval?.approved)
           ? "已中断"
           : row.status === "running"
             ? "进行中"
@@ -562,40 +562,11 @@ export function ToolChips({
     );
   };
 
+  /* The collapse header lives on the status row above (`AssistantStatus`
+   *  owns open state + the "N 次工具调用" label) — this is just the rows. */
   return (
-    <div className="w-full my-1">
-      <button
-        aria-expanded={open}
-        className="text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 flex w-fit items-center gap-1.5 rounded-md px-1.5 py-1 text-xs cursor-pointer select-none transition-colors"
-        onClick={() => {
-          setOpen((current) => !current);
-        }}
-        type="button"
-      >
-        <ChevronDown
-          className={cn(
-            "h-3.5 w-3.5 text-neutral-500 transition-transform duration-250 ease-out",
-            open ? "rotate-0" : "-rotate-90"
-          )}
-        />
-        <span className="font-medium">
-          {rows.length} 次工具调用
-          {running > 0 ? ` · ${running} 进行中` : ""}
-        </span>
-      </button>
-      <div
-        className="grid transition-[grid-template-rows,opacity] duration-250 ease-out w-full"
-        style={{
-          gridTemplateRows: open ? "1fr" : "0fr",
-          opacity: open ? 1 : 0,
-        }}
-      >
-        <div className="min-h-0 overflow-hidden w-full">
-          <div className="pt-1.5 flex flex-col gap-1.5 w-full">
-            {rows.map((row) => renderRow(row))}
-          </div>
-        </div>
-      </div>
+    <div className="w-full pt-1.5 flex flex-col gap-1.5">
+      {rows.map((row) => renderRow(row))}
     </div>
   );
 }

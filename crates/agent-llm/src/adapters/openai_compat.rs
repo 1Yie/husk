@@ -238,6 +238,7 @@ fn serialize_message(m: &ChatMessage) -> serde_json::Value {
     });
     if let Some(obj) = v.as_object_mut() {
         obj.remove("is_error"); obj.remove("notice"); obj.remove("ts");
+        obj.remove("duration_ms");
         // The stored reasoning trace is ours to replay, not the provider's to
         // read: strict backends reject unknown fields outright.
         obj.remove("reasoning");
@@ -323,8 +324,10 @@ fn build_messages_dev(
     }
 
     for m in messages {
-        // UI-only compaction card row — render metadata, never context.
-        if m.role == Role::System && m.notice == Some(NoticeKind::Compacted) {
+        // UI-only compaction/plan card rows — render metadata, never context.
+        if m.role == Role::System
+            && matches!(m.notice, Some(NoticeKind::Compacted) | Some(NoticeKind::Plan))
+        {
             continue;
         }
         let mut v = serialize_message(m);
@@ -678,7 +681,7 @@ mod tests {
     fn m(role: Role, text: &str) -> ChatMessage {
         ChatMessage {
             role, content: Some(text.into()), tool_calls: None,
-            tool_call_id: None, is_error: None, notice: None, ts: None, reasoning: None,
+            tool_call_id: None, is_error: None, notice: None, ts: None, reasoning: None, duration_ms: None,
             images: Vec::new(),
         }
     }

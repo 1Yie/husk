@@ -1,16 +1,15 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import { Orb } from "@/features/chat/components/agent-orb/index";
 import { ChevronDown } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
-import { thinkingMarkdownComponents } from "@/features/chat/components/chat-stream/markdown-components";
+import { ReasoningBody } from "@/features/chat/components/chat-stream/reasoning-body";
 
 /** The live modes — i.e. the states the row is actively working in, as
  *  opposed to the settled "思考过程" recap. */
 function liveMode(
-  mode: "reply" | "thought" | "thinking" | "tools" | "compacting" | null
+  mode: "reply" | "thought" | "thinking" | "tools" | "tools_done" | "compacting" | null
 ): boolean {
   return (
     mode === "reply" ||
@@ -22,7 +21,7 @@ function liveMode(
 
 /** Duration label — bare seconds under a minute ("20s"), then `m:ss`, and
  *  `h:mm:ss` once an hour in (a stalled tool call can sit there a long while). */
-function formatElapsed(ms: number): string {
+export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   if (total < 60) return `${total}s`;
   const mins = Math.floor(total / 60);
@@ -100,29 +99,49 @@ const ElapsedLabel = memo(function ElapsedLabel({
 const ThinkingBody = memo(function ThinkingBody({
   text,
   animating,
+  open,
 }: {
   text: string;
   animating?: boolean;
+  /** The parent's Collapsible open state — needed to gate the plain-div
+   *  fallback that bypasses Radix's measured-height animation for huge
+   *  traces. */
+  open: boolean;
 }) {
+  const body = <ReasoningBody text={text} animating={animating} />;
+  // A huge trace skips Radix's collapsible entirely: expanding it would pay a
+  // synchronous getBoundingClientRect on the fresh subtree plus a 240ms
+  // animated reflow — a plain open-gated div does neither.
+  if (text.length > HUGE_TRACE_CHARS) {
+    return open ? body : null;
+  }
   return (
     <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
-      <div className="text-neutral-500 mt-1 w-full min-w-0 text-[13px] leading-relaxed select-text font-normal pl-6">
-        <MemoStreamdown
-          text={text}
-          animating={animating}
-          components={thinkingMarkdownComponents}
-        />
-      </div>
+      {body}
     </CollapsibleContent>
   );
 });
+
+/** Past this length the reasoning body mounts without the collapse
+ *  animation (and without Radix's content measurement). */
+const HUGE_TRACE_CHARS = 16_000;
 
 export function AssistantStatus({
   mode,
   thinkingText,
   startedAt,
+  elapsedMs,
+  doneLabel,
+  children,
 }: {
-  mode: "reply" | "thought" | "thinking" | "tools" | "compacting" | null;
+  mode:
+    | "reply"
+    | "thought"
+    | "thinking"
+    | "tools"
+    | "tools_done"
+    | "compacting"
+    | null;
   thinkingText: string;
   /** Epoch ms when this phase ACTUALLY began — the thinking/tool item's own
    *  start stamp (or the turn's for the reply-wait row). Anchoring the clock
@@ -130,6 +149,17 @@ export function AssistantStatus({
    *  elapsed figure instead of restarting it at 0. Falls back to mount time
    *  when the caller has no stamp (e.g. a replayed item). */
   startedAt?: number;
+  /** Settled span for a replayed row — `trace` stays null for a row that was
+   *  never live this session, so the persisted `· 20s` renders statically. */
+  elapsedMs?: number;
+  /** Settled-mode label override — the tools row becomes "N 次工具调用"
+   *  (count from the caller), exactly like "思考过程" carries the thinking
+   *  phase's name. */
+  doneLabel?: string;
+  /** Collapsible body for non-thinking rows — the tools row mounts its chip
+   *  list here so the status row IS the collapse toggle, one-to-one with
+   *  the thinking row's expand-to-trace pattern. */
+  children?: ReactNode;
 }) {
   // Collapsed by default in EVERY mode — the header row alone carries the
   // state; reasoning body expands on explicit click. Previously the body
@@ -163,10 +193,12 @@ export function AssistantStatus({
         ? "正在调用工具"
         : mode === "compacting"
           ? "正在压缩上下文"
-        : mode === "thinking"
-          ? "思考中"
-          : "思考过程";
-  const canToggle = Boolean(thinkingText);
+          : mode === "thinking"
+            ? "思考中"
+            : mode === "tools_done"
+              ? (doneLabel ?? "工具调用")
+              : "思考过程";
+  const canToggle = Boolean(thinkingText) || children != null;
   /** Pinned while expanded — see the capsule note below. */
   const pinned = open && canToggle;
 
@@ -246,6 +278,7 @@ export function AssistantStatus({
                   "正在压缩上下文",
                   "思考中",
                   "思考过程",
+                  "工具调用",
                 ] as const
               ).map(
                 (item) => {
@@ -266,17 +299,54 @@ export function AssistantStatus({
                   );
                 }
               )}
+              {/* Dynamic settled label ("3 次工具调用") — the stack members
+               *  cross-fade by opacity; width follows the in-flow active
+               *  span, so a per-row count just renders as another member. */}
+              {doneLabel != null && (
+                <span
+                  aria-hidden={label !== doneLabel}
+                  className={cn(
+                    "whitespace-nowrap transition-opacity duration-300 ease-out",
+                    label === doneLabel
+                      ? "opacity-100"
+                      : "pointer-events-none absolute top-0 left-0 opacity-0"
+                  )}
+                >
+                  {doneLabel}
+                </span>
+              )}
             </span>
             {/* `正在回复 · 20s` — how long this state has been running. */}
-            {trace && <ElapsedLabel trace={trace} live={live} />}
+            {trace ? (
+              <ElapsedLabel trace={trace} live={live} />
+            ) : elapsedMs != null && elapsedMs >= 1000 ? (
+              /* Replayed settled row — no clock ever ran this session, but
+               * the persisted span still names how long it took. */
+              <span className="whitespace-nowrap text-neutral-500 font-normal tabular-nums">
+                · {formatElapsed(elapsedMs)}
+              </span>
+            ) : null}
           </Button>
         </CollapsibleTrigger>
       </div>
       {thinkingText ? (
         // `thinking` = the reasoning is still arriving → the streaming
         // highlighter, same as the answer text uses.
-        <ThinkingBody text={thinkingText} animating={mode === "thinking"} />
-      ) : null}
+        <ThinkingBody
+          text={thinkingText}
+          animating={mode === "thinking"}
+          open={open}
+        />
+      ) : (
+        /* Non-thinking body (the tools row's chip list) — same Radix
+         *  collapsible animation as the thinking trace: the content measures
+         *  once and plays `animate-collapsible-*`, and unmounts when closed. */
+        children != null ? (
+          <CollapsibleContent>
+            <div className="pt-0.5">{children}</div>
+          </CollapsibleContent>
+        ) : null
+      )}
     </Collapsible>
   );
 }

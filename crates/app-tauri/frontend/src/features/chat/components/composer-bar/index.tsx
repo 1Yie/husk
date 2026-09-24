@@ -34,7 +34,9 @@ import { parseTodos, type TodoItem } from "@/features/chat/components/todo-view/
 import * as agent from "@/lib/agent-ipc/index";
 import type { Attachment, FileItem, SkillItem } from "@/lib/agent-ipc/index";
 import type { SessionView } from "@/features/chat/hooks/stream-view";
+import type { PlanPayload } from "@/types";
 import { pendingApprovalOf } from "@/features/chat/hooks/stream-view";
+import { planToMarkdown } from "@/features/chat/components/chat-stream/plan-card";
 import { onQuoteRequest } from "@/lib/selection-bus";
 import { toast } from "sonner";
 import {
@@ -794,17 +796,55 @@ export function ComposerBar({
   // block (the plan). Approving flips to build and feeds the plan back as
   // the execution instruction — Claude Code's exit-plan-mode flow. `agentMode`
   // is the ACTIVE session's mode (refreshed per session above), so the strip
-  // only exists in the session that actually ran the plan.
-  const lastItem = view.items[view.items.length - 1];
+  // only exists in the session that actually ran the plan — and only when the
+  // turn ended on a `submit_plan` card, not on any assistant message.
+  // The strip keys off the last DECISION item — system notices (model
+  // switch, thinking level, permission mode) and compaction cards land
+  // after the plan without deciding anything, so a naive last-item check
+  // kills the approval strip the moment the user swaps models to execute.
+  // Only a new prompt or a fresh assistant answer supersedes a pending plan.
+  let lastPlan: PlanPayload | undefined;
+  for (let i = view.items.length - 1; i >= 0; i--) {
+    const it = view.items[i];
+    if (it.kind === "user" || it.kind === "assistant") break;
+    if (it.kind === "plan") {
+      lastPlan = it.plan;
+      break;
+    }
+  }
   const planReady =
-    agentMode === "plan" && !streaming && lastItem?.kind === "assistant";
+    agentMode === "plan" && !streaming && lastPlan !== undefined;
   const approvePlan = async () => {
+    if (!lastPlan) return;
     await switchAgentMode("build");
     try {
-      await agent.sendPrompt("上面的计划已获批准 — 按它实施。");
+      // The serialized plan rides the approval prompt — the build turn gets
+      // the exact steps, not a pointer at scrollback.
+      await agent.sendPrompt(
+        `计划已批准 — 按以下方案执行：\n\n${planToMarkdown(lastPlan)}`,
+      );
     } catch (e) {
       console.error("approve-plan send failed:", e);
     }
+  };
+  const discardPlan = async () => {
+    // Drop the plan and leave plan mode — no execution instruction follows.
+    await switchAgentMode("build");
+  };
+  const copyPlan = async () => {
+    if (!lastPlan) return;
+    try {
+      await navigator.clipboard.writeText(planToMarkdown(lastPlan));
+      toast.success("计划已复制");
+    } catch {
+      toast.error("复制失败");
+    }
+  };
+  const revisePlan = () => {
+    const el = document.querySelector<HTMLTextAreaElement>(
+      "textarea[data-composer]",
+    );
+    el?.focus();
   };
 
   return (
@@ -834,8 +874,33 @@ export function ComposerBar({
                     计划已就绪
                   </span>
                   <span className="min-w-0 flex-1 truncate font-normal text-neutral-500">
-                    审核上面的方案，批准后切到构建模式执行
+                    审核方案，批准后切到构建模式执行
                   </span>
+                  <TooltipSimple content="复制计划">
+                    <button
+                      type="button"
+                      className="shrink-0 rounded p-1 text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-700 cursor-pointer transition-colors"
+                      onClick={() => void copyPlan()}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                  </TooltipSimple>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 h-6 px-2 text-[11px] text-neutral-600 hover:text-neutral-800 cursor-pointer"
+                    onClick={() => void discardPlan()}
+                  >
+                    放弃
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 h-6 px-2 text-[11px] text-neutral-600 hover:text-neutral-800 cursor-pointer"
+                    onClick={revisePlan}
+                  >
+                    修改意见
+                  </Button>
                   <Button
                     size="sm"
                     className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-zinc-50 cursor-pointer"

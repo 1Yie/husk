@@ -3,13 +3,24 @@
 // reopened session). Pure data: no React, no IPC.
 
 import type { AgentState } from "@/types";
+import type { PlanPayload } from "@/types";
 
 export type StreamItem =
   /** `hi` = global history index — stamped by `viewFromHistory` for
    * persisted messages; live items leave it undefined. It makes turn
    * keys stable when older pages prepend above. */
   | { kind: "user"; text: string; ts?: number; hi?: number }
-  | { kind: "assistant"; text: string; streaming: boolean; ts?: number; hi?: number }
+  | {
+      kind: "assistant";
+      text: string;
+      streaming: boolean;
+      /** First-delta arrival (epoch ms) — distinct from `ts` (commit stamp):
+       *  a tools step's phase end is "when the answer STARTED streaming",
+       *  not when it finished writing. */
+      startedAt?: number;
+      ts?: number;
+      hi?: number;
+    }
   | {
       kind: "thinking";
       text: string;
@@ -18,6 +29,10 @@ export type StreamItem =
        *  on the first reasoning delta. Drives the status row's "思考中 Xs"
        *  clock so a session switch doesn't restart it at 0. */
       startedAt?: number;
+      /** Epoch ms when the block CLOSED — stamped by `closeOpenThinking`
+       *  live, or persisted `m.ts` on replay. `ts - startedAt` is the settled
+       *  span, same formula the tools step uses. */
+      ts?: number;
       hi?: number;
     }
   | {
@@ -30,6 +45,9 @@ export type StreamItem =
       /** Epoch ms when the call STARTED (`ToolCallStarted`) — the tools
        *  status row's clock anchor, stable across a session switch. */
       startedAt?: number;
+      /** Result timestamp (epoch ms) — persisted on replayed items; the
+       *  tools step derives its end stamp from the latest one. */
+      ts?: number;
       /** A delegated child's streamed answer text, before its report lands. */
       live?: string;
       /** The same child's streamed reasoning trace. */
@@ -61,6 +79,9 @@ export type StreamItem =
       text: string;
       /** Emitted between turns — folds into its own block. */
       standalone?: boolean;
+      /** Arrival stamp — a system notice after a tools phase ends that
+       *  phase's clock (`phaseEnd` on the step). */
+      ts?: number;
       hi?: number;
     }
   | {
@@ -78,6 +99,13 @@ export type StreamItem =
       pending?: boolean;
       /** `true` = the user ran `/compact` — the card's "手动" badge. */
       manual?: boolean;
+      ts?: number;
+      hi?: number;
+    }
+  | {
+      kind: "plan";
+      /** The `submit_plan` payload — parsed once at ingest. */
+      plan: PlanPayload;
       ts?: number;
       hi?: number;
     };

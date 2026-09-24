@@ -407,6 +407,7 @@ mod tests {
             ts: None,
             images: Vec::new(),
             reasoning: None,
+            duration_ms: None,
         }
     }
 
@@ -456,6 +457,7 @@ mod tests {
                 images: Vec::new(),
 
                 reasoning: None,
+                duration_ms: None,
             },
         ];
         // text-protocol provider → tool_calls flattened into message text.
@@ -482,6 +484,7 @@ mod tests {
                 images: Vec::new(),
 
                 reasoning: None,
+                duration_ms: None,
             },
         ];
         sanitize_for_sample(&mut h2, 100_000, /*native_tool_calls*/ true, true);
@@ -537,6 +540,7 @@ mod tests {
                 images: Vec::new(),
 
                 reasoning: None,
+                duration_ms: None,
             },
             {
                 let mut m = msg(Role::Tool, &"output_a ".repeat(500));
@@ -611,6 +615,7 @@ mod tests {
             ts: None,
             images: Vec::new(),
             reasoning: None,
+            duration_ms: None,
         });
         h.push(msg(Role::Tool, &"T".repeat(20_000))); // ≈5000 tokens ≫ 25%
 

@@ -310,6 +310,7 @@ impl SubagentSpawner {
             active_registry: std::sync::RwLock::new(None),
             ui_tx: Some(child_sink.clone()),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
+            plan: Arc::new(crate::tools::plan::PlanController::new()),
         };
         let registry = if readonly {
             self.registry_readonly.clone()

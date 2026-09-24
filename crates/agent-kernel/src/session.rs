@@ -1160,10 +1160,13 @@ impl SessionActor {
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
             }
-            UiCommand::ReloadModel { provider, model } => {
+            UiCommand::ReloadModel => {
                 // A config write re-reads `config.toml` into every live actor,
                 // so an edited model takes effect on the next turn instead of
-                // on the next launch. Silent: no history notice for a settings save.
+                // on the next launch. The session reloads ITS OWN pair —
+                // carrying the manager's mirror once re-pointed every actor
+                // at the active session's model. Silent: no history notice.
+                let (provider, model) = (self.provider_name.clone(), self.model.clone());
                 info!(%provider, %model, "model config reload");
                 self.apply_model_switch(&provider, &model);
             }

@@ -854,6 +854,11 @@ impl SessionManager {
         if !self.workspace_active {
             return;
         }
+        // `self.metas` only refreshes on structural ops — a live session's
+        // `persist_settings`/`persist_turn` lands on disk without touching
+        // the cache, so spawning/mirroring off the stale copy restores the
+        // session's PRE-swap model. Read fresh.
+        self.metas = self.store.list();
         if !self.handles.contains_key(&id) {
             self.spawn_actor(id);
         }
@@ -1381,12 +1386,11 @@ impl SessionManager {
 
     /// Push a reload into every live actor — the active session's and the parked
     /// workspaces' (they keep running, and keep their endpoints, while switched
-    /// away). Returns `(notified, live)`.
+    /// away). The command carries no pair: each actor re-reads the fresh config
+    /// for ITS OWN provider/model — broadcasting the mirror once re-pointed
+    /// every session at the active one's model. Returns `(notified, live)`.
     fn notify_live_actors(&self) -> (usize, usize) {
-        let cmd = agent_ipc::UiCommand::ReloadModel {
-            provider: self.provider_name.clone(),
-            model: self.model_name.clone(),
-        };
+        let cmd = agent_ipc::UiCommand::ReloadModel;
         let mut notified = 0;
         let mut live = 0;
         for h in self
@@ -1752,11 +1756,13 @@ mod tests {
 
         let mut sent = Vec::new();
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if let agent_ipc::UiCommand::ReloadModel { provider, model } = cmd {
-                sent.push((provider, model));
+            if let agent_ipc::UiCommand::ReloadModel = cmd {
+                sent.push(());
             }
         }
-        assert_eq!(sent, vec![("devin".to_string(), "devin/swe-3".to_string())]);
+        // One ReloadModel on this actor's queue — no payload, each actor
+        // re-reads the fresh config for its own provider/model.
+        assert_eq!(sent.len(), 1);
     }
 
     /// One `config.toml` writer for the reload tests.

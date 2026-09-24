@@ -151,6 +151,10 @@ pub struct ToolCtx {
     /// takes the signal payload for the final report. Always present
     /// (cheap); only consulted in `goal` mode.
     pub goal: Arc<crate::tools::goal::GoalController>,
+    /// Plan-mode contract channel: `submit_plan` declares through it, the
+    /// engine takes the payload at the quiet point for the plan card.
+    /// Always present (cheap); only consulted in `plan` mode.
+    pub plan: Arc<crate::tools::plan::PlanController>,
 }
 
 impl ToolCtx {
@@ -169,6 +173,7 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
             goal: Arc::new(crate::tools::goal::GoalController::new()),
+            plan: Arc::new(crate::tools::plan::PlanController::new()),
         }
     }
 
@@ -190,6 +195,7 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
             goal: Arc::new(crate::tools::goal::GoalController::new()),
+            plan: Arc::new(crate::tools::plan::PlanController::new()),
         }
     }
 
@@ -221,6 +227,7 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
             goal: self.goal.clone(),
+            plan: self.plan.clone(),
         }
     }
 

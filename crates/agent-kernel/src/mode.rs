@@ -42,14 +42,21 @@ impl AgentMode {
             Self::Build => "Mode: build — full tool set. Read, edit, run, verify.",
             Self::Plan => {
                 "Mode: plan — READ-ONLY. You may inspect files, search, and reason, \
-                 but you cannot edit files or run mutating commands. Produce a \
-                 concrete implementation plan: the files to touch, the changes in \
-                 each, and the verification steps. Do not attempt writes — the \
-                 registry does not carry them. When the plan is complete, say so \
-                 plainly; the user reviews and executes it in build mode."
+                 but you cannot edit files or run mutating commands. Do not attempt \
+                 writes — the registry does not carry them. Your deliverable is a \
+                 STRUCTURED plan, not prose: when the analysis is complete, call \
+                 `submit_plan` ONCE with `summary`, ordered `steps` (each with \
+                 `title`, `detail`, and the `files` it touches), `verification`, \
+                 and `risks`. The user reviews that card and decides whether to \
+                 execute it in build mode — a plain text answer is only for \
+                 questions, never for a planning deliverable."
             }
             Self::Goal => {
                 "Mode: goal — pursue the user's stated goal autonomously. The turn \
+                 STARTS by confirming the goal: restate what you understood plus \
+                 the success criteria you'll verify, and confirm with the user via \
+                 `ask_question` before doing any work — only proceed autonomously \
+                 after confirmation. The turn \
                  does NOT end when you stop calling tools: it ends only when you \
                  call `goal_complete` (with a summary of what was achieved) or \
                  `goal_blocked` (with the concrete blocker). If you produce a \
