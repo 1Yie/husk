@@ -364,3 +364,91 @@ async fn auto_compaction_fires_between_tool_rounds_mid_turn() {
         .iter()
         .any(|m| m.role == agent_llm::types::Role::Tool));
 }
+
+/// The 70/80/90% setting must retune a RUNNING session, not only sessions
+/// spawned afterwards: it is a workspace-wide rule with no per-session
+/// override, so a live actor has to pick it up from `SetCompactAt`.
+#[tokio::test]
+async fn compact_ratio_change_applies_to_a_live_session() {
+    // ≈2880 tokens: above 70% of a 4k window (2800), below 80% (3200).
+    let seeded = || {
+        vec![
+            ChatMessage::system("kernel"),
+            ChatMessage::user("q1"),
+            ChatMessage::assistant("A".repeat(11_500)),
+        ]
+    };
+    let config = |root: &std::path::Path, stub: Arc<ScriptedProvider>| SessionConfig {
+        workspace_root: root.to_path_buf(),
+        provider: stub,
+        model: "test-model".into(),
+        temperature: 0.0,
+        permission_mode: "default".into(),
+        agent_mode: "build".into(),
+        track_dirty: false,
+        thinking_level: None,
+        thinking_level_map: None,
+        context_window: Some(4_000),
+        compact_at: None,
+        model_input: Vec::new(),
+        model_params: None,
+        queued_prompts: Vec::new(),
+        plugins: None,
+        provider_name: "test".into(),
+    };
+    async fn drain(rx: &mut agent_kernel::channels::UiChannels) -> Vec<UiEvent> {
+        rx.event_rx.close();
+        let mut out = Vec::new();
+        while let Some(ev) = rx.event_rx.recv().await {
+            out.push(ev);
+        }
+        out
+    }
+
+    // Control: the default 80% leaves this fill alone — the only scripted
+    // sample is the plain answer.
+    let dir_a = tempfile::tempdir().unwrap();
+    let stub_a = Arc::new(ScriptedProvider::new());
+    stub_a.script_text("plain answer");
+    let (mut a, mut ch_a) =
+        SessionActor::resume(config(dir_a.path(), stub_a), SESSION_ID, seeded());
+    a.handle(UiCommand::Prompt { text: "hi".into() }).await;
+    let events_a = drain(&mut ch_a).await;
+    assert!(
+        events_a
+            .iter()
+            .all(|e| !matches!(e, UiEvent::Compacted { .. })),
+        "the 80% default must not fire at ~72% fill"
+    );
+
+    // Retuned live: 70% → the very next turn compacts before its first sample.
+    let dir_b = tempfile::tempdir().unwrap();
+    let stub_b = Arc::new(ScriptedProvider::new());
+    stub_b.script_text(SUMMARY); // the compactor's sample
+    stub_b.script_text("answer after retune");
+    let (mut b, mut ch_b) =
+        SessionActor::resume(config(dir_b.path(), stub_b), SESSION_ID, seeded());
+    b.handle(UiCommand::SetCompactAt { fraction: 0.7 }).await;
+    b.handle(UiCommand::Prompt { text: "hi".into() }).await;
+
+    let events_b = drain(&mut ch_b).await;
+    assert!(
+        events_b
+            .iter()
+            .any(|e| matches!(e, UiEvent::Compacted { .. })),
+        "a live session must compact at the newly set 70%"
+    );
+    let final_text = events_b
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            UiEvent::AssistantMessage(t) => Some(t.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(final_text, "answer after retune");
+    assert!(b
+        .history()
+        .iter()
+        .any(|m| m.notice == Some(NoticeKind::CompactedMemory)));
+}

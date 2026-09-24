@@ -1137,6 +1137,13 @@ impl SessionActor {
             UiCommand::SetQueued { items } => {
                 self.set_queued(items);
             }
+            UiCommand::SetCompactAt { fraction } => {
+                // Workspace-wide default change from the settings page —
+                // applied to the live engine so the new trigger takes effect
+                // on the next round instead of waiting for a respawn.
+                info!(fraction, "compaction ratio change requested");
+                self.engine.set_compact_at(fraction);
+            }
             UiCommand::Enqueue { text } => {
                 self.queued.push_back(text);
                 self.emit_queued();

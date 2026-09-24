@@ -133,6 +133,12 @@ pub enum UiCommand {
     /// the actor echoes the new list back via `QueuedPrompts` and mirrors
     /// it into `SessionMeta` so a reopened session restores it.
     SetQueued { items: Vec<String> },
+    /// Apply a new auto-compaction ratio (fraction of the context window,
+    /// 70/80/90% from the settings page) to a LIVE session. Broadcast by
+    /// `SessionManager` when the workspace default changes — without it the
+    /// new ratio only reached sessions spawned afterwards, so a running
+    /// session kept the threshold it was born with.
+    SetCompactAt { fraction: f32 },
     /// Park one follow-up prompt — appends to the queue, then drains right
     /// away when the session is idle. Distinct from `SetQueued` because a
     /// queue write that lands mid-turn is only processed after the turn:

@@ -1561,9 +1561,11 @@ impl SessionManager {
         )
     }
 
-    /// Update the stored default preferences — applies to sessions spawned
-    /// AFTER this call; live sessions are untouched (no gate write, no
-    /// UiCommand, no SystemMessage in their stream).
+    /// Update the stored default preferences. Permission mode, thinking
+    /// level and agent mode are per-session composer choices, so live
+    /// sessions are untouched by those; the compaction ratio has no
+    /// per-session override, so it IS pushed into every live actor (see
+    /// `broadcast_compact_at`).
     pub fn set_default_prefs(
         &mut self,
         permission_mode: Option<String>,
@@ -1582,6 +1584,10 @@ impl SessionManager {
         }
         if let Some(f) = compact_at {
             self.compact_at = f.clamp(0.5, 0.95);
+            // The ratio is a workspace-wide rule with no per-session
+            // override — a running session must not keep the threshold it
+            // was spawned with.
+            self.broadcast_compact_at(self.compact_at);
         }
         self.persist_prefs();
         // Also persist the global defaults so fresh workspaces inherit them.
@@ -1599,6 +1605,24 @@ impl SessionManager {
                 sandbox_max_processes: lim.max_processes,
             },
         );
+    }
+
+    /// Push the compaction ratio into every LIVE actor — the value is
+    /// otherwise only read at spawn, so a settings change left running
+    /// sessions on the threshold they were born with. Parked workspaces are
+    /// included: their actors keep draining turns in the background and must
+    /// compact under the same rule.
+    pub fn broadcast_compact_at(&mut self, fraction: f32) {
+        let frac = fraction.clamp(0.5, 0.95);
+        let live = self
+            .handles
+            .values()
+            .chain(self.parked.values().flat_map(|m| m.values()));
+        for handle in live {
+            let _ = handle
+                .cmd_tx
+                .try_send(agent_ipc::UiCommand::SetCompactAt { fraction: frac });
+        }
     }
 
     /// Persist current workspace composer preferences (model, thinking level, permission mode).
