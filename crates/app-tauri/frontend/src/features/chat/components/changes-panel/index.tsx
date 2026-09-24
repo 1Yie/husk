@@ -77,8 +77,10 @@ function FileRow({
           )}
         </span>
       </button>
+      {/* Patch cards span the full row width — the panel is too narrow
+          for a filename-alignment gutter. */}
       {open && (
-        <div className="mb-1.5 ml-[26px] mr-1 flex flex-col gap-1.5">
+        <div className="mb-1.5 flex flex-col gap-1.5">
           {change.patches.map((p) => (
             <div key={p.n} className="min-w-0">
               {change.patches.length > 1 && (
