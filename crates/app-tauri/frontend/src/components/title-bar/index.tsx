@@ -190,7 +190,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
               aria-pressed={changesOpen}
               className={`relative flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors cursor-pointer ${
                 changesOpen
-                  ? "bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)] text-neutral-800 dark:text-neutral-200"
+                  ? "bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)] text-neutral-800"
                   : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-800"
               }`}
             >
