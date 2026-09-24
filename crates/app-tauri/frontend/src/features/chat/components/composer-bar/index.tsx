@@ -771,10 +771,14 @@ export function ComposerBar({
 
   return (
     <TooltipProvider delayDuration={300}>
-      {/* Since the native right-side scrollbar was removed, we use symmetric
-          padding so the floating composer card is perfectly horizontally centered
-          with the conversation stream. */}
-      <div className="w-full px-4 pb-6 select-none pointer-events-none">
+      {/* pl-11 mirrors the stream's rail lane once the rail exists;
+          an empty session keeps symmetric padding. */}
+      <div
+        className={cn(
+          "w-full pr-4 pb-6 select-none pointer-events-none",
+          view.items.length > 0 || view.streaming ? "pl-11" : "pl-4",
+        )}
+      >
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
           {planReady || pending || question || hasActiveTodos || queued.length > 0 ? (
             /* Outer container with attached banner: the plan handoff, approval

@@ -1,11 +1,13 @@
 // Chat page — the conversation column of the main window: window title
 // bar (with the git/usage meter), the scrollable stream, and the composer.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/features/chat/components/chat-stream";
+import { ChangesPanel } from "@/features/chat/components/changes-panel";
 import { ComposerBar } from "@/features/chat/components/composer-bar";
 import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/components/workspace-welcome";
 import { useActiveView, useAgentChips, useHasMoreHistory } from "@/stores/agent-store";
+import { cn } from "@/lib/utils";
 
 interface ChatPageProps {
   title: string;
@@ -27,9 +29,12 @@ interface ChatPageProps {
   onOpenRecent?: (path: string) => void;
   /** Boot not resolved — keep the skeleton instead of the empty pane. */
   workspaceReady?: boolean;
+  /** Changes panel open state + toggle, owned by the app shell. */
+  changesOpen?: boolean;
+  onToggleChanges?: () => void;
 }
 
-export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true }: ChatPageProps) {
+export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true, changesOpen, onToggleChanges }: ChatPageProps) {
   // The conversation's live data comes from the store, not from props: the
   // shell must not be a subscriber of the 60 fps stream (it used to re-render —
   // and drag the sidebar with it — for a whole turn).
@@ -73,9 +78,41 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
     composerRoRef.current = ro;
   }, []);
 
+  // Auto-open the panel once per session on the first file change; a
+  // manual close (dismissedRef) suppresses the auto-open afterwards.
+  const changeCount = view.changes.length;
+  const dismissedRef = useRef(false);
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    dismissedRef.current = false;
+    autoOpenedRef.current = false;
+  }, [sessionKey]);
+  useEffect(() => {
+    if (changeCount > 0 && !autoOpenedRef.current && !dismissedRef.current && !changesOpen) {
+      autoOpenedRef.current = true;
+      onToggleChanges?.();
+    }
+  }, [changeCount, changesOpen, onToggleChanges]);
+  const handleToggleChanges = useCallback(() => {
+    if (changesOpen) dismissedRef.current = true;
+    else dismissedRef.current = false;
+    onToggleChanges?.();
+  }, [changesOpen, onToggleChanges]);
+
   return (
     <>
-      <TitleBar title={title} view={view} gitInfo={gitInfo} contextWindowHint={contextWindowHint} modelCost={modelCost} onShowRaw={onShowRaw} noWorkspace={!workspaceRoot} />
+      <TitleBar
+        title={title}
+        view={view}
+        gitInfo={gitInfo}
+        contextWindowHint={contextWindowHint}
+        modelCost={modelCost}
+        onShowRaw={onShowRaw}
+        noWorkspace={!workspaceRoot}
+        changesOpen={changesOpen}
+        changesCount={changeCount}
+        onToggleChanges={workspaceRoot ? handleToggleChanges : undefined}
+      />
       {!workspaceRoot ? (
         workspaceReady ? (
           <WorkspaceWelcome
@@ -87,31 +124,56 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
           <div className="flex-1 min-h-0" />
         )
       ) : (
-        <>
-      <ChatStream
-        // Remount per session — scroll position, pin state, landing
-        // flag and the windowing shell state are all per-session.
-        key={sessionKey}
-        view={view}
-        bottomPad={composerH + 24}
-        composerH={composerH}
-        loading={loading}
-        sessionKey={sessionKey}
-        hasMore={hasMore}
-        onLoadOlder={onLoadOlder}
-      />
+        // Stream + changes dock side by side below the title bar — the
+        // title bar spans the full width, so the panel can't cover the
+        // window controls. The dock's wrapper animates its width so the
+        // stream re-flows smoothly instead of jumping.
+        <div className="flex flex-1 min-h-0">
+          <div className="relative flex-1 min-w-0 flex flex-col transition-[flex-basis,margin] duration-300 ease-out">
+            <ChatStream
+              // Remount per session — scroll position, pin state, landing
+              // flag and the windowing shell state are all per-session.
+              key={sessionKey}
+              view={view}
+              bottomPad={composerH + 24}
+              composerH={composerH}
+              loading={loading}
+              sessionKey={sessionKey}
+              hasMore={hasMore}
+              onLoadOlder={onLoadOlder}
+            />
 
-      {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
-      <div
-        style={{ height: composerH + 16 }}
-        className="absolute inset-x-0 bottom-0 pointer-events-none z-10 bg-gradient-to-t from-[color-mix(in_srgb,var(--husk-white)_75%,transparent)] via-[color-mix(in_srgb,var(--husk-white)_35%,transparent)] to-transparent dark:from-[#16161a]/75 dark:via-[#16161a]/35 dark:to-transparent"
-        aria-hidden="true"
-      />
+            {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
+            <div
+              style={{ height: composerH + 16 }}
+              className="absolute inset-x-0 bottom-0 pointer-events-none z-10 bg-gradient-to-t from-[color-mix(in_srgb,var(--husk-white)_75%,transparent)] via-[color-mix(in_srgb,var(--husk-white)_35%,transparent)] to-transparent dark:from-[#16161a]/75 dark:via-[#16161a]/35 dark:to-transparent"
+              aria-hidden="true"
+            />
 
-      <div ref={measureComposer} className="absolute inset-x-0 bottom-0 pointer-events-none z-20">
-        <ComposerBar view={view} workspaceRoot={workspaceRoot} sessionKey={sessionKey} />
-      </div>
-        </>
+            <div ref={measureComposer} className="absolute inset-x-0 bottom-0 pointer-events-none z-20">
+              <ComposerBar view={view} workspaceRoot={workspaceRoot} sessionKey={sessionKey} />
+            </div>
+          </div>
+
+          {/* Dock wrapper animates its width so the stream gives way
+              smoothly; the inner panel slides in from the right edge. */}
+          <div
+            className={cn(
+              "flex-none overflow-hidden transition-[width] duration-300 ease-out",
+              changesOpen ? "w-[300px]" : "w-0",
+            )}
+            aria-hidden={!changesOpen}
+          >
+            <div
+              className={cn(
+                "h-full w-[300px] transition-transform duration-300 ease-out",
+                changesOpen ? "translate-x-0" : "translate-x-full",
+              )}
+            >
+              <ChangesPanel changes={view.changes} onClose={handleToggleChanges} />
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

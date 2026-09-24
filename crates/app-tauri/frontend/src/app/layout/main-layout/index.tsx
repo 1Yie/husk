@@ -1,6 +1,6 @@
-// App shell — the main window's two-column frame: sidebar on the left,
-// `main-col` (title bar + stream + composer) on the right. Pages feed
-// both slots; the shell only owns the chrome geometry.
+// App shell — sidebar on the left, `main-col` (title bar + stream +
+// composer) on the right. The changes panel lives inside `main-col`,
+// below the title bar, so it never covers the window controls.
 import { cn } from "@/lib/utils";
 
 interface MainLayoutProps {

@@ -1809,7 +1809,15 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         onWheel={noteUserScroll}
         onTouchStart={noteUserScroll}
       >
-        <div className="max-w-3xl w-full mx-auto px-4 pt-6 flex flex-col gap-6 min-h-full">
+        {/* pl-11 reserves the rail lane — only once the rail renders
+            (content or loading); an empty session keeps symmetric
+            padding so the greeting stays centred. */}
+        <div
+          className={cn(
+            "max-w-3xl w-full mx-auto pr-4 pt-6 flex flex-col gap-6 min-h-full",
+            loading || view.items.length > 0 ? "pl-11" : "pl-4",
+          )}
+        >
           {loading ? (
             // Loading = skeleton INSTEAD of content — the old
             // session's turns must never linger under it.

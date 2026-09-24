@@ -46,6 +46,29 @@ export type StreamItem =
     }
   | { kind: "system"; text: string; hi?: number };
 
+/** How a file landed in the changes panel (add/update/delete). */
+export type ChangeKind = "add" | "update" | "delete";
+
+/** One patch a write tool applied to `path`; `n` is the touch counter. */
+export interface ChangePatch {
+  tool: string;
+  diff: string;
+  n: number;
+}
+
+/** A file the agent touched this session. */
+export interface FileChange {
+  path: string;
+  kind: ChangeKind;
+  patches: ChangePatch[];
+  adds: number;
+  dels: number;
+  fuzzy: boolean;
+  /** True while the only diffs came from `ApprovalRequested` previews —
+   * not yet committed (pending or denied). Cleared on ToolCallFinished. */
+  pending?: boolean;
+}
+
 export interface SessionView {
   /** An unresolved `QuestionAsked` — the composer renders it in the same
    * slot as an approval strip. Cleared when answered (locally), when the
@@ -85,10 +108,14 @@ export interface SessionView {
    * gaps between consecutive deltas (capped per gap), so tool-execution
    * pauses don't drag the decode-rate reading down. */
   rate: { chars: number; activeMs: number; lastAt: number | null };
+  /** Files the agent wrote this session — feeds the changes panel.
+   *  Accumulated live by `applyEvent`, rebuilt by `viewFromHistory`. */
+  changes: FileChange[];
 }
 
 export const emptyView = (): SessionView => ({
   items: [],
+  changes: [],
   state: null,
   streaming: false,
   usage: { prompt: 0, completion: 0, contextWindow: 0, cachedTokens: 0 },

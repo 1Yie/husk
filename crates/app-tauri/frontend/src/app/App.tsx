@@ -170,6 +170,9 @@ export function App() {
   // mounted underneath, so closing it costs nothing (the old takeover
   // unmounted ChatPage and remounted the whole stream on return).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Changes panel docked right of the chat column; its content reads the
+  // active view's `changes`, so it follows the foreground session.
+  const [changesOpen, setChangesOpen] = useState(false);
   // Raw-JSON history viewer — fetches the full persisted record on open.
   const [rawOpen, setRawOpen] = useState(false);
   const [rawData, setRawData] = useState<import("@/types").ChatMessage[] | null>(null);
@@ -454,6 +457,8 @@ export function App() {
           recents={workspace.recents}
           onOpenRecent={(path) => void handleSwitchWorkspace(path)}
           workspaceReady={wsReady}
+          changesOpen={changesOpen}
+          onToggleChanges={() => setChangesOpen((o) => !o)}
         />
       </MainLayout>
 

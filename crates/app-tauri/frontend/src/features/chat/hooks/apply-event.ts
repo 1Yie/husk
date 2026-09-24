@@ -3,7 +3,127 @@
 // other half of "same stream, two sources".
 
 import type { AgentEventEnvelope } from "@/types";
-import type { SessionView, StreamItem } from "@/features/chat/hooks/stream-view";
+import type {
+  ChangeKind,
+  ChangePatch,
+  FileChange,
+  SessionView,
+  StreamItem,
+} from "@/features/chat/hooks/stream-view";
+
+// ---------------------------------------------------------------- changes
+
+/** Write tools emit `ui_type: "diff"` with a unified diff in `content`. */
+const WRITE_TOOLS = new Set(["fuzzy_patch", "apply_patch", "write_file", "fs_patch"]);
+
+/** `fuzzy_patch` content: `patched {path} (line N)\n\n{diff}`. */
+const FUZZY_HEADER = /^patched\s+(.+?)\s+\(line \d+\)/;
+/** `apply_patch` emits `added|updated|deleted|moved {path}` per file. */
+const PATCH_SECTION = /^(added|updated|deleted|moved)\s+(.+?)\s*$/;
+
+function looksLikeDiff(text: string): boolean {
+  return text.includes("@@ -") || (text.includes("--- ") && text.includes("+++ "));
+}
+
+function countDiff(diff: string): { adds: number; dels: number } {
+  let adds = 0;
+  let dels = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) adds++;
+    else if (line.startsWith("-")) dels++;
+  }
+  return { adds, dels };
+}
+
+function sectionsFromFuzzy(content: string): { path: string; kind: ChangeKind; diff: string }[] {
+  const m = content.match(FUZZY_HEADER);
+  if (!m) return [];
+  const diffStart = content.indexOf("\n\n");
+  const diff = diffStart >= 0 ? content.slice(diffStart + 2) : "";
+  if (!looksLikeDiff(diff)) return [];
+  return [{ path: m[1].trim(), kind: "update", diff }];
+}
+
+/** Split an `apply_patch` result into one entry per touched file. */
+export function sectionsFromPatch(content: string): { path: string; kind: ChangeKind; diff: string }[] {
+  const out: { path: string; kind: ChangeKind; diff: string }[] = [];
+  const lines = content.split("\n");
+  let cur: { path: string; kind: ChangeKind; diff: string[] } | null = null;
+  const flush = () => {
+    if (!cur) return;
+    const diff = cur.diff.join("\n").replace(/\n+$/, "");
+    if (cur.kind === "delete" || looksLikeDiff(diff)) {
+      out.push({ path: cur.path, kind: cur.kind, diff });
+    }
+    cur = null;
+  };
+  for (const line of lines) {
+    const m = line.match(PATCH_SECTION);
+    if (m) {
+      flush();
+      const kind: ChangeKind = m[1] === "added" ? "add" : m[1] === "deleted" ? "delete" : "update";
+      // `moved a → b` has no diff body — flush() drops it; keep the
+      // destination as the panel path.
+      const path = m[1] === "moved" ? (m[2].split("→").pop() ?? m[2]).trim() : m[2].trim();
+      cur = { path, kind, diff: [] };
+      continue;
+    }
+    cur?.diff.push(line);
+  }
+  flush();
+  return out;
+}
+
+/** Fold a write tool's diff into `view.changes`, one entry per file.
+ * `pending` marks an approval-preview diff (staged, not yet committed). */
+export function recordFileChanges(
+  changes: FileChange[],
+  tool: string,
+  content: string,
+  fuzzy: boolean,
+  pending = false,
+) {
+  if (!WRITE_TOOLS.has(tool)) return;
+  const sections =
+    tool === "apply_patch" ? sectionsFromPatch(content) : sectionsFromFuzzy(content);
+  for (const s of sections) {
+    let fc = changes.find((c) => c.path === s.path);
+    if (!fc) {
+      fc = { path: s.path, kind: s.kind, patches: [], adds: 0, dels: 0, fuzzy: false };
+      changes.push(fc);
+    }
+    // Latest op wins the badge; adds/dels accumulate.
+    fc.kind = s.kind;
+    fc.fuzzy = fc.fuzzy || fuzzy;
+    // Approval → the same staged diff lands twice (ApprovalRequested,
+    // then ToolCallFinished). Dedupe: the finished call flips `pending`
+    // off instead of stacking a second patch.
+    if (fc.patches.some((p) => p.diff === s.diff)) {
+      if (!pending) fc.pending = false;
+      continue;
+    }
+    const { adds, dels } = countDiff(s.diff);
+    fc.adds += adds;
+    fc.dels += dels;
+    const patch: ChangePatch = { tool, diff: s.diff, n: fc.patches.length + 1 };
+    fc.patches.push(patch);
+    fc.pending = pending;
+  }
+}
+
+/** A denied approval never commits — drop the pending preview patches
+ * `ApprovalRequested` added under this tool's name. Approvals serialize,
+ * so every pending entry of that tool belongs to the refused call. */
+function dropPendingChanges(changes: FileChange[], tool: string) {
+  for (let i = changes.length - 1; i >= 0; i--) {
+    const fc = changes[i];
+    if (!fc.pending) continue;
+    fc.patches = fc.patches.filter((p) => p.tool !== tool);
+    if (fc.patches.length === 0) changes.splice(i, 1);
+    else fc.pending = false;
+  }
+}
 
 function closeOpenThinking(items: StreamItem[]) {
   for (let i = 0; i < items.length; i++) {
@@ -165,6 +285,10 @@ export function applyEvent(
   if ("ToolCallFinished" in ev) {
     closeOpenThinking(items);
     const t = ev.ToolCallFinished;
+    // Fold a committed write's diff into the changes panel.
+    const changes = [...v.changes];
+    if (t.ok && t.content) recordFileChanges(changes, t.name, t.content, false);
+    else if (!t.ok) dropPendingChanges(changes, t.name);
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (it.kind === "approval" && !it.resolved && it.toolName === t.name) {
@@ -193,11 +317,15 @@ export function applyEvent(
         break;
       }
     }
-    return { ...v, items };
+    return { ...v, items, changes };
   }
   if ("ApprovalRequested" in ev) {
     closeOpenThinking(items);
     const a = ev.ApprovalRequested;
+    // Mirror the staged write's diff into the panel as a preview
+    // (pending). Approve re-records and dedupes; deny drops it.
+    const changes = [...v.changes];
+    if (a.diff) recordFileChanges(changes, a.tool_name, a.diff, a.fuzzy, true);
     let attached = false;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -225,7 +353,7 @@ export function applyEvent(
         resolved: false,
       });
     }
-    return { ...v, items };
+    return { ...v, items, changes };
   }
   if ("QuestionAsked" in ev) {
     const q = ev.QuestionAsked;

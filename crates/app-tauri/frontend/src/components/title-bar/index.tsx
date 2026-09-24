@@ -2,7 +2,7 @@ import { WindowControls } from "@/components/window-controls";
 import { isMac } from "@/lib/platform";
 import { useCurrencySymbol } from "@/lib/appearance";
 import { GitBranch, ChartPie, Zap, BarChartHorizontalStart, Inbox } from "@keyline-icons/react";
-import { BrainCircuit } from "lucide-react";
+import { BrainCircuit, FileDiff } from "lucide-react";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { StreamHealth } from "@/features/chat/components/stream-health";
 import type { SessionView } from "@/features/chat/hooks/stream-view";
@@ -20,6 +20,10 @@ interface TitleBarProps {
   modelCost?: ModelItem["cost"];
   /** Opens the raw-JSON history viewer for the active session. */
   onShowRaw?: () => void;
+  /** Changes panel toggle — only rendered when provided. */
+  changesOpen?: boolean;
+  changesCount?: number;
+  onToggleChanges?: () => void;
   /** No workspace open — hide title, raw button and the stats cluster. */
   noWorkspace?: boolean;
 }
@@ -62,7 +66,7 @@ function turnCost(
   );
 }
 
-export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, noWorkspace = false }: TitleBarProps) {
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, changesOpen, changesCount = 0, onToggleChanges, noWorkspace = false }: TitleBarProps) {
   const prompt = view?.usage.prompt ?? 0;
   const completion = view?.usage.completion ?? 0;
   const cached = view?.usage.cachedTokens ?? 0;
@@ -172,6 +176,30 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
             {fmtRate(toks)} tok/s
           </span>
         </TooltipSimple>
+        {onToggleChanges && (
+          <TooltipSimple
+            content={changesOpen ? "关闭改动面板" : `查看改动${changesCount > 0 ? ` (${changesCount} 个文件)` : ""}`}
+            side="bottom"
+          >
+            <button
+              type="button"
+              data-tauri-drag-region="false"
+              onClick={onToggleChanges}
+              aria-label="改动面板"
+              aria-pressed={changesOpen}
+              className={`relative flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors cursor-pointer ${
+                changesOpen
+                  ? "bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)] text-neutral-800 dark:text-neutral-200"
+                  : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-800"
+              }`}
+            >
+              <FileDiff className="h-3.5 w-3.5" />
+              {changesCount > 0 && (
+                <span className="tabular-nums">{changesCount}</span>
+              )}
+            </button>
+          </TooltipSimple>
+        )}
       </div>
       )}
 
