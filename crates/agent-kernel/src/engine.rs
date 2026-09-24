@@ -898,6 +898,13 @@ impl Engine {
                     continue;
                 }
 
+                // `on_response` hooks — the last mutation point before the
+                // answer lands in history and on screen. Runs only on the
+                // finishing path: the nudge branches above pushed pre-hook
+                // text deliberately, the turn wasn't over there.
+                let mut final_text = final_text;
+                self.hooks.run_on_response(&mut final_text).await;
+
                 history.push(ChatMessage {
                     role: agent_llm::Role::Assistant,
                     content: if final_text.is_empty() {
@@ -1050,8 +1057,7 @@ impl Engine {
 
                 // before_tool hooks (veto/mutate, pre-gate)
                 let mut call_mut = call.clone();
-                if !self.hooks.run_before_tool(&mut call_mut).await {
-                    let msg = format!("tool `{}` vetoed by hook", call.name);
+                if let Err(msg) = self.hooks.run_before_tool(&mut call_mut).await {
                     let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                         name: call.name.clone(),
                         ok: false,
@@ -1063,6 +1069,11 @@ impl Engine {
                     continue;
                 }
                 let call = &call_mut; // hooks may have rewritten args
+                // Gate + dispatch must see the *rewritten* arguments; `args`
+                // above is the model's own request, kept for the step card's
+                // preview and the audit trail.
+                let args: serde_json::Value = serde_json::from_str(&call.arguments)
+                    .unwrap_or_else(|_| serde_json::json!({ "_malformed": call.arguments }));
 
                 // Permission gate before dispatch
                 let registry = self.active_registry();
@@ -1543,6 +1554,9 @@ impl Engine {
     }
 
     fn set_state(&self, io: &EngineIo, state: AgentState) {
+        // Lifecycle hooks observe the transition fire-and-forget: a hook must
+        // never delay the state the UI is about to render.
+        self.hooks.observe_nowait(&state);
         let _ = io.ui_tx.send(UiEvent::StateChanged(state));
     }
 }

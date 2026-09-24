@@ -465,6 +465,8 @@ impl SessionActor {
                 cancel,
                 cmd_rx,
                 workspace_root: cfg.workspace_root,
+                // Empty until `set_hooks` installs the plugin chain — the
+                // manager does it before the actor starts running.
                 hooks: HookChain::new(),
                 memory,
                 distiller,
@@ -494,6 +496,15 @@ impl SessionActor {
     /// `Prompt`/`Steer`/`SetModel`/`UndoLastTurn` go here.
     pub fn command_sender(&self) -> mpsc::Sender<UiCommand> {
         self.cmd_tx.clone()
+    }
+
+    /// Install the lifecycle hook chain — the manager calls this right after
+    /// the actor is built and before its thread starts, so the first turn
+    /// already runs under the plugins' hooks. The chain is shared, so a
+    /// later `reload_plugins` reaches this session without a restart.
+    pub fn set_hooks(&mut self, chain: HookChain) {
+        self.hooks = chain.clone();
+        self.engine.set_hooks(chain);
     }
 
     /// The shared tool-decision slot — the bridge writes `ToolDecision`
@@ -560,6 +571,9 @@ impl SessionActor {
         self.cancel
             .store(false, std::sync::atomic::Ordering::Relaxed);
         self.state = AgentState::ScanningWorkspace;
+        // The session's own writes feed the same transition slot the engine
+        // emits into, so a state both sides announce is one hook event.
+        self.hooks.observe(&self.state).await;
         let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
         let turn = self.hunks.begin_turn();
 
@@ -610,6 +624,7 @@ impl SessionActor {
             // frontend's turn-end notification.
             Ok(outcome) => {
                 self.state = AgentState::Finished;
+                self.hooks.observe(&self.state).await;
                 self.last_usage = outcome.usage;
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
                 self.queue_distill(TurnRecord {
@@ -627,6 +642,7 @@ impl SessionActor {
             }
             Err(e) => {
                 self.state = AgentState::Failed(e.clone());
+                self.hooks.observe(&self.state).await;
                 warn!("turn failed: {e}");
                 // `run_turn` emits its own display line before every Err —
                 // a SystemMessage for cancel, an Error for transport and
@@ -1260,6 +1276,7 @@ impl SessionActor {
                 // but dropping the oneshot fails it fast either way.
                 self.ask_channel.clear();
                 self.state = AgentState::Finished;
+                self.hooks.observe(&self.state).await;
                 let _ = self
                     .io
                     .ui_tx

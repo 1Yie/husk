@@ -131,7 +131,12 @@ impl McpClient {
     /// Spawn + handshake + initial `tools/list` (+ resources/prompts when
     /// the server declares them).
     pub async fn start(manifest: &PluginManifest) -> Result<Arc<Self>> {
-        let entry = &manifest.entry;
+        // No `entry` = a pure plugin (host-side capabilities only) — there is
+        // nothing to connect and this constructor should never have run.
+        let entry = manifest
+            .entry
+            .as_ref()
+            .context("manifest has no `entry` — not a server-backed plugin")?;
 
         // HTTP transport — `entry.url` means streamable HTTP instead of a
         // spawned child. No env/stdin machinery applies.
@@ -585,8 +590,9 @@ impl McpClient {
 /// would also match — erring toward refuse is the safe side).
 /// `env:VAR` indirection → resolve from the host environment, refusing
 /// secret-shaped names (same policy as manifest env vars). Plain values
-/// pass through untouched.
-fn resolve_indirect(val: &str, kind: &str) -> String {
+/// pass through untouched. Shared with the hook runner (`hooks.rs`), which
+/// gives a hook command the same env posture as an MCP child.
+pub(crate) fn resolve_indirect(val: &str, kind: &str) -> String {
     match val.strip_prefix("env:") {
         Some(name) => {
             if host_env_is_secret(name) {

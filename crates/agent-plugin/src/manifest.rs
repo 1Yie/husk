@@ -6,7 +6,27 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-/// Runtime kind.
+/// Lifecycle events a hook can declare — the `AgentHook` trait's methods,
+/// spelled for a manifest. Anything else is a manifest error.
+pub const HOOK_EVENTS: [&str; 5] = [
+    "on_user_input",
+    "before_tool_execute",
+    "after_tool_execute",
+    "on_state_transition",
+    "on_response",
+];
+
+/// Per-hook latency budget when the manifest does not set `timeout_ms` —
+/// matches `agent_kernel::hooks::HOOK_TIMEOUT`.
+pub const HOOK_DEFAULT_TIMEOUT_MS: u64 = 2_000;
+/// Upper bound a manifest `timeout_ms` is clamped to — a hook sits in the
+/// turn's critical path at two of the four events, so it can't stall a turn
+/// for as long as it likes.
+pub const HOOK_MAX_TIMEOUT_MS: u64 = 10_000;
+
+/// Runtime kind — only meaningful when `entry` is present. A manifest that
+/// declares no `entry` is a pure plugin (host-side capabilities like hooks):
+/// there is no connection, so there is no kind to pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginKind {
@@ -54,20 +74,65 @@ pub struct HookDecl {
     /// `before_tool_execute` / `after_tool_execute` / `on_user_input` /
     /// `on_state_transition`.
     pub event: String,
+    /// Narrow the hook to one tool (`{"tool": "bash"}`) or one state
+    /// (`{"state": "Failed"}`). Absent = every occurrence of the event.
     #[serde(default)]
     pub filter: Option<serde_json::Value>,
+    /// The command to spawn — the hook's whole implementation. Required:
+    /// interception happens by running this, so a declaration without one
+    /// would be a hook that can never fire.
+    #[serde(default)]
+    pub run: Option<HookRun>,
+    /// Latency budget; defaults to [`HOOK_DEFAULT_TIMEOUT_MS`], capped at
+    /// [`HOOK_MAX_TIMEOUT_MS`].
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
-/// `manifest.json` — one per plugin directory.
+/// How a hook is executed — a local command, same posture as an MCP child
+/// (`mcp.rs`): declared env only, `kill_on_drop`, pdeathsig on Linux.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HookRun {
+    /// Executable. A relative path resolves against the plugin's own
+    /// directory, so `"./guard.sh"` means the script shipped next to the
+    /// manifest rather than something on `PATH`.
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Literal values, plus `env:VAR` indirection into the host environment
+    /// — secret-shaped host vars are refused (see `mcp::resolve_indirect`).
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
+impl HookDecl {
+    /// Effective latency budget — manifest value, defaulted and clamped.
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+            .unwrap_or(HOOK_DEFAULT_TIMEOUT_MS)
+            .clamp(1, HOOK_MAX_TIMEOUT_MS)
+    }
+}
+
+/// `manifest.json` — one per plugin directory. Two independent halves:
+/// `entry` bridges to a server (MCP), `capabilities` extends the kernel in
+/// the host (hooks today). A manifest may carry either or both — a plugin is
+/// not a kind of MCP server.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PluginManifest {
     pub id: String,
     pub name: String,
     #[serde(default = "v1")]
     pub version: String,
-    pub kind: PluginKind,
-    /// wasm: file path; mcp: `{ "command": "npx", "args": [...] }`.
-    pub entry: serde_json::Value,
+    /// Which runtime `entry` runs under — absent defaults to MCP when an
+    /// entry exists, meaningless without one.
+    #[serde(default)]
+    pub kind: Option<PluginKind>,
+    /// The bridge to a server — wasm: file path; mcp: `{ "command": "npx",
+    /// "args": [...] }` or `{ "url": ... }`. Absent = pure plugin: nothing to
+    /// connect, only host-side capabilities.
+    #[serde(default)]
+    pub entry: Option<serde_json::Value>,
     #[serde(default)]
     pub permissions: PluginPermissions,
     #[serde(default)]
@@ -95,18 +160,73 @@ pub struct Capabilities {
 }
 
 impl PluginManifest {
-    /// Validate structural rules (schema validity, wasm-only hooks…).
+    /// Validate structural rules (hook declarations, schema validity).
     pub fn validate(&self) -> Result<(), String> {
         if self.id.is_empty() {
             return Err("manifest id empty".into());
         }
-        // Hooks are WASM-only (plugin-system.md: MCP has no interception
-        // semantics — stdio latency + no interception model).
-        if self.kind == PluginKind::Mcp && !self.capabilities.hooks.is_empty() {
-            return Err(format!(
-                "MCP plugin `{}` declares hooks — MCP cannot hook",
-                self.id
-            ));
+        // A manifest that neither bridges to a server nor extends the kernel
+        // is dead weight — refuse it rather than loading an inert entry.
+        let c = &self.capabilities;
+        if self.entry.is_none()
+            && c.tools.is_empty()
+            && c.context_providers.is_empty()
+            && c.commands.is_empty()
+            && c.hooks.is_empty()
+        {
+            return Err("manifest needs an `entry` or a declared capability".into());
+        }
+        // Hooks are LOCAL commands, so they are not bound to the plugin's
+        // runtime kind — an MCP plugin declares them just as freely, because
+        // interception happens in the host, not over the MCP connection.
+        for h in &self.capabilities.hooks {
+            if !HOOK_EVENTS.contains(&h.event.as_str()) {
+                return Err(format!(
+                    "hook event `{}` is not one of {HOOK_EVENTS:?}",
+                    h.event
+                ));
+            }
+            let Some(run) = &h.run else {
+                return Err(format!(
+                    "hook `{}` declares no `run` command — a hook with nothing \
+                     to execute can never fire",
+                    h.event
+                ));
+            };
+            if run.command.trim().is_empty() {
+                return Err(format!("hook `{}` has an empty `run.command`", h.event));
+            }
+            // A filter key that no event consults would read as "narrowed to
+            // nothing" while silently matching everything — refuse it.
+            if let Some(filter) = &h.filter {
+                let Some(obj) = filter.as_object() else {
+                    return Err(format!("hook `{}` filter must be an object", h.event));
+                };
+                for (k, v) in obj {
+                    let expected = match h.event.as_str() {
+                        "before_tool_execute" | "after_tool_execute" => "tool",
+                        "on_state_transition" => "state",
+                        _ => {
+                            return Err(format!(
+                                "hook `{}` takes no filter (got `{k}`)",
+                                h.event
+                            ))
+                        }
+                    };
+                    if k != expected {
+                        return Err(format!(
+                            "hook `{}` filter key `{k}` is not `{expected}`",
+                            h.event
+                        ));
+                    }
+                    if !v.is_string() {
+                        return Err(format!("hook `{}` filter `{k}` must be a string", h.event));
+                    }
+                }
+                if obj.is_empty() {
+                    return Err(format!("hook `{}` filter is empty", h.event));
+                }
+            }
         }
         // Tool parameter schemas must be objects.
         for t in &self.capabilities.tools {
@@ -127,10 +247,10 @@ impl PluginManifest {
             id: id.to_string(),
             name: id.to_string(),
             version: "mcp".into(),
-            kind: PluginKind::Mcp,
-            entry: serde_json::json!({
+            kind: Some(PluginKind::Mcp),
+            entry: Some(serde_json::json!({
                 "command": e.command, "args": e.args, "env": e.env,
-            }),
+            })),
             permissions: PluginPermissions::default(),
             capabilities: Capabilities::default(),
             sandboxed: e.sandboxed.unwrap_or(false),
@@ -149,4 +269,130 @@ pub struct McpServerEntry {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub sandboxed: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest_with(hooks: serde_json::Value) -> PluginManifest {
+        serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "p", "kind": "mcp",
+            "entry": {"command": "npx"},
+            "capabilities": {"hooks": hooks},
+        }))
+        .expect("manifest parses")
+    }
+
+    /// An MCP plugin may declare hooks: interception is a local command, so
+    /// the MCP connection has nothing to do with it. (The old rule rejected
+    /// every MCP hook outright.)
+    #[test]
+    fn mcp_plugin_may_declare_a_hook() {
+        let m = manifest_with(serde_json::json!([
+            {"event": "before_tool_execute",
+             "run": {"command": "./guard.sh"},
+             "filter": {"tool": "bash"}}
+        ]));
+        assert!(m.validate().is_ok());
+        assert_eq!(m.capabilities.hooks[0].timeout_ms(), HOOK_DEFAULT_TIMEOUT_MS);
+    }
+
+    /// A declaration with nothing to execute can never fire — refuse it
+    /// rather than registering a hook that is silently dead.
+    #[test]
+    fn hook_without_run_is_refused() {
+        let m = manifest_with(serde_json::json!([{"event": "on_user_input"}]));
+        assert!(m.validate().unwrap_err().contains("no `run`"));
+    }
+
+    #[test]
+    fn unknown_event_is_refused() {
+        let m = manifest_with(serde_json::json!([
+            {"event": "before_model_call", "run": {"command": "x"}}
+        ]));
+        assert!(m.validate().unwrap_err().contains("not one of"));
+    }
+
+    /// A filter key the event never consults would match everything while
+    /// reading as narrowed — the worst of both.
+    #[test]
+    fn filter_keys_are_checked_against_the_event() {
+        for (event, filter, needle) in [
+            ("before_tool_execute", serde_json::json!({"state": "Failed"}), "`tool`"),
+            ("on_state_transition", serde_json::json!({"tool": "bash"}), "`state`"),
+            ("on_user_input", serde_json::json!({"tool": "bash"}), "no filter"),
+        ] {
+            let m = manifest_with(serde_json::json!([
+                {"event": event, "run": {"command": "x"}, "filter": filter}
+            ]));
+            let err = m.validate().unwrap_err();
+            assert!(err.contains(needle), "event {event}: {err}");
+        }
+        // …and the legitimate shapes pass.
+        assert!(manifest_with(serde_json::json!([
+            {"event": "on_state_transition",
+             "run": {"command": "x"}, "filter": {"state": "Failed"}}
+        ]))
+        .validate()
+        .is_ok());
+    }
+
+    /// The timeout is bounded on both ends — a manifest can't ask for a
+    /// hook that outlives the turn.
+    #[test]
+    fn timeout_is_defaulted_and_clamped() {
+        let m = manifest_with(serde_json::json!([
+            {"event": "on_user_input", "run": {"command": "x"}, "timeout_ms": 999_999}
+        ]));
+        assert_eq!(m.capabilities.hooks[0].timeout_ms(), HOOK_MAX_TIMEOUT_MS);
+
+        let m = manifest_with(serde_json::json!([
+            {"event": "on_user_input", "run": {"command": "x"}, "timeout_ms": 0}
+        ]));
+        assert_eq!(m.capabilities.hooks[0].timeout_ms(), 1);
+    }
+
+    /// `run` carries args + env like an MCP entry does.
+    #[test]
+    fn run_command_parses_args_and_env() {
+        let m = manifest_with(serde_json::json!([
+            {"event": "after_tool_execute",
+             "run": {"command": "python3", "args": ["h.py"], "env": {"MODE": "strict"}}}
+        ]));
+        assert!(m.validate().is_ok());
+        let run = m.capabilities.hooks[0].run.as_ref().unwrap();
+        assert_eq!(run.command, "python3");
+        assert_eq!(run.args, vec!["h.py".to_string()]);
+        assert_eq!(run.env.get("MODE").map(String::as_str), Some("strict"));
+    }
+
+    /// A plugin is not a kind of MCP server: hooks-only manifests carry no
+    /// `kind` and no `entry` — there is no runtime and nothing to connect.
+    #[test]
+    fn hooks_only_manifest_needs_neither_kind_nor_entry() {
+        let m: PluginManifest = serde_json::from_value(serde_json::json!({
+            "id": "guard", "name": "Guard",
+            "capabilities": {"hooks": [
+                {"event": "on_user_input", "run": {"command": "./h.sh"}}
+            ]},
+        }))
+        .unwrap();
+        assert!(m.kind.is_none() && m.entry.is_none());
+        assert!(m.validate().is_ok());
+    }
+
+    /// …but a manifest with NOTHING — no bridge, no capability — is dead
+    /// weight, and dead weight gets refused instead of silently inert.
+    #[test]
+    fn empty_manifest_is_refused() {
+        let m: PluginManifest = serde_json::from_value(serde_json::json!({
+            "id": "nothing", "name": "Nothing",
+        }))
+        .unwrap();
+        assert!(m
+            .validate()
+            .unwrap_err()
+            .contains("entry` or a declared capability"));
+    }
 }

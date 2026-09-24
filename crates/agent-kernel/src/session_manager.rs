@@ -158,6 +158,9 @@ pub struct SessionManager {
     /// session's engine gets this router, so plugin tools are advertised and
     /// dispatchable in the ReAct loop. `None` = no manifest discovered.
     plugins: Option<crate::engine::PluginHandle>,
+    /// Plugin-declared lifecycle hooks, shared with every session's engine
+    /// and rebuilt in place by `reload_plugins`.
+    hooks: crate::hooks::HookChain,
     /// Sidebar metadata (persisted index + live preview overrides).
     pub metas: Vec<SessionMeta>,
     /// The session the stream is showing.
@@ -231,12 +234,14 @@ impl SessionManager {
         // session resumed below is built with the router. `load_all` bounds
         // each registration (8 s) and skips failures, and an empty plugin dir
         // is skipped without even creating a runtime.
+        let hooks = crate::hooks::HookChain::new();
         let plugins = cwd.as_ref().map(|root| {
             let handle: crate::engine::PluginHandle = Arc::new(std::sync::RwLock::new(None));
-            *handle.write().unwrap() = Self::load_plugins(root);
+            *handle.write().unwrap() = Self::load_plugins(root, &hooks);
             handle
         });
         let plugins_for_manager = plugins;
+        let hooks_for_manager = hooks;
 
         // Empty boot: inert store, no actors, no metas.
         let Some(cwd) = cwd else {
@@ -260,6 +265,7 @@ impl SessionManager {
             }
             let mgr = Self {
                 plugins: plugins_for_manager.clone(),
+                hooks: hooks_for_manager,
                 metas: Vec::new(),
                 store,
                 provider_cfg: cfg,
@@ -335,6 +341,7 @@ impl SessionManager {
 
         let mut mgr = Self {
             plugins: plugins_for_manager,
+            hooks: hooks_for_manager,
             metas: store.list(),
             store,
             provider_cfg: cfg,
@@ -741,6 +748,10 @@ impl SessionManager {
         let steer_tx = actor.steer_writer();
         let cancel = actor.cancel_writer();
 
+        // Lifecycle hooks, installed before the actor starts: the shared chain
+        // may gain hooks later (`reload_plugins`) without a restart.
+        actor.set_hooks(self.hooks.clone());
+
         // Actor run() on its own tokio thread — a background session keeps
         // running its turn while the UI shows another session.
         std::thread::Builder::new()
@@ -1009,13 +1020,25 @@ impl SessionManager {
 
     /// Discover + register every MCP server for `root`. `None` when there is
     /// nothing to load, so an empty plugin dir costs no runtime.
-    fn load_plugins(root: &std::path::Path) -> Option<Arc<agent_plugin::PluginManager>> {
+    ///
+    /// The plugins' lifecycle hooks are installed into `hooks` — the shared
+    /// chain every session's engine holds a clone of.
+    fn load_plugins(
+        root: &std::path::Path,
+        hooks: &crate::hooks::HookChain,
+    ) -> Option<Arc<agent_plugin::PluginManager>> {
         if agent_plugin::discover(root).is_empty() {
+            hooks.replace(Vec::new());
             return None;
         }
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let mgr = rt.block_on(agent_plugin::load_all(root));
-        tracing::info!(tools = mgr.exported_tools().len(), "MCP plugins loaded");
+        hooks.replace(crate::hooks::manifest_hooks(mgr.hook_specs()));
+        tracing::info!(
+            tools = mgr.exported_tools().len(),
+            hooks = hooks.len(),
+            "MCP plugins loaded"
+        );
         Some(Arc::new(mgr))
     }
 
@@ -1028,7 +1051,7 @@ impl SessionManager {
     pub fn reload_plugins(&self) -> Vec<serde_json::Value> {
         match &self.plugins {
             Some(handle) => {
-                let loaded = Self::load_plugins(&self.workspace_root);
+                let loaded = Self::load_plugins(&self.workspace_root, &self.hooks);
                 let summary = loaded.as_ref().map(|m| m.status()).unwrap_or_default();
                 *handle.write().unwrap() = loaded;
                 summary
@@ -1078,6 +1101,40 @@ impl SessionManager {
         }
     }
 
+    /// Grant a repo-local plugin consent to load (settings UI). Without this
+    /// its manifest is discovered but never registered — and a plugin hook is
+    /// local code, so an untrusted checkout must not run one.
+    ///
+    /// The grant is persisted (`plugin-trust.json`) and the live router is
+    /// rebuilt so the plugin loads without an app restart.
+    pub fn trust_plugin(&self, id: &str) -> Result<Vec<serde_json::Value>, String> {
+        if self.plugins.is_none() {
+            return Err("plugin router not installed for this workspace".into());
+        }
+        // Record the grant first, then reload: the load path reads grants from
+        // disk, so persisting before it runs is what makes the plugin load.
+        let path = agent_plugin::trust_store_path().ok_or("no config dir for the trust store")?;
+        let mut store = agent_plugin::TrustStore::load(&path);
+        store.trust(id, &self.workspace_root);
+        store.save(&path);
+        Ok(self.reload_plugins())
+    }
+
+    /// Toggle a plugin/MCP's enabled flag — persists to `plugin-state.json`,
+    /// then reloads so its hooks stop firing and its tools stop advertising
+    /// without an app restart. Same write-then-reload shape as `trust_plugin`:
+    /// the load path reads the store from disk.
+    pub fn set_plugin_enabled(&self, id: &str, enabled: bool) -> Result<Vec<serde_json::Value>, String> {
+        if self.plugins.is_none() {
+            return Err("plugin router not installed for this workspace".into());
+        }
+        let path = agent_plugin::disabled_store_path().ok_or("no config dir for the state store")?;
+        let mut store = agent_plugin::DisabledStore::load(&path);
+        store.set(id, !enabled);
+        store.save(&path);
+        Ok(self.reload_plugins())
+    }
+
     /// Delete a discovered plugin's directory (settings UI). The path comes
     /// from discovery, so an id can never point outside the plugins dirs.
     pub fn remove_plugin(workspace_root: &std::path::Path, id: &str) -> Result<(), String> {
@@ -1095,8 +1152,8 @@ impl SessionManager {
     }
 
     /// Discovered MCP/plugin manifests for the settings UI — reads
-    /// `manifest.json` files under `~/.config/husk/plugins/` and
-    /// `<repo>/.agent/plugins/`. Listing only: this never spawns a server.
+    /// `manifest.json` files under `~/.config/husk/{plugins,mcp}/` and
+    /// `<repo>/.husk/{plugins,mcp}/`. Listing only: this never spawns a server.
     pub fn plugin_overview(&self) -> Vec<serde_json::Value> {
         // Live state of the connections loaded at boot (`spawn_at`) — memory
         // only. Reconnecting here would open a fresh MCP session per plugin on
@@ -1120,20 +1177,66 @@ impl SessionManager {
             let Ok(text) = std::fs::read_to_string(&mpath) else {
                 continue;
             };
-            let Ok(m) = serde_json::from_str::<agent_plugin::PluginManifest>(&text) else {
+            let Ok(mut m) = serde_json::from_str::<agent_plugin::PluginManifest>(&text) else {
                 continue;
             };
+            // `dir` is serde-skipped — refill it the way `load_all` does, or
+            // `repoLocal`/`dir` below are computed off an empty path.
+            m.dir = mpath.parent().map(|p| p.to_path_buf()).unwrap_or_default();
             let id = m.id.clone();
             let st = live.get(&id);
             let field = |k: &str| st.map(|v| v[k].clone()).unwrap_or(serde_json::Value::Null);
+            // Repo-local manifests are inert until trusted — the card has to
+            // be able to say so, and to show what a trusted plugin would run.
+            let mgr = self
+                .plugins
+                .as_ref()
+                .and_then(|h| h.read().ok().and_then(|g| g.clone()));
+            let trusted = mgr
+                .as_ref()
+                .map(|m| m.trust.is_trusted(&id, &self.workspace_root))
+                .unwrap_or(false);
+            // The toggle binds the PERSISTED intent, not the live flag — a
+            // failed or untrusted plugin reads "on" (it would run once the
+            // blocker clears), because live `enabled` being false there says
+            // nothing about what the user asked for.
+            let enabled = mgr.as_ref().map(|m| !m.is_disabled(&id)).unwrap_or(true);
+            let repo_local = m.dir.starts_with(self.workspace_root.join(".husk"));
+            // A plugin that never loaded has no live status — and a
+            // TRUST-REFUSED one lands in `errors`, where `status()` emits
+            // `hooks: []`. Treat both as "fall back to the manifest" so the
+            // card still shows the hooks that WOULD run.
+            let hooks = match field("hooks") {
+                live if live.as_array().map(|a| !a.is_empty()).unwrap_or(false) => live,
+                _ => serde_json::json!(m
+                    .capabilities
+                    .hooks
+                    .iter()
+                    .map(|h| serde_json::json!({
+                        "event": h.event,
+                        "command": h
+                            .run
+                            .as_ref()
+                            .map(|r| {
+                                std::iter::once(r.command.clone())
+                                    .chain(r.args.iter().cloned())
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            })
+                            .unwrap_or_default(),
+                    }))
+                    .collect::<Vec<_>>()),
+            };
             out.push(serde_json::json!({
                 "id": id,
                 "name": m.name,
                 "version": m.version,
-                "kind": match m.kind {
+                // `null` for a pure plugin — `kind` only exists when there is
+                // an `entry` for it to describe.
+                "kind": m.kind.map(|k| match k {
                     agent_plugin::PluginKind::Mcp => "mcp",
                     agent_plugin::PluginKind::Wasm => "wasm",
-                },
+                }),
                 "entry": m.entry,
                 // Live tool names from the loaded handshake (the manifest's
                 // own `capabilities.tools` is empty for HTTP servers).
@@ -1144,6 +1247,14 @@ impl SessionManager {
                 "connected": field("connected"),
                 "serverVersion": field("serverVersion"),
                 "error": field("error"),
+                // Lifecycle hooks the plugin declares — live list when it
+                // connected, the manifest's own declaration otherwise.
+                "hooks": hooks,
+                "trusted": trusted,
+                "repoLocal": repo_local,
+                // Persisted toggle intent — NOT the live `enabled` (which is
+                // also false for load failures and trust refusals).
+                "enabled": enabled,
             }));
         }
         out

@@ -7,6 +7,7 @@
 //! feature-gated — Wasmtime pulls a C toolchain against the single-binary
 //! constraint, so `wasm.rs` is a stub until the policy for it is decided.
 
+pub mod hooks;
 pub mod manager;
 pub mod manifest;
 pub mod mcp;
@@ -16,9 +17,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value;
 
-pub use manager::{discover, load_all, wire_tool_name, PluginInfo, PluginManager, TrustStore};
-pub use manifest::{McpServerEntry, PluginKind, PluginManifest};
+pub use manager::{
+    discover, disabled_store_path, load_all, trust_store_path, wire_tool_name, DisabledStore,
+    PluginInfo, PluginManager, TrustStore,
+};
+pub use manifest::{HookDecl, HookRun, McpServerEntry, PluginKind, PluginManifest, HOOK_EVENTS};
 pub use mcp::McpClient;
+pub use hooks::{hooks_from_manifest, CommandHook, InputVerdict, ToolVerdict};
 
 /// One plugin — WASM or MCP, mapped onto the same trait so the manager,
 /// permission pipeline, and tool router can't tell them apart.
