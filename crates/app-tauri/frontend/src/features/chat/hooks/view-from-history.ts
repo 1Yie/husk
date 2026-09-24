@@ -321,9 +321,10 @@ function foldMessage(
     // note, hook injections) is internal context and stays hidden.
     if (m.role === "system") {
       if (m.notice === "system")
-        v.items.push({ kind: "system", text: m.content ?? "", hi });
+        // Notices only exist between turns — replay them standalone.
+        v.items.push({ kind: "system", text: m.content ?? "", standalone: true, hi });
       else if (m.notice === "error")
-        v.items.push({ kind: "system", text: `⚠ ${m.content ?? ""}`, hi });
+        v.items.push({ kind: "system", text: `⚠ ${m.content ?? ""}`, standalone: true, hi });
       else if (m.notice === "compacted") {
         // The compaction card must replay exactly like the live
         // `Compacted` event drew it — numbers, summary, position.

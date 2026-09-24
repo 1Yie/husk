@@ -216,7 +216,9 @@ export function applyEvent(
       items: next,
       state: s,
       streaming,
-      ...(settled ? { pendingQuestion: undefined, turnStartedAt: undefined } : {}),
+      ...(settled
+        ? { pendingQuestion: undefined, turnStartedAt: undefined, turnOpen: false }
+        : {}),
     };
   }
   if ("CompactionStarted" in ev) {
@@ -248,6 +250,7 @@ export function applyEvent(
     return {
       ...v,
       items,
+      turnOpen: true,
       pendingQuestion: undefined,
       turnStartedAt: Date.now(),
       toksPerSec: 0,
@@ -457,7 +460,7 @@ export function applyEvent(
   }
   if ("SystemMessage" in ev) {
     closeOpenThinking(items);
-    items.push({ kind: "system", text: ev.SystemMessage });
+    items.push({ kind: "system", text: ev.SystemMessage, standalone: !v.turnOpen });
     return { ...v, items };
   }
   if ("Usage" in ev) {
@@ -524,7 +527,7 @@ export function applyEvent(
   }
   if ("Error" in ev) {
     closeOpenThinking(items);
-    items.push({ kind: "system", text: `⚠ ${ev.Error}` });
+    items.push({ kind: "system", text: `⚠ ${ev.Error}`, standalone: !v.turnOpen });
     return { ...v, items, streaming: false };
   }
   if ("QueuedPrompts" in ev) {

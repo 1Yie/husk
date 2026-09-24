@@ -566,24 +566,39 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
     }
 
     if (item.kind === "compaction") {
-      // A manual `/compact` is a user action BETWEEN turns, not part of the
-      // previous answer — it gets its own block instead of dangling off the
-      // last turn's tail (which is where it used to land, since it carries
-      // no prompt of its own). An automatic pass stays inside the turn it
-      // happened in: that IS where the model was working.
-      if (item.manual) {
-        flush(idx);
-        currentTurn = { id: turnId(item, idx), hi: item.hi, steps: [] };
-        turnStart = idx;
-      }
-      ensureTurn(item, idx).steps.push({
-        type: "compaction",
-        before: item.before,
-        after: item.after,
-        removed: item.removed,
-        note: item.note,
-        manual: item.manual,
-        pending: item.pending,
+      // A compaction pass is its own block, not turn content.
+      flush(idx);
+      out.push({
+        turn: {
+          id: turnId(item, idx),
+          hi: item.hi,
+          steps: [
+            {
+              type: "compaction",
+              before: item.before,
+              after: item.after,
+              removed: item.removed,
+              note: item.note,
+              manual: item.manual,
+              pending: item.pending,
+            },
+          ],
+        },
+        span: items.slice(idx, idx + 1),
+      });
+      continue;
+    }
+
+    // A between-turns notice is its own block below the previous turn.
+    if (item.kind === "system" && item.standalone) {
+      flush(idx);
+      out.push({
+        turn: {
+          id: turnId(item, idx),
+          hi: item.hi,
+          steps: [{ type: "system", text: item.text }],
+        },
+        span: items.slice(idx, idx + 1),
       });
       continue;
     }

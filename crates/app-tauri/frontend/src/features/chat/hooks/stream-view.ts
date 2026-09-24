@@ -56,7 +56,13 @@ export type StreamItem =
       approved?: boolean;
       hi?: number;
     }
-  | { kind: "system"; text: string; hi?: number }
+  | {
+      kind: "system";
+      text: string;
+      /** Emitted between turns — folds into its own block. */
+      standalone?: boolean;
+      hi?: number;
+    }
   | {
       kind: "compaction";
       /** Context estimate before the pass, in tokens. */
@@ -70,9 +76,7 @@ export type StreamItem =
       /** True while the pass is still running (`Compacting` saw it start,
        *  no `Compacted` yet) — the card renders as a progress placeholder. */
       pending?: boolean;
-      /** `true` = the user ran `/compact`. A manual pass renders as its own
-       *  block between turns; an automatic one stays inside the turn it
-       *  happened in. */
+      /** `true` = the user ran `/compact` — the card's "手动" badge. */
       manual?: boolean;
       ts?: number;
       hi?: number;
@@ -124,6 +128,10 @@ export interface SessionView {
   turnOffset?: number;
   state: AgentState | null;
   streaming: boolean;
+  /** A `UserPrompt` opened a turn no settled `StateChanged` has closed —
+   *  what `standalone` tags off (state alone can't tell: a manual
+   *  `/compact` is Compacting between turns). */
+  turnOpen: boolean;
   /** Epoch ms when the CURRENT turn began — stamped on `UserPrompt` /
    *  `TurnRetry`. The "this turn has been running Xs" statistic reads
    *  `Date.now() - turnStartedAt`; being a view field, it survives a session
@@ -161,6 +169,7 @@ export const emptyView = (): SessionView => ({
   queuedPrompts: [],
   state: null,
   streaming: false,
+  turnOpen: false,
   usage: { prompt: 0, completion: 0, contextWindow: 0, cachedTokens: 0 },
   toksPerSec: 0,
   rate: { chars: 0, activeMs: 0, lastAt: null },
