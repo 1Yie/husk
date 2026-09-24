@@ -323,6 +323,10 @@ fn build_messages_dev(
     }
 
     for m in messages {
+        // UI-only compaction card row — render metadata, never context.
+        if m.role == Role::System && m.notice == Some(NoticeKind::Compacted) {
+            continue;
+        }
         let mut v = serialize_message(m);
         if m.role == Role::System && m.notice == Some(NoticeKind::CompactedMemory) {
             // Compacted memory is historical context, not a live
@@ -752,6 +756,22 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1]["role"].as_str().unwrap(), "tool");
         assert_eq!(msgs[1]["tool_call_id"].as_str().unwrap(), "call_z");
+    }
+
+    #[test]
+    fn build_messages_drops_compaction_card_rows() {
+        // The persisted compaction card is UI metadata — dropped, not
+        // routed to `developer`/`system` like a plain notice.
+        let msgs = build_messages(&[
+            m(Role::System, "kernel"),
+            ChatMessage::compaction(120_000, 40_000, 30, "summary text"),
+            m(Role::User, "q"),
+        ]);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"].as_str().unwrap(), "system");
+        assert_eq!(msgs[1]["role"].as_str().unwrap(), "user");
+        let text = serde_json::to_string(&msgs).unwrap();
+        assert!(!text.contains("before_tokens"), "card JSON leaked to the wire");
     }
 
     #[test]

@@ -260,6 +260,26 @@ export async function viewFromHistoryChunked(
 
 type ToolInfo = { name: string; args: string; raw: string };
 
+/** Persisted `NoticeKind::Compacted` row → the card fields. The content is
+ * a JSON payload written by `ChatMessage::compaction`; a malformed/legacy
+ * row degrades to nothing rather than throwing out the whole replay. */
+function parseCompactionCard(content: string):
+  | { kind: "compaction"; before: number; after: number; removed: number; note: string }
+  | null {
+  try {
+    const p = JSON.parse(content);
+    return {
+      kind: "compaction",
+      before: Number(p.before_tokens) || 0,
+      after: Number(p.after_tokens) || 0,
+      removed: Number(p.removed_messages) || 0,
+      note: typeof p.note === "string" ? p.note : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** call_id → tool name/args index — one pass over `tool_calls` on the
  * preceding assistant messages. */
 function indexToolCalls(idToTool: Map<string, ToolInfo>, m: ChatMessage) {
@@ -296,6 +316,12 @@ function foldMessage(
         v.items.push({ kind: "system", text: m.content ?? "", hi });
       else if (m.notice === "error")
         v.items.push({ kind: "system", text: `⚠ ${m.content ?? ""}`, hi });
+      else if (m.notice === "compacted") {
+        // The compaction card must replay exactly like the live
+        // `Compacted` event drew it — numbers, summary, position.
+        const card = parseCompactionCard(m.content ?? "");
+        if (card) v.items.push({ ...card, ts: m.ts ?? undefined, hi });
+      }
       return;
     }
     if (m.role === "tool") {

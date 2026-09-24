@@ -232,6 +232,18 @@ pub enum UiEvent {
     },
     /// Session-fatal error.
     Error(String),
+    /// A compaction pass finished — older turns were folded into a summary
+    /// note. The UI draws a compaction card (before → after tokens, how
+    /// many messages were merged, the summary itself) and re-bases the
+    /// context meter on `after_tokens` immediately, instead of waiting for
+    /// the next sample's `Usage`.
+    Compacted {
+        before_tokens: u32,
+        after_tokens: u32,
+        removed_messages: u32,
+        context_window: u32,
+        note: String,
+    },
     /// A `Retry` command rewound the session to the last user prompt —
     /// the UI drops the retried turn's items before the fresh
     /// `UserPrompt` echo lands on the same stream.

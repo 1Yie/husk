@@ -106,6 +106,8 @@ impl OpenAiResponsesProvider {
         for m in messages {
             let text = m.content.clone().unwrap_or_default();
             match m.role {
+                // UI-only compaction card row — render metadata, never context.
+                Role::System if m.notice == Some(NoticeKind::Compacted) => {}
                 // The compaction memory note is historical context, not a
                 // live instruction — it occupies a user `input` position
                 // rather than folding into `instructions`. It still flushes

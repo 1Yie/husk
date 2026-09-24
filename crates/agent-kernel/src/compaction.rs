@@ -17,6 +17,22 @@
 
 use agent_llm::types::{ChatMessage, Role};
 
+/// What one completed compaction pass did — drives the UI card and the
+/// session's post-compaction accounting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionOutcome {
+    /// Estimated tokens across the history before the splice.
+    pub before_tokens: usize,
+    /// Estimated tokens after the splice (the note + verbatim suffix).
+    pub after_tokens: usize,
+    /// Messages folded into the note — `prefix_end - 1`, because
+    /// `history[0]` (the kernel system prompt) is never compacted.
+    pub removed_messages: usize,
+    /// The raw summary the compactor produced (unwrapped — `apply` frames
+    /// it for the wire).
+    pub note: String,
+}
+
 /// Fraction of `context_window` that triggers compaction.
 pub const COMPACT_AT: f32 = 0.80;
 /// Fraction at which a *prefire* Pass-1 summary may start (hidden latency).

@@ -456,11 +456,11 @@ impl Engine {
         {
             self.set_state(io, AgentState::Compacting);
             match self.compact_history(io, history).await {
-                Ok(()) => {
+                Ok(_) => {
+                    // The card row + `UiEvent::Compacted` already went out
+                    // from `compact_history` — no second system line here
+                    // (that duplicate was the whole visible feedback before).
                     self.compaction_suppressor.on_success();
-                    let line = format!("已压缩历史上下文（原约 {est} tokens）");
-                    let _ = io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                    history.push(ChatMessage::notice(line));
                 }
                 Err(e) => {
                     self.compaction_suppressor.on_failure();
@@ -1233,17 +1233,21 @@ impl Engine {
     /// new one (the compactor is told to merge, not stack).
     async fn compact_history(
         &mut self,
-        _io: &mut EngineIo,
+        io: &mut EngineIo,
         history: &mut Vec<ChatMessage>,
-    ) -> Result<(), String> {
+    ) -> Result<compaction::CompactionOutcome, String> {
+        let before_tokens = compaction::estimate_tokens(history);
         let plan =
             compaction::plan(history, self.context_window).ok_or("history too small to compact")?;
 
         // `history[0]` is the rendered kernel system prompt — it survives
         // compaction verbatim, so feeding it to the compactor only burns
         // input tokens and risks protocol language leaking into the note.
+        // `NoticeKind::Compacted` rows are UI cards, not conversation —
+        // feeding their JSON payload to the compactor is pure noise.
         let prefix_text: String = history[1..plan.prefix_end]
             .iter()
+            .filter(|m| m.notice != Some(agent_llm::types::NoticeKind::Compacted))
             .map(compaction::render_for_summary)
             .collect::<Vec<_>>()
             .join("\n---\n");
@@ -1296,12 +1300,38 @@ impl Engine {
         if note.trim().is_empty() {
             return Err("compactor returned empty note".into());
         }
-        compaction::apply(history, &plan, note);
+        let removed_messages = plan.prefix_end.saturating_sub(1);
+        compaction::apply(history, &plan, note.clone());
         // The pre-compact `prompt_tokens` is stale — reseed the actual-usage
         // signal with the post-splice estimate or the trigger would
         // immediately re-fire on the stale (large) figure.
-        self.last_prompt_tokens = compaction::estimate_tokens(history);
-        Ok(())
+        let after_tokens = compaction::estimate_tokens(history);
+        self.last_prompt_tokens = after_tokens;
+        // Persist the display row at the point in the stream where the
+        // compaction happened (mid-turn: right after the live user turn) —
+        // replay then draws the card in the same place the live event did.
+        history.push(ChatMessage::compaction(
+            before_tokens as u32,
+            after_tokens as u32,
+            removed_messages as u32,
+            &note,
+        ));
+        // Card + meter in one event: the stream gets the summary, the
+        // title-bar fill drops to the post-splice figure now instead of at
+        // the next sample's `Usage`.
+        let _ = io.ui_tx.send(UiEvent::Compacted {
+            before_tokens: before_tokens as u32,
+            after_tokens: after_tokens as u32,
+            removed_messages: removed_messages as u32,
+            context_window: self.context_window as u32,
+            note: note.clone(),
+        });
+        Ok(compaction::CompactionOutcome {
+            before_tokens,
+            after_tokens,
+            removed_messages,
+            note,
+        })
     }
 
     /// Manual `/compact` — bypasses the threshold AND the suppressor (the
@@ -1311,11 +1341,11 @@ impl Engine {
         &mut self,
         io: &mut EngineIo,
         history: &mut Vec<ChatMessage>,
-    ) -> Result<(), String> {
+    ) -> Result<compaction::CompactionOutcome, String> {
         match self.compact_history(io, history).await {
-            Ok(()) => {
+            Ok(outcome) => {
                 self.compaction_suppressor.on_success();
-                Ok(())
+                Ok(outcome)
             }
             Err(e) => {
                 self.compaction_suppressor.on_failure();

@@ -447,6 +447,35 @@ export function applyEvent(
       },
     };
   }
+  if ("Compacted" in ev) {
+    // A compaction pass landed. Draw the card where it happened and re-base
+    // the context meter NOW — the next `Usage` (end of this turn) would
+    // otherwise be the first truthful reading, leaving the header showing
+    // the pre-compaction fill for the rest of the turn.
+    closeOpenThinking(items);
+    const c = ev.Compacted;
+    items.push({
+      kind: "compaction",
+      before: c.before_tokens,
+      after: c.after_tokens,
+      removed: c.removed_messages,
+      note: c.note,
+      ts: Date.now(),
+    });
+    return {
+      ...v,
+      items,
+      usage: {
+        ...v.usage,
+        prompt: c.after_tokens,
+        // The pre-compaction cache reading describes a request body that no
+        // longer exists — leaving it would make the uncached chip under-read
+        // until the next `Usage` lands.
+        cachedTokens: 0,
+        ...(c.context_window > 0 ? { contextWindow: c.context_window } : {}),
+      },
+    };
+  }
   if ("Error" in ev) {
     closeOpenThinking(items);
     items.push({ kind: "system", text: `⚠ ${ev.Error}` });

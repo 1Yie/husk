@@ -89,6 +89,8 @@ fn build_messages(messages: &[ChatMessage]) -> (String, Vec<serde_json::Value>) 
     while i < messages.len() {
         let m = &messages[i];
         match m.role {
+            // UI-only compaction card row — render metadata, never context.
+            Role::System if m.notice == Some(NoticeKind::Compacted) => {}
             // The compaction memory note is historical context, not a live
             // instruction — emit it as a user message instead of folding it
             // into the top-level `system` prompt. `push_user` merges it into
@@ -393,6 +395,22 @@ impl LlmProvider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compaction_card_row_is_dropped_from_the_wire() {
+        // The card row is UI render metadata (a JSON payload) — it must
+        // never reach the provider, neither as system text nor as a user
+        // turn.
+        let (system, out) = build_messages(&[
+            ChatMessage::system("kernel"),
+            ChatMessage::compaction(120_000, 40_000, 30, "summary text"),
+            ChatMessage::user("q"),
+        ]);
+        assert_eq!(system, "kernel");
+        assert_eq!(out.len(), 1);
+        let text = serde_json::to_string(&out).unwrap();
+        assert!(!text.contains("before_tokens"), "card JSON leaked to the wire");
+    }
 
     #[test]
     fn compacted_memory_lands_in_user_not_system() {

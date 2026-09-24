@@ -42,6 +42,7 @@ import { loadStamp } from "@/lib/load-probe";
 import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "@/lib/agent-ipc/sessions";
 import { retryTurn } from "@/lib/agent-ipc/commands";
+import { CompactionCard } from "@/features/chat/components/chat-stream/compaction-card";
 
 const BUILTIN_COMMANDS_DESC: Record<string, string> = {
   clear: "清空会话历史",
@@ -294,6 +295,9 @@ function getAssistantPreview(steps: AssistantStep[]): string {
     }
   }
   for (const step of steps) {
+    if (step.type === "compaction") return "上下文已压缩";
+  }
+  for (const step of steps) {
     if (step.type === "system" && step.text.trim()) {
       return step.text.trim();
     }
@@ -328,6 +332,13 @@ type AssistantStep =
   | { type: "thinking"; text: string; done: boolean; startedAt?: number }
   | { type: "text"; text: string; streaming: boolean }
   | { type: "tools"; rows: ToolChipRow[]; startedAt?: number }
+  | {
+      type: "compaction";
+      before: number;
+      after: number;
+      removed: number;
+      note: string;
+    }
   | { type: "system"; text: string };
 
 interface Turn {
@@ -585,6 +596,17 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
       continue;
     }
 
+    if (item.kind === "compaction") {
+      t.steps.push({
+        type: "compaction",
+        before: item.before,
+        after: item.after,
+        removed: item.removed,
+        note: item.note,
+      });
+      continue;
+    }
+
     if (item.kind === "tool" || item.kind === "approval") {
       // Batch children — attach to the nearest preceding batch_execute
       // row in the current step instead of counting as a top-level call.
@@ -716,6 +738,7 @@ const STEP_LABEL: Record<AssistantStep["type"], string> = {
   thinking: "思考",
   text: "输出",
   tools: "工具",
+  compaction: "压缩",
   system: "提示",
 };
 
@@ -736,6 +759,9 @@ function clipPreview(text: string, max = 160): string {
  *  (`detail` — streamed text, report, diff, log) is what makes a turn long to
  *  scroll, not its prose. */
 function stepWeight(step: AssistantStep): number {
+  // The compaction card is a fixed-height header; the expandable summary
+  // counts only once its own toggle opens (not part of the collapse weight).
+  if (step.type === "compaction") return 160;
   if (step.type !== "tools") return step.text.length;
   let n = 0;
   for (const row of step.rows) {
@@ -905,6 +931,23 @@ const ChatTurn = memo(function ChatTurn({
                   className="text-xs text-neutral-500 font-mono py-1 select-none"
                 >
                   {step.text}
+                </div>
+              );
+            }
+
+            if (step.type === "compaction") {
+              return (
+                <div
+                  key={`step-${stepIdx}`}
+                  id={`chat-turn-${turn.id}-step-${stepIdx}`}
+                  className="w-full min-w-0"
+                >
+                  <CompactionCard
+                    before={step.before}
+                    after={step.after}
+                    removed={step.removed}
+                    note={step.note}
+                  />
                 </div>
               );
             }
