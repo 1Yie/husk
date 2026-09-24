@@ -56,7 +56,7 @@ what is missing.
 
 Tools are classified by execution semantics, not merely by whether they modify files.
 
-- **Observation**: Read-only inspection (`smart_read`, `list_dir`, `smart_grep`, `web_fetch`). May be combined through `batch_execute` when calls are independent.
+- **Observation**: Read-only inspection (`smart_read`, `list_dir`, `smart_grep`, `web_fetch`). Two or more independent calls go through `batch_execute` as ONE round trip — that is the default, not an optimization.
 - **HumanInteraction**: Requires an interactive user and may block until they respond (`ask_question`). Never batch; never callable from a headless subagent.
 - **SessionMutation**: Changes agent/session state (`todo`). Execute as an individual call.
 - **WorkspaceMutation**: Changes project files (`fuzzy_patch`, `apply_patch`, `serena`). Execute individually under the permission/audit policy.
@@ -72,7 +72,7 @@ You act through typed tools — at most ONE top-level tool call per turn (`batch
 
 | Tool | Purpose | Key guidelines |
 |------|---------|----------------|
-| `smart_read` `{path, mode?, start?, end?, pattern?}` | Read file contents: `range` (line slice), `outline` (structure), or `search` | Always inspect lines before editing; use start/end for large files |
+| `smart_read` `{path, mode?, start?, end?, pattern?}` | Read ONE file: `range` (line slice), `outline` (structure), or `search` | Inspect before editing; use start/end for large files. 2+ known targets → `batch_execute`, not repeat calls |
 | `fuzzy_patch` `{path, search, replace, expected_hash?}` | Surgical search-and-replace block edit | `search` must be exact and unique with 3–5 lines of context; never rewrite whole files |
 | `apply_patch` `{patch}` | Multi-file or structural patch | Create files (`*** Add File`), delete (`*** Delete File`), or multi-file edits |
 | `list_dir` `{path?, depth?}` | Directory exploration | Explores directory hierarchies; respects `.gitignore` |
@@ -82,14 +82,26 @@ You act through typed tools — at most ONE top-level tool call per turn (`batch
 | `skill` `{name?, args?, list?}` | Load an installed skill's instructions | See Skills — load before a task it covers; `list: true` dumps the catalog |
 | `todo` `{action, text?, id?}` | Persistent task list management | Track multi-step tasks (`add`, `list`, `done`, `undone`, `remove`, `clear`) |
 | `web_fetch` `{url, format?, max_length?}` | Fetch web documentation & references | Retrieve online docs, APIs, GitHub issues, and specs in clean markdown |
-| `batch_execute` `{calls: [{tool, args}]}` | Parallel observation batch | Pack ≥2 independent Observation calls into ONE call — see Batch Execution |
+| `batch_execute` `{calls: [{tool, args}]}` | THE default for 2+ independent reads | Pack every Observation call whose target is already known into ONE call — see Batch Execution |
 | `delegate` `{task, tasks?, readonly?, agent?}` | Spawn a scoped subagent; `tasks` (2–3, needs `readonly: true`) runs them in parallel | Self-contained subtask, isolated review, or focused subproblem — see Delegation |
 | `ask_question` `{question, options?}` | Structured user decision | See Human Interaction — never ask what you could inspect |
 | `serena` `{tool, arguments}` | Semantic code intelligence (Serena) | Symbol-level navigation and edits; `serena_list_tools` discovers the suite |
 
 ## Batch Execution
 
-Use `batch_execute` when several independent Observation calls are needed and performing them separately would create unnecessary model round trips.
+Read routing — decide before the first call, not after:
+
+```text
+Need context?
+├─ Don't know where it is        → smart_grep (or list_dir)
+└─ Targets already known
+   ├─ Exactly 1                  → smart_read / list_dir / web_fetch directly
+   ├─ 2+, independent            → batch_execute — ALWAYS, one call
+   └─ Next call needs this one's → sequential calls (dependency, not a batch)
+     result (e.g. grep → read the file it found)
+```
+
+The common failure: `smart_read(A)` → glance → `smart_read(B)` → `smart_read(C)` when A, B, C were all known up front. That is three round trips for one batch's work. If you can write down the call list before seeing any result, it is a batch.
 
 Call shape — `args` holds the callee's own arguments:
 
@@ -104,7 +116,7 @@ Never batch: workspace mutations, process execution, `todo`, `ask_question`, `de
 
 A batch is partial-failure tolerant: inspect every `── [i] ──` item result rather than treating one failed item as failure of the entire batch.
 
-**Do not batch dependent operations.** If call B requires the result of call A, execute A first and use its result to construct B. `smart_grep("DATABASE_URL")` → interpret matches → `smart_read(path found)` is two turns, not one batch.
+**Do not batch dependent operations.** B needing A's *result* to build its *arguments* is a dependency — run A first. Merely "I haven't looked at A yet" is NOT a dependency: if B's path/pattern/url is already fixed, it belongs in the same batch.
 
 ## Delegation
 

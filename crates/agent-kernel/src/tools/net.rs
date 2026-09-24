@@ -13,7 +13,6 @@
 //! `127.0.0.1` is refused. Bodies stream under a byte cap, and the caller's
 //! cancel flag is polled per hop and chunk.
 
-
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -80,7 +79,7 @@ pub fn is_public_ip(ip: &IpAddr) -> bool {
                 || o[0] == 0                      // 0.0.0.0/8 "this network"
                 || (o[0] == 100 && (o[1] & 0xC0) == 64)  // CGNAT 100.64/10
                 || (o[0] == 192 && o[1] == 0 && o[2] == 0)   // 192.0.0/24 IETF
-                || (o[0] == 198 && (o[1] & 0xFE) == 18))     // 198.18/15 benchmarks
+                || (o[0] == 198 && (o[1] & 0xFE) == 18)) // 198.18/15 benchmarks
         }
         IpAddr::V6(v6) => {
             // IPv4-mapped (::ffff:x.x.x.x) routes through the v4 rules.
@@ -131,7 +130,9 @@ pub async fn validate_url(url: &Url) -> Result<(), ToolError> {
         .map_err(|e| ToolError::Failed(format!("DNS lookup failed for '{host}': {e}")))?
         .collect();
     if addrs.is_empty() {
-        return Err(ToolError::Failed(format!("DNS lookup for '{host}' returned no addresses")));
+        return Err(ToolError::Failed(format!(
+            "DNS lookup for '{host}' returned no addresses"
+        )));
     }
     for addr in &addrs {
         let ip = addr.ip();
@@ -218,7 +219,13 @@ pub async fn fetch(
             body.extend_from_slice(&chunk);
         }
 
-        return Ok(FetchResponse { url, status, content_type, body, body_truncated });
+        return Ok(FetchResponse {
+            url,
+            status,
+            content_type,
+            body,
+            body_truncated,
+        });
     }
 
     Err(ToolError::Failed(format!(
@@ -237,10 +244,20 @@ mod tests {
     #[test]
     fn rejects_private_and_reserved_ips() {
         for bad in [
-            "127.0.0.1", "10.0.0.1", "172.16.5.4", "192.168.1.1",
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.5.4",
+            "192.168.1.1",
             "169.254.169.254", // cloud metadata endpoint
-            "0.0.0.0", "255.255.255.255", "100.64.1.1", "224.0.0.1",
-            "::1", "::", "fe80::1", "fd00::1", "ff02::1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "100.64.1.1",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fd00::1",
+            "ff02::1",
             "::ffff:127.0.0.1", // v4-mapped v6 still hits the v4 rules
         ] {
             assert!(!is_public_ip(&ip(bad)), "{bad} should be refused");
@@ -289,9 +306,6 @@ mod tests {
             base.join("/login").unwrap().as_str(),
             "https://example.com/login"
         );
-        assert_eq!(
-            base.join("../c").unwrap().as_str(),
-            "https://example.com/c"
-        );
+        assert_eq!(base.join("../c").unwrap().as_str(), "https://example.com/c");
     }
 }

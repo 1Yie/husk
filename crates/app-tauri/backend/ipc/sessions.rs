@@ -76,6 +76,9 @@ pub fn agent_session(
                 "turn_total": turns,
                 "turn_offset": turn_from,
                 "usage": mgr.store_usage(id),
+                // The composer's parked queue is session state — a rebuilt
+                // view seeds it from here; live updates ride `QueuedPrompts`.
+                "queued_prompts": mgr.store_queued(id),
             }))
         }
         // Older-history page: `payload.before` is the exclusive end index
@@ -106,7 +109,7 @@ pub fn agent_session(
             let (history, total, turns, turn_from) = mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
             let usage = mgr.store_usage(mgr.active_id);
             Ok(serde_json::json!({"active": mgr.active_id, "history": history, "history_total": total, "turn_total": turns,
-                "turn_offset": turn_from, "usage": usage}))
+                "turn_offset": turn_from, "usage": usage, "queued_prompts": mgr.store_queued(mgr.active_id)}))
         }
         // `fork` copies the source session's latest snapshot into a new
         // session and activates it — same return shape as `open`.
@@ -123,6 +126,7 @@ pub fn agent_session(
                         "turn_total": turns,
                 "turn_offset": turn_from,
                         "usage": mgr.store_usage(new_id),
+                        "queued_prompts": mgr.store_queued(new_id),
                     }))
                 }
                 None => Err("session has no history to fork yet".into()),
@@ -190,6 +194,7 @@ pub fn agent_session(
                     "turn_total": turns,
                 "turn_offset": turn_from,
                     "usage": mgr.store_usage(mgr.active_id),
+                    "queued_prompts": mgr.store_queued(mgr.active_id),
                     "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
                         serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
                     }).collect::<Vec<_>>(),
@@ -212,6 +217,7 @@ pub fn agent_session(
                 "turn_total": turns,
                 "turn_offset": turn_from,
                 "usage": mgr.store_usage(mgr.active_id),
+                "queued_prompts": mgr.store_queued(mgr.active_id),
                 "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
                     serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
                 }).collect::<Vec<_>>(),

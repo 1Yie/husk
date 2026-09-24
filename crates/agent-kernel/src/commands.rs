@@ -9,7 +9,6 @@
 //! composer leaves the literal token in the text and the kernel inlines the
 //! file's content or the skill's instructions before the prompt reaches history.
 
-
 use std::path::{Path, PathBuf};
 
 use agent_ipc::UiEvent;
@@ -61,12 +60,11 @@ impl CommandRegistry {
     /// (unknown `/x`/`$x` gets a hint but still feeds through as a prompt —
     /// the contract). `$` is a skill-only trigger: `$name` never matches
     /// built-ins, so `$clear` can't wipe history.
-    pub async fn try_run(
-        text: &str,
-        ctx: &mut CommandCtx<'_>,
-    ) -> Option<CommandResult> {
+    pub async fn try_run(text: &str, ctx: &mut CommandCtx<'_>) -> Option<CommandResult> {
         let t = text.trim();
-        let (name, args) = t.split_once(' ').map(|(n, a)| (n, a.trim()))
+        let (name, args) = t
+            .split_once(' ')
+            .map(|(n, a)| (n, a.trim()))
             .unwrap_or((t, ""));
         if let Some(cmd) = name.strip_prefix('/') {
             return Some(Self::dispatch(cmd, args, ctx));
@@ -83,9 +81,10 @@ impl CommandRegistry {
             let line = format!("`${skill_name}` 不是可用技能 — 已作为普通消息发送");
             let _ = ctx.ui_tx.send(UiEvent::SystemMessage(line.clone()));
             ctx.history.push(ChatMessage::notice(line));
-            return Some(CommandResult::FeedToAgent(
-                expand_user_tokens(t, ctx.workspace_root),
-            ));
+            return Some(CommandResult::FeedToAgent(expand_user_tokens(
+                t,
+                ctx.workspace_root,
+            )));
         }
         // Plain prompt — still expand `@path`/`$skill` mentions so the
         // model sees file contents / skill instructions, not bare tokens.
@@ -109,7 +108,8 @@ impl CommandRegistry {
                 // catalog is built from.
                 if skills.list().is_empty() {
                     CommandResult::Reply(
-                        "no skills found — add `.agents/skills/<name>/SKILL.md` to the workspace".into(),
+                        "no skills found — add `.agents/skills/<name>/SKILL.md` to the workspace"
+                            .into(),
                     )
                 } else {
                     CommandResult::Reply(skills.catalog_listing())
@@ -130,9 +130,7 @@ impl CommandRegistry {
                 // The session owns the tracker; command returns a reply
                 // asking the session to emit the file list (ControlOp could
                 // carry it, but Reply keeps the boundary simple).
-                CommandResult::Reply(
-                    "[/diff] file-change report is emitted by the session".into(),
-                )
+                CommandResult::Reply("[/diff] file-change report is emitted by the session".into())
             }
             _ => {
                 // Skill fallback — `/{name}` resolves against the workspace +
@@ -149,7 +147,10 @@ impl CommandRegistry {
                     let line = format!("`/{name}` 不是命令或技能 — 已作为普通消息发送");
                     let _ = ctx.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                     ctx.history.push(ChatMessage::notice(line));
-                    CommandResult::FeedToAgent(expand_user_tokens(&t_fallback(name, args), ctx.workspace_root))
+                    CommandResult::FeedToAgent(expand_user_tokens(
+                        &t_fallback(name, args),
+                        ctx.workspace_root,
+                    ))
                 }
             }
         }
@@ -158,7 +159,11 @@ impl CommandRegistry {
 
 /// Reassemble the original `/x args` text for the unknown-command fallthrough.
 fn t_fallback<'a>(name: &'a str, args: &'a str) -> String {
-    if args.is_empty() { format!("/{name}") } else { format!("/{name} {args}") }
+    if args.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("/{name} {args}")
+    }
 }
 
 /// Inline `@path` mentions — each `@rel/path` token is replaced by a fenced
@@ -199,7 +204,11 @@ fn expand_mentions(text: &str, root: &Path) -> String {
         for comp in rel.components() {
             use std::path::Component::*;
             match comp {
-                ParentDir => { if !norm.pop() { escapes = true; } }
+                ParentDir => {
+                    if !norm.pop() {
+                        escapes = true;
+                    }
+                }
                 CurDir => {}
                 Normal(c) => norm.push(c),
                 RootDir | Prefix(_) => escapes = true,
@@ -280,7 +289,11 @@ fn expand_skill_refs(text: &str, root: &Path) -> String {
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_');
         let resolved = looks_like_name
-            .then(|| crate::skills::SkillManager::new(root).load(token, None).ok())
+            .then(|| {
+                crate::skills::SkillManager::new(root)
+                    .load(token, None)
+                    .ok()
+            })
             .flatten();
         if let Some(skill) = resolved {
             out.push_str(&format!(
@@ -338,7 +351,10 @@ mod tests {
         let review = manager.load("review", None).unwrap();
         assert_eq!(review.description, "review code carefully");
         assert!(review.body.contains("Look for bugs."));
-        assert!(!review.body.contains("name:"), "front-matter must not reach the body");
+        assert!(
+            !review.body.contains("name:"),
+            "front-matter must not reach the body"
+        );
 
         // A no-front-matter skill still loads (name from the directory).
         let deploy = manager.load("deploy", None).unwrap();
@@ -382,7 +398,9 @@ mod tests {
             workspace_root: &root,
             ui_tx: &tx,
         };
-        let res = CommandRegistry::try_run("/review src/", &mut ctx).await.unwrap();
+        let res = CommandRegistry::try_run("/review src/", &mut ctx)
+            .await
+            .unwrap();
         match res {
             CommandResult::FeedToAgent(p) => assert!(p.contains("Skill arguments: src/")),
             _ => panic!("expected FeedToAgent"),
@@ -400,7 +418,9 @@ mod tests {
             workspace_root: &root,
             ui_tx: &tx,
         };
-        let res = CommandRegistry::try_run("/nonexistent", &mut ctx).await.unwrap();
+        let res = CommandRegistry::try_run("/nonexistent", &mut ctx)
+            .await
+            .unwrap();
         match res {
             CommandResult::FeedToAgent(p) => assert_eq!(p, "/nonexistent"),
             _ => panic!("expected FeedToAgent"),
@@ -418,7 +438,9 @@ mod tests {
             workspace_root: &root,
             ui_tx: &tx,
         };
-        let res = CommandRegistry::try_run("check @main.rs please", &mut ctx).await.unwrap();
+        let res = CommandRegistry::try_run("check @main.rs please", &mut ctx)
+            .await
+            .unwrap();
         match res {
             CommandResult::FeedToAgent(p) => {
                 assert!(p.contains("fn main() {}"), "inlined body missing: {p}");
@@ -465,7 +487,9 @@ mod tests {
             workspace_root: &root,
             ui_tx: &tx,
         };
-        let res = CommandRegistry::try_run("read @../outside.txt", &mut ctx).await.unwrap();
+        let res = CommandRegistry::try_run("read @../outside.txt", &mut ctx)
+            .await
+            .unwrap();
         match res {
             CommandResult::FeedToAgent(p) => {
                 assert!(p.contains("outside workspace"), "escape not blocked: {p}");
@@ -487,7 +511,9 @@ mod tests {
         };
         // `a@b` — the `@` isn't at a token boundary, so no expansion and the
         // text falls through unchanged (None → normal prompt path).
-        assert!(CommandRegistry::try_run("mail a@b.com", &mut ctx).await.is_none());
+        assert!(CommandRegistry::try_run("mail a@b.com", &mut ctx)
+            .await
+            .is_none());
     }
 
     #[test]
@@ -522,7 +548,9 @@ mod tests {
             ui_tx: &tx,
         };
         // `$review` resolves the workspace skill…
-        let res = CommandRegistry::try_run("$review src/", &mut ctx).await.unwrap();
+        let res = CommandRegistry::try_run("$review src/", &mut ctx)
+            .await
+            .unwrap();
         match res {
             CommandResult::FeedToAgent(p) => {
                 assert!(p.contains("`$review` skill"));

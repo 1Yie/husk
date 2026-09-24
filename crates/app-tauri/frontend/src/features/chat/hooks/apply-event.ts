@@ -189,7 +189,7 @@ export function applyEvent(
         break;
       }
     }
-    return { ...v, items, pendingQuestion: undefined };
+    return { ...v, items, pendingQuestion: undefined, turnStartedAt: undefined };
   }
   if ("StateChanged" in ev) {
     const s = ev.StateChanged;
@@ -204,7 +204,12 @@ export function applyEvent(
       !(typeof s === "object" && "Failed" in s);
     // A finished/failed/idle turn resolves any parked question too.
     const settled = s === "Idle" || s === "Finished" || (typeof s === "object" && "Failed" in s);
-    return { ...v, state: s, streaming, ...(settled ? { pendingQuestion: undefined } : {}) };
+    return {
+      ...v,
+      state: s,
+      streaming,
+      ...(settled ? { pendingQuestion: undefined, turnStartedAt: undefined } : {}),
+    };
   }
   if ("UserPrompt" in ev) {
     items.push({ kind: "user", text: ev.UserPrompt, ts: Date.now() });
@@ -212,6 +217,7 @@ export function applyEvent(
       ...v,
       items,
       pendingQuestion: undefined,
+      turnStartedAt: Date.now(),
       toksPerSec: 0,
       rate: { chars: 0, activeMs: 0, lastAt: null },
     };
@@ -256,15 +262,28 @@ export function applyEvent(
     if (ti >= 0) {
       const it = items[ti];
       if (it.kind === "thinking")
-        items[ti] = { ...it, text: it.text + ev.ReasoningDelta.text, done: false };
+        items[ti] = {
+          ...it,
+          text: it.text + ev.ReasoningDelta.text,
+          done: false,
+          // Keep the ORIGINAL start stamp on a reopen — the clock must not
+          // restart when a late reasoning delta flips the block live again.
+          startedAt: it.startedAt ?? Date.now(),
+        };
     } else if (l?.kind === "assistant" && l.streaming) {
       items.splice(items.length - 1, 0, {
         kind: "thinking",
         text: ev.ReasoningDelta.text,
         done: false,
+        startedAt: Date.now(),
       });
     } else {
-      items.push({ kind: "thinking", text: ev.ReasoningDelta.text, done: false });
+      items.push({
+        kind: "thinking",
+        text: ev.ReasoningDelta.text,
+        done: false,
+        startedAt: Date.now(),
+      });
     }
     return { ...v, items, rate, toksPerSec: rateEstimate(rate) };
   }
@@ -275,6 +294,7 @@ export function applyEvent(
       kind: "tool",
       name,
       args: ev.ToolCallStarted.args_preview,
+      startedAt: Date.now(),
       // Rust Option<String> serializes `null`, not `undefined` —
       // normalize at the boundary so the Finished matcher's
       // `=== undefined` comparison actually works.
@@ -366,6 +386,16 @@ export function applyEvent(
       },
     };
   }
+  if ("QuestionAnswered" in ev) {
+    // The kernel resolved the parked card — drop it from the buffer itself.
+    // (The composer's `answeredId` still hides it instantly; this is what
+    // stops the card resurrecting after a session switch.) Only clear when
+    // the id matches: a stale answer must not clear a newer question.
+    if (v.pendingQuestion?.requestId === ev.QuestionAnswered.request_id) {
+      return { ...v, pendingQuestion: undefined };
+    }
+    return v;
+  }
   if ("AssistantMessage" in ev) {
     closeOpenThinking(items);
     // Replace the streamed draft IN PLACE — not just when it's `last()`:
@@ -421,6 +451,11 @@ export function applyEvent(
     closeOpenThinking(items);
     items.push({ kind: "system", text: `⚠ ${ev.Error}` });
     return { ...v, items, streaming: false };
+  }
+  if ("QueuedPrompts" in ev) {
+    // The kernel's parked list is the single source of truth — every
+    // SetQueued write and each drain pop echoes the new list here.
+    return { ...v, queuedPrompts: ev.QueuedPrompts.items };
   }
   return v;
 }

@@ -9,7 +9,6 @@
 //! 5. `expected_hash` is checked before any match attempt — stale context is the
 //!    top source of corrupted writes.
 
-
 use std::sync::Arc;
 
 use futures::FutureExt;
@@ -48,10 +47,12 @@ pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "fuzzy_patch",
         schema: schema_for::<FuzzyPatchArgs>(
-            "Edit a file via a search/replace block — never a diff, never a \
-             full-file rewrite. `search` must match exactly one location \
-             (whitespace/fuzzy fallback exists but exact is preferred). Pass \
-             `expected_hash` from smart_read to guard against file drift.",
+            "Make a targeted text replacement in one file. Use for changing \
+             a small local section — replacing an existing block with \
+             another block when the exact surrounding text is known. \
+             `search` must match exactly one location (whitespace/fuzzy \
+             fallback exists but exact is preferred). Pass `expected_hash` \
+             from smart_read to guard against file drift.",
         ),
         readonly: false,
         class: super::registry::ToolClass::WorkspaceMutation,
@@ -84,7 +85,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     // the approval card, and lets the engine record the hunk in one step
     // (no read-after-write to reconstruct what changed).
     let mut content = String::new();
-    content.push_str(&format!("patched {} (line {})", parsed.path, res.match_line));
+    content.push_str(&format!(
+        "patched {} (line {})",
+        parsed.path, res.match_line
+    ));
     if res.matched_fuzzily {
         content.push_str(" — matched approximately, review carefully");
     }
@@ -116,13 +120,20 @@ pub fn apply(source: &str, search: &str, replace: &str) -> Result<PatchResult, T
     }
 
     // Tier 2: exact.
-    let hits: Vec<usize> = norm_src.match_indices(&norm_search).map(|(i, _)| i).collect();
+    let hits: Vec<usize> = norm_src
+        .match_indices(&norm_search)
+        .map(|(i, _)| i)
+        .collect();
     let (patched, match_byte, fuzzy) = match hits.len() {
-        1 => (norm_src.replacen(&norm_search, &norm_replace, 1), hits[0], false),
+        1 => (
+            norm_src.replacen(&norm_search, &norm_replace, 1),
+            hits[0],
+            false,
+        ),
         n if n > 1 => {
             return Err(ToolError::Failed(format!(
-                "search block matched {n} locations — add surrounding context lines to make it unique"
-            )))
+            "search block matched {n} locations — add surrounding context lines to make it unique"
+        )))
         }
         _ => {
             // Tier 3: whitespace-tolerant line match.

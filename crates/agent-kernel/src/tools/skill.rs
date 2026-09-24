@@ -9,7 +9,6 @@
 //! Loading a skill grants nothing — the text lands as instructions, and every
 //! action it asks for still goes through the normal tool policy.
 
-
 use std::sync::Arc;
 
 use futures::FutureExt;
@@ -123,9 +122,15 @@ mod tests {
     #[tokio::test]
     async fn loads_a_skill_and_names_its_manifest() {
         let (dir, name) = temp_root_with_skill();
-        let out = (spec().exec)(json!({"name": name}), ctx(dir.path())).await.unwrap();
+        let out = (spec().exec)(json!({"name": name}), ctx(dir.path()))
+            .await
+            .unwrap();
         assert!(out.content.contains("Do the thing."), "{}", out.content);
-        assert!(out.content.contains("SKILL.md"), "source is named: {}", out.content);
+        assert!(
+            out.content.contains("SKILL.md"),
+            "source is named: {}",
+            out.content
+        );
     }
 
     /// The tool path and the composer's `$name` path must deliver the same body
@@ -160,9 +165,15 @@ mod tests {
     #[tokio::test]
     async fn list_is_the_fallback_and_reports_the_catalog() {
         let (dir, name) = temp_root_with_skill();
-        let out = (spec().exec)(json!({"list": true}), ctx(dir.path())).await.unwrap();
+        let out = (spec().exec)(json!({"list": true}), ctx(dir.path()))
+            .await
+            .unwrap();
         assert!(out.content.contains(&name), "{}", out.content);
-        assert!(out.content.contains("test skill for the unit suite"), "{}", out.content);
+        assert!(
+            out.content.contains("test skill for the unit suite"),
+            "{}",
+            out.content
+        );
     }
 
     #[tokio::test]
@@ -178,7 +189,9 @@ mod tests {
         assert!(msg.contains(&name), "{msg}");
 
         // No name at all is an argument error, not a lookup miss.
-        let err = (spec().exec)(json!({}), ctx(dir.path())).await.expect_err("no name");
+        let err = (spec().exec)(json!({}), ctx(dir.path()))
+            .await
+            .expect_err("no name");
         assert!(matches!(err, ToolError::Args(_)), "{err}");
     }
 
@@ -204,7 +217,12 @@ mod tests {
         .await
         .unwrap();
         // Declared order, not JSON order; description text intact.
-        assert!(out.content.contains("Skill arguments:\n- path: src/engine.rs\n- focus: security"), "{}", out.content);
+        assert!(
+            out.content
+                .contains("Skill arguments:\n- path: src/engine.rs\n- focus: security"),
+            "{}",
+            out.content
+        );
 
         let err = (spec().exec)(
             json!({"name": name, "args": {"pth": "src/engine.rs"}}),
@@ -214,19 +232,32 @@ mod tests {
         .expect_err("unknown argument");
         let msg = format!("{err}");
         assert!(msg.contains("unknown argument `pth`"), "{msg}");
-        assert!(msg.contains("path*, focus"), "declared names are named back: {msg}");
+        assert!(
+            msg.contains("path*, focus"),
+            "declared names are named back: {msg}"
+        );
 
-        let err = (spec().exec)(json!({"name": name, "args": {"focus": "security"}}), ctx.clone())
-            .await
-            .expect_err("missing required");
-        assert!(format!("{err}").contains("missing required argument `path`"), "{err}");
+        let err = (spec().exec)(
+            json!({"name": name, "args": {"focus": "security"}}),
+            ctx.clone(),
+        )
+        .await
+        .expect_err("missing required");
+        assert!(
+            format!("{err}").contains("missing required argument `path`"),
+            "{err}"
+        );
 
         // A string arg still works — the composer's shape, and what a skill
         // that declares nothing expects.
         let out = (spec().exec)(json!({"name": name, "args": "src/engine.rs security"}), ctx)
             .await
             .unwrap();
-        assert!(out.content.contains("- path: src/engine.rs"), "{}", out.content);
+        assert!(
+            out.content.contains("- path: src/engine.rs"),
+            "{}",
+            out.content
+        );
     }
 
     /// A skill is knowledge, not capability: the tool is readonly whatever the
@@ -235,7 +266,10 @@ mod tests {
     fn loading_never_grants_more_than_a_read() {
         let spec = spec();
         assert!(spec.readonly);
-        assert_eq!(spec.class, super::super::registry::ToolClass::SessionMutation);
+        assert_eq!(
+            spec.class,
+            super::super::registry::ToolClass::SessionMutation
+        );
         assert!(!spec.network);
     }
 }

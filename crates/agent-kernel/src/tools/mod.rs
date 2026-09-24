@@ -5,9 +5,9 @@
 
 pub mod apply_patch;
 pub mod ask;
+pub mod bash;
 pub mod batch;
 pub mod delegate;
-pub mod bash;
 pub mod fs_patch;
 pub mod fs_read;
 pub mod goal;

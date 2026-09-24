@@ -12,7 +12,6 @@
 //! or skip the permission gate — which is what makes third-party skill text safe
 //! to load.
 
-
 pub mod loader;
 pub mod manager;
 pub mod prompt;

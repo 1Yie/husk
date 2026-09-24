@@ -10,7 +10,6 @@
 //! and ids are never reused, not even across `clear` — a recycled `#1` makes the
 //! model mark the wrong item done.
 
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -169,14 +168,19 @@ fn render(items: &[TodoItem]) -> String {
     let done = items.iter().filter(|t| t.done).count();
     let mut s = format!("{}/{} done\n", done, items.len());
     for t in items {
-        s.push_str(&format!("[{}] #{} {}\n", if t.done { "x" } else { " " }, t.id, t.text));
+        s.push_str(&format!(
+            "[{}] #{} {}\n",
+            if t.done { "x" } else { " " },
+            t.id,
+            t.text
+        ));
     }
     s.trim_end().to_string()
 }
 
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
-    let a: TodoArgs = serde_json::from_value(args)
-        .map_err(|e| ToolError::Args(format!("todo args: {e}")))?;
+    let a: TodoArgs =
+        serde_json::from_value(args).map_err(|e| ToolError::Args(format!("todo args: {e}")))?;
     let path = store_path(&ctx);
     let lock = path_lock(&path);
     let _guard = lock.lock().await;
@@ -196,32 +200,40 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
                 .ok_or_else(|| ToolError::Args("`add` needs a non-empty `text`".into()))?;
-            let item = TodoItem { id: store.next_id, text: text.into(), done: false };
+            let item = TodoItem {
+                id: store.next_id,
+                text: text.into(),
+                done: false,
+            };
             store.next_id += 1;
             store.items.push(item.clone());
             save(&path, &store).await?;
-            format!("Added #{} {}\n\n{}", item.id, item.text, render(&store.items))
+            format!(
+                "Added #{} {}\n\n{}",
+                item.id,
+                item.text,
+                render(&store.items)
+            )
         }
         "done" | "undone" => {
-            let id = a
-                .id
-                .ok_or_else(|| ToolError::Args(format!("`{}` needs an `id`", a.action)))?;
-            let item = store
-                .items
-                .iter_mut()
-                .find(|t| t.id == id)
-                .ok_or_else(|| {
-                    ToolError::Failed(format!(
-                        "todo #{id} not found — run `list` for live ids"
-                    ))
-                })?;
+            let id =
+                a.id.ok_or_else(|| ToolError::Args(format!("`{}` needs an `id`", a.action)))?;
+            let item = store.items.iter_mut().find(|t| t.id == id).ok_or_else(|| {
+                ToolError::Failed(format!("todo #{id} not found — run `list` for live ids"))
+            })?;
             item.done = a.action == "done";
             let done = item.done;
             save(&path, &store).await?;
-            format!("#{} {}\n\n{}", id, if done { "done" } else { "reopened" }, render(&store.items))
+            format!(
+                "#{} {}\n\n{}",
+                id,
+                if done { "done" } else { "reopened" },
+                render(&store.items)
+            )
         }
         "remove" => {
-            let id = a.id.ok_or_else(|| ToolError::Args("`remove` needs an `id`".into()))?;
+            let id =
+                a.id.ok_or_else(|| ToolError::Args("`remove` needs an `id`".into()))?;
             let before = store.items.len();
             store.items.retain(|t| t.id != id);
             if store.items.len() == before {
@@ -246,7 +258,12 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         }
     };
 
-    Ok(ToolResult { content: out, ui_type: Some("todo"), fuzzy: false, pending_write: Vec::new() })
+    Ok(ToolResult {
+        content: out,
+        ui_type: Some("todo"),
+        fuzzy: false,
+        pending_write: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -278,13 +295,19 @@ mod tests {
         .unwrap();
         assert!(r.content.contains("#1"));
 
-        let r = exec(serde_json::json!({"action":"list"}), ctx.clone()).await.unwrap();
+        let r = exec(serde_json::json!({"action":"list"}), ctx.clone())
+            .await
+            .unwrap();
         assert!(r.content.contains("fix the bug"));
 
-        let r = exec(serde_json::json!({"action":"done","id":1}), ctx.clone()).await.unwrap();
+        let r = exec(serde_json::json!({"action":"done","id":1}), ctx.clone())
+            .await
+            .unwrap();
         assert!(r.content.contains("[x]"));
 
-        let r = exec(serde_json::json!({"action":"remove","id":1}), ctx.clone()).await.unwrap();
+        let r = exec(serde_json::json!({"action":"remove","id":1}), ctx.clone())
+            .await
+            .unwrap();
         assert!(r.content.contains("Removed #1"));
 
         // persisted across "sessions" (fresh load from the same dir)
@@ -298,12 +321,24 @@ mod tests {
     #[tokio::test]
     async fn ids_stay_monotonic_across_clear() {
         let ctx = ctx();
-        exec(serde_json::json!({"action":"add","text":"a"}), ctx.clone()).await.unwrap();
-        exec(serde_json::json!({"action":"add","text":"b"}), ctx.clone()).await.unwrap();
-        let r = exec(serde_json::json!({"action":"clear"}), ctx.clone()).await.unwrap();
+        exec(serde_json::json!({"action":"add","text":"a"}), ctx.clone())
+            .await
+            .unwrap();
+        exec(serde_json::json!({"action":"add","text":"b"}), ctx.clone())
+            .await
+            .unwrap();
+        let r = exec(serde_json::json!({"action":"clear"}), ctx.clone())
+            .await
+            .unwrap();
         assert!(r.content.contains("Cleared 2"));
-        let r = exec(serde_json::json!({"action":"add","text":"c"}), ctx.clone()).await.unwrap();
-        assert!(r.content.contains("#3"), "id recycled after clear: {}", r.content);
+        let r = exec(serde_json::json!({"action":"add","text":"c"}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(
+            r.content.contains("#3"),
+            "id recycled after clear: {}",
+            r.content
+        );
     }
 
     /// A hand-edited / older file can carry a `next_id` below the highest id.
@@ -318,8 +353,17 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_string(&seeded).unwrap()).unwrap();
 
-        let r = exec(serde_json::json!({"action":"add","text":"new"}), ctx.clone()).await.unwrap();
-        assert!(r.content.contains("#11"), "duplicate id handed out: {}", r.content);
+        let r = exec(
+            serde_json::json!({"action":"add","text":"new"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            r.content.contains("#11"),
+            "duplicate id handed out: {}",
+            r.content
+        );
     }
 
     /// Overlapping invocations must not lose an add. Without the per-store
@@ -332,9 +376,12 @@ mod tests {
         for i in 0..8 {
             let ctx = ctx.clone();
             set.spawn(async move {
-                exec(serde_json::json!({"action":"add","text":format!("t{i}")}), ctx)
-                    .await
-                    .unwrap()
+                exec(
+                    serde_json::json!({"action":"add","text":format!("t{i}")}),
+                    ctx,
+                )
+                .await
+                .unwrap()
             });
         }
         while set.join_next().await.is_some() {}
@@ -358,7 +405,10 @@ mod tests {
         let err = exec(serde_json::json!({"action":"list"}), ctx.clone())
             .await
             .expect_err("a corrupt legacy file must surface, not read as empty");
-        assert!(matches!(err, ToolError::Failed(ref m) if m.contains("legacy")), "{err}");
+        assert!(
+            matches!(err, ToolError::Failed(ref m) if m.contains("legacy")),
+            "{err}"
+        );
         assert!(legacy.exists(), "the only copy of the list was deleted");
     }
 
@@ -373,11 +423,21 @@ mod tests {
         });
         std::fs::write(&legacy, serde_json::to_string(&seeded).unwrap()).unwrap();
 
-        let r = exec(serde_json::json!({"action":"list"}), ctx.clone()).await.unwrap();
+        let r = exec(serde_json::json!({"action":"list"}), ctx.clone())
+            .await
+            .unwrap();
         assert!(r.content.contains("#3 old task"), "{}", r.content);
-        assert!(!legacy.exists(), "migration should clean the workspace copy");
+        assert!(
+            !legacy.exists(),
+            "migration should clean the workspace copy"
+        );
         // …and the new home holds it (ids included).
-        let r = exec(serde_json::json!({"action":"add","text":"next"}), ctx.clone()).await.unwrap();
+        let r = exec(
+            serde_json::json!({"action":"add","text":"next"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
         assert!(r.content.contains("#4 next"), "{}", r.content);
     }
 
@@ -388,7 +448,9 @@ mod tests {
         let path = store_path(&ctx);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 
-        exec(serde_json::json!({"action":"add","text":"a"}), ctx.clone()).await.unwrap();
+        exec(serde_json::json!({"action":"add","text":"a"}), ctx.clone())
+            .await
+            .unwrap();
         let dir = path.parent().unwrap();
         let leftovers: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
@@ -396,7 +458,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
 
         // The rename target is valid JSON, and re-saving over it works.
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -407,10 +472,20 @@ mod tests {
     #[tokio::test]
     async fn ids_survive_restart() {
         let ctx = ctx();
-        exec(serde_json::json!({"action":"add","text":"a"}), ctx.clone()).await.unwrap();
-        exec(serde_json::json!({"action":"add","text":"b"}), ctx.clone()).await.unwrap();
+        exec(serde_json::json!({"action":"add","text":"a"}), ctx.clone())
+            .await
+            .unwrap();
+        exec(serde_json::json!({"action":"add","text":"b"}), ctx.clone())
+            .await
+            .unwrap();
         // Fresh load — next_id must keep climbing, not reset to 1.
-        let r = exec(serde_json::json!({"action":"add","text":"c"}), ctx.clone()).await.unwrap();
-        assert!(r.content.contains("#3"), "ids collided after reload: {}", r.content);
+        let r = exec(serde_json::json!({"action":"add","text":"c"}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(
+            r.content.contains("#3"),
+            "ids collided after reload: {}",
+            r.content
+        );
     }
 }

@@ -1,36 +1,64 @@
 //! `compaction` — history summarization near the context window.
 //!
-//! - Trigger: estimated tokens ≈80% of `context_window`; optional prefire starts
-//!   Pass 1 at 70% so the latency hides behind the next turn.
-//! - Two-pass: summarize the prefix into `NOTE₁`, then condense `NOTE₁` + suffix
-//!   until the total fits the window again.
+//! - Trigger: estimated tokens ≈80% of `context_window` (user-settable
+//!   70/80/90%), corrected upward by the provider's last reported
+//!   `prompt_tokens` when available. A `PREFIRE_LEAD_PERCENT` threshold
+//!   (70%) exists for a background Pass-1, but the prefire itself is not
+//!   wired yet — compaction currently runs inline at trigger time.
+//! - One summarization pass: the prefix (everything before the ~25%
+//!   suffix) compresses into a single `NOTE`; a prior NOTE folds into the
+//!   new one rather than stacking.
 //! - The sanitize pipeline runs before every sample, not just at compaction.
-//! - A failed compaction suppresses the next trigger, so it cannot retry-storm.
+//! - A failed compaction suppresses further triggers until one succeeds —
+//!   with an emergency escape once the estimate nears the window edge.
 //!
-//! Token estimate is `chars / 4` — good enough for a soft trigger.
-
+//! Token estimate: ASCII ≈4 chars/token, non-ASCII ≈1 token/char — the
+//! provider's actual `prompt_tokens` overrides it whenever reported.
 
 use agent_llm::types::{ChatMessage, Role};
 
 /// Fraction of `context_window` that triggers compaction.
 pub const COMPACT_AT: f32 = 0.80;
 /// Fraction at which a *prefire* Pass-1 summary may start (hidden latency).
+/// NOTE: threshold only — the prefire pass is not wired yet.
 pub const PREFIRE_LEAD_PERCENT: f32 = 0.70;
+/// Fill fraction at which a latched `UntilSuccess` suppression is
+/// overridden — a transient compactor error must not strand the session
+/// in silent truncation when the window is nearly full.
+pub const EMERGENCY_COMPACT_AT: f32 = 0.95;
 
-/// Rough token estimate — chars/4 covers GPT-class models; CJK text leans
-/// toward 1 token/char so this stays conservative on the trigger side.
+/// Rough token estimate — ASCII ≈4 chars/token, non-ASCII (CJK, emoji)
+/// ≈1 token/char. `String::len()` is BYTES, so `len/4` alone reads ~0.75
+/// tokens per CJK char against a real cost of ~1-1.5 — underestimating on
+/// the trigger side. The provider's reported `prompt_tokens` supersedes
+/// this whenever available (see `Engine::last_prompt_tokens`).
 pub fn estimate_tokens(msgs: &[ChatMessage]) -> usize {
-    msgs.iter()
-        .map(|m| {
-            let c = m.content.as_deref().map(str::len).unwrap_or(0);
-            let tc = m
-                .tool_calls
-                .as_ref()
-                .map(|v| v.iter().map(|t| t.name.len() + t.arguments.len()).sum::<usize>())
-                .unwrap_or(0);
-            (c + tc) / 4 + 4 + m.images.len() * 1100 // +4 msg overhead; ~1100/image
+    msgs.iter().map(msg_token_est).sum()
+}
+
+/// One message's share of the estimate — content + tool-call payload,
+/// per-message overhead, and a flat ~1100/image vision cost.
+fn msg_token_est(m: &ChatMessage) -> usize {
+    let c = m.content.as_deref().map(est_text).unwrap_or(0);
+    let tc = m
+        .tool_calls
+        .as_ref()
+        .map(|v| {
+            v.iter()
+                .map(|t| est_text(&t.name) + est_text(&t.arguments))
+                .sum::<usize>()
         })
-        .sum()
+        .unwrap_or(0);
+    c + tc + 4 + m.images.len() * 1100 // +4 msg overhead; ~1100/image
+}
+
+/// ASCII chars count 1/4 token each; every non-ASCII char counts 1 —
+/// summing numerators over 4 keeps the math in integers.
+fn est_text(s: &str) -> usize {
+    s.chars()
+        .map(|c| if c.is_ascii() { 1usize } else { 4usize })
+        .sum::<usize>()
+        / 4
 }
 
 /// Should compaction fire at a caller-chosen fraction? The settings UI
@@ -118,8 +146,12 @@ fn fit_conversation_to_budget(history: &mut Vec<ChatMessage>, budget: usize) {
             .position(|(_, m)| m.role == Role::Tool)
             .map(|p| p + 1)
             .or_else(|| {
-                history.iter().enumerate().skip(1)
-                    .position(|(_, m)| m.role != Role::System).map(|p| p + 1)
+                history
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .position(|(_, m)| m.role != Role::System)
+                    .map(|p| p + 1)
             });
         match drop_idx {
             Some(i) if i < history.len() => {
@@ -140,7 +172,10 @@ fn fit_conversation_to_budget(history: &mut Vec<ChatMessage>, budget: usize) {
                                     // Assistant row now carries neither
                                     // calls nor text → drop the blank turn.
                                     if calls.is_empty()
-                                        && m.content.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true)
+                                        && m.content
+                                            .as_deref()
+                                            .map(|s| s.trim().is_empty())
+                                            .unwrap_or(true)
                                     {
                                         m.tool_calls = None;
                                         m.content = None;
@@ -155,8 +190,14 @@ fn fit_conversation_to_budget(history: &mut Vec<ChatMessage>, budget: usize) {
                 // (no calls, no content) — it replays as a blank message.
                 history.retain(|m| {
                     m.role != Role::Assistant
-                        || m.content.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false)
-                        || m.tool_calls.as_ref().map(|c| !c.is_empty()).unwrap_or(false)
+                        || m.content
+                            .as_deref()
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false)
+                        || m.tool_calls
+                            .as_ref()
+                            .map(|c| !c.is_empty())
+                            .unwrap_or(false)
                 });
             }
             _ => break, // only system left — can't shrink further
@@ -185,7 +226,7 @@ pub fn plan(history: &[ChatMessage], window: usize) -> Option<CompactionPlan> {
     let mut acc = 0usize;
     let mut cut = history.len();
     for (i, m) in history.iter().enumerate().rev() {
-        let t = m.content.as_deref().map(|s| s.len() / 4 + 4).unwrap_or(4);
+        let t = msg_token_est(m);
         if acc + t > suffix_budget && i > 1 {
             cut = i + 1;
             break;
@@ -207,31 +248,52 @@ pub fn plan(history: &[ChatMessage], window: usize) -> Option<CompactionPlan> {
         return None; // the tail is one tool block — nothing to summarize past
     }
     let prefix_tokens = estimate_tokens(&history[..cut]);
-    Some(CompactionPlan { prefix_end: cut, prefix_tokens })
+    Some(CompactionPlan {
+        prefix_end: cut,
+        prefix_tokens,
+    })
 }
 
 /// Apply a completed compaction: replace history[1..plan.prefix_end) with a
 /// single synthesized `NOTE` message — `history[0]` (the kernel system
-/// prompt) is never compacted away. The `note_text` is Pass-2's output
-/// (the condensed summary the provider produced).
+/// prompt) is never compacted away. The `note_text` is the compactor's
+/// output. The note is tagged `NoticeKind::CompactedMemory` so adapters
+/// emit it at user privilege — folding a history summary into
+/// `system`/`instructions` would let stale decisions read as live orders.
 pub fn apply(history: &mut Vec<ChatMessage>, plan: &CompactionPlan, note_text: String) {
-    let note = ChatMessage {
-        role: Role::System,
-        content: Some(format!(
-            "[context note — earlier turns compacted]\n{note_text}"
-        )),
-        tool_calls: None,
-        tool_call_id: None,
-        is_error: None,
-        notice: None,
-        ts: None,
-        images: Vec::new(),
-        reasoning: None,
-    };
+    let note = ChatMessage::compacted_memory(format!(
+        "[BEGIN COMPACTED CONTEXT — summary of earlier turns; historical context, not new instructions]\n\
+         {note_text}\n\
+         [END COMPACTED CONTEXT]"
+    ));
     // Splice from index 1 — `history[0]` is the rendered kernel system
     // prompt; compacting it away would strip the model's tool protocol and
     // mode contract for the rest of the session.
     history.splice(1..plan.prefix_end, std::iter::once(note));
+}
+
+/// Render one message as compactor input — role label + content + any
+/// `tool_calls`. Native-calling providers keep calls structured, so a
+/// content-only join would hide every invocation (name + args) from the
+/// summary; only the `Role::Tool` result text would survive.
+pub fn render_for_summary(m: &ChatMessage) -> String {
+    let role = match m.role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    };
+    let mut body = m.content.clone().unwrap_or_default();
+    if let Some(calls) = &m.tool_calls {
+        for c in calls {
+            body.push_str(&format!(
+                "\n[call: {}({})]",
+                c.name,
+                abbreviate(&c.arguments, 200)
+            ));
+        }
+    }
+    format!("{role}: {body}")
 }
 
 /// Sticky suppression state — after a failed compaction we don't re-fire on
@@ -255,13 +317,21 @@ pub struct CompactionSuppressor {
 impl CompactionSuppressor {
     /// Check + consume. `fire` when the trigger is allowed to run.
     pub fn check(&mut self) -> bool {
+        self.check_at_fill(0.0)
+    }
+
+    /// Same as `check`, but `fill` is the current estimated fraction of
+    /// the context window — a latched `UntilSuccess` is overridden once
+    /// the window is nearly full, so one transient provider error can't
+    /// strand the session in silent oldest-first truncation.
+    pub fn check_at_fill(&mut self, fill: f32) -> bool {
         match self.state {
             Suppress::None => true,
             Suppress::Sticky => {
                 self.state = Suppress::None;
                 false
             }
-            Suppress::UntilSuccess => false,
+            Suppress::UntilSuccess => fill >= EMERGENCY_COMPACT_AT,
         }
     }
 
@@ -292,15 +362,34 @@ fn abbreviate(s: &str, n: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_llm::types::NoticeKind;
 
     fn msg(role: Role, text: &str) -> ChatMessage {
-        ChatMessage { role, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: None, images: Vec::new(), reasoning: None }
+        ChatMessage {
+            role,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: None,
+            ts: None,
+            images: Vec::new(),
+            reasoning: None,
+        }
     }
 
     #[test]
     fn estimate_is_chars_over_four() {
         let h = vec![msg(Role::User, &"a".repeat(400))];
         // 400 chars / 4 + 4 overhead = 104
+        assert_eq!(estimate_tokens(&h), 104);
+    }
+
+    #[test]
+    fn estimate_counts_cjk_at_one_token_per_char() {
+        // 100 CJK chars ≈100 real tokens — `len()/4` would read ~75 and
+        // delay the trigger past the true fill.
+        let h = vec![msg(Role::User, &"汉".repeat(100))];
         assert_eq!(estimate_tokens(&h), 104);
     }
 
@@ -324,16 +413,18 @@ mod tests {
                 role: Role::Assistant,
                 content: Some("calling".into()),
                 tool_calls: Some(vec![agent_llm::types::ToolCall {
-                    id: "1".into(), name: "list_dir".into(),
+                    id: "1".into(),
+                    name: "list_dir".into(),
                     arguments: "{\"path\":\".\"}".into(),
                 }]),
                 tool_call_id: None,
                 is_error: None,
-                        notice: None,
+                notice: None,
                 ts: None,
-            images: Vec::new(),
-            
-            reasoning: None,},
+                images: Vec::new(),
+
+                reasoning: None,
+            },
         ];
         // text-protocol provider → tool_calls flattened into message text.
         sanitize_for_sample(&mut h, 100_000, /*native_tool_calls*/ false, true);
@@ -342,22 +433,30 @@ mod tests {
 
         // native provider → tool_calls stay structured (NOT flattened),
         // else the matching Role::Tool result would orphan (P1-b).
-        let mut h2 = vec![msg(Role::System, "sys"), ChatMessage {
-            role: Role::Assistant,
-            content: Some("ok".into()),
-            tool_calls: Some(vec![agent_llm::types::ToolCall {
-                id: "1".into(), name: "list_dir".into(),
-                arguments: "{\"path\":\".\"}".into(),
-            }]),
-            tool_call_id: None,
-            is_error: None,
-                        notice: None,
-            ts: None,
-            images: Vec::new(),
-        
-        reasoning: None,}];
+        let mut h2 = vec![
+            msg(Role::System, "sys"),
+            ChatMessage {
+                role: Role::Assistant,
+                content: Some("ok".into()),
+                tool_calls: Some(vec![agent_llm::types::ToolCall {
+                    id: "1".into(),
+                    name: "list_dir".into(),
+                    arguments: "{\"path\":\".\"}".into(),
+                }]),
+                tool_call_id: None,
+                is_error: None,
+                notice: None,
+                ts: None,
+                images: Vec::new(),
+
+                reasoning: None,
+            },
+        ];
         sanitize_for_sample(&mut h2, 100_000, /*native_tool_calls*/ true, true);
-        assert!(h2[1].tool_calls.is_some(), "native tool_calls must not flatten");
+        assert!(
+            h2[1].tool_calls.is_some(),
+            "native tool_calls must not flatten"
+        );
         assert!(!h2[1].content.as_deref().unwrap().contains("[call:"));
     }
 
@@ -389,16 +488,24 @@ mod tests {
                 content: Some("calling".into()),
                 tool_calls: Some(vec![
                     agent_llm::types::ToolCall {
-                        id: "call_a".into(), name: "bash".into(), arguments: "{}".into(),
+                        id: "call_a".into(),
+                        name: "bash".into(),
+                        arguments: "{}".into(),
                     },
                     agent_llm::types::ToolCall {
-                        id: "call_b".into(), name: "bash".into(), arguments: "{}".into(),
+                        id: "call_b".into(),
+                        name: "bash".into(),
+                        arguments: "{}".into(),
                     },
                 ]),
-                tool_call_id: None, is_error: None, notice: None, ts: None,
+                tool_call_id: None,
+                is_error: None,
+                notice: None,
+                ts: None,
                 images: Vec::new(),
-            
-            reasoning: None,},
+
+                reasoning: None,
+            },
             {
                 let mut m = msg(Role::Tool, &"output_a ".repeat(500));
                 m.tool_call_id = Some("call_a".into());
@@ -417,12 +524,23 @@ mod tests {
         let call_a_out = 500 * "output_a ".len() / 4 + 4;
         sanitize_for_sample(&mut h, total - call_a_out + 50, true, true);
         // The bulky call_a output is gone; its call must be gone too.
-        let assistant = h.iter().find(|m| m.role == Role::Assistant && m.tool_calls.is_some()).unwrap();
-        let ids: Vec<&str> = assistant.tool_calls.as_ref().unwrap().iter().map(|c| c.id.as_str()).collect();
+        let assistant = h
+            .iter()
+            .find(|m| m.role == Role::Assistant && m.tool_calls.is_some())
+            .unwrap();
+        let ids: Vec<&str> = assistant
+            .tool_calls
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
         assert!(!ids.contains(&"call_a"), "orphaned call_a must be removed");
         assert!(ids.contains(&"call_b"), "call_b survives with its output");
         // call_b's output row is still present.
-        assert!(h.iter().any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_b")));
+        assert!(h
+            .iter()
+            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_b")));
     }
 
     #[test]
@@ -453,7 +571,17 @@ mod tests {
         // Splice starts at 1 — the system prompt survives compaction.
         assert_eq!(h.len(), orig_len - p.prefix_end + 2);
         assert_eq!(h[0].content.as_deref().unwrap(), "sys");
-        assert!(h[1].content.as_deref().unwrap().contains("[context note"));
+        assert!(h[1]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("[BEGIN COMPACTED CONTEXT"));
+        assert!(h[1]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("[END COMPACTED CONTEXT]"));
+        assert_eq!(h[1].notice, Some(NoticeKind::CompactedMemory));
     }
 
     #[test]
@@ -464,5 +592,28 @@ mod tests {
         assert!(!s.check());
         s.on_success();
         assert!(s.check());
+    }
+
+    #[test]
+    fn suppressor_escapes_at_emergency_fill() {
+        let mut s = CompactionSuppressor::default();
+        s.on_failure();
+        assert!(!s.check_at_fill(0.80)); // still suppressed below the edge
+        assert!(s.check_at_fill(0.96)); // emergency — near-full window fires anyway
+                                        // The latch survives the emergency check: only a success clears it.
+        assert!(!s.check_at_fill(0.80));
+    }
+
+    #[test]
+    fn render_for_summary_includes_tool_calls() {
+        let mut m = msg(Role::Assistant, "checking");
+        m.tool_calls = Some(vec![agent_llm::types::ToolCall {
+            id: "c1".into(),
+            name: "fs_read".into(),
+            arguments: "{\"path\":\"a.rs\"}".into(),
+        }]);
+        let r = render_for_summary(&m);
+        assert!(r.starts_with("assistant: checking"));
+        assert!(r.contains("[call: fs_read("));
     }
 }

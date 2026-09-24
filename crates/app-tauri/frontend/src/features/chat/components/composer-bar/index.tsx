@@ -27,6 +27,7 @@ import {
   Map as MapIcon,
   Clock,
   GripVertical,
+  CirclePen,
   ListPlus, MessagesSquare } from "@keyline-icons/react";
 import { Orb } from "@/features/chat/components/agent-orb/index";
 import { parseTodos, type TodoItem } from "@/features/chat/components/todo-view/index";
@@ -215,11 +216,24 @@ export function ComposerBar({
   // gate decides HOW calls get approved, the mode decides WHAT the session
   // may do at all (plan = readonly registry, goal = completion contract).
   const [agentMode, setAgentMode] = useState<string>("build");
-  // Queued follow-ups — submitting mid-turn parks the payload here instead
-  // of steering; each drains as a fresh prompt the moment the turn ends.
-  // "立即发送" on a row promotes it to a live Steer.
-  const [queued, setQueued] = useState<string[]>([]);
-  useEffect(() => setQueued([]), [sessionKey]);
+  // Queued follow-ups — the KERNEL owns the list (SessionActor + persisted
+  // `SessionMeta.queued_prompts`), so it survives session switches and app
+  // restarts; the view's copy arrives via `QueuedPrompts` events. Submitting
+  // mid-turn parks the payload; each drains as a fresh prompt the moment the
+  // turn ends. "立即发送" on a row promotes it to a live Steer.
+  const queued = useMemo(() => view.queuedPrompts ?? [], [view.queuedPrompts]);
+  const pushQueued = useCallback((items: string[]) => {
+    agent.setQueued(items).catch((e) => console.error("setQueued failed:", e));
+  }, []);
+  // Inline edit — a queued row swaps to a textarea; Enter commits,
+  // Shift+Enter adds a newline, Esc cancels. Local draft only: the kernel's
+  // list stays untouched until the edit is committed.
+  const [editIdx, setEditIdx] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  useEffect(() => {
+    setEditIdx(null);
+    setEditDraft("");
+  }, [sessionKey]);
   // ask_question — the answered id hides the strip (no echo event comes
   // back); the input holds a custom free-text answer.
   const [answeredId, setAnsweredId] = useState<number | null>(null);
@@ -595,7 +609,10 @@ export function ComposerBar({
     if (streaming) {
       // Queue it — delivered as a fresh Prompt the moment this turn ends.
       // Mid-turn steering is still one click away on the queued row.
-      setQueued((q) => [...q, payload]);
+      // `Enqueue` (not a whole-list write): the actor's deque is the source
+      // of truth — appending there sidesteps the stale-view race where this
+      // render's `queued` lags an in-flight echo.
+      agent.enqueue(payload).catch((e) => console.error("enqueue failed:", e));
       return;
     }
     try {
@@ -608,32 +625,30 @@ export function ComposerBar({
 
   /** Promote a queued draft to a live Steer — delivered mid-turn. */
   const steerNow = async (i: number) => {
-    const item = queued[i];
-    setQueued((q) => q.filter((_, j) => j !== i));
+    const item = shown[i];
+    pushQueued(shown.filter((_, j) => j !== i));
     try {
       await agent.steer(item);
     } catch (e) {
       console.error("steer failed:", e);
-      setQueued((q) => [item, ...q]);
+      pushQueued([item, ...shown]);
     }
   };
 
   const removeQueued = (i: number) =>
-    setQueued((q) => q.filter((_, j) => j !== i));
+    pushQueued(shown.filter((_, j) => j !== i));
 
   // Drag-to-reorder — pointer-based, NOT HTML5 DnD: WebKitGTK (Linux
   // webview) never fires dragstart/drop reliably. pointerdown on the grip
   // arms the drag; a window listener converts pointer Y into an insertion
   // index via row midpoints and reorders LIVE — the list is its own preview.
   const [dragIdx, setDragIdx] = useState<number | null>(null);
+  // The drag previews locally and commits ONE SetQueued on drop — a
+  // per-pointermove write would round-trip an echo mid-gesture and fight
+  // the very list it's reordering.
+  const [dragOrder, setDragOrder] = useState<string[] | null>(null);
+  const shown = dragOrder ?? queued;
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const moveQueued = (from: number, to: number) =>
-    setQueued((q) => {
-      const next = [...q];
-      const [m] = next.splice(from, 1);
-      next.splice(to, 0, m);
-      return next;
-    });
 
   useEffect(() => {
     if (dragIdx == null) return;
@@ -641,8 +656,9 @@ export function ComposerBar({
       // Insertion index = number of row midpoints above the pointer; after
       // removing the dragged row the index shifts down by one if it was
       // below the drag origin.
-      let target = queued.length;
-      for (let idx = 0; idx < queued.length; idx++) {
+      const list = dragOrder ?? queued;
+      let target = list.length;
+      for (let idx = 0; idx < list.length; idx++) {
         const el = rowRefs.current.get(idx);
         if (!el) continue;
         const r = el.getBoundingClientRect();
@@ -652,32 +668,54 @@ export function ComposerBar({
         }
       }
       const to = target > dragIdx ? target - 1 : target;
-      if (to !== dragIdx && to >= 0 && to < queued.length) {
-        moveQueued(dragIdx, to);
+      if (to !== dragIdx && to >= 0 && to < list.length) {
+        const next = [...list];
+        const [m] = next.splice(dragIdx, 1);
+        next.splice(to, 0, m);
+        setDragOrder(next);
         setDragIdx(to);
       }
     };
-    const onUp = () => setDragIdx(null);
+    const onUp = () => {
+      setDragIdx(null);
+      setDragOrder((order) => {
+        if (order) pushQueued(order);
+        return null;
+      });
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [dragIdx, queued]);
+  }, [dragIdx, dragOrder, queued, pushQueued]);
 
-  // Drain the queue one prompt per turn end — `wasStreaming` guards the
-  // transition so a state change alone can't flush the whole list.
-  const wasStreamingRef = useRef(false);
-  useEffect(() => {
-    const was = wasStreamingRef.current;
-    wasStreamingRef.current = streaming;
-    if (was && !streaming && queued.length > 0) {
-      const head = queued[0];
-      setQueued((q) => q.slice(1));
-      void agent.sendPrompt(head);
+  /** Pop the LAST queued prompt back into the composer draft — Codex's
+   *  Alt+↑ gesture; the keyboard path for "edit what I just queued". */
+  const popQueuedToDraft = (): string | null => {
+    if (queued.length === 0) return null;
+    const last = queued[queued.length - 1];
+    pushQueued(queued.slice(0, -1));
+    return last;
+  };
+
+  /** Swap a queued row into its edit textarea. */
+  const beginEditQueued = (i: number) => {
+    setEditIdx(i);
+    setEditDraft(shown[i] ?? "");
+  };
+  /** Enter commits — empty text deletes the row, unchanged text is a no-op. */
+  const commitEditQueued = (i: number) => {
+    const trimmed = editDraft.trim();
+    setEditIdx(null);
+    if (!trimmed) {
+      removeQueued(i);
+      return;
     }
-  }, [streaming, queued]);
+    if (trimmed === (shown[i] ?? "").trim()) return;
+    pushQueued(shown.map((q, j) => (j === i ? trimmed : q)));
+  };
 
   const cancel = async () => {
     try {
@@ -985,7 +1023,7 @@ export function ComposerBar({
                 </div>
               ) : null}
 
-              {queued.length > 0 ? (
+              {shown.length > 0 ? (
                 /* Queued follow-ups — parked drafts sent when the turn ends;
                    approval-strip visual family (icon · label · chips · actions). */
                 <div className="flex flex-col gap-1.5 px-3 pt-0.5">
@@ -995,10 +1033,10 @@ export function ComposerBar({
                       排队消息
                     </span>
                     <span className="text-[11px] font-mono text-neutral-500">
-                      {queued.length} 条 · 回合结束后按序发送
+                      {shown.length} 条 · 回合结束后按序发送
                     </span>
                   </div>
-                  {queued.slice(0, 4).map((q, i) => (
+                  {shown.map((q, i) => (
                     <div
                       key={i}
                       ref={(el) => {
@@ -1017,9 +1055,36 @@ export function ComposerBar({
                         }}
                         className="h-3.5 w-3.5 text-neutral-300 hover:text-neutral-500 cursor-grab active:cursor-grabbing shrink-0 touch-none"
                       />
-                      <span className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-2 py-0.5 rounded select-none">
-                        {q.split("\n")[0]}
-                      </span>
+                      {editIdx === i ? (
+                        /* Inline edit — same chip shell, textarea inside;
+                           Enter commits, Esc cancels, blur commits too. */
+                        <textarea
+                          autoFocus
+                          value={editDraft}
+                          rows={1}
+                          onChange={(e) => setEditDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              commitEditQueued(i);
+                            }
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              setEditIdx(null);
+                            }
+                          }}
+                          onBlur={() => commitEditQueued(i)}
+                          className="font-mono text-[11px] text-neutral-700 min-w-0 flex-1 bg-white border border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)] px-2 py-0.5 rounded outline-none focus:border-neutral-400 resize-none"
+                        />
+                      ) : (
+                        <span
+                          title="点击编辑 · Enter 保存 · Esc 取消"
+                          onClick={() => beginEditQueued(i)}
+                          className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-2 py-0.5 rounded select-none cursor-text hover:border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)]"
+                        >
+                          {q.split("\n")[0]}
+                        </span>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -1030,6 +1095,15 @@ export function ComposerBar({
                       </Button>
                       <button
                         type="button"
+                        aria-label="编辑"
+                        title="编辑排队消息"
+                        className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200 transition-colors cursor-pointer"
+                        onClick={() => beginEditQueued(i)}
+                      >
+                        <CirclePen className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
                         aria-label="移除"
                         className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200 transition-colors cursor-pointer"
                         onClick={() => removeQueued(i)}
@@ -1038,11 +1112,6 @@ export function ComposerBar({
                       </button>
                     </div>
                   ))}
-                  {queued.length > 4 && (
-                    <span className="pl-5 text-[11px] text-neutral-500">
-                      …还有 {queued.length - 4} 条
-                    </span>
-                  )}
                 </div>
               ) : null}
 
@@ -1068,6 +1137,7 @@ export function ComposerBar({
                   onRefreshMention={refreshMention}
                   onAcceptMention={acceptMention}
                   onDismissMention={() => setMention(null)}
+                  onPopQueued={popQueuedToDraft}
                 />
 
                 <ComposerToolbar
@@ -1120,6 +1190,7 @@ export function ComposerBar({
                 onRefreshMention={refreshMention}
                 onAcceptMention={acceptMention}
                 onDismissMention={() => setMention(null)}
+                onPopQueued={popQueuedToDraft}
               />
 
               <ComposerToolbar
@@ -1431,6 +1502,7 @@ function ComposerTextarea({
   onRefreshMention,
   onAcceptMention,
   onDismissMention,
+  onPopQueued,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -1458,6 +1530,9 @@ function ComposerTextarea({
   onRefreshMention: (value: string, caret: number) => void;
   onAcceptMention: (row: { insert: string }) => void;
   onDismissMention: () => void;
+  /** Alt+↑ on an empty composer pops the newest parked prompt back into the
+   *  draft — returns its text (null when the queue is empty). */
+  onPopQueued: () => string | null;
 }) {
   const mirrorRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1618,6 +1693,16 @@ function ComposerTextarea({
               // system clipboard is read from Rust. Text pastes are left to
               // the browser (no preventDefault here).
               onAttachClipboardImage(false);
+            }
+            if (e.altKey && e.key === "ArrowUp" && !value.trim()) {
+              // Codex parity — Alt+↑ on an empty composer pops the newest
+              // queued prompt back into the draft for editing.
+              const popped = onPopQueued();
+              if (popped != null) {
+                e.preventDefault();
+                onChange(popped);
+                return;
+              }
             }
             if (open) {
               if (e.key === "ArrowDown") {

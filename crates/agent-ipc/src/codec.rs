@@ -48,9 +48,7 @@ impl Decoder {
     }
 
     /// Pop the next complete frame, if any.
-    pub fn next_frame<T: serde::de::DeserializeOwned>(
-        &mut self,
-    ) -> Result<Option<T>, CodecError> {
+    pub fn next_frame<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, CodecError> {
         if self.buf.len() < 4 {
             return Ok(None);
         }
@@ -61,7 +59,11 @@ impl Decoder {
         if self.buf.len() < 4 + len as usize {
             return Ok(None);
         }
-        let payload = self.buf.drain(..4 + len as usize).skip(4).collect::<Vec<u8>>();
+        let payload = self
+            .buf
+            .drain(..4 + len as usize)
+            .skip(4)
+            .collect::<Vec<u8>>();
         Ok(Some(serde_json::from_slice(&payload)?))
     }
 }

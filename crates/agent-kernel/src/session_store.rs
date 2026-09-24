@@ -8,7 +8,6 @@
 //! The owning `SessionActor` writes on turn boundaries only (single writer,
 //! never mid-turn), so a running session's file holds its last completed state.
 
-
 use std::path::{Path, PathBuf};
 
 use agent_llm::types::ChatMessage;
@@ -33,11 +32,30 @@ pub struct SessionMeta {
     #[serde(default)]
     pub usage: Option<SessionUsage>,
     /// Model that produced `usage` — the settings 统计 pane groups spend by
-    /// model, which the token counts alone cannot tell apart.
+    /// model, which the token counts alone cannot tell apart. Doubles as the
+    /// session's persisted model selection: `spawn_actor` restores it so a
+    /// reopened session keeps the model it was last run with.
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
+    /// Per-session composer settings — written by the actor the moment a
+    /// `SetModel`/`SetPermissionMode`/`SetAgentMode`/`SetThinkingLevel`
+    /// command lands, so a session's choices are its own (not a workspace-wide
+    /// default that leaks across sessions). `None` = "fall back to the
+    /// workspace default at spawn".
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub agent_mode: Option<String>,
+    #[serde(default)]
+    pub thinking_level: Option<String>,
+    /// Parked follow-up prompts the composer queued mid-turn — session
+    /// state like `history`, so a switched-away-and-back or reopened
+    /// session still has them. Written on every queue mutation; restored
+    /// by `spawn_actor`.
+    #[serde(default)]
+    pub queued_prompts: Vec<String>,
 }
 
 /// A session's last-known token usage, persisted inside `SessionMeta`.
@@ -117,7 +135,9 @@ impl SessionStore {
 
     /// This store's directory name (the workspace key hash).
     pub fn dir_name(&self) -> Option<String> {
-        self.dir.file_name().map(|n| n.to_string_lossy().into_owned())
+        self.dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
     }
 
     /// The workspace root this store belongs to, if it was ever recorded.
@@ -153,7 +173,9 @@ impl SessionStore {
             .collect();
         files.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX));
         for f in files.iter().take(4) {
-            let Ok(mut fh) = std::fs::File::open(f) else { continue };
+            let Ok(mut fh) = std::fs::File::open(f) else {
+                continue;
+            };
             let mut head = vec![0u8; 32 * 1024];
             use std::io::Read as _;
             let n = fh.read(&mut head).unwrap_or(0);
@@ -188,8 +210,11 @@ impl SessionStore {
     /// List sessions — pinned first, then newest activity within each tier.
     pub fn list(&self) -> Vec<SessionMeta> {
         let mut idx = self.read_index();
-        idx.sessions
-            .sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.updated_at.cmp(&a.updated_at)));
+        idx.sessions.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.updated_at.cmp(&a.updated_at))
+        });
         idx.sessions
     }
 
@@ -334,7 +359,10 @@ fn last_line_start(buf: &[u8]) -> Option<usize> {
     if end == 0 {
         return None;
     }
-    buf[..end].iter().rposition(|&b| b == b'\n').map(|nl| nl + 1)
+    buf[..end]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map(|nl| nl + 1)
 }
 
 /// `buf` minus trailing ASCII whitespace/newlines — the final snapshot
@@ -387,7 +415,9 @@ pub fn recent_workspaces_path() -> Option<PathBuf> {
 }
 
 pub fn load_recent_workspaces() -> Vec<RecentWorkspace> {
-    let Some(path) = recent_workspaces_path() else { return Vec::new(); };
+    let Some(path) = recent_workspaces_path() else {
+        return Vec::new();
+    };
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(_) => return Vec::new(),
@@ -478,7 +508,9 @@ pub fn default_preferences_path() -> Option<PathBuf> {
 }
 
 pub fn load_default_preferences() -> DefaultPreferences {
-    let Some(path) = default_preferences_path() else { return DefaultPreferences::default(); };
+    let Some(path) = default_preferences_path() else {
+        return DefaultPreferences::default();
+    };
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -496,7 +528,9 @@ pub fn try_load_default_preferences() -> Option<DefaultPreferences> {
 }
 
 pub fn save_default_preferences(prefs: &DefaultPreferences) -> std::io::Result<()> {
-    let Some(path) = default_preferences_path() else { return Ok(()); };
+    let Some(path) = default_preferences_path() else {
+        return Ok(());
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -547,14 +581,30 @@ pub struct AppearanceSettings {
     pub currency: String,
 }
 
-fn default_theme_mode() -> String { "system".into() }
-fn default_accent() -> String { "#339CFF".into() }
-fn default_bg() -> String { "#FFFFFF".into() }
-fn default_fg() -> String { "#1A1C1F".into() }
-fn default_ui_font() -> String { "-apple-system, BlinkMacSystemFont, \"Segoe UI\"".into() }
-fn default_code_font() -> String { "ui-monospace, \"SFMono-Regular\", monospace".into() }
-fn default_contrast() -> u32 { 45 }
-fn default_currency() -> String { "usd".into() }
+fn default_theme_mode() -> String {
+    "system".into()
+}
+fn default_accent() -> String {
+    "#339CFF".into()
+}
+fn default_bg() -> String {
+    "#FFFFFF".into()
+}
+fn default_fg() -> String {
+    "#1A1C1F".into()
+}
+fn default_ui_font() -> String {
+    "-apple-system, BlinkMacSystemFont, \"Segoe UI\"".into()
+}
+fn default_code_font() -> String {
+    "ui-monospace, \"SFMono-Regular\", monospace".into()
+}
+fn default_contrast() -> u32 {
+    45
+}
+fn default_currency() -> String {
+    "usd".into()
+}
 
 impl Default for AppearanceSettings {
     fn default() -> Self {
@@ -580,7 +630,9 @@ pub fn appearance_settings_path() -> Option<PathBuf> {
 }
 
 pub fn load_appearance_settings() -> AppearanceSettings {
-    let Some(path) = appearance_settings_path() else { return AppearanceSettings::default(); };
+    let Some(path) = appearance_settings_path() else {
+        return AppearanceSettings::default();
+    };
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -588,7 +640,9 @@ pub fn load_appearance_settings() -> AppearanceSettings {
 }
 
 pub fn save_appearance_settings(s: &AppearanceSettings) -> std::io::Result<()> {
-    let Some(path) = appearance_settings_path() else { return Ok(()); };
+    let Some(path) = appearance_settings_path() else {
+        return Ok(());
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -618,11 +672,15 @@ impl SessionStore {
 }
 
 pub fn record_recent_workspace(workspace_root: &Path) {
-    let Some(path) = recent_workspaces_path() else { return; };
+    let Some(path) = recent_workspaces_path() else {
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let canon = workspace_root.canonicalize().unwrap_or_else(|_| workspace_root.to_path_buf());
+    let canon = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
     let name = canon
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -636,11 +694,14 @@ pub fn record_recent_workspace(workspace_root: &Path) {
 
     let mut list = load_recent_workspaces();
     list.retain(|w| w.path != canon);
-    list.insert(0, RecentWorkspace {
-        path: canon,
-        name,
-        last_opened: now,
-    });
+    list.insert(
+        0,
+        RecentWorkspace {
+            path: canon,
+            name,
+            last_opened: now,
+        },
+    );
     list.truncate(15);
 
     if let Ok(json) = serde_json::to_string_pretty(&list) {
@@ -650,14 +711,14 @@ pub fn record_recent_workspace(workspace_root: &Path) {
 
 /// Drop a workspace from recents; session files are left on disk.
 pub fn remove_recent_workspace(workspace_root: &Path) {
-    let Some(path) = recent_workspaces_path() else { return; };
+    let Some(path) = recent_workspaces_path() else {
+        return;
+    };
     let canon = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
     let mut list = load_recent_workspaces();
-    list.retain(|w| {
-        w.path.canonicalize().unwrap_or_else(|_| w.path.clone()) != canon
-    });
+    list.retain(|w| w.path.canonicalize().unwrap_or_else(|_| w.path.clone()) != canon);
     if let Ok(json) = serde_json::to_string_pretty(&list) {
         let _ = std::fs::write(path, json);
     }
@@ -674,16 +735,23 @@ mod tests {
     #[test]
     fn load_history_finds_last_line_across_block_boundaries() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SessionStore { dir: dir.path().to_path_buf() };
+        let store = SessionStore {
+            dir: dir.path().to_path_buf(),
+        };
 
         store.snapshot(7, &[ChatMessage::user("first")]).unwrap();
         // A mid-file snapshot inflated past the 64 KiB block size, so the
         // final small line lands >1 block from the start and the backward
         // reader must assemble it across reads.
         let big = ChatMessage::user("x".repeat(200 * 1024));
-        store.snapshot(7, &[big, ChatMessage::assistant("mid")]).unwrap();
         store
-            .snapshot(7, &[ChatMessage::user("final"), ChatMessage::assistant("answer")])
+            .snapshot(7, &[big, ChatMessage::assistant("mid")])
+            .unwrap();
+        store
+            .snapshot(
+                7,
+                &[ChatMessage::user("final"), ChatMessage::assistant("answer")],
+            )
             .unwrap();
         // Trailing blank lines must not hide the real last line.
         std::fs::OpenOptions::new()

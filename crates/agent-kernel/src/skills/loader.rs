@@ -116,14 +116,21 @@ pub fn parse_named_args(
             return Err(format!(
                 "missing required argument `{}` ({})",
                 arg.name,
-                if arg.description.is_empty() { "declared by the skill" } else { &arg.description }
+                if arg.description.is_empty() {
+                    "declared by the skill"
+                } else {
+                    &arg.description
+                }
             ));
         }
     }
     // Declared order, unknown-name skills keep insertion order.
     if !declared.is_empty() {
         pairs.sort_by_key(|(name, _)| {
-            declared.iter().position(|a| a.name == *name).unwrap_or(usize::MAX)
+            declared
+                .iter()
+                .position(|a| a.name == *name)
+                .unwrap_or(usize::MAX)
         });
     }
     Ok(SkillArguments::Named(pairs))
@@ -132,7 +139,13 @@ pub fn parse_named_args(
 fn declared_names(declared: &[SkillArgument]) -> String {
     declared
         .iter()
-        .map(|a| if a.required { format!("{}*", a.name) } else { a.name.clone() })
+        .map(|a| {
+            if a.required {
+                format!("{}*", a.name)
+            } else {
+                a.name.clone()
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -186,7 +199,8 @@ pub fn load_named(
     arguments: &serde_json::Value,
 ) -> Result<LoadedSkill, LoadError> {
     let mut loaded = read(meta)?;
-    loaded.arguments = Some(parse_named_args(arguments, &loaded.declared).map_err(LoadError::Args)?);
+    loaded.arguments =
+        Some(parse_named_args(arguments, &loaded.declared).map_err(LoadError::Args)?);
     Ok(loaded)
 }
 
@@ -198,13 +212,19 @@ fn read(meta: &SkillMetadata) -> Result<LoadedSkill, LoadError> {
         name: meta.name.clone(),
         // Frontmatter is the catalog's copy; a manifest edited since the scan
         // may disagree, and the file wins.
-        description: parsed.description.unwrap_or_else(|| meta.description.clone()),
+        description: parsed
+            .description
+            .unwrap_or_else(|| meta.description.clone()),
         path: meta.path.clone(),
         global: meta.global,
         body: parsed.body,
         // Declarations come from the file too — a skill that grew a new
         // argument since the scan must validate against the current schema.
-        declared: if parsed.arguments.is_empty() { meta.arguments.clone() } else { parsed.arguments },
+        declared: if parsed.arguments.is_empty() {
+            meta.arguments.clone()
+        } else {
+            parsed.arguments
+        },
         arguments: None,
     })
 }
@@ -268,7 +288,10 @@ mod tests {
 
         let loaded = load(&meta, None).unwrap();
         assert_eq!(loaded.body, "Look for races.");
-        assert_eq!(loaded.description, "rewritten", "the file wins over the cached metadata");
+        assert_eq!(
+            loaded.description, "rewritten",
+            "the file wins over the cached metadata"
+        );
     }
 
     #[test]

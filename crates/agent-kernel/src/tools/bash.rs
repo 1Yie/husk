@@ -83,8 +83,8 @@ fn sandbox_config(
 }
 
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
-    let parsed: BashArgs = serde_json::from_value(args)
-        .map_err(|e| ToolError::Args(format!("bash args: {e}")))?;
+    let parsed: BashArgs =
+        serde_json::from_value(args).map_err(|e| ToolError::Args(format!("bash args: {e}")))?;
     let timeout = parsed
         .timeout_secs
         .map(Duration::from_secs)
@@ -93,10 +93,8 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 
     // Audit before spawn; its verdict becomes the result's risk tier.
     // Scoped to the workspace so out-of-scope writes flag ScopeViolation.
-    let verdict = agent_sandbox::audit_command_scoped(
-        &parsed.command,
-        Some(ctx.workspace_root.as_ref()),
-    );
+    let verdict =
+        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.workspace_root.as_ref()));
 
     let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), timeout);
 
@@ -117,7 +115,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let mut content = format!("── exit {} `{}` ──\n", output.status, parsed.command);
     if verdict.level > agent_sandbox::AuditLevel::Normal {
         content.push_str(&format!(
-            "[audit {:?}: {}]\n", verdict.level, verdict.reasons.join("; ")));
+            "[audit {:?}: {}]\n",
+            verdict.level,
+            verdict.reasons.join("; ")
+        ));
     }
     if output.is_timeout {
         content.push_str(&format!("[timeout {}s — tree killed]\n", timeout.as_secs()));
@@ -156,9 +157,18 @@ mod tests {
         let verdict = agent_sandbox::audit_command_scoped("ls", Some(root));
         let cfg = sandbox_config(&verdict, root, Duration::from_secs(30));
 
-        assert_eq!(cfg.extra_ro_mounts, crate::skills::scanner::global_skill_roots());
-        assert!(!cfg.extra_ro_mounts.is_empty(), "no $HOME would hide every skill");
-        assert!(cfg.extra_rw_mounts.is_empty(), "skills must not be writable");
+        assert_eq!(
+            cfg.extra_ro_mounts,
+            crate::skills::scanner::global_skill_roots()
+        );
+        assert!(
+            !cfg.extra_ro_mounts.is_empty(),
+            "no $HOME would hide every skill"
+        );
+        assert!(
+            cfg.extra_rw_mounts.is_empty(),
+            "skills must not be writable"
+        );
         assert_eq!(cfg.workspace_dir, root);
     }
 }

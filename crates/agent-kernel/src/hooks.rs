@@ -5,7 +5,6 @@
 //! the permission gate, so a hook can veto or rewrite args but never approve.
 //! The chain ships empty until a concrete need appears.
 
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,9 +44,11 @@ pub trait AgentHook: Send + Sync {
     }
 
     /// After a tool executes — may mutate `output` (truncation applies).
-    async fn after_tool_execute(&self, _call: &ToolCall, _output: &mut String)
-        -> anyhow::Result<()>
-    {
+    async fn after_tool_execute(
+        &self,
+        _call: &ToolCall,
+        _output: &mut String,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -109,11 +110,7 @@ impl HookChain {
     /// `after_tool_execute` chain — hooks may mutate `output`.
     pub async fn run_after_tool(&self, call: &ToolCall, output: &mut String) {
         for h in &self.hooks {
-            let _ = tokio::time::timeout(
-                HOOK_TIMEOUT,
-                h.after_tool_execute(call, output),
-            )
-            .await;
+            let _ = tokio::time::timeout(HOOK_TIMEOUT, h.after_tool_execute(call, output)).await;
         }
     }
 

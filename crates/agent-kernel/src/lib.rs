@@ -17,14 +17,13 @@ pub mod mode;
 pub mod permissions;
 pub mod sandbox_prefs;
 pub mod session;
-pub mod session_store;
 pub mod session_manager;
+pub mod session_store;
 pub mod skills;
 pub mod steering;
 pub mod tools;
 
 pub use session_store::{
     load_appearance_settings, load_default_preferences, save_appearance_settings,
-    save_default_preferences, try_load_default_preferences, AppearanceSettings,
-    DefaultPreferences,
+    save_default_preferences, try_load_default_preferences, AppearanceSettings, DefaultPreferences,
 };

@@ -278,7 +278,9 @@ impl SerenaBridge {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+                    let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
                     if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
                         if let Some(tx) = pending.lock().await.remove(&id) {
                             let _ = tx.send(Ok(v));
@@ -480,7 +482,12 @@ mod tests {
     /// (pending map, death detection, stderr capture).
     fn stub_launch() -> SerenaLaunch {
         SerenaLaunch {
-            program: Some(std::env::current_exe().expect("test binary path").display().to_string()),
+            program: Some(
+                std::env::current_exe()
+                    .expect("test binary path")
+                    .display()
+                    .to_string(),
+            ),
             source: String::new(),
             modes: Vec::new(),
             argv_override: Some(vec![
@@ -515,16 +522,14 @@ mod tests {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
             let Ok(line) = line else { return };
-            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
             let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
             let id = v.get("id").cloned();
             let reply = |result: Value| {
                 let mut out = std::io::stdout();
-                let _ = writeln!(
-                    out,
-                    "{}",
-                    json!({"jsonrpc":"2.0","id":id,"result":result})
-                );
+                let _ = writeln!(out, "{}", json!({"jsonrpc":"2.0","id":id,"result":result}));
                 let _ = out.flush();
             };
             match method {
@@ -569,12 +574,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (bridge, _guard) = stub_session("ok", dir.path()).await;
         assert!(bridge.is_healthy());
-        assert_eq!(bridge.call("find_symbol", json!({"name_path":"x"})).await.unwrap(), "stub-ok");
+        assert_eq!(
+            bridge
+                .call("find_symbol", json!({"name_path":"x"}))
+                .await
+                .unwrap(),
+            "stub-ok"
+        );
 
         let tools = bridge.list_tools().await.unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "find_symbol");
-        assert!(tools[0].input_schema.as_ref().unwrap().get("properties").is_some());
+        assert!(tools[0]
+            .input_schema
+            .as_ref()
+            .unwrap()
+            .get("properties")
+            .is_some());
     }
 
     /// A child that exits mid-request must fail that request with the reason
@@ -614,14 +630,23 @@ mod tests {
             .await
             .expect_err("no reply must time out");
         assert!(format!("{err}").contains("timed out"), "{err}");
-        assert!(bridge.pending.lock().await.is_empty(), "timeout leaked a pending slot");
+        assert!(
+            bridge.pending.lock().await.is_empty(),
+            "timeout leaked a pending slot"
+        );
 
         // Send-failure path: the stub is still alive, so kill it by closing
         // the pipe — `send` then errors before a reply can arrive.
         bridge.dead.store(true, Ordering::Relaxed);
         let body = json!({"jsonrpc":"2.0","id":78,"method":"tools/call","params":{}});
-        bridge.request(body, Duration::from_millis(150)).await.expect_err("dead bridge");
-        assert!(bridge.pending.lock().await.is_empty(), "send failure leaked a pending slot");
+        bridge
+            .request(body, Duration::from_millis(150))
+            .await
+            .expect_err("dead bridge");
+        assert!(
+            bridge.pending.lock().await.is_empty(),
+            "send failure leaked a pending slot"
+        );
     }
 
     #[tokio::test]
@@ -654,7 +679,12 @@ mod tests {
         };
         let server = launch.server_args(Path::new("/ws"));
         assert_eq!(server[0], "start-mcp-server");
-        let value = |flag: &str| server.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone());
+        let value = |flag: &str| {
+            server
+                .windows(2)
+                .find(|w| w[0] == flag)
+                .map(|w| w[1].clone())
+        };
         assert_eq!(value("--transport").as_deref(), Some("stdio"));
         assert_eq!(value("--project").as_deref(), Some("/ws"));
         assert_eq!(value("--context").as_deref(), Some("ide"));
@@ -675,7 +705,13 @@ mod tests {
             ]
         );
 
-        let bare = SerenaLaunch { modes: Vec::new(), ..launch };
-        assert!(!bare.server_args(Path::new("/ws")).iter().any(|a| a == "--mode"));
+        let bare = SerenaLaunch {
+            modes: Vec::new(),
+            ..launch
+        };
+        assert!(!bare
+            .server_args(Path::new("/ws"))
+            .iter()
+            .any(|a| a == "--mode"));
     }
 }

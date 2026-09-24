@@ -6,14 +6,13 @@
 //! `SessionStore` snapshots history at turn boundaries; `open_session` resumes
 //! from the last snapshot.
 
-
 use std::collections::HashMap;
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
-use agent_ipc::UiEvent;
 use crate::channels::{UiSink, UiStatsSnapshot};
 use crate::session::{SessionActor, SessionConfig};
 use crate::session_store::{SessionMeta, SessionStore};
+use agent_ipc::UiEvent;
 use agent_llm::{AppConfig, ProviderFactory};
 use serde::{Deserialize, Serialize};
 
@@ -107,7 +106,7 @@ pub struct SessionHandle {
     #[allow(dead_code)]
     pub id: i64,
     pub cmd_tx: tokio::sync::mpsc::Sender<agent_ipc::UiCommand>,
-    pub decision: Arc<Mutex<Option<(u64, bool)>>> ,
+    pub decision: Arc<Mutex<Option<(u64, bool)>>>,
     /// `AnswerQuestion` resolves the parked ask_question oneshot — same
     /// bypass-the-pump channel as `decision`.
     pub ask: Arc<crate::tools::registry::AskChannel>,
@@ -213,16 +212,17 @@ impl SessionManager {
     }
 
     /// Boot the manager at a specific workspace root (or current directory / most recent).
-    pub fn spawn_at(root: Option<std::path::PathBuf>) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
+    pub fn spawn_at(
+        root: Option<std::path::PathBuf>,
+    ) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
         // No explicit root → MRU recents head. No recents → empty state
         // (no cwd fallback — don't silently attach the launch directory).
-        let cwd: Option<std::path::PathBuf> = root
-            .or_else(|| {
-                crate::session_store::load_recent_workspaces()
-                    .first()
-                    .map(|w| w.path.clone())
-                    .filter(|p| p.is_dir())
-            });
+        let cwd: Option<std::path::PathBuf> = root.or_else(|| {
+            crate::session_store::load_recent_workspaces()
+                .first()
+                .map(|w| w.path.clone())
+                .filter(|p| p.is_dir())
+        });
         let cfg = AppConfig::load(None).unwrap_or_default();
         let (event_tx, event_rx) = std_mpsc::channel();
         let (_p, default_model, default_pname) = resolve_provider(&cfg);
@@ -232,8 +232,7 @@ impl SessionManager {
         // each registration (8 s) and skips failures, and an empty plugin dir
         // is skipped without even creating a runtime.
         let plugins = cwd.as_ref().map(|root| {
-            let handle: crate::engine::PluginHandle =
-                Arc::new(std::sync::RwLock::new(None));
+            let handle: crate::engine::PluginHandle = Arc::new(std::sync::RwLock::new(None));
             *handle.write().unwrap() = Self::load_plugins(root);
             handle
         });
@@ -242,8 +241,10 @@ impl SessionManager {
         // Empty boot: inert store, no actors, no metas.
         let Some(cwd) = cwd else {
             let store = Arc::new(
-                SessionStore::open(&crate::session_store::app_data_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp")))
+                SessionStore::open(
+                    &crate::session_store::app_data_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp")),
+                )
                 .expect("session store"),
             );
             let defaults = crate::session_store::try_load_default_preferences();
@@ -291,8 +292,7 @@ impl SessionManager {
         let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
         let store = Arc::new(SessionStore::open(&canon).unwrap_or_else(|_| {
             // Fallback: temp dir so the app still boots without a data dir.
-            SessionStore::open(std::path::Path::new("/tmp"))
-                .expect("session store")
+            SessionStore::open(std::path::Path::new("/tmp")).expect("session store")
         }));
 
         crate::session_store::record_recent_workspace(&canon);
@@ -376,7 +376,9 @@ impl SessionManager {
         let defaults = crate::session_store::try_load_default_preferences();
         let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
         let (provider_name, model_name) = match (&prefs.provider, &prefs.model) {
-            (Some(p), Some(m)) if self.provider_cfg.providers.contains_key(p) => (p.clone(), m.clone()),
+            (Some(p), Some(m)) if self.provider_cfg.providers.contains_key(p) => {
+                (p.clone(), m.clone())
+            }
             _ => (default_pname, default_model),
         };
         self.permission_mode = prefs
@@ -505,9 +507,7 @@ impl SessionManager {
             // Parked handles = this workspace's actors are still live —
             // overlay their real running/preview so the sidebar orb stays
             // on a turn the user switched away from mid-flight.
-            let parked_handles = self
-                .parked
-                .get(&w_canon.to_string_lossy().into_owned());
+            let parked_handles = self.parked.get(&w_canon.to_string_lossy().into_owned());
             let sessions = SessionStore::open_existing(&w_canon)
                 .map(|store| {
                     store
@@ -555,10 +555,7 @@ impl SessionManager {
         // the history head (see `SessionStore`).
         let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         for w in self.recent_workspaces() {
-            names.insert(
-                crate::session_store::workspace_key(&w.path),
-                w.name.clone(),
-            );
+            names.insert(crate::session_store::workspace_key(&w.path), w.name.clone());
         }
 
         let mut out = Vec::new();
@@ -585,9 +582,7 @@ impl SessionManager {
             if root.as_ref().is_some_and(|r| r.starts_with(&tmp)) {
                 continue;
             }
-            let key = store
-                .dir_name()
-                .unwrap_or_else(|| "unknown".to_string());
+            let key = store.dir_name().unwrap_or_else(|| "unknown".to_string());
             let name = root
                 .as_ref()
                 .and_then(|r| names.get(&crate::session_store::workspace_key(r)).cloned())
@@ -636,21 +631,56 @@ impl SessionManager {
     }
 
     /// Spawn an actor for `id` (resume from store if a snapshot exists).
+    ///
+    /// The session's own persisted `SessionMeta` settings win over the
+    /// manager-level workspace default: a session that picked its own model /
+    /// permission mode / agent mode / thinking level keeps it across a respawn,
+    /// and is never silently re-seeded with whatever another session last set.
+    /// `None` fields (a fresh or pre-settings session) fall back to the
+    /// workspace default.
     fn spawn_actor(&mut self, id: i64) {
+        let meta = self.metas.iter().find(|m| m.id == id).cloned();
+        // Per-session overrides — present only after the session itself made a
+        // choice (or ran a turn that stamped them). Absent → workspace default.
+        let sess_provider = meta
+            .as_ref()
+            .and_then(|m| m.provider.clone())
+            .unwrap_or_else(|| self.provider_name.clone());
+        let sess_model = meta
+            .as_ref()
+            .and_then(|m| m.model.clone())
+            .unwrap_or_else(|| self.model_name.clone());
+        let sess_permission = meta
+            .as_ref()
+            .and_then(|m| m.permission_mode.clone())
+            .unwrap_or_else(|| self.permission_mode.clone());
+        let sess_agent_mode = meta
+            .as_ref()
+            .and_then(|m| m.agent_mode.clone())
+            .unwrap_or_else(|| self.agent_mode.clone());
+        // `thinking_level` is itself an Option: `and_then` flattens
+        // `Option<Option<String>>` so a session that never set one (meta
+        // present, field None) still falls back to the workspace default —
+        // a `.map` here would unwrap to `Some(None)` and drop the fallback.
+        let sess_thinking = meta
+            .as_ref()
+            .and_then(|m| m.thinking_level.clone())
+            .or_else(|| self.active_thinking_level.clone());
+
         let provider = self
             .provider_cfg
             .providers
-            .get(&self.provider_name)
+            .get(&sess_provider)
             .and_then(|pcfg| ProviderFactory::build(pcfg).ok())
             .unwrap_or_else(|| {
                 let (p, _, _) = resolve_provider(&self.provider_cfg);
                 p
             });
-        let model = self.model_name.clone();
+        let model = sess_model.clone();
         let mentry = self
             .provider_cfg
             .providers
-            .get(&self.provider_name)
+            .get(&sess_provider)
             .and_then(|p| p.find_model(&model));
         // Resolved with `modelOverrides` folded in — the model the user picked
         // is what `model_info` lists, so an override must apply here rather
@@ -658,7 +688,7 @@ impl SessionManager {
         let resolved = mentry.is_some().then(|| {
             self.provider_cfg
                 .providers
-                .get(&self.provider_name)
+                .get(&sess_provider)
                 .map(|p| p.model_opts(&model))
                 .unwrap_or_default()
         });
@@ -667,25 +697,33 @@ impl SessionManager {
             .map(ProviderFactory::model_params_from)
             .unwrap_or_default();
         let thinking_level_map = resolved.as_ref().and_then(|d| d.thinking_level_map.clone());
-        let model_input = resolved.as_ref().map(|d| d.input.clone()).unwrap_or_default();
+        let model_input = resolved
+            .as_ref()
+            .map(|d| d.input.clone())
+            .unwrap_or_default();
         let context_window = resolved.as_ref().and_then(|d| d.context_window);
 
         let cfg = SessionConfig {
             workspace_root: self.workspace_root.clone(),
             plugins: self.plugins.clone(),
             provider,
-            provider_name: self.provider_name.clone(),
+            provider_name: sess_provider.clone(),
             model,
             temperature: 1.0,
-            permission_mode: self.permission_mode.clone(),
-            agent_mode: self.agent_mode.clone(),
+            permission_mode: sess_permission.clone(),
+            agent_mode: sess_agent_mode.clone(),
             track_dirty: true,
-            thinking_level: self.active_thinking_level.clone(),
+            thinking_level: sess_thinking.clone(),
             thinking_level_map,
             context_window,
             model_input,
             compact_at: Some(self.compact_at),
             model_params: Some(model_params),
+            // Restored queue — prompts parked mid-turn persist like history.
+            queued_prompts: meta
+                .as_ref()
+                .map(|m| m.queued_prompts.clone())
+                .unwrap_or_default(),
         };
 
         let (mut actor, channels) = match self.store.load_history(id) {
@@ -746,27 +784,36 @@ impl SessionManager {
             .find(|m| m.id == id)
             .map(|m| m.preview.clone())
             .unwrap_or_else(|| "new session".into());
-        self.handles.insert(id, SessionHandle {
+        self.handles.insert(
             id,
-            cmd_tx,
-            decision,
-            ask,
-            permissions,
-            agent_mode,
-            thinking_level,
-            steer_tx,
-            cancel,
-            preview,
-            running: false,
-            ui,
-        });
+            SessionHandle {
+                id,
+                cmd_tx,
+                decision,
+                ask,
+                permissions,
+                agent_mode,
+                thinking_level,
+                steer_tx,
+                cancel,
+                preview,
+                running: false,
+                ui,
+            },
+        );
     }
 
     /// Create a brand-new session (fresh actor, no history) and activate it.
+    ///
+    /// A new session's settings template is the WORKSPACE default — not the
+    /// previous session's per-session choice. `mirror_active_settings` may have
+    /// pointed `self.*` at the outgoing session, so we re-resolve the template
+    /// from `prefs`+`defaults` here rather than trusting the display mirror.
     pub fn new_session(&mut self) {
         if !self.workspace_active {
             return;
         }
+        self.restore_workspace_default_settings();
         let id = self.store.next_id();
         // Reserve the id in the index so the sidebar lists it immediately.
         let now = std::time::SystemTime::now()
@@ -780,8 +827,14 @@ impl SessionManager {
             updated_at: now,
             pinned: false,
             usage: None,
+            // Fresh session — no per-session choices yet; every field falls
+            // back to the workspace default at spawn.
             model: None,
             provider: None,
+            permission_mode: None,
+            agent_mode: None,
+            thinking_level: None,
+            queued_prompts: Vec::new(),
         });
         self.metas = self.store.list();
         self.spawn_actor(id);
@@ -790,6 +843,13 @@ impl SessionManager {
 
     /// Switch to an existing session — spawns its actor (resumed from the
     /// store) if not already live; the outgoing actor keeps running.
+    ///
+    /// Activating a session also re-points the manager's *displayed* settings
+    /// at that session's own values: `model_info`'s fallback reports
+    /// `self.provider_name`/`model_name`/mode/level, so leaving them on the
+    /// previous session's choice is exactly the "wrong model in window B" bug.
+    /// The session's authoritative values come from its `SessionMeta` (and the
+    /// live handle slots); the manager fields are just the active mirror.
     pub fn open_session(&mut self, id: i64) {
         if !self.workspace_active {
             return;
@@ -799,6 +859,78 @@ impl SessionManager {
         }
         self.active_id = id;
         let _ = self.store.set_last_active(id);
+        self.mirror_active_settings();
+    }
+
+    /// Copy the ACTIVE session's settings into the manager's display fields so
+    /// `model_info` and the status bar describe the session now in front — not
+    /// the last one that happened to write them. Live handle slots (permission
+    /// gate, agent mode, thinking level) are read directly; model/provider come
+    /// from the session's `SessionMeta`. Fields the session never set keep the
+    /// workspace default.
+    fn mirror_active_settings(&mut self) {
+        let id = self.active_id;
+        if let Some(meta) = self.metas.iter().find(|m| m.id == id).cloned() {
+            if let Some(p) = meta.provider.filter(|s| !s.is_empty()) {
+                self.provider_name = p;
+            }
+            if let Some(m) = meta.model.filter(|s| !s.is_empty()) {
+                self.model_name = m;
+            }
+            if let Some(v) = meta.permission_mode.filter(|s| !s.is_empty()) {
+                self.permission_mode = v;
+            }
+            if let Some(v) = meta.agent_mode.filter(|s| !s.is_empty()) {
+                self.agent_mode = v;
+            }
+            if meta.thinking_level.is_some() {
+                self.active_thinking_level = meta.thinking_level;
+            }
+        }
+        // Live handle slots override the persisted meta — a mid-session
+        // `SetAgentMode`/`SetPermissionMode`/`SetThinkingLevel` writes the slot
+        // before the meta round-trip, so the live value is fresher.
+        if let Some(h) = self.handles.get(&id) {
+            if let Ok(g) = h.permissions.read() {
+                self.permission_mode = g.mode().as_str().to_string();
+            }
+            if let Ok(m) = h.agent_mode.read() {
+                self.agent_mode = m.as_str().to_string();
+            }
+            if let Ok(l) = h.thinking_level.read() {
+                self.active_thinking_level = l.clone();
+            }
+        }
+    }
+
+    /// Re-resolve the WORKSPACE default settings (workspace prefs → global
+    /// defaults → built-ins) into `self.*`. Called before spawning a NEW
+    /// session: a fresh session's template is the workspace default, and
+    /// `self.*` may currently be mirroring another session's per-session
+    /// choice. Same precedence as `spawn_at`/`switch_workspace`.
+    fn restore_workspace_default_settings(&mut self) {
+        let prefs = self.store.load_prefs();
+        let defaults = crate::session_store::try_load_default_preferences();
+        let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
+        let (provider_name, model_name) = match (&prefs.provider, &prefs.model) {
+            (Some(p), Some(m)) if self.provider_cfg.providers.contains_key(p) => {
+                (p.clone(), m.clone())
+            }
+            _ => (default_pname, default_model),
+        };
+        self.provider_name = provider_name;
+        self.model_name = model_name;
+        self.permission_mode = prefs
+            .permission_mode
+            .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
+            .unwrap_or_else(|| "default".into());
+        self.agent_mode = prefs
+            .agent_mode
+            .or_else(|| defaults.as_ref().map(|d| d.agent_mode.clone()))
+            .unwrap_or_else(|| "build".into());
+        self.active_thinking_level = prefs
+            .thinking_level
+            .or_else(|| defaults.and_then(|d| d.thinking_level));
     }
 
     /// Delete a session — abort its turn, drop the actor handle (closing
@@ -854,6 +986,14 @@ impl SessionManager {
             usage: src.as_ref().and_then(|m| m.usage),
             model: src.as_ref().and_then(|m| m.model.clone()),
             provider: src.as_ref().and_then(|m| m.provider.clone()),
+            // The fork inherits the source's composer settings too — a copy
+            // should run under the same model/mode/level its source was using.
+            permission_mode: src.as_ref().and_then(|m| m.permission_mode.clone()),
+            agent_mode: src.as_ref().and_then(|m| m.agent_mode.clone()),
+            thinking_level: src.as_ref().and_then(|m| m.thinking_level.clone()),
+            // The fork copies history, not pending intent — parked prompts
+            // stay with the source session.
+            queued_prompts: Vec::new(),
         });
         self.metas = self.store.list();
         self.spawn_actor(new_id);
@@ -884,10 +1024,7 @@ impl SessionManager {
         match &self.plugins {
             Some(handle) => {
                 let loaded = Self::load_plugins(&self.workspace_root);
-                let summary = loaded
-                    .as_ref()
-                    .map(|m| m.status())
-                    .unwrap_or_default();
+                let summary = loaded.as_ref().map(|m| m.status()).unwrap_or_default();
                 *handle.write().unwrap() = loaded;
                 summary
             }
@@ -905,9 +1042,15 @@ impl SessionManager {
     /// connected a plugin, so there was no live number to show. Failures come
     /// back as data (`ok: false`) so the card can print the reason.
     pub async fn mcp_probe(workspace_root: &std::path::Path, id: &str) -> serde_json::Value {
-        let Some(mpath) = agent_plugin::discover(workspace_root).into_iter().find(|p| {
-            p.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str()) == Some(id)
-        }) else {
+        let Some(mpath) = agent_plugin::discover(workspace_root)
+            .into_iter()
+            .find(|p| {
+                p.parent()
+                    .and_then(|d| d.file_name())
+                    .and_then(|n| n.to_str())
+                    == Some(id)
+            })
+        else {
             return serde_json::json!({ "ok": false, "error": format!("找不到插件 {id}") });
         };
         let Ok(text) = std::fs::read_to_string(&mpath) else {
@@ -936,7 +1079,10 @@ impl SessionManager {
         let mpath = agent_plugin::discover(workspace_root)
             .into_iter()
             .find(|p| {
-                p.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str()) == Some(id)
+                p.parent()
+                    .and_then(|d| d.file_name())
+                    .and_then(|n| n.to_str())
+                    == Some(id)
             })
             .ok_or_else(|| format!("找不到插件 {id}"))?;
         let dir = mpath.parent().ok_or("插件目录异常")?;
@@ -1112,6 +1258,21 @@ impl SessionManager {
             .and_then(|m| m.usage)
     }
 
+    /// A session's persisted queued prompts — seeds the composer's parked
+    /// list when the webview rebuilds a closed view. Reads the store fresh
+    /// for the same reason `store_usage` does.
+    pub fn store_queued(&self, id: i64) -> Vec<String> {
+        if !self.workspace_active {
+            return Vec::new();
+        }
+        self.store
+            .list()
+            .into_iter()
+            .find(|m| m.id == id)
+            .map(|m| m.queued_prompts)
+            .unwrap_or_default()
+    }
+
     /// Sidebar rows — persisted metas overlaid with live running/preview.
     /// Tuple: (id, title, preview, active, running, pinned).
     pub fn sidebar_rows(&self) -> Vec<(i64, String, String, bool, bool, bool)> {
@@ -1122,9 +1283,18 @@ impl SessionManager {
             .iter()
             .map(|m| {
                 let live = self.handles.get(&m.id);
-                let preview = live.map(|h| h.preview.clone()).unwrap_or_else(|| m.preview.clone());
+                let preview = live
+                    .map(|h| h.preview.clone())
+                    .unwrap_or_else(|| m.preview.clone());
                 let running = live.map(|h| h.running).unwrap_or(false);
-                (m.id, m.title.clone(), preview, m.id == self.active_id, running, m.pinned)
+                (
+                    m.id,
+                    m.title.clone(),
+                    preview,
+                    m.id == self.active_id,
+                    running,
+                    m.pinned,
+                )
             })
             .collect()
     }
@@ -1268,7 +1438,9 @@ impl SessionManager {
                         thinking_level_map,
                         available_levels,
                         context_window: d.and_then(|x| x.context_window),
-                        max_tokens: d.and_then(|x| x.max_tokens).map(|v| v.min(u32::MAX as u64) as u32),
+                        max_tokens: d
+                            .and_then(|x| x.max_tokens)
+                            .map(|v| v.min(u32::MAX as u64) as u32),
                         cost: d.and_then(|x| x.cost.clone()),
                     });
                 }
@@ -1299,26 +1471,37 @@ impl SessionManager {
             }
         }
 
-        if !models.iter().any(|m| m.provider == self.provider_name && m.model == self.model_name) {
-            models.insert(0, ModelDetails {
-                provider: self.provider_name.clone(),
-                model: self.model_name.clone(),
-                name: Some(self.model_name.clone()),
-                reasoning: false,
-                thinking_level_map: None,
-                available_levels: Vec::new(),
-                context_window: None,
-                max_tokens: None,
-                cost: None,
-            });
+        if !models
+            .iter()
+            .any(|m| m.provider == self.provider_name && m.model == self.model_name)
+        {
+            models.insert(
+                0,
+                ModelDetails {
+                    provider: self.provider_name.clone(),
+                    model: self.model_name.clone(),
+                    name: Some(self.model_name.clone()),
+                    reasoning: false,
+                    thinking_level_map: None,
+                    available_levels: Vec::new(),
+                    context_window: None,
+                    max_tokens: None,
+                    cost: None,
+                },
+            );
         }
 
         if self.active_thinking_level.is_none() {
-            if let Some(m) = models.iter().find(|m| m.provider == self.provider_name && m.model == self.model_name) {
+            if let Some(m) = models
+                .iter()
+                .find(|m| m.provider == self.provider_name && m.model == self.model_name)
+            {
                 if m.reasoning {
                     if m.available_levels.contains(&"medium".to_string()) {
                         self.active_thinking_level = Some("medium".into());
-                    } else if let Some(first_non_off) = m.available_levels.iter().find(|l| *l != "off") {
+                    } else if let Some(first_non_off) =
+                        m.available_levels.iter().find(|l| *l != "off")
+                    {
                         self.active_thinking_level = Some(first_non_off.clone());
                     } else {
                         self.active_thinking_level = Some("off".into());
@@ -1381,7 +1564,13 @@ impl SessionManager {
     /// Update the stored default preferences — applies to sessions spawned
     /// AFTER this call; live sessions are untouched (no gate write, no
     /// UiCommand, no SystemMessage in their stream).
-    pub fn set_default_prefs(&mut self, permission_mode: Option<String>, thinking_level: Option<String>, agent_mode: Option<String>, compact_at: Option<f32>) {
+    pub fn set_default_prefs(
+        &mut self,
+        permission_mode: Option<String>,
+        thinking_level: Option<String>,
+        agent_mode: Option<String>,
+        compact_at: Option<f32>,
+    ) {
         if let Some(m) = permission_mode {
             self.permission_mode = m;
         }
@@ -1453,9 +1642,7 @@ impl SessionManager {
 }
 
 /// Resolve the active provider from `config.toml`.
-fn resolve_provider(
-    cfg: &AppConfig,
-) -> (Arc<dyn agent_llm::LlmProvider>, String, String) {
+fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String, String) {
     if let Some(name) = &cfg.active_provider {
         if let Some(pcfg) = cfg.providers.get(name) {
             if let Ok(p) = ProviderFactory::build(pcfg) {
@@ -1573,7 +1760,10 @@ mod tests {
         write_config(&path, "devin", "devin/swe-2");
         let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
 
-        assert!(mgr.reload_model_config_from(Some(&path)), "changed file loads");
+        assert!(
+            mgr.reload_model_config_from(Some(&path)),
+            "changed file loads"
+        );
         assert_eq!(
             (mgr.provider_name.as_str(), mgr.model_name.as_str()),
             ("devin", "devin/swe-2")
@@ -1649,7 +1839,10 @@ mod tests {
         fn fake_handle(
             id: i64,
             mode: AgentMode,
-        ) -> (SessionHandle, tokio::sync::mpsc::Receiver<agent_ipc::UiCommand>) {
+        ) -> (
+            SessionHandle,
+            tokio::sync::mpsc::Receiver<agent_ipc::UiCommand>,
+        ) {
             let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(4);
             let (ui, _ui_rx) = crate::channels::UiSink::channel();
             (
@@ -1693,5 +1886,133 @@ mod tests {
         assert_eq!(mgr.model_info().active_agent_mode.as_deref(), Some("build"));
         mgr.active_id = 1;
         assert_eq!(mgr.model_info().active_agent_mode.as_deref(), Some("plan"));
+    }
+
+    /// The core regression: switching sessions must re-point the manager's
+    /// displayed settings at THAT session's own persisted choice — the
+    /// "window B shows window A's model" bug. Two sessions with different
+    /// stored models; activating each mirrors its own meta.
+    #[test]
+    fn switching_sessions_mirrors_each_sessions_own_model() {
+        use crate::session_store::SessionMeta;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+        mgr.workspace_active = true;
+
+        // Two sessions, each persisted a different model/provider. Handles are
+        // fake — `open_session` sees them as already-live and skips respawn.
+        for (id, provider, model) in [(1i64, "openai", "gpt-5"), (2i64, "deepseek", "ds-v3")] {
+            let meta = SessionMeta {
+                id,
+                title: format!("s{id}"),
+                preview: String::new(),
+                updated_at: 0,
+                pinned: false,
+                usage: None,
+                model: Some(model.into()),
+                provider: Some(provider.into()),
+                permission_mode: Some("default".into()),
+                agent_mode: Some("build".into()),
+                thinking_level: None,
+                queued_prompts: Vec::new(),
+            };
+            mgr.store.upsert_meta(meta).unwrap();
+            let (cmd_tx, _rx) = tokio::sync::mpsc::channel(4);
+            let (ui, _ui_rx) = crate::channels::UiSink::channel();
+            mgr.handles.insert(
+                id,
+                SessionHandle {
+                    id,
+                    cmd_tx,
+                    decision: Arc::new(Mutex::new(None)),
+                    ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+                    permissions: Arc::new(std::sync::RwLock::new(
+                        crate::permissions::PermissionGate::from_mode_str("default"),
+                    )),
+                    agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
+                    thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                    steer_tx: tokio::sync::mpsc::channel(1).0,
+                    cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    preview: String::new(),
+                    running: false,
+                    ui,
+                },
+            );
+        }
+        mgr.metas = mgr.store.list();
+
+        // Activate session 1 — its model becomes the displayed one.
+        mgr.open_session(1);
+        assert_eq!(mgr.provider_name, "openai");
+        assert_eq!(mgr.model_name, "gpt-5");
+
+        // Switch to session 2 — the display must follow IT, not stay on 1's.
+        mgr.open_session(2);
+        assert_eq!(mgr.provider_name, "deepseek");
+        assert_eq!(mgr.model_name, "ds-v3");
+        let info = mgr.model_info();
+        assert_eq!(info.active_provider, "deepseek");
+        assert_eq!(info.active_model, "ds-v3");
+    }
+
+    /// A session that never picked its own settings falls back to the
+    /// workspace default on activation — per-session fields are `None` until
+    /// the session itself chooses.
+    #[test]
+    fn a_session_without_settings_falls_back_to_the_workspace_default() {
+        use crate::session_store::SessionMeta;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+        mgr.workspace_active = true;
+        // Workspace default the fresh session should inherit.
+        mgr.provider_name = "fallback-p".into();
+        mgr.model_name = "fallback-m".into();
+
+        // Session meta with NO per-session choices — every field falls back.
+        let meta = SessionMeta {
+            id: 7,
+            title: "untouched".into(),
+            preview: String::new(),
+            updated_at: 0,
+            pinned: false,
+            usage: None,
+            model: None,
+            provider: None,
+            permission_mode: None,
+            agent_mode: None,
+            thinking_level: None,
+            queued_prompts: Vec::new(),
+        };
+        mgr.store.upsert_meta(meta).unwrap();
+        mgr.metas = mgr.store.list();
+        let (cmd_tx, _rx) = tokio::sync::mpsc::channel(4);
+        let (ui, _ui_rx) = crate::channels::UiSink::channel();
+        mgr.handles.insert(
+            7,
+            SessionHandle {
+                id: 7,
+                cmd_tx,
+                decision: Arc::new(Mutex::new(None)),
+                ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+                permissions: Arc::new(std::sync::RwLock::new(
+                    crate::permissions::PermissionGate::from_mode_str("auto"),
+                )),
+                agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Plan)),
+                thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                steer_tx: tokio::sync::mpsc::channel(1).0,
+                cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                preview: String::new(),
+                running: false,
+                ui,
+            },
+        );
+
+        mgr.open_session(7);
+        // Model/provider fall back to the workspace default (meta unset); the
+        // live handle's mode/level slots still override where they exist.
+        assert_eq!(mgr.provider_name, "fallback-p");
+        assert_eq!(mgr.model_name, "fallback-m");
+        assert_eq!(mgr.permission_mode, "auto");
+        assert_eq!(mgr.agent_mode, "plan");
     }
 }

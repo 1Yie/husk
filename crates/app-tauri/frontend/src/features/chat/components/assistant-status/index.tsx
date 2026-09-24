@@ -113,9 +113,16 @@ const ThinkingBody = memo(function ThinkingBody({
 export function AssistantStatus({
   mode,
   thinkingText,
+  startedAt,
 }: {
   mode: "reply" | "thought" | "thinking" | "tools" | null;
   thinkingText: string;
+  /** Epoch ms when this phase ACTUALLY began — the thinking/tool item's own
+   *  start stamp (or the turn's for the reply-wait row). Anchoring the clock
+   *  here rather than on mount means a session switch / remount keeps the
+   *  elapsed figure instead of restarting it at 0. Falls back to mount time
+   *  when the caller has no stamp (e.g. a replayed item). */
+  startedAt?: number;
 }) {
   // Collapsed by default in EVERY mode — the header row alone carries the
   // state; reasoning body expands on explicit click. Previously the body
@@ -126,7 +133,7 @@ export function AssistantStatus({
   // scrolled into view) starts with no clock at all — nothing was measured,
   // so nothing is shown.
   const [trace, setTrace] = useState<Trace | null>(() =>
-    liveMode(mode) ? { banked: 0, since: Date.now() } : null,
+    liveMode(mode) ? { banked: 0, since: startedAt ?? Date.now() } : null,
   );
   const [seenMode, setSeenMode] = useState(mode);
   if (mode !== seenMode) {

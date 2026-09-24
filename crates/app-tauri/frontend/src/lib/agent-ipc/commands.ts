@@ -16,6 +16,16 @@ export const sendPrompt = (text: string) => send({ Prompt: { text } });
 /** Mid-turn steering text — injected into the running turn. */
 export const steer = (text: string) => send({ Steer: { text } });
 
+/** Replace the session's parked queue — every list op (enqueue, edit,
+ * remove, reorder) resolves to this one write; the kernel echoes the new
+ * list back via `QueuedPrompts`. */
+export const setQueued = (items: string[]) => send({ SetQueued: { items } });
+
+/** Park one follow-up prompt — the kernel appends and, if the session is
+ * already idle, drains it immediately (closes the "turn ended between the
+ * user's keystroke and this command" race). */
+export const enqueue = (text: string) => send({ Enqueue: { text } });
+
 /** Resolve a pending approval card. */
 export const decideTool = (requestId: number, approved: boolean) =>
   send({ ToolDecision: { request_id: requestId, approved } });

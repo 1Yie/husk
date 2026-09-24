@@ -56,11 +56,11 @@ mod tests {
         // a(1) é(2) 中(3) b(1) → byte layout: a|é é|中 中 中|b → len 7
         let s = "aé中b";
         assert_eq!(floor_char_boundary(s, 0), 0);
-        assert_eq!(floor_char_boundary(s, 1), 1);  // after 'a'
-        assert_eq!(floor_char_boundary(s, 2), 1);  // inside 'é' → down to 1
-        assert_eq!(floor_char_boundary(s, 3), 3);  // after 'é'
-        assert_eq!(floor_char_boundary(s, 5), 3);  // inside '中' → down to 3
-        assert_eq!(floor_char_boundary(s, 6), 6);  // after '中'
+        assert_eq!(floor_char_boundary(s, 1), 1); // after 'a'
+        assert_eq!(floor_char_boundary(s, 2), 1); // inside 'é' → down to 1
+        assert_eq!(floor_char_boundary(s, 3), 3); // after 'é'
+        assert_eq!(floor_char_boundary(s, 5), 3); // inside '中' → down to 3
+        assert_eq!(floor_char_boundary(s, 6), 6); // after '中'
         assert_eq!(floor_char_boundary(s, 99), 7); // clamped to len
     }
 
@@ -68,14 +68,14 @@ mod tests {
     fn head_tail_never_panic() {
         // byte layout: 中(0-2) 文(3-5) a(6) b(7) c(8) → len 9
         let s = "中文abc";
-        assert_eq!(head(s, 4), "中");       // 4 is mid-文 → down to 3 → "中"
-        assert_eq!(tail(s, 3), "abc");     // len-3=6 → 'a' boundary → "abc"
-        assert_eq!(tail(s, 6), "文abc");   // len-6=3 → '文' boundary → "文abc"
-        assert_eq!(tail(s, 7), "文abc");   // len-7=2 mid-中 → up to 3 → "文abc"
+        assert_eq!(head(s, 4), "中"); // 4 is mid-文 → down to 3 → "中"
+        assert_eq!(tail(s, 3), "abc"); // len-3=6 → 'a' boundary → "abc"
+        assert_eq!(tail(s, 6), "文abc"); // len-6=3 → '文' boundary → "文abc"
+        assert_eq!(tail(s, 7), "文abc"); // len-7=2 mid-中 → up to 3 → "文abc"
         assert_eq!(tail(s, 9), "中文abc"); // n>=len → whole string
         let mut owned = "中文abc".to_string();
         truncate(&mut owned, 4);
-        assert_eq!(owned, "中");           // 4 mid-文 → "中"
+        assert_eq!(owned, "中"); // 4 mid-文 → "中"
     }
 
     #[test]

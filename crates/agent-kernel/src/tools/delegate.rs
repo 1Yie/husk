@@ -6,23 +6,23 @@
 //! `Ask` — so it runs headless where escalations deny, and the parent's cancel
 //! flag tears the child down with it.
 
-
 use std::sync::Arc;
 
 use futures::FutureExt;
 use serde::Deserialize;
 
 use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolSpec};
-use agent_ipc::events::UiEvent;
 use crate::engine::{Engine, EngineIo};
 use crate::permissions::PermissionGate;
 use agent_context::HunkTracker;
+use agent_ipc::events::UiEvent;
 use agent_llm::types::ChatMessage;
 use std::path::{Path, PathBuf};
 
 /// The child's system prompt — intentionally small: the parent's request
 /// carries the task context; the prompt only sets behavior contract.
-pub const SUBAGENT_PROMPT: &str = "You are a delegated subagent working inside the user's workspace. \
+pub const SUBAGENT_PROMPT: &str =
+    "You are a delegated subagent working inside the user's workspace. \
 A parent agent handed you one scoped task — complete it autonomously and return your findings or \
 result as your final message. Rules: (1) no user is listening — never ask questions, report \
 blockers instead; (2) stay strictly inside the task's scope; (3) verify before claiming done — \
@@ -254,40 +254,40 @@ impl SubagentSpawner {
                         continue;
                     };
                     {
-                    let forwarded = match ev {
-                        UiEvent::ToolCallStarted {
-                            name, args_preview, ..
-                        } => UiEvent::ToolCallStarted {
-                            name,
-                            args_preview,
-                            parent: Some(tag.clone()),
-                        },
-                        UiEvent::ToolCallFinished {
-                            name,
-                            ok,
-                            content,
-                            ui_type,
-                            ..
-                        } => UiEvent::ToolCallFinished {
-                            name,
-                            ok,
-                            content,
-                            ui_type,
-                            parent: Some(tag.clone()),
-                        },
-                        UiEvent::TextDelta { text, .. } => UiEvent::TextDelta {
-                            text,
-                            parent: Some(tag.clone()),
-                        },
-                        UiEvent::ReasoningDelta { text, .. } => UiEvent::ReasoningDelta {
-                            text,
-                            parent: Some(tag.clone()),
-                        },
-                        // Text/state stay local while this child is the only
-                        // stream on screen; the parent's own reply is not.
-                        _ => continue,
-                    };
-                    let _ = parent_sink.send(forwarded);
+                        let forwarded = match ev {
+                            UiEvent::ToolCallStarted {
+                                name, args_preview, ..
+                            } => UiEvent::ToolCallStarted {
+                                name,
+                                args_preview,
+                                parent: Some(tag.clone()),
+                            },
+                            UiEvent::ToolCallFinished {
+                                name,
+                                ok,
+                                content,
+                                ui_type,
+                                ..
+                            } => UiEvent::ToolCallFinished {
+                                name,
+                                ok,
+                                content,
+                                ui_type,
+                                parent: Some(tag.clone()),
+                            },
+                            UiEvent::TextDelta { text, .. } => UiEvent::TextDelta {
+                                text,
+                                parent: Some(tag.clone()),
+                            },
+                            UiEvent::ReasoningDelta { text, .. } => UiEvent::ReasoningDelta {
+                                text,
+                                parent: Some(tag.clone()),
+                            },
+                            // Text/state stay local while this child is the only
+                            // stream on screen; the parent's own reply is not.
+                            _ => continue,
+                        };
+                        let _ = parent_sink.send(forwarded);
                     }
                 }
             }));
@@ -329,7 +329,11 @@ impl SubagentSpawner {
 
         let ui_tx = child_sink;
         let (_steer_tx, steer_rx) = tokio::sync::mpsc::channel(1);
-        let mut io = EngineIo { ui_tx, steer_rx, cancel };
+        let mut io = EngineIo {
+            ui_tx,
+            steer_rx,
+            cancel,
+        };
         let system = agent_prompt.unwrap_or_else(|| SUBAGENT_PROMPT.to_string());
         let task_preview = task.clone();
         let mut history = vec![ChatMessage::system(system)];
@@ -725,7 +729,14 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let text = if tasks.len() == 1 {
         let label = child_label(agent_name.as_deref(), 0, 1);
         spawner
-            .run(ctx, tasks[0].clone(), parsed.readonly, agent_prompt, cancel, &label)
+            .run(
+                ctx,
+                tasks[0].clone(),
+                parsed.readonly,
+                agent_prompt,
+                cancel,
+                &label,
+            )
             .await
             .map_err(ToolError::Failed)?
     } else {
@@ -772,7 +783,10 @@ mod tests {
         let two = ["a", "b"];
         let err = resolve_tasks(&args(None, Some(&two), false)).unwrap_err();
         assert!(err.contains("readonly: true"), "{err}");
-        assert_eq!(resolve_tasks(&args(None, Some(&two), true)).unwrap().len(), 2);
+        assert_eq!(
+            resolve_tasks(&args(None, Some(&two), true)).unwrap().len(),
+            2
+        );
 
         let err = resolve_tasks(&args(None, Some(&["one"]), true)).unwrap_err();
         assert!(err.contains("`task`"), "{err}");
@@ -798,9 +812,16 @@ mod tests {
         )
         .unwrap();
         let with_manifest = catalog(dir.path());
-        assert!(with_manifest.contains("our own reviewer"), "{with_manifest}");
+        assert!(
+            with_manifest.contains("our own reviewer"),
+            "{with_manifest}"
+        );
         assert!(with_manifest.contains("(project)"), "{with_manifest}");
-        assert_eq!(with_manifest.matches("`review`").count(), 1, "{with_manifest}");
+        assert_eq!(
+            with_manifest.matches("`review`").count(),
+            1,
+            "{with_manifest}"
+        );
     }
 
     /// Manifests live in Husk's own dirs; the project one wins over the same

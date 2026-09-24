@@ -13,13 +13,17 @@ use std::path::{Path, PathBuf};
 /// first hit wins when a name is duplicated. `.agents/skills` is the canonical
 /// root (agentskills convention); `.claude/skills` and `.pi/skills` are the
 /// Claude-Code / pi aliases so existing skill trees register natively.
-pub const WORKSPACE_SKILL_DIRS: [&str; 5] =
-    [".agents/skills", ".agent/skills", ".skills", ".claude/skills", ".pi/skills"];
+pub const WORKSPACE_SKILL_DIRS: [&str; 5] = [
+    ".agents/skills",
+    ".agent/skills",
+    ".skills",
+    ".claude/skills",
+    ".pi/skills",
+];
 
 /// User-level skill roots (under `dirs::home_dir()`) — scanned after the
 /// workspace dirs, so a project skill always shadows a global one.
-pub const GLOBAL_SKILL_DIRS: [&str; 3] =
-    [".agents/skills", ".claude/skills", ".pi/agent/skills"];
+pub const GLOBAL_SKILL_DIRS: [&str; 3] = [".agents/skills", ".claude/skills", ".pi/agent/skills"];
 
 /// How much of a manifest a scan reads. Frontmatter lives at the top; the cap
 /// only bites on a manifest with an absurdly long preamble, which then reads
@@ -75,10 +79,16 @@ pub struct ParsedManifest {
 pub fn parse_manifest(text: &str) -> ParsedManifest {
     let trimmed = text.trim_start();
     let Some(fm) = trimmed.strip_prefix("---") else {
-        return ParsedManifest { body: text.to_string(), ..Default::default() };
+        return ParsedManifest {
+            body: text.to_string(),
+            ..Default::default()
+        };
     };
     let Some(end) = fm.find("\n---") else {
-        return ParsedManifest { body: text.to_string(), ..Default::default() };
+        return ParsedManifest {
+            body: text.to_string(),
+            ..Default::default()
+        };
     };
     let mut out = ParsedManifest {
         body: fm[end + 4..].trim().to_string(),
@@ -109,7 +119,11 @@ pub fn parse_manifest(text: &str) -> ParsedManifest {
                         break;
                     }
                 }
-                out.description = Some(if folded { parts.join(" ") } else { parts.join("\n") });
+                out.description = Some(if folded {
+                    parts.join(" ")
+                } else {
+                    parts.join("\n")
+                });
                 i = j;
                 continue;
             }
@@ -136,7 +150,11 @@ pub fn parse_manifest(text: &str) -> ParsedManifest {
                 let required = key.starts_with('<') && key.ends_with('>');
                 out.arguments.push(SkillArgument {
                     name: key.trim_matches(|c| c == '<' || c == '>').to_string(),
-                    description: value.trim().trim_matches('"').trim_matches('\'').to_string(),
+                    description: value
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .to_string(),
                     required,
                 });
                 j += 1;
@@ -151,8 +169,10 @@ pub fn parse_manifest(text: &str) -> ParsedManifest {
 
 /// Every skill root, tagged `global`, in scan order — workspace dirs first.
 pub fn skill_base_dirs(root: &Path) -> Vec<(PathBuf, bool)> {
-    let mut out: Vec<(PathBuf, bool)> =
-        WORKSPACE_SKILL_DIRS.iter().map(|d| (root.join(d), false)).collect();
+    let mut out: Vec<(PathBuf, bool)> = WORKSPACE_SKILL_DIRS
+        .iter()
+        .map(|d| (root.join(d), false))
+        .collect();
     if let Some(home) = dirs::home_dir() {
         out.extend(GLOBAL_SKILL_DIRS.iter().map(|d| (home.join(d), true)));
     }
@@ -199,7 +219,9 @@ pub fn scan_all_skills(root: &Path) -> Vec<SkillMetadata> {
 /// Look up one skill by name (`/{name}` / `${name}` dispatch, `skill` tool).
 pub fn find_skill(root: &Path, name: &str) -> Option<SkillMetadata> {
     let want = name.to_lowercase();
-    scan_all_skills(root).into_iter().find(|s| s.name.to_lowercase() == want)
+    scan_all_skills(root)
+        .into_iter()
+        .find(|s| s.name.to_lowercase() == want)
 }
 
 /// Newest mtime across the skill roots and their entries — the catalog's
@@ -215,7 +237,9 @@ pub fn skills_stamp(root: &Path) -> u64 {
     let mut newest = 0u64;
     for (base, _) in skill_base_dirs(root) {
         newest = newest.max(millis(std::fs::metadata(&base).and_then(|m| m.modified())));
-        let Ok(rd) = std::fs::read_dir(&base) else { continue };
+        let Ok(rd) = std::fs::read_dir(&base) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let p = entry.path();
             if p.is_dir() {
@@ -251,23 +275,35 @@ fn scan_skill_dirs(
     out: &mut Vec<SkillMetadata>,
 ) {
     for base in dirs {
-        let Ok(rd) = std::fs::read_dir(base) else { continue };
+        let Ok(rd) = std::fs::read_dir(base) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let p = entry.path();
             let manifest = if p.is_dir() {
                 let m = p.join("SKILL.md");
-                if m.is_file() { m } else { continue }
+                if m.is_file() {
+                    m
+                } else {
+                    continue;
+                }
             } else if p.extension().is_some_and(|e| e == "md") {
                 p.clone()
             } else {
                 continue;
             };
-            let Some(head) = read_head(&manifest) else { continue };
+            let Some(head) = read_head(&manifest) else {
+                continue;
+            };
             let parsed = parse_manifest(&head);
             let name = parsed.name.unwrap_or_else(|| {
                 p.file_name()
                     .map(|n| n.to_string_lossy().into_owned())
-                    .or_else(|| manifest.file_stem().map(|n| n.to_string_lossy().into_owned()))
+                    .or_else(|| {
+                        manifest
+                            .file_stem()
+                            .map(|n| n.to_string_lossy().into_owned())
+                    })
                     .unwrap_or_default()
             });
             if name.is_empty() || !seen.insert(name.clone()) {
@@ -321,7 +357,10 @@ mod tests {
 
         let found = scan_skills(dir.path());
         let get = |n: &str| found.iter().find(|s| s.name == n).expect("skill");
-        assert_eq!(get("folded").description, "A folded summary across two lines.");
+        assert_eq!(
+            get("folded").description,
+            "A folded summary across two lines."
+        );
         assert_eq!(get("literal").description, "line one\nline two");
     }
 
@@ -336,10 +375,14 @@ mod tests {
             ".agents/skills/heavy",
             &format!("---\nname: heavy\ndescription: big body\n---\n\n{body}\n"),
         );
-        let parsed = parse_manifest(&read_head(&dir.path().join(".agents/skills/heavy/SKILL.md")).unwrap());
+        let parsed =
+            parse_manifest(&read_head(&dir.path().join(".agents/skills/heavy/SKILL.md")).unwrap());
         assert_eq!(parsed.name.as_deref(), Some("heavy"));
         assert_eq!(parsed.description.as_deref(), Some("big body"));
-        assert!(parsed.body.len() < FRONTMATTER_HEAD as usize, "head read pulled the body");
+        assert!(
+            parsed.body.len() < FRONTMATTER_HEAD as usize,
+            "head read pulled the body"
+        );
         // The metadata path never even looks at it.
         assert_eq!(scan_skills(dir.path())[0].name, "heavy");
     }
@@ -355,9 +398,15 @@ mod tests {
             "---\nname: review\ndescription: review code\narguments:\n  <path>: file or directory\n  focus: what to look for\n  severity:\nlicense: MIT\n---\n\nBody.\n",
         );
         let meta = &scan_skills(dir.path())[0];
-        let names: Vec<(&str, bool)> =
-            meta.arguments.iter().map(|a| (a.name.as_str(), a.required)).collect();
-        assert_eq!(names, vec![("path", true), ("focus", false), ("severity", false)]);
+        let names: Vec<(&str, bool)> = meta
+            .arguments
+            .iter()
+            .map(|a| (a.name.as_str(), a.required))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("path", true), ("focus", false), ("severity", false)]
+        );
         assert_eq!(meta.arguments[0].description, "file or directory");
         assert_eq!(meta.arguments[2].description, "", "a bare name is allowed");
         // `license:` after the block is not an argument.
@@ -377,24 +426,57 @@ mod tests {
     #[test]
     fn agent_and_claude_and_pi_dirs_all_register_and_dedupe() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), ".agents/skills/shared", "---\nname: shared\ndescription: canonical\n---\n\nA.\n");
-        write_manifest(dir.path(), ".claude/skills/shared", "---\nname: shared\ndescription: shadowed\n---\n\nB.\n");
-        write_manifest(dir.path(), ".pi/skills/pi-only", "---\nname: pi-only\ndescription: from pi\n---\n\nC.\n");
+        write_manifest(
+            dir.path(),
+            ".agents/skills/shared",
+            "---\nname: shared\ndescription: canonical\n---\n\nA.\n",
+        );
+        write_manifest(
+            dir.path(),
+            ".claude/skills/shared",
+            "---\nname: shared\ndescription: shadowed\n---\n\nB.\n",
+        );
+        write_manifest(
+            dir.path(),
+            ".pi/skills/pi-only",
+            "---\nname: pi-only\ndescription: from pi\n---\n\nC.\n",
+        );
         let found = scan_skills(dir.path());
         assert_eq!(found.len(), 2, "{found:?}");
-        assert_eq!(found.iter().find(|s| s.name == "shared").unwrap().description, "canonical");
+        assert_eq!(
+            found
+                .iter()
+                .find(|s| s.name == "shared")
+                .unwrap()
+                .description,
+            "canonical"
+        );
     }
 
     #[test]
     fn stamp_moves_when_the_tree_changes() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), ".agents/skills/one", "---\nname: one\n---\n\nA.\n");
+        write_manifest(
+            dir.path(),
+            ".agents/skills/one",
+            "---\nname: one\n---\n\nA.\n",
+        );
         let before = skills_stamp(dir.path());
         // mtime granularity can be coarse on some filesystems; a fresh write
         // must still move the stamp once the filesystem records it.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        write_manifest(dir.path(), ".agents/skills/two", "---\nname: two\n---\n\nB.\n");
-        assert!(skills_stamp(dir.path()) > before, "adding a skill must move the stamp");
-        assert_eq!(find_skill(dir.path(), "TWO").map(|s| s.name), Some("two".into()));
+        write_manifest(
+            dir.path(),
+            ".agents/skills/two",
+            "---\nname: two\n---\n\nB.\n",
+        );
+        assert!(
+            skills_stamp(dir.path()) > before,
+            "adding a skill must move the stamp"
+        );
+        assert_eq!(
+            find_skill(dir.path(), "TWO").map(|s| s.name),
+            Some("two".into())
+        );
     }
 }

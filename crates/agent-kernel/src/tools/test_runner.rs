@@ -86,15 +86,44 @@ pub fn test_distill_pub(raw: &str, focus: Option<&str>) -> String {
 
 fn distill(raw: &str, focus: Option<&str>) -> String {
     const KEEP_PATTERNS: &[&str] = &[
-        "FAILED", "failed", "failures:", "error[", "error:", "panicked",
-        "assertion failed", "assertion `", "FAILED:", "Error:", "FAIL ",
-        "expected", "Expected", "left:", "right:", "diff <", "thread '",
-        "not ok", "✗", "×", "Cannot find", "TypeError", "ReferenceError",
-        "File \"", "line ", "at ",
+        "FAILED",
+        "failed",
+        "failures:",
+        "error[",
+        "error:",
+        "panicked",
+        "assertion failed",
+        "assertion `",
+        "FAILED:",
+        "Error:",
+        "FAIL ",
+        "expected",
+        "Expected",
+        "left:",
+        "right:",
+        "diff <",
+        "thread '",
+        "not ok",
+        "✗",
+        "×",
+        "Cannot find",
+        "TypeError",
+        "ReferenceError",
+        "File \"",
+        "line ",
+        "at ",
     ];
     const DROP_PATTERNS: &[&str] = &[
-        "... ok", "test result: ok", "Compiling", "Finished", "Running ",
-        "Downloading", "Downloaded", "npm warn", "PASS ", "✓ ",
+        "... ok",
+        "test result: ok",
+        "Compiling",
+        "Finished",
+        "Running ",
+        "Downloading",
+        "Downloaded",
+        "npm warn",
+        "PASS ",
+        "✓ ",
     ];
 
     let mut kept: Vec<&str> = Vec::new();
@@ -110,11 +139,16 @@ fn distill(raw: &str, focus: Option<&str>) -> String {
         // (b) directly follows one (assertion continuations, backtrace).
         let keep = KEEP_PATTERNS.iter().any(|p| l.contains(p))
             && !DROP_PATTERNS.iter().any(|p| l.contains(p))
-            || (i as i64 - last_kept_idx <= 2 && kept.last().is_some_and(|_| {
-                l.starts_with("at ") || l.starts_with('|') || l.starts_with("File ")
-            }));
+            || (i as i64 - last_kept_idx <= 2
+                && kept.last().is_some_and(|_| {
+                    l.starts_with("at ") || l.starts_with('|') || l.starts_with("File ")
+                }));
         if let Some(f) = focus {
-            if keep && !f.is_empty() && !l.contains(f) && KEEP_PATTERNS.iter().any(|p| l.contains(p)) {
+            if keep
+                && !f.is_empty()
+                && !l.contains(f)
+                && KEEP_PATTERNS.iter().any(|p| l.contains(p))
+            {
                 // focus filter: non-focused failures drop unless they're the summary
                 if !l.contains("test result") && !l.contains("failures:") {
                     continue;

@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_context::{
-    git_snapshot, memory::TurnRecord, HunkTracker, MemoryStore, TrackingMode,
-    TurnDistiller, WorkspaceScanner,
+    git_snapshot, memory::TurnRecord, HunkTracker, MemoryStore, TrackingMode, TurnDistiller,
+    WorkspaceScanner,
 };
 use agent_ipc::{AgentState, UiCommand, UiEvent};
 use agent_llm::types::ChatMessage;
@@ -92,6 +92,9 @@ pub struct SessionConfig {
     /// Per-model wire settings from config (`maxTokens`, `samplingParams`,
     /// model-level `compat`). `None` → every adapter default applies.
     pub model_params: Option<agent_llm::ModelParams>,
+    /// Parked follow-up prompts restored from `SessionMeta` — the
+    /// composer's queue survives session switches and app restarts.
+    pub queued_prompts: Vec<String>,
 }
 
 /// One live session: owns history + engine, consumes commands, emits events.
@@ -108,7 +111,7 @@ pub struct SessionActor {
     /// Write tracking for undo/rewind + files-changed list.
     hunks: HunkTracker,
     /// Engine's decision slot — `ToolDecision` writes here mid-turn.
-    decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>> ,
+    decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
     /// `AnswerQuestion` resolves here mid-turn (same bypass pattern).
     ask_channel: Arc<crate::tools::registry::AskChannel>,
     /// Engine's permissions slot — permission mode updates apply immediately mid-turn.
@@ -139,6 +142,11 @@ pub struct SessionActor {
     /// into `SessionMeta` so a reopened session's header meter shows real
     /// numbers before the next `Usage` event.
     last_usage: Option<(u32, u32, u32)>,
+    /// Parked follow-up prompts — the composer's queue. Lives here (not
+    /// in the webview) so it survives session switches: the actor stays
+    /// alive in `handles`/`parked`, drains at turn end no matter which
+    /// session is on screen, and mirrors into `SessionMeta` for restarts.
+    queued: std::collections::VecDeque<String>,
     /// Skill backend — owns the cached prompt catalog and its change stamp, so
     /// a large tree is not re-read on every prompt.
     skills: crate::skills::SkillManager,
@@ -153,7 +161,10 @@ impl SessionActor {
 
     /// Fresh session with a caller-assigned id (the SessionManager allocates
     /// ids via `SessionStore::next_id` so persistence + sidebar agree).
-    pub fn spawn_with_id(cfg: SessionConfig, session_id: i64) -> (Self, super::channels::UiChannels) {
+    pub fn spawn_with_id(
+        cfg: SessionConfig,
+        session_id: i64,
+    ) -> (Self, super::channels::UiChannels) {
         Self::spawn_inner(cfg, None, session_id)
     }
 
@@ -217,12 +228,11 @@ impl SessionActor {
                     // keep assistant if it has content OR tool_calls
                     m.content.is_some() || m.tool_calls.is_some()
                 }
-                agent_llm::types::Role::Tool => {
-                    m.tool_call_id
-                        .as_ref()
-                        .map(|id| known_call_ids.contains(id))
-                        .unwrap_or(false)
-                }
+                agent_llm::types::Role::Tool => m
+                    .tool_call_id
+                    .as_ref()
+                    .map(|id| known_call_ids.contains(id))
+                    .unwrap_or(false),
                 _ => true,
             }
         });
@@ -249,9 +259,15 @@ impl SessionActor {
 
         let system_prompt = SYSTEM_PROMPT_TEMPLATE
             .replace("{{DATE}}", &chrono_lite_date())
-            .replace("{{WORKSPACE_ROOT}}", &cfg.workspace_root.display().to_string())
+            .replace(
+                "{{WORKSPACE_ROOT}}",
+                &cfg.workspace_root.display().to_string(),
+            )
             .replace("{{PERMISSION_MODE}}", &cfg.permission_mode)
-            .replace("{{AGENT_MODE}}", crate::mode::AgentMode::from_str(&cfg.agent_mode).prompt_block())
+            .replace(
+                "{{AGENT_MODE}}",
+                crate::mode::AgentMode::from_str(&cfg.agent_mode).prompt_block(),
+            )
             .replace("{{WORKSPACE_TREE}}", &workspace_tree)
             .replace("{{GIT_STATUS}}", &git_status);
 
@@ -270,7 +286,11 @@ impl SessionActor {
                 Some(s) => {
                     let s = Arc::new(s);
                     let block = s.memory_block("workspace").unwrap_or_default();
-                    (Some(s.clone()), Some(Arc::new(TurnDistiller::new(s))), block)
+                    (
+                        Some(s.clone()),
+                        Some(Arc::new(TurnDistiller::new(s))),
+                        block,
+                    )
                 }
                 None => (None, None, "(no memory)".to_string()),
             }
@@ -318,8 +338,7 @@ impl SessionActor {
         // question — deny at the policy layer, not just via missing ui_tx);
         // `readonly` children drop every non-readonly tool too.
         let child_full = registry.filtered(|s| {
-            s.name != "delegate"
-                && s.class != crate::tools::registry::ToolClass::HumanInteraction
+            s.name != "delegate" && s.class != crate::tools::registry::ToolClass::HumanInteraction
         });
         let child_ro = child_full.readonly_only();
         let mut tool_ctx =
@@ -429,6 +448,7 @@ impl SessionActor {
                 session_id,
                 store,
                 last_usage: None,
+                queued: cfg.queued_prompts.into(),
                 skills,
             },
             channels,
@@ -514,7 +534,8 @@ impl SessionActor {
         info!("user prompt ({} chars)", text.len());
         // Clear the cancel flag so a stale Cancel from a previous turn can't
         // abort this one before it starts.
-        self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.cancel
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         self.state = AgentState::ScanningWorkspace;
         let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
         let turn = self.hunks.begin_turn();
@@ -556,7 +577,11 @@ impl SessionActor {
         }
 
         let outcome_text = text.clone();
-        match self.engine.run_turn(&mut self.io, &mut self.history, text, &mut self.hunks).await {
+        match self
+            .engine
+            .run_turn(&mut self.io, &mut self.history, text, &mut self.hunks)
+            .await
+        {
             // `run_turn` already emitted the terminal `StateChanged` on every
             // exit path (Finished at the assistant-message boundary, Failed at
             // each early return) — re-emitting here doubles the event and the
@@ -568,8 +593,12 @@ impl SessionActor {
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
                     outcome: "success".into(),
-                    files: self.hunks.files_in_turn(turn).iter()
-                        .map(|p| p.to_string_lossy().into_owned()).collect(),
+                    files: self
+                        .hunks
+                        .files_in_turn(turn)
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect(),
                     correction: None,
                     steered_with: None,
                 });
@@ -585,8 +614,12 @@ impl SessionActor {
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
                     outcome: "failed".into(),
-                    files: self.hunks.files_in_turn(turn).iter()
-                        .map(|p| p.to_string_lossy().into_owned()).collect(),
+                    files: self
+                        .hunks
+                        .files_in_turn(turn)
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect(),
                     correction: None,
                     steered_with: None,
                 });
@@ -608,21 +641,27 @@ impl SessionActor {
         // echo a provider leaked into assistant content (the streaming
         // CallStripper catches it live, but this is the last-line defense so
         // a poisoned snapshot can't re-teach the model on resume).
-        let sanitized: Vec<ChatMessage> = self.history.iter().map(|m| {
-            if m.role == agent_llm::types::Role::Assistant {
-                let mut m = m.clone();
-                if let Some(c) = &m.content {
-                    m.content = Some(strip_call_echo(c));
+        let sanitized: Vec<ChatMessage> = self
+            .history
+            .iter()
+            .map(|m| {
+                if m.role == agent_llm::types::Role::Assistant {
+                    let mut m = m.clone();
+                    if let Some(c) = &m.content {
+                        m.content = Some(strip_call_echo(c));
+                    }
+                    m
+                } else {
+                    m.clone()
                 }
-                m
-            } else {
-                m.clone()
-            }
-        }).collect();
+            })
+            .collect();
         let _ = store.snapshot(id, &sanitized);
 
         // Title = first user prompt (truncated); preview = last agent text.
-        let title = self.history.iter()
+        let title = self
+            .history
+            .iter()
             .find(|m| m.role == agent_llm::types::Role::User)
             .and_then(|m| m.content.clone())
             .map(|c| c.chars().take(40).collect())
@@ -631,7 +670,9 @@ impl SessionActor {
         let preview = if running {
             "⟳ running…".to_string()
         } else {
-            self.history.iter().rev()
+            self.history
+                .iter()
+                .rev()
                 .find(|m| m.role == agent_llm::types::Role::Assistant)
                 .and_then(|m| m.content.clone())
                 .map(|c| c.chars().take(60).collect())
@@ -647,12 +688,14 @@ impl SessionActor {
         // actor's `last_usage` starts empty until its first turn lands).
         let usage = self
             .last_usage
-            .map(|(prompt, completion, cached)| crate::session_store::SessionUsage {
-                prompt,
-                completion,
-                context_window: self.engine.context_window() as u32,
-                cached,
-            })
+            .map(
+                |(prompt, completion, cached)| crate::session_store::SessionUsage {
+                    prompt,
+                    completion,
+                    context_window: self.engine.context_window() as u32,
+                    cached,
+                },
+            )
             .or_else(|| {
                 store
                     .list()
@@ -668,8 +711,11 @@ impl SessionActor {
             .find(|m| m.id == id)
             .map(|m| m.pinned)
             .unwrap_or(false);
-        // Stamp the model alongside the usage: a turn's spend is only
-        // attributable while we know who served it.
+        // Stamp the live composer settings alongside the usage — the model a
+        // turn ran under is the spend's attribution, and the same fields are
+        // what `spawn_actor` restores on reopen. These come from the engine's
+        // live slots (updated by `apply_model_switch` mid-session), not the
+        // spawn-time snapshot.
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
         let _ = store.upsert_meta(crate::session_store::SessionMeta {
             id,
@@ -680,6 +726,109 @@ impl SessionActor {
             usage,
             model: (!model.is_empty()).then_some(model),
             provider: (!provider.is_empty()).then_some(provider),
+            permission_mode: Some(self.current_permission_mode()),
+            agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
+            thinking_level: self.engine.thinking_level(),
+            queued_prompts: self.queued.iter().cloned().collect(),
+        });
+    }
+
+    /// The permission mode the engine is currently dispatching under —
+    /// `model_info` labels and `SessionMeta` share this canonical string.
+    fn current_permission_mode(&self) -> String {
+        self.permissions_slot
+            .read()
+            .map(|g| g.mode().as_str().to_string())
+            .unwrap_or_else(|_| "default".into())
+    }
+
+    /// Broadcast the current queue to the session's view + mirror it into
+    /// `SessionMeta` — the two copies keep a switched-away view and a
+    /// reopened session in sync with the actor's deque.
+    fn emit_queued(&mut self) {
+        let items: Vec<String> = self.queued.iter().cloned().collect();
+        let _ = self.io.ui_tx.send(UiEvent::QueuedPrompts {
+            items: items.clone(),
+        });
+        if let Some(store) = &self.store {
+            let id = self.session_id;
+            let old = store.list().into_iter().find(|m| m.id == id);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = store.upsert_meta(crate::session_store::SessionMeta {
+                id,
+                title: old
+                    .as_ref()
+                    .map(|m| m.title.clone())
+                    .unwrap_or_else(|| "新会话".into()),
+                preview: old.as_ref().map(|m| m.preview.clone()).unwrap_or_default(),
+                updated_at: now,
+                pinned: old.as_ref().map(|m| m.pinned).unwrap_or(false),
+                usage: old.as_ref().and_then(|m| m.usage),
+                model: old.as_ref().and_then(|m| m.model.clone()),
+                provider: old.as_ref().and_then(|m| m.provider.clone()),
+                permission_mode: old.as_ref().and_then(|m| m.permission_mode.clone()),
+                agent_mode: old.as_ref().and_then(|m| m.agent_mode.clone()),
+                thinking_level: old.as_ref().and_then(|m| m.thinking_level.clone()),
+                queued_prompts: items,
+            });
+        }
+    }
+
+    /// `UiCommand::SetQueued` — the composer replaces the whole parked
+    /// list (enqueue/edit/remove/reorder are all list ops client-side).
+    fn set_queued(&mut self, items: Vec<String>) {
+        self.queued = items.into();
+        self.emit_queued();
+    }
+
+    /// Send parked follow-ups — each pops off the front and runs as a
+    /// normal prompt (slash intercept included), one turn at a time, for
+    /// as long as the session is idle. Called after any path that can end
+    /// a turn; a mid-turn call is a no-op (`is_active` guard).
+    async fn drain_queue(&mut self) {
+        while !self.state.is_active() {
+            let Some(next) = self.queued.pop_front() else {
+                break;
+            };
+            self.emit_queued();
+            self.handle_prompt(next).await;
+        }
+    }
+
+    /// Persist ONLY this session's composer settings to its own meta row —
+    /// called the moment a `SetModel`/`SetPermissionMode`/`SetAgentMode`/
+    /// `SetThinkingLevel` lands, so a reopened session restores the choice even
+    /// if no turn has run yet (the turn-boundary `persist_turn` also writes
+    /// them, but that only fires after a prompt). Other meta fields are read
+    /// back and preserved untouched.
+    fn persist_settings(&mut self) {
+        let Some(store) = &self.store else { return };
+        let id = self.session_id;
+        let old = store.list().into_iter().find(|m| m.id == id);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let (model, provider) = (self.model.clone(), self.provider_name.clone());
+        let _ = store.upsert_meta(crate::session_store::SessionMeta {
+            id,
+            title: old
+                .as_ref()
+                .map(|m| m.title.clone())
+                .unwrap_or_else(|| "新会话".into()),
+            preview: old.as_ref().map(|m| m.preview.clone()).unwrap_or_default(),
+            updated_at: now,
+            pinned: old.as_ref().map(|m| m.pinned).unwrap_or(false),
+            usage: old.as_ref().and_then(|m| m.usage),
+            model: (!model.is_empty()).then_some(model),
+            provider: (!provider.is_empty()).then_some(provider),
+            permission_mode: Some(self.current_permission_mode()),
+            agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
+            thinking_level: self.engine.thinking_level(),
+            queued_prompts: self.queued.iter().cloned().collect(),
         });
     }
 
@@ -768,13 +917,16 @@ impl SessionActor {
                 if let Ok(p) = agent_llm::ProviderFactory::build(pcfg) {
                     self.engine.set_provider(p);
                 }
-                let resolved = pcfg.find_model(model).is_some().then(|| pcfg.model_opts(model));
+                let resolved = pcfg
+                    .find_model(model)
+                    .is_some()
+                    .then(|| pcfg.model_opts(model));
                 match resolved {
                     Some(d) => {
-                        self.engine.set_thinking_level_map(d.thinking_level_map.clone());
-                        self.engine.set_context_window(
-                            d.context_window.unwrap_or(256_000) as usize,
-                        );
+                        self.engine
+                            .set_thinking_level_map(d.thinking_level_map.clone());
+                        self.engine
+                            .set_context_window(d.context_window.unwrap_or(256_000) as usize);
                         self.engine.set_model_input(d.input.clone());
                         self.engine
                             .set_model_params(agent_llm::ProviderFactory::model_params_from(&d));
@@ -789,6 +941,12 @@ impl SessionActor {
             }
         }
         self.engine.set_model(model.to_string());
+        // Keep the actor's own identity fields in step — they feed both the
+        // usage attribution on `persist_turn` and the `SessionMeta` row a
+        // reopened session restores from. Letting them lag behind the engine
+        // recorded a stale model against the spend.
+        self.model = model.to_string();
+        self.provider_name = provider.to_string();
     }
 
     /// Execute a `ControlOp` from a slash command — session state changes
@@ -803,21 +961,28 @@ impl SessionActor {
             }
             ControlOp::Compact => {
                 let est = crate::compaction::estimate_tokens(&self.history);
-                let window = 256_000usize; // engine's context_window is the real bound
-                if crate::compaction::should_compact_at(est, window, self.engine.compact_at()) {
-                    let line = "正在压缩历史上下文…".to_string();
-                    let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                    self.history.push(ChatMessage::notice(line));
-                } else {
-                    let line = format!("历史约 {est} tokens — 未达压缩阈值");
-                    let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                    self.history.push(ChatMessage::notice(line));
+                match self
+                    .engine
+                    .compact_now(&mut self.io, &mut self.history)
+                    .await
+                {
+                    Ok(()) => {
+                        let line = format!("已压缩历史上下文（原约 {est} tokens）");
+                        let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+                        self.history.push(ChatMessage::notice(line));
+                    }
+                    Err(e) => {
+                        let line = format!("上下文压缩失败: {e}");
+                        let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+                        self.history.push(ChatMessage::notice(line));
+                    }
                 }
             }
             ControlOp::UndoLastTurn => self.undo_last_turn().await,
             ControlOp::SetModel { provider, model } => {
                 info!(%provider, %model, "slash hot-swap");
                 self.apply_model_switch(&provider, &model);
+                self.persist_settings();
                 let line = format!("已切换模型至: {model} ({provider}) — 下一轮生效");
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
@@ -882,6 +1047,7 @@ impl SessionActor {
         match cmd {
             UiCommand::Prompt { text } => {
                 self.handle_prompt(text).await;
+                self.drain_queue().await;
             }
             UiCommand::Retry => {
                 // Regenerate the last turn: rewind `history` to just before
@@ -916,6 +1082,7 @@ impl SessionActor {
                     self.history.truncate(idx);
                     let _ = self.io.ui_tx.send(UiEvent::TurnRetry);
                     self.handle_prompt(text).await;
+                    self.drain_queue().await;
                 }
             }
             UiCommand::Steer { text } => {
@@ -927,11 +1094,24 @@ impl SessionActor {
                 } else {
                     // Between turns a Steer is a fresh Prompt.
                     self.run_prompt(text).await;
+                    self.drain_queue().await;
                 }
+            }
+            UiCommand::SetQueued { items } => {
+                self.set_queued(items);
+            }
+            UiCommand::Enqueue { text } => {
+                self.queued.push_back(text);
+                self.emit_queued();
+                // Idle + enqueue = send now — covers the race where the UI
+                // still showed streaming when the user hit queue but the
+                // turn had already finished.
+                self.drain_queue().await;
             }
             UiCommand::SetModel { provider, model } => {
                 info!(%provider, %model, "hot-swap requested");
                 self.apply_model_switch(&provider, &model);
+                self.persist_settings();
                 let line = format!("已切换模型至: {model} ({provider})");
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
@@ -945,34 +1125,40 @@ impl SessionActor {
             }
             UiCommand::SetThinkingLevel { level } => {
                 info!(%level, "thinking level change requested");
-                self.engine.set_thinking_level(if level.is_empty() { None } else { Some(level.clone()) });
+                self.engine.set_thinking_level(if level.is_empty() {
+                    None
+                } else {
+                    Some(level.clone())
+                });
+                self.persist_settings();
                 let line = format!("已设置思考推理强度: {level}");
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
             }
             UiCommand::SetPermissionMode { mode } => {
                 info!(%mode, "permission mode switch");
-                self.engine.set_permissions(
-                    crate::permissions::PermissionGate::from_mode_str(&mode),
-                );
+                self.engine
+                    .set_permissions(crate::permissions::PermissionGate::from_mode_str(&mode));
+                self.persist_settings();
                 let _ = self
                     .io
                     .ui_tx
                     .send(UiEvent::SystemMessage(format!("权限模式已切换为: {mode}")));
-                self.history.push(ChatMessage::notice(format!("权限模式已切换为: {mode}")));
+                self.history
+                    .push(ChatMessage::notice(format!("权限模式已切换为: {mode}")));
             }
             UiCommand::SetAgentMode { mode } => {
                 let new = crate::mode::AgentMode::from_str(&mode);
                 let old = self.engine.agent_mode();
                 self.engine.set_agent_mode(new);
+                self.persist_settings();
                 // Rewrite the mode block inside the rendered system prompt —
                 // the contract text must match the registry the next round
                 // actually dispatches against.
                 if let Some(sys) = self.history.first_mut() {
                     if sys.role == agent_llm::Role::System && sys.notice.is_none() {
                         if let Some(c) = sys.content.take() {
-                            sys.content =
-                                Some(c.replace(old.prompt_block(), new.prompt_block()));
+                            sys.content = Some(c.replace(old.prompt_block(), new.prompt_block()));
                         }
                     }
                 }
@@ -990,7 +1176,8 @@ impl SessionActor {
                 // and before each tool dispatch. This pump path covers the
                 // between-turns case; mid-turn cancels arrive via
                 // `cancel_writer()`, which isn't queued behind `run_turn`.
-                self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 // Wake a parked ask_question too — its exec polls the flag,
                 // but dropping the oneshot fails it fast either way.
                 self.ask_channel.clear();
@@ -1006,7 +1193,10 @@ impl SessionActor {
                 // directly; this arm covers test-driven actors.
                 self.ask_channel.answer(request_id, answer);
             }
-            UiCommand::ToolDecision { request_id, approved } => {
+            UiCommand::ToolDecision {
+                request_id,
+                approved,
+            } => {
                 // Direct write to the engine's shared decision slot — reaches
                 // the wait even when handle() runs mid-turn via run()'s
                 // serial pump (the turn future polls the slot, not this

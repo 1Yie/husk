@@ -5,7 +5,6 @@
 //! produces the request's `tools` array and dispatches by name; plugin tools
 //! merge in under `plugin_id:name` (Stage 9).
 
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -57,7 +56,9 @@ impl AskChannel {
                 "ask_question unavailable — no UI channel in this context".into(),
             ));
         };
-        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.pending.lock().unwrap() = Some((id, tx));
         if ui_tx
@@ -172,7 +173,10 @@ impl ToolCtx {
     }
 
     /// Explicit backend (tests / custom wiring).
-    pub fn with_sandbox(root: impl Into<PathBuf>, sandbox: Arc<dyn agent_sandbox::SandboxBackend>) -> Self {
+    pub fn with_sandbox(
+        root: impl Into<PathBuf>,
+        sandbox: Arc<dyn agent_sandbox::SandboxBackend>,
+    ) -> Self {
         let root = root.into();
         let root = root.canonicalize().unwrap_or(root);
         Self {
@@ -214,9 +218,7 @@ impl ToolCtx {
             subagent: self.subagent.clone(),
             ask: self.ask.clone(),
             ui_tx: self.ui_tx.clone(),
-            active_registry: std::sync::RwLock::new(
-                self.active_registry.read().unwrap().clone(),
-            ),
+            active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
             goal: self.goal.clone(),
         }
@@ -238,9 +240,11 @@ impl ToolCtx {
                     .parent()
                     .and_then(|p| p.canonicalize().ok())
                     .ok_or_else(|| ToolError::PathEscape(path.to_string()))?;
-                parent.join(joined.file_name().ok_or_else(|| {
-                    ToolError::PathEscape(path.to_string())
-                })?)
+                parent.join(
+                    joined
+                        .file_name()
+                        .ok_or_else(|| ToolError::PathEscape(path.to_string()))?,
+                )
             }
         };
         if !canon.starts_with(&*self.workspace_root) {
@@ -278,7 +282,12 @@ pub struct PendingWrite {
 impl PendingWrite {
     /// Convenience constructor for the common overwrite case.
     pub fn write(path: std::path::PathBuf, content: Vec<u8>) -> Self {
-        Self { path, content, op: WriteOp::Write, auto_mkdir: false }
+        Self {
+            path,
+            content,
+            op: WriteOp::Write,
+            auto_mkdir: false,
+        }
     }
 }
 
@@ -331,9 +340,7 @@ pub enum ToolError {
 /// passthrough) can capture its bridge + remote name in a closure, while
 /// plain builtins still wrap a free fn.
 pub type ExecFn = Arc<
-    dyn Fn(Args, Arc<ToolCtx>) -> BoxFuture<'static, Result<ToolResult, ToolError>>
-        + Send
-        + Sync,
+    dyn Fn(Args, Arc<ToolCtx>) -> BoxFuture<'static, Result<ToolResult, ToolError>> + Send + Sync,
 >;
 
 /// What a call actually does — the capability seam `batch_execute`,
@@ -497,9 +504,7 @@ pub fn arg_usize(args: &Args, key: &str) -> Option<usize> {
 
 /// Derive a JSON Schema `parameters` object from a serde shape via schemars,
 /// and attach the tool description separately.
-pub fn schema_for<T: schemars::JsonSchema>(
-    description: &str,
-) -> serde_json::Value {
+pub fn schema_for<T: schemars::JsonSchema>(description: &str) -> serde_json::Value {
     let params = schemars::schema_for!(T);
     let params = serde_json::to_value(params).unwrap_or_default();
     serde_json::json!({ "description": description, "parameters": params })

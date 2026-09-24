@@ -33,6 +33,7 @@ export type UiEvent =
         options: AskOption[];
       };
     }
+  | { QuestionAnswered: { request_id: number } }
   | { UserPrompt: string }
   | { TextDelta: { text: string; parent?: string | null } }
   | { ReasoningDelta: { text: string; parent?: string | null } }
@@ -58,7 +59,8 @@ export type UiEvent =
   | { SystemMessage: string }
   | { Usage: { prompt_tokens: number; completion_tokens: number; context_window: number; cached_tokens: number } }
   | { Error: string }
-  | "TurnRetry";
+  | "TurnRetry"
+  | { QueuedPrompts: { items: string[] } };
 
 /** UI → kernel commands — mirrors `UiCommand`. */
 export type UiCommand =
@@ -72,7 +74,9 @@ export type UiCommand =
   | { SetAgentMode: { mode: string } }
   | { SetThinkingLevel: { level: string } }
   | "UndoLastTurn"
-  | "Retry";
+  | "Retry"
+  | { SetQueued: { items: string[] } }
+  | { Enqueue: { text: string } };
 
 /** The `agent://event` envelope — owning workspace root + session id +
  * the event payload. Session ids are per-workspace; `root` keeps a
@@ -134,7 +138,7 @@ export interface ChatMessage {
   /** Set on `system` entries the live stream showed the user — `system`
    * renders as a plain line, `error` with a `⚠` prefix. Absent means
    * internal context (system prompt, compaction note) — stays hidden. */
-  notice?: "system" | "error" | "hidden";
+  notice?: "system" | "error" | "hidden" | "compacted_memory";
   /** Creation time (epoch ms) — drives the `—— time ——` turn divider. */
   ts?: number | null;
   /** Reasoning trace of this assistant round — replays as the same 思考过程

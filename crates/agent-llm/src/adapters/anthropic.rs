@@ -21,7 +21,7 @@ use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
-use crate::types::{ChatMessage, Role, StreamChunk};
+use crate::types::{ChatMessage, NoticeKind, Role, StreamChunk};
 
 /// `anthropic-version` — the stable Messages API contract.
 const API_VERSION: &str = "2023-06-01";
@@ -89,6 +89,14 @@ fn build_messages(messages: &[ChatMessage]) -> (String, Vec<serde_json::Value>) 
     while i < messages.len() {
         let m = &messages[i];
         match m.role {
+            // The compaction memory note is historical context, not a live
+            // instruction — emit it as a user message instead of folding it
+            // into the top-level `system` prompt. `push_user` merges it into
+            // a preceding user row so roles keep alternating.
+            Role::System if m.notice == Some(NoticeKind::CompactedMemory) => {
+                let text = m.content.clone().unwrap_or_default();
+                push_user(&mut out, vec![json!({"type": "text", "text": text})]);
+            }
             Role::System => {
                 if let Some(t) = &m.content {
                     if !system.is_empty() {
@@ -116,7 +124,7 @@ fn build_messages(messages: &[ChatMessage]) -> (String, Vec<serde_json::Value>) 
                         })),
                     }
                 }
-                out.push(json!({"role": "user", "content": parts}));
+                push_user(&mut out, parts);
             }
             Role::Assistant => {
                 let mut parts = Vec::new();
@@ -155,13 +163,31 @@ fn build_messages(messages: &[ChatMessage]) -> (String, Vec<serde_json::Value>) 
                     }));
                     i += 1;
                 }
-                out.push(json!({"role": "user", "content": parts}));
+                push_user(&mut out, parts);
                 continue;
             }
         }
         i += 1;
     }
     (system, out)
+}
+
+/// Push a `user`-role message, merging into the previous one when the
+/// last emitted row is already `user`. The API requires strict
+/// user/assistant alternation — a compaction note, a mid-turn steer, or
+/// a tool-result run can otherwise leave two consecutive `user` rows,
+/// which is a 400. Mixed text/tool_result parts in one user message are
+/// legal, so merging is safe.
+fn push_user(out: &mut Vec<serde_json::Value>, parts: Vec<serde_json::Value>) {
+    if let Some(last) = out.last_mut() {
+        if last["role"] == "user" {
+            if let Some(arr) = last["content"].as_array_mut() {
+                arr.extend(parts);
+                return;
+            }
+        }
+    }
+    out.push(json!({"role": "user", "content": parts}));
 }
 
 /// OpenAI-shaped `[{type:"function",function:{name,description,parameters}}]`
@@ -361,5 +387,48 @@ impl LlmProvider for AnthropicProvider {
         });
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compacted_memory_lands_in_user_not_system() {
+        // The note is historical context — it must not concatenate into
+        // the top-level `system` prompt beside the kernel instructions.
+        let (system, out) = build_messages(&[
+            ChatMessage::system("kernel"),
+            ChatMessage::compacted_memory("prior summary"),
+            ChatMessage::user("q"),
+        ]);
+        assert_eq!(system, "kernel");
+        // The note and the following user turn merge into ONE user row —
+        // the API requires strict user/assistant alternation.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"].as_str().unwrap(), "user");
+        let text = out[0]["content"].as_array().unwrap().iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("prior summary"));
+        assert!(text.contains("q"));
+    }
+
+    #[test]
+    fn consecutive_user_rows_merge() {
+        // A mid-turn steer or injected user line after a real user turn
+        // would otherwise emit two consecutive `user` rows — a 400.
+        let (_s, out) = build_messages(&[
+            ChatMessage::system("kernel"),
+            ChatMessage::user("a"),
+            ChatMessage::user("b"),
+            ChatMessage::assistant("r"),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["role"].as_str().unwrap(), "user");
+        assert_eq!(out[0]["content"].as_array().unwrap().len(), 2);
+        assert_eq!(out[1]["role"].as_str().unwrap(), "assistant");
     }
 }

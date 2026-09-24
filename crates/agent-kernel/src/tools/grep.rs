@@ -13,8 +13,8 @@ use std::time::Duration;
 use futures::FutureExt;
 use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
-use grep_searcher::SinkError;
 use grep_searcher::SearcherBuilder;
+use grep_searcher::SinkError;
 use serde::Deserialize;
 
 use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
@@ -39,12 +39,10 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 /// Obvious-binary extensions skipped before search (cheap, deterministic).
 /// Text-ish files like `.lock` stay searchable — Cargo.lock matters.
 const BINARY_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "tiff", "pdf",
-    "zip", "gz", "tgz", "xz", "bz2", "7z", "rar", "zst", "wasm",
-    "so", "dll", "dylib", "exe", "bin", "class", "jar", "o", "a",
-    "db", "sqlite", "sqlite3", "pyc", "pdb",
-    "mp3", "mp4", "mov", "avi", "mkv", "wav", "flac", "ogg", "webm",
-    "ttf", "otf", "woff", "woff2", "eot",
+    "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "tiff", "pdf", "zip", "gz", "tgz", "xz",
+    "bz2", "7z", "rar", "zst", "wasm", "so", "dll", "dylib", "exe", "bin", "class", "jar", "o",
+    "a", "db", "sqlite", "sqlite3", "pyc", "pdb", "mp3", "mp4", "mov", "avi", "mkv", "wav", "flac",
+    "ogg", "webm", "ttf", "otf", "woff", "woff2", "eot",
 ];
 
 #[derive(Debug, serde::Serialize, Deserialize, schemars::JsonSchema)]
@@ -117,7 +115,11 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         .glob
         .as_deref()
         .map(|g| {
-            let pat = if g.contains('/') { g.to_string() } else { format!("**/{g}") };
+            let pat = if g.contains('/') {
+                g.to_string()
+            } else {
+                format!("**/{g}")
+            };
             globset::GlobBuilder::new(&pat)
                 .literal_separator(true)
                 .build()
@@ -136,7 +138,16 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let stop_task = Arc::clone(&stop);
 
     let handle = tokio::task::spawn_blocking(move || {
-        search_sync(&base, &ws, &matcher, glob_matcher.as_ref(), include_hidden, max_hits, &stop_task, &ctx_cancel)
+        search_sync(
+            &base,
+            &ws,
+            &matcher,
+            glob_matcher.as_ref(),
+            include_hidden,
+            max_hits,
+            &stop_task,
+            &ctx_cancel,
+        )
     });
     match tokio::time::timeout(TIMEOUT, handle).await {
         Ok(Ok(res)) => res,
@@ -181,11 +192,11 @@ fn search_sync(
     ctx_cancel: &Option<Arc<AtomicBool>>,
 ) -> Result<ToolResult, ToolError> {
     let mut out = String::new();
-    let mut total = 0usize;      // matches seen; counting stops at the cap
-    let mut emitted = 0usize;    // lines written to `out`
+    let mut total = 0usize; // matches seen; counting stops at the cap
+    let mut emitted = 0usize; // lines written to `out`
     let mut scanned = 0usize;
     let mut errors = 0usize;
-    let mut skipped = 0usize;    // binary-ext / oversize
+    let mut skipped = 0usize; // binary-ext / oversize
     let mut bytes = 0usize;
     let mut stopped_early = false;
     let mut was_cancelled = false;
@@ -216,10 +227,7 @@ fn search_sync(
 
         // Glob matches the workspace-RELATIVE path — an absolute match on
         // `src/**/*.rs` would hinge on where the workspace happens to sit.
-        let rel_path = entry
-            .path()
-            .strip_prefix(workspace)
-            .unwrap_or(entry.path());
+        let rel_path = entry.path().strip_prefix(workspace).unwrap_or(entry.path());
         if let Some(m) = glob_matcher {
             if !m.is_match(rel_path) {
                 continue;
@@ -289,7 +297,11 @@ fn search_sync(
     if total == 0 && !was_cancelled {
         out.push_str("no matches\n");
     } else {
-        let plus = if stopped_early || was_cancelled { "+" } else { "" };
+        let plus = if stopped_early || was_cancelled {
+            "+"
+        } else {
+            ""
+        };
         let mut summary = format!("── {total}{plus} matches");
         if emitted < total {
             summary.push_str(&format!(", first {emitted} shown"));
@@ -301,7 +313,9 @@ fn search_sync(
         out.push_str("⚠ search cancelled — results are partial\n");
     }
     if errors > 0 {
-        out.push_str(&format!("⚠ {errors} files could not be searched — results may be incomplete\n"));
+        out.push_str(&format!(
+            "⚠ {errors} files could not be searched — results may be incomplete\n"
+        ));
     }
     if skipped > 0 {
         out.push_str(&format!("({skipped} binary/oversize files skipped)\n"));

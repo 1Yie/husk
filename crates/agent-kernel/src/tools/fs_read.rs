@@ -44,10 +44,14 @@ pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "smart_read",
         schema: schema_for::<SmartReadArgs>(
-            "Read a file structurally: `outline` returns a signature skeleton \
+            "Read ONE file structurally: `outline` returns a signature skeleton \
              (~100 tokens for large files), `range` returns numbered lines with \
              a content_hash for patch anchoring, `search` returns matching \
-             lines with numbers. Prefer outline→range over dumping whole files.",
+             lines with numbers. Prefer outline→range over dumping whole files. \
+             When you already know 2+ independent files/ranges to inspect, do \
+             NOT call smart_read repeatedly — send them as ONE batch_execute. \
+             Call smart_read directly only for a single read, or when the next \
+             read's target depends on this read's result.",
         ),
         readonly: true,
         class: super::registry::ToolClass::Observation,
@@ -78,12 +82,19 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     match mode {
         "outline" => Ok(ToolResult::text(outline(&parsed.path, &lines, &hash))),
         "search" => {
-            let pat = parsed.pattern.as_deref().ok_or_else(|| {
-                ToolError::Args("search mode requires 'pattern'".into())
-            })?;
+            let pat = parsed
+                .pattern
+                .as_deref()
+                .ok_or_else(|| ToolError::Args("search mode requires 'pattern'".into()))?;
             Ok(ToolResult::text(search(&parsed.path, &lines, pat, &hash)))
         }
-        _ => Ok(ToolResult::text(range(&parsed.path, &lines, parsed.start, parsed.end, &hash))),
+        _ => Ok(ToolResult::text(range(
+            &parsed.path,
+            &lines,
+            parsed.start,
+            parsed.end,
+            &hash,
+        ))),
     }
 }
 
@@ -94,7 +105,13 @@ fn header(path: &str, hash: &str) -> String {
 /// `range` mode: numbered `NNNN │ code` lines, hard cap + continuation hint.
 /// Guards empty files and out-of-bounds slices — `start`/`end` clamped to
 /// `1..=total`, `s > e` returns a friendly error rather than panicking.
-fn range(path: &str, lines: &[&str], start: Option<usize>, end: Option<usize>, hash: &str) -> String {
+fn range(
+    path: &str,
+    lines: &[&str],
+    start: Option<usize>,
+    end: Option<usize>,
+    hash: &str,
+) -> String {
     let total = lines.len();
     let mut out = header(path, hash);
     if total == 0 {
@@ -103,7 +120,10 @@ fn range(path: &str, lines: &[&str], start: Option<usize>, end: Option<usize>, h
     }
     let s = start.unwrap_or(1).max(1).min(total + 1); // 1..=total, allow past-EOF msg
     if s > total {
-        let _ = writeln!(out, "{path}: {total} lines total; requested start {s} is past EOF");
+        let _ = writeln!(
+            out,
+            "{path}: {total} lines total; requested start {s} is past EOF"
+        );
         return out;
     }
     let req_end = end.unwrap_or(total).min(total);
@@ -116,7 +136,11 @@ fn range(path: &str, lines: &[&str], start: Option<usize>, end: Option<usize>, h
         let _ = writeln!(out, "{:>4} │ {}", s + i, line);
     }
     if e < total {
-        let _ = writeln!(out, "… [truncated — {total} lines total, continue with start={}] …", e + 1);
+        let _ = writeln!(
+            out,
+            "… [truncated — {total} lines total, continue with start={}] …",
+            e + 1
+        );
     }
     out
 }
@@ -141,7 +165,10 @@ fn search(path: &str, lines: &[&str], pattern: &str, hash: &str) -> String {
     if hits == 0 {
         out.push_str("no matches\n");
     } else if hits > MAX_SEARCH_HITS {
-        let _ = writeln!(out, "… [{hits} matches total, first {MAX_SEARCH_HITS} shown] …");
+        let _ = writeln!(
+            out,
+            "… [{hits} matches total, first {MAX_SEARCH_HITS} shown] …"
+        );
     }
     out
 }
@@ -161,7 +188,9 @@ fn outline(path: &str, lines: &[&str], hash: &str) -> String {
             // Attach a doc comment directly above (O(1) index — not nth()).
             if i > 0 {
                 let prev = lines[i - 1].trim();
-                if prev.starts_with("///") || prev.starts_with("**") || prev.starts_with('*')
+                if prev.starts_with("///")
+                    || prev.starts_with("**")
+                    || prev.starts_with('*')
                     || (prev.starts_with("//") && !prev.starts_with("////"))
                 {
                     let _ = writeln!(out, "{:>4} │ {}", i, prev);
@@ -204,12 +233,35 @@ fn looks_like_signature(trimmed: &str) -> bool {
         return false;
     }
     const PREFIXES: &[&str] = &[
-        "pub fn", "pub async fn", "async fn", "fn ", "pub struct", "struct ",
-        "pub enum", "enum ", "pub trait", "trait ", "impl ", "pub impl",
-        "pub const", "pub static", "pub type", "pub mod", "mod ",
-        "def ", "class ", "async def ",
-        "function ", "const ", "export ", "interface ", "type ",
-        "public ", "private ", "protected ", "static ",
+        "pub fn",
+        "pub async fn",
+        "async fn",
+        "fn ",
+        "pub struct",
+        "struct ",
+        "pub enum",
+        "enum ",
+        "pub trait",
+        "trait ",
+        "impl ",
+        "pub impl",
+        "pub const",
+        "pub static",
+        "pub type",
+        "pub mod",
+        "mod ",
+        "def ",
+        "class ",
+        "async def ",
+        "function ",
+        "const ",
+        "export ",
+        "interface ",
+        "type ",
+        "public ",
+        "private ",
+        "protected ",
+        "static ",
     ];
     PREFIXES.iter().any(|p| t.starts_with(p))
         || t.starts_with("#[")
@@ -269,7 +321,8 @@ mod tests {
         let code = "/// Service entry\npub async fn bootstrap(\n    port: u16,\n    host: &str,\n) -> anyhow::Result<()> {\n    body()\n}\n";
         let out = outline("s.rs", &lines(code), "h");
         assert!(out.contains("/// Service entry"));
-        assert!(out.contains("pub async fn bootstrap( port: u16, host: &str, ) -> anyhow::Result<()> {"));
+        assert!(out
+            .contains("pub async fn bootstrap( port: u16, host: &str, ) -> anyhow::Result<()> {"));
     }
 
     #[test]

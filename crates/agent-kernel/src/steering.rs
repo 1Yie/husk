@@ -6,7 +6,6 @@
 //! calls) lives in engine/session; this module owns the probes and the
 //! `steered` provenance flag.
 
-
 use std::time::{Duration, Instant};
 
 /// Minimum interval between ambient suggestions (1 per 5 min).

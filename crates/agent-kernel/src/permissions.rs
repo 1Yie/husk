@@ -12,7 +12,6 @@
 //! gate is synchronous policy, not a channel: the engine calls `decide()` and on
 //! `Ask` pauses in `AwaitingToolConfirmation` until a `ToolDecision` arrives.
 
-
 use std::collections::HashSet;
 
 /// The five modes — `from_str` accepts the labels the prompt/config use.
@@ -74,20 +73,39 @@ pub struct PermissionRules {
 /// Readonly shell verbs for the `dontAsk` whitelist — `bash` is non-readonly
 /// by spec, but these command prefixes count as readonly shell.
 const READONLY_SHELL: &[&str] = &[
-    "ls", "cat", "head", "tail", "grep", "rg", "find", "pwd", "wc",
-    "git status", "git diff", "git log", "git show", "git branch",
-    "file", "stat", "du", "df", "echo", "which", "env", "tree",
-    "uname", "date", "hostname", "id", "whoami",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "rg",
+    "find",
+    "pwd",
+    "wc",
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "git branch",
+    "file",
+    "stat",
+    "du",
+    "df",
+    "echo",
+    "which",
+    "env",
+    "tree",
+    "uname",
+    "date",
+    "hostname",
+    "id",
+    "whoami",
     // note: `cargo test`/`cargo build`/`cargo check` write artifacts → NOT
     // readonly; they ask for confirmation like any mutating command.
 ];
 
 /// Destructive shell patterns that escalate to `Ask` even in `auto` and `bypass`.
-const DESTRUCTIVE_PHRASES: &[&str] = &[
-    "git reset --hard",
-    "git clean -f",
-    "git checkout --",
-];
+const DESTRUCTIVE_PHRASES: &[&str] = &["git reset --hard", "git clean -f", "git checkout --"];
 
 /// Destructive shell binary names that escalate to `Ask`.
 const DESTRUCTIVE_BINARIES: &[&str] = &[
@@ -104,14 +122,22 @@ pub struct PermissionGate {
 
 impl PermissionGate {
     pub fn new(mode: PermissionMode, rules: PermissionRules) -> Self {
-        Self { mode, rules, headless: false }
+        Self {
+            mode,
+            rules,
+            headless: false,
+        }
     }
 
     /// Gate for a delegated subagent — `auto` baseline (readonly, edits,
     /// and safe shell auto-run) with `headless` on: anything that would
     /// pause for human approval denies instead, since no UI answers it.
     pub fn for_subagent() -> Self {
-        Self { mode: PermissionMode::Auto, rules: PermissionRules::default(), headless: true }
+        Self {
+            mode: PermissionMode::Auto,
+            rules: PermissionRules::default(),
+            headless: true,
+        }
     }
 
     pub fn from_mode_str(mode: &str) -> Self {
@@ -145,7 +171,8 @@ impl PermissionGate {
         if self.headless {
             match d {
                 Decision::Ask { .. } => Decision::Deny {
-                    reason: "requires human approval — unavailable inside a delegated subagent".into(),
+                    reason: "requires human approval — unavailable inside a delegated subagent"
+                        .into(),
                 },
                 d => d,
             }
@@ -163,17 +190,23 @@ impl PermissionGate {
     ) -> Decision {
         // 1. Explicit deny — absolute.
         if self.rules.deny.contains(tool_name) {
-            return Decision::Deny { reason: format!("`{tool_name}` denied by rule") };
+            return Decision::Deny {
+                reason: format!("`{tool_name}` denied by rule"),
+            };
         }
         // Destructive shell always asks in every mode except a matching allow.
         if let Some(cmd) = command {
             if is_destructive(cmd) && !self.rules.allow.contains(tool_name) {
-                return Decision::Ask { diff_summary: diff_summary.into() };
+                return Decision::Ask {
+                    diff_summary: diff_summary.into(),
+                };
             }
         }
         // 2. Explicit ask.
         if self.rules.ask.contains(tool_name) {
-            return Decision::Ask { diff_summary: diff_summary.into() };
+            return Decision::Ask {
+                diff_summary: diff_summary.into(),
+            };
         }
         // 3. Explicit allow.
         if self.rules.allow.contains(tool_name) {
@@ -193,7 +226,9 @@ impl PermissionGate {
                 } else if command.map(is_readonly_shell).unwrap_or(false) {
                     Decision::Allow
                 } else {
-                    Decision::Ask { diff_summary: diff_summary.into() }
+                    Decision::Ask {
+                        diff_summary: diff_summary.into(),
+                    }
                 }
             }
             PermissionMode::AcceptEdits => {
@@ -203,7 +238,9 @@ impl PermissionGate {
                 } else if command.map(is_readonly_shell).unwrap_or(false) {
                     Decision::Allow
                 } else {
-                    Decision::Ask { diff_summary: diff_summary.into() }
+                    Decision::Ask {
+                        diff_summary: diff_summary.into(),
+                    }
                 }
             }
             PermissionMode::Auto => {
@@ -219,10 +256,14 @@ impl PermissionGate {
                     if is_readonly_shell(cmd) {
                         Decision::Allow
                     } else {
-                        Decision::Deny { reason: "dontAsk: non-readonly shell".into() }
+                        Decision::Deny {
+                            reason: "dontAsk: non-readonly shell".into(),
+                        }
                     }
                 } else {
-                    Decision::Deny { reason: "dontAsk: tool not pre-approved".into() }
+                    Decision::Deny {
+                        reason: "dontAsk: tool not pre-approved".into(),
+                    }
                 }
             }
         }
@@ -231,7 +272,10 @@ impl PermissionGate {
 
 /// File-edit tools — `acceptEdits`/`auto` approve these without asking.
 fn is_file_edit(tool_name: &str) -> bool {
-    matches!(tool_name, "fuzzy_patch" | "apply_patch" | "write_file" | "fs_patch")
+    matches!(
+        tool_name,
+        "fuzzy_patch" | "apply_patch" | "write_file" | "fs_patch"
+    )
 }
 
 /// Command is a PURE readonly-shell call? Starts with a readonly verb AND
@@ -242,9 +286,9 @@ fn is_readonly_shell(cmd: &str) -> bool {
     if c.is_empty() {
         return false;
     }
-    let starts_readonly = READONLY_SHELL.iter().any(|v| {
-        c == *v || c.starts_with(&format!("{v} "))
-    });
+    let starts_readonly = READONLY_SHELL
+        .iter()
+        .any(|v| c == *v || c.starts_with(&format!("{v} ")));
     if !starts_readonly {
         return false;
     }
@@ -393,7 +437,10 @@ mod tests {
     #[test]
     fn accept_edits_skips_patch_asks_shell() {
         let g = gate("acceptEdits");
-        assert!(matches!(g.decide("fuzzy_patch", false, None, ""), Decision::Allow));
+        assert!(matches!(
+            g.decide("fuzzy_patch", false, None, ""),
+            Decision::Allow
+        ));
         // non-readonly shell (an install) still asks even in acceptEdits.
         assert!(matches!(
             g.decide("bash", false, Some("npm install foo"), ""),
@@ -419,9 +466,18 @@ mod tests {
     fn auto_allows_safe_shell_and_edits_asks_destructive() {
         let g = gate("auto");
         // file edits auto-run in auto
-        assert!(matches!(g.decide("fuzzy_patch", false, None, ""), Decision::Allow));
-        assert!(matches!(g.decide("apply_patch", false, None, ""), Decision::Allow));
-        assert!(matches!(g.decide("write_file", false, None, ""), Decision::Allow));
+        assert!(matches!(
+            g.decide("fuzzy_patch", false, None, ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("apply_patch", false, None, ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("write_file", false, None, ""),
+            Decision::Allow
+        ));
 
         // safe non-readonly shell commands auto-run in auto
         assert!(matches!(

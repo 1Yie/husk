@@ -1,8 +1,12 @@
-//! `apply_patch` — codex-style multi-file patch.
+//! `apply_patch` — structured multi-file patch.
 //!
-//! Like `fuzzy_patch` it stages the change: one `PendingWrite` per file op, so
-//! the engine can show the full diff on the approval card and write only after
-//! the decision. Grammar (tolerant subset of the codex format):
+//! The patch is the general-purpose file-edit primitive: `*** Add File` /
+//! `*** Delete File` / `*** Update File` (with `*** Move to`) compose into
+//! one transaction — the model expresses a whole workspace change in a
+//! single call, and the engine shows the full diff on the approval card
+//! before committing via `PendingWrite`. Exact matching only: a hunk that
+//! can't anchor is a teaching error (approximate matching is
+//! `fuzzy_patch`'s job). Grammar (tolerant subset of the codex format):
 //!
 //! ```text
 //! *** Begin Patch
@@ -17,14 +21,15 @@
 //! *** End Patch
 //! ```
 
-
 use std::sync::Arc;
 
 use futures::FutureExt;
 use serde::Deserialize;
 use similar::TextDiff;
 
-use super::registry::{schema_for, Args, PendingWrite, ToolCtx, ToolError, ToolResult, ToolSpec, WriteOp};
+use super::registry::{
+    schema_for, Args, PendingWrite, ToolCtx, ToolError, ToolResult, ToolSpec, WriteOp,
+};
 
 #[derive(Debug, serde::Serialize, Deserialize, schemars::JsonSchema)]
 struct ApplyPatchArgs {
@@ -42,12 +47,12 @@ pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "apply_patch",
         schema: schema_for::<ApplyPatchArgs>(
-            "Apply a multi-file patch — codex-style `*** Add File` /\n\
-             `*** Delete File` / `*** Update File` sections inside\n\
-             `*** Begin Patch`/`*** End Patch`. Use this to CREATE new\n\
-             files or folders (parents are made automatically), DELETE\n\
-             files, or update several files in one call. `fuzzy_patch`\n\
-             remains the right tool for a single in-place search/replace.",
+            "Apply a structured patch to one or more workspace files.\n\
+             Use `*** Update File` with unified hunks for precise contextual\n\
+             edits, or `*** Add File` / `*** Delete File` / `*** Move to`\n\
+             for structural file changes. Multiple file operations can be\n\
+             composed in one patch. Prefer this when the edit is naturally\n\
+             expressed as a patch or involves multiple hunks/files.",
         ),
         readonly: false,
         class: super::registry::ToolClass::WorkspaceMutation,
@@ -59,9 +64,18 @@ pub fn spec() -> ToolSpec {
 /// One parsed file operation.
 #[derive(Debug)]
 enum FileOp {
-    Add { path: String, content: String },
-    Delete { path: String },
-    Update { path: String, move_to: Option<String>, hunks: Vec<Hunk> },
+    Add {
+        path: String,
+        content: String,
+    },
+    Delete {
+        path: String,
+    },
+    Update {
+        path: String,
+        move_to: Option<String>,
+        hunks: Vec<Hunk>,
+    },
 }
 
 /// In-memory per-path state for the patch pipeline — `original` is the
@@ -85,10 +99,18 @@ struct Hunk {
 
 impl Hunk {
     fn new(context: Option<String>) -> Self {
-        Self { context, lines: Vec::new(), eof: false }
+        Self {
+            context,
+            lines: Vec::new(),
+            eof: false,
+        }
     }
     fn implicit(line: String) -> Self {
-        Self { context: None, lines: vec![line], eof: false }
+        Self {
+            context: None,
+            lines: vec![line],
+            eof: false,
+        }
     }
 }
 
@@ -105,7 +127,8 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     if ops.is_empty() {
         return Err(ToolError::Args(
             "patch contained no file operations — expected `*** Add File:` / \
-             `*** Delete File:` / `*** Update File:` sections".into(),
+             `*** Delete File:` / `*** Update File:` sections"
+                .into(),
         ));
     }
 
@@ -117,7 +140,6 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         std::collections::HashMap::new();
     let mut order: Vec<std::path::PathBuf> = Vec::new();
     let mut summary = String::new();
-    let mut any_fuzzy = false;
 
     for op in &ops {
         match op {
@@ -133,10 +155,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 if !content.is_empty() && !content.ends_with('\n') {
                     content.push('\n');
                 }
-                let diff = unified_diff(
-                    st.original.as_deref().unwrap_or(""),
-                    &content,
-                );
+                let diff = unified_diff(st.original.as_deref().unwrap_or(""), &content);
                 summary.push_str(&format!("added {path}\n\n{diff}\n"));
                 st.current = Some(content);
             }
@@ -146,13 +165,14 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 let old = st.current.clone().ok_or_else(|| {
                     ToolError::Failed(format!("Delete File {path}: does not exist"))
                 })?;
-                summary.push_str(&format!(
-                    "deleted {path}\n\n{}\n",
-                    unified_diff(&old, "")
-                ));
+                summary.push_str(&format!("deleted {path}\n\n{}\n", unified_diff(&old, "")));
                 st.current = None;
             }
-            FileOp::Update { path, move_to, hunks } => {
+            FileOp::Update {
+                path,
+                move_to,
+                hunks,
+            } => {
                 if hunks.is_empty() {
                     return Err(ToolError::Args(format!(
                         "Update File {path}: no `@@` hunks — each update needs                          at least one context/remove/add section"
@@ -167,12 +187,8 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                         ))
                     })?
                 };
-                let (new, fuzzy) = apply_hunks(path, &old, hunks)?;
-                any_fuzzy |= fuzzy;
-                summary.push_str(&format!(
-                    "updated {path}\n\n{}\n",
-                    unified_diff(&old, &new)
-                ));
+                let new = apply_hunks(path, &old, hunks)?;
+                summary.push_str(&format!("updated {path}\n\n{}\n", unified_diff(&old, &new)));
                 if let Some(dest) = move_to {
                     let dest_abs = ctx.resolve(dest)?;
                     if dest_abs != abs {
@@ -226,7 +242,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     Ok(ToolResult {
         content: summary.trim_end().to_string(),
         ui_type: Some("diff"),
-        fuzzy: any_fuzzy,
+        fuzzy: false,
         pending_write: writes,
     })
 }
@@ -241,7 +257,10 @@ async fn load_state<'a>(
         let disk = tokio::fs::read_to_string(abs).await.ok();
         state.insert(
             abs.to_path_buf(),
-            FileState { original: disk.clone(), current: disk },
+            FileState {
+                original: disk.clone(),
+                current: disk,
+            },
         );
         order.push(abs.to_path_buf());
     }
@@ -288,7 +307,10 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
             match cur_op.take() {
                 Some("add") => {
                     if let Some(p) = cur_path.take() {
-                        ops.push(FileOp::Add { path: p, content: add_lines.join("\n") });
+                        ops.push(FileOp::Add {
+                            path: p,
+                            content: add_lines.join("\n"),
+                        });
                     }
                 }
                 Some("delete") => {
@@ -328,7 +350,11 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
                 if let Some(h) = cur_hunk.as_mut() {
                     h.eof = true;
                 } else {
-                    cur_hunk = Some(Hunk { context: None, lines: Vec::new(), eof: true });
+                    cur_hunk = Some(Hunk {
+                        context: None,
+                        lines: Vec::new(),
+                        eof: true,
+                    });
                 }
                 continue;
             }
@@ -376,9 +402,7 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
                     // apply_hunks uses it to disambiguate a `before` that
                     // matches more than one spot.
                     let marker = l[2..].trim();
-                    cur_hunk = Some(Hunk::new(
-                        (!marker.is_empty()).then(|| marker.to_string()),
-                    ));
+                    cur_hunk = Some(Hunk::new((!marker.is_empty()).then(|| marker.to_string())));
                 } else if l.starts_with(' ') || l.starts_with('-') || l.starts_with('+') {
                     if let Some(h) = cur_hunk.as_mut() {
                         h.lines.push(l.to_string());
@@ -404,15 +428,14 @@ fn parse_patch(patch: &str) -> Result<Vec<FileOp>, ToolError> {
 }
 
 /// Apply `*** Update File` hunks to `old`. Each hunk's `-`/` ` lines are
-/// the "before" pattern, `+`/` ` the "after". Reuses a fuzzy/whitespace
-/// match so updates land even with drifted indentation.
+/// the "before" pattern, `+`/` ` the "after". Exact match only — a miss
+/// is a teaching error (fuzzy matching is fuzzy_patch's job).
 ///
 /// Errors name the file, the hunk index, and a preview of the `before`
 /// pattern so a failed patch is diagnosable without re-reading the tool
 /// call (native-tools.md: errors must teach the fix).
-fn apply_hunks(path: &str, old: &str, hunks: &[Hunk]) -> Result<(String, bool), ToolError> {
+fn apply_hunks(path: &str, old: &str, hunks: &[Hunk]) -> Result<String, ToolError> {
     let mut src = old.replace("\r\n", "\n");
-    let mut fuzzy = false;
     for (idx, h) in hunks.iter().enumerate() {
         let hunk_desc = || format!("{path} hunk {}/{}", idx + 1, hunks.len());
         let mut before = String::new();
@@ -512,9 +535,8 @@ fn apply_hunks(path: &str, old: &str, hunks: &[Hunk]) -> Result<(String, bool), 
                 // occurrence AT/AFTER the marker (codex semantics), else
                 // report the ambiguity so the model adds context.
                 let pick = h.context.as_deref().and_then(|marker| {
-                    src.find(marker).and_then(|mpos| {
-                        hits.iter().copied().find(|&i| i >= mpos)
-                    })
+                    src.find(marker)
+                        .and_then(|mpos| hits.iter().copied().find(|&i| i >= mpos))
                 });
                 match pick {
                     Some(i) => {
@@ -531,24 +553,21 @@ fn apply_hunks(path: &str, old: &str, hunks: &[Hunk]) -> Result<(String, bool), 
                 }
             }
             _ => {
-                // Whitespace-tolerant fallback via the shared fuzzy helper.
-                match super::fs_patch::apply(&src, before, after) {
-                    Ok(res) => {
-                        src = res.patched_content;
-                        fuzzy |= res.matched_fuzzily;
-                    }
-                    Err(e) => {
-                        return Err(ToolError::Failed(format!(
-                            "{}: {e}. Pattern starts: {:?}",
-                            hunk_desc(),
-                            preview(before)
-                        )))
-                    }
-                }
+                // No fuzzy fallback — apply_patch is the structured tool;
+                // approximate matching belongs to fuzzy_patch. A miss is a
+                // teaching error: the model adds context lines or an `@@`
+                // marker instead of us guessing where the hunk lands.
+                return Err(ToolError::Failed(format!(
+                    "{}: context not found — add more ` ` context lines or \
+                     an `@@ marker` so the hunk anchors uniquely. \
+                     Pattern starts: {:?}",
+                    hunk_desc(),
+                    preview(before)
+                )));
             }
         }
     }
-    Ok((src, fuzzy))
+    Ok(src)
 }
 
 /// First ~60 chars of a pattern, single-line, for error messages.
@@ -594,11 +613,15 @@ mod tests {
     fn update_hunks_patch_source() {
         let old = "fn a() {}\nfn b() {}\n";
         let hunks = vec![Hunk {
-            lines: vec![" fn a() {}".into(), "-fn b() {}".into(), "+fn c() {}".into()],
+            lines: vec![
+                " fn a() {}".into(),
+                "-fn b() {}".into(),
+                "+fn c() {}".into(),
+            ],
             context: None,
             eof: false,
         }];
-        let (new, _) = apply_hunks("src/lib.rs", old, &hunks).unwrap();
+        let new = apply_hunks("src/lib.rs", old, &hunks).unwrap();
         assert!(new.contains("fn c()"));
         assert!(!new.contains("fn b()"));
     }
@@ -618,10 +641,15 @@ mod tests {
                 eof: false,
             },
         ];
-        let err = apply_hunks("src/lib.rs", old, &hunks).unwrap_err().to_string();
+        let err = apply_hunks("src/lib.rs", old, &hunks)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("src/lib.rs"), "missing path: {err}");
         assert!(err.contains("hunk 2/2"), "missing hunk index: {err}");
-        assert!(err.contains("fn missing()"), "missing pattern preview: {err}");
+        assert!(
+            err.contains("fn missing()"),
+            "missing pattern preview: {err}"
+        );
     }
 
     #[test]
@@ -647,7 +675,7 @@ mod tests {
             lines: vec!["-x".into(), "+y".into()],
             eof: false,
         }];
-        let (new, _) = apply_hunks("f.txt", old, &hunks).unwrap();
+        let new = apply_hunks("f.txt", old, &hunks).unwrap();
         assert_eq!(new, "first\nx\nsecond\ny\n");
     }
 
@@ -659,7 +687,7 @@ mod tests {
             lines: vec!["+fn tail() {}".into()],
             eof: true,
         }];
-        let (new, _) = apply_hunks("f.rs", old, &hunks).unwrap();
+        let new = apply_hunks("f.rs", old, &hunks).unwrap();
         assert_eq!(new, "fn a() {}\nfn tail() {}\n");
     }
 
@@ -675,9 +703,12 @@ mod tests {
 
     #[test]
     fn move_to_parses_and_requires_update() {
-        let ok = "*** Begin Patch\n*** Update File: a.rs\n*** Move to: b.rs\n@@\n-x\n+y\n*** End Patch";
+        let ok =
+            "*** Begin Patch\n*** Update File: a.rs\n*** Move to: b.rs\n@@\n-x\n+y\n*** End Patch";
         match parse_patch(ok).unwrap().as_slice() {
-            [FileOp::Update { move_to: Some(m), .. }] => assert_eq!(m, "b.rs"),
+            [FileOp::Update {
+                move_to: Some(m), ..
+            }] => assert_eq!(m, "b.rs"),
             other => panic!("expected update+move, got {} ops", other.len()),
         }
         let bad = "*** Begin Patch\n*** Add File: a.rs\n*** Move to: b.rs\n+x\n*** End Patch";
@@ -692,7 +723,7 @@ mod tests {
             lines: vec!["+fn inserted() {}".into()],
             eof: false,
         }];
-        let (new, _) = apply_hunks("f.rs", old, &hunks).unwrap();
+        let new = apply_hunks("f.rs", old, &hunks).unwrap();
         assert_eq!(new, "fn a() {}\nfn inserted() {}\nfn b() {}\n");
 
         // Ambiguous marker refuses instead of guessing.

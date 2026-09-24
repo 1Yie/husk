@@ -148,7 +148,11 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     if kind == Kind::Binary {
         return Err(ToolError::Failed(format!(
             "refusing binary content ('{}') from '{}' — web_fetch only returns text",
-            if resp.content_type.is_empty() { "unknown" } else { &resp.content_type },
+            if resp.content_type.is_empty() {
+                "unknown"
+            } else {
+                &resp.content_type
+            },
             resp.url
         )));
     }
@@ -294,7 +298,10 @@ mod tests {
 
     #[test]
     fn classify_recognises_content_families() {
-        assert_eq!(classify("application/json; charset=utf-8", b"{}"), Kind::Json);
+        assert_eq!(
+            classify("application/json; charset=utf-8", b"{}"),
+            Kind::Json
+        );
         assert_eq!(classify("application/ld+json", b"{}"), Kind::Json);
         assert_eq!(classify("text/html", b"<html>"), Kind::Html);
         assert_eq!(classify("text/plain", b"hi"), Kind::Text);

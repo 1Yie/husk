@@ -135,6 +135,7 @@ export function App() {
         turn_total?: number;
         turn_offset?: number;
         usage?: Parameters<typeof viewFromHistory>[1];
+        queued_prompts?: string[];
       },
     ) => {
       const folded = await viewFromHistoryChunked(
@@ -146,6 +147,10 @@ export function App() {
         // rail marks + key remount churn).
         (r.history_total ?? r.history.length) - r.history.length,
       );
+      // Cold view rebuild — the parked queue is session state persisted in
+      // SessionMeta; seed it so the composer shows the same rows the actor
+      // still holds (live updates continue via QueuedPrompts events).
+      folded.queuedPrompts = r.queued_prompts ?? [];
       loadStamp("fold");
       loadView(root, id, folded, {
         historyStart: (r.history_total ?? r.history.length) - r.history.length,

@@ -325,9 +325,9 @@ interface Props {
 }
 
 type AssistantStep =
-  | { type: "thinking"; text: string; done: boolean }
+  | { type: "thinking"; text: string; done: boolean; startedAt?: number }
   | { type: "text"; text: string; streaming: boolean }
-  | { type: "tools"; rows: ToolChipRow[] }
+  | { type: "tools"; rows: ToolChipRow[]; startedAt?: number }
   | { type: "system"; text: string };
 
 interface Turn {
@@ -557,6 +557,7 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
         type: "thinking",
         text: item.text,
         done: item.done,
+        startedAt: item.startedAt,
       });
       continue;
     }
@@ -675,10 +676,16 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
 
       if (lastStep?.type === "tools") {
         lastStep.rows.push(row);
+        // The step's clock anchors on its FIRST tool — later calls in the
+        // same tools phase extend the run, they don't restart it.
+        if (lastStep.startedAt == null && item.kind === "tool") {
+          lastStep.startedAt = item.startedAt;
+        }
       } else {
         t.steps.push({
           type: "tools",
           rows: [row],
+          startedAt: item.kind === "tool" ? item.startedAt : undefined,
         });
       }
     }
@@ -848,6 +855,7 @@ const ChatTurn = memo(function ChatTurn({
                   <AssistantStatus
                     mode={step.done ? "thought" : "thinking"}
                     thinkingText={thinkingText}
+                    startedAt={step.startedAt}
                   />
                 </div>
               );
@@ -876,7 +884,9 @@ const ChatTurn = memo(function ChatTurn({
                   className="flex w-full min-w-0 flex-col items-start gap-2"
                   key={`step-${stepIdx}`}
                 >
-                  {running && <AssistantStatus mode="tools" thinkingText="" />}
+                  {running && (
+                    <AssistantStatus mode="tools" thinkingText="" startedAt={step.startedAt} />
+                  )}
                   <ToolChips
                     rows={step.rows}
                     renderProse={(text) => (
@@ -1853,9 +1863,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                 );
               })}
 
-            {showReplyWait && (
+            {/* Turn-running clock — visible for the WHOLE streaming turn, not
+                just the pre-first-delta wait. Anchored on `view.turnStartedAt`
+                (stamped on UserPrompt) so it reads as "this turn has been
+                running Xs" and survives a session switch; the per-phase rows
+                above still show their own thinking/tools durations. */}
+            {view.streaming && view.turnStartedAt != null && (
               <div id="chat-reply-wait">
-                <AssistantStatus mode="reply" thinkingText="" />
+                <AssistantStatus mode="reply" thinkingText="" startedAt={view.turnStartedAt} />
               </div>
             )}
 

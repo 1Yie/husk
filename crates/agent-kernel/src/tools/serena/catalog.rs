@@ -8,8 +8,8 @@
 
 use serde_json::Value;
 
-use super::bridge::{McpBridge, SerenaToolInfo};
 use super::super::registry::ToolError;
+use super::bridge::{McpBridge, SerenaToolInfo};
 
 #[derive(Debug, Default)]
 pub struct SerenaToolCatalog {
@@ -43,13 +43,20 @@ impl SerenaToolCatalog {
                     format!(
                         "{}\n\n{}\n\ninputSchema:\n{}",
                         t.name,
-                        t.description.as_deref().unwrap_or("(no description)").trim(),
+                        t.description
+                            .as_deref()
+                            .unwrap_or("(no description)")
+                            .trim(),
                         serde_json::to_string_pretty(&schema).unwrap_or_default()
                     )
                 }
                 None => format!(
                     "No serena tool named `{name}`. Available: {}",
-                    self.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+                    self.tools
+                        .iter()
+                        .map(|t| t.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             };
         }
@@ -122,14 +129,22 @@ mod tests {
 
     #[test]
     fn render_marks_required_arguments_and_hides_extra_description_lines() {
-        let cat = SerenaToolCatalog { fetched: true, tools: vec![
-            tool("find_symbol", json!({"name_path": {"type":"string"}, "depth": {"type":"integer"}}), json!(["name_path"])),
-        ]};
+        let cat = SerenaToolCatalog {
+            fetched: true,
+            tools: vec![tool(
+                "find_symbol",
+                json!({"name_path": {"type":"string"}, "depth": {"type":"integer"}}),
+                json!(["name_path"]),
+            )],
+        };
         let out = cat.render(None);
         assert!(out.contains("find_symbol"), "{out}");
         assert!(out.contains("name_path*:string"), "{out}");
         assert!(out.contains("depth:integer"), "{out}");
-        assert!(!out.contains("Second line"), "list stays one line per tool: {out}");
+        assert!(
+            !out.contains("Second line"),
+            "list stays one line per tool: {out}"
+        );
 
         // Detail mode prints the schema for exactly one tool.
         let detail = cat.render(Some("find_symbol"));

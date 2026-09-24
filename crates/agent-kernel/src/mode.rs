@@ -39,9 +39,7 @@ impl AgentMode {
     /// the model needs to know its mode's contract, not just its tool set.
     pub fn prompt_block(&self) -> &'static str {
         match self {
-            Self::Build => {
-                "Mode: build — full tool set. Read, edit, run, verify."
-            }
+            Self::Build => "Mode: build — full tool set. Read, edit, run, verify.",
             Self::Plan => {
                 "Mode: plan — READ-ONLY. You may inspect files, search, and reason, \
                  but you cannot edit files or run mutating commands. Produce a \

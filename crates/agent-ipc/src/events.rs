@@ -4,7 +4,6 @@
 //! `agent_llm::StreamChunk` and never crosses a transport — see
 //! `agent-kernel/src/channels.rs`.
 
-
 use serde::{Deserialize, Serialize};
 
 /// Kernel state machine — mirrored to the UI so the status strip can render
@@ -18,14 +17,26 @@ pub enum AgentState {
     /// Text deltas flowing.
     StreamingToken,
     /// A write/destructive tool is paused for user review.
-    AwaitingToolConfirmation { tool_name: String, diff_summary: String },
+    AwaitingToolConfirmation {
+        tool_name: String,
+        diff_summary: String,
+    },
     /// A plugin wants a capability beyond its manifest.
-    AwaitingPluginConsent { plugin_id: String, capability: String },
+    AwaitingPluginConsent {
+        plugin_id: String,
+        capability: String,
+    },
     /// P2: generalizes tool/plugin/capture approvals.
-    AwaitingConsent { kind: String },
+    AwaitingConsent {
+        kind: String,
+    },
     /// P2: CoW fork-and-verify planning.
-    Branching { candidates: u8 },
-    ExecutingTool { tool_name: String },
+    Branching {
+        candidates: u8,
+    },
+    ExecutingTool {
+        tool_name: String,
+    },
     /// Auto-compact in flight.
     Compacting,
     Finished,
@@ -54,7 +65,10 @@ impl AgentState {
             AgentState::AwaitingToolConfirmation { tool_name, .. } => {
                 format!("confirm {tool_name}")
             }
-            AgentState::AwaitingPluginConsent { plugin_id, capability } => {
+            AgentState::AwaitingPluginConsent {
+                plugin_id,
+                capability,
+            } => {
                 format!("consent {plugin_id}:{capability}")
             }
             AgentState::AwaitingConsent { kind } => format!("consent {kind}"),
@@ -112,6 +126,19 @@ pub enum UiCommand {
     /// last user prompt's position and re-runs it through the normal
     /// Prompt path. Idle-only; ignored while a turn is active.
     Retry,
+    /// Replace the session's queued-prompt list — the composer's staging
+    /// area for follow-ups parked until the current turn ends. Every list
+    /// op (enqueue, edit, remove, reorder) collapses into this one write;
+    /// the actor echoes the new list back via `QueuedPrompts` and mirrors
+    /// it into `SessionMeta` so a reopened session restores it.
+    SetQueued { items: Vec<String> },
+    /// Park one follow-up prompt — appends to the queue, then drains right
+    /// away when the session is idle. Distinct from `SetQueued` because a
+    /// queue write that lands mid-turn is only processed after the turn:
+    /// without this arm, a just-queued item would sit parked until some
+    /// *later* turn ended. (`SetQueued` — the edit/remove/reorder path —
+    /// deliberately never drains on its own.)
+    Enqueue { text: String },
 }
 
 /// One offered answer on an `ask_question` card.
@@ -170,24 +197,48 @@ pub enum UiEvent {
     /// `ask_question` paused the turn for structured input — the card
     /// offers the model's options plus a free-text field. Resolved by
     /// `AnswerQuestion`.
-    QuestionAsked { request_id: u64, question: String, options: Vec<AskOption> },
+    QuestionAsked {
+        request_id: u64,
+        question: String,
+        options: Vec<AskOption>,
+    },
+    /// The matching `AnswerQuestion` resolved the parked card — emitted so
+    /// the frontend can drop `pendingQuestion` from the view buffer itself,
+    /// rather than hiding it behind a per-mount flag that a session switch
+    /// would reset (the "answered card comes back" bug).
+    QuestionAnswered { request_id: u64 },
     /// A destructive op paused for review — `diff` is the unified diff for
     /// the approval card; `fuzzy` flags an approximate patch match.
     /// `request_id` is the correlation token the frontend echoes back in
     /// `ToolDecision` so a stale verdict can't land on a different pending
     /// approval (P1-a).
-    ApprovalRequested { request_id: u64, tool_name: String, diff: String, fuzzy: bool },
+    ApprovalRequested {
+        request_id: u64,
+        tool_name: String,
+        diff: String,
+        fuzzy: bool,
+    },
     /// Final assistant text for the turn (complete, post-streaming).
     AssistantMessage(String),
     /// System/degrade notice (sampler retry, fallback, compaction…).
     SystemMessage(String),
     /// Token-usage update for the meter. `context_window` rides along so
     /// the UI can render fill percentage without re-deriving the bound.
-    Usage { prompt_tokens: u32, completion_tokens: u32, context_window: u32, cached_tokens: u32 },
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        context_window: u32,
+        cached_tokens: u32,
+    },
     /// Session-fatal error.
     Error(String),
     /// A `Retry` command rewound the session to the last user prompt —
     /// the UI drops the retried turn's items before the fresh
     /// `UserPrompt` echo lands on the same stream.
     TurnRetry,
+    /// The session's queued-prompt list changed — emitted on every
+    /// `SetQueued` write and after each item pops off the drain, so the
+    /// composer always renders the kernel's list (single source of truth).
+    /// Carries the full list — queue ops are rare and the list is small.
+    QueuedPrompts { items: Vec<String> },
 }

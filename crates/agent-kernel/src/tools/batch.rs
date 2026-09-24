@@ -7,7 +7,6 @@
 //! `ctx.cancel` actually abort. No permission gate runs: only auto-allowed
 //! specs are eligible by construction.
 
-
 use super::registry::{Args, ToolClass, ToolCtx, ToolError, ToolResult, ToolSpec};
 use futures::{FutureExt, StreamExt};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,7 +94,10 @@ enum ParsedItem {
     Call(BatchCall),
     /// Unparseable — reported as that item's rejection instead of failing the
     /// whole batch, and named from whatever the item did carry.
-    Bad { name: String, reason: String },
+    Bad {
+        name: String,
+        reason: String,
+    },
 }
 
 /// The documented shape, quoted back at the model when an item makes no sense.
@@ -130,28 +132,30 @@ fn parse_items(args: serde_json::Value) -> Result<Vec<ParsedItem>, ToolError> {
     })?;
     Ok(items
         .into_iter()
-        .map(|item| match serde_json::from_value::<BatchCall>(item.clone()) {
-            Ok(call) => ParsedItem::Call(call.normalized()),
-            Err(e) => {
-                let name = ["tool", "name", "tool_name"]
-                    .iter()
-                    .find_map(|k| item.get(k).and_then(|v| v.as_str()))
-                    .unwrap_or("(unnamed)")
-                    .to_string();
-                let mut shown = item.to_string();
-                if shown.len() > 160 {
-                    shown.truncate(shown.floor_char_boundary(160));
-                    shown.push('…');
-                }
-                ParsedItem::Bad {
-                    name,
-                    reason: format!(
-                        "item could not be parsed ({e}); got {shown} — expected \
+        .map(
+            |item| match serde_json::from_value::<BatchCall>(item.clone()) {
+                Ok(call) => ParsedItem::Call(call.normalized()),
+                Err(e) => {
+                    let name = ["tool", "name", "tool_name"]
+                        .iter()
+                        .find_map(|k| item.get(k).and_then(|v| v.as_str()))
+                        .unwrap_or("(unnamed)")
+                        .to_string();
+                    let mut shown = item.to_string();
+                    if shown.len() > 160 {
+                        shown.truncate(shown.floor_char_boundary(160));
+                        shown.push('…');
+                    }
+                    ParsedItem::Bad {
+                        name,
+                        reason: format!(
+                            "item could not be parsed ({e}); got {shown} — expected \
                          {{tool, args}} with `tool` naming an Observation tool"
-                    ),
+                        ),
+                    }
                 }
-            }
-        })
+            },
+        )
         .collect())
 }
 
@@ -169,14 +173,19 @@ pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "batch_execute",
         schema: super::registry::schema_for::<BatchArgs>(
-            "Run up to 16 INDEPENDENT observation calls (smart_read, list_dir, \
-             smart_grep, web_fetch…) as ONE round trip — use it whenever you \
-             would otherwise fire several read-only tools back to back. Calls \
-             run at limited concurrency (max 4, max 4 network calls); results \
-             return in the order you sent them, and one call's failure doesn't \
-             fail the batch (check each `── [i] ──` section). Forbidden by \
-             design: mutations (write/patch/shell/test), delegate, todo, \
-             ask_question, goal signals, and nested batch_execute.",
+            "The DEFAULT way to issue 2+ INDEPENDENT observation calls \
+             (smart_read, list_dir, smart_grep, web_fetch…) — pack them into \
+             ONE round trip instead of firing read-only tools back to back. \
+             Known-target rule: if the targets are already known (e.g. three \
+             file paths, a dir listing plus a grep), batch them now — never \
+             read A → reason → read B when A and B were both known up front. \
+             Only go sequential when the next call's arguments depend on this \
+             call's result. Calls run at limited concurrency (max 4, max 4 \
+             network calls); results return in the order you sent them, and \
+             one call's failure doesn't fail the batch (check each \
+             `── [i] ──` section). Forbidden by design: mutations \
+             (write/patch/shell/test), delegate, todo, ask_question, goal \
+             signals, and nested batch_execute.",
         ),
         readonly: true, // orchestrator — only ever runs auto-allowed Observation specs
         class: ToolClass::Orchestration,
@@ -211,8 +220,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     // Network sub-cap — count up front so over-capacity items get a
     // per-item rejection instead of silently queueing.
     let mut network_used = 0usize;
-    let mut eligible_flags: Vec<Result<Arc<ToolSpec>, String>> =
-        Vec::with_capacity(items.len());
+    let mut eligible_flags: Vec<Result<Arc<ToolSpec>, String>> = Vec::with_capacity(items.len());
     for item in &items {
         let ParsedItem::Call(call) = item else {
             let ParsedItem::Bad { reason, .. } = item else {
@@ -226,12 +234,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 "unknown tool `{}` — not in the active registry",
                 call.tool
             ))),
-            Some(spec) if !is_batchable(&spec) => {
-                eligible_flags.push(Err(format!(
-                    "`{}` is not batchable — only Observation tools run in a batch",
-                    call.tool
-                )))
-            }
+            Some(spec) if !is_batchable(&spec) => eligible_flags.push(Err(format!(
+                "`{}` is not batchable — only Observation tools run in a batch",
+                call.tool
+            ))),
             Some(spec) if spec.network => {
                 network_used += 1;
                 if network_used > MAX_NETWORK_CALLS {
@@ -258,9 +264,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         tokio::spawn(async move {
             loop {
                 if Instant::now() >= deadline
-                    || parent
-                        .as_ref()
-                        .is_some_and(|c| c.load(Ordering::Relaxed))
+                    || parent.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
                 {
                     flag.store(true, Ordering::Relaxed);
                     break;
@@ -295,8 +299,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                     Ok(spec) => {
                         // Item ctx carries the batch flag — tools that poll
                         // cancel abort their own blocking work too.
-                        let item_ctx =
-                            Arc::new(ctx.with_cancel(batch_cancel.clone()));
+                        let item_ctx = Arc::new(ctx.with_cancel(batch_cancel.clone()));
                         if let Some(ui) = &ctx.ui_tx {
                             let _ = ui.send(agent_ipc::events::UiEvent::ToolCallStarted {
                                 name: tool.clone(),
@@ -375,7 +378,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 
     // Sectioned model-facing text — one block per call, order preserved,
     // aggregate bytes capped. Status + duration ride in every header.
-    let ok = results.iter().filter(|r| matches!(r.status, ItemStatus::Ok)).count();
+    let ok = results
+        .iter()
+        .filter(|r| matches!(r.status, ItemStatus::Ok))
+        .count();
     let errors = results.len() - ok;
     let mut out = format!(
         "[batch_execute — {} calls · {} ok · {} failed · {:.1}s]\n",
@@ -471,7 +477,9 @@ mod tests {
                 call.args
             );
         }
-        let ParsedItem::Call(grep) = &items[2] else { unreachable!() };
+        let ParsedItem::Call(grep) = &items[2] else {
+            unreachable!()
+        };
         assert_eq!(grep.args["pattern"], "TODO", "inline keys must survive");
     }
 

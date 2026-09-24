@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
-use crate::types::{ChatMessage, Role, StreamChunk};
+use crate::types::{ChatMessage, NoticeKind, Role, StreamChunk};
 
 /// One provider for every OpenAI-shaped backend. `api_key` is the *resolved*
 /// secret — config's `env:`/`keyring:` indirection happens in `factory`.
@@ -324,7 +324,12 @@ fn build_messages_dev(
 
     for m in messages {
         let mut v = serialize_message(m);
-        if m.role == Role::System && compat.developer_role() {
+        if m.role == Role::System && m.notice == Some(NoticeKind::CompactedMemory) {
+            // Compacted memory is historical context, not a live
+            // instruction — emit it at user privilege instead of
+            // system/developer so a summary can't silently become one.
+            v["role"] = json!("user");
+        } else if m.role == Role::System && compat.developer_role() {
             // pi: `supportsDeveloperRole: true` means the endpoint understands
             // the newer `developer` role. Default is `system` — which every
             // OpenAI-compatible shim accepts.
@@ -747,5 +752,20 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1]["role"].as_str().unwrap(), "tool");
         assert_eq!(msgs[1]["tool_call_id"].as_str().unwrap(), "call_z");
+    }
+
+    #[test]
+    fn build_messages_routes_compacted_memory_to_user() {
+        // A compaction note is historical context, not a live instruction —
+        // it must not ride the wire as `system`/`developer`.
+        let msgs = build_messages(&[
+            m(Role::System, "kernel"),
+            ChatMessage::compacted_memory("prior summary"),
+            m(Role::User, "q"),
+        ]);
+        assert_eq!(msgs[0]["role"].as_str().unwrap(), "system");
+        assert_eq!(msgs[1]["role"].as_str().unwrap(), "user");
+        assert!(msgs[1]["content"].as_str().unwrap().contains("prior summary"));
+        assert_eq!(msgs[2]["role"].as_str().unwrap(), "user");
     }
 }

@@ -6,16 +6,15 @@
 //! `replace_symbol_body` against the wrong tree. It is not per session either:
 //! sessions in one workspace share one server and one index.
 
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use tokio::sync::Mutex;
 
+use super::super::registry::ToolError;
 use super::bridge::{BridgeFactory, McpBridge, SerenaBridge, SerenaToolInfo};
 use super::catalog::SerenaToolCatalog;
-use super::super::registry::ToolError;
 
 /// A bridge plus the catalog fetched from it — one unit, because a catalog
 /// only describes the server it came from.
@@ -57,7 +56,9 @@ impl SerenaManager {
         slots
             .entry(root.to_path_buf())
             .or_insert_with(|| {
-                Arc::new(WorkspaceSlot { live: Mutex::new(None) })
+                Arc::new(WorkspaceSlot {
+                    live: Mutex::new(None),
+                })
             })
             .clone()
     }
@@ -110,15 +111,23 @@ impl SerenaManager {
         root: &Path,
     ) -> Result<tokio::sync::MutexGuard<'a, Option<Live>>, ToolError> {
         let mut live = slot.live.lock().await;
-        if live.as_ref().map(|l| !l.bridge.is_healthy()).unwrap_or(false) {
+        if live
+            .as_ref()
+            .map(|l| !l.bridge.is_healthy())
+            .unwrap_or(false)
+        {
             // The child died: drop the handle (kill_on_drop reaps it) so the
             // next call starts a fresh server over a fresh index.
             live.take();
         }
         if live.is_none() {
             let bridge = self.factory.spawn(root).await?;
-            self.spawns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            live.replace(Live { bridge, catalog: SerenaToolCatalog::default() });
+            self.spawns
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            live.replace(Live {
+                bridge,
+                catalog: SerenaToolCatalog::default(),
+            });
         }
         Ok(live)
     }
@@ -151,9 +160,7 @@ pub fn manager_for(root: &Path) -> Arc<SerenaManager> {
     let mut managers = managers.lock().unwrap_or_else(|e| e.into_inner());
     managers
         .entry(normalize_root(root))
-        .or_insert_with(|| {
-            Arc::new(SerenaManager::new(Arc::new(UvxSerenaFactory)))
-        })
+        .or_insert_with(|| Arc::new(SerenaManager::new(Arc::new(UvxSerenaFactory))))
         .clone()
 }
 
@@ -256,9 +263,16 @@ mod tests {
         let _ = mgr.bridge(&b).await.unwrap();
 
         let roots = factory.roots.lock().unwrap().clone();
-        assert_eq!(mgr.spawn_count(), 2, "one server per workspace, not per call");
+        assert_eq!(
+            mgr.spawn_count(),
+            2,
+            "one server per workspace, not per call"
+        );
         assert!(roots[0].ends_with("project-a"), "{roots:?}");
-        assert!(roots[1].ends_with("project-b"), "workspace B reused A's bridge: {roots:?}");
+        assert!(
+            roots[1].ends_with("project-b"),
+            "workspace B reused A's bridge: {roots:?}"
+        );
     }
 
     /// A dead child must be replaced on the next call — the old code cached
@@ -272,11 +286,21 @@ mod tests {
         let first = mgr.bridge(dir.path()).await.unwrap();
         assert!(first.is_healthy());
         // The child exits (the reader task flips this in the real bridge).
-        factory.last.lock().unwrap().as_ref().unwrap().healthy.store(false, Ordering::Relaxed);
+        factory
+            .last
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .healthy
+            .store(false, Ordering::Relaxed);
 
         let second = mgr.bridge(dir.path()).await.unwrap();
         assert_eq!(mgr.spawn_count(), 2, "a dead child must be respawned");
-        assert!(second.is_healthy(), "the manager handed out the dead bridge again");
+        assert!(
+            second.is_healthy(),
+            "the manager handed out the dead bridge again"
+        );
 
         // Explicit invalidation (what the tool does when a call failed on a
         // child that had already died) also forces a restart.
@@ -325,7 +349,10 @@ mod tests {
         std::fs::create_dir_all(&b).unwrap();
 
         let ma = manager_for(&a);
-        assert!(Arc::ptr_eq(&ma, &manager_for(&a)), "same root must reuse one manager");
+        assert!(
+            Arc::ptr_eq(&ma, &manager_for(&a)),
+            "same root must reuse one manager"
+        );
         assert!(
             Arc::ptr_eq(&ma, &manager_for(&a.join("."))),
             "a non-normalized path must not get its own server"
@@ -338,7 +365,10 @@ mod tests {
         );
 
         shutdown(&a);
-        assert!(!Arc::ptr_eq(&ma, &manager_for(&a)), "shutdown must drop the entry");
+        assert!(
+            !Arc::ptr_eq(&ma, &manager_for(&a)),
+            "shutdown must drop the entry"
+        );
         shutdown(&a);
         shutdown(&b);
     }
@@ -359,6 +389,10 @@ mod tests {
         while let Some(r) = set.join_next().await {
             r.unwrap().unwrap();
         }
-        assert_eq!(mgr.spawn_count(), 1, "thundering herd spawned extra servers");
+        assert_eq!(
+            mgr.spawn_count(),
+            1,
+            "thundering herd spawned extra servers"
+        );
     }
 }

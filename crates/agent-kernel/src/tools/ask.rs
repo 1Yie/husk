@@ -5,7 +5,6 @@
 //! `readonly: true` — asking mutates nothing, so it auto-allows in every mode.
 //! Headless contexts carry no UI sender and refuse fast instead of deadlocking.
 
-
 use super::registry::{Args, ToolCtx, ToolError, ToolResult, ToolSpec};
 use futures::FutureExt;
 
@@ -54,8 +53,8 @@ pub fn spec() -> ToolSpec {
 }
 
 async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
-    let parsed: AskQuestionArgs = serde_json::from_value(args)
-        .map_err(|e| ToolError::Args(e.to_string()))?;
+    let parsed: AskQuestionArgs =
+        serde_json::from_value(args).map_err(|e| ToolError::Args(e.to_string()))?;
 
     // Headless fast-fail before building the request — a child agent
     // must never park on a oneshot nobody can answer.
@@ -85,9 +84,7 @@ async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, To
             )));
         }
         if !seen.insert(label.to_string()) {
-            return Err(ToolError::Args(
-                "option labels must be unique".into(),
-            ));
+            return Err(ToolError::Args("option labels must be unique".into()));
         }
         let description = match opt.description.as_deref().map(str::trim) {
             None | Some("") => None,

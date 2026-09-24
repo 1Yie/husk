@@ -7,7 +7,6 @@
 //! `goal_blocked` ends it with the blocker as the report. `ToolError` and
 //! `GoalBlocked` are different outcomes and must not be conflated.
 
-
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -69,17 +68,23 @@ impl GoalController {
 
     pub fn reset(&self) {
         *self.signal.lock().unwrap() = None;
-        self.state.store(GoalState::Running as u8, Ordering::Release);
+        self.state
+            .store(GoalState::Running as u8, Ordering::Release);
     }
 
     pub fn complete(&self, summary: String, reported_evidence: Option<String>) {
-        *self.signal.lock().unwrap() = Some(GoalSignal::Complete { summary, reported_evidence });
-        self.state.store(GoalState::Complete as u8, Ordering::Release);
+        *self.signal.lock().unwrap() = Some(GoalSignal::Complete {
+            summary,
+            reported_evidence,
+        });
+        self.state
+            .store(GoalState::Complete as u8, Ordering::Release);
     }
 
     pub fn blocked(&self, reason: String) {
         *self.signal.lock().unwrap() = Some(GoalSignal::Blocked { reason });
-        self.state.store(GoalState::Blocked as u8, Ordering::Release);
+        self.state
+            .store(GoalState::Blocked as u8, Ordering::Release);
     }
 
     pub fn state(&self) -> GoalState {

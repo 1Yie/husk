@@ -79,6 +79,12 @@ pub enum NoticeKind {
     /// Persisted for the provider but never drawn — injected
     /// instructions like the tool-limit nudge.
     Hidden,
+    /// Compacted-context memory note — a summary of earlier turns. Still
+    /// `Role::System` internally (hidden on replay like the kernel
+    /// prompt), but adapters MUST NOT fold it into `system`/`instructions`
+    /// like a plain system row: it is historical context, not a live
+    /// instruction. Each adapter emits it at user privilege instead.
+    CompactedMemory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +195,12 @@ impl ChatMessage {
     /// skipped on replay.
     pub fn user_hidden(text: impl Into<String>) -> Self {
         Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
+    }
+    /// The compaction memory note — kept as `Role::System` so replay
+    /// stays hidden, but tagged so adapters route it to user privilege
+    /// instead of folding it into `system`/`instructions`.
+    pub fn compacted_memory(text: impl Into<String>) -> Self {
+        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::CompactedMemory), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None }

@@ -82,12 +82,20 @@ async fn path_escape_blocked() {
 #[tokio::test]
 async fn smart_read_range_and_search() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.rs"), "fn one() {}\nfn two() {\n    x();\n}\n").unwrap();
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "fn one() {}\nfn two() {\n    x();\n}\n",
+    )
+    .unwrap();
 
     let r = registry();
     // range mode: numbered lines + content_hash
     let res = r
-        .dispatch("smart_read", serde_json::json!({"path": "a.rs", "mode": "range"}), ctx_at(dir.path()))
+        .dispatch(
+            "smart_read",
+            serde_json::json!({"path": "a.rs", "mode": "range"}),
+            ctx_at(dir.path()),
+        )
         .await
         .unwrap();
     assert!(res.content.contains("1 │ fn one() {}"));
@@ -95,7 +103,11 @@ async fn smart_read_range_and_search() {
 
     // outline mode: signature skeleton, bodies folded
     let res = r
-        .dispatch("smart_read", serde_json::json!({"path": "a.rs", "mode": "outline"}), ctx_at(dir.path()))
+        .dispatch(
+            "smart_read",
+            serde_json::json!({"path": "a.rs", "mode": "outline"}),
+            ctx_at(dir.path()),
+        )
         .await
         .unwrap();
     assert!(res.content.contains("fn one()"));
@@ -104,7 +116,11 @@ async fn smart_read_range_and_search() {
 
     // search mode
     let res = r
-        .dispatch("smart_read", serde_json::json!({"path": "a.rs", "mode": "search", "pattern": "two"}), ctx_at(dir.path()))
+        .dispatch(
+            "smart_read",
+            serde_json::json!({"path": "a.rs", "mode": "search", "pattern": "two"}),
+            ctx_at(dir.path()),
+        )
         .await
         .unwrap();
     assert!(res.content.contains("2 │ fn two()"));
@@ -135,7 +151,10 @@ async fn fuzzy_patch_full_roundtrip() {
 
     // P1-c: the tool now returns a `PendingWrite` instead of writing — the
     // ENGINE commits it post-approval. Emulate that commit here.
-    let pw = res.pending_write.into_iter().next()
+    let pw = res
+        .pending_write
+        .into_iter()
+        .next()
         .expect("fuzzy_patch returns a PendingWrite");
     std::fs::write(&pw.path, &pw.content).unwrap();
 
@@ -151,7 +170,11 @@ async fn fuzzy_patch_hash_guard() {
     let r = registry();
     // get real hash
     let read = r
-        .dispatch("smart_read", serde_json::json!({"path": "a.rs", "mode": "range"}), ctx_at(dir.path()))
+        .dispatch(
+            "smart_read",
+            serde_json::json!({"path": "a.rs", "mode": "range"}),
+            ctx_at(dir.path()),
+        )
         .await
         .unwrap();
     let hash = read
@@ -191,7 +214,11 @@ async fn list_dir_bounded() {
     std::fs::write(dir.path().join(".hidden"), "").unwrap();
 
     let res = registry()
-        .dispatch("list_dir", serde_json::json!({"path": "."}), ctx_at(dir.path()))
+        .dispatch(
+            "list_dir",
+            serde_json::json!({"path": "."}),
+            ctx_at(dir.path()),
+        )
         .await
         .unwrap();
     assert!(res.content.contains("src/"));
@@ -224,14 +251,22 @@ async fn bash_truncates_and_reports_exit() {
     let r = registry();
 
     let res = r
-        .dispatch("bash", serde_json::json!({"command": "echo hi && echo huge && seq 1 5000"}), ctx_at(dir.path()))
+        .dispatch(
+            "bash",
+            serde_json::json!({"command": "echo hi && echo huge && seq 1 5000"}),
+            ctx_at(dir.path()),
+        )
         .await
         .unwrap();
     assert!(res.content.contains("exit 0"));
     assert!(res.content.contains("truncated")); // 5000 lines > 20KB → folded
 
     let res = r
-        .dispatch("bash", serde_json::json!({"command": "exit 3"}), ctx_at(dir.path()))
+        .dispatch(
+            "bash",
+            serde_json::json!({"command": "exit 3"}),
+            ctx_at(dir.path()),
+        )
         .await
         .unwrap();
     assert!(res.content.contains("exit 3"));

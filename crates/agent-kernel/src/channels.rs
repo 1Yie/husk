@@ -11,7 +11,6 @@
 //! never are. Both kinds share one queue, so a tool capsule cannot overtake
 //! the prose that preceded it.
 
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -134,8 +133,14 @@ impl UiSink {
             stats: UiStats::default(),
         });
         (
-            UiSink { inner: inner.clone() },
-            UiReceiver { inner, bell: bell_rx, bell_closed: false },
+            UiSink {
+                inner: inner.clone(),
+            },
+            UiReceiver {
+                inner,
+                bell: bell_rx,
+                bell_closed: false,
+            },
         )
     }
 
@@ -203,7 +208,10 @@ impl UiSink {
                 self.inner.stats.sent.fetch_add(1, Ordering::Relaxed);
             }
         }
-        self.inner.stats.depth_peak.fetch_max(queue.len(), Ordering::Relaxed);
+        self.inner
+            .stats
+            .depth_peak
+            .fetch_max(queue.len(), Ordering::Relaxed);
         drop(queue);
         // A full bell means a wake-up is already queued for the consumer.
         let _ = self.inner.bell.try_send(());
@@ -261,7 +269,11 @@ impl UiReceiver {
     }
 
     fn pop(&mut self) -> Option<UiEvent> {
-        self.inner.queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+        self.inner
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
     }
 }
 
@@ -305,7 +317,12 @@ pub struct AgentChannels {
 pub fn ui_channels() -> UiChannels {
     let (cmd_tx, cmd_rx) = mpsc::channel(CMD_CHANNEL_CAP);
     let (event_tx, event_rx) = UiSink::channel();
-    UiChannels { cmd_rx, event_tx, cmd_tx, event_rx }
+    UiChannels {
+        cmd_rx,
+        event_tx,
+        cmd_tx,
+        event_rx,
+    }
 }
 
 /// Create the sampler→session channel.
@@ -368,9 +385,13 @@ mod tests {
             tx.send(UiEvent::StateChanged(agent_ipc::AgentState::Finished))
                 .unwrap_or_else(|_| panic!("control event {i} dropped"));
         }
-        tx.send(UiEvent::AssistantMessage("done".into())).expect("final text");
+        tx.send(UiEvent::AssistantMessage("done".into()))
+            .expect("final text");
         // A delta arriving while the tail is a control event cannot merge.
-        assert!(matches!(tx.send(delta("late")), Err(SendError::Saturated(_))));
+        assert!(matches!(
+            tx.send(delta("late")),
+            Err(SendError::Saturated(_))
+        ));
         let events = drain(&mut rx);
         let control = events
             .iter()
@@ -392,7 +413,8 @@ mod tests {
         })
         .unwrap();
         tx.send(delta("b")).unwrap();
-        tx.send(UiEvent::StateChanged(agent_ipc::AgentState::Finished)).unwrap();
+        tx.send(UiEvent::StateChanged(agent_ipc::AgentState::Finished))
+            .unwrap();
         let events = drain(&mut rx);
         assert_eq!(events.len(), 4);
         assert!(matches!(&events[0], UiEvent::TextDelta { text: t, .. } if t == "a"));
@@ -449,10 +471,12 @@ mod tests {
         // Make room, seed the child's tail, then saturate on that tail: now the
         // merge key matches, so the child's next deltas coalesce.
         assert!(rx.try_recv().is_some());
-        tx.send(child("c1")).expect("room for the child's first delta");
+        tx.send(child("c1"))
+            .expect("room for the child's first delta");
         tx.send(child("c2")).expect("same parent merges");
         tx.send(child("c3")).expect("same parent merges");
-        tx.send(delta("turn")).expect_err("turn text must not merge into a child's tail");
+        tx.send(delta("turn"))
+            .expect_err("turn text must not merge into a child's tail");
 
         let events = drain(&mut rx);
         let UiEvent::TextDelta { text, parent } = events.last().unwrap() else {

@@ -6,16 +6,15 @@ mod common;
 
 use std::sync::Arc;
 
-use agent_kernel::tools::delegate::SubagentSpawner;
 use agent_kernel::channels::UiSink;
+use agent_kernel::tools::delegate::SubagentSpawner;
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 use common::ScriptedProvider;
 
 fn spawner(provider: Arc<dyn agent_llm::LlmProvider>) -> SubagentSpawner {
-    let full = ToolRegistry::with_builtins().filtered(|s| {
-        s.name != "delegate" && s.class != ToolClass::HumanInteraction
-    });
+    let full = ToolRegistry::with_builtins()
+        .filtered(|s| s.name != "delegate" && s.class != ToolClass::HumanInteraction);
     let readonly = full.readonly_only();
     SubagentSpawner::new(
         provider,
@@ -114,15 +113,11 @@ async fn every_child_emits_a_nested_card() {
             agent_ipc::events::UiEvent::ToolCallStarted { name, parent, .. } => {
                 started.push((name, parent))
             }
-            agent_ipc::events::UiEvent::ToolCallFinished { name, ok, parent, .. } => {
-                finished.push((name, ok, parent))
-            }
-            agent_ipc::events::UiEvent::TextDelta { text: t, parent } => {
-                text.push((parent, t))
-            }
-            agent_ipc::events::UiEvent::ReasoningDelta { parent, .. } => {
-                reasoning.push(parent)
-            }
+            agent_ipc::events::UiEvent::ToolCallFinished {
+                name, ok, parent, ..
+            } => finished.push((name, ok, parent)),
+            agent_ipc::events::UiEvent::TextDelta { text: t, parent } => text.push((parent, t)),
+            agent_ipc::events::UiEvent::ReasoningDelta { parent, .. } => reasoning.push(parent),
             _ => {}
         }
     }
@@ -131,8 +126,14 @@ async fn every_child_emits_a_nested_card() {
     for (name, parent) in &started {
         assert_eq!(parent.as_deref(), Some("delegate"), "{name}");
     }
-    assert!(started.iter().any(|(n, _)| n == "subagent #1"), "{started:?}");
-    assert!(started.iter().any(|(n, _)| n == "subagent #2"), "{started:?}");
+    assert!(
+        started.iter().any(|(n, _)| n == "subagent #1"),
+        "{started:?}"
+    );
+    assert!(
+        started.iter().any(|(n, _)| n == "subagent #2"),
+        "{started:?}"
+    );
     assert!(finished.iter().all(|(_, ok, _)| *ok), "{finished:?}");
 
     // The children's prose arrives tagged with their own labels, so the UI can

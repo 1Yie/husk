@@ -72,8 +72,8 @@ pub fn get_ui_stats(
 
 #[tauri::command]
 pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), String> {
-    let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
-        let (cancel, steer_tx, decision, ask, permissions, agent_mode, cmd_tx) = {
+    let mgr = state.0.lock().map_err(|e| e.to_string())?;
+        let (cancel, steer_tx, decision, ask, permissions, agent_mode, ui, cmd_tx) = {
         let Some(handle) = mgr.active() else {
             return Err("no active session".into());
         };
@@ -84,6 +84,7 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
             handle.ask.clone(),
             handle.permissions.clone(),
                 handle.agent_mode.clone(),
+            handle.ui.clone(),
             handle.cmd_tx.clone(),
         )
     };
@@ -103,23 +104,32 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
         return Ok(());
     }
     if let UiCommand::AnswerQuestion { request_id, answer } = &cmd {
-        ask.answer(*request_id, answer.clone());
+        // Only a matched answer resolves the parked card — `answer()` returns
+        // false for a stale/duplicate request_id, and echoing that would drop
+        // a *different* live question's card.
+        if ask.answer(*request_id, answer.clone()) {
+            // Echo the resolution so the frontend clears `pendingQuestion`
+            // from the view buffer — the answered card must not resurrect on
+            // the next session switch.
+            let _ = ui.send(agent_ipc::UiEvent::QuestionAnswered {
+                request_id: *request_id,
+            });
+        }
         return Ok(());
     }
-    if let UiCommand::SetModel { provider, model } = &cmd {
-        mgr.set_model(provider.clone(), model.clone());
-    }
-    if let UiCommand::SetThinkingLevel { level } = &cmd {
-        mgr.set_thinking_level(level.clone());
-    }
+    // Composer settings are PER-SESSION: the command goes only to the active
+    // actor, which applies it to its own engine and persists it into its own
+    // SessionMeta. They deliberately do NOT touch the manager-level workspace
+    // default (`mgr.set_*`/`persist_prefs`) — that's what used to leak one
+    // session's model/mode/level into every other session's display & spawn.
+    // `SetPermissionMode`/`SetAgentMode` still write the live handle slots here
+    // so a mid-turn swap applies at the next dispatch rather than after the turn.
     if let UiCommand::SetPermissionMode { mode } = &cmd {
-        mgr.set_permission_mode(mode.clone());
         if let Ok(mut gate) = permissions.write() {
             *gate = agent_kernel::permissions::PermissionGate::from_mode_str(mode);
         }
     }
     if let UiCommand::SetAgentMode { mode } = &cmd {
-        mgr.set_agent_mode(mode.clone());
         if let Ok(mut slot) = agent_mode.write() {
             *slot = agent_kernel::mode::AgentMode::from_str(mode);
         }

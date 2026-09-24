@@ -77,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         compact_at: None,
         model_params: Some(model_params),
         plugins: None,
+        queued_prompts: Vec::new(),
     };
     let (mut actor, channels) = SessionActor::spawn(cfg);
     let cmd_tx = actor.command_sender();
@@ -122,7 +123,9 @@ fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String
     if let Some(name) = &cfg.active_provider {
         if let Some(pcfg) = cfg.providers.get(name) {
             if let Ok(p) = ProviderFactory::build(pcfg) {
-                let model = cfg.active_model.clone()
+                let model = cfg
+                    .active_model
+                    .clone()
                     .or_else(|| pcfg.default_model.clone())
                     .unwrap_or_else(|| "default".into());
                 return (p, model);
@@ -131,11 +134,16 @@ fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String
     }
     for (_name, pcfg) in &cfg.providers {
         if let Ok(p) = ProviderFactory::build(pcfg) {
-            let model = cfg.active_model.clone()
+            let model = cfg
+                .active_model
+                .clone()
                 .or_else(|| pcfg.default_model.clone())
                 .unwrap_or_else(|| "default".into());
             return (p, model);
         }
     }
-    (Arc::new(agent_llm::provider::UnconfiguredProvider), "default".into())
+    (
+        Arc::new(agent_llm::provider::UnconfiguredProvider),
+        "default".into(),
+    )
 }

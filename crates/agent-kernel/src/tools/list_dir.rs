@@ -44,8 +44,8 @@ pub fn spec() -> ToolSpec {
 }
 
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
-    let parsed: ListDirArgs = serde_json::from_value(args)
-        .map_err(|e| ToolError::Args(format!("list_dir args: {e}")))?;
+    let parsed: ListDirArgs =
+        serde_json::from_value(args).map_err(|e| ToolError::Args(format!("list_dir args: {e}")))?;
     let rel = parsed.path.as_deref().unwrap_or(".");
     let root = ctx.resolve(rel)?;
     if !root.is_dir() {
@@ -58,7 +58,11 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let display = {
         let d = rel.trim_end_matches('/');
         let d = d.strip_prefix("./").unwrap_or(d);
-        if d.is_empty() { "." } else { d }
+        if d.is_empty() {
+            "."
+        } else {
+            d
+        }
     };
 
     let mut out = format!("{display}/\n");

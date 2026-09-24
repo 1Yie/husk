@@ -13,7 +13,6 @@
 //! child's stderr tail; a dead child is replaced on the next call. Bootstrap
 //! (`uvx --from git+…`) needs network — `network: false` describes execution.
 
-
 pub mod bridge;
 pub mod catalog;
 pub mod manager;

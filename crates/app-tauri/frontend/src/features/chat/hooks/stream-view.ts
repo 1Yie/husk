@@ -10,7 +10,16 @@ export type StreamItem =
    * keys stable when older pages prepend above. */
   | { kind: "user"; text: string; ts?: number; hi?: number }
   | { kind: "assistant"; text: string; streaming: boolean; ts?: number; hi?: number }
-  | { kind: "thinking"; text: string; done: boolean; hi?: number }
+  | {
+      kind: "thinking";
+      text: string;
+      done: boolean;
+      /** Epoch ms when this thinking block STARTED — stamped by `applyEvent`
+       *  on the first reasoning delta. Drives the status row's "思考中 Xs"
+       *  clock so a session switch doesn't restart it at 0. */
+      startedAt?: number;
+      hi?: number;
+    }
   | {
       kind: "tool";
       name: string;
@@ -18,6 +27,9 @@ export type StreamItem =
       content?: string;
       ok?: boolean;
       uiType?: string;
+      /** Epoch ms when the call STARTED (`ToolCallStarted`) — the tools
+       *  status row's clock anchor, stable across a session switch. */
+      startedAt?: number;
       /** A delegated child's streamed answer text, before its report lands. */
       live?: string;
       /** The same child's streamed reasoning trace. */
@@ -92,6 +104,12 @@ export interface SessionView {
   turnOffset?: number;
   state: AgentState | null;
   streaming: boolean;
+  /** Epoch ms when the CURRENT turn began — stamped on `UserPrompt` /
+   *  `TurnRetry`. The "this turn has been running Xs" statistic reads
+   *  `Date.now() - turnStartedAt`; being a view field, it survives a session
+   *  switch (the old per-mount wall clock reset to 0). Undefined once the
+   *  turn settles. */
+  turnStartedAt?: number;
   usage: {
     prompt: number;
     completion: number;
@@ -111,11 +129,16 @@ export interface SessionView {
   /** Files the agent wrote this session — feeds the changes panel.
    *  Accumulated live by `applyEvent`, rebuilt by `viewFromHistory`. */
   changes: FileChange[];
+  /** Parked follow-up prompts — the kernel's queue (`SetQueued` writes,
+   *  `QueuedPrompts` events echo it back, `open` seeds it from
+   *  `SessionMeta`). Lives on the view so a session switch preserves it. */
+  queuedPrompts: string[];
 }
 
 export const emptyView = (): SessionView => ({
   items: [],
   changes: [],
+  queuedPrompts: [],
   state: null,
   streaming: false,
   usage: { prompt: 0, completion: 0, contextWindow: 0, cachedTokens: 0 },

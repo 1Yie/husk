@@ -7,8 +7,8 @@ use std::sync::Arc;
 use agent_ipc::{AgentState, UiCommand, UiEvent};
 use agent_kernel::session::{SessionActor, SessionConfig};
 mod common;
-use common::ScriptedProvider;
 use agent_llm::types::StreamChunk;
+use common::ScriptedProvider;
 
 fn collect_script_tool_call_then_answer() -> Vec<Vec<StreamChunk>> {
     // Script 1: model emits a tool call to `list_dir` + Done.
@@ -21,12 +21,20 @@ fn collect_script_tool_call_then_answer() -> Vec<Vec<StreamChunk>> {
             name: Some("list_dir".into()),
             args_delta: tool_args,
         },
-        StreamChunk::Done { prompt_tokens: Some(10), completion_tokens: Some(5), cached_tokens: None },
+        StreamChunk::Done {
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            cached_tokens: None,
+        },
     ];
     // Script 2: after the tool result, model answers + Done.
     let script2 = vec![
         StreamChunk::ContentDelta("The workspace has 2 entries.".into()),
-        StreamChunk::Done { prompt_tokens: Some(20), completion_tokens: Some(8), cached_tokens: None },
+        StreamChunk::Done {
+            prompt_tokens: Some(20),
+            completion_tokens: Some(8),
+            cached_tokens: None,
+        },
     ];
     vec![script1, script2]
 }
@@ -56,12 +64,17 @@ async fn headless_react_loop_drives_tool_then_answers() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        queued_prompts: Vec::new(),
         plugins: None,
         provider_name: "test".into(),
     });
 
     // Drive one prompt through the actor.
-    actor.handle(UiCommand::Prompt { text: "list files".into() }).await;
+    actor
+        .handle(UiCommand::Prompt {
+            text: "list files".into(),
+        })
+        .await;
 
     // Collect everything the kernel emitted.
     channels.event_rx.close();
@@ -79,18 +92,32 @@ async fn headless_react_loop_drives_tool_then_answers() {
         })
         .collect();
     assert!(states.iter().any(|s| matches!(s, AgentState::Reasoning)));
-    assert!(states.iter().any(|s| matches!(s, AgentState::ExecutingTool { .. })));
+    assert!(states
+        .iter()
+        .any(|s| matches!(s, AgentState::ExecutingTool { .. })));
     assert!(matches!(states.last(), Some(AgentState::Finished)));
 
     // The tool ran and its result went back to the model.
-    let tool_started = events.iter().any(|e| matches!(e, UiEvent::ToolCallStarted { name, .. } if name == "list_dir"));
-    let tool_done = events.iter().any(|e| matches!(e, UiEvent::ToolCallFinished { name, ok: true, .. } if name == "list_dir"));
+    let tool_started = events
+        .iter()
+        .any(|e| matches!(e, UiEvent::ToolCallStarted { name, .. } if name == "list_dir"));
+    let tool_done = events.iter().any(
+        |e| matches!(e, UiEvent::ToolCallFinished { name, ok: true, .. } if name == "list_dir"),
+    );
     assert!(tool_started && tool_done);
 
     // Final assistant text arrived.
-    assert!(events.iter().any(|e| matches!(e, UiEvent::AssistantMessage(t) if t.contains("2 entries"))));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::AssistantMessage(t) if t.contains("2 entries"))));
 
-    assert!(events.iter().any(|e| matches!(e, UiEvent::Usage { completion_tokens: 8, .. })));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        UiEvent::Usage {
+            completion_tokens: 8,
+            ..
+        }
+    )));
 
     // History now holds: system, user, assistant(tool_call), tool result, assistant(answer).
     assert!(actor.history_len() >= 5);
@@ -117,6 +144,7 @@ async fn system_prompt_is_rendered_with_workspace_and_git() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        queued_prompts: Vec::new(),
         plugins: None,
         provider_name: "test".into(),
     });
@@ -148,13 +176,18 @@ async fn steer_between_turns_becomes_a_prompt() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        queued_prompts: Vec::new(),
         plugins: None,
         provider_name: "test".into(),
     });
 
     actor.handle(UiCommand::Prompt { text: "one".into() }).await;
     // Between turns a Steer acts like a Prompt.
-    actor.handle(UiCommand::Steer { text: "actually do X".into() }).await;
+    actor
+        .handle(UiCommand::Steer {
+            text: "actually do X".into(),
+        })
+        .await;
 
     channels.event_rx.close();
     let mut all = Vec::new();
@@ -192,13 +225,21 @@ async fn reasoning_traces_persist_for_replay() {
             name: Some("list_dir".into()),
             args_delta: serde_json::json!({"path": "."}).to_string(),
         },
-        StreamChunk::Done { prompt_tokens: Some(10), completion_tokens: Some(4), cached_tokens: None },
+        StreamChunk::Done {
+            prompt_tokens: Some(10),
+            completion_tokens: Some(4),
+            cached_tokens: None,
+        },
     ]);
     // Round 2: think, then answer.
     stub.push_script(vec![
         StreamChunk::ReasoningDelta("目录里有 a.txt。".into()),
         StreamChunk::ContentDelta("工作区有 1 个文件。".into()),
-        StreamChunk::Done { prompt_tokens: Some(20), completion_tokens: Some(6), cached_tokens: None },
+        StreamChunk::Done {
+            prompt_tokens: Some(20),
+            completion_tokens: Some(6),
+            cached_tokens: None,
+        },
     ]);
 
     let (mut actor, _c) = SessionActor::spawn(SessionConfig {
@@ -215,10 +256,15 @@ async fn reasoning_traces_persist_for_replay() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        queued_prompts: Vec::new(),
         plugins: None,
         provider_name: "test".into(),
     });
-    actor.handle(UiCommand::Prompt { text: "list files".into() }).await;
+    actor
+        .handle(UiCommand::Prompt {
+            text: "list files".into(),
+        })
+        .await;
 
     let traces: Vec<&str> = actor
         .history()
@@ -277,22 +323,32 @@ async fn subagent_catalog_is_in_the_prompt_and_refreshes() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        queued_prompts: Vec::new(),
         plugins: None,
         provider_name: "test".into(),
     });
 
     let system = actor.history()[0].content.clone().unwrap_or_default();
-    assert!(system.contains("`helper`"), "catalog misses the manifest:\n{system}");
+    assert!(
+        system.contains("`helper`"),
+        "catalog misses the manifest:\n{system}"
+    );
     assert!(system.contains("project-local helper agent"), "{system}");
     assert!(system.contains("(project)"), "{system}");
     // Builtins are still listed so `agent: "review"` keeps working.
-    assert!(system.contains("`review`") && system.contains("(built-in)"), "{system}");
+    assert!(
+        system.contains("`review`") && system.contains("(built-in)"),
+        "{system}"
+    );
 
     // A manifest added mid-session shows up after the next turn.
     write_agent("later", "added while the session was open");
     actor.handle(UiCommand::Prompt { text: "hi".into() }).await;
     let system = actor.history()[0].content.clone().unwrap_or_default();
-    assert!(system.contains("`later`"), "catalog did not refresh:\n{system}");
+    assert!(
+        system.contains("`later`"),
+        "catalog did not refresh:\n{system}"
+    );
     assert!(system.contains("`helper`"), "{system}");
 }
 
@@ -325,13 +381,17 @@ async fn subagent_catalog_is_in_the_prompt() {
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        queued_prompts: Vec::new(),
         plugins: None,
         provider_name: "test".into(),
     });
 
     let system = actor.history()[0].content.clone().unwrap_or_default();
     assert!(system.contains("## Skills"), "no Skills section:\n{system}");
-    assert!(system.contains("`demo-skill`"), "catalog misses the skill:\n{system}");
+    assert!(
+        system.contains("`demo-skill`"),
+        "catalog misses the skill:\n{system}"
+    );
     assert!(system.contains("a demo skill for the stage-4 suite"));
     // The load-on-demand rule has to be stated, or the model may guess.
     assert!(system.contains("skill` tool"), "{system}");
@@ -341,6 +401,81 @@ async fn subagent_catalog_is_in_the_prompt() {
     write_skill("later-skill", "added after the session started");
     actor.handle(UiCommand::Prompt { text: "hi".into() }).await;
     let system = actor.history()[0].content.clone().unwrap_or_default();
-    assert!(system.contains("`later-skill`"), "catalog did not refresh:\n{system}");
+    assert!(
+        system.contains("`later-skill`"),
+        "catalog did not refresh:\n{system}"
+    );
     assert!(system.contains("`demo-skill`"), "{system}");
+}
+
+/// The composer's parked queue lives in the actor: `SetQueued` replaces it
+/// (echoed via `QueuedPrompts`), and a finished `Prompt` turn drains each
+/// parked entry as its own fresh prompt — one per turn, in order.
+#[tokio::test]
+async fn queued_prompts_drain_one_per_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let stub = ScriptedProvider::new();
+    // Three turns run: the direct prompt plus both parked ones.
+    stub.script_text("answer p0");
+    stub.script_text("answer q1");
+    stub.script_text("answer q2");
+
+    let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
+        workspace_root: dir.path().to_path_buf(),
+        provider: Arc::new(stub),
+        model: "m".into(),
+        temperature: 0.0,
+        permission_mode: "default".into(),
+        agent_mode: "build".into(),
+        track_dirty: false,
+        thinking_level: None,
+        thinking_level_map: None,
+        context_window: None,
+        compact_at: None,
+        model_input: Vec::new(),
+        model_params: None,
+        queued_prompts: Vec::new(),
+        plugins: None,
+        provider_name: "test".into(),
+    });
+
+    actor
+        .handle(UiCommand::SetQueued {
+            items: vec!["queued one".into(), "queued two".into()],
+        })
+        .await;
+    actor
+        .handle(UiCommand::Prompt {
+            text: "direct prompt".into(),
+        })
+        .await;
+
+    channels.event_rx.close();
+    let mut events = Vec::new();
+    while let Some(ev) = channels.event_rx.recv().await {
+        events.push(ev);
+    }
+
+    // Every parked prompt ran as its own turn — three user echoes total.
+    let prompts: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::UserPrompt(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts, ["direct prompt", "queued one", "queued two"]);
+
+    // The queue emptied: echoes go [full list] → [one popped] → [empty].
+    let queue_snapshots: Vec<&Vec<String>> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::QueuedPrompts { items } => Some(items),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(queue_snapshots.len(), 3);
+    assert_eq!(queue_snapshots[0].len(), 2);
+    assert_eq!(queue_snapshots[1].len(), 1);
+    assert!(queue_snapshots[2].is_empty());
 }

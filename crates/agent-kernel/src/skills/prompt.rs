@@ -43,7 +43,11 @@ pub fn catalog_lines(skills: &[SkillMetadata], limit: usize, desc_chars: usize) 
 /// correctly on the first try — discovering them from an "unknown argument"
 /// error costs a round trip.
 pub fn line(skill: &SkillMetadata, desc_chars: usize) -> String {
-    let desc = skill.description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let desc = skill
+        .description
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let desc = if desc.is_empty() {
         "(no description)".to_string()
     } else if desc.chars().count() > desc_chars {
@@ -59,9 +63,19 @@ pub fn line(skill: &SkillMetadata, desc_chars: usize) -> String {
     let args: Vec<String> = skill
         .arguments
         .iter()
-        .map(|a| if a.required { format!("{}*", a.name) } else { a.name.clone() })
+        .map(|a| {
+            if a.required {
+                format!("{}*", a.name)
+            } else {
+                a.name.clone()
+            }
+        })
         .collect();
-    format!("`{}` — {desc} ({origin}; args: {})", skill.name, args.join(", "))
+    format!(
+        "`{}` — {desc} ({origin}; args: {})",
+        skill.name,
+        args.join(", ")
+    )
 }
 
 /// The shared frame: a provenance line, the body fenced, then any arguments.
@@ -89,7 +103,11 @@ pub fn for_user(skill: &LoadedSkill, trigger: &str) -> String {
 /// *instructions*, never permissions.
 pub fn for_model(skill: &LoadedSkill) -> String {
     frame(
-        &format!("Skill `{}` — follow its instructions exactly.\n(source: {})", skill.name, skill.path.display()),
+        &format!(
+            "Skill `{}` — follow its instructions exactly.\n(source: {})",
+            skill.name,
+            skill.path.display()
+        ),
         &skill.body,
         skill.arguments.as_ref(),
     )
@@ -134,7 +152,10 @@ mod tests {
         let out = catalog_lines(&skills, 40, DESC_CHARS);
         assert!(out.contains("`alpha` — does a thing (workspace)"), "{out}");
         assert!(out.contains("(global)"), "{out}");
-        assert!(out.contains(&format!("{}…", "x".repeat(DESC_CHARS - 1))), "{out}");
+        assert!(
+            out.contains(&format!("{}…", "x".repeat(DESC_CHARS - 1))),
+            "{out}"
+        );
         assert!(out.contains("(no description)"), "{out}");
 
         let capped = catalog_lines(&skills, 2, DESC_CHARS);
@@ -147,8 +168,16 @@ mod tests {
         // where the model reads how to call the skill.
         let mut with_args = meta("with-args", "takes args", false);
         with_args.arguments = vec![
-            SkillArgument { name: "path".into(), description: String::new(), required: true },
-            SkillArgument { name: "focus".into(), description: String::new(), required: false },
+            SkillArgument {
+                name: "path".into(),
+                description: String::new(),
+                required: true,
+            },
+            SkillArgument {
+                name: "focus".into(),
+                description: String::new(),
+                required: false,
+            },
         ];
         let out = catalog_lines(&[with_args], 40, DESC_CHARS);
         assert!(out.contains("(workspace; args: path*, focus)"), "{out}");
@@ -173,6 +202,9 @@ mod tests {
             ..loaded("review", "Look for bugs.", None)
         };
         let frame = for_model(&named);
-        assert!(frame.contains("Skill arguments:\n- path: src/engine.rs\n- focus: security"), "{frame}");
+        assert!(
+            frame.contains("Skill arguments:\n- path: src/engine.rs\n- focus: security"),
+            "{frame}"
+        );
     }
 }
