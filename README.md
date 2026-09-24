@@ -4,7 +4,7 @@
 
 # Husk
 
-![version](https://img.shields.io/badge/version-0.1.8-2f6feb?style=flat-square)
+![version](https://img.shields.io/github/v/tag/1Yie/husk?style=flat-square&label=version&color=2f6feb&sort=semver)
 ![rust](https://img.shields.io/badge/rust-stable-dea584?style=flat-square&logo=rust&logoColor=white)
 ![tauri](https://img.shields.io/badge/tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-6e7681?style=flat-square)
