@@ -204,8 +204,33 @@ export function applyEvent(
       !(typeof s === "object" && "Failed" in s);
     // A finished/failed/idle turn resolves any parked question too.
     const settled = s === "Idle" || s === "Finished" || (typeof s === "object" && "Failed" in s);
+    // Compaction has its own in-flight UI: a placeholder card appears the
+    // moment the phase starts (the summarization sample can run for a long
+    // time on a big history — without this the user saw nothing until the
+    // finished card landed). Success settles the placeholder in place from
+    // the `Compacted` event; any other phase means the pass ended some
+    // other way (failure, cancel), so a still-pending card is dropped here —
+    // the failure notice draws its own line.
+    const compacting = s === "Compacting";
+    const next = compacting
+      ? items.some((it) => it.kind === "compaction" && it.pending)
+        ? items
+        : [
+            ...items,
+            {
+              kind: "compaction" as const,
+              before: 0,
+              after: 0,
+              removed: 0,
+              note: "",
+              pending: true,
+              ts: Date.now(),
+            },
+          ]
+      : items.filter((it) => !(it.kind === "compaction" && it.pending));
     return {
       ...v,
+      items: next,
       state: s,
       streaming,
       ...(settled ? { pendingQuestion: undefined, turnStartedAt: undefined } : {}),
@@ -454,14 +479,27 @@ export function applyEvent(
     // the pre-compaction fill for the rest of the turn.
     closeOpenThinking(items);
     const c = ev.Compacted;
-    items.push({
+    const card: StreamItem = {
       kind: "compaction",
       before: c.before_tokens,
       after: c.after_tokens,
       removed: c.removed_messages,
       note: c.note,
       ts: Date.now(),
-    });
+    };
+    // Settle the in-flight placeholder in place (same position the pass
+    // started at); push a fresh card when there was none — e.g. a session
+    // switched to mid-pass, or a view rebuilt while the phase was running.
+    let settled = false;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "compaction" && it.pending) {
+        items[i] = card;
+        settled = true;
+        break;
+      }
+    }
+    if (!settled) items.push(card);
     return {
       ...v,
       items,

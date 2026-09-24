@@ -9,8 +9,15 @@ import { thinkingMarkdownComponents } from "@/features/chat/components/chat-stre
 
 /** The live modes — i.e. the states the row is actively working in, as
  *  opposed to the settled "思考过程" recap. */
-function liveMode(mode: "reply" | "thought" | "thinking" | "tools" | null): boolean {
-  return mode === "reply" || mode === "tools" || mode === "thinking";
+function liveMode(
+  mode: "reply" | "thought" | "thinking" | "tools" | "compacting" | null
+): boolean {
+  return (
+    mode === "reply" ||
+    mode === "tools" ||
+    mode === "thinking" ||
+    mode === "compacting"
+  );
 }
 
 /** Duration label — bare seconds under a minute ("20s"), then `m:ss`, and
@@ -115,7 +122,7 @@ export function AssistantStatus({
   thinkingText,
   startedAt,
 }: {
-  mode: "reply" | "thought" | "thinking" | "tools" | null;
+  mode: "reply" | "thought" | "thinking" | "tools" | "compacting" | null;
   thinkingText: string;
   /** Epoch ms when this phase ACTUALLY began — the thinking/tool item's own
    *  start stamp (or the turn's for the reply-wait row). Anchoring the clock
@@ -154,6 +161,8 @@ export function AssistantStatus({
       ? "正在回复"
       : mode === "tools"
         ? "正在调用工具"
+        : mode === "compacting"
+          ? "正在压缩上下文"
         : mode === "thinking"
           ? "思考中"
           : "思考过程";
@@ -201,6 +210,7 @@ export function AssistantStatus({
                   ["reply", "B3"],
                   ["thinking", "S1"],
                   ["tools", "S3"],
+                  ["compacting", "S2"],
                 ] as const
               ).map(([item, variant]) => (
                 <span
@@ -229,7 +239,15 @@ export function AssistantStatus({
               </span>
             </span>
             <span className="relative">
-              {(["正在回复", "正在调用工具", "思考中", "思考过程"] as const).map(
+              {(
+                [
+                  "正在回复",
+                  "正在调用工具",
+                  "正在压缩上下文",
+                  "思考中",
+                  "思考过程",
+                ] as const
+              ).map(
                 (item) => {
                   const active = label === item;
                   return (

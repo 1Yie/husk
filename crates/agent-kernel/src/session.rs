@@ -964,12 +964,23 @@ impl SessionActor {
                 // the user asked for it now. (The old arm only *reported* a
                 // threshold and never compacted, which read as "the button
                 // does nothing".)
-                match self
+                // Publish the in-flight phase around the pass: the summary
+                // sample can take a while on a big history, and without a
+                // state the UI showed nothing at all until the card landed.
+                // Restore the pre-command phase afterwards (Idle/Finished —
+                // a manual compact never runs inside a turn).
+                let prev_state = self.state.clone();
+                let _ = self
+                    .io
+                    .ui_tx
+                    .send(UiEvent::StateChanged(AgentState::Compacting));
+                let result = self
                     .engine
                     .compact_now(&mut self.io, &mut self.history)
-                    .await
-                {
-                    Ok(outcome) => {
+                    .await;
+                let _ = self.io.ui_tx.send(UiEvent::StateChanged(prev_state));
+                match result {
+                    Ok(crate::engine::CompactOutcome::Compacted(outcome)) => {
                         // The engine already emitted the card event and
                         // pushed the persisted display row. Re-base the
                         // persisted meter on the post-splice figure, then
@@ -988,6 +999,14 @@ impl SessionActor {
                             None => (outcome.after_tokens as u32, 0, 0),
                         });
                         self.persist_turn("已压缩上下文");
+                    }
+                    Ok(crate::engine::CompactOutcome::NothingToDo) => {
+                        // Not a failure: the history already fits the
+                        // verbatim suffix budget. Report it neutrally so a
+                        // second `/compact` doesn't read as an error.
+                        let line = "当前上下文已足够小，无需压缩".to_string();
+                        let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+                        self.history.push(ChatMessage::notice(line));
                     }
                     Err(e) => {
                         let line = format!("上下文压缩失败: {e}");

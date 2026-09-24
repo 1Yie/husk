@@ -37,7 +37,8 @@ pub enum AgentState {
     ExecutingTool {
         tool_name: String,
     },
-    /// Auto-compact in flight.
+    /// A compaction pass is in flight (auto near the window edge, or a
+    /// manual `/compact`) — the UI shows a running card + status row.
     Compacting,
     Finished,
     Failed(String),

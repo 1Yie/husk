@@ -67,6 +67,9 @@ export type StreamItem =
       removed: number;
       /** The compactor's summary — expanded in the card on demand. */
       note: string;
+      /** True while the pass is still running (`Compacting` saw it start,
+       *  no `Compacted` yet) — the card renders as a progress placeholder. */
+      pending?: boolean;
       ts?: number;
       hi?: number;
     };

@@ -46,6 +46,18 @@ pub struct TurnOutcome {
     pub tool_calls_run: usize,
 }
 
+/// Result of a manual `/compact` — `NothingToDo` is deliberately NOT an
+/// error: the user asked, but the history already fits the verbatim suffix
+/// budget (or is too short to split), so there is no work rather than a
+/// failure to report.
+#[derive(Debug)]
+pub enum CompactOutcome {
+    /// A pass ran and rewrote the history.
+    Compacted(compaction::CompactionOutcome),
+    /// Nothing worth compacting right now.
+    NothingToDo,
+}
+
 /// Handle to the live plugin router. `None` = no plugin dir discovered; `Some`
 /// with an inner `None` = a plugin manager existed but failed to load, which a
 /// later reload can still fill in.
@@ -1235,10 +1247,14 @@ impl Engine {
         &mut self,
         io: &mut EngineIo,
         history: &mut Vec<ChatMessage>,
-    ) -> Result<compaction::CompactionOutcome, String> {
+    ) -> Result<Option<compaction::CompactionOutcome>, String> {
         let before_tokens = compaction::estimate_tokens(history);
-        let plan =
-            compaction::plan(history, self.context_window).ok_or("history too small to compact")?;
+        // `None` = nothing to do (too few messages, or the whole history
+        // already fits the ~25% suffix budget). Not an error — the caller
+        // decides how to report it.
+        let Some(plan) = compaction::plan(history, self.context_window) else {
+            return Ok(None);
+        };
 
         // `history[0]` is the rendered kernel system prompt — it survives
         // compaction verbatim, so feeding it to the compactor only burns
@@ -1326,12 +1342,12 @@ impl Engine {
             context_window: self.context_window as u32,
             note: note.clone(),
         });
-        Ok(compaction::CompactionOutcome {
+        Ok(Some(compaction::CompactionOutcome {
             before_tokens,
             after_tokens,
             removed_messages,
             note,
-        })
+        }))
     }
 
     /// Manual `/compact` — bypasses the threshold AND the suppressor (the
@@ -1341,12 +1357,13 @@ impl Engine {
         &mut self,
         io: &mut EngineIo,
         history: &mut Vec<ChatMessage>,
-    ) -> Result<compaction::CompactionOutcome, String> {
+    ) -> Result<CompactOutcome, String> {
         match self.compact_history(io, history).await {
-            Ok(outcome) => {
+            Ok(Some(outcome)) => {
                 self.compaction_suppressor.on_success();
-                Ok(outcome)
+                Ok(CompactOutcome::Compacted(outcome))
             }
+            Ok(None) => Ok(CompactOutcome::NothingToDo),
             Err(e) => {
                 self.compaction_suppressor.on_failure();
                 Err(e)

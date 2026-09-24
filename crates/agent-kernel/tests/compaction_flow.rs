@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use agent_ipc::{UiCommand, UiEvent};
+use agent_ipc::{AgentState, UiCommand, UiEvent};
 use agent_kernel::compaction::estimate_tokens;
 use agent_kernel::session::{SessionActor, SessionConfig};
 use agent_kernel::session_store::SessionStore;
@@ -153,6 +153,26 @@ async fn manual_compact_rewrites_the_context_and_persists_it() {
     assert_eq!(card_event.3, SUMMARY);
     assert!(card_event.0 > card_event.1);
     assert_eq!(card_event.2, 2);
+    // (6) The in-flight phase is published before the card — without it the
+    //     UI had nothing to show while the summarization sample ran.
+    let compacting_at = events
+        .iter()
+        .position(|e| matches!(e, UiEvent::StateChanged(AgentState::Compacting)))
+        .expect("/compact must announce the Compacting phase");
+    let card_at = events
+        .iter()
+        .position(|e| matches!(e, UiEvent::Compacted { .. }))
+        .unwrap();
+    assert!(compacting_at < card_at, "the phase must precede the card");
+    // ...and the phase is restored after the pass (settled again).
+    let restored = events
+        .iter()
+        .skip(card_at + 1)
+        .any(|e| matches!(e, UiEvent::StateChanged(s) if !s.is_active()));
+    assert!(
+        restored,
+        "the pre-command phase must come back after the pass"
+    );
     // No stale "compaction failed" line leaked into the stream.
     assert!(events
         .iter()
@@ -160,7 +180,7 @@ async fn manual_compact_rewrites_the_context_and_persists_it() {
 }
 
 #[tokio::test]
-async fn compact_on_a_short_history_reports_failure_and_leaves_history_alone() {
+async fn compact_on_a_short_history_is_a_neutral_noop() {
     let dir = tempfile::tempdir().unwrap();
     let stub = Arc::new(ScriptedProvider::new());
 
@@ -197,11 +217,12 @@ async fn compact_on_a_short_history_reports_failure_and_leaves_history_alone() {
             text: "/compact".into(),
         })
         .await;
-    // Only the failure notice is appended — nothing was compacted away.
+    // Only the neutral "nothing to do" notice is appended — nothing was
+    // compacted away, and the line must NOT read as a failure.
     assert_eq!(actor.history_len(), before + 1);
     let last = actor.history().last().unwrap();
     assert_eq!(last.notice, Some(NoticeKind::System));
-    assert!(last.content.as_deref().unwrap().contains("上下文压缩失败"));
+    assert!(last.content.as_deref().unwrap().contains("无需压缩"));
     assert!(actor
         .history()
         .iter()
@@ -214,7 +235,7 @@ async fn compact_on_a_short_history_reports_failure_and_leaves_history_alone() {
     }
     assert!(events
         .iter()
-        .any(|e| matches!(e, UiEvent::SystemMessage(m) if m.contains("上下文压缩失败"))));
+        .any(|e| matches!(e, UiEvent::SystemMessage(m) if m.contains("无需压缩"))));
     assert!(events
         .iter()
         .all(|e| !matches!(e, UiEvent::Compacted { .. })));

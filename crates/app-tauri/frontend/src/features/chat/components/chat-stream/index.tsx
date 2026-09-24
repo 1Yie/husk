@@ -295,7 +295,8 @@ function getAssistantPreview(steps: AssistantStep[]): string {
     }
   }
   for (const step of steps) {
-    if (step.type === "compaction") return "上下文已压缩";
+    if (step.type === "compaction")
+      return step.pending ? "正在压缩上下文" : "上下文已压缩";
   }
   for (const step of steps) {
     if (step.type === "system" && step.text.trim()) {
@@ -338,6 +339,8 @@ type AssistantStep =
       after: number;
       removed: number;
       note: string;
+      /** Pass still running — the card renders as a progress placeholder. */
+      pending?: boolean;
     }
   | { type: "system"; text: string };
 
@@ -603,6 +606,7 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
         after: item.after,
         removed: item.removed,
         note: item.note,
+        pending: item.pending,
       });
       continue;
     }
@@ -947,6 +951,7 @@ const ChatTurn = memo(function ChatTurn({
                     after={step.after}
                     removed={step.removed}
                     note={step.note}
+                    pending={step.pending}
                   />
                 </div>
               );
@@ -1241,6 +1246,15 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   });
 
   const showReplyWait = view.streaming && !hasActiveItem;
+
+  // A compaction pass has no user turn to anchor its clock (a manual
+  // `/compact` arrives between turns) — the running card's own stamp is the
+  // phase start.
+  const pendingCompactionAt = view.items.reduce<number | undefined>(
+    (acc, it) => (it.kind === "compaction" && it.pending ? it.ts : acc),
+    undefined
+  );
+  const compacting = view.state === "Compacting";
 
   const marks = useMemo<RailMark[]>(() => {
     if (turns.length === 0) return [];
@@ -1911,9 +1925,13 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                 (stamped on UserPrompt) so it reads as "this turn has been
                 running Xs" and survives a session switch; the per-phase rows
                 above still show their own thinking/tools durations. */}
-            {view.streaming && view.turnStartedAt != null && (
+            {view.streaming && (view.turnStartedAt != null || compacting) && (
               <div id="chat-reply-wait">
-                <AssistantStatus mode="reply" thinkingText="" startedAt={view.turnStartedAt} />
+                <AssistantStatus
+                  mode={compacting ? "compacting" : "reply"}
+                  thinkingText=""
+                  startedAt={compacting ? pendingCompactionAt : view.turnStartedAt}
+                />
               </div>
             )}
 
