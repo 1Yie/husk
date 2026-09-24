@@ -1,6 +1,6 @@
 [package]
 name = "husk"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "Husk — Tauri desktop shell: React + Tailwind frontend over the shared kernel wiring"
 build = "build.rs"
