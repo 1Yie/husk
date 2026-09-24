@@ -249,8 +249,17 @@ pub enum UiEvent {
         after_tokens: u32,
         removed_messages: u32,
         context_window: u32,
+        /// `true` = the user ran `/compact`, `false` = the automatic trigger.
+        /// The UI keeps an automatic pass inside the turn it happened in, but
+        /// gives a manual one its own block — it is a user action between
+        /// turns, not part of the previous answer.
+        manual: bool,
         note: String,
     },
+    /// A compaction pass started — emitted right before the summarization
+    /// sample so the UI can draw the running card while the (potentially
+    /// slow) pass runs. `manual` mirrors `Compacted`; no accounting yet.
+    CompactionStarted { manual: bool },
     /// A `Retry` command rewound the session to the last user prompt —
     /// the UI drops the retried turn's items before the fresh
     /// `UserPrompt` echo lands on the same stream.

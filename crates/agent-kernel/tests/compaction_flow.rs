@@ -139,20 +139,26 @@ async fn manual_compact_rewrites_the_context_and_persists_it() {
                 before_tokens,
                 after_tokens,
                 removed_messages,
+                manual,
                 note,
                 ..
             } => Some((
                 *before_tokens,
                 *after_tokens,
                 *removed_messages,
+                *manual,
                 note.clone(),
             )),
             _ => None,
         })
         .expect("/compact must emit UiEvent::Compacted");
-    assert_eq!(card_event.3, SUMMARY);
+    assert_eq!(card_event.4, SUMMARY);
     assert!(card_event.0 > card_event.1);
     assert_eq!(card_event.2, 2);
+    // A user-run pass is tagged manual — the UI renders it as its own block
+    // instead of folding it into the previous answer.
+    assert!(card_event.3, "a `/compact` pass must be flagged manual");
+    assert_eq!(payload["manual"], true);
     // (6) The in-flight phase is published before the card — without it the
     //     UI had nothing to show while the summarization sample ran.
     let compacting_at = events
@@ -339,12 +345,19 @@ async fn auto_compaction_fires_between_tool_rounds_mid_turn() {
         final_text, "final answer after compaction",
         "the compactor script leaked into the answer — the mid-turn pass did not run"
     );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, UiEvent::Compacted { .. })),
-        "the mid-turn pass must emit the card"
+    let auto_manual = events.iter().find_map(|e| match e {
+        UiEvent::Compacted { manual, .. } => Some(*manual),
+        _ => None,
+    });
+    assert_eq!(
+        auto_manual,
+        Some(false),
+        "the mid-turn pass must emit the card, flagged automatic"
     );
+    // The running-card signal precedes it and carries the same origin.
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, UiEvent::CompactionStarted { manual: false })));
     assert!(events
         .iter()
         .any(|e| matches!(e, UiEvent::StateChanged(AgentState::Compacting))));

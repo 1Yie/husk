@@ -403,7 +403,7 @@ mod tests {
         // turn.
         let (system, out) = build_messages(&[
             ChatMessage::system("kernel"),
-            ChatMessage::compaction(120_000, 40_000, 30, "summary text"),
+            ChatMessage::compaction(120_000, 40_000, 30, false, "summary text"),
             ChatMessage::user("q"),
         ]);
         assert_eq!(system, "kernel");

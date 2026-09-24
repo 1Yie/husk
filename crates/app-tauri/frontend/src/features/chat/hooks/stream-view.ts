@@ -70,6 +70,10 @@ export type StreamItem =
       /** True while the pass is still running (`Compacting` saw it start,
        *  no `Compacted` yet) — the card renders as a progress placeholder. */
       pending?: boolean;
+      /** `true` = the user ran `/compact`. A manual pass renders as its own
+       *  block between turns; an automatic one stays inside the turn it
+       *  happened in. */
+      manual?: boolean;
       ts?: number;
       hi?: number;
     };

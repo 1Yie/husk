@@ -1236,7 +1236,7 @@ impl Engine {
             return;
         }
         self.set_state(io, AgentState::Compacting);
-        match self.compact_history(io, history).await {
+        match self.compact_history(io, history, /*manual*/ false).await {
             Ok(_) => {
                 // The card row + `UiEvent::Compacted` already went out from
                 // `compact_history` — no second system line here (that
@@ -1261,6 +1261,7 @@ impl Engine {
         &mut self,
         io: &mut EngineIo,
         history: &mut Vec<ChatMessage>,
+        manual: bool,
     ) -> Result<Option<compaction::CompactionOutcome>, String> {
         let before_tokens = compaction::estimate_tokens(history);
         // `None` = nothing to do (too few messages, or the whole history
@@ -1269,6 +1270,9 @@ impl Engine {
         let Some(plan) = compaction::plan(history, self.context_window) else {
             return Ok(None);
         };
+        // The running card can appear immediately — the pass below is a real
+        // provider request on the pre-splice prefix.
+        let _ = io.ui_tx.send(UiEvent::CompactionStarted { manual });
 
         // `history[0]` is the rendered kernel system prompt — it survives
         // compaction verbatim, so feeding it to the compactor only burns
@@ -1344,6 +1348,7 @@ impl Engine {
             before_tokens as u32,
             after_tokens as u32,
             removed_messages as u32,
+            manual,
             &note,
         ));
         // Card + meter in one event: the stream gets the summary, the
@@ -1354,6 +1359,7 @@ impl Engine {
             after_tokens: after_tokens as u32,
             removed_messages: removed_messages as u32,
             context_window: self.context_window as u32,
+            manual,
             note: note.clone(),
         });
         Ok(Some(compaction::CompactionOutcome {
@@ -1372,7 +1378,7 @@ impl Engine {
         io: &mut EngineIo,
         history: &mut Vec<ChatMessage>,
     ) -> Result<CompactOutcome, String> {
-        match self.compact_history(io, history).await {
+        match self.compact_history(io, history, /*manual*/ true).await {
             Ok(Some(outcome)) => {
                 self.compaction_suppressor.on_success();
                 Ok(CompactOutcome::Compacted(outcome))

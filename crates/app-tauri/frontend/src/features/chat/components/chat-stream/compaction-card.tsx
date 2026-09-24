@@ -16,6 +16,7 @@ export const CompactionCard = memo(function CompactionCard({
   removed,
   note,
   pending = false,
+  manual = false,
 }: {
   /** Context estimate before the pass, in tokens. */
   before: number;
@@ -27,6 +28,9 @@ export const CompactionCard = memo(function CompactionCard({
   note: string;
   /** The pass is still running — render the progress placeholder. */
   pending?: boolean;
+  /** `true` = the user ran `/compact` — tagged so the standalone block is
+   *  self-explaining (an automatic pass carries no tag). */
+  manual?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const saved = before > 0 ? Math.round((1 - after / before) * 100) : 0;
@@ -60,6 +64,11 @@ export const CompactionCard = memo(function CompactionCard({
         <span className="text-[12px] font-medium text-neutral-700">
           {pending ? "正在压缩上下文…" : "上下文已压缩"}
         </span>
+        {manual && (
+          <span className="rounded-full bg-[color-mix(in_srgb,var(--husk-n300)_55%,transparent)] px-1.5 py-px text-[10px] text-neutral-500">
+            手动
+          </span>
+        )}
         {!pending && (
           <>
             <span className="font-mono text-[11px] text-neutral-500 tabular-nums">

@@ -65,9 +65,11 @@ export type UiEvent =
         after_tokens: number;
         removed_messages: number;
         context_window: number;
+        manual: boolean;
         note: string;
       };
     }
+  | { CompactionStarted: { manual: boolean } }
   | "TurnRetry"
   | { QueuedPrompts: { items: string[] } };
 

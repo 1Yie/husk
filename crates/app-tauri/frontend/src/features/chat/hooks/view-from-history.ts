@@ -264,7 +264,14 @@ type ToolInfo = { name: string; args: string; raw: string };
  * a JSON payload written by `ChatMessage::compaction`; a malformed/legacy
  * row degrades to nothing rather than throwing out the whole replay. */
 function parseCompactionCard(content: string):
-  | { kind: "compaction"; before: number; after: number; removed: number; note: string }
+  | {
+      kind: "compaction";
+      before: number;
+      after: number;
+      removed: number;
+      manual: boolean;
+      note: string;
+    }
   | null {
   try {
     const p = JSON.parse(content);
@@ -273,6 +280,7 @@ function parseCompactionCard(content: string):
       before: Number(p.before_tokens) || 0,
       after: Number(p.after_tokens) || 0,
       removed: Number(p.removed_messages) || 0,
+      manual: p.manual === true,
       note: typeof p.note === "string" ? p.note : "",
     };
   } catch {

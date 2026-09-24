@@ -208,15 +208,18 @@ impl ChatMessage {
         Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::CompactedMemory), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
     }
     /// The persisted compaction card — a JSON payload (`before_tokens`,
-    /// `after_tokens`, `removed_messages`, `note`) the frontend renders as
-    /// the compaction card on replay. `NoticeKind::Compacted` rows are
-    /// dropped by every adapter, so the note here never costs wire tokens;
-    /// the model sees the summary through the `compacted_memory` row.
-    pub fn compaction(before_tokens: u32, after_tokens: u32, removed_messages: u32, note: &str) -> Self {
+    /// `after_tokens`, `removed_messages`, `manual`, `note`) the frontend
+    /// renders as the compaction card on replay. `NoticeKind::Compacted`
+    /// rows are dropped by every adapter, so the note here never costs wire
+    /// tokens; the model sees the summary through the `compacted_memory`
+    /// row. `manual` keeps the user-run `/compact` card a standalone block
+    /// on replay instead of folding it into the previous turn.
+    pub fn compaction(before_tokens: u32, after_tokens: u32, removed_messages: u32, manual: bool, note: &str) -> Self {
         let payload = serde_json::json!({
             "before_tokens": before_tokens,
             "after_tokens": after_tokens,
             "removed_messages": removed_messages,
+            "manual": manual,
             "note": note,
         });
         Self { role: Role::System, content: Some(payload.to_string()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Compacted), ts: Some(now_ms()), images: Vec::new(), reasoning: None }
@@ -395,7 +398,7 @@ mod tests {
     fn compaction_card_roundtrips_the_frontend_payload() {
         // The card row is persisted verbatim and parsed by the webview —
         // field names are part of the frontend contract.
-        let m = ChatMessage::compaction(126_995, 64_019, 77, "merged summary");
+        let m = ChatMessage::compaction(126_995, 64_019, 77, true, "merged summary");
         assert_eq!(m.role, Role::System);
         assert_eq!(m.notice, Some(NoticeKind::Compacted));
         let payload: serde_json::Value =
@@ -403,6 +406,7 @@ mod tests {
         assert_eq!(payload["before_tokens"], 126_995);
         assert_eq!(payload["after_tokens"], 64_019);
         assert_eq!(payload["removed_messages"], 77);
+        assert_eq!(payload["manual"], true);
         assert_eq!(payload["note"], "merged summary");
 
         // Notice kind serializes to the snake_case string the TS union

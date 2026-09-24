@@ -341,6 +341,8 @@ type AssistantStep =
       note: string;
       /** Pass still running — the card renders as a progress placeholder. */
       pending?: boolean;
+      /** `true` = the user ran `/compact`; renders as its own block. */
+      manual?: boolean;
     }
   | { type: "system"; text: string };
 
@@ -563,6 +565,29 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
       continue;
     }
 
+    if (item.kind === "compaction") {
+      // A manual `/compact` is a user action BETWEEN turns, not part of the
+      // previous answer — it gets its own block instead of dangling off the
+      // last turn's tail (which is where it used to land, since it carries
+      // no prompt of its own). An automatic pass stays inside the turn it
+      // happened in: that IS where the model was working.
+      if (item.manual) {
+        flush(idx);
+        currentTurn = { id: turnId(item, idx), hi: item.hi, steps: [] };
+        turnStart = idx;
+      }
+      ensureTurn(item, idx).steps.push({
+        type: "compaction",
+        before: item.before,
+        after: item.after,
+        removed: item.removed,
+        note: item.note,
+        manual: item.manual,
+        pending: item.pending,
+      });
+      continue;
+    }
+
     const t = ensureTurn(item, idx);
     const lastStep = t.steps[t.steps.length - 1];
 
@@ -595,18 +620,6 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
       t.steps.push({
         type: "system",
         text: item.text,
-      });
-      continue;
-    }
-
-    if (item.kind === "compaction") {
-      t.steps.push({
-        type: "compaction",
-        before: item.before,
-        after: item.after,
-        removed: item.removed,
-        note: item.note,
-        pending: item.pending,
       });
       continue;
     }
@@ -824,10 +837,14 @@ function CappedAssistantText({ text, animating }: { text: string; animating?: bo
 const ChatTurn = memo(function ChatTurn({
   turn,
   isLast,
+  retryable,
   streaming,
 }: {
   turn: Turn;
   isLast: boolean;
+  /** Carries the retry control — the last ANSWER turn, which is not always
+   *  the structurally last one (a manual-compaction block sits after it). */
+  retryable: boolean;
   streaming: boolean;
 }) {
   // Regex-heavy collapse (workspace-file expansions, skill preambles) —
@@ -952,6 +969,7 @@ const ChatTurn = memo(function ChatTurn({
                     removed={step.removed}
                     note={step.note}
                     pending={step.pending}
+                    manual={step.manual}
                   />
                 </div>
               );
@@ -971,7 +989,7 @@ const ChatTurn = memo(function ChatTurn({
               align="start"
               ts={(turn.assistantTs ?? turn.ts) as number}
               copyText={copyText}
-              onRetry={isLast ? () => void retryTurn() : undefined}
+              onRetry={retryable ? () => void retryTurn() : undefined}
             />
           </div>
         )}
@@ -1228,6 +1246,16 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
   const visibleTurns = hidden > 0 ? turns.slice(hidden) : turns;
 
+  // The turn the retry/copy footer belongs to. A manual-compaction block is
+  // its own turn at the tail, but retrying is about the last ANSWER — the
+  // button must stay on the previous turn instead of moving onto the card.
+  const lastAnswerIdx = (() => {
+    for (let i = visibleTurns.length - 1; i >= 0; i--) {
+      const t = visibleTurns[i];
+      if (t.userText || t.steps.some((s) => s.type !== "compaction")) return i;
+    }
+    return visibleTurns.length - 1;
+  })();
 
   // Only items in the CURRENT turn count — a stale active item left by a
   // dead earlier turn (streaming assistant that never got AssistantMessage,
@@ -1335,10 +1363,13 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     // Turn numbers are GLOBAL ordinals, not loaded indices: on a reopened
     // session the first loaded turn is turn `unloaded + 1` — or `unloaded`
     // when the page cut it in half — so "#1" was naming a turn the reader
-    // was not looking at.
-    const firstTurnNum = unloaded + (boundaryTurn ? 0 : 1);
+    // was not looking at. Only a turn WITH a prompt advances the ordinal:
+    // the page-boundary half-turn and a manual-compaction block have no user
+    // turn of their own, and counting them shifted every later "#N".
+    let ordinal = unloaded;
     turns.forEach((turn, idx) => {
-      const turnNum = firstTurnNum + idx;
+      if (turn.userText) ordinal += 1;
+      const turnNum = ordinal;
       if (turn.userText) {
         // Length from the COLLAPSED preview, not the raw text: a `/skill` or
         // `@file` mention expands into a multi-kilobyte preamble that the
@@ -1369,9 +1400,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             type: "assistant",
             turnId: turn.id,
             targetId: `chat-turn-${turn.id}-step-${stepIdx}`,
-            previewTitle: `助手回复 #${turnNum} · ${STEP_LABEL[step.type]}${
-              isStreaming ? " (生成中)" : ""
-            }`,
+            previewTitle:
+              step.type === "compaction"
+                ? `上下文压缩${step.manual ? "（手动）" : "（自动）"}${
+                    step.pending ? " · 进行中" : ""
+                  }`
+                : `助手回复 #${turnNum} · ${STEP_LABEL[step.type]}${
+                    isStreaming ? " (生成中)" : ""
+                  }`,
             previewSnippet: stepPreview(step),
             len: stepWeight(step),
             isStreaming,
@@ -1915,6 +1951,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                     key={turn.id}
                     turn={turn}
                     isLast={isLast}
+                    retryable={turnIdx === lastAnswerIdx}
                     streaming={view.streaming && isLast}
                   />
                 );

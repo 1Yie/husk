@@ -764,7 +764,7 @@ mod tests {
         // routed to `developer`/`system` like a plain notice.
         let msgs = build_messages(&[
             m(Role::System, "kernel"),
-            ChatMessage::compaction(120_000, 40_000, 30, "summary text"),
+            ChatMessage::compaction(120_000, 40_000, 30, false, "summary text"),
             m(Role::User, "q"),
         ]);
         assert_eq!(msgs.len(), 2);

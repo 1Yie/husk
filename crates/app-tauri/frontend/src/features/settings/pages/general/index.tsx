@@ -200,7 +200,7 @@ export function GeneralPane() {
                         type: "select",
                         label: "上下文压缩阈值",
                         description:
-                          "历史占用达到上下文窗口的该比例时触发自动压缩（立即生效，含正在运行的会话）",
+                          "历史占用达到上下文窗口的该比例时触发自动压缩",
                         icon: <Archive className="h-4 w-4 text-neutral-500" />,
                         value: compactAt,
                         onChange: (v) => {
