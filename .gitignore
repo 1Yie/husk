@@ -58,3 +58,4 @@ Desktop.ini
 
 # app-desktop — local iced experiment, untracked
 crates/app-desktop/
+__pycache__/
