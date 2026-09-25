@@ -103,6 +103,32 @@ impl OpenAiResponsesProvider {
             };
         }
 
+        // Frames a tool produced (a screenshot) have no place inside a
+        // `function_call_output` — that item's `output` is a plain string.
+        // They ride `input_image` user items emitted once the run of tool
+        // outputs closes, after any synthesized placeholders, so a placeholder
+        // still sits directly after the call it answers.
+        let mut tool_images: Vec<crate::types::ImageRef> = Vec::new();
+        macro_rules! flush_tool_images {
+            () => {
+                for img in tool_images.drain(..) {
+                    match img.data_url() {
+                        Some(url) => input.push(json!({
+                            "role": "user",
+                            "content": [
+                                { "type": "input_text", "text": "(screenshot from the tool results above)" },
+                                { "type": "input_image", "image_url": url },
+                            ],
+                        })),
+                        None => input.push(json!({
+                            "role": "user",
+                            "content": [{ "type": "input_text", "text": format!("(image unavailable: {})", img.path.display()) }],
+                        })),
+                    }
+                }
+            };
+        }
+
         for m in messages {
             let text = m.content.clone().unwrap_or_default();
             match m.role {
@@ -115,6 +141,7 @@ impl OpenAiResponsesProvider {
                 // first tool block in practice, so this is a no-op).
                 Role::System if m.notice == Some(NoticeKind::CompactedMemory) => {
                     flush_missing!();
+                    flush_tool_images!();
                     input.push(json!({
                         "role": "user",
                         "content": [{ "type": "input_text", "text": text }],
@@ -127,6 +154,9 @@ impl OpenAiResponsesProvider {
                 Role::System => instructions.push(text),
                 Role::User => {
                     flush_missing!();
+                    // The frames from the preceding tool run land before this
+                    // row — it is the boundary that closes that run.
+                    flush_tool_images!();
                     // Vision: image refs become `input_image` parts after
                     // the text part — materialized `data:` URLs, degrading
                     // to a text note when the staged file is gone.
@@ -150,6 +180,7 @@ impl OpenAiResponsesProvider {
                 }
                 Role::Assistant => {
                     flush_missing!();
+                    flush_tool_images!();
                     // Text first, then function_call items — the natural
                     // output order ("I'll check the files" → calls), and it
                     // keeps each call adjacent to its outputs instead of
@@ -209,6 +240,13 @@ impl OpenAiResponsesProvider {
                             "call_id": call_id,
                             "output": text,
                         }));
+                        // A tool that produced images (a screenshot) has no
+                        // place inside `function_call_output` (string output
+                        // only) — the frames are staged and emitted once this
+                        // run of outputs ends, so a missing-output placeholder
+                        // still lands directly after its own call (the
+                        // invariant `flush_missing!` exists to keep).
+                        tool_images.extend(m.images.iter().cloned());
                         if let Some(pos) = expected.iter().position(|id| *id == call_id) {
                             expected.remove(pos);
                         }
@@ -230,6 +268,7 @@ impl OpenAiResponsesProvider {
         // Trailing dangling calls — history ends mid-tools (cancel before
         // dispatch fill, crash before persist).
         flush_missing!();
+        flush_tool_images!();
         let instructions = if instructions.is_empty() {
             None
         } else {
@@ -748,6 +787,106 @@ mod tests {
             chunks.first(),
             Some(StreamChunk::ReasoningDelta(t)) if t == "thinking hard"
         ));
+    }
+
+    /// A tool result carrying a screenshot: `function_call_output.output` is a
+    /// plain string, so the frame rides an `input_image` user item emitted
+    /// once the run of outputs closes — after any synthesized placeholder,
+    /// which must stay directly after the call it answers.
+    #[test]
+    fn build_input_emits_screenshot_after_the_output_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+
+        let mut calls_msg = ChatMessage::assistant("");
+        calls_msg.tool_calls = Some(vec![
+            ToolCall { id: "call_1".into(), name: "screenshot".into(), arguments: "{}".into() },
+            ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() },
+        ]);
+        let mut shot = ChatMessage::tool_result("call_1", "shot: 1568x882");
+        shot.images = crate::types::ImageRef::for_path(png).into_iter().collect();
+        let mut plain = ChatMessage::tool_result("call_2", "plain");
+        plain.tool_call_id = Some("call_2".into());
+
+        let (input, _) = OpenAiResponsesProvider::build_input(&[ChatMessage::system("k"), calls_msg, shot, plain]);
+        let kinds: Vec<&str> = input.iter().map(item_kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                "function_call",
+                "function_call",
+                "function_call_output",
+                "function_call_output",
+                "message"
+            ]
+        );
+        let frames = &input[4];
+        assert_eq!(frames["role"], "user");
+        let parts = frames["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "input_text");
+        assert_eq!(parts[1]["type"], "input_image");
+        assert!(parts[1]["image_url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        // The outputs themselves stay strings.
+        assert!(input[2]["output"].is_string());
+        assert!(input[3]["output"].is_string());
+    }
+
+    /// The placeholder for a never-answered call must still land directly
+    /// after its own call — the frame item comes after, not between.
+    #[test]
+    fn placeholder_stays_adjacent_to_its_call_with_a_frame_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("s.png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+        let mut calls_msg = ChatMessage::assistant("");
+        calls_msg.tool_calls = Some(vec![
+            ToolCall { id: "call_1".into(), name: "screenshot".into(), arguments: "{}".into() },
+            ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() },
+        ]);
+        let mut shot = ChatMessage::tool_result("call_1", "shot");
+        shot.images = crate::types::ImageRef::for_path(png).into_iter().collect();
+        // call_2 never got an output.
+        let (input, _) = OpenAiResponsesProvider::build_input(&[ChatMessage::system("k"), calls_msg, shot]);
+        let kinds: Vec<&str> = input.iter().map(item_kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                "function_call",
+                "function_call",
+                "function_call_output",
+                "function_call_output",
+                "message"
+            ]
+        );
+        // The synthesized placeholder for call_2 is the last output, and it
+        // answers call_2 — not the framed call_1.
+        assert_eq!(input[3]["call_id"], "call_2");
+        assert!(input[3]["output"].as_str().unwrap().contains("missing"));
+    }
+
+    /// No images → no extra item; the request stays exactly as before.
+    #[test]
+    fn build_input_without_tool_images_is_unchanged() {
+        let mut calls_msg = ChatMessage::assistant("");
+        calls_msg.tool_calls = Some(vec![ToolCall {
+            id: "call_1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }]);
+        let (input, _) = OpenAiResponsesProvider::build_input(&[
+            ChatMessage::system("k"),
+            calls_msg,
+            ChatMessage::tool_result("call_1", "out"),
+        ]);
+        let kinds: Vec<&str> = input.iter().map(item_kind).collect();
+        assert_eq!(kinds, ["function_call", "function_call_output"]);
+    }
+
+    /// Item kind for the assertions above — a plain `role:"user"` item has no
+    /// `type`, everything else is named by it.
+    fn item_kind(v: &serde_json::Value) -> &str {
+        v["type"].as_str().unwrap_or("message")
     }
 
     #[test]

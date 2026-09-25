@@ -6,6 +6,13 @@
 //! rather than fatal, and cancellation is batch-scoped so tools that poll
 //! `ctx.cancel` actually abort. No permission gate runs: only auto-allowed
 //! specs are eligible by construction.
+//!
+//! `screenshot` is batchable (it is an `Observation`), `computer` is not (it is
+//! `Process`). Never pair them in one batch: a `screenshot` item installs the
+//! coordinate scale on the shared desktop backend, and a concurrent `computer`
+//! in another item reads whichever `last` was written first — sequence the
+//! pair across batches (`screenshot` in one turn, `computer` in the next)
+//! or the click maps onto the previous frame.
 
 use super::registry::{Args, ToolClass, ToolCtx, ToolError, ToolResult, ToolSpec};
 use futures::{FutureExt, StreamExt};
@@ -45,6 +52,9 @@ struct ItemOut {
     tool: String,
     status: ItemStatus,
     body: String,
+    /// Images an item produced (`screenshot` is batchable by class) — folded
+    /// onto the batch result so a batched capture keeps its frame.
+    images: Vec<agent_llm::types::ImageRef>,
     duration_ms: u64,
 }
 
@@ -447,6 +457,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                             tool,
                             status: ItemStatus::Rejected,
                             body: reason,
+                            images: Vec::new(),
                             duration_ms: 0,
                         }
                     }
@@ -482,16 +493,21 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                     ItemStatus::Timeout
                                 },
                                 body: "batch wall-time budget exhausted".into(),
+                                images: Vec::new(),
                                 duration_ms: t0.elapsed().as_millis() as u64,
                             },
                             Ok(Ok(res)) => {
                                 // Readonly tools never stage writes — a
                                 // pending_write here would be dropped by
                                 // design anyway (observations don't write).
+                                // Images are kept: a batched `screenshot` must
+                                // reach the model with the same frame a plain
+                                // call would have handed it.
                                 ItemOut {
                                     tool: tool.clone(),
                                     status: ItemStatus::Ok,
                                     body: res.content,
+                                    images: res.images,
                                     duration_ms: t0.elapsed().as_millis() as u64,
                                 }
                             }
@@ -499,6 +515,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                 tool: tool.clone(),
                                 status: ItemStatus::Error,
                                 body: e.to_string(),
+                                images: Vec::new(),
                                 duration_ms: t0.elapsed().as_millis() as u64,
                             },
                         };
@@ -575,7 +592,17 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     if capped {
         out.push_str("\n⚠ batch output cap reached — later sections were truncated or dropped\n");
     }
-    Ok(ToolResult::text(out))
+    // Item images ride the batch result — the engine attaches them to this
+    // tool message, so a batched `screenshot` still reaches the model's eyes.
+    // The text sections already name each item's tool, so the model can pair
+    // a frame with its call.
+    let images: Vec<agent_llm::types::ImageRef> = results
+        .into_iter()
+        .flat_map(|r| r.images)
+        .collect();
+    let mut res = ToolResult::text(out);
+    res.images = images;
+    Ok(res)
 }
 
 #[cfg(test)]

@@ -1,9 +1,51 @@
-/** Dev-only frame probe — press Ctrl+Shift+P to toggle a tiny HUD showing
- *  frame gaps (the lag signature), event rate, and view-cache size. If the
- *  page "stays laggy" after a load, the HUD shows whether the main thread
- *  is actually busy (frames >16ms constantly) or the cost is elsewhere.
- *  No-op in production builds. */
-if (import.meta.env.DEV) {
+/** Dev-feature bootstrap — reads `~/.config/husk/settings.toml` once at
+ *  boot via `agent_session get_dev_config` and installs the gated knobs:
+ *
+ *   - `monitor_panel = true` → Ctrl+Shift+P toggles a tiny HUD showing
+ *     frame gaps (the lag signature) + event rate.
+ *   - `devtools = true` → F12 / Ctrl+Shift+I/C/J/K reach the WebKitGTK
+ *     inspector in a packaged build. Implemented via
+ *     `window.__huskDevToolsEnabled`, which `App.tsx` consults inside its
+ *     keydown guard.
+ *
+ *  Both default to `import.meta.env.DEV` so `cargo tauri dev` keeps the
+ *  debugging surface without needing the file. Flipping either in the
+ *  config needs a reload — same cost as the renderer/gpu flags the same
+ *  file carries. */
+import { invoke } from "@tauri-apps/api/core";
+
+declare global {
+  interface Window {
+    __huskMonitorEnabled?: boolean;
+    __huskDevToolsEnabled?: boolean;
+  }
+}
+
+interface DevConfigPayload {
+  monitor_panel?: boolean | null;
+  devtools?: boolean | null;
+}
+
+// Read once at boot — settings changes take effect on next launch, matching
+// the renderer/gpu flags that the same file controls. Failures fall back to
+// the dev-build default so a broken backend never strips the probe.
+async function readDevFlags(): Promise<DevConfigPayload> {
+  try {
+    return await invoke<DevConfigPayload>("agent_session", {
+      op: "get_dev_config",
+    });
+  } catch {
+    return {};
+  }
+}
+
+readDevFlags().then((cfg) => {
+  const monitor = cfg.monitor_panel ?? import.meta.env.DEV;
+  const devtools = cfg.devtools ?? import.meta.env.DEV;
+  window.__huskMonitorEnabled = monitor;
+  window.__huskDevToolsEnabled = devtools;
+  if (!monitor) return;
+
   let hud: HTMLDivElement | null = null;
   let frames = 0;
   let slow = 0;
@@ -50,5 +92,5 @@ if (import.meta.env.DEV) {
   window.addEventListener("keydown", (e) => {
     if (e.ctrlKey && e.shiftKey && e.key === "P") toggle();
   });
-}
+});
 export {};

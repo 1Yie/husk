@@ -39,6 +39,16 @@ Husk 是一个跑在本机的编码 Agent，读代码、改代码、跑测试、
 
 编排：`batch_execute`（批量观察调用，最多 16 个）、`delegate`（子代理）、`todo`、`ask_question`、`skill`、`serena`（[Serena](https://github.com/oraios/serena) 桥接，`find_symbol`、`replace_symbol_body`、`rename_symbol` 等符号级操作）。
 
+### 桌面操作（computer use）
+
+`screenshot`（只读观察）抓屏并把 PNG 交给模型看，`computer`（过程类）驱动鼠标键盘：点击、拖拽、输入、按键、滚动、等待。
+
+- 坐标约定：`screenshot` 打印图片分辨率与真实分辨率，模型按**图片坐标**给 `computer` 传参，后端内部换算到真实屏幕。
+- 图片回传：截图随工具消息进入下一轮请求 —— Anthropic 的 `tool_result` 原生带 image 块，其余三家协议（Chat Completions / Responses / Gemini）的 tool 输出只收文本，降级为紧随其后的合成 user turn 携图。模型未声明 `image` 输入时只给路径。
+- 权限：`default`/`acceptEdits` 下每次动作都要确认，`dontAsk` 直接拒绝，`auto`/`bypassPermissions` 自动放行；`plan` 模式只保留 `screenshot`（能看不能动）；子代理 registry 不含 `computer`。
+- 后端：X11（`xdotool` + `scrot`/ImageMagick `import`，PNG 缩放到长边 ≤1568 由纯 Rust `image` 完成）。无 `$DISPLAY` 或缺依赖时工具返回明确的安装提示，不静默失败。
+- 桌面后端**刻意不走 `bwrap`**：`--clearenv` + `--tmpfs /tmp` 让 X socket 在构造上不可达，沙箱化的桌面工具是坏功能而非加固 —— 防线是权限门，不是文件系统隔离。
+
 ### 子代理
 
 `delegate` 派生干净上下文的新 Agent，共享工作区，无 `delegate` 工具。
@@ -235,6 +245,7 @@ run()
 | `agent-llm` | Provider 适配器、SSE 采样、重试与降级、密钥解析 |
 | `agent-context` | 文件树扫描、git 快照、hunk 追踪 |
 | `agent-sandbox` | bwrap 后端、命令审计、环境脱敏、资源限制 |
+| `agent-computer` | 桌面控制后端：抓屏（纯 Rust 缩放）+ 合成输入，X11 / `none` |
 | `agent-plugin` | 插件清单、MCP stdio 桥、hook 链 |
 | `app-tauri`（`husk`） | Tauri 后端 + React / Tailwind / Radix 前端 |
 | `app-cli`（`agent-cli`） | headless 事件泵 |

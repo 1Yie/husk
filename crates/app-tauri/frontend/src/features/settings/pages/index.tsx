@@ -9,6 +9,7 @@ import {
   Bot,
   Cpu,
   FileText,
+  FlaskConical,
   Info,
   Palette,
   Plug,
@@ -21,12 +22,14 @@ import { cn } from "@/lib/utils";
 import { WindowControls } from "@/components/window-controls";
 import { isMac } from "@/lib/platform";
 import { GeneralPane } from "@/features/settings/pages/general/index";
+import { DeveloperPane } from "@/features/settings/pages/general/developer";
 import { AppearanceSettings } from "@/features/settings/pages/appearance/index";
 import { StatsPane } from "@/features/settings/pages/stats/index";
 import { AboutSettings } from "@/features/settings/pages/about/index";
 import { AgentSettings, type AgentTab } from "@/features/settings/pages/agent/index";
+import { getDevConfig } from "@/lib/agent-ipc/sessions";
 
-type SettingsTab = "general" | "appearance" | "stats" | AgentTab | "about";
+type SettingsTab = "general" | "appearance" | "developer" | "stats" | AgentTab | "about";
 
 const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; icon: React.ReactNode }[] }[] = [
   {
@@ -51,6 +54,7 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
     label: "系统",
     items: [
       { key: "stats", label: "统计", icon: <ChartColumn className="h-4 w-4 shrink-0" /> },
+      { key: "developer", label: "开发者选项", icon: <FlaskConical className="h-4 w-4 shrink-0" /> },
       { key: "about", label: "关于", icon: <Info className="h-4 w-4 shrink-0" /> },
     ],
   },
@@ -58,6 +62,7 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
 
 export function SettingsPage({ onClose }: { onClose: () => void }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+  const [devUnlocked, setDevUnlocked] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   // Esc goes back to the workspace — same reflex as every full-screen pane.
   useEffect(() => {
@@ -67,6 +72,16 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Read the persisted unlock flag once on mount. The dev pane is hidden
+  // by default — opting in is a manual edit of
+  // `~/.config/husk/settings.toml` (`developer_ui = true`), so a reload is
+  // always required anyway; no event subscription needed.
+  useEffect(() => {
+    void getDevConfig()
+      .then((c) => setDevUnlocked(c.developer_ui === true))
+      .catch(() => {});
+  }, []);
 
   // Each tab opens at the top — the container keeps its scrollTop otherwise.
   useEffect(() => {
@@ -117,7 +132,9 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                 <span className="px-3 pb-1 text-[11px] font-medium text-neutral-500 tracking-wide">
                   {g.label}
                 </span>
-                {g.items.map((item) => (
+                {g.items
+                  .filter((item) => item.key !== "developer" || devUnlocked)
+                  .map((item) => (
                   <button
                     key={item.key}
                     type="button"
@@ -154,6 +171,8 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               <GeneralPane />
             ) : activeTab === "stats" ? (
               <StatsPane />
+            ) : activeTab === "developer" ? (
+              <DeveloperPane />
             ) : activeTab === "appearance" ? (
               <AppearanceSettings />
             ) : activeTab === "about" ? (

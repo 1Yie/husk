@@ -4,7 +4,7 @@
 //! bypass the command pump (direct flag / channel) so they are not queued behind a
 //! running turn.
 
-use agent_ipc::UiCommand;
+use agent_ipc::{UiCommand, UiEvent};
 use tauri::State;
 
 use crate::kernel::KernelState;
@@ -111,7 +111,7 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
             // Echo the resolution so the frontend clears `pendingQuestion`
             // from the view buffer — the answered card must not resurrect on
             // the next session switch.
-            let _ = ui.send(agent_ipc::UiEvent::QuestionAnswered {
+            let _ = ui.send(UiEvent::QuestionAnswered {
                 request_id: *request_id,
             });
         }
@@ -133,6 +133,36 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
         if let Ok(mut slot) = agent_mode.write() {
             *slot = agent_kernel::mode::AgentMode::from_str(mode);
         }
+    }
+    // Per-session tool whitelisting (computer-use's "本会话允许"): write
+    // the live gate directly so the next dispatch sees it — forwarding
+    // through `cmd_tx` would only apply it at the actor's next `handle`,
+    // and a `computer` call paused in AwaitingToolConfirmation is waiting
+    // on the *decision* slot, not the command pump, so the gate has to be
+    // hot right now.
+    if let UiCommand::ApproveSessionTool { tool_name } = &cmd {
+        if let Ok(mut gate) = permissions.write() {
+            gate.allow_tool_for_session(tool_name);
+        }
+        // Notify the UI — the computer-use overlay mounts off this event.
+        let _ = ui.send(UiEvent::SessionToolWhitelisted {
+            tool_name: tool_name.clone(),
+            stopped: false,
+        });
+        return Ok(());
+    }
+    // The overlay's "停止" button — same direct-write path. Session-level
+    // revoke so the NEXT `computer` call drops back to Ask; any running
+    // call isn't retro-cancelled.
+    if let UiCommand::RevokeSessionTool { tool_name } = &cmd {
+        if let Ok(mut gate) = permissions.write() {
+            gate.revoke_tool_for_session(tool_name);
+        }
+        let _ = ui.send(UiEvent::SessionToolWhitelisted {
+            tool_name: tool_name.clone(),
+            stopped: true,
+        });
+        return Ok(());
     }
     cmd_tx.try_send(cmd).map_err(|e| e.to_string())
 }

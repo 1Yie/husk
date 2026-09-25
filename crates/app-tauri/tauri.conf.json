@@ -10,9 +10,11 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Husk",
+        "visible": false,
         "width": 1280,
         "height": 840,
         "minWidth": 900,

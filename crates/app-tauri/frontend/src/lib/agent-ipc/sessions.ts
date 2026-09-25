@@ -436,6 +436,40 @@ export function getSandboxInfo() {
   return invoke<SandboxInfo>("agent_session", { op: "get_sandbox_info" });
 }
 
+/** User-level developer overrides — `~/.config/husk/settings.toml`. Each
+ *  field is `null` when unset (falls back to the compiled default). These
+ *  can break the GUI (`renderer = "wayland"` on a driver that can't do
+ *  it, `gpu_acceleration = false` on a stack that needs hardware GL) —
+ *  the recovery path is a single obvious file beside `config.toml`. */
+export interface DevConfig {
+  /** "x11" | "wayland" — GTK/WebKitGTK backend. Default compiled: "x11". */
+  renderer?: "x11" | "wayland" | null;
+  /** false = software GL (dmabuf off + LIBGL_ALWAYS_SOFTWARE); true = opt
+   *  into the dmabuf GPU renderer; null = compiled NVIDIA-safe default. */
+  gpu_acceleration?: boolean | null;
+  /** Shift+Ctrl+P HUD toggle — `true` enables it, `null` falls back to
+   *  dev-build default. */
+  monitor_panel?: boolean | null;
+  /** `true` → F12 / Ctrl+Shift+I/C/J/K reach the WebKitGTK inspector in a
+   *  packaged build. `null` falls back to dev-build default. */
+  devtools?: boolean | null;
+  /** `true` → the "开发者选项" settings entry shows in the left nav.
+   *  Hidden by default — opting in is a manual edit of
+   *  `~/.config/husk/settings.toml` (`developer_ui = true`) + relaunch. */
+  developer_ui?: boolean | null;
+}
+
+export function getDevConfig() {
+  return invoke<DevConfig>("agent_session", { op: "get_dev_config" });
+}
+
+export function saveDevConfig(payload: DevConfig) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "save_dev_config",
+    payload,
+  });
+}
+
 /** Git branch + dirty count for the active workspace — `branch` is null
  * when the workspace isn't inside a repository. */
 export interface GitInfo {

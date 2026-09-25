@@ -34,7 +34,10 @@ function isEditableTarget(e: Event): boolean {
 /** Global chrome policy for the packaged shell:
  *  - right-click belongs to app menus (sidebar rows, chat stream); the
  *    native webview menu is suppressed everywhere except editable fields
- *  - devtools shortcuts are dead keys in production builds.
+ *  - devtools shortcuts are dead keys in production builds UNLESS the
+ *    user opted in via `~/.config/husk/settings.toml` `devtools = true`
+ *    (read once into `window.__huskDevToolsEnabled` by `frame-probe.ts`'s
+ *    sibling bootstrap in `main.tsx`).
  * Dev (`vite dev`) keeps both for debugging. */
 function useAppChromeGuards() {
   useEffect(() => {
@@ -63,12 +66,17 @@ function useAppChromeGuards() {
       const k = e.key;
       const mod = e.ctrlKey || e.metaKey;
       // F12 · Ctrl/Cmd+Shift+I/J/C/K · Cmd/Ctrl+Alt+I/J/C (mac) · Ctrl+U.
+      // Opt-in via `window.__huskDevToolsEnabled` (set by the dev-config
+      // bootstrap in main.tsx) lets a packaged build open devtools for
+      // debugging without rebuilding.
+      const devtoolsEnabled =
+        (window as { __huskDevToolsEnabled?: boolean }).__huskDevToolsEnabled === true;
       const devtools =
         k === "F12" ||
         (mod && e.shiftKey && ["i", "I", "j", "J", "c", "C", "k", "K"].includes(k)) ||
         (mod && e.altKey && ["i", "I", "j", "J", "c", "C"].includes(k)) ||
         (e.ctrlKey && (k === "u" || k === "U"));
-      if (devtools) e.preventDefault();
+      if (devtools && !devtoolsEnabled) e.preventDefault();
     };
     document.addEventListener("contextmenu", onContextMenu, true);
     document.addEventListener("keydown", onKeyDown, true);

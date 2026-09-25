@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>Husk — controlling</title>
+  <style>
+    :root {
+      --bg: #0a0a0b;
+      --line: rgba(255, 255, 255, 0.10);
+      --ink: rgba(255, 255, 255, 0.92);
+      --ink-dim: rgba(255, 255, 255, 0.40);
+      --accent: #e8b04b;
+      --danger: rgba(255, 255, 255, 0.40);
+      --danger-hover: #f0857a;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      background: transparent;
+      overflow: hidden;
+      user-select: none;
+    }
+    body {
+      /* CJK text first, mono for the glyph texture — the status labels are
+         Chinese now, so a CJK-capable face leads. */
+      font-family: "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei",
+                   ui-monospace, "SF Mono", "JetBrains Mono", Menlo,
+                   Consolas, monospace;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .hud {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 10px 0 12px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--ink);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+      box-sizing: border-box;
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    /* Terminal-cursor style status mark — a solid block that blinks in
+       hard steps, not a soft glow. This is the one accented element;
+       everything else stays monochrome. */
+    .mark {
+      flex-shrink: 0;
+      width: 7px;
+      height: 7px;
+      background: var(--accent);
+      animation: blink 1.1s steps(1, jump-start) infinite;
+    }
+    @keyframes blink {
+      0%, 49%   { opacity: 1; }
+      50%, 100% { opacity: 0.15; }
+    }
+
+    .line {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .status {
+      color: var(--ink-dim);
+      letter-spacing: 0.01em;
+      flex-shrink: 0;
+    }
+    .action {
+      color: var(--ink);
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cursor {
+      display: inline-block;
+      width: 6px;
+      color: var(--ink-dim);
+      animation: caret 1s steps(1, jump-start) infinite;
+    }
+    @keyframes caret {
+      0%, 49%   { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+
+    .stop {
+      flex-shrink: 0;
+      border: 0;
+      background: transparent;
+      color: var(--danger);
+      font-family: inherit;
+      font-size: 11px;
+      letter-spacing: 0.02em;
+      padding: 5px 7px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: color 120ms ease, background 120ms ease;
+    }
+    .stop:hover {
+      color: var(--danger-hover);
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .stop:active { opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="mark"></div>
+    <div class="line">
+      <span class="status">控制中</span>
+      <span id="action" class="action">待命</span><span class="cursor">▏</span>
+    </div>
+    <button class="stop" id="stop" title="停止控制">停止</button>
+  </div>
+  <script>
+    // The `#action` text is PUSHED in from Rust via `webview.eval` on every
+    // computer/screenshot tool start & finish — there is deliberately no
+    // `__TAURI__.event.listen` here (the bridge isn't guaranteed to inject
+    // into this public-dir page, which is exactly why the HUD used to sit
+    // on "待命" forever).
+    document.getElementById("stop").addEventListener("click", async () => {
+      try {
+        await window.__TAURI__.core.invoke("stop_computer_control");
+      } catch (e) {
+        console.error("stop_computer_control failed:", e);
+      }
+    });
+  </script>
+</body>
+</html>

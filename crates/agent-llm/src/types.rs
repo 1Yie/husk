@@ -254,6 +254,15 @@ impl ChatMessage {
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
     }
+    /// Attach staged image refs a *tool* produced (a screenshot) — the tool
+    /// analogue of [`ChatMessage::with_images`]. Adapters encode them per
+    /// their wire: an Anthropic `tool_result` carries real image blocks, the
+    /// protocols whose tool output is text-only emit a synthetic user turn
+    /// right after (see each adapter's `build_messages`).
+    pub fn tool_result_with_images(mut self, images: Vec<ImageRef>) -> Self {
+        self.images = images;
+        self
+    }
     /// Failed tool result — same wire shape, plus the persisted `is_error`
     /// flag the UI replays into the red capsule state.
     pub fn tool_result_err(call_id: impl Into<String>, text: impl Into<String>) -> Self {

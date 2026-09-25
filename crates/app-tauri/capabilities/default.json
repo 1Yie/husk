@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "default window capability",
-  "windows": ["main"],
+  "windows": ["main", "computer-glow", "computer-hud"],
   "permissions": [
     "core:default",
     "core:event:default",

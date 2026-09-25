@@ -30,6 +30,19 @@ export const enqueue = (text: string) => send({ Enqueue: { text } });
 export const decideTool = (requestId: number, approved: boolean) =>
   send({ ToolDecision: { request_id: requestId, approved } });
 
+/** Whitelist a tool for the rest of this session — pairs with
+ *  `decideTool` on the computer-use approval modal: "本会话允许"
+ *  writes the gate AND resolves the pending card. Session-scoped, so
+ *  quitting the app revokes it; nothing is persisted. */
+export const approveSessionTool = (toolName: string) =>
+  send({ ApproveSessionTool: { tool_name: toolName } });
+
+/** Drop a tool from the session whitelist — the overlay's "停止" button.
+ *  Session-scoped like the grant; the NEXT `computer` call falls back
+ *  to Ask (which re-opens the approval modal). */
+export const revokeSessionTool = (toolName: string) =>
+  send({ RevokeSessionTool: { tool_name: toolName } });
+
 /** Answer a pending `ask_question` card — option label or free text. */
 export const answerQuestion = (requestId: number, answer: string) =>
   send({ AnswerQuestion: { request_id: requestId, answer } });

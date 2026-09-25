@@ -6,4 +6,5 @@
 
 pub mod commands;
 pub mod forwarder;
+pub mod overlay;
 pub mod sessions;

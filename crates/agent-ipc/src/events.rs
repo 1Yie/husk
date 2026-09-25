@@ -96,6 +96,19 @@ pub enum UiCommand {
     /// a stale click can be consumed by a *later* pending approval and
     /// approve a tool the user never reviewed (P1-a).
     ToolDecision { request_id: u64, approved: bool },
+    /// Whitelist a tool for the rest of this session — the gate's
+    /// `rules.allow` gains `tool_name`, so subsequent calls of the same
+    /// tool auto-approve instead of pausing again. Used by the
+    /// computer-use approval dialog ("本会话允许"): granting once and then
+    /// re-prompting on every `computer` action would defeat the flow.
+    /// Session-scoped by design — the whitelist dies with the actor and
+    /// never touches `~/.config/husk`.
+    ApproveSessionTool { tool_name: String },
+    /// Drop `tool_name` from the session whitelist — the inverse of
+    /// `ApproveSessionTool`. The computer-use overlay's "停止" button
+    /// sends this so the next `computer` call falls back to Ask (which
+    /// re-pops the approval dialog instead of running silently).
+    RevokeSessionTool { tool_name: String },
     /// Answer to a pending `QuestionAsked` card — `request_id` correlates
     /// the answer to the specific question, same staleness rule as
     /// `ToolDecision`.
@@ -230,6 +243,15 @@ pub enum UiEvent {
     },
     /// Final assistant text for the turn (complete, post-streaming).
     AssistantMessage(String),
+    /// The session's tool whitelist just gained `tool_name` — emitted when
+    /// `ApproveSessionTool` lands so the UI can show the matching overlay
+    /// (computer-use's "AI is controlling your screen" HUD + edge glow).
+    /// `stopped:false` on grant, `stopped:true` on revoke.
+    SessionToolWhitelisted {
+        tool_name: String,
+        #[serde(default)]
+        stopped: bool,
+    },
     /// System/degrade notice (sampler retry, fallback, compaction…).
     SystemMessage(String),
     /// Token-usage update for the meter. `context_window` rides along so

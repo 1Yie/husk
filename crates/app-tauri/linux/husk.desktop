@@ -9,5 +9,8 @@ Icon={{icon}}
 Terminal=false
 Categories={{categories}}
 Keywords=AI;agent;assistant;coding;LLM;
-StartupWMClass=husk
+# Under XWayland (the pinned GDK_BACKEND) GTK sets WM_CLASS from tauri's
+# `identifier`, so the launcher groups by the reverse-DNS name, not the
+# binary name.
+StartupWMClass=husk.ingstar.im
 StartupNotify=true

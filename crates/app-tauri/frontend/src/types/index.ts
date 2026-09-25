@@ -71,6 +71,7 @@ export type UiEvent =
       };
     }
   | { AssistantMessage: string }
+  | { SessionToolWhitelisted: { tool_name: string; stopped?: boolean } }
   | { SystemMessage: string }
   | { Usage: { prompt_tokens: number; completion_tokens: number; context_window: number; cached_tokens: number } }
   | { Error: string }
@@ -94,6 +95,8 @@ export type UiCommand =
   | { Prompt: { text: string } }
   | { Steer: { text: string } }
   | { ToolDecision: { request_id: number; approved: boolean } }
+  | { ApproveSessionTool: { tool_name: string } }
+  | { RevokeSessionTool: { tool_name: string } }
   | { AnswerQuestion: { request_id: number; answer: string } }
   | "Cancel"
   | { SetModel: { provider: string; model: string } }

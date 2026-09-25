@@ -197,10 +197,139 @@ fn exempt_self_from_proxy() {
     }
 }
 
+/// Pin the GTK/WebKitGTK rendering env before GTK init reads it.
+///
+/// Under Wayland + the proprietary NVIDIA driver, WebKitGTK's dmabuf
+/// renderer hits a presentation-protocol conflict and the compositor
+/// floods the log with `Failed to create GBM buffer` while the webview
+/// renders broken or blank — and on some setups the process dies at
+/// startup. Forcing the X11 backend (XWayland) plus disabling the dmabuf
+/// renderer sidesteps the conflict without giving up GPU acceleration,
+/// and `__GLX_VENDOR_LIBRARY_NAME` keeps GLX on the NVIDIA vendor library.
+///
+/// **Override path:** `~/.config/husk/settings.toml` — user-level config
+/// the user can flip even when the GUI is dead (edit the file, relaunch).
+/// Defaults below are the conservative NVIDIA-safe set; explicit opt-ins
+/// (`renderer = "wayland"`, `gpu_acceleration = true`) are honoured.
+#[cfg(target_os = "linux")]
+fn pin_linux_rendering_env() {
+    let dev = agent_llm::config::DevConfig::load().unwrap_or_default();
+
+    // GDK_BACKEND — the conservative default is X11; `wayland` is opt-in.
+    match dev.renderer.as_deref() {
+        Some("wayland") => std::env::set_var("GDK_BACKEND", "wayland"),
+        Some("x11") | None => std::env::set_var("GDK_BACKEND", "x11"),
+        Some(other) => {
+            eprintln!("husk: unknown dev.renderer {other:?} — falling back to x11");
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+    }
+
+    // Hardware-acceleration kill switch. Default is the NVIDIA-safe set
+    // (dmabuf off so WebKitGTK falls back to its non-dmabuf GPU path).
+    // `gpu_acceleration = false` additionally forces software GL; `true`
+    // opts into the dmabuf renderer (the user accepts the NVIDIA breakage).
+    match dev.gpu_acceleration {
+        Some(true) => {
+            // Opted into dmabuf — leave the var unset so WebKitGTK picks it.
+            std::env::remove_var("WEBKIT_DISABLE_DMABUF_RENDERER");
+            std::env::remove_var("LIBGL_ALWAYS_SOFTWARE");
+            std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
+        }
+        Some(false) => {
+            // Software rendering — the safest floor, useful when debugging
+            // driver-level GPU issues.
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+        }
+        None => {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
+        }
+    }
+}
+
+/// Size the main window to the monitor it opens on and center it.
+///
+/// The configured 1280×840 is the design baseline for a 1080-class
+/// display, but tauri sizes are physical pixels and the compositor's
+/// scale only exists at runtime: on a 150-200%-scaled Wayland panel the
+/// fixed size lands cramped, and `GDK_BACKEND=x11` (see
+/// `pin_linux_rendering_env`) flattens the reported scale factor to 1.0,
+/// so the monitor's own `scale_factor` can't be trusted to recover it.
+///
+/// `work_area` is always physical pixels, so a fixed fraction of it
+/// yields a consistent *logical* size at every scale without needing the
+/// factor at all. The height drives: take ~75% of the work-area height,
+/// then derive the width from the baseline 1280:840 aspect — a wide or
+/// ultrawide monitor gets the same window, not a wider one, and a
+/// 4K@200% panel lands back at roughly the baseline logical size. The
+/// floor keeps the baseline when it fits, the ceiling clamps to the
+/// work area so the window can never open larger than the usable
+/// screen. A zero work area or a failed monitor probe leaves the
+/// configured size alone.
+///
+/// `visible: false` in the config keeps the window off-screen until this
+/// runs: under X11/XWayland an early-shown window flashes a black frame
+/// (no compositing yet) and then visibly jumps when the resize lands, so
+/// the reveal is deferred to one `show()` after the geometry is set.
+fn fit_main_window(app: &tauri::App) {
+    const BASE_W: f64 = 1280.0;
+    const BASE_H: f64 = 840.0;
+    const HEIGHT_FRACTION: f64 = 0.75;
+    const ASPECT: f64 = BASE_W / BASE_H;
+
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    let reveal = |win: &tauri::WebviewWindow| {
+        let _ = win.show();
+        let _ = win.set_focus();
+    };
+    let monitor = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| win.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        // Geometry unknown — revealing at the configured size beats a
+        // black window that never opens.
+        reveal(&win);
+        return;
+    };
+
+    let work = monitor.work_area();
+    if work.size.width == 0 || work.size.height == 0 {
+        reveal(&win);
+        return;
+    }
+    let (work_w, work_h) = (work.size.width as f64, work.size.height as f64);
+    let h = (HEIGHT_FRACTION * work_h)
+        .max(BASE_H.min(work_h))
+        .min(work_h);
+    let w = (h * ASPECT).max(BASE_W.min(work_w)).min(work_w);
+    let (w, h) = (w as u32, h as u32);
+
+    // Position it ourselves rather than via `win.center()`: tao's
+    // `center()` on Linux is `gtk_window_set_position(Center)`, which
+    // asks the WM to center whatever size the window *currently* has.
+    // The `set_size` below is still in flight when `center` runs, so
+    // the WM centers the pre-resize 1280×840 frame — off-center under
+    // X11/XWayland, right where this function matters.
+    let x = work.position.x + ((work.size.width.saturating_sub(w)) / 2) as i32;
+    let y = work.position.y + ((work.size.height.saturating_sub(h)) / 2) as i32;
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = win.set_size(tauri::PhysicalSize::new(w, h));
+    reveal(&win);
+}
+
 fn main() {
-    // Must run before GTK/libsoup init reads the env.
+    // Must run before GTK/WebKitGTK/libsoup init reads the env.
     #[cfg(target_os = "linux")]
-    exempt_self_from_proxy();
+    {
+        pin_linux_rendering_env();
+        exempt_self_from_proxy();
+    }
 
     // Dev builds never inherit a previous run's process — see the function.
     #[cfg(all(debug_assertions, target_os = "linux"))]
@@ -288,12 +417,20 @@ fn main() {
             let mgr = state.0.clone();
             app.manage(state);
             ipc::forwarder::spawn(app.handle().clone(), rx, mgr);
+
+            // Adapt the configured 1280×840 to the monitor that actually
+            // opened the window — see `fit_main_window`.
+            fit_main_window(app);
             Ok(())
         })
         // Close (title-bar X, Alt+F4) hides to the tray instead of destroying
         // the window — `prevent_close` keeps the process alive, which is what
         // makes the single-instance restore path work. Real quit lives on the
-        // tray menu.
+        // tray menu. The computer-use overlay intentionally does NOT hide with
+        // the main window: the whole point is that the user sees "AI is
+        // controlling your screen" even when they've parked Husk itself —
+        // the glow + HUD die with the process, or when the user clicks the
+        // HUD's stop button.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
@@ -306,6 +443,7 @@ fn main() {
             ipc::commands::agent_cmd,
             ipc::commands::get_ui_stats,
             ipc::commands::paste_clipboard,
+            ipc::overlay::stop_computer_control,
             ipc::sessions::agent_session,
             ipc::sessions::mcp_probe,
         ])

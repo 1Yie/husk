@@ -157,10 +157,36 @@ fn build_messages(messages: &[ChatMessage]) -> (String, Vec<serde_json::Value>) 
                 let mut parts = Vec::new();
                 while i < messages.len() && matches!(messages[i].role, Role::Tool) {
                     let t = &messages[i];
+                    // A tool that produced images (a screenshot) carries them
+                    // INSIDE its `tool_result` — this API takes a content
+                    // block array where the text-only shape takes a string.
+                    // Sticking to the string when there are no images keeps
+                    // the common case byte-identical to before.
+                    let content = if t.images.is_empty() {
+                        json!(t.content.clone().unwrap_or_default())
+                    } else {
+                        let mut blocks = vec![json!({
+                            "type": "text",
+                            "text": t.content.clone().unwrap_or_default(),
+                        })];
+                        for img in &t.images {
+                            match img.data_url().as_deref().and_then(split_data_url) {
+                                Some((mime, data)) => blocks.push(json!({
+                                    "type": "image",
+                                    "source": {"type": "base64", "media_type": mime, "data": data},
+                                })),
+                                None => blocks.push(json!({
+                                    "type": "text",
+                                    "text": format!("(image unavailable: {})", img.path.display()),
+                                })),
+                            }
+                        }
+                        json!(blocks)
+                    };
                     parts.push(json!({
                         "type": "tool_result",
                         "tool_use_id": t.tool_call_id.clone().unwrap_or_default(),
-                        "content": t.content.clone().unwrap_or_default(),
+                        "content": content,
                         "is_error": t.is_error.unwrap_or(false),
                     }));
                     i += 1;
@@ -448,5 +474,80 @@ mod tests {
         assert_eq!(out[0]["role"].as_str().unwrap(), "user");
         assert_eq!(out[0]["content"].as_array().unwrap().len(), 2);
         assert_eq!(out[1]["role"].as_str().unwrap(), "assistant");
+    }
+
+    /// A tool result with no images keeps the plain string `content` — the
+    /// shape every existing request already used.
+    #[test]
+    fn plain_tool_result_stays_a_string() {
+        let mut call = ChatMessage::assistant("");
+        call.tool_calls = Some(vec![crate::types::ToolCall {
+            id: "call_1".into(),
+            name: "screenshot".into(),
+            arguments: "{}".into(),
+        }]);
+        let (_s, out) = build_messages(&[
+            ChatMessage::system("kernel"),
+            call,
+            ChatMessage::tool_result("call_1", "no image here"),
+        ]);
+        let tr = &out[1]["content"][0];
+        assert_eq!(tr["type"], "tool_result");
+        assert!(tr["content"].is_string(), "content must stay a string: {tr}");
+        assert_eq!(tr["content"], "no image here");
+    }
+
+    /// A tool result carrying a screenshot switches `content` to a block
+    /// array: the text first, then a native `image` block — this API's own
+    /// shape for a tool-produced frame, so no synthetic user turn is needed.
+    #[test]
+    fn tool_result_with_image_uses_content_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        // Minimal but real PNG bytes — `data_url` only reads the file.
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+
+        let mut call = ChatMessage::assistant("");
+        call.tool_calls = Some(vec![crate::types::ToolCall {
+            id: "call_1".into(),
+            name: "screenshot".into(),
+            arguments: "{}".into(),
+        }]);
+        let shot = ChatMessage::tool_result("call_1", "shot: 1568x882")
+            .tool_result_with_images(
+                crate::types::ImageRef::for_path(png.clone()).into_iter().collect(),
+            );
+
+        let (_s, out) = build_messages(&[ChatMessage::system("kernel"), call, shot]);
+        let tr = &out[1]["content"][0];
+        assert_eq!(tr["type"], "tool_result");
+        let blocks = tr["content"].as_array().expect("block array");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "shot: 1568x882");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "base64");
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+        assert!(blocks[1]["source"]["data"].as_str().is_some_and(|d| !d.is_empty()));
+    }
+
+    /// A staged file that vanished degrades to a text note instead of
+    /// failing the whole request.
+    #[test]
+    fn missing_tool_image_degrades_to_a_note() {
+        let gone = std::path::PathBuf::from("/nonexistent/shot-gone.png");
+        let mut call = ChatMessage::assistant("");
+        call.tool_calls = Some(vec![crate::types::ToolCall {
+            id: "call_1".into(),
+            name: "screenshot".into(),
+            arguments: "{}".into(),
+        }]);
+        let shot = ChatMessage::tool_result("call_1", "text")
+            .tool_result_with_images(
+                crate::types::ImageRef::for_path(gone).into_iter().collect(),
+            );
+        let (_s, out) = build_messages(&[ChatMessage::system("kernel"), call, shot]);
+        let blocks = out[1]["content"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks[1]["type"], "text");
+        assert!(blocks[1]["text"].as_str().unwrap().contains("image unavailable"));
     }
 }

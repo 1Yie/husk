@@ -244,6 +244,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         ui_type: Some("diff"),
         fuzzy: false,
         pending_write: writes,
+        images: Vec::new(),
     })
 }
 

@@ -103,6 +103,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             path,
             res.patched_content.into_bytes(),
         )],
+        images: Vec::new(),
     })
 }
 

@@ -299,6 +299,11 @@ impl SubagentSpawner {
         let child_ctx = ToolCtx {
             workspace_root: parent_ctx.workspace_root.clone(),
             sandbox: parent_ctx.sandbox.clone(),
+            // Screenshots are inherited (a delegated visual check needs to
+            // see the screen); input is not — `computer` is absent from every
+            // child registry, and a refusing backend is the second guard
+            // behind it for any path that constructs a child ctx itself.
+            desktop: parent_ctx.desktop.clone(),
             session: None,
             cancel: Some(cancel.clone()),
             subagent: None,

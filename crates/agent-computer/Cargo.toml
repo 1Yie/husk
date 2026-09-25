@@ -1,0 +1,17 @@
+[package]
+name = "agent-computer"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop-control backends for computer-use tools: screenshot capture + synthetic input"
+license = "MIT"
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+# Pure-Rust codecs only (png → flate2/miniz_oxide): the workspace never links C.
+image.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

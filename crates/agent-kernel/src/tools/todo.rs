@@ -263,6 +263,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         ui_type: Some("todo"),
         fuzzy: false,
         pending_write: Vec::new(),
+        images: Vec::new(),
     })
 }
 

@@ -16,6 +16,13 @@
 const ALLOWLIST: &[&str] = &[
     "PATH", "LANG", "TERM", "HOME", "TMPDIR", "USER", "SHELL",
     "COLORTERM", "EDITOR", "VISUAL", "TZ",
+    // Display session — a GUI-launched Tauri app spawns the agent, and its
+    // `bash`/`test_runner` tools must be able to launch GUI binaries (`code`,
+    // `firefox`) or drive `xdotool`/`scrot` for computer-use. Stripping these
+    // in `none` (loud-unsandboxed) mode breaks the desktop; `bwrap` clears the
+    // env itself anyway, so this only reaches the host-spawn path.
+    "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE",
+    "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP", "DBUS_SESSION_BUS_ADDRESS",
     // toolchain vars the workspace needs
     "CARGO_HOME", "GOPATH", "GOCACHE", "NVM_DIR", "NODE_ENV",
     "PYTHONPATH", "VIRTUAL_ENV", "RUSTUP_HOME", "JAVA_HOME",

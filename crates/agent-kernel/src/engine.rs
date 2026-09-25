@@ -1208,39 +1208,41 @@ impl Engine {
                 // covers dispatch + deferred-write commits + after_tool
                 // hooks, i.e. everything the row's `· 3s` label meant live.
                 let call_started = std::time::Instant::now();
-                let (mut content, ui_type, mut ok, pending_write) = if let Some(res) = staged {
-                    let ui_type = res.ui_type.map(|s| s.to_string());
-                    (res.content, ui_type, true, res.pending_write)
-                } else {
-                    match self
-                        .active_registry()
-                        .dispatch(&call.name, args.clone(), self.ctx.clone())
-                        .await
-                    {
-                        Ok(res) => (
-                            res.content,
-                            res.ui_type.map(|s| s.to_string()),
-                            true,
-                            res.pending_write,
-                        ),
-                        Err(e) => {
-                            // Built-in miss → try the plugin router (built-in
-                            // names are reserved and can't be shadowed).
-                            // Plugins never stage deferred writes → empty vec.
-                            // Plan mode dispatches read-only built-ins only.
-                            if self.plan_mode() {
-                                (e.to_string(), None, false, Vec::new())
-                            } else if let Some(mgr) = self.plugins() {
-                                match mgr.dispatch_tool_call(&call.name, args).await {
-                                    Ok(out) => (out, None, true, Vec::new()),
-                                    Err(_) => (e.to_string(), None, false, Vec::new()),
+                let (mut content, ui_type, mut ok, pending_write, result_images) =
+                    if let Some(res) = staged {
+                        let ui_type = res.ui_type.map(|s| s.to_string());
+                        (res.content, ui_type, true, res.pending_write, res.images)
+                    } else {
+                        match self
+                            .active_registry()
+                            .dispatch(&call.name, args.clone(), self.ctx.clone())
+                            .await
+                        {
+                            Ok(res) => (
+                                res.content,
+                                res.ui_type.map(|s| s.to_string()),
+                                true,
+                                res.pending_write,
+                                res.images,
+                            ),
+                            Err(e) => {
+                                // Built-in miss → try the plugin router (built-in
+                                // names are reserved and can't be shadowed).
+                                // Plugins never stage deferred writes → empty vec.
+                                // Plan mode dispatches read-only built-ins only.
+                                if self.plan_mode() {
+                                    (e.to_string(), None, false, Vec::new(), Vec::new())
+                                } else if let Some(mgr) = self.plugins() {
+                                    match mgr.dispatch_tool_call(&call.name, args).await {
+                                        Ok(out) => (out, None, true, Vec::new(), Vec::new()),
+                                        Err(_) => (e.to_string(), None, false, Vec::new(), Vec::new()),
+                                    }
+                                } else {
+                                    (e.to_string(), None, false, Vec::new(), Vec::new())
                                 }
-                            } else {
-                                (e.to_string(), None, false, Vec::new())
                             }
                         }
-                    }
-                };
+                    };
 
                 // P1-c: commit the deferred writes the tool staged — the
                 // engine owns the side effect so it lands only after the
@@ -1310,6 +1312,17 @@ impl Engine {
                     ChatMessage::tool_result(call.id.clone(), content)
                 } else {
                     ChatMessage::tool_result_err(call.id.clone(), content)
+                };
+                // A tool that produced images (a screenshot) hands them to the
+                // model alongside its text. Adapters encode them per their wire
+                // — Anthropic carries real blocks inside `tool_result`, the
+                // text-only tool protocols get a synthetic user turn after it.
+                // Gated on vision like the composer path: a text-only model
+                // keeps the file path the tool already printed.
+                let result_msg = if result_images.is_empty() || !self.supports_images() {
+                    result_msg
+                } else {
+                    result_msg.tool_result_with_images(result_images)
                 };
                 // The call's wall time persists with the row — a replayed
                 // tools step re-derives its span from `ts - duration_ms`.

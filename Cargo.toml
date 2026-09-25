@@ -34,6 +34,9 @@ dirs = "6"
 base64 = "0.22"
 keyring = { version = "4", features = ["v1"] }
 
+# agent-computer — desktop control (computer use). Pure-Rust PNG scaling only.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # agent-kernel tools
 schemars = "1"
 grep-searcher = "0.1"

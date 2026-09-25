@@ -161,6 +161,21 @@ fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serd
                             },
                         },
                     }));
+                    // Frames a tool produced (a screenshot) cannot live inside
+                    // `functionResponse` — its `response` is a plain object.
+                    // `inlineData` parts ride the SAME user turn as the
+                    // responses, which keeps the required user/model
+                    // alternation intact (a separate turn would break it).
+                    for img in &t.images {
+                        match img.data_url().as_deref().and_then(split_data_url) {
+                            Some((mime, data)) => parts.push(json!({
+                                "inlineData": {"mimeType": mime, "data": data},
+                            })),
+                            None => parts.push(json!({
+                                "text": format!("(image unavailable: {})", img.path.display()),
+                            })),
+                        }
+                    }
                     i += 1;
                 }
                 push_user(&mut out, parts);
@@ -379,6 +394,52 @@ mod tests {
         let r = ChatMessage::tool_result("search", "out");
         let (_sys, contents) = build_contents(&[r]);
         assert_eq!(contents[0]["parts"][0]["functionResponse"]["name"], "search");
+    }
+
+    /// A tool result carrying a screenshot: `functionResponse.response` is an
+    /// object, so the frame rides an `inlineData` part on the SAME user turn
+    /// as the responses — a separate turn would break the required
+    /// user/model alternation.
+    #[test]
+    fn tool_image_rides_the_same_turn_as_the_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+        let mut calls = ChatMessage::assistant("");
+        calls.tool_calls = Some(vec![ToolCall {
+            id: "call_1".into(),
+            name: "screenshot".into(),
+            arguments: "{}".into(),
+        }]);
+        let mut shot = ChatMessage::tool_result("call_1", "shot: 1568x882");
+        shot.images = crate::types::ImageRef::for_path(png).into_iter().collect();
+
+        let (_sys, contents) = build_contents(&[calls, shot]);
+        let parts = &contents[1]["parts"];
+        assert_eq!(parts[0]["functionResponse"]["name"], "screenshot");
+        assert_eq!(parts[0]["functionResponse"]["response"]["result"], "shot: 1568x882");
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert!(parts[1]["inlineData"]["data"].as_str().is_some_and(|d| !d.is_empty()));
+        // Still exactly two turns (user, model) — no extra turn appeared.
+        assert_eq!(contents.len(), 2);
+    }
+
+    /// A vanished file degrades to a text part rather than failing the turn.
+    #[test]
+    fn missing_tool_image_degrades_to_a_text_part() {
+        let mut calls = ChatMessage::assistant("");
+        calls.tool_calls = Some(vec![ToolCall {
+            id: "call_1".into(),
+            name: "screenshot".into(),
+            arguments: "{}".into(),
+        }]);
+        let mut shot = ChatMessage::tool_result("call_1", "txt");
+        shot.images = crate::types::ImageRef::for_path("/nonexistent/x.png".into())
+            .into_iter()
+            .collect();
+        let (_sys, contents) = build_contents(&[calls, shot]);
+        let parts = &contents[1]["parts"];
+        assert!(parts[1]["text"].as_str().unwrap().contains("image unavailable"));
     }
 
     #[test]

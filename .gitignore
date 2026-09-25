@@ -28,6 +28,7 @@ pnpm-debug.log*
 # Agent runtime state & local databases
 .agent/
 .serena/
+.husk/
 .pi/tasks/
 .pi/sessions/
 *.db

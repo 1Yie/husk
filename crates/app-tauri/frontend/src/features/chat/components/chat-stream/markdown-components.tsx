@@ -27,18 +27,33 @@ function listClasses(className: string | undefined, base: string): string {
 }
 
 /**
- * Unwrap the fade's `<span data-sd-animate>` nodes inside code: an inline pill
- * paints its box immediately, so a faded one sits there empty while its text
- * fades in. Fenced code is spared by the plugin (`pre` is skipped), inline
- * `code` is not.
+ * The stream fade wraps each word in `<span data-sd-animate>` — including words
+ * inside an inline `code` pill (`pre` is the only element the plugin spares).
+ * But the pill paints its box the moment it mounts, so fading only the inner
+ * words leaves an empty shell until the first word lands.
+ *
+ * Instead of stripping the spans, lift the FIRST word's animation onto the
+ * `<code>` itself: the whole pill blurs in with its first word, and later
+ * words keep their own staggered spans inside it. Returns undefined when the
+ * code isn't mid-stream (finished blocks carry no animate spans, and the
+ * pill renders as plain static chrome).
  */
-function unfaded(children: React.ReactNode): React.ReactNode {
-  return React.Children.map(children, (child) => {
-    if (!React.isValidElement(child)) return child;
-    const props = child.props as { "data-sd-animate"?: unknown; children?: React.ReactNode };
-    if ("data-sd-animate" in props) return unfaded(props.children);
-    return child;
+function firstFadeStyle(children: React.ReactNode): React.CSSProperties | undefined {
+  let found: React.CSSProperties | undefined;
+  React.Children.forEach(children, (child) => {
+    if (found || !React.isValidElement(child)) return;
+    const props = child.props as {
+      "data-sd-animate"?: unknown;
+      style?: React.CSSProperties;
+      children?: React.ReactNode;
+    };
+    if ("data-sd-animate" in props) {
+      found = props.style;
+      return;
+    }
+    found = firstFadeStyle(props.children);
   });
+  return found;
 }
 
 export const chatMarkdownComponents = {
@@ -131,16 +146,17 @@ export const chatMarkdownComponents = {
     </blockquote>
   ),
 
-  inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => (
-    <code
-      {...domProps(
+  inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => {
+    const fade = firstFadeStyle(children);
+    const animated = {
+      ...domProps(
         props,
         "bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] text-neutral-800 px-1.5 py-[1px] rounded-[4px] text-[12px] font-mono border border-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] font-normal mx-0.5 inline-block leading-snug align-baseline",
-      )}
-    >
-      {unfaded(children)}
-    </code>
-  ),
+      ),
+      ...(fade ? { "data-sd-animate": true, style: fade } : {}),
+    };
+    return <code {...animated}>{children}</code>;
+  },
 
   pre: ({ children }: React.ComponentPropsWithoutRef<"pre">) => {
     if (React.isValidElement(children)) {
@@ -313,16 +329,17 @@ export const thinkingMarkdownComponents = {
     </h4>
   ),
 
-  inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => (
-    <code
-      {...domProps(
+  inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => {
+    const fade = firstFadeStyle(children);
+    const animated = {
+      ...domProps(
         props,
         "bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] text-neutral-600 px-1.5 py-[1px] rounded-[4px] text-[11.5px] font-mono border border-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] font-normal mx-0.5 inline-block leading-snug align-baseline",
-      )}
-    >
-      {unfaded(children)}
-    </code>
-  ),
+      ),
+      ...(fade ? { "data-sd-animate": true, style: fade } : {}),
+    };
+    return <code {...animated}>{children}</code>;
+  },
 
   blockquote: ({ children, ...props }: React.ComponentPropsWithoutRef<"blockquote">) => (
     <blockquote

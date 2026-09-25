@@ -22,7 +22,7 @@ import {
   Clock,
   GripVertical,
   CirclePen,
-  ListPlus, MessagesSquare } from "@keyline-icons/react";
+  ListPlus, MessagesSquare, Monitor } from "@keyline-icons/react";
 import { MentionPopup } from "@/features/chat/components/composer-bar/mention-popup";
 import { AttachmentChips } from "@/features/chat/components/composer-bar/attachment-chips";
 import { TokenMirror } from "@/features/chat/components/composer-bar/token-mirror";
@@ -50,6 +50,14 @@ import {
   Scissors,
   TextSelect,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export function extractLatestTodos(view: SessionView): {
   items: TodoItem[];
@@ -249,9 +257,22 @@ export function ComposerBar({
   const sessionKeyRef = useRef(sessionKey);
   sessionKeyRef.current = sessionKey;
 
+  // Model reads come from three unsynchronized triggers — mount/session
+  // change, `CONFIG_CHANGED_EVENT` (a settings save), and window focus —
+  // and each `getModelInfo` resolves in IPC order, not issue order. Two
+  // overlapping fetches around one settings write return different values
+  // for the same `active_model`; the SLOWER response lands last and wins,
+  // so the picker flips A→B→A. A monotonically increasing stamp makes only
+  // the newest issued fetch able to write state.
+  const fetchSeq = useRef(0);
+
   const fetchModels = async (forSession?: string) => {
+    const seq = ++fetchSeq.current;
     try {
       const info = await agent.getModelInfo();
+      // Stale: a newer fetch was issued after this one — its response is
+      // the authoritative config, this one would roll the picker back.
+      if (seq !== fetchSeq.current) return;
       if (forSession !== undefined && forSession !== sessionKeyRef.current) return;
       if (info) {
         if (info.active_model) setActiveModel(info.active_model);
@@ -731,6 +752,28 @@ export function ComposerBar({
     }
   };
 
+  // Computer-use approvals live in a modal — not the input strip — because
+  // the grant is scoped differently: "本会话允许" whitelists the tool for
+  // the rest of the session (computer calls are inherently multi-action,
+  // so re-prompting on every click/type would defeat the flow), then
+  // resolves THIS pending call in one motion.
+  const isComputerApproval = pending?.toolName === "computer";
+  const decideComputerSession = async () => {
+    if (!pending || decidedId === pending.requestId) return;
+    const reqId = pending.requestId;
+    setDecidedId(reqId);
+    try {
+      // Whitelist first, then resolve — if the gate write loses, the
+      // pending card still closes and the next call re-asks (same UX as
+      // a once-only approval, not a stuck modal).
+      await agent.approveSessionTool("computer");
+      await agent.decideTool(reqId, true);
+    } catch (e) {
+      console.error("approveSessionTool/decideTool failed:", e);
+      setDecidedId(null);
+    }
+  };
+
   const switchMode = async (m: string) => {
     setMode(m);
     try {
@@ -828,7 +871,7 @@ export function ComposerBar({
         )}
       >
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
-          {planReady || pending || question || hasActiveTodos || queued.length > 0 ? (
+          {planReady || (pending && !isComputerApproval) || question || hasActiveTodos || queued.length > 0 ? (
             /* Outer container with attached banner: the plan handoff, approval
                (Priority 1), ask_question and the active todo list (Priority 2)
                all render as rows of this one panel, so the composer reads as a
@@ -933,8 +976,10 @@ export function ComposerBar({
                 </div>
               ) : null}
 
-              {pending ? (
-                /* Priority 1: Permission approval strip */
+              {pending && !isComputerApproval ? (
+                /* Priority 1: Permission approval strip — computer-use
+                   approvals route to the modal dialog (different grant
+                   semantics, doesn't belong in the input accessory row). */
                 <div className="flex items-center gap-2 px-3 pt-0.5 text-xs text-neutral-600 font-medium select-none">
                   <span className="text-neutral-500 shrink-0 flex items-center">
                     {toolIcon(pending.toolName)}
@@ -1256,6 +1301,62 @@ export function ComposerBar({
           )}
         </div>
       </div>
+
+      {/* Computer-use approval — a modal, not the input strip, because the
+          grant is session-scoped: approving once unblocks every `computer`
+          call for the rest of the session, so the choice deserves a real
+          dialog (and the strip's "允许 / 拒绝" pair can't express it). */}
+      <Dialog
+        open={isComputerApproval}
+        onOpenChange={(open) => {
+          // Click-outside / Esc counts as "deny for now" — the pending
+          // approval can't be left hanging or the turn stalls forever.
+          if (!open && isComputerApproval) void decide(false);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Monitor className="h-4 w-4 text-neutral-600" />
+              允许使用计算机控制?
+            </DialogTitle>
+            <DialogDescription>
+              Agent 将在你的真实桌面上移动鼠标、点击、打字和截图。
+              授权后整个会话期间不再重复询问;会话结束自动失效。
+            </DialogDescription>
+          </DialogHeader>
+          {pending?.args && (
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2">
+              <div className="font-mono text-[11px] text-neutral-600 break-all whitespace-pre-wrap max-h-32 overflow-y-auto">
+                {pending.args}
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void decide(false)}
+            >
+              拒绝
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void decide(true)}
+            >
+              仅本次允许
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => void decideComputerSession()}
+              className="bg-emerald-600 hover:bg-emerald-700 text-zinc-50"
+            >
+              本会话允许
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </TooltipProvider>
   );
 }

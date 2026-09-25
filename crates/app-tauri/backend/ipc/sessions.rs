@@ -618,6 +618,33 @@ pub fn agent_session(
                 "thinking_level": mgr.active_thinking_level,
             }))
         }
+        // User-level dev config — `~/.config/husk/settings.toml`. The
+        // file sits beside `config.toml` so a broken renderer flag can
+        // be reverted by hand even while the GUI is dead.
+        "get_dev_config" => {
+            let dev = agent_llm::config::DevConfig::load()
+                .map_err(|e| format!("load dev config: {e}"))?;
+            Ok(serde_json::to_value(&dev).map_err(|e| e.to_string())?)
+        }
+        "save_dev_config" => {
+            let Some(val) = payload else {
+                return Err("save_dev_config requires payload".into());
+            };
+            let dev: agent_llm::config::DevConfig =
+                serde_json::from_value(val).map_err(|e| format!("dev config: {e}"))?;
+            // Validate enum-ish fields so a typo'd renderer can't silently
+            // fall back to the default.
+            if let Some(r) = dev.renderer.as_deref() {
+                if !matches!(r, "x11" | "wayland") {
+                    return Err(format!(
+                        "dev.renderer must be \"x11\" or \"wayland\", got {r:?}"
+                    ));
+                }
+            }
+            agent_llm::config::DevConfig::save(&dev)
+                .map_err(|e| format!("save dev config: {e}"))?;
+            Ok(serde_json::json!({ "success": true }))
+        }
         "save_app_config" => {
             let Some(path) = agent_llm::AppConfig::default_path() else {
                 return Err("config path not found".into());

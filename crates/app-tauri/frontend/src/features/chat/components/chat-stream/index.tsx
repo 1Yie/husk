@@ -607,26 +607,38 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
     }
 
     if (item.kind === "compaction") {
-      // A compaction pass is its own block, not turn content.
-      flush(idx);
-      out.push({
-        turn: {
-          id: turnId(item, idx),
-          hi: item.hi,
-          steps: [
-            {
-              type: "compaction",
-              before: item.before,
-              after: item.after,
-              removed: item.removed,
-              note: item.note,
-              manual: item.manual,
-              pending: item.pending,
-            },
-          ],
-        },
-        span: items.slice(idx, idx + 1),
-      });
+      // Whether a compaction pass splits the stream is a POSITION
+      // question, not a trigger question. `manual` only says who asked
+      // for it (auto threshold vs `/compact`) — a `/compact` issued
+      // mid-turn still lands INSIDE the running turn (the engine's
+      // `ControlOp::Compact` doesn't wait for `Finished`), so splitting
+      // on `manual` cut one logical turn in two, which is the visible
+      // "split into two pieces" bug. `currentTurn` is the truth: null =
+      // between turns (own block), non-null = fold into the open turn's
+      // steps regardless of `manual`.
+      const step = {
+        type: "compaction" as const,
+        before: item.before,
+        after: item.after,
+        removed: item.removed,
+        note: item.note,
+        manual: item.manual,
+        pending: item.pending,
+      };
+      if (!currentTurn) {
+        flush(idx);
+        out.push({
+          turn: {
+            id: turnId(item, idx),
+            hi: item.hi,
+            steps: [step],
+          },
+          span: items.slice(idx, idx + 1),
+        });
+        continue;
+      }
+      const t = ensureTurn(item, idx);
+      t.steps.push(step);
       continue;
     }
 
@@ -960,7 +972,7 @@ const ChatTurn = memo(function ChatTurn({
   return (
     <div
       id={`chat-turn-${turn.id}`}
-      className="flex w-full flex-col gap-6"
+      className="flex w-full flex-col gap-3"
       // Every mounted turn lays out for real. `content-visibility: auto`
       // was tried on this shell and reverted: skipping offscreen layout
       // makes the browser substitute a 320px intrinsic guess for the real
@@ -990,7 +1002,7 @@ const ChatTurn = memo(function ChatTurn({
       {turn.steps.length > 0 && (
         <div
           id={`chat-turn-${turn.id}-assistant`}
-          className="flex w-full flex-col items-start gap-4"
+          className="flex w-full flex-col items-start gap-2"
         >
           {turn.steps.map((step, stepIdx) => {
             if (step.type === "thinking") {
@@ -1122,7 +1134,7 @@ const ChatTurn = memo(function ChatTurn({
       {turn.steps.length > 0 &&
         !streaming &&
         (turn.assistantTs ?? turn.ts) != null && (
-          <div className="-mt-4">
+          <div className="-mt-1">
             <TurnFooter
               align="start"
               ts={(turn.assistantTs ?? turn.ts) as number}
@@ -2060,7 +2072,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             padding so the greeting stays centred. */}
         <div
           className={cn(
-            "max-w-3xl w-full mx-auto pr-4 pt-6 flex flex-col gap-6 min-h-full",
+            "max-w-3xl w-full mx-auto pr-4 pt-4 flex flex-col gap-4 min-h-full",
             loading || view.items.length > 0 ? "pl-11" : "pl-4",
           )}
         >

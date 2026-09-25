@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
-use crate::types::{ChatMessage, NoticeKind, Role, StreamChunk};
+use crate::types::{ChatMessage, ImageRef, NoticeKind, Role, StreamChunk};
 
 /// One provider for every OpenAI-shaped backend. `api_key` is the *resolved*
 /// secret — config's `env:`/`keyring:` indirection happens in `factory`.
@@ -323,6 +323,48 @@ fn build_messages_dev(
         };
     }
 
+    // Images a tool produced (a screenshot) have no place in this protocol's
+    // `role:"tool"` rows — they are text-only. The frames therefore ride a
+    // synthetic user turn emitted once the whole RUN of tool results has been
+    // replayed: never wedged between two `tool` rows of the same assistant
+    // turn, which strict backends read as a broken pairing.
+    let mut tool_images: Vec<ImageRef> = Vec::new();
+    macro_rules! flush_tool_images {
+        () => {
+            if !tool_images.is_empty() {
+                // A backend that demands an assistant turn between tool
+                // results and any following user row must see one here too —
+                // our synthetic row IS a user message.
+                if compat.requires_assistant_after_tool_result == Some(true)
+                    && out
+                        .last()
+                        .and_then(|l| l.get("role"))
+                        .and_then(|r| r.as_str())
+                        == Some("tool")
+                {
+                    out.push(json!({ "role": "assistant", "content": "" }));
+                }
+                let mut parts = vec![json!({
+                    "type": "text",
+                    "text": "(screenshots from the tool results above)",
+                })];
+                for img in tool_images.drain(..) {
+                    match img.data_url() {
+                        Some(url) => parts.push(json!({
+                            "type": "image_url",
+                            "image_url": { "url": url },
+                        })),
+                        None => parts.push(json!({
+                            "type": "text",
+                            "text": format!("(image unavailable: {})", img.path.display()),
+                        })),
+                    }
+                }
+                out.push(json!({ "role": "user", "content": parts }));
+            }
+        };
+    }
+
     for m in messages {
         // UI-only compaction/plan card rows — render metadata, never context.
         if m.role == Role::System
@@ -345,6 +387,9 @@ fn build_messages_dev(
         match m.role {
             Role::Assistant => {
                 flush_missing!();
+                // A new assistant turn closes the previous tool-result run —
+                // any frames it carried must already be on the wire.
+                flush_tool_images!();
                 // Rewrite empty call ids in the emitted message so the wire
                 // and the pairing ledger agree.
                 if let Some(calls) = v.get_mut("tool_calls").and_then(|c| c.as_array_mut()) {
@@ -389,12 +434,16 @@ fn build_messages_dev(
                     if result_name {
                         v["name"] = json!(names.get(&call_id).cloned().unwrap_or_default());
                     }
+                    // Staged, not emitted: the frames wait until this run of
+                    // tool results ends (below) so no `tool` row is split.
+                    tool_images.extend(m.images.iter().cloned());
                     out.push(v);
                 } else if let Some(pos) = expected.iter().position(|id| *id == call_id) {
                     expected.remove(pos);
                     if result_name {
                         v["name"] = json!(names.get(&call_id).cloned().unwrap_or_default());
                     }
+                    tool_images.extend(m.images.iter().cloned());
                     out.push(v);
                 }
                 // else: orphan tool output — drop it.
@@ -409,11 +458,15 @@ fn build_messages_dev(
                         }
                     }
                 }
+                // Placeholders first (they are `tool` rows and belong to the
+                // run), then the frames — this user row is the boundary.
                 flush_missing!();
+                flush_tool_images!();
                 out.push(v);
             }
             _ => {
                 flush_missing!();
+                flush_tool_images!();
                 out.push(v);
             }
         }
@@ -421,6 +474,7 @@ fn build_messages_dev(
     // Trailing dangling calls — the last assistant row ended the history
     // mid-tools (cancelled turn, crash before persist).
     flush_missing!();
+    flush_tool_images!();
     out
 }
 
@@ -688,6 +742,106 @@ mod tests {
 
     fn call(id: &str) -> ToolCall {
         ToolCall { id: id.into(), name: "bash".into(), arguments: "{}".into() }
+    }
+
+    /// A tool result that carries a screenshot cannot put the frame inside
+    /// its `role:"tool"` row (this protocol's tool content is text-only), so
+    /// the frame rides a synthetic `user` message emitted AFTER the run of
+    /// tool rows — never wedged between two outputs of the same turn.
+    #[test]
+    fn tool_images_ride_a_synthetic_user_turn_after_the_tool_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+
+        let mut calls_msg = m(Role::Assistant, "");
+        calls_msg.tool_calls = Some(vec![call("call_1"), call("call_2")]);
+        let plain = m(Role::Tool, "second result");
+        let mut plain = plain;
+        plain.tool_call_id = Some("call_2".into());
+        let mut shot = m(Role::Tool, "shot: 1568x882");
+        shot.tool_call_id = Some("call_1".into());
+        shot.images = crate::types::ImageRef::for_path(png).into_iter().collect();
+
+        let out = build_messages(&[
+            m(Role::System, "kernel"),
+            calls_msg,
+            shot,
+            plain,
+            m(Role::User, "next question"),
+        ]);
+
+        // Roles in order: system, assistant, tool, tool, user(frames), user.
+        let roles: Vec<&str> = out.iter().map(|r| r["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["system", "assistant", "tool", "tool", "user", "user"]);
+
+        // The frames land strictly after BOTH tool rows of the run.
+        let frames = &out[4];
+        let parts = frames["content"].as_array().expect("synthetic user is a parts array");
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert!(parts[1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        // The tool rows themselves stay plain strings.
+        assert!(out[2]["content"].is_string());
+        assert!(out[3]["content"].is_string());
+        assert!(out[2].get("images").is_none(), "images must not leak onto the wire");
+    }
+
+    /// A tool row whose image file is gone degrades to a text note — the
+    /// request still goes out.
+    #[test]
+    fn missing_tool_image_degrades_to_a_note() {
+        let mut calls_msg = m(Role::Assistant, "");
+        calls_msg.tool_calls = Some(vec![call("call_1")]);
+        let mut shot = m(Role::Tool, "text");
+        shot.tool_call_id = Some("call_1".into());
+        shot.images = crate::types::ImageRef::for_path("/nonexistent/x.png".into())
+            .into_iter()
+            .collect();
+        let out = build_messages(&[m(Role::System, "k"), calls_msg, shot, m(Role::User, "q")]);
+        // system, assistant, tool, then the synthetic frame turn, then `q`.
+        let parts = out[3]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "text");
+        assert!(parts[1]["text"].as_str().unwrap().contains("image unavailable"));
+    }
+
+    /// No images → no synthetic row. The wire stays byte-identical to the
+    /// shape every existing request already produced.
+    #[test]
+    fn no_tool_images_means_no_synthetic_turn() {
+        let mut calls_msg = m(Role::Assistant, "");
+        calls_msg.tool_calls = Some(vec![call("call_1")]);
+        let mut res = m(Role::Tool, "plain result");
+        res.tool_call_id = Some("call_1".into());
+        let out = build_messages(&[m(Role::System, "k"), calls_msg, res, m(Role::User, "q")]);
+        let roles: Vec<&str> = out.iter().map(|r| r["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["system", "assistant", "tool", "user"]);
+    }
+
+    /// The synthetic frame turn must precede a following assistant turn too —
+    /// not just a user one — or the frames are silently dropped at the next
+    /// model round.
+    #[test]
+    fn frames_are_not_stranded_before_an_assistant_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("s.png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+        let mut calls_msg = m(Role::Assistant, "");
+        calls_msg.tool_calls = Some(vec![call("call_1")]);
+        let mut shot = m(Role::Tool, "shot");
+        shot.tool_call_id = Some("call_1".into());
+        shot.images = crate::types::ImageRef::for_path(png).into_iter().collect();
+        let mut next_calls = m(Role::Assistant, "thinking");
+        next_calls.tool_calls = Some(vec![call("call_2")]);
+
+        let out = build_messages(&[m(Role::System, "k"), calls_msg, shot, next_calls]);
+        let roles: Vec<&str> = out.iter().map(|r| r["role"].as_str().unwrap()).collect();
+        // The frame turn sits between the tool output and the next assistant.
+        // The trailing placeholder closes `call_2`, which never got an output
+        // (the pre-existing dangling-call repair).
+        assert_eq!(roles, ["system", "assistant", "tool", "user", "assistant", "tool"]);
+        assert!(out[3]["content"].as_array().is_some());
     }
 
     /// The stored reasoning trace is ours to replay, not the provider's to

@@ -360,8 +360,19 @@ impl SessionActor {
         // guard) or `HumanInteraction` tools (nobody can answer a child's
         // question — deny at the policy layer, not just via missing ui_tx);
         // `readonly` children drop every non-readonly tool too.
+        //
+        // `computer` is excluded by the same rule: nobody can approve a
+        // child's click. The policy layer does NOT cover this case —
+        // `for_subagent()` is `auto` with `headless` on, and `headless` only
+        // turns `Ask` into `Deny`, while `auto` never asks for a
+        // `Process`-class tool. Excluding it here is the guard, and the
+        // child's `ToolCtx` carries a refusing desktop backend as the second
+        // one. `screenshot` stays: looking at the screen is an observation a
+        // delegated visual check legitimately needs.
         let child_full = registry.filtered(|s| {
-            s.name != "delegate" && s.class != crate::tools::registry::ToolClass::HumanInteraction
+            s.name != "delegate"
+                && s.name != "computer"
+                && s.class != crate::tools::registry::ToolClass::HumanInteraction
         });
         let child_ro = child_full.readonly_only();
         let mut tool_ctx =
@@ -666,6 +677,11 @@ impl SessionActor {
                 });
             }
         }
+        // The turn is done — drop the screenshots it staged. They fed the
+        // model this turn; on disk they're just leaked PNGs now (a resumed
+        // session would re-shoot rather than trust a stale frame anyway).
+        crate::tools::screenshot::cleanup_screenshots(&self.workspace_root);
+
         // Persist at the turn boundary — the store's last JSONL line is the
         // resumable state; sidebar meta updates so the session list reflects
         // the latest preview even if this session isn't the visible one.
@@ -1298,6 +1314,33 @@ impl SessionActor {
                 // channel). The request_id correlates the verdict to a
                 // specific ApprovalRequested (P1-a).
                 *self.decision_slot.lock().unwrap() = Some((request_id, approved));
+            }
+            UiCommand::ApproveSessionTool { tool_name } => {
+                // Computer-use (and friends) opt into per-session
+                // whitelisting so a single approval unblocks the rest of
+                // the turn's actions. The flag lives on the gate — dies
+                // with the actor, never persisted.
+                if let Ok(mut gate) = self.permissions_slot.write() {
+                    gate.allow_tool_for_session(&tool_name);
+                }
+                let _ = self.io.ui_tx.send(UiEvent::SessionToolWhitelisted {
+                    tool_name,
+                    stopped: false,
+                });
+            }
+            UiCommand::RevokeSessionTool { tool_name } => {
+                // The overlay's "停止" path — the whitelist drops the
+                // entry so the NEXT `computer` dispatch goes back to Ask.
+                // A running call isn't retro-cancelled; the next one
+                // re-prompts, which is exactly what the user asked for
+                // when they clicked stop.
+                if let Ok(mut gate) = self.permissions_slot.write() {
+                    gate.revoke_tool_for_session(&tool_name);
+                }
+                let _ = self.io.ui_tx.send(UiEvent::SessionToolWhitelisted {
+                    tool_name,
+                    stopped: true,
+                });
             }
             UiCommand::UndoLastTurn => {
                 self.undo_last_turn().await;

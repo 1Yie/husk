@@ -157,6 +157,22 @@ impl PermissionGate {
         self.rules.allow.extend(rules.allow);
     }
 
+    /// Whitelist `tool_name` for the rest of this session — the
+    /// "本会话允许" path for computer-use. The decision is session-scoped:
+    /// `rules.allow` lives on this gate, dies with the actor, and never
+    /// touches `~/.config/husk`. Idempotent.
+    pub fn allow_tool_for_session(&mut self, tool_name: &str) {
+        self.rules.allow.insert(tool_name.to_string());
+    }
+
+    /// Remove `tool_name` from the session whitelist — the overlay's
+    /// "停止" button path. Idempotent: removing a tool that was never
+    /// whitelisted is a no-op, which is the right answer for a revoke
+    /// arriving after the actor dropped the entry some other way.
+    pub fn revoke_tool_for_session(&mut self, tool_name: &str) {
+        self.rules.allow.remove(tool_name);
+    }
+
     /// Decide one tool call. `tool_name` + `is_readonly` come from the
     /// registry; `command` is the shell text for `bash`/`pty` calls (empty
     /// for file tools); `diff_summary` is pre-computed for `Ask` cards.
@@ -207,6 +223,25 @@ impl PermissionGate {
                     diff_summary: diff_summary.into(),
                 };
             }
+        }
+        // Synthetic input (mouse/keyboard on the real desktop) is the
+        // highest-risk tool class — the model is moving the user's actual
+        // pointer, typing into their focused window, and reading the
+        // screen back. Every interactive mode asks by default, including
+        // `auto` and `bypass`: an autonomous mode that skips this gate lets
+        // the model hijack the desktop in a single turn. The escape hatch
+        // is the session-scoped whitelist written by `allow_tool_for_session`
+        // — the UI's "本会话允许" button — which lands in `rules.allow` and
+        // short-circuits this check. `deny` still wins outright, and
+        // `dontAsk` keeps its "no questions asked" contract by denying the
+        // call rather than asking.
+        if tool_name == "computer"
+            && !self.rules.allow.contains(tool_name)
+            && self.mode != PermissionMode::DontAsk
+        {
+            return Decision::Ask {
+                diff_summary: diff_summary.into(),
+            };
         }
         // 2. Explicit ask.
         if self.rules.ask.contains(tool_name) {
@@ -488,6 +523,44 @@ mod tests {
             g.decide("some_process", Some(ToolClass::Process), false, None, ""),
             Decision::Ask { .. }
         ));
+    }
+
+    /// `computer` is elevated above mode: even `auto` and
+    /// `bypassPermissions` ask for it. The only way past the ask is the
+    /// session whitelist written by `allow_tool_for_session`.
+    #[test]
+    fn computer_asks_in_every_mode_until_session_allowed() {
+        for mode in ["default", "acceptEdits", "auto", "bypassPermissions"] {
+            let g = gate(mode);
+            assert!(
+                matches!(
+                    g.decide("computer", Some(ToolClass::Process), false, None, ""),
+                    Decision::Ask { .. }
+                ),
+                "mode {mode} should ask for `computer`"
+            );
+        }
+
+        // `dontAsk` denies outright (it doesn't trust Ask either — nothing
+        // pre-approved means nothing runs).
+        let g = gate("dontAsk");
+        assert!(matches!(
+            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            Decision::Deny { .. }
+        ));
+
+        // Session whitelist unblocks the ask — every mode.
+        for mode in ["default", "auto", "bypassPermissions", "acceptEdits"] {
+            let mut g = gate(mode);
+            g.allow_tool_for_session("computer");
+            assert!(
+                matches!(
+                    g.decide("computer", Some(ToolClass::Process), false, None, ""),
+                    Decision::Allow
+                ),
+                "session-allowed `computer` should run in {mode}"
+            );
+        }
     }
 
     #[test]

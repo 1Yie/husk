@@ -118,6 +118,24 @@ pub struct ToolCtx {
     /// The sandbox backend for process tools (`bash`, `test_runner`, pty).
     /// `id() == "none"` means loud-unsandboxed: every `bash` must confirm.
     pub sandbox: Arc<dyn agent_sandbox::SandboxBackend>,
+    /// Desktop-control backend for the computer-use tools (`screenshot`,
+    /// `computer`). Always present — `id() == "none"` refuses per call with
+    /// the probe's reason, the same loud-fallback shape as `sandbox`.
+    ///
+    /// Deliberately NOT routed through `sandbox`: bwrap's `--clearenv` +
+    /// `--tmpfs /tmp` make the X socket unreachable by construction, so a
+    /// sandboxed desktop tool is a broken feature rather than a hardened one.
+    /// The defence for synthetic input is the permission gate.
+    ///
+    /// Shared across clones: `with_cancel` and `with_desktop` hand out `Arc`
+    /// handles to the same backend, whose `last` capture drives coordinate
+    /// mapping for every `computer` call. That is the intent — a screenshot
+    /// taken in one tool call steers the click in the next. It also means a
+    /// `batch_execute` that fans out `screenshot`+`computer` items runs
+    /// them against one shared scale: keep the two sequenced (screenshot in
+    /// one batch item, computer actions in the next) rather than issuing
+    /// them concurrently, or the click can map onto the previous frame.
+    pub desktop: Arc<dyn agent_computer::DesktopBackend>,
     /// Owning session's id + its per-workspace store. Tools that keep
     /// per-session scratch state (`todo`) write next to the session's
     /// history file in the app state dir — never into the user's repo.
@@ -165,6 +183,7 @@ impl ToolCtx {
         Self {
             workspace_root: Arc::from(root.as_path()),
             sandbox: Arc::from(sandbox),
+            desktop: agent_computer::detect_backend(),
             session: None,
             cancel: None,
             subagent: None,
@@ -187,6 +206,9 @@ impl ToolCtx {
         Self {
             workspace_root: Arc::from(root.as_path()),
             sandbox,
+            // Host probe, same as `new` — a test that wants a deterministic
+            // desktop pairs this with `with_desktop`.
+            desktop: agent_computer::detect_backend(),
             session: None,
             cancel: None,
             subagent: None,
@@ -197,6 +219,16 @@ impl ToolCtx {
             goal: Arc::new(crate::tools::goal::GoalController::new()),
             plan: Arc::new(crate::tools::plan::PlanController::new()),
         }
+    }
+
+    /// Explicit desktop backend (tests / custom wiring) — the determinism
+    /// seam for the computer-use tools, mirroring `with_sandbox`.
+    pub fn with_desktop(
+        mut self,
+        desktop: Arc<dyn agent_computer::DesktopBackend>,
+    ) -> Self {
+        self.desktop = desktop;
+        self
     }
 
     /// Attach the owning session — gives tools access to per-session
@@ -219,6 +251,7 @@ impl ToolCtx {
         ToolCtx {
             workspace_root: self.workspace_root.clone(),
             sandbox: self.sandbox.clone(),
+            desktop: self.desktop.clone(),
             session: self.session.clone(),
             cancel: Some(cancel),
             subagent: self.subagent.clone(),
@@ -313,6 +346,10 @@ pub struct ToolResult {
     /// read-only tools and tools that manage their own side effects. A
     /// multi-file tool (`apply_patch`) stages one entry per file op.
     pub pending_write: Vec<PendingWrite>,
+    /// Staged image refs this result carries as model input (a screenshot).
+    /// The engine hangs them on the tool message; adapters encode or annotate
+    /// them per their wire (only the vision-capable ones get real parts).
+    pub images: Vec<agent_llm::types::ImageRef>,
 }
 
 impl ToolResult {
@@ -322,6 +359,7 @@ impl ToolResult {
             ui_type: None,
             fuzzy: false,
             pending_write: Vec::new(),
+            images: Vec::new(),
         }
     }
 }
@@ -417,6 +455,8 @@ impl ToolRegistry {
         r.register(crate::tools::serena::spec());
         r.register(crate::tools::web_fetch::spec());
         r.register(crate::tools::web_fetch::spec_alias());
+        r.register(crate::tools::screenshot::spec());
+        r.register(crate::tools::computer::spec());
         r.register(crate::tools::delegate::spec());
         r.register(crate::tools::ask::spec());
         r.register(crate::tools::batch::spec());

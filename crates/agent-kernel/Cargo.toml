@@ -10,6 +10,7 @@ agent-context = { path = "../agent-context" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }
 agent-sandbox = { path = "../agent-sandbox" }
+agent-computer = { path = "../agent-computer" }
 agent-plugin = { path = "../agent-plugin" }
 reqwest.workspace = true
 htmd.workspace = true
@@ -34,3 +35,9 @@ grep-matcher.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# The computer-use acceptance test installs a scripted desktop backend and
+# writes a real PNG through it — both crates are normal deps, listed here for
+# the test target's own imports.
+agent-computer = { path = "../agent-computer" }
+image.workspace = true
+async-trait.workspace = true

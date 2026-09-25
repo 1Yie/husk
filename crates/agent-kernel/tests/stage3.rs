@@ -16,7 +16,7 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 #[tokio::test]
 async fn registry_lists_builtins() {
     let r = registry();
-    assert_eq!(r.len(), 15);
+    assert_eq!(r.len(), 17);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -37,6 +37,8 @@ async fn registry_lists_builtins() {
         "skill",
         "web_fetch",
         "webfetch",
+        "screenshot",
+        "computer",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
@@ -50,6 +52,9 @@ async fn registry_lists_builtins() {
     // Loading a skill reads instruction files only — never the workspace — so
     // it is auto-approved and stays available in plan mode.
     assert!(r.is_readonly("skill"));
+    // Looking at the screen is an observation; driving it is not.
+    assert!(r.is_readonly("screenshot"));
+    assert!(!r.is_readonly("computer"));
     assert!(!r.is_readonly("fuzzy_patch"));
     assert!(!r.is_readonly("bash"));
 }
