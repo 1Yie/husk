@@ -53,7 +53,8 @@ jobs:
           - platform: macos-14
             target: aarch64-apple-darwin
             label: macOS Apple Silicon
-          - platform: macos-13
+          # macos-13 was retired; macos-15-intel is the current Intel image.
+          - platform: macos-15-intel
             target: x86_64-apple-darwin
             label: macOS Intel
           - platform: ubuntu-22.04
