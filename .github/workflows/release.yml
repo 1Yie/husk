@@ -117,4 +117,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ env.RELEASE_TAG }}
-        run: gh release edit "$TAG" --notes-file changelog.md --draft=false --latest
+        # --repo because this job never checks out — gh can't infer it from .git
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file changelog.md --draft=false --latest
