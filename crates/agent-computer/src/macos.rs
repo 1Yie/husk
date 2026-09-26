@@ -22,6 +22,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use image::GenericImageView;
 
 use crate::traits::{
     fit_dimensions, Capture, DesktopBackend, MouseButton, ScrollDir, ScreenshotMeta, MAX_EDGE,
@@ -79,8 +80,11 @@ impl DesktopBackend for MacBackend {
             .await
             .context("screencapture")?;
 
+        // Decode + downscale is CPU-bound and takes ~100–300 ms on a 4K grab.
+        // The closure owns its copy of `raw`; the local one stays for cleanup.
         let dest_buf = dest.to_path_buf();
-        let meta = tokio::task::spawn_blocking(move || downscale_png(&raw, &dest_buf))
+        let raw_for_task = raw.clone();
+        let meta = tokio::task::spawn_blocking(move || downscale_png(&raw_for_task, &dest_buf))
             .await
             .context("screenshot task panicked")??;
         let _ = std::fs::remove_file(&raw);
@@ -121,17 +125,14 @@ impl DesktopBackend for MacBackend {
         if text.is_empty() {
             return Ok(());
         }
-        // CGEventKeyboardSetUnicodeString types arbitrary UTF-16 — the same
-        // path as SendInput's KEYEVENTF_UNICODE on Windows.
-        for unit in text.encode_utf16() {
-            if unit > 0xFFFF {
-                // Supplementary planes need a surrogate pair — emit it twice.
-                cg_key_unicode(unit)?;
-            } else {
-                cg_key_unicode(unit)?;
-            }
-        }
-        Ok(())
+        // CGEventKeyboardSetUnicodeString takes the whole UTF-16 buffer in
+        // one event — surrogate pairs stay together so supplementary-plane
+        // chars actually compose (a per-unit event stream can't rebuild
+        // them). Same path as SendInput's KEYEVENTF_UNICODE on Windows.
+        let ev = CGEvent::new_keyboard_event(event_source()?, 0, true)
+            .map_err(|_| anyhow!("CGEvent type-text"))?;
+        ev.set_string(text);
+        post(ev)
     }
 
     async fn key(&self, combo: &str, hold_ms: Option<u64>) -> Result<()> {
@@ -273,6 +274,12 @@ async fn run(cmd: &str, args: &[&str], timeout: Duration) -> Result<String> {
 
 /* ============================ input ============================ */
 
+// `check-macos` builds this module off-target against a stub — the alias
+// makes every `core_graphics::` path below resolve to it there and to the
+// real crate on macOS.
+#[cfg(not(target_os = "macos"))]
+use crate::core_graphics_stub as core_graphics;
+
 use core_graphics::event::{
     CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, ScrollEventUnit,
 };
@@ -354,17 +361,6 @@ fn cg_click(x: i32, y: i32, b: MouseButton, double: bool) -> Result<()> {
         cg_up(x, y, b)?;
     }
     Ok(())
-}
-
-/// `CGEventKeyboardSetUnicodeString` — press+release a single UTF-16 unit.
-fn cg_key_unicode(unit: u16) -> Result<()> {
-    let ev = CGEvent::new_keyboard_event(event_source()?, 0, true)
-        .map_err(|_| anyhow!("CGEvent keydown"))?;
-    ev.set_unicode_string(&[unit]);
-    post(ev)?;
-    let ev = CGEvent::new_keyboard_event(event_source()?, 0, false)
-        .map_err(|_| anyhow!("CGEvent keyup"))?;
-    post(ev)
 }
 
 /// Map a name to a macOS keycode and press/release it.

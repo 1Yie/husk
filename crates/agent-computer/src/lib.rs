@@ -24,7 +24,13 @@ pub mod x11;
 // own target, the same way `detect` only probes them there.
 #[cfg(target_os = "windows")]
 pub mod windows;
-#[cfg(target_os = "macos")]
+
+// Off-target typecheck: `check-macos` compiles the macOS backend on
+// Linux/CI against a pure-Rust `core-graphics` stub so API drift breaks a
+// normal `cargo check` instead of only surfacing on a macOS runner.
+#[cfg(all(feature = "check-macos", not(target_os = "macos")))]
+mod core_graphics_stub;
+#[cfg(any(target_os = "macos", feature = "check-macos"))]
 pub mod macos;
 
 pub use detect::detect_backend;
