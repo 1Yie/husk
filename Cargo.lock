@@ -81,6 +81,7 @@ dependencies = [
  "htmd",
  "ignore",
  "image",
+ "redb",
  "reqwest 0.12.28",
  "schemars 1.2.2",
  "serde",

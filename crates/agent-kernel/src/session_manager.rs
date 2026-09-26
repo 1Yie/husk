@@ -1933,8 +1933,8 @@ mod tests {
 
     #[test]
     fn test_model_info_with_devin_swe2() {
-        // `spawn()`/boot resolution reads the global `default_preferences.json`,
-        // which is machine-local developer state — a dev box saved with
+        // `spawn()`/boot resolution reads the global `default_preferences`
+        // row, which is machine-local developer state — a dev box saved with
         // thinking=max made the bare assertions read ambient settings instead
         // of the test's own. Pin the winning layer *before* boot: per-workspace
         // prefs outrank global defaults, and the session actor's slots are
@@ -1942,8 +1942,8 @@ mod tests {
         // those slots, so writing prefs post-spawn would be too late).
         let dir = tempfile::tempdir().unwrap();
         let canon = dir.path().canonicalize().unwrap();
-        crate::session_store::SessionStore::open(&canon)
-            .unwrap()
+        let store = crate::session_store::SessionStore::open(&canon).unwrap();
+        store
             .save_prefs(&crate::session_store::WorkspacePrefs {
                 provider: Some("devin".into()),
                 model: Some("devin/swe-2".into()),
@@ -1968,14 +1968,9 @@ mod tests {
         assert!(swe2.reasoning);
         assert_eq!(swe2.available_levels, vec!["off", "medium", "high", "max"]);
 
-        // The prefs write landed in the real sessions dir keyed by a temp
-        // workspace — don't leave the dead key behind.
-        if let Some(base) = crate::session_store::app_data_dir() {
-            let _ = std::fs::remove_dir_all(
-                base.join("sessions")
-                    .join(crate::session_store::workspace_key(&canon)),
-            );
-        }
+        // The store wrote rows under the temp workspace's key — drop them so
+        // the shared db isn't left with a dead workspace.
+        store.delete_workspace().unwrap();
     }
 
     #[test]

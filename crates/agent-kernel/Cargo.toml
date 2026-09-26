@@ -29,6 +29,7 @@ xxhash-rust.workspace = true
 ignore.workspace = true
 globset.workspace = true
 dirs.workspace = true
+redb = "4.3.0"
 grep-searcher.workspace = true
 grep-regex.workspace = true
 grep-matcher.workspace = true
