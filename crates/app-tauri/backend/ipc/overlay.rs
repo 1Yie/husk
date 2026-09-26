@@ -57,21 +57,30 @@ fn spawn_glow(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let win = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         "computer-glow",
         WebviewUrl::App("overlay-glow.html".into()),
     )
     .title("Husk — computer control")
     .decorations(false)
-    .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
     .visible(false)
-    .fullscreen(true)
-    .build()
-    .map_err(|e| format!("spawn glow window: {e}"))?;
+    .fullscreen(true);
+
+    // `.transparent` is compiled out on macOS (`#[cfg(any(not(macos),
+    // macos-private-api))]`) — calling it unconditionally breaks the macOS
+    // cross-compile. Real overlay transparency there needs the
+    // `macos-private-api` Tauri feature; until that's enabled the glow is
+    // non-transparent on macOS but the window still builds and runs.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.transparent(true);
+
+    let win = builder
+        .build()
+        .map_err(|e| format!("spawn glow window: {e}"))?;
 
     // The entire surface must pass clicks through — this window exists
     // only to paint, not to interact.
@@ -100,11 +109,9 @@ fn spawn_hud(app: &AppHandle) -> Result<(), String> {
         )
         .title("Husk — controlling")
         .decorations(false)
-        // NOT transparent: the HUD is a solid card filling its window, so
-        // alpha buys nothing — and on NVIDIA/webkit2gtk an RGBA surface
-        // composites as opaque black anyway. Keeping it opaque removes the
-        // whole driver-transparency variable.
-        .transparent(false)
+        // NOT transparent — the HUD is a solid card filling its window, so
+        // alpha buys nothing (and `.transparent` doesn't even exist on macOS).
+        // Opaque is the default anyway, so there's no call to make.
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
