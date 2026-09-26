@@ -4,7 +4,6 @@
 //! speaks the normalized `StreamChunk` protocol, so adding a provider means adding
 //! one adapter file.
 
-
 pub mod adapters;
 pub mod config;
 pub mod factory;
@@ -17,8 +16,8 @@ pub mod types;
 
 pub use config::{
     AppConfig, ConfigWarning, CostTier, ImageLimits, ImageResize, InputLimits, ModelConfig,
-    ModelCost, ModelEntry, ModelOverride, PromptCache, ProviderCompat, ProviderConfig, ProviderKind,
-    THINKING_LEVELS,
+    ModelCost, ModelEntry, ModelOverride, PromptCache, ProviderCompat, ProviderConfig,
+    ProviderKind, THINKING_LEVELS,
 };
 pub use factory::ProviderFactory;
 pub use masking::EgressMasker;

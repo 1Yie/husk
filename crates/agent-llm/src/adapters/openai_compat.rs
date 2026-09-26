@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::provider::{BoxStream, LlmProvider, ModelParams};
 use crate::transport::{DoneGuard, Transport};
-use crate::types::{ChatMessage, ImageRef, NoticeKind, Role, StreamChunk};
+use crate::types::{ChatMessage, HarmonyStripper, ImageRef, NoticeKind, Role, StreamChunk};
 
 /// One provider for every OpenAI-shaped backend. `api_key` is the *resolved*
 /// secret — config's `env:`/`keyring:` indirection happens in `factory`.
@@ -32,10 +32,7 @@ pub struct GenericOpenAiProvider {
 }
 
 impl GenericOpenAiProvider {
-    pub fn new(
-        base_url: impl Into<String>,
-        api_key: impl Into<String>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> anyhow::Result<Self> {
         Ok(Self {
             transport: Transport::new()?,
             base_url: base_url.into().trim_end_matches('/').to_string(),
@@ -152,10 +149,16 @@ fn map_data(data: &str, pending_usage: &mut Option<WireUsage>) -> Vec<StreamChun
     let chunk: WireChunk = match serde_json::from_str(data) {
         Ok(c) => c,
         Err(e) => {
-            return vec![StreamChunk::Error(format!(
-                "malformed SSE JSON: {e}; payload: {}",
-                &data[..data.len().min(120)]
-            ))]
+// A shim that forwards the model's raw harmony framing as a `data:`
+// frame — markup junk, not a model turn. Fatal-ing here ended the
+// whole session loop; drop the frame and let the stream continue.
+if data.contains("<|") {
+return Vec::new();
+}
+return vec![StreamChunk::Error(format!(
+"malformed SSE JSON: {e}; payload: {}",
+&data[..data.len().min(120)]
+))]
         }
     };
 
@@ -220,9 +223,9 @@ pub fn test_map_data(
 ) -> Vec<StreamChunk> {
     // Bridge: internal map_data uses the concrete WireUsage; tests just need
     // "did usage fold into Done" — emulate by stashing a marker.
-    let mut internal: Option<WireUsage> = pending_usage.as_ref().and_then(|v| {
-        serde_json::from_value::<WireUsage>(v.clone()).ok()
-    });
+    let mut internal: Option<WireUsage> = pending_usage
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<WireUsage>(v.clone()).ok());
     let out = map_data(data, &mut internal);
     *pending_usage = internal.map(|u| serde_json::to_value(u).unwrap_or_default());
     out
@@ -233,11 +236,12 @@ pub fn test_map_data(
 /// image refs becomes a content-parts array (text first, `image_url` parts
 /// after; unresolvable refs degrade to a text note).
 fn serialize_message(m: &ChatMessage) -> serde_json::Value {
-    let mut v = serde_json::to_value(m).unwrap_or_else(|_| {
-        json!({ "role": "user", "content": "" })
-    });
+    let mut v =
+        serde_json::to_value(m).unwrap_or_else(|_| json!({ "role": "user", "content": "" }));
     if let Some(obj) = v.as_object_mut() {
-        obj.remove("is_error"); obj.remove("notice"); obj.remove("ts");
+        obj.remove("is_error");
+        obj.remove("notice");
+        obj.remove("ts");
         obj.remove("duration_ms");
         // The stored reasoning trace is ours to replay, not the provider's to
         // read: strict backends reject unknown fields outright.
@@ -368,7 +372,10 @@ fn build_messages_dev(
     for m in messages {
         // UI-only compaction/plan card rows — render metadata, never context.
         if m.role == Role::System
-            && matches!(m.notice, Some(NoticeKind::Compacted) | Some(NoticeKind::Plan))
+            && matches!(
+                m.notice,
+                Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)
+            )
         {
             continue;
         }
@@ -485,7 +492,11 @@ fn build_messages_dev(
 /// Dialects not yet mapped here fall back to `reasoning_effort`, which is
 /// what every OpenAI-compatible shim that isn't one of the listed dialects
 /// accepts.
-fn apply_thinking(body: &mut serde_json::Value, compat: &crate::config::ProviderCompat, effort: &str) {
+fn apply_thinking(
+    body: &mut serde_json::Value,
+    compat: &crate::config::ProviderCompat,
+    effort: &str,
+) {
     match compat.thinking_format_name() {
         // `reasoning: { effort }` — OpenRouter's shape.
         "openrouter" => {
@@ -585,7 +596,10 @@ fn resolve_thinking_var(
     let enabled = effort != "none" && effort != "off";
     // `omitWhenOff` drops the key entirely when thinking is disabled — the
     // caller re-reads this sentinel and removes it.
-    let omit = obj.get("omitWhenOff").and_then(|x| x.as_bool()).unwrap_or(false);
+    let omit = obj
+        .get("omitWhenOff")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
     if !enabled && omit {
         *v = serde_json::Value::Null;
         return;
@@ -696,20 +710,60 @@ impl LlmProvider for GenericOpenAiProvider {
         let done = DoneGuard::new();
         let pending2 = pending_usage.clone();
         let flag = done.clone();
+        // gpt-oss/harmony models leak `<|…|>` framing tokens into `content`
+        // AND `reasoning` on some shims — strip both channels or the tokens
+        // land in history (persisted thinking trace) and the UI verbatim.
+        // `Arc<Mutex>`: the `FnMut` closure outlives one call and the `Done`
+        // flush below reads any tail still held when the stream ends.
+        let harmony = std::sync::Arc::new(std::sync::Mutex::new(HarmonyStripper::new()));
+        let harmony2 = harmony.clone();
+        let harmony_r = std::sync::Arc::new(std::sync::Mutex::new(HarmonyStripper::new()));
+        let harmony_r2 = harmony_r.clone();
 
-        let stream = data.flat_map(move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
-            let items: Vec<anyhow::Result<StreamChunk>> = match res {
-                Err(e) => vec![Err(e)],
-                Ok(d) => map_data(&d, &mut *pending2.lock().unwrap())
-                    .into_iter()
-                    .map(|c| {
-                        flag.observe(&c);
-                        Ok(c)
-                    })
-                    .collect(),
-            };
-            futures::stream::iter(items)
-        });
+        let stream = data.flat_map(
+            move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
+                let items: Vec<anyhow::Result<StreamChunk>> = match res {
+                    Err(e) => vec![Err(e)],
+                    Ok(d) => {
+                        let mapped = map_data(&d, &mut *pending2.lock().unwrap());
+                        // A `Done` (real or synthesized next) ends the stream —
+                        // flush any held text out of the stripper BEFORE it, so
+                        // a `<` tail that never became a token isn't dropped.
+                        let mut out: Vec<StreamChunk> = Vec::with_capacity(mapped.len() + 1);
+                        for c in mapped {
+                            let is_done = matches!(c, StreamChunk::Done { .. });
+                            if is_done {
+                                if let Some(t) = harmony_r2.lock().unwrap().flush() {
+                                    out.push(StreamChunk::ReasoningDelta(t));
+                                }
+                                if let Some(t) = harmony2.lock().unwrap().flush() {
+                                    out.push(StreamChunk::ContentDelta(t));
+                                }
+                            }
+                            let c = match c {
+                                StreamChunk::ReasoningDelta(t) => {
+                                    match harmony_r2.lock().unwrap().feed(&t) {
+                                        Some(t) => StreamChunk::ReasoningDelta(t),
+                                        None => continue, // fully held
+                                    }
+                                }
+                                StreamChunk::ContentDelta(t) => {
+                                    match harmony2.lock().unwrap().feed(&t) {
+                                        Some(t) => StreamChunk::ContentDelta(t),
+                                        None => continue, // fully held
+                                    }
+                                }
+                                other => other,
+                            };
+                            flag.observe(&c);
+                            out.push(c);
+                        }
+                        out.into_iter().map(Ok).collect()
+                    }
+                };
+                futures::stream::iter(items)
+            },
+        );
 
         // Guarantee Done-exactly-once: if the backend closed without [DONE]
         // or a trailing usage chunk, synthesize it at stream end — carrying
@@ -727,6 +781,7 @@ impl LlmProvider for GenericOpenAiProvider {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,14 +789,25 @@ mod tests {
 
     fn m(role: Role, text: &str) -> ChatMessage {
         ChatMessage {
-            role, content: Some(text.into()), tool_calls: None,
-            tool_call_id: None, is_error: None, notice: None, ts: None, reasoning: None, duration_ms: None,
+            role,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: None,
+            ts: None,
+            reasoning: None,
+            duration_ms: None,
             images: Vec::new(),
         }
     }
 
     fn call(id: &str) -> ToolCall {
-        ToolCall { id: id.into(), name: "bash".into(), arguments: "{}".into() }
+        ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }
     }
 
     /// A tool result that carries a screenshot cannot put the frame inside
@@ -773,18 +839,29 @@ mod tests {
 
         // Roles in order: system, assistant, tool, tool, user(frames), user.
         let roles: Vec<&str> = out.iter().map(|r| r["role"].as_str().unwrap()).collect();
-        assert_eq!(roles, ["system", "assistant", "tool", "tool", "user", "user"]);
+        assert_eq!(
+            roles,
+            ["system", "assistant", "tool", "tool", "user", "user"]
+        );
 
         // The frames land strictly after BOTH tool rows of the run.
         let frames = &out[4];
-        let parts = frames["content"].as_array().expect("synthetic user is a parts array");
+        let parts = frames["content"]
+            .as_array()
+            .expect("synthetic user is a parts array");
         assert_eq!(parts[0]["type"], "text");
         assert_eq!(parts[1]["type"], "image_url");
-        assert!(parts[1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert!(parts[1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
         // The tool rows themselves stay plain strings.
         assert!(out[2]["content"].is_string());
         assert!(out[3]["content"].is_string());
-        assert!(out[2].get("images").is_none(), "images must not leak onto the wire");
+        assert!(
+            out[2].get("images").is_none(),
+            "images must not leak onto the wire"
+        );
     }
 
     /// A tool row whose image file is gone degrades to a text note — the
@@ -803,7 +880,10 @@ mod tests {
         let parts = out[3]["content"].as_array().unwrap();
         assert_eq!(parts[0]["type"], "text");
         assert_eq!(parts[1]["type"], "text");
-        assert!(parts[1]["text"].as_str().unwrap().contains("image unavailable"));
+        assert!(parts[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("image unavailable"));
     }
 
     /// No images → no synthetic row. The wire stays byte-identical to the
@@ -840,7 +920,10 @@ mod tests {
         // The frame turn sits between the tool output and the next assistant.
         // The trailing placeholder closes `call_2`, which never got an output
         // (the pre-existing dangling-call repair).
-        assert_eq!(roles, ["system", "assistant", "tool", "user", "assistant", "tool"]);
+        assert_eq!(
+            roles,
+            ["system", "assistant", "tool", "user", "assistant", "tool"]
+        );
         assert!(out[3]["content"].as_array().is_some());
     }
 
@@ -853,13 +936,20 @@ mod tests {
         let v = serialize_message(&msg);
         assert!(v.get("reasoning").is_none(), "reasoning leaked: {v}");
         assert_eq!(v["content"], "hello");
-        assert_eq!(msg.reasoning.as_deref(), Some("chain of thought"), "still replayable");
+        assert_eq!(
+            msg.reasoning.as_deref(),
+            Some("chain of thought"),
+            "still replayable"
+        );
     }
 
     /// An empty trace is not a thought block — it must not survive on the row.
     #[test]
     fn with_reasoning_drops_blank_traces() {
-        assert!(m(Role::Assistant, "x").with_reasoning(Some("  \n ".into())).reasoning.is_none());
+        assert!(m(Role::Assistant, "x")
+            .with_reasoning(Some("  \n ".into()))
+            .reasoning
+            .is_none());
     }
 
     #[test]
@@ -873,9 +963,16 @@ mod tests {
         let mut t = m(Role::Tool, "out1");
         t.tool_call_id = Some("call_1".into());
         let msgs = build_messages(&[
-            m(Role::System, "s"), m(Role::User, "q"), a, t, m(Role::Assistant, "done"),
+            m(Role::System, "s"),
+            m(Role::User, "q"),
+            a,
+            t,
+            m(Role::Assistant, "done"),
         ]);
-        let pos_a = msgs.iter().position(|v| v["tool_calls"].is_array()).unwrap();
+        let pos_a = msgs
+            .iter()
+            .position(|v| v["tool_calls"].is_array())
+            .unwrap();
         assert_eq!(msgs[pos_a + 1]["tool_call_id"].as_str().unwrap(), "call_1");
         assert_eq!(msgs[pos_a + 2]["tool_call_id"].as_str().unwrap(), "call_2");
         assert_eq!(msgs[pos_a + 2]["role"].as_str().unwrap(), "tool");
@@ -928,7 +1025,10 @@ mod tests {
         assert_eq!(msgs[0]["role"].as_str().unwrap(), "system");
         assert_eq!(msgs[1]["role"].as_str().unwrap(), "user");
         let text = serde_json::to_string(&msgs).unwrap();
-        assert!(!text.contains("before_tokens"), "card JSON leaked to the wire");
+        assert!(
+            !text.contains("before_tokens"),
+            "card JSON leaked to the wire"
+        );
     }
 
     #[test]
@@ -942,7 +1042,39 @@ mod tests {
         ]);
         assert_eq!(msgs[0]["role"].as_str().unwrap(), "system");
         assert_eq!(msgs[1]["role"].as_str().unwrap(), "user");
-        assert!(msgs[1]["content"].as_str().unwrap().contains("prior summary"));
+        assert!(msgs[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("prior summary"));
         assert_eq!(msgs[2]["role"].as_str().unwrap(), "user");
+    }
+
+    /// A shim that forwards the model's raw harmony framing as a `data:`
+    /// frame produced `malformed SSE JSON` → `StreamChunk::Error` → fatal —
+    /// the turn died and the session loop ended. Framing frames are dropped
+    /// instead; a real corrupt frame without the marker signature still
+    /// errors.
+    #[test]
+    fn framing_data_frames_are_dropped_not_fatal() {
+        let mut u = None;
+        let frame = [
+            "<|", "close", "|>", "argument", "<|", "sep", "|>", "<|", "close", "|>", "call", "<|",
+            "sep", "|>",
+        ]
+        .concat();
+        assert!(test_map_data(&frame, &mut u).is_empty());
+
+        let out = test_map_data("{not json", &mut u);
+        assert!(
+            matches!(&out[0], StreamChunk::Error(e) if e.contains("malformed SSE JSON")),
+            "real corrupt frames still surface an error: {out:?}"
+        );
+        // A payload that happens to contain `<|` inside JSON parses fine and
+        // is unaffected by the framing drop.
+        let ok = test_map_data(r#"{"choices":[{"delta":{"content":"a <| b"}}]}"#, &mut u);
+        assert!(
+            matches!(&ok[0], StreamChunk::ContentDelta(t) if t == "a <| b"),
+            "{ok:?}"
+        );
     }
 }

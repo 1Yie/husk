@@ -6,7 +6,6 @@
 //! * `Error` is a stream item, not stream termination — `SamplerActor` decides
 //!   retry vs propagate.
 
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -41,7 +40,10 @@ impl ImageRef {
             "bmp" => "image/bmp",
             _ => return None,
         };
-        Some(Self { path, media_type: media_type.into() })
+        Some(Self {
+            path,
+            media_type: media_type.into(),
+        })
     }
 
     /// Read the file and frame it as `data:<mime>;base64,<bytes>` — the
@@ -168,10 +170,7 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn content_as_string<S: serde::Serializer>(
-    c: &Option<String>,
-    s: S,
-) -> Result<S::Ok, S::Error> {
+fn content_as_string<S: serde::Serializer>(c: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(c.as_deref().unwrap_or(""))
 }
 
@@ -191,10 +190,32 @@ impl ChatMessage {
     }
 
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::System,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: None,
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::User,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: None,
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     /// Attach staged image refs — only call this when the active model
     /// declares `"image"` in its `input` modalities.
@@ -203,29 +224,84 @@ impl ChatMessage {
         self
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::Assistant,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: None,
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     /// A user-facing system line the live stream emitted via
     /// `UiEvent::SystemMessage` — persisted so a reloaded view replays
     /// it exactly (vs `system()`, which is invisible internal context).
     pub fn notice(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::System), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::System,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: Some(NoticeKind::System),
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     /// Same, for a `UiEvent::Error` line — replays with the `⚠` prefix.
     pub fn notice_error(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Error), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::System,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: Some(NoticeKind::Error),
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     /// A `Role::User` instruction the UI never showed (injected by the
     /// engine, e.g. the synthesis nudge) — kept for the provider,
     /// skipped on replay.
     pub fn user_hidden(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Hidden), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::User,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: Some(NoticeKind::Hidden),
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     /// The compaction memory note — kept as `Role::System` so replay
     /// stays hidden, but tagged so adapters route it to user privilege
     /// instead of folding it into `system`/`instructions`.
     pub fn compacted_memory(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(text.into()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::CompactedMemory), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::System,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: Some(NoticeKind::CompactedMemory),
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     /// The persisted compaction card — a JSON payload (`before_tokens`,
     /// `after_tokens`, `removed_messages`, `manual`, `note`) the frontend
@@ -234,7 +310,13 @@ impl ChatMessage {
     /// tokens; the model sees the summary through the `compacted_memory`
     /// row. `manual` keeps the user-run `/compact` card a standalone block
     /// on replay instead of folding it into the previous turn.
-    pub fn compaction(before_tokens: u32, after_tokens: u32, removed_messages: u32, manual: bool, note: &str) -> Self {
+    pub fn compaction(
+        before_tokens: u32,
+        after_tokens: u32,
+        removed_messages: u32,
+        manual: bool,
+        note: &str,
+    ) -> Self {
         let payload = serde_json::json!({
             "before_tokens": before_tokens,
             "after_tokens": after_tokens,
@@ -242,17 +324,50 @@ impl ChatMessage {
             "manual": manual,
             "note": note,
         });
-        Self { role: Role::System, content: Some(payload.to_string()), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Compacted), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::System,
+            content: Some(payload.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: Some(NoticeKind::Compacted),
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     /// The persisted plan card — the `submit_plan` payload as a JSON string
     /// (`summary`, `steps`, `verification`, `risks`) the frontend renders as
     /// the plan card on replay. `NoticeKind::Plan` rows are dropped by every
     /// adapter — the model sees the plan through its own `submit_plan` call.
     pub fn plan(payload: String) -> Self {
-        Self { role: Role::System, content: Some(payload), tool_calls: None, tool_call_id: None, is_error: None, notice: Some(NoticeKind::Plan), ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::System,
+            content: Some(payload),
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: Some(NoticeKind::Plan),
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: None, notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::Tool,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: Some(call_id.into()),
+            is_error: None,
+            notice: None,
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
     /// Attach staged image refs a *tool* produced (a screenshot) — the tool
     /// analogue of [`ChatMessage::with_images`]. Adapters encode them per
@@ -266,7 +381,18 @@ impl ChatMessage {
     /// Failed tool result — same wire shape, plus the persisted `is_error`
     /// flag the UI replays into the red capsule state.
     pub fn tool_result_err(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(text.into()), tool_calls: None, tool_call_id: Some(call_id.into()), is_error: Some(true), notice: None, ts: Some(now_ms()), images: Vec::new(), reasoning: None, duration_ms: None }
+        Self {
+            role: Role::Tool,
+            content: Some(text.into()),
+            tool_calls: None,
+            tool_call_id: Some(call_id.into()),
+            is_error: Some(true),
+            notice: None,
+            ts: Some(now_ms()),
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        }
     }
 }
 
@@ -296,10 +422,13 @@ impl Serialize for ToolCall {
         let mut st = s.serialize_struct("ToolCall", 3)?;
         st.serialize_field("id", &self.id)?;
         st.serialize_field("type", "function")?;
-        st.serialize_field("function", &serde_json::json!({
-            "name": self.name,
-            "arguments": self.arguments,
-        }))?;
+        st.serialize_field(
+            "function",
+            &serde_json::json!({
+                "name": self.name,
+                "arguments": self.arguments,
+            }),
+        )?;
         st.end()
     }
 }
@@ -308,17 +437,38 @@ impl<'de> Deserialize<'de> for ToolCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         // Accept both the OpenAI shape and the flat shape on the way in.
         #[derive(Deserialize)]
-        struct Flat { id: String, name: String, arguments: String }
+        struct Flat {
+            id: String,
+            name: String,
+            arguments: String,
+        }
         #[derive(Deserialize)]
-        struct Func { name: String, arguments: String }
+        struct Func {
+            name: String,
+            arguments: String,
+        }
         #[derive(Deserialize)]
-        struct OpenAi { id: String, function: Func }
+        struct OpenAi {
+            id: String,
+            function: Func,
+        }
         #[derive(Deserialize)]
         #[serde(untagged)]
-        enum Any { Oa(OpenAi), Fl(Flat) }
+        enum Any {
+            Oa(OpenAi),
+            Fl(Flat),
+        }
         match Any::deserialize(d)? {
-            Any::Oa(o) => Ok(ToolCall { id: o.id, name: o.function.name, arguments: o.function.arguments }),
-            Any::Fl(f) => Ok(ToolCall { id: f.id, name: f.name, arguments: f.arguments }),
+            Any::Oa(o) => Ok(ToolCall {
+                id: o.id,
+                name: o.function.name,
+                arguments: o.function.arguments,
+            }),
+            Any::Fl(f) => Ok(ToolCall {
+                id: f.id,
+                name: f.name,
+                arguments: f.arguments,
+            }),
         }
     }
 }
@@ -375,7 +525,13 @@ impl ToolCallAssembler {
 
     /// Fold one chunk. Returns `true` when the chunk was a tool delta.
     pub fn feed(&mut self, chunk: &StreamChunk) -> bool {
-        if let StreamChunk::ToolCallDelta { slot, id, name, args_delta } = chunk {
+        if let StreamChunk::ToolCallDelta {
+            slot,
+            id,
+            name,
+            args_delta,
+        } = chunk
+        {
             let call = self.calls.entry(*slot).or_insert_with(|| ToolCall {
                 id: String::new(),
                 name: String::new(),
@@ -411,8 +567,7 @@ impl ToolCallAssembler {
     /// replays next turn as `function_call.call_id: ""`, which strict
     /// upstreams reject with `400 invalid_request_error`.
     pub fn finish(mut self) -> Vec<ToolCall> {
-        static SYNTH_SEQ: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static SYNTH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         for call in self.calls.values_mut() {
             if call.id.is_empty() {
                 call.id = format!(
@@ -421,9 +576,221 @@ impl ToolCallAssembler {
                     SYNTH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 );
             }
+            // Harmony `<|…|>` framing leaked into `function.name` breaks
+            // dispatch as `unknown tool` — a name never legitimately
+            // contains the markers, strip unconditionally.
+            call.name = HarmonyStripper::strip_str(&call.name);
+            // The same leak inside streamed `arguments` corrupts the JSON
+            // (a valid object followed by `argument`/`call` markup prose,
+            // or a string cut mid-way by a leaked close marker). Recover
+            // before the engine's `_malformed` fallback: strip the tokens,
+            // take the first complete JSON value when markup prose trails
+            // a valid object, then close a dangling tail. The repair is
+            // gated on framing actually being present: a leaked close
+            // marker is the MODEL ending the arg, but a bare transport
+            // cut's tail is arbitrary — "completing" it could dispatch a
+            // call never intended (e.g. `rm -rf /var` cut to `rm -rf /`).
+            if serde_json::from_str::<serde_json::Value>(&call.arguments).is_err() {
+                let stripped = HarmonyStripper::strip_str(&call.arguments);
+                let recovered = serde_json::from_str::<serde_json::Value>(&stripped)
+                    .ok()
+                    .or_else(|| {
+                        serde_json::Deserializer::from_str(&stripped)
+                            .into_iter::<serde_json::Value>()
+                            .next()
+                            .and_then(|r| r.ok())
+                    })
+                    .or_else(|| {
+                        (stripped.len() != call.arguments.len())
+                            .then(|| repair_truncated_json(&stripped))
+                            .flatten()
+                    });
+                if let Some(v) = recovered {
+                    call.arguments = serde_json::to_string(&v).unwrap_or_default();
+                }
+            }
         }
         self.calls.into_values().collect()
     }
+}
+
+// ---- harmony special-token stripping ----------------------------------------
+//
+// gpt-oss / harmony-format models emit control tokens as inline text when a
+// chat-completions shim surfaces them in `delta.content`/`arguments` instead
+// of a structured `tool_calls` block: `<|open|>`, `<|sep|>`, `<|close|>`,
+// `<|start|>`, `<|message|>`, `<|channel|>`, `<|end|>`, `<|call|>`,
+// `<|return|>`, `<|endoftext|>`, … They are model-internal framing, not user
+// text — left in, they corrupt history (the model parrots the marker next
+// turn), render as garbage in the UI, and break the accumulated `arguments`
+// JSON. One uniform shape covers them all: `<|` + `[a-z0-9_]+` + `|>`.
+
+/// Incremental `<|…|>` token stripper — the chat-completions adapter feeds
+/// `content`/`reasoning` deltas through it, and [`ToolCallAssembler::finish`]
+/// uses [`HarmonyStripper::strip_str`] on assembled `arguments`/`name`.
+///
+/// A partial token split across deltas is held until it resolves or proves
+/// to be plain text; `flush` at stream end emits whatever was still held.
+pub(crate) struct HarmonyStripper {
+    /// Held-back tail that might still become a `<|…|>` token (`<` / `<|se` …).
+    hold: String,
+}
+
+impl HarmonyStripper {
+    pub(crate) fn new() -> Self {
+        Self {
+            hold: String::new(),
+        }
+    }
+
+    /// Feed one delta; returns the text safe to emit (None = all held).
+    pub(crate) fn feed(&mut self, delta: &str) -> Option<String> {
+        self.hold.push_str(delta);
+        let mut out = String::new();
+        let bytes = self.hold.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            // A `<` at the buffer tail could still grow into `<|…|>` — hold it.
+            if bytes[i] == b'<' && i + 1 == bytes.len() {
+                break;
+            }
+            if bytes[i] == b'<' && bytes.get(i + 1) == Some(&b'|') {
+                let rest = &self.hold[i..];
+                // Whole token present? `<|word|>` — drop it.
+                if let Some(tok_len) = harmony_token_len(rest) {
+                    i += tok_len;
+                    continue;
+                }
+                // Could still be a token once more bytes land — the prefix is
+                // `<|` plus word chars so far but no closing `|` yet.
+                if could_be_harmony_prefix(rest) {
+                    break; // hold the tail
+                }
+                // `<|` followed by a non-word char → literal text, emit both.
+                out.push_str("<|");
+                i += 2;
+                continue;
+            }
+            let l = utf8_len(bytes[i]);
+            out.push_str(&self.hold[i..i + l]);
+            i += l;
+        }
+        self.hold = self.hold[i..].to_string();
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+
+    /// Stream end — anything still held was plain text, not a token. Emit it.
+    pub(crate) fn flush(&mut self) -> Option<String> {
+        if self.hold.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.hold))
+        }
+    }
+
+    /// One-shot strip for a whole string — assembled `arguments`, `name`.
+    pub(crate) fn strip_str(s: &str) -> String {
+        let mut st = Self::new();
+        let mut out = st.feed(s).unwrap_or_default();
+        if let Some(tail) = st.flush() {
+            out.push_str(&tail);
+        }
+        out
+    }
+}
+
+/// If `rest` opens with a complete `<|word|>` harmony token, return its byte
+/// length. `word` is `[a-z0-9_]+` — lowercase+digits+underscore only, which is
+/// every harmony marker (`<|end|>`, `<|call_0|>`) but not text like `<|Hi|>`.
+fn harmony_token_len(rest: &str) -> Option<usize> {
+    debug_assert!(rest.starts_with("<|"));
+    let body = &rest[2..];
+    let close = body.find('|')?;
+    let word = &body[..close];
+    if !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    {
+        // `<|` + word + `|` — but the `>` must follow too.
+        if body.as_bytes().get(close + 1) == Some(&b'>') {
+            return Some(2 + close + 2); // `<|` + word + `|>`
+        }
+    }
+    None
+}
+
+/// True when `rest` is `<|` (or `<|` + word chars) with no closing `|` yet —
+/// a token that could complete on the next delta. Also covers a bare `<` or
+/// `<|` at the buffer tail.
+fn could_be_harmony_prefix(rest: &str) -> bool {
+    if rest == "<" || rest == "<|" {
+        return true;
+    }
+    // `<|` + partial word chars, still no `|`/`>` seen → may become a token.
+    rest.starts_with("<|")
+        && rest[2..]
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// UTF-8 length of the char starting at byte `b`.
+fn utf8_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Close a JSON text truncated at a harmony boundary: `"` inside an open
+/// string, then `]`/`}` per still-open container. Returns the parsed value
+/// only when the repair actually yields valid JSON — a dangling escape or
+/// half-literal stays unparseable and the caller keeps the `_malformed`
+/// fallback instead.
+fn repair_truncated_json(s: &str) -> Option<serde_json::Value> {
+    let mut stack: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escape = false;
+    for ch in s.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => escape = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => stack.push('}'),
+            '[' => stack.push(']'),
+            '}' | ']' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    let mut out = s.to_string();
+    if in_string {
+        out.push('"');
+    }
+    while let Some(c) = stack.pop() {
+        out.push(c);
+    }
+    serde_json::from_str::<serde_json::Value>(&out).ok()
 }
 
 #[cfg(test)]
@@ -501,5 +868,163 @@ mod tests {
         let old = r#"{"role":"system","content":"a context note"}"#;
         let back: ChatMessage = serde_json::from_str(old).unwrap();
         assert_eq!(back.notice, None);
+    }
+
+    // ---- harmony special-token stripper ----
+    //
+    // A gpt-oss shim that surfaces harmony framing in `content`/`arguments`
+    // must not leak the tokens through. Build the markers by concat so this
+    // source file itself never contains a live token literal.
+    fn tok(w: &str) -> String {
+        format!("{}{}{}", "<|", w, "|>")
+    }
+
+    #[test]
+    fn strips_full_harmony_tokens() {
+        let mut s = HarmonyStripper::new();
+        let text = format!("fix {} it {}now{}", tok("open"), tok("sep"), tok("close"));
+        assert_eq!(s.feed(&text), Some("fix  it now".to_string()));
+    }
+
+    #[test]
+    fn strips_token_split_across_deltas() {
+        let mut s = HarmonyStripper::new();
+        // `<|se` then `p|>` — the partial prefix is held, then the whole token drops.
+        assert_eq!(s.feed(&format!("a {}", "<|se")), Some("a ".to_string()));
+        assert_eq!(s.feed("p|> tail"), Some(" tail".to_string()));
+    }
+
+    #[test]
+    fn leaves_literal_angle_pipe_text() {
+        let mut s = HarmonyStripper::new();
+        // Uppercase after `<|` and a space are NOT harmony-word chars — pass through.
+        for src in ["<|Hi|>", "a <| b |> c", "x < y", "<| spaced |>"] {
+            assert_eq!(s.feed(src), Some(src.to_string()), "mangled: {src}");
+        }
+    }
+
+    #[test]
+    fn flush_emits_held_non_token_tail() {
+        let mut s = HarmonyStripper::new();
+        // `feed` emits the safe prefix and holds the trailing lone `<`.
+        assert_eq!(s.feed("ends with <"), Some("ends with ".to_string()));
+        // …and `flush` at stream end emits just the held `<` tail.
+        assert_eq!(s.flush(), Some("<".to_string()));
+    }
+
+    #[test]
+    fn strips_known_harmony_markers() {
+        let mut s = HarmonyStripper::new();
+        for w in [
+            "open",
+            "sep",
+            "close",
+            "start",
+            "message",
+            "channel",
+            "end",
+            "call",
+            "return",
+            "endoftext",
+            "constrain",
+        ] {
+            let t = tok(w);
+            assert_eq!(s.feed(&format!("x{}y", t)), Some("xy".to_string()), "{t}");
+        }
+    }
+
+    #[test]
+    fn strip_str_is_a_one_shot_feed_plus_flush() {
+        let s = format!("a{}b{}", tok("open"), tok("close"));
+        assert_eq!(HarmonyStripper::strip_str(&s), "ab");
+    }
+
+    /// Framing leaked into `arguments` AFTER a complete JSON object — the
+    /// markup prose (`argument`/`call` words between tokens) trails the
+    /// value. Salvage takes the first complete object: the tool call runs.
+    #[test]
+    fn assembler_recovers_call_with_harmony_tail_after_json() {
+        let mut a = ToolCallAssembler::new();
+        a.feed(&StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: Some("c1".into()),
+            name: Some("apply_patch".into()),
+            args_delta: format!(
+                "{{\"patch\":\"x\"}}{}argument{}{}call{}",
+                tok("close"),
+                tok("sep"),
+                tok("close"),
+                tok("sep")
+            ),
+        });
+        let calls = a.finish();
+        let v: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(v["patch"], "x");
+    }
+
+    /// A leaked close marker ended the arg mid-string — the dangling JSON
+    /// tail is repaired so the tool sees real args instead of `_malformed`.
+    #[test]
+    fn assembler_repairs_args_cut_at_a_harmony_boundary() {
+        let mut a = ToolCallAssembler::new();
+        a.feed(&StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: None,
+            name: Some("apply_patch".into()),
+            args_delta: format!(
+                "{{\"patch\":\"*** Begin Patch\\n+unicode: u16{}",
+                tok("close")
+            ),
+        });
+        let calls = a.finish();
+        let v: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert!(v["patch"].as_str().unwrap().contains("Begin Patch"));
+    }
+
+    /// A bare transport cut carries no framing — the tail is arbitrary and
+    /// closing it could "complete" a call the model never intended, so it
+    /// must stay unparseable (the engine's `_malformed` path reports it).
+    #[test]
+    fn assembler_leaves_a_bare_transport_cut_malformed() {
+        let mut a = ToolCallAssembler::new();
+        a.feed(&StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: None,
+            name: Some("bash".into()),
+            args_delta: "{\"command\":\"rm -rf /var".into(),
+        });
+        let calls = a.finish();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&calls[0].arguments).is_err(),
+            "a bare cut must not be repaired into a runnable command"
+        );
+    }
+
+    #[test]
+    fn assembler_strips_harmony_from_name() {
+        let mut a = ToolCallAssembler::new();
+        a.feed(&StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: None,
+            name: Some(format!("apply_patch{}", tok("close"))),
+            args_delta: "{}".into(),
+        });
+        assert_eq!(a.finish()[0].name, "apply_patch");
+    }
+
+    /// A tool call that legitimately writes `<|…|>` text (a doc/patch about
+    /// the markers) keeps its args verbatim — salvage only runs when the
+    /// JSON doesn't already parse.
+    #[test]
+    fn assembler_keeps_valid_args_with_literal_marker_text() {
+        let args = format!("{{\"patch\":\"use {} markers\"}}", tok("close"));
+        let mut a = ToolCallAssembler::new();
+        a.feed(&StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: None,
+            name: Some("apply_patch".into()),
+            args_delta: args.clone(),
+        });
+        assert_eq!(a.finish()[0].arguments, args);
     }
 }

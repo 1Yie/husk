@@ -90,7 +90,11 @@ fn build_messages(messages: &[ChatMessage]) -> (String, Vec<serde_json::Value>) 
         let m = &messages[i];
         match m.role {
             // UI-only compaction/plan card rows — render metadata, never context.
-            Role::System if matches!(m.notice, Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)) => {}
+            Role::System
+                if matches!(
+                    m.notice,
+                    Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)
+                ) => {}
             // The compaction memory note is historical context, not a live
             // instruction — emit it as a user message instead of folding it
             // into the top-level `system` prompt. `push_user` merges it into
@@ -378,32 +382,36 @@ impl LlmProvider for AnthropicProvider {
         // Shared stream state — the flat_map mapper and the tail Done
         // fallback must see the SAME usage/done flags (a `move`-copied
         // Option would fork them, losing usage on the fallback path).
-        let pending = std::sync::Arc::new(std::sync::Mutex::new(
-            (None::<u32>, None::<u32>, None::<u32>),
-        ));
+        let pending = std::sync::Arc::new(std::sync::Mutex::new((
+            None::<u32>,
+            None::<u32>,
+            None::<u32>,
+        )));
         let done = DoneGuard::new();
         let pending2 = pending.clone();
         let flag = done.clone();
 
-        let stream = data.flat_map(move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
-            let items: Vec<anyhow::Result<StreamChunk>> = match res {
-                Err(e) => vec![Err(e)],
-                Ok(d) => match serde_json::from_str::<serde_json::Value>(&d) {
-                    Ok(ev) => map_event(&ev, &mut *pending2.lock().unwrap())
-                        .into_iter()
-                        .map(|c| {
-                            flag.observe(&c);
-                            Ok(c)
-                        })
-                        .collect(),
-                    Err(e) => vec![Ok(StreamChunk::Error(format!(
-                        "malformed SSE JSON: {e}; payload: {}",
-                        &d[..d.len().min(120)]
-                    )))],
-                },
-            };
-            futures::stream::iter(items)
-        });
+        let stream = data.flat_map(
+            move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
+                let items: Vec<anyhow::Result<StreamChunk>> = match res {
+                    Err(e) => vec![Err(e)],
+                    Ok(d) => match serde_json::from_str::<serde_json::Value>(&d) {
+                        Ok(ev) => map_event(&ev, &mut *pending2.lock().unwrap())
+                            .into_iter()
+                            .map(|c| {
+                                flag.observe(&c);
+                                Ok(c)
+                            })
+                            .collect(),
+                        Err(e) => vec![Ok(StreamChunk::Error(format!(
+                            "malformed SSE JSON: {e}; payload: {}",
+                            &d[..d.len().min(120)]
+                        )))],
+                    },
+                };
+                futures::stream::iter(items)
+            },
+        );
 
         let stream = done.finish(stream, move || {
             let p = *pending.lock().unwrap();
@@ -435,7 +443,10 @@ mod tests {
         assert_eq!(system, "kernel");
         assert_eq!(out.len(), 1);
         let text = serde_json::to_string(&out).unwrap();
-        assert!(!text.contains("before_tokens"), "card JSON leaked to the wire");
+        assert!(
+            !text.contains("before_tokens"),
+            "card JSON leaked to the wire"
+        );
     }
 
     #[test]
@@ -452,7 +463,10 @@ mod tests {
         // the API requires strict user/assistant alternation.
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"].as_str().unwrap(), "user");
-        let text = out[0]["content"].as_array().unwrap().iter()
+        let text = out[0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
             .filter_map(|p| p["text"].as_str())
             .collect::<Vec<_>>()
             .join("\n");
@@ -493,7 +507,10 @@ mod tests {
         ]);
         let tr = &out[1]["content"][0];
         assert_eq!(tr["type"], "tool_result");
-        assert!(tr["content"].is_string(), "content must stay a string: {tr}");
+        assert!(
+            tr["content"].is_string(),
+            "content must stay a string: {tr}"
+        );
         assert_eq!(tr["content"], "no image here");
     }
 
@@ -513,10 +530,11 @@ mod tests {
             name: "screenshot".into(),
             arguments: "{}".into(),
         }]);
-        let shot = ChatMessage::tool_result("call_1", "shot: 1568x882")
-            .tool_result_with_images(
-                crate::types::ImageRef::for_path(png.clone()).into_iter().collect(),
-            );
+        let shot = ChatMessage::tool_result("call_1", "shot: 1568x882").tool_result_with_images(
+            crate::types::ImageRef::for_path(png.clone())
+                .into_iter()
+                .collect(),
+        );
 
         let (_s, out) = build_messages(&[ChatMessage::system("kernel"), call, shot]);
         let tr = &out[1]["content"][0];
@@ -527,7 +545,9 @@ mod tests {
         assert_eq!(blocks[1]["type"], "image");
         assert_eq!(blocks[1]["source"]["type"], "base64");
         assert_eq!(blocks[1]["source"]["media_type"], "image/png");
-        assert!(blocks[1]["source"]["data"].as_str().is_some_and(|d| !d.is_empty()));
+        assert!(blocks[1]["source"]["data"]
+            .as_str()
+            .is_some_and(|d| !d.is_empty()));
     }
 
     /// A staged file that vanished degrades to a text note instead of
@@ -542,12 +562,13 @@ mod tests {
             arguments: "{}".into(),
         }]);
         let shot = ChatMessage::tool_result("call_1", "text")
-            .tool_result_with_images(
-                crate::types::ImageRef::for_path(gone).into_iter().collect(),
-            );
+            .tool_result_with_images(crate::types::ImageRef::for_path(gone).into_iter().collect());
         let (_s, out) = build_messages(&[ChatMessage::system("kernel"), call, shot]);
         let blocks = out[1]["content"][0]["content"].as_array().unwrap();
         assert_eq!(blocks[1]["type"], "text");
-        assert!(blocks[1]["text"].as_str().unwrap().contains("image unavailable"));
+        assert!(blocks[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("image unavailable"));
     }
 }

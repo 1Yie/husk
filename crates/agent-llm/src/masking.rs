@@ -5,7 +5,6 @@
 //! sanitization is the first wall, this is the second — a match becomes
 //! `[REDACTED_<kind>]`.
 
-
 /// Resolved secret values + the shapes that catch them.
 pub struct EgressMasker {
     /// Concrete secret strings resolved from `keyring:`/`env:` config —
@@ -17,25 +16,74 @@ pub struct EgressMasker {
 /// the *content*, not just names (a value containing `sk-ant-…` is a leak
 /// even if the field was named `note`).
 const SECRET_SHAPES: &[&str] = &[
-    "sk-", "sk-ant-", "sk-proj-", "ghp_", "gho_", "github_pat_",
-    "xai-", "glpat-", "AKIA", "AIza", "ya29.", "dop_v1_",
-    "-----BEGIN", "PRIVATE KEY-----",
+    "sk-",
+    "sk-ant-",
+    "sk-proj-",
+    "ghp_",
+    "gho_",
+    "github_pat_",
+    "xai-",
+    "glpat-",
+    "AKIA",
+    "AIza",
+    "ya29.",
+    "dop_v1_",
+    "-----BEGIN",
+    "PRIVATE KEY-----",
 ];
 
-/// Field-name patterns whose values are secrets — `api_key`, `token`, …
+/// Whole field names whose values are always scrubbed (`"api_key": …`).
 const SECRET_FIELDS: &[&str] = &[
-    "_key", "_token", "_secret", "_password", "api_key", "apikey",
-    "access_token", "refresh_token", "auth_token", "bearer ",
+    "key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "pwd",
+    "api_key",
+    "apikey",
+    "api_secret",
+    "private_key",
+    "client_secret",
+    "access_key",
+    "secret_key",
+    "access_token",
+    "refresh_token",
+    "auth_token",
+    "id_token",
+    "session_key",
+    "encryption_key",
+];
+
+/// Suffixes that mark a longer field name as secret too — `AWS_SECRET_ACCESS_KEY`,
+/// `my_api_token`, `db_password`. Matched on the **last identifier** before the
+/// `:`/`=`, never as a substring of the whole line, so `VIRTUAL_KEY`/`key_input`
+/// don't trip it (they aren't the field-name position; see `mask_field_values`).
+const SECRET_SUFFIXES: &[&str] = &[
+    "_key",
+    "_token",
+    "_secret",
+    "_password",
+    "_passwd",
+    "_apikey",
+];
+
+/// Rust/other keywords that start a statement — if the left side of `:`/`=`
+/// begins with one, it is a declaration/signature, not a `field: value` secret.
+/// `fn key_input(vk: u16`, `let flag = X`, `use …::KEY` all bail here, which is
+/// what stopped the `_key`-in-`VIRTUAL_KEY` self-mask that wrote
+/// `[REDACTED_SECRET]` into `windows.rs` history.
+const STMT_PREFIXES: &[&str] = &[
+    "fn ", "let ", "const ", "static ", "pub ", "use ", "type ", "struct ", "enum ", "impl ",
+    "mod ", "match ", "if ", "for ", "while ", "return ", "async ", "unsafe ", "extern ", "trait ",
+    "where ",
 ];
 
 impl EgressMasker {
     /// Build from the resolved secret strings (post `env:`/`keyring:`).
     pub fn new(secrets: Vec<String>) -> Self {
         // Keep only non-trivial secrets — a 4-char value would over-mask.
-        let secrets = secrets
-            .into_iter()
-            .filter(|s| s.len() >= 8)
-            .collect();
+        let secrets = secrets.into_iter().filter(|s| s.len() >= 8).collect();
         Self { secrets }
     }
 
@@ -82,7 +130,9 @@ fn mask_shape(text: &str, shape: &str) -> Option<String> {
         // grows), so an index found in the folded string is NOT a valid index
         // into the original: slicing `rest[..idx]` with it lands mid-char
         // (panic) or silently checks the wrong boundary char.
-        let Some(idx) = find_ascii_ci(rest, &needle) else { break };
+        let Some(idx) = find_ascii_ci(rest, &needle) else {
+            break;
+        };
 
         // Word-boundary check: the char before the match must be a boundary
         // (start, whitespace, quote, or non-alphanumeric punctuation), else
@@ -142,14 +192,11 @@ fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
     if needle.len() > haystack.len() {
         return None;
     }
-    haystack
-        .char_indices()
-        .map(|(i, _)| i)
-        .find(|&i| {
-            haystack[i..]
-                .get(..needle.len())
-                .is_some_and(|w| w.eq_ignore_ascii_case(needle))
-        })
+    haystack.char_indices().map(|(i, _)| i).find(|&i| {
+        haystack[i..]
+            .get(..needle.len())
+            .is_some_and(|w| w.eq_ignore_ascii_case(needle))
+    })
 }
 
 /// `"<field>": "<value>"` / `<field>=<value>` → scrub value when field is
@@ -157,11 +204,37 @@ fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
 fn mask_field_values(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
-        let lower = line.to_lowercase();
-        let is_secret_field = SECRET_FIELDS.iter().any(|f| lower.contains(f));
-        if is_secret_field {
-            // Find the value part after `:` or `=`.
-            if let Some(pos) = line.find(|c| c == ':' || c == '=') {
+        // Only inspect `field: value` / `field = value` lines — extract the
+        // field name as the LAST identifier before the `:`/`=` and compare it
+        // as a whole token. Matching `contains` over the whole line mangles
+        // code (`_key` ⊂ `VIRTUAL_KEY`/`key_input`), and the resulting
+        // `[REDACTED_SECRET]` leaks back into model history as literal text.
+        let sep = line
+            .rfind(|c: char| c == 61u8 as char)
+            .or_else(|| line.find(|c: char| c == 58u8 as char));
+        if let Some(pos) = sep {
+            let lhs = &line[..pos];
+            // Skip statement/decl context: `fn key_input(vk: ...`,
+            // `let flag = ...`, `use …::KEY`, `#define X ...` are code, not
+            // `field = secret` config lines. A leading statement keyword or a
+            // `#` directive marks code. NOTE: `{`/`(` must NOT count as code —
+            // JSON payloads (`{"cmd":"export KEY=…"}`) and call args start with
+            // them, and they are exactly the exfiltration path being scrubbed.
+            let lead = lhs.trim_start();
+            let is_stmt =
+                STMT_PREFIXES.iter().any(|p| lead.starts_with(p)) || lead.starts_with('#');
+            let field = last_identifier(lhs);
+            let is_secret_field = field
+                .map(|f| {
+                    let fl = f.to_lowercase();
+                    SECRET_FIELDS.contains(&fl.as_str())
+                        || SECRET_SUFFIXES
+                            .iter()
+                            .any(|s| fl.len() > s.len() && fl.ends_with(s))
+                })
+                .unwrap_or(false)
+                && !is_stmt;
+            if is_secret_field {
                 let (head, val) = line.split_at(pos + 1);
                 let v = val.trim();
                 if !v.is_empty() && !v.starts_with('[') && v.len() >= 6 {
@@ -174,6 +247,21 @@ fn mask_field_values(text: &str) -> String {
         out.push_str(line);
     }
     out
+}
+
+/// The last `[A-Za-z0-9_]` run in `lhs` (the text before the `:`/`=`) — the
+/// field name. `"access_key" ` → `access_key`; `fn key_input(vk` → `vk` (so
+/// `vk: [REDACTED_SECRET]
+/// "let flag "` → `flag`).
+fn last_identifier(lhs: &str) -> Option<&str> {
+    let trimmed = lhs.trim_end_matches(|c: char| !(c.is_ascii_alphanumeric() || c == 95u8 as char));
+    let start = trimmed
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let ident = &trimmed[start..];
+    (!ident.is_empty() && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .then_some(ident)
 }
 
 #[cfg(test)]
@@ -263,5 +351,40 @@ mod tests {
         let m = EgressMasker::new(vec![]);
         let (out, _) = m.scrub("{\"cmd\":\"export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI\"}");
         assert!(!out.contains("wJalrXUtnFEMI"));
+    }
+
+    /// Regression for the `windows.rs` corruption: `_key` inside `VIRTUAL_KEY`,
+    /// `INPUT_KEYBOARD`, `key_input`, `wVk` used to trip `contains("_key")` and
+    /// rewrite whole declarations into `[REDACTED_SECRET]`, which the model then
+    /// echoed back as literal source. Statement/decl context must NOT be masked.
+    #[test]
+    fn code_declarations_are_not_masked() {
+        let m = EgressMasker::new(vec![]);
+        for src in [
+            "fn key_input(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS, unicode: u16) -> INPUT {",
+            "    let flag = KEYBD_EVENT_FLAGS(0);",
+            "        r#type: INPUT_KEYBOARD,",
+            "use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;",
+            "    pub vk: VIRTUAL_KEY,",
+            "struct S { access_key: u32 }",
+        ] {
+            let (out, _) = m.scrub(src);
+            assert_eq!(out, src, "code line was mangled: {src:?}");
+        }
+    }
+
+    /// The `_key`/`_token`/`_secret` suffix still catches long env-var-style
+    /// names on the LAST identifier before `=`/`:` — `AWS_SECRET_ACCESS_KEY`,
+    /// `MY_DB_PASSWORD`, json `"refresh_token": "…"`.
+    #[test]
+    fn secret_suffix_fields_still_masked() {
+        let m = EgressMasker::new(vec![]);
+        let (out, _) = m.scrub("export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI123");
+        assert!(!out.contains("wJalrXUtnFEMI"), "suffix field leaked: {out}");
+        let (out2, _) = m.scrub("{\"refresh_token\": \"tok_abc123456\"}");
+        assert!(!out2.contains("tok_abc123456"), "json field leaked: {out2}");
+        // exact whole-name `password` too
+        let (out3, _) = m.scrub("password = hunter2_secret");
+        assert!(!out3.contains("hunter2_secret"));
     }
 }

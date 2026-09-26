@@ -26,7 +26,10 @@ impl Transport {
             .pool_max_idle_per_host(4)
             .build()
             .context("build reqwest client")?;
-        Ok(Self { client, extra_headers: Vec::new() })
+        Ok(Self {
+            client,
+            extra_headers: Vec::new(),
+        })
     }
 
     /// A provider-static header applied to every request (e.g.

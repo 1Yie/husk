@@ -5,13 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod common;
-use common::ScriptedProvider;
 use agent_llm::config::{AppConfig, ProviderConfig, ProviderKind, SecretResolution};
 use agent_llm::factory::ProviderFactory;
 use agent_llm::sampler::{SampleRequest, Sampler};
 use agent_llm::types::{ChatMessage, StreamChunk, ToolCallAssembler};
+use common::ScriptedProvider;
 use futures::StreamExt;
-
 
 // ---------- ToolCallAssembler ----------
 
@@ -171,7 +170,11 @@ async fn sampler_retries_retryable_then_fails() {
     for _ in 0..4 {
         stub.push_script(vec![
             StreamChunk::Error("HTTP 429 too many requests".into()),
-            StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
+            StreamChunk::Done {
+                prompt_tokens: None,
+                completion_tokens: None,
+                cached_tokens: None,
+            },
         ]);
     }
     let sampler = Sampler::new(Arc::new(stub));
@@ -278,11 +281,22 @@ async fn openai_adapter_maps_wire_to_normalized() {
     }
     assert!(matches!(seen[0], StreamChunk::ReasoningDelta(ref s) if s == "r1"));
     assert!(matches!(seen[1], StreamChunk::ContentDelta(ref s) if s == "a"));
-    assert!(matches!(seen[2], StreamChunk::ToolCallDelta { slot: 0, ref id, ref name, ref args_delta }
-        if id.as_deref() == Some("c") && name.as_deref() == Some("f") && args_delta == "{"));
-    assert!(matches!(seen[3], StreamChunk::ToolCallDelta { ref args_delta, .. } if args_delta == "}"));
+    assert!(
+        matches!(seen[2], StreamChunk::ToolCallDelta { slot: 0, ref id, ref name, ref args_delta }
+        if id.as_deref() == Some("c") && name.as_deref() == Some("f") && args_delta == "{")
+    );
+    assert!(
+        matches!(seen[3], StreamChunk::ToolCallDelta { ref args_delta, .. } if args_delta == "}")
+    );
     // usage chunk folds into Done via pending_usage
-    assert!(matches!(seen.last(), Some(StreamChunk::Done { prompt_tokens: Some(1), completion_tokens: Some(2), .. })));
+    assert!(matches!(
+        seen.last(),
+        Some(StreamChunk::Done {
+            prompt_tokens: Some(1),
+            completion_tokens: Some(2),
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
@@ -291,7 +305,11 @@ async fn sampler_idle_timeout() {
     let stub = ScriptedProvider::new()
         .with_script(vec![
             StreamChunk::ContentDelta("first".into()),
-            StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
+            StreamChunk::Done {
+                prompt_tokens: None,
+                completion_tokens: None,
+                cached_tokens: None,
+            },
         ])
         .with_latency(Duration::from_millis(0));
     // We can't wait 300 s in a test — just verify the constant exists and

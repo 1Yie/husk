@@ -9,8 +9,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::adapters::{
-    anthropic::AnthropicProvider, GenericOpenAiProvider,
-    OpenAiResponsesProvider,
+    anthropic::AnthropicProvider, GenericOpenAiProvider, OpenAiResponsesProvider,
 };
 use crate::config::{ModelConfig, ProviderConfig, ProviderKind, SecretResolution};
 use crate::provider::{LlmProvider, ModelParams};
@@ -49,8 +48,8 @@ impl ProviderFactory {
 
         match cfg.kind {
             ProviderKind::OpenaiCompat => {
-                let mut p = GenericOpenAiProvider::new(&cfg.base_url, key)
-                    .map_err(FactoryError::Build)?;
+                let mut p =
+                    GenericOpenAiProvider::new(&cfg.base_url, key).map_err(FactoryError::Build)?;
                 for (k, v) in &cfg.headers {
                     p = p.with_header(k.clone(), v.clone());
                 }
@@ -71,8 +70,8 @@ impl ProviderFactory {
                 Ok(Arc::new(p))
             }
             ProviderKind::Anthropic => {
-                let mut p = AnthropicProvider::new(&cfg.base_url, key)
-                    .map_err(FactoryError::Build)?;
+                let mut p =
+                    AnthropicProvider::new(&cfg.base_url, key).map_err(FactoryError::Build)?;
                 for (k, v) in &cfg.headers {
                     p = p.with_header(k.clone(), v.clone());
                 }

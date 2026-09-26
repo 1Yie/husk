@@ -56,7 +56,11 @@ impl ScriptedProvider {
             .chunks(8)
             .map(|c| StreamChunk::ContentDelta(c.iter().collect()))
             .collect();
-        chunks.push(StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None });
+        chunks.push(StreamChunk::Done {
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+        });
         self.push_script(chunks);
     }
 }
@@ -82,11 +86,10 @@ impl LlmProvider for ScriptedProvider {
         _reasoning_effort: Option<&str>,
         _params: &agent_llm::ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
-        self.calls.lock().unwrap().push((
-            model.to_string(),
-            messages.len(),
-            tools.is_some(),
-        ));
+        self.calls
+            .lock()
+            .unwrap()
+            .push((model.to_string(), messages.len(), tools.is_some()));
         let script = self
             .scripts
             .lock()

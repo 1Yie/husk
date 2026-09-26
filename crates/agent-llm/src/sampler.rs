@@ -12,7 +12,6 @@
 //! The sampler never owns a concrete provider — it wraps `Arc<dyn LlmProvider>`,
 //! so a hot-swap replaces the Arc, not the actor.
 
-
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,7 +55,11 @@ pub enum SampleError {
 #[derive(Debug, Clone)]
 pub enum SamplerEvent {
     /// Retry k of N scheduled after `delay`.
-    Retrying { attempt: u32, delay: Duration, reason: String },
+    Retrying {
+        attempt: u32,
+        delay: Duration,
+        reason: String,
+    },
     /// Provider failed permanently; the session should degrade or abort.
     Failed(String),
 }
@@ -123,10 +126,7 @@ impl Sampler {
     {
         let mut attempt = 0u32;
         loop {
-            match self
-                .sample_once(&req, messages, &mut on_chunk)
-                .await
-            {
+            match self.sample_once(&req, messages, &mut on_chunk).await {
                 Ok(()) => return Ok(()),
                 Err(e) if !e.retryable() => return Err(e),
                 Err(e) => {
@@ -267,7 +267,11 @@ impl Sampler {
         if !done_seen {
             // Clean close without Done — synthesize so the caller's
             // invariants hold (spec: Done fires exactly once).
-            on_chunk(&StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None });
+            on_chunk(&StreamChunk::Done {
+                prompt_tokens: None,
+                completion_tokens: None,
+                cached_tokens: None,
+            });
         }
         Ok(())
     }
@@ -293,9 +297,7 @@ fn doom_detected(recent: &VecDeque<String>) -> bool {
     // tolerates the window boundary landing mid-repetition.
     for p in 4..=(n / 3) {
         // Tail must show ≥3 verbatim repeats first — the cheap check.
-        if b[n - p..] != b[n - 2 * p..n - p]
-            || b[n - 2 * p..n - p] != b[n - 3 * p..n - 2 * p]
-        {
+        if b[n - p..] != b[n - 2 * p..n - p] || b[n - 2 * p..n - p] != b[n - 3 * p..n - 2 * p] {
             continue;
         }
         let mut matches = 0usize;
@@ -360,7 +362,11 @@ fn classify_transport_error(msg: &str) -> SampleError {
 impl std::fmt::Display for SamplerEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SamplerEvent::Retrying { attempt, delay, reason } => write!(
+            SamplerEvent::Retrying {
+                attempt,
+                delay,
+                reason,
+            } => write!(
                 f,
                 "上游响应中断 — {:.1}s 后重试（第 {attempt}/{MAX_RETRIES} 次）：{reason}",
                 delay.as_secs_f32()
@@ -406,9 +412,7 @@ mod tests {
         }
 
         // No prefix → keyword fallback (in-stream errors, transport drops).
-        assert!(
-            classify_transport_error("internal_server_error: upstream error").retryable()
-        );
+        assert!(classify_transport_error("internal_server_error: upstream error").retryable());
         assert!(classify_transport_error("connection reset by peer").retryable());
         // A bare number in free text is still not a status code.
         assert!(!classify_transport_error("model refused: 5000 tokens over budget").retryable());

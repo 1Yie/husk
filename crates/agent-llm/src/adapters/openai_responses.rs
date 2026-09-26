@@ -37,10 +37,7 @@ pub struct OpenAiResponsesProvider {
 }
 
 impl OpenAiResponsesProvider {
-    pub fn new(
-        base_url: impl Into<String>,
-        api_key: impl Into<String>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> anyhow::Result<Self> {
         Ok(Self {
             transport: Transport::new()?,
             base_url: base_url.into().trim_end_matches('/').to_string(),
@@ -133,7 +130,11 @@ impl OpenAiResponsesProvider {
             let text = m.content.clone().unwrap_or_default();
             match m.role {
                 // UI-only compaction/plan card rows — render metadata, never context.
-                Role::System if matches!(m.notice, Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)) => {}
+                Role::System
+                    if matches!(
+                        m.notice,
+                        Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)
+                    ) => {}
                 // The compaction memory note is historical context, not a
                 // live instruction — it occupies a user `input` position
                 // rather than folding into `instructions`. It still flushes
@@ -370,9 +371,7 @@ impl LlmProvider for OpenAiResponsesProvider {
         // Shared with the tail fallback — a `Copy` capture would snapshot
         // `None` at construction, so the synthesized Done must read usage
         // through the Arc, not a moved Option.
-        let usage = std::sync::Arc::new(std::sync::Mutex::new(
-            None::<(u32, u32, u32)>,
-        ));
+        let usage = std::sync::Arc::new(std::sync::Mutex::new(None::<(u32, u32, u32)>));
         let done = DoneGuard::new();
         let usage2 = usage.clone();
         let flag = done.clone();
@@ -529,7 +528,12 @@ struct CallStripper {
 
 impl CallStripper {
     fn new() -> Self {
-        Self { hold: String::new(), in_call: false, call_buf: String::new(), recovered: Vec::new() }
+        Self {
+            hold: String::new(),
+            in_call: false,
+            call_buf: String::new(),
+            recovered: Vec::new(),
+        }
     }
 
     /// Feed a delta; returns the safe-to-emit text (None = fully held).
@@ -599,7 +603,11 @@ impl CallStripper {
             i += l;
         }
         self.hold = self.hold[i..].to_string();
-        if out.is_empty() { None } else { Some(out) }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     }
 
     /// Flush on a structured tool-call item or stream end — drops held text,
@@ -625,7 +633,15 @@ impl CallStripper {
 
 /// UTF-8 length of the char starting at byte `b`.
 fn utf8_len(b: u8) -> usize {
-    if b < 0x80 { 1 } else if b < 0xE0 { 2 } else if b < 0xF0 { 3 } else { 4 }
+    if b < 0x80 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    }
 }
 
 /// Parse a `[call: name({json})]` body (the text inside the brackets, after
@@ -674,8 +690,7 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
         // reasoning, while open-weight models (deepseek's shim) stream the
         // raw CoT as `reasoning_text.delta`. Both fold into ReasoningDelta —
         // without the second arm a thinking model renders as silent.
-        "response.reasoning_summary_text.delta"
-        | "response.reasoning_text.delta" => {
+        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             if let Some(d) = ev.delta {
                 if !d.is_empty() {
                     out.push(StreamChunk::ReasoningDelta(d));
@@ -749,7 +764,9 @@ fn map_data(data: &str, usage: &mut Option<(u32, u32, u32)>) -> Vec<StreamChunk>
                     *usage = Some((
                         u.input_tokens.unwrap_or(0),
                         u.output_tokens.unwrap_or(0),
-                        u.input_tokens_details.and_then(|d| d.cached_tokens).unwrap_or(0),
+                        u.input_tokens_details
+                            .and_then(|d| d.cached_tokens)
+                            .unwrap_or(0),
                     ));
                 }
             }
@@ -801,15 +818,28 @@ mod tests {
 
         let mut calls_msg = ChatMessage::assistant("");
         calls_msg.tool_calls = Some(vec![
-            ToolCall { id: "call_1".into(), name: "screenshot".into(), arguments: "{}".into() },
-            ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "call_1".into(),
+                name: "screenshot".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "call_2".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
         ]);
         let mut shot = ChatMessage::tool_result("call_1", "shot: 1568x882");
         shot.images = crate::types::ImageRef::for_path(png).into_iter().collect();
         let mut plain = ChatMessage::tool_result("call_2", "plain");
         plain.tool_call_id = Some("call_2".into());
 
-        let (input, _) = OpenAiResponsesProvider::build_input(&[ChatMessage::system("k"), calls_msg, shot, plain]);
+        let (input, _) = OpenAiResponsesProvider::build_input(&[
+            ChatMessage::system("k"),
+            calls_msg,
+            shot,
+            plain,
+        ]);
         let kinds: Vec<&str> = input.iter().map(item_kind).collect();
         assert_eq!(
             kinds,
@@ -826,7 +856,10 @@ mod tests {
         let parts = frames["content"].as_array().unwrap();
         assert_eq!(parts[0]["type"], "input_text");
         assert_eq!(parts[1]["type"], "input_image");
-        assert!(parts[1]["image_url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert!(parts[1]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
         // The outputs themselves stay strings.
         assert!(input[2]["output"].is_string());
         assert!(input[3]["output"].is_string());
@@ -841,13 +874,22 @@ mod tests {
         std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
         let mut calls_msg = ChatMessage::assistant("");
         calls_msg.tool_calls = Some(vec![
-            ToolCall { id: "call_1".into(), name: "screenshot".into(), arguments: "{}".into() },
-            ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "call_1".into(),
+                name: "screenshot".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "call_2".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
         ]);
         let mut shot = ChatMessage::tool_result("call_1", "shot");
         shot.images = crate::types::ImageRef::for_path(png).into_iter().collect();
         // call_2 never got an output.
-        let (input, _) = OpenAiResponsesProvider::build_input(&[ChatMessage::system("k"), calls_msg, shot]);
+        let (input, _) =
+            OpenAiResponsesProvider::build_input(&[ChatMessage::system("k"), calls_msg, shot]);
         let kinds: Vec<&str> = input.iter().map(item_kind).collect();
         assert_eq!(
             kinds,
@@ -930,25 +972,46 @@ mod tests {
         // next non-output item.
         let mut calls_msg = ChatMessage::assistant("calling");
         calls_msg.tool_calls = Some(vec![
-            ToolCall { id: "call_1".into(), name: "bash".into(), arguments: "{}".into() },
-            ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "call_1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "call_2".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
         ]);
         let mut out1 = ChatMessage::tool_result("call_1", "ok");
         out1.tool_call_id = Some("call_1".into());
         let (input, _) = OpenAiResponsesProvider::build_input(&[
-            calls_msg, out1, ChatMessage::assistant("done"),
+            calls_msg,
+            out1,
+            ChatMessage::assistant("done"),
         ]);
         // assistant text, function_call, function_call, output(call_1),
         // output(call_2 synth), assistant text.
         let types: Vec<&str> = input
             .iter()
-            .map(|i| i["type"].as_str().or_else(|| i["role"].as_str()).unwrap_or("?"))
+            .map(|i| {
+                i["type"]
+                    .as_str()
+                    .or_else(|| i["role"].as_str())
+                    .unwrap_or("?")
+            })
             .collect();
-        assert_eq!(types, [
-            "assistant", "function_call", "function_call",
-            "function_call_output", "function_call_output",
-            "assistant",
-        ]);
+        assert_eq!(
+            types,
+            [
+                "assistant",
+                "function_call",
+                "function_call",
+                "function_call_output",
+                "function_call_output",
+                "assistant",
+            ]
+        );
         assert_eq!(input[4]["call_id"], "call_2");
     }
 
@@ -957,9 +1020,11 @@ mod tests {
         // History ends mid-tools — the trailing call gets a placeholder
         // output so the replayed request stays pair-valid.
         let mut calls_msg = ChatMessage::assistant("calling");
-        calls_msg.tool_calls = Some(vec![
-            ToolCall { id: "call_z".into(), name: "bash".into(), arguments: "{}".into() },
-        ]);
+        calls_msg.tool_calls = Some(vec![ToolCall {
+            id: "call_z".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }]);
         let (input, _) = OpenAiResponsesProvider::build_input(&[calls_msg]);
         assert_eq!(input.len(), 3);
         assert_eq!(input[2]["type"], "function_call_output");
@@ -972,9 +1037,11 @@ mod tests {
         // trigger placeholder synthesis, or the real tool row after it
         // would orphan-drop.
         let mut calls_msg = ChatMessage::assistant("calling");
-        calls_msg.tool_calls = Some(vec![
-            ToolCall { id: "call_1".into(), name: "bash".into(), arguments: "{}".into() },
-        ]);
+        calls_msg.tool_calls = Some(vec![ToolCall {
+            id: "call_1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }]);
         let mut out1 = ChatMessage::tool_result("call_1", "real output");
         out1.tool_call_id = Some("call_1".into());
         let (input, _) = OpenAiResponsesProvider::build_input(&[
@@ -1002,7 +1069,9 @@ mod tests {
         assert_eq!(input.len(), 2);
         assert_eq!(input[0]["role"].as_str().unwrap(), "user");
         assert!(input[0]["content"][0]["text"]
-            .as_str().unwrap().contains("prior summary"));
+            .as_str()
+            .unwrap()
+            .contains("prior summary"));
         let ins = instructions.unwrap_or_default();
         assert!(ins.contains("kernel"));
         assert!(!ins.contains("prior summary"));
@@ -1016,16 +1085,23 @@ mod tests {
         // blank queue and emit a duplicate output for it.
         let mut calls_msg = ChatMessage::assistant("calling");
         calls_msg.tool_calls = Some(vec![
-            ToolCall { id: "call_1".into(), name: "bash".into(), arguments: "{}".into() },
-            ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "call_1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "call_2".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
         ]);
         let mut out1 = ChatMessage::tool_result("call_1", "first");
         out1.tool_call_id = Some("call_1".into());
         let mut out2 = ChatMessage::tool_result("", "second");
         out2.tool_call_id = Some(String::new());
 
-        let (input, _) =
-            OpenAiResponsesProvider::build_input(&[calls_msg, out1, out2]);
+        let (input, _) = OpenAiResponsesProvider::build_input(&[calls_msg, out1, out2]);
         let outputs: Vec<_> = input
             .iter()
             .filter(|i| i["type"] == "function_call_output")
@@ -1042,7 +1118,10 @@ mod tests {
         let mut s = CallStripper::new();
         // A `[call: ()]` + `[call: bash({...})]` echo mixed into text.
         let out: Vec<String> = [
-            "已创建 ", "\n[call: ()]\n", "[call: bash({\"command\": \"x\"})]\n", "done.",
+            "已创建 ",
+            "\n[call: ()]\n",
+            "[call: bash({\"command\": \"x\"})]\n",
+            "done.",
         ]
         .iter()
         .filter_map(|d| s.feed(d))

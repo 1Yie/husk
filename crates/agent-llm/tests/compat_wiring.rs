@@ -53,7 +53,10 @@ const HELPER_READERS: &[(&str, &str)] = &[
     ("supports_developer_role", "developer_role"),
     ("max_tokens_field", "max_tokens_field_name"),
     ("thinking_format", "thinking_format_name"),
-    ("thinking_token_budget_field", "thinking_token_budget_field_name"),
+    (
+        "thinking_token_budget_field",
+        "thinking_token_budget_field_name",
+    ),
 ];
 
 /// Declared-but-unwired surface — accepted debt, not invisible debt. Each
@@ -108,7 +111,11 @@ fn every_compat_field_is_wired_or_listed_as_debt() {
 
     let dead: HashSet<&str> = KNOWN_DEAD.iter().copied().collect();
     let fields: HashSet<&str> = COMPAT_FIELDS.iter().copied().collect();
-    assert_eq!(fields.len(), COMPAT_FIELDS.len(), "duplicate entry in COMPAT_FIELDS");
+    assert_eq!(
+        fields.len(),
+        COMPAT_FIELDS.len(),
+        "duplicate entry in COMPAT_FIELDS"
+    );
     for f in KNOWN_DEAD {
         assert!(fields.contains(f), "KNOWN_DEAD names a non-field: {f}");
     }

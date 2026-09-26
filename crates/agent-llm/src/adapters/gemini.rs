@@ -60,7 +60,10 @@ impl GeminiProvider {
     }
 
     fn stream_url(&self, model: &str) -> String {
-        format!("{}/models/{model}:streamGenerateContent?alt=sse", self.base_url)
+        format!(
+            "{}/models/{model}:streamGenerateContent?alt=sse",
+            self.base_url
+        )
     }
 }
 
@@ -88,7 +91,11 @@ fn build_contents(messages: &[ChatMessage]) -> (Vec<serde_json::Value>, Vec<serd
         let m = &messages[i];
         match m.role {
             // UI-only compaction/plan card rows — render metadata, never context.
-            Role::System if matches!(m.notice, Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)) => {}
+            Role::System
+                if matches!(
+                    m.notice,
+                    Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)
+                ) => {}
             // The compaction memory note is historical context, not a
             // live instruction — emit it as a user message instead of a
             // system part. `push_user` merges it into a preceding user
@@ -275,30 +282,31 @@ impl LlmProvider for GeminiProvider {
             .await?;
         // Shared stream state — usage arrives on the terminal chunk; the
         // synthetic-Done fallback reads it, so both must see one copy.
-        let usage = std::sync::Arc::new(std::sync::Mutex::new(
-            None::<serde_json::Value>,
-        ));
+        let usage = std::sync::Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
         let call_index = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let done = DoneGuard::new();
         let usage2 = usage.clone();
         let calls2 = call_index.clone();
         let flag = done.clone();
 
-        let stream = data.flat_map(move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
-            let items: Vec<anyhow::Result<StreamChunk>> = match res {
-                Err(e) => vec![Err(e)],
-                Ok(d) => {
-                    match serde_json::from_str::<serde_json::Value>(&d) {
+        let stream = data.flat_map(
+            move |res| -> futures::stream::Iter<std::vec::IntoIter<anyhow::Result<StreamChunk>>> {
+                let items: Vec<anyhow::Result<StreamChunk>> = match res {
+                    Err(e) => vec![Err(e)],
+                    Ok(d) => match serde_json::from_str::<serde_json::Value>(&d) {
                         Ok(ev) => {
                             let mut out = Vec::new();
                             if let Some(u) = ev.get("usageMetadata") {
                                 *usage2.lock().unwrap() = Some(u.clone());
                             }
                             for cand in ev["candidates"].as_array().into_iter().flatten() {
-                                for part in cand["content"]["parts"].as_array().into_iter().flatten() {
+                                for part in
+                                    cand["content"]["parts"].as_array().into_iter().flatten()
+                                {
                                     if part.get("functionCall").is_some() {
                                         let fc = &part["functionCall"];
-                                        let idx = calls2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        let idx = calls2
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                         out.push(StreamChunk::ToolCallDelta {
                                             slot: idx,
                                             id: Some(format!("call_{idx}")),
@@ -332,11 +340,11 @@ impl LlmProvider for GeminiProvider {
                             "malformed SSE JSON: {e}; payload: {}",
                             &d[..d.len().min(120)]
                         )))],
-                    }
-                }
-            };
-            futures::stream::iter(items)
-        });
+                    },
+                };
+                futures::stream::iter(items)
+            },
+        );
 
         let stream = done.finish(stream, move || {
             let u = usage.lock().unwrap().clone();
@@ -374,17 +382,31 @@ mod tests {
         // correlation rule).
         let mut calls = ChatMessage::assistant("calling");
         calls.tool_calls = Some(vec![
-            ToolCall { id: "call_0".into(), name: "search".into(), arguments: "{}".into() },
-            ToolCall { id: "call_1".into(), name: "search".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "call_0".into(),
+                name: "search".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "call_1".into(),
+                name: "search".into(),
+                arguments: "{}".into(),
+            },
         ]);
         let r1 = ChatMessage::tool_result("call_0", "first");
         let r2 = ChatMessage::tool_result("call_1", "second");
         let (_sys, contents) = build_contents(&[calls, r1, r2]);
         let responses = &contents[1]["parts"];
         assert_eq!(responses[0]["functionResponse"]["name"], "search");
-        assert_eq!(responses[0]["functionResponse"]["response"]["result"], "first");
+        assert_eq!(
+            responses[0]["functionResponse"]["response"]["result"],
+            "first"
+        );
         assert_eq!(responses[1]["functionResponse"]["name"], "search");
-        assert_eq!(responses[1]["functionResponse"]["response"]["result"], "second");
+        assert_eq!(
+            responses[1]["functionResponse"]["response"]["result"],
+            "second"
+        );
     }
 
     #[test]
@@ -393,7 +415,10 @@ mod tests {
         // that never appeared on a call IS the name.
         let r = ChatMessage::tool_result("search", "out");
         let (_sys, contents) = build_contents(&[r]);
-        assert_eq!(contents[0]["parts"][0]["functionResponse"]["name"], "search");
+        assert_eq!(
+            contents[0]["parts"][0]["functionResponse"]["name"],
+            "search"
+        );
     }
 
     /// A tool result carrying a screenshot: `functionResponse.response` is an
@@ -417,9 +442,14 @@ mod tests {
         let (_sys, contents) = build_contents(&[calls, shot]);
         let parts = &contents[1]["parts"];
         assert_eq!(parts[0]["functionResponse"]["name"], "screenshot");
-        assert_eq!(parts[0]["functionResponse"]["response"]["result"], "shot: 1568x882");
+        assert_eq!(
+            parts[0]["functionResponse"]["response"]["result"],
+            "shot: 1568x882"
+        );
         assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
-        assert!(parts[1]["inlineData"]["data"].as_str().is_some_and(|d| !d.is_empty()));
+        assert!(parts[1]["inlineData"]["data"]
+            .as_str()
+            .is_some_and(|d| !d.is_empty()));
         // Still exactly two turns (user, model) — no extra turn appeared.
         assert_eq!(contents.len(), 2);
     }
@@ -439,7 +469,10 @@ mod tests {
             .collect();
         let (_sys, contents) = build_contents(&[calls, shot]);
         let parts = &contents[1]["parts"];
-        assert!(parts[1]["text"].as_str().unwrap().contains("image unavailable"));
+        assert!(parts[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("image unavailable"));
     }
 
     #[test]
@@ -457,7 +490,10 @@ mod tests {
         // user/model alternation.
         let users: Vec<_> = contents.iter().filter(|c| c["role"] == "user").collect();
         assert_eq!(users.len(), 1);
-        let texts: Vec<_> = users[0]["parts"].as_array().unwrap().iter()
+        let texts: Vec<_> = users[0]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
             .filter_map(|p| p["text"].as_str())
             .collect();
         assert!(texts.iter().any(|t| t.contains("prior summary")));
