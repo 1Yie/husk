@@ -20,6 +20,13 @@ pub mod none;
 pub mod traits;
 pub mod x11;
 
+// Per-OS backends — only compiled (and only link their OS APIs) on their
+// own target, the same way `detect` only probes them there.
+#[cfg(target_os = "windows")]
+pub mod windows;
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 pub use detect::detect_backend;
 pub use none::NoneBackend;
 pub use traits::{

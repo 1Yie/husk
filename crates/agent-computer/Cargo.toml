@@ -13,5 +13,27 @@ async-trait.workspace = true
 # Pure-Rust codecs only (png → flate2/miniz_oxide): the workspace never links C.
 image.workspace = true
 
+# Capture + synthetic input are per-OS — gated so each backend only links
+# its own API (and so Linux/Windows never pull macOS frameworks).
+#
+# Windows: `windows` crate covers BOTH `SendInput` (input) and the GDI
+#   `BitBlt` grab (capture) — no extra capture crate needed, and the raw
+#   RGBA it hands back feeds straight into the shared `image` PNG pipeline.
+# macOS:  `screencapture` is a system binary for capture (like `scrot`),
+#   `core-graphics` covers `CGEventPost` for input — nothing else required.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Threading",
+  "Win32_Graphics_Dwm",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25"
+core-foundation = "0.10"
+
 [dev-dependencies]
 tempfile = "3"

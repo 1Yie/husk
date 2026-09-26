@@ -22,12 +22,31 @@ pub fn detect_backend() -> Arc<dyn DesktopBackend> {
             .map_err(|e| e.to_string())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
     fn pick() -> Result<Arc<dyn DesktopBackend>, String> {
-        // macOS (`screencapture` + CGEvent via a shim) and Windows (SendInput)
-        // land with their own backends; until then, refuse loudly.
+        // SendInput needs no `$DISPLAY`/external tool — a desktop session can
+        // always synthesize input. The probe still refuses on a headless/RDP
+        // session where no screens exist.
+        crate::windows::WindowsBackend::probe()
+            .map(|b| Arc::new(b) as Arc<dyn DesktopBackend>)
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn pick() -> Result<Arc<dyn DesktopBackend>, String> {
+        // macOS gates on Screen Recording (capture) + Accessibility (CGEvent).
+        // The probe preflights screen-recording so a denied app refuses at
+        // detect time with the exact Settings pane to fix, instead of failing
+        // on the first click.
+        crate::macos::MacBackend::probe()
+            .map(|b| Arc::new(b) as Arc<dyn DesktopBackend>)
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    fn pick() -> Result<Arc<dyn DesktopBackend>, String> {
         Err(format!(
-            "no desktop backend for {} yet (X11 only for now)",
+            "no desktop backend for {} yet",
             std::env::consts::OS
         ))
     }
@@ -48,6 +67,6 @@ mod tests {
     #[test]
     fn detect_always_returns_a_backend() {
         let b = detect_backend();
-        assert!(matches!(b.id(), "x11" | "none"));
+        assert!(matches!(b.id(), "x11" | "windows" | "macos" | "none"));
     }
 }
