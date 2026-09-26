@@ -265,6 +265,11 @@ impl SessionStore {
     /// found instead of pulling the whole file into memory — a 100 MB
     /// history file then costs one snapshot's worth of I/O, not the whole
     /// file, on every `history_page` fetch.
+    ///
+    /// A torn trailing write (kill or power-loss mid-append) leaves the
+    /// last line unparseable; the scan keeps walking earlier complete
+    /// lines, so the newest INTACT snapshot restores the session instead
+    /// of losing the whole history to one bad tail.
     pub fn load_history(&self, id: i64) -> Option<Vec<ChatMessage>> {
         use std::io::{Read, Seek, SeekFrom};
         let mut f = std::fs::File::open(self.history_path(id)).ok()?;
@@ -281,8 +286,19 @@ impl SessionStore {
             f.read_exact(&mut buf).ok()?;
             buf.extend_from_slice(&tail);
             tail = buf;
-            if let Some(start) = last_line_start(&tail) {
-                return serde_json::from_slice(&tail[start..]).ok();
+            // Newest→oldest over complete lines in `tail`: a candidate
+            // that fails to parse is dropped (torn append) and the scan
+            // retries on the snapshot before it.
+            let mut region: &[u8] = &tail;
+            while let Some(start) = last_line_start(region) {
+                let line = trim_ascii_end(&region[start..]);
+                if line.is_empty() {
+                    break;
+                }
+                match serde_json::from_slice(line) {
+                    Ok(history) => return Some(history),
+                    Err(_) => region = &region[..start],
+                }
             }
             if pos == 0 {
                 // The whole file is one unterminated line (or all blank).
@@ -302,22 +318,23 @@ impl SessionStore {
     /// original intact (the reader only ever wants the last line anyway).
     pub fn snapshot(&self, id: i64, history: &[ChatMessage]) -> std::io::Result<()> {
         use std::io::Write;
-        let line = serde_json::to_string(history)?;
+        // One `write_all` for payload + terminator: two calls could be
+        // split by a kill mid-append, widening the torn-tail window.
+        let mut line = serde_json::to_string(history)?.into_bytes();
+        line.push(b'\n');
         let path = self.history_path(id);
         {
             let mut f = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&path)?;
-            f.write_all(line.as_bytes())?;
-            f.write_all(b"\n")?;
+            f.write_all(&line)?;
         }
         if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_HISTORY_BYTES {
             let tmp = path.with_extension("jsonl.tmp");
             {
                 let mut t = std::fs::File::create(&tmp)?;
-                t.write_all(line.as_bytes())?;
-                t.write_all(b"\n")?;
+                t.write_all(&line)?;
                 t.sync_all()?;
             }
             std::fs::rename(&tmp, &path)?;
@@ -799,6 +816,59 @@ mod tests {
         assert!(store.load_history(9).is_none());
         std::fs::write(dir.path().join("8.jsonl"), b"\n\n").unwrap();
         assert!(store.load_history(8).is_none());
+    }
+
+    /// A kill or power-loss mid-append leaves the tail line truncated —
+    /// half a JSON record, no terminator. The reader must fall back to
+    /// the newest INTACT snapshot instead of returning `None`, so one
+    /// torn write costs at most the last turn, never the whole history.
+    #[test]
+    fn load_history_falls_back_past_a_torn_trailing_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore {
+            dir: dir.path().to_path_buf(),
+        };
+
+        store
+            .snapshot(
+                7,
+                &[ChatMessage::user("first"), ChatMessage::assistant("one")],
+            )
+            .unwrap();
+        store
+            .snapshot(
+                7,
+                &[
+                    ChatMessage::user("first"),
+                    ChatMessage::assistant("one"),
+                    ChatMessage::user("second"),
+                    ChatMessage::assistant("two"),
+                ],
+            )
+            .unwrap();
+
+        // The crash leaves a half-written record at EOF.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("7.jsonl"))
+            .map(|mut f| {
+                use std::io::Write;
+                let _ = f.write_all(b"[{\"role\":\"user\",\"content\":\"brot");
+            })
+            .unwrap();
+
+        let hist = store.load_history(7).expect("history survives a torn tail");
+        assert_eq!(hist.len(), 4);
+        assert_eq!(hist[3].content.as_deref(), Some("two"));
+
+        // And the degenerate case: the ONLY line is torn → still None,
+        // not a panic or a bogus parse.
+        std::fs::write(
+            dir.path().join("9.jsonl"),
+            b"[{\"role\":\"user\",\"content\":\"hal",
+        )
+        .unwrap();
+        assert!(store.load_history(9).is_none());
     }
 
     /// Snapshots are full copies, so the file grew with `turns × history` and
