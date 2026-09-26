@@ -42,7 +42,7 @@ function InstructionsBlock({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         rows={10}
-        className="font-mono text-[12px] leading-relaxed resize-y min-h-40"
+        className="font-mono text-[12px] leading-relaxed resize-y min-h-40 dark:bg-active"
         placeholder="在此编写自定义指令，会追加到每个新会话的系统提示词末尾"
       />
       <div className="flex justify-end">

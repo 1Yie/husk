@@ -1838,8 +1838,11 @@ function ComposerToolbar({
     models.find((m) => m.model === activeModel);
 
   return (
-    <div className="flex items-center justify-between pt-1">
-      <div className="flex items-center gap-1.5">
+    // `min-w-0` on both groups is what lets a narrow window compress the row
+    // instead of pushing the model chip / send button off the right edge —
+    // `justify-between` alone pins the ends and lets the chips overflow.
+    <div className="flex items-center justify-between gap-2 pt-1">
+      <div className="flex items-center gap-1.5 min-w-0">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -1895,12 +1898,12 @@ function ComposerToolbar({
         />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 min-w-0 shrink-0">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               aria-label={`当前模型: ${activeItem ? modelLabel(activeItem) : activeModel || "未选择"} (${activeProvider}/${activeModel})`}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer"
+              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer"
             >
               <span
                 className={cn(

@@ -42,8 +42,11 @@ export const INK_MUTED = "text-neutral-500 dark:text-[#9a9aa4]";
 
 /** The activity heat-map's "nothing happened" cell — a flat neutral in BOTH
  *  themes. `--husk-n800` belongs to the inverted dark ramp, so it would paint
- *  a near-white square on the dark card. */
-export const SURFACE_ACTIVITY_EMPTY = "bg-neutral-100 dark:bg-[#26262c]";
+ *  a near-white square on the dark card. Bumped from `#26262c` — that was a
+ *  near-exact match for the `--husk-card` (`#26262d`) the empty cell sits on,
+ *  so in dark mode the zero-activity days dissolved into the card and only
+ *  the active (green) squares showed. `#33333c` stays one step above the card. */
+export const SURFACE_ACTIVITY_EMPTY = "bg-neutral-100 dark:bg-[#33333c]";
 
 /** Form controls (input, textarea, quiet buttons): a visible well on both themes.
  *  `bg-transparent` left them identical to the page background in dark mode. */

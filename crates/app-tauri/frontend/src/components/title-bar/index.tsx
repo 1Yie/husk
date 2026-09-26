@@ -1,9 +1,15 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import { WindowControls } from "@/components/window-controls";
 import { isMac } from "@/lib/platform";
 import { useCurrencySymbol } from "@/lib/appearance";
-import { GitBranch, ChartPie, Zap, BarChartHorizontalStart, Inbox } from "@keyline-icons/react";
+import { GitBranch, ChartPie, Zap, BarChartHorizontalStart, Inbox, MoreHorizontal } from "@keyline-icons/react";
 import { BrainCircuit, FileDiff } from "lucide-react";
 import { TooltipSimple } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { StreamHealth } from "@/features/chat/components/stream-health";
 import type { SessionView } from "@/features/chat/hooks/stream-view";
 import type { GitInfo, ModelItem } from "@/lib/agent-ipc/index";
@@ -79,8 +85,89 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   const ctxColor =
     pct >= 80 ? "text-red-500 dark:text-red-400" : pct >= 50 ? "text-amber-500 dark:text-amber-400" : undefined;
 
+  // Collapse threshold — below this the stats cluster folds into a "…"
+  // dropdown so the window controls on the right are never clipped. The
+  // full chip row needs ~700px for itself once the title + sidebar leave it
+  // ~850px of bar; we flip on the bar's own width, not the chips', so a long
+  // title can't hold it open and still starve the controls.
+  const barRef = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
+  useLayoutEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setNarrow(el.clientWidth < 880);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // The stat chips — identical markup whether inline or inside the collapse
+  // dropdown, so it's built once and dropped into whichever slot fits.
+  const statsChips = (
+    <>
+      <StreamHealth />
+      {gitInfo?.branch && (
+        <TooltipSimple content={`Git 分支: ${gitInfo.branch}${gitInfo.dirty > 0 ? ` (${gitInfo.dirty} 处未提交修改)` : ""}`} side="bottom">
+          <span className="flex items-center gap-1 cursor-default">
+            <GitBranch className="h-3 w-3" />
+            {gitInfo.branch}
+            {gitInfo.dirty > 0 && (
+              <span className="text-amber-500 dark:text-amber-400">·{gitInfo.dirty}</span>
+            )}
+          </span>
+        </TooltipSimple>
+      )}
+      <TooltipSimple content={`上下文窗口占用: ${fmtK(prompt)}/${fmtK(ctxWin)} (${pct}%)`} side="bottom">
+        <span
+          className={`flex items-center gap-1 cursor-default ${ctxColor ?? ""}`}
+        >
+          <ChartPie className="h-3 w-3" />
+          {fmtK(prompt)}/{fmtK(ctxWin)} · {pct}%
+        </span>
+      </TooltipSimple>
+      <TooltipSimple content={`本轮模型生成 Token: ${fmtK(completion)}`} side="bottom">
+        <span className="flex items-center gap-1 cursor-default">
+          <BrainCircuit className="h-3 w-3" />
+          {fmtK(completion)}
+        </span>
+      </TooltipSimple>
+      <TooltipSimple
+        content={`提示词缓存命中: ${fmtK(cached)} · 未缓存: ${fmtK(uncached)}`}
+        side="bottom"
+      >
+        <span className="flex items-center gap-1 cursor-default">
+          <Inbox className="h-3 w-3" />
+          {fmtK(cached)}/{fmtK(uncached)}
+        </span>
+      </TooltipSimple>
+      {cost !== null && (
+        <TooltipSimple
+          content={
+            `本轮花费: ${fmtCost(cost, sym)}` +
+            `（输入 ${sym}${modelCost?.input ?? 0}/M` +
+            (modelCost?.cache_read != null ? ` · 缓存读 ${sym}${modelCost.cache_read}/M` : "") +
+            ` · 输出 ${sym}${modelCost?.output ?? 0}/M）`
+          }
+          side="bottom"
+        >
+          <span className="flex items-center gap-1 cursor-default">
+            {fmtCost(cost, sym)}
+          </span>
+        </TooltipSimple>
+      )}
+      <TooltipSimple content={`生成速率: ${fmtRate(toks)} tok/s`} side="bottom">
+        <span className="flex items-center gap-1 cursor-default">
+          <Zap className="h-3 w-3" />
+          {fmtRate(toks)} tok/s
+        </span>
+      </TooltipSimple>
+    </>
+  );
+
   return (
     <div
+      ref={barRef}
       data-tauri-drag-region="deep"
       className="flex items-center h-9 flex-none bg-white border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] select-none px-3 justify-between"
     >
@@ -114,94 +201,59 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
       <div className="flex-1 h-full" />
 
       {/* Session stats — always rendered (zeroed before the first turn) so
-       * the meter cluster doesn't pop in mid-conversation. The git chip is
-       * the only conditional one: outside a repo there is no branch to show. */}
-      {!noWorkspace && (
-      <div
-        className="flex items-center gap-3 flex-none mr-2 text-[11px] font-mono text-neutral-600"
-      >
-        <StreamHealth />
-        {gitInfo?.branch && (
-          <TooltipSimple content={`Git 分支: ${gitInfo.branch}${gitInfo.dirty > 0 ? ` (${gitInfo.dirty} 处未提交修改)` : ""}`} side="bottom">
-            <span className="flex items-center gap-1 cursor-default">
-              <GitBranch className="h-3 w-3" />
-              {gitInfo.branch}
-              {gitInfo.dirty > 0 && (
-                <span className="text-amber-500 dark:text-amber-400">·{gitInfo.dirty}</span>
-              )}
-            </span>
-          </TooltipSimple>
-        )}
-        <TooltipSimple content={`上下文窗口占用: ${fmtK(prompt)}/${fmtK(ctxWin)} (${pct}%)`} side="bottom">
-          <span
-            className={`flex items-center gap-1 cursor-default ${ctxColor ?? ""}`}
-          >
-            <ChartPie className="h-3 w-3" />
-            {fmtK(prompt)}/{fmtK(ctxWin)} · {pct}%
-          </span>
-        </TooltipSimple>
-        <TooltipSimple content={`本轮模型生成 Token: ${fmtK(completion)}`} side="bottom">
-          <span className="flex items-center gap-1 cursor-default">
-            <BrainCircuit className="h-3 w-3" />
-            {fmtK(completion)}
-          </span>
-        </TooltipSimple>
+       * the meter cluster doesn't pop in mid-conversation. Below the collapse
+       * threshold the chips fold into a "…" dropdown instead of pushing the
+       * window controls off the bar's right edge. */}
+      {!noWorkspace &&
+        (narrow ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                data-tauri-drag-region="false"
+                aria-label="会话统计"
+                className="mr-2 flex-none rounded p-1.5 text-neutral-500 hover:text-neutral-800 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors cursor-pointer"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              side="bottom"
+              className="flex flex-col gap-3 px-3 py-2.5 text-[11px] font-mono text-neutral-600"
+            >
+              {statsChips}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <div className="flex items-center gap-3 flex-none mr-2 min-w-0 text-[11px] font-mono text-neutral-600">
+            {statsChips}
+          </div>
+        ))}
+
+      {/* Changes-panel toggle stays on the bar in BOTH states — it's an
+       * action, not a stat, so it never folds into the "…" overflow menu. */}
+      {onToggleChanges && changesCount > 0 && (
         <TooltipSimple
-          content={`提示词缓存命中: ${fmtK(cached)} · 未缓存: ${fmtK(uncached)}`}
+          content={changesOpen ? "关闭改动面板" : `查看改动${changesCount > 0 ? ` (${changesCount} 个文件)` : ""}`}
           side="bottom"
         >
-          <span className="flex items-center gap-1 cursor-default">
-            <Inbox className="h-3 w-3" />
-            {fmtK(cached)}/{fmtK(uncached)}
-          </span>
-        </TooltipSimple>
-        {cost !== null && (
-          <TooltipSimple
-            content={
-              `本轮花费: ${fmtCost(cost, sym)}` +
-              `（输入 ${sym}${modelCost?.input ?? 0}/M` +
-              (modelCost?.cache_read != null ? ` · 缓存读 ${sym}${modelCost.cache_read}/M` : "") +
-              ` · 输出 ${sym}${modelCost?.output ?? 0}/M）`
-            }
-            side="bottom"
+          <button
+            type="button"
+            data-tauri-drag-region="false"
+            onClick={onToggleChanges}
+            aria-label="改动面板"
+            aria-pressed={changesOpen}
+            className={`relative mr-2 flex-none flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors cursor-pointer text-[11px] font-mono ${
+              changesOpen
+                ? "bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)] text-neutral-800"
+                : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-800"
+            }`}
           >
-            <span className="flex items-center gap-1 cursor-default">
-              {fmtCost(cost, sym)}
-            </span>
-          </TooltipSimple>
-        )}
-        <TooltipSimple content={`生成速率: ${fmtRate(toks)} tok/s`} side="bottom">
-          <span className="flex items-center gap-1 cursor-default">
-            <Zap className="h-3 w-3" />
-            {fmtRate(toks)} tok/s
-          </span>
+            <FileDiff className="h-3.5 w-3.5" />
+            <span className="tabular-nums">{changesCount}</span>
+          </button>
         </TooltipSimple>
-        {/* Hidden when the list is empty — nothing to show. */}
-        {onToggleChanges && changesCount > 0 && (
-          <TooltipSimple
-            content={changesOpen ? "关闭改动面板" : `查看改动${changesCount > 0 ? ` (${changesCount} 个文件)` : ""}`}
-            side="bottom"
-          >
-            <button
-              type="button"
-              data-tauri-drag-region="false"
-              onClick={onToggleChanges}
-              aria-label="改动面板"
-              aria-pressed={changesOpen}
-              className={`relative flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors cursor-pointer ${
-                changesOpen
-                  ? "bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)] text-neutral-800"
-                  : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-800"
-              }`}
-            >
-              <FileDiff className="h-3.5 w-3.5" />
-              {changesCount > 0 && (
-                <span className="tabular-nums">{changesCount}</span>
-              )}
-            </button>
-          </TooltipSimple>
-        )}
-      </div>
       )}
 
       <WindowControls />

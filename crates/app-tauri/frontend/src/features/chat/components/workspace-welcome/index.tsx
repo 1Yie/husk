@@ -78,7 +78,12 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Pro
   }, []);
   const stats = useMemo(() => (records ? aggregate(records) : null), [records]);
   return (
-    <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto px-6 py-10 select-none">
+    // `main-col` paints `bg-workspace` (#16161a dark) but the open-session
+    // stream covers it with `bg-white` (#232329). Without its own surface
+    // the empty workspace showed the darker main-col behind it, so it read
+    // a shade off from the chat — give it the same `bg-white` the stream
+    // uses.
+    <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto px-6 py-10 select-none bg-white">
       <div className="w-full max-w-[720px] flex flex-col items-center gap-8">
         <div className="flex flex-col items-center gap-5 text-center">
           {/* Greeting + tail come from `lib/greeting` — the same line the

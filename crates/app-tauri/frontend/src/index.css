@@ -69,7 +69,11 @@
   --husk-fg: #e4e4e7;
   --husk-accent: #4da3ff;
   --husk-panel: #1b1b21;
-  --husk-card: #232329;
+  /* Cards sit one step above the page surface (`--husk-white` #232329)
+     so they read as lifted elements — at the old #232329 a `bg-card`
+     section was invisible against the page, which is exactly what made
+     the stats/settings cards dissolve into the background. */
+  --husk-card: #26262d;
   --husk-hover: #2b2b32;
   --husk-active: #26262d;
   --husk-border: #34343d;
@@ -98,21 +102,37 @@
   --husk-black: #fafafa;
 }
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
   margin: 0;
   background-color: var(--husk-bg);
   color: var(--husk-fg);
-  font-family: var(--husk-ui-font), "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family:
+    var(--husk-ui-font),
+    "MiSans",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
 }
 
 body {
   @apply bg-workspace text-text-primary font-sans text-sm antialiased overflow-hidden select-none;
 }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-corner { background: transparent; }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
   @apply bg-neutral-300 rounded-full;
 }
@@ -168,7 +188,13 @@ code:not(pre code),
   padding: 1px 5px !important;
   margin: 0 2px !important;
   font-size: 12px !important;
-  font-family: var(--font-mono, "JetBrains Mono", ui-monospace, SFMono-Regular, monospace) !important;
+  font-family: var(
+    --font-mono,
+    "JetBrains Mono",
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  ) !important;
   font-weight: 450 !important;
   line-height: 1.35 !important;
   border-radius: 4px !important;
@@ -222,7 +248,8 @@ img.emoji {
   padding: 0 0.875rem !important;
   height: 2.25rem !important;
   min-height: 2.25rem !important;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  font-family:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
   font-size: 12px !important;
   color: #d4d4d8 !important;
   user-select: none !important;
@@ -306,7 +333,9 @@ img.emoji {
   border-radius: 0 !important;
   padding: 0.875rem 1rem !important;
   font-size: 13px !important;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+  font-family:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace !important;
   line-height: 1.6 !important;
   overflow-x: auto !important;
 }
@@ -575,7 +604,9 @@ img.emoji {
 }
 
 [data-streamdown="image"]:hover {
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1) !important;
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -2px rgba(0, 0, 0, 0.1) !important;
 }
 
 [data-streamdown="image-fallback"] {
@@ -799,8 +830,9 @@ img.emoji {
 
 .accordion-grid {
   display: grid;
-  transition: grid-template-rows 250ms cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition:
+    grid-template-rows 250ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
   will-change: grid-template-rows, opacity;
 }
 
@@ -813,7 +845,3 @@ img.emoji {
   grid-template-rows: 0fr;
   opacity: 0;
 }
-
-
-
-

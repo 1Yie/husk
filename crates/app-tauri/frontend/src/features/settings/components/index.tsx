@@ -60,7 +60,7 @@ export function SettingSelect({
         <button
           type="button"
           className={cn(
-            "flex h-8 min-w-44 items-center justify-between gap-2 whitespace-nowrap rounded-xl border border-neutral-200 bg-white px-3 text-xs text-neutral-800 shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-neutral-900 data-[state=open]:ring-1 data-[state=open]:ring-neutral-900",
+            "flex h-8 min-w-44 items-center justify-between gap-2 whitespace-nowrap rounded-xl border border-neutral-200 bg-white px-3 text-xs text-neutral-800 shadow-sm transition-[color,box-shadow] focus:outline-none focus:border-neutral-400 focus:ring-[3px] focus:ring-[color-mix(in_srgb,var(--husk-n950)_12%,transparent)] data-[state=open]:border-neutral-400 data-[state=open]:ring-[3px] data-[state=open]:ring-[color-mix(in_srgb,var(--husk-n950)_12%,transparent)]",
             triggerClassName
           )}
         >

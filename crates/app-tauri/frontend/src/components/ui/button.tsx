@@ -14,7 +14,11 @@ const buttonVariants = cva(
         destructive:
           "bg-red-600 text-neutral-50 dark:text-[var(--husk-black)] shadow-sm hover:bg-red-600/90",
         outline:
-          "border border-neutral-200 bg-white shadow-sm hover:bg-neutral-100 hover:text-neutral-900",
+          // `bg-white` → `--husk-white` (#232329) in dark mode reads nearly
+          // identical to the settings panel behind it, so the button
+          // dissolved into the background. Lift it a step (`--husk-hover`)
+          // and give it a visible hairline so it always reads as a control.
+          "border border-neutral-200 bg-white shadow-sm hover:bg-neutral-100 hover:text-neutral-900 dark:bg-[var(--husk-hover)] dark:border-[var(--husk-border)] dark:hover:bg-[color-mix(in_srgb,var(--husk-n300)_30%,var(--husk-hover))]",
         secondary:
           "bg-neutral-100 text-neutral-900 shadow-sm hover:bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)]",
         ghost: "hover:bg-neutral-100 hover:text-neutral-900",

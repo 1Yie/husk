@@ -90,10 +90,10 @@ export function ModePicker({
           <DropdownMenuTrigger asChild>
             <button
               aria-label="代理模式"
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
+              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
             >
-              <Bot className="h-3.5 w-3.5 text-neutral-500" />
-              <span>{agentModeLabel}</span>
+              <Bot className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              <span className="truncate max-w-[7em]">{agentModeLabel}</span>
               <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
           </DropdownMenuTrigger>
@@ -131,10 +131,10 @@ export function ModePicker({
           <DropdownMenuTrigger asChild>
             <button
               aria-label="权限模式"
-              className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
+              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
             >
-              <ShieldCheck className="h-3.5 w-3.5 text-neutral-500" />
-              <span>{modeLabel}</span>
+              <ShieldCheck className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              <span className="truncate max-w-[7em]">{modeLabel}</span>
               <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
           </DropdownMenuTrigger>
@@ -172,8 +172,8 @@ export function ModePicker({
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
-                aria-label={`思考推理强度: ${currentThinkingLabel}`}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
+              aria-label={`思考推理强度: ${currentThinkingLabel}`}
+              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
               >
                 <Brain
                   className={cn(

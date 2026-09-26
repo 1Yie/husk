@@ -988,8 +988,13 @@ const ChatTurn = memo(function ChatTurn({
           id={`chat-turn-${turn.id}-user`}
           className="ms-auto flex w-fit max-w-[80%] flex-col items-end gap-1"
         >
-          <div className="bg-neutral-100 text-neutral-900 flex w-fit flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]">
-            <div className="min-w-0 text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text [overflow-wrap:anywhere]">
+          {/* `w-fit` sizes the bubble to content, but a single unbroken
+              line (a pasted log / URL) inflates `max-content` and pushes the
+              bubble past the 80% cap. `max-w-full` clamps it to the wrapper's
+              80%, and `min-w-0` on the text lets `overflow-wrap:anywhere`
+              actually break mid-word instead of overflowing. */}
+          <div className="bg-neutral-100 text-neutral-900 flex w-fit max-w-full flex-col gap-2 rounded-xl px-3.5 py-2.5 text-[14px]">
+            <div className="min-w-0 max-w-full text-[14px] leading-relaxed [&_p]:max-w-none [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 select-text [overflow-wrap:anywhere] break-words">
               <UserMemoStreamdown text={collapsedUser} />
             </div>
           </div>
