@@ -36,8 +36,6 @@ const COMPAT_FIELDS: &[&str] = &[
     "supports_strict_mode",
     "supports_openai_grammar_tools",
     "supports_long_cache_retention",
-    "open_router_routing",
-    "vercel_gateway_routing",
     "supports_eager_tool_input_streaming",
     "supports_cache_control_on_tools",
     "force_adaptive_thinking",
@@ -62,19 +60,14 @@ const HELPER_READERS: &[(&str, &str)] = &[
 /// Declared-but-unwired surface — accepted debt, not invisible debt. Each
 /// entry means the field has zero readers anywhere in the workspace.
 const KNOWN_DEAD: &[&str] = &[
-    "supports_usage_in_streaming",
     "supports_finish_reason",
-    "requires_thinking_as_text",
     "thinking_token_budget_field",
     "supports_thinking_token_budget",
-    "cache_control_format",
     "send_session_affinity_headers",
     "session_affinity_format",
     "supports_strict_mode",
     "supports_openai_grammar_tools",
     "supports_long_cache_retention",
-    "open_router_routing",
-    "vercel_gateway_routing",
     "supports_eager_tool_input_streaming",
     "supports_cache_control_on_tools",
     "force_adaptive_thinking",

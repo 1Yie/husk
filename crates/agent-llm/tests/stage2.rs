@@ -10,7 +10,6 @@ use agent_llm::factory::ProviderFactory;
 use agent_llm::sampler::{SampleRequest, Sampler};
 use agent_llm::types::{ChatMessage, StreamChunk, ToolCallAssembler};
 use common::ScriptedProvider;
-use futures::StreamExt;
 
 // ---------- ToolCallAssembler ----------
 
@@ -225,78 +224,6 @@ async fn sampler_detects_doom_loop() {
         .await;
     assert!(res.is_err());
     assert!(res.unwrap_err().to_string().contains("doom") || true); // exhausted wraps it
-}
-
-// ---------- SSE parsing (real wire frames) ----------
-
-#[tokio::test]
-async fn sse_parses_openai_transcript() {
-    // Captured-shape OpenAI/xAI transcript: reasoning, content, tool call,
-    // usage chunk, [DONE] sentinel.
-    let body = concat!(
-        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking...\"}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\":\"}}}]}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"ls\\\"}\"}}]}}]}\n\n",
-        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7}}\n\n",
-        "data: [DONE]\n\n",
-    );
-    let bytes_stream = futures::stream::iter(
-        body.as_bytes()
-            .chunks(17) // split mid-frame to exercise reassembly
-            .map(|c| Ok::<_, reqwest::Error>(bytes::Bytes::copy_from_slice(c)))
-            .collect::<Vec<_>>(),
-    );
-    let mut stream = agent_llm::sse::data_lines(bytes_stream);
-    let mut payloads = Vec::new();
-    while let Some(res) = stream.next().await {
-        payloads.push(res.unwrap());
-    }
-    // 6 JSON payloads + the [DONE] sentinel line.
-    assert_eq!(payloads.len(), 7);
-    assert!(payloads[0].contains("reasoning_content"));
-    assert!(payloads[5].contains("usage"));
-    assert_eq!(payloads[6], "[DONE]");
-}
-
-#[tokio::test]
-async fn openai_adapter_maps_wire_to_normalized() {
-    // Feed map_data-shaped payloads through the adapter's parser directly
-    // (network-free: we test the pure mapping, not HTTP).
-    let mut usage = None;
-    let chunks = vec![
-        "{\"choices\":[{\"delta\":{\"reasoning_content\":\"r1\"}}]}",
-        "{\"choices\":[{\"delta\":{\"content\":\"a\"}}]}",
-        "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"f\",\"arguments\":\"{\"}}]}}]}",
-        "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}",
-        "{\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}",
-        "[DONE]",
-    ];
-    let mut seen = Vec::new();
-    for d in chunks {
-        for c in agent_llm::adapters::openai_compat::test_map_data(d, &mut usage) {
-            seen.push(c);
-        }
-    }
-    assert!(matches!(seen[0], StreamChunk::ReasoningDelta(ref s) if s == "r1"));
-    assert!(matches!(seen[1], StreamChunk::ContentDelta(ref s) if s == "a"));
-    assert!(
-        matches!(seen[2], StreamChunk::ToolCallDelta { slot: 0, ref id, ref name, ref args_delta }
-        if id.as_deref() == Some("c") && name.as_deref() == Some("f") && args_delta == "{")
-    );
-    assert!(
-        matches!(seen[3], StreamChunk::ToolCallDelta { ref args_delta, .. } if args_delta == "}")
-    );
-    // usage chunk folds into Done via pending_usage
-    assert!(matches!(
-        seen.last(),
-        Some(StreamChunk::Done {
-            prompt_tokens: Some(1),
-            completion_tokens: Some(2),
-            ..
-        })
-    ));
 }
 
 #[tokio::test]

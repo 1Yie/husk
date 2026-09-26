@@ -5,14 +5,13 @@
 //! `build` returns `Err` carrying the reason so the UI can grey it out.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::adapters::{
-    anthropic::AnthropicProvider, GenericOpenAiProvider, OpenAiResponsesProvider,
-};
-use crate::config::{ModelConfig, ProviderConfig, ProviderKind, SecretResolution};
+use crate::config::{ModelConfig, ProviderConfig, SecretResolution};
 use crate::provider::{LlmProvider, ModelParams};
+use crate::rig_bridge::RigProvider;
 
 #[derive(Debug, Error)]
 pub enum FactoryError {
@@ -21,6 +20,17 @@ pub enum FactoryError {
 
     #[error("provider construction failed: {0}")]
     Build(#[from] anyhow::Error),
+}
+
+/// One `reqwest::Client` shared by every rig client — rustls-only TLS,
+/// generous total timeout for slow generations, short connect timeout.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!("agent-rs/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(30 * 60))
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+        .expect("reqwest client")
 }
 
 pub struct ProviderFactory;
@@ -45,47 +55,9 @@ impl ProviderFactory {
                 "api_key is plaintext in config.toml — prefer env: or keyring: indirection"
             );
         }
-
-        match cfg.kind {
-            ProviderKind::OpenaiCompat => {
-                let mut p =
-                    GenericOpenAiProvider::new(&cfg.base_url, key).map_err(FactoryError::Build)?;
-                for (k, v) in &cfg.headers {
-                    p = p.with_header(k.clone(), v.clone());
-                }
-                if let Some(compat) = &cfg.compat {
-                    p = p.with_compat(compat.clone());
-                }
-                Ok(Arc::new(p))
-            }
-            ProviderKind::OpenaiResponses => {
-                let mut p = OpenAiResponsesProvider::new(&cfg.base_url, key)
-                    .map_err(FactoryError::Build)?;
-                for (k, v) in &cfg.headers {
-                    p = p.with_header(k.clone(), v.clone());
-                }
-                if let Some(compat) = &cfg.compat {
-                    p = p.with_compat(compat.clone());
-                }
-                Ok(Arc::new(p))
-            }
-            ProviderKind::Anthropic => {
-                let mut p =
-                    AnthropicProvider::new(&cfg.base_url, key).map_err(FactoryError::Build)?;
-                for (k, v) in &cfg.headers {
-                    p = p.with_header(k.clone(), v.clone());
-                }
-                Ok(Arc::new(p))
-            }
-            ProviderKind::Gemini => {
-                let mut p = crate::adapters::gemini::GeminiProvider::new(&cfg.base_url, key)
-                    .map_err(FactoryError::Build)?;
-                for (k, v) in &cfg.headers {
-                    p = p.with_header(k.clone(), v.clone());
-                }
-                Ok(Arc::new(p))
-            }
-        }
+        RigProvider::new(cfg, key, http_client())
+            .map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
+            .map_err(FactoryError::Build)
     }
 
     /// The per-model wire settings for `model_id` under `cfg` — `maxTokens`,
@@ -109,7 +81,7 @@ impl ProviderFactory {
             max_tokens: model.max_tokens.map(|v| v.min(u32::MAX as u64) as u32),
             sampling_params: model.sampling_params.clone(),
             // The model's own `compat`; the provider's is merged in by the
-            // adapter at request time (`ModelParams::compat_with`), so a
+            // provider at request time (`ModelParams::compat_with`), so a
             // provider-level change still reaches a resolved model.
             compat: model.compat.clone(),
         }

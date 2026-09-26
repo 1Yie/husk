@@ -333,6 +333,7 @@ fn classify_transport_error(msg: &str) -> SampleError {
         None => {
             let lower = msg.to_lowercase();
             lower.contains("timeout")
+                || lower.contains("timed out")
                 || lower.contains("connection")
                 || lower.contains("transport")
                 || lower.contains("eof")

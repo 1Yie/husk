@@ -2,16 +2,14 @@
 //!
 //! The kernel and UI never see vendor JSON: everything behind `Arc<dyn LlmProvider>`
 //! speaks the normalized `StreamChunk` protocol, so adding a provider means adding
-//! one adapter file.
+//! one wire entry in the rig bridge.
 
-pub mod adapters;
 pub mod config;
 pub mod factory;
 pub mod masking;
 pub mod provider;
+mod rig_bridge;
 pub mod sampler;
-pub mod sse;
-pub mod transport;
 pub mod types;
 
 pub use config::{
@@ -22,5 +20,5 @@ pub use config::{
 pub use factory::ProviderFactory;
 pub use masking::EgressMasker;
 pub use provider::{BoxStream, Capabilities, LlmProvider, ModelParams};
-pub use transport::{DoneGuard, Transport};
+pub use rig_bridge::RigProvider;
 pub use types::{ChatMessage, Role, StreamChunk, ToolCall};
