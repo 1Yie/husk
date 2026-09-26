@@ -245,7 +245,12 @@ impl RigProvider {
     /// Provider-level `ProviderCompat` is on the ext that goes through
     /// `with_ext`, so dialect hooks see the model-merged values only if we
     /// rebuild — which we do per call anyway.
-    fn build_model(&self, model: &str, compat: &ProviderCompat) -> anyhow::Result<RigModel> {
+    fn build_model(
+        &self,
+        model: &str,
+        compat: &ProviderCompat,
+        thinking_on: bool,
+    ) -> anyhow::Result<RigModel> {
         let mut headers = HeaderMap::new();
         for (k, v) in &self.headers {
             if let (Ok(name), Ok(value)) = (
@@ -312,11 +317,22 @@ impl RigProvider {
                     .base_url(&self.base_url)
                     .http_headers(headers)
                     .http_client(http);
-                let client = if self.auth_header && !self.api_key.is_empty() {
-                    b.api_key(anthropic::client::AnthropicKey::from(self.api_key.clone())).build()
+                let b = if self.auth_header && !self.api_key.is_empty() {
+                    b.api_key(anthropic::client::AnthropicKey::from(self.api_key.clone()))
                 } else {
-                    b.api_key(anthropic::client::AnthropicKey::from(String::new())).build()
-                }
+                    b.api_key(anthropic::client::AnthropicKey::from(String::new()))
+                };
+                // Interleaved thinking is still behind the beta header —
+                // send it only when a thinking block will actually ride the
+                // request (resolved budget exists), matching the retired
+                // adapter.
+                let b = if thinking_on {
+                    b.anthropic_beta("interleaved-thinking-2025-05-14")
+                } else {
+                    b
+                };
+                let client = b
+                    .build()
                 .map_err(|e| anyhow::anyhow!("anthropic client: {e}"))?;
                 let model = client.completion_model(model.to_string());
                 RigModel::Anthropic(model)
@@ -386,6 +402,17 @@ impl LlmProvider for RigProvider {
         let mut additional = Map::new();
         let max_tokens_field = compat.max_tokens_field_name();
         let mut max_tokens = params.max_tokens.map(|v| v as u64);
+        // Claude requires `1024 ≤ thinking.budget_tokens < max_tokens` —
+        // resolve the budget against the real cap once so both the request
+        // body and the `anthropic-beta` header see the same outcome.
+        let anthropic_budget = if self.kind == WireKind::Anthropic {
+            anthropic_effective_budget(
+                effort,
+                params.max_tokens.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS),
+            )
+        } else {
+            None
+        };
         match self.kind {
             WireKind::Compat => {
                 if let Some(cap) = max_tokens.take() {
@@ -419,9 +446,11 @@ impl LlmProvider for RigProvider {
                     .map(|v| v as u32)
                     .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
                 max_tokens = Some(cap as u64);
-                if let Some(eff) = effort.and_then(anthropic_thinking_budget) {
-                    additional
-                        .insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": eff }));
+                if let Some(budget) = anthropic_budget {
+                    additional.insert(
+                        "thinking".into(),
+                        json!({ "type": "enabled", "budget_tokens": budget }),
+                    );
                 }
             }
             WireKind::Gemini => {
@@ -455,7 +484,7 @@ impl LlmProvider for RigProvider {
             record_telemetry_content: false,
         };
 
-        let rig_model = self.build_model(model, &compat)?;
+        let rig_model = self.build_model(model, &compat, anthropic_budget.is_some())?;
         let rig_stream: StreamingCompletionResponse = match &rig_model {
             RigModel::Compat(m) => m.stream(request).await,
             RigModel::Responses(m) => m.stream(request).await,
@@ -593,6 +622,18 @@ fn anthropic_thinking_budget(effort: &str) -> Option<u32> {
         "max" => Some(28_672),
         _ => None,
     }
+}
+
+/// Anthropic `thinking.budget_tokens` vs the real output cap — Claude
+/// hard-rejects `budget_tokens ≥ max_tokens` and requires `≥ 1024`. The
+/// effort-table budgets assume the 32k default cap; a smaller declared cap
+/// clamps into the valid window, and a cap that can't fit a legal budget
+/// drops the thinking block entirely (no block, no beta header).
+fn anthropic_effective_budget(effort: Option<&str>, cap: u32) -> Option<u32> {
+    effort
+        .and_then(anthropic_thinking_budget)
+        .map(|b| b.min(cap.saturating_sub(1)))
+        .filter(|b| *b >= 1024)
 }
 
 /// `reasoning_effort` → Gemini `thinkingConfig.thinkingBudget` — `-1` lets the
@@ -768,7 +809,11 @@ fn to_rig_messages(
 ) -> Vec<RigMessage> {
     // Pairing ledger — assistant call ids that still need results. Orphan
     // results are dropped; dangling calls get a placeholder at the end.
-    let mut expected: Vec<String> = Vec::new();
+    // Declared call ids still awaiting a result — HashSet membership plus a
+    // Vec for deterministic placeholder order (the old Vec's contains/retain
+    // was O(n²) over long tool-call histories).
+    let mut pending: HashSet<String> = HashSet::new();
+    let mut pending_order: Vec<String> = Vec::new();
     let mut names: HashMap<String, String> = HashMap::new();
     let mut synth_seq = 0usize;
     let mut out: Vec<RigMessage> = Vec::new();
@@ -878,7 +923,8 @@ fn to_rig_messages(
                         tc.id.clone()
                     };
                     names.insert(id.clone(), tc.name.clone());
-                    expected.push(id.clone());
+                    pending.insert(id.clone());
+                    pending_order.push(id.clone());
                     content.push(AssistantContent::ToolCall(RigToolCall {
                         id: ToolCallId::new_or_mint(id),
                         provider: None,
@@ -900,8 +946,7 @@ fn to_rig_messages(
             }
             Role::Tool => {
                 let call_id = m.tool_call_id.clone().unwrap_or_default();
-                if !call_id.is_empty() && expected.contains(&call_id) {
-                    expected.retain(|e| e != &call_id);
+                if !call_id.is_empty() && pending.remove(&call_id) {
                     let mut parts: Vec<ToolResultContent> = Vec::new();
                     if let Some(t) = &m.content {
                         if !t.is_empty() {
@@ -954,12 +999,12 @@ fn to_rig_messages(
     // Dangling assistant calls still need a result — an interrupted stream
     // or a reconstructed session can leave the pair half-written, and strict
     // backends answer that with a hard 400.
-    for id in expected {
+    for id in pending_order.iter().filter(|i| pending.contains(i.as_str())) {
         out.push(RigMessage::User {
             content: vec![UserContent::ToolResult(RigToolResult {
                 call: ToolCallId::new_or_mint(id.clone()),
                 provider: None,
-                name: names.get(&id).cloned().unwrap_or_default(),
+                name: names.get(id).cloned().unwrap_or_default(),
                 content: vec![ToolResultContent::Text(RigText::new(
                     "(missing tool result in replayed history — call interrupted)",
                 ))],
@@ -1254,10 +1299,19 @@ impl MapState {
     fn drain(&mut self) -> Vec<StreamChunk> {
         let mut out = Vec::new();
         if let Some(stripper) = self.call_stripper.as_mut() {
-            stripper.flush_call_line();
-            if let Some(safe) = stripper.feed("") {
-                if let Some(clean) = self.text.feed(&safe) {
-                    out.push(StreamChunk::ContentDelta(clean));
+            if stripper.in_call {
+                // Mid-`[call:` truncation — the held tail is call echo: try
+                // to recover a call, then drop the residue.
+                stripper.flush_call_line();
+            } else if !stripper.hold.is_empty() {
+                // Held tail is only a `[call:`-prefix candidate ("[", "[cal"
+                // — e.g. the model ends on "参见下方 [附录]"): ordinary text
+                // that must surface, not be dropped.
+                let tail = std::mem::take(&mut stripper.hold);
+                if let Some(clean) = self.text.feed(&tail) {
+                    if !clean.is_empty() {
+                        out.push(StreamChunk::ContentDelta(clean));
+                    }
                 }
             }
             for c in stripper.take_recovered() {
@@ -1707,5 +1761,57 @@ mod tests {
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs[0]["reasoning_content"], "");
         assert_eq!(msgs[1]["name"], "bash");
+    }
+
+    /// Stream end with held `[call`-prefix text: the tail is ordinary model
+    /// text — drain must emit it, not drop it (regression: flush used to
+    /// clear `hold` unconditionally).
+    #[test]
+    fn drain_emits_held_call_prefix_as_text() {
+        let mut m = MapState::new(WireKind::Compat);
+        // Feed text that ends exactly on a `[call:`-prefix fragment.
+        let mut seen = m.map_one(Ok(StreamedAssistantContent::Text(
+            rig_core::message::Text::new("answer ends with [ca".to_string()),
+        )));
+        seen.extend(m.drain());
+        assert!(
+            seen.iter().any(|c| matches!(c, StreamChunk::ContentDelta(t) if t.contains("[ca"))),
+            "held prefix text must surface on drain: {seen:?}"
+        );
+    }
+
+    /// A structured ToolCall still drops held echo text — the structured
+    /// event already carries the call; the `[call:` residue is the shim's
+    /// textual echo of it.
+    #[test]
+    fn structured_call_drops_held_echo() {
+        let mut m = MapState::new(WireKind::Compat);
+        let mut seen = m.map_one(Ok(StreamedAssistantContent::Text(
+            rig_core::message::Text::new(r#"calling [call: bash({"cmd":"ls"})]"#.to_string()),
+        )));
+        seen.extend(m.drain());
+        // The `[call: bash(...)]` echo recovers as a real call — NOT text.
+        assert!(
+            seen.iter().any(|c| matches!(c, StreamChunk::ToolCallDelta { name: Some(n), .. } if n == "bash")),
+            "{seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|c| matches!(c, StreamChunk::ContentDelta(t) if t.contains("[call:"))),
+            "call echo must not leak as text: {seen:?}"
+        );
+    }
+
+    /// `thinking.budget_tokens` clamps under a small max_tokens cap and
+    /// disappears entirely when no legal budget fits.
+    #[test]
+    fn anthropic_budget_clamps_under_cap() {
+        // max effort + 4k cap → clamped to cap-1.
+        assert_eq!(anthropic_effective_budget(Some("max"), 4_096), Some(4_095));
+        // cap too small for the 1024 minimum → thinking dropped.
+        assert_eq!(anthropic_effective_budget(Some("low"), 1_024), None);
+        // big cap → table value unchanged.
+        assert_eq!(anthropic_effective_budget(Some("high"), 32_768), Some(16_384));
+        // no effort → nothing.
+        assert_eq!(anthropic_effective_budget(None, 32_768), None);
     }
 }
