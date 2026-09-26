@@ -70,6 +70,84 @@ pub fn get_ui_stats(
     Ok(mgr.ui_stats())
 }
 
+/// `check_update` — query the GitHub Releases API for the newest published
+/// release and report whether it's newer than the running build.
+///
+/// The webview's CSP (`default-src 'self'`, no `connect-src`) blocks any
+/// `fetch()` off-origin, so the version check can't live in the frontend —
+/// it goes through Rust where `reqwest` already carries rustls.
+///
+/// Returns `{ current, latest, url, notes, is_newer }`:
+/// - `latest`/`url`/`notes` are `null` when the API has no releases yet or the
+///   call fails (offline, rate-limited) — the caller treats null latest as
+///   "couldn't check", distinct from "up to date".
+/// - `is_newer` is a strict semver-ish compare on the `v`-stripped tag, so a
+///   same-version release is NOT flagged as an update.
+#[tauri::command]
+pub async fn check_update() -> Result<serde_json::Value, String> {
+    #[derive(serde::Deserialize)]
+    struct Release {
+        tag_name: String,
+        html_url: String,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        draft: bool,
+        #[serde(default)]
+        prerelease: bool,
+    }
+
+    const RELEASES: &str = "https://api.github.com/repos/1Yie/husk/releases/latest";
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("husk/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let res = client.get(RELEASES).send().await.map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        // Surface the HTTP status so the UI can say "检查失败 (404)" instead
+        // of silently showing "up to date".
+        return Err(format!("GitHub 返回 {}", res.status()));
+    }
+    let rel: Release = res.json().await.map_err(|e| e.to_string())?;
+
+    // Newest is /latest which already excludes drafts & prereleases, but
+    // belt-and-suspenders in case the API shape shifts.
+    if rel.draft || rel.prerelease {
+        return Ok(serde_json::json!({
+            "current": current, "latest": null, "url": null, "notes": null, "is_newer": false
+        }));
+    }
+
+    let latest = rel.tag_name.trim_start_matches('v').to_string();
+    Ok(serde_json::json!({
+        "current": current,
+        "latest": latest,
+        "url": rel.html_url,
+        "notes": rel.body,
+        "is_newer": is_newer(&current, &latest),
+    }))
+}
+
+/// Strict `a.b.c` numeric compare — `is_newer("0.1.9", "0.1.10")` is true.
+/// Non-numeric segments (e.g. a `-rc1` suffix) make the comparison bail to
+/// `false` rather than guess wrong about ordering.
+fn is_newer(current: &str, latest: &str) -> bool {
+    fn parts(v: &str) -> Option<Vec<u64>> {
+        v.split('-')
+            .next()?
+            .split('.')
+            .map(|p| p.parse().ok())
+            .collect()
+    }
+    match (parts(current), parts(latest)) {
+        (Some(c), Some(l)) => l > c,
+        _ => false,
+    }
+}
+
 #[tauri::command]
 pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), String> {
     let mgr = state.0.lock().map_err(|e| e.to_string())?;

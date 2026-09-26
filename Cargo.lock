@@ -3035,6 +3035,7 @@ dependencies = [
  "ksni",
  "libc",
  "png 0.17.16",
+ "reqwest 0.12.28",
  "rfd",
  "serde",
  "serde_json",

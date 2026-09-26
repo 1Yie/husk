@@ -406,6 +406,24 @@ export function openUrl(url: string) {
   });
 }
 
+/** Result of a real update check against the GitHub Releases API. `latest`
+ *  is `null` when the API returned no release (or the check couldn't be
+ *  completed) — distinct from "you're up to date". */
+export interface UpdateCheck {
+  current: string;
+  latest: string | null;
+  url: string | null;
+  notes: string | null;
+  is_newer: boolean;
+}
+
+/** Query GitHub for the newest published release and compare it to the
+ *  running build. The network call lives in Rust — the webview CSP blocks
+ *  off-origin `fetch`. */
+export function checkUpdate() {
+  return invoke<UpdateCheck>("check_update");
+}
+
 export interface AppConfigData {
   path?: string;
   raw: string;

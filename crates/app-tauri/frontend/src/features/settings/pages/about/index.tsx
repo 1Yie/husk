@@ -12,7 +12,8 @@ import {
 } from "@keyline-icons/react";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { Button } from "@/components/ui/button";
-import { openUrl } from "@/lib/agent-ipc/sessions";
+import { openUrl, checkUpdate } from "@/lib/agent-ipc/sessions";
+import { toast } from "sonner";
 import iconUrl from "@/assets/husk-icon.png";
 
 const REPO_URL = "https://github.com/1Yie/husk";
@@ -20,11 +21,37 @@ const AUTHOR_URL = "https://github.com/1Yie";
 
 export function AboutSettings() {
   const [version, setVersion] = useState("");
+  const [checking, setChecking] = useState(false);
   useEffect(() => {
     void getVersion()
       .then(setVersion)
       .catch(() => {});
   }, []);
+
+  const handleCheck = async () => {
+    setChecking(true);
+    try {
+      const r = await checkUpdate();
+      if (r.is_newer && r.latest && r.url) {
+        toast.success(`发现新版本 v${r.latest}`, {
+          description: "点击前往下载页",
+          action: { label: "前往下载", onClick: () => void openUrl(r.url!) },
+        });
+      } else if (r.latest) {
+        toast.info(`已是最新版本 v${r.current}`, {
+          description: "当前使用的即是最新发布版",
+        });
+      } else {
+        toast.info(`当前版本 v${r.current}`, {
+          description: "尚未发布任何正式版本",
+        });
+      }
+    } catch (e) {
+      toast.error("检查更新失败", { description: String(e) });
+    } finally {
+      setChecking(false);
+    }
+  };
 
   return (
     <div className="flex flex-col items-center gap-8 pt-16 select-none">
@@ -93,10 +120,11 @@ export function AboutSettings() {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => void openUrl(`${REPO_URL}/releases`)}
+              disabled={checking}
+              onClick={() => void handleCheck()}
               className="h-7 px-3 rounded-lg text-[12px]"
             >
-              检查更新
+              {checking ? "检查中…" : "检查更新"}
             </Button>
           </KvRow>
         </KvListContent>

@@ -443,6 +443,7 @@ fn main() {
             ipc::commands::agent_cmd,
             ipc::commands::get_ui_stats,
             ipc::commands::paste_clipboard,
+            ipc::commands::check_update,
             ipc::overlay::stop_computer_control,
             ipc::sessions::agent_session,
             ipc::sessions::mcp_probe,
