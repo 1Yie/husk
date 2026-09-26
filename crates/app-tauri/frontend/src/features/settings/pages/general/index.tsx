@@ -260,7 +260,7 @@ export function GeneralPane() {
                         key: "sandboxProcs",
                         type: "select",
                         label: "进程数上限",
-                        description: "单条命令可派生的最大进程数，防 fork 炸弹",
+                        description: "单条命令可派生的最大进程数",
                         icon: <Activity className="h-4 w-4 text-neutral-500" />,
                         value: sandboxProcs,
                         onChange: (v) => {
