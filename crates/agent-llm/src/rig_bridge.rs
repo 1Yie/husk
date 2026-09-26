@@ -1575,7 +1575,9 @@ fn preview(s: &str) -> String {
     if s.len() <= MAX {
         s.to_string()
     } else {
-        format!("{}…", &s[..MAX])
+        // `&s[..MAX]` panics when byte 2000 lands mid-char (CJK/emoji in a
+        // provider error body) — round down to a boundary instead.
+        format!("{}…", &s[..s.floor_char_boundary(MAX)])
     }
 }
 
@@ -1813,5 +1815,18 @@ mod tests {
         assert_eq!(anthropic_effective_budget(Some("high"), 32_768), Some(16_384));
         // no effort → nothing.
         assert_eq!(anthropic_effective_budget(None, 32_768), None);
+    }
+
+    #[test]
+    fn preview_does_not_panic_on_a_mid_char_cut() {
+        // 1999 ascii + one 3-byte char → byte 2000 lands inside the char;
+        // the old `&s[..2000]` panicked here.
+        let mut s = "a".repeat(1999);
+        s.push('界');
+        s.push_str(&"b".repeat(10));
+        let p = preview(&s);
+        assert!(p.ends_with('…'));
+        // 1999 bytes of text + the 3-byte ellipsis.
+        assert_eq!(p.len(), 2002);
     }
 }

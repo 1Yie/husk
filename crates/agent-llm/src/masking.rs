@@ -255,9 +255,14 @@ fn mask_field_values(text: &str) -> String {
 /// "let flag "` → `flag`).
 fn last_identifier(lhs: &str) -> Option<&str> {
     let trimmed = lhs.trim_end_matches(|c: char| !(c.is_ascii_alphanumeric() || c == 95u8 as char));
+    // `rfind` gives a char's byte START — `i + 1` slices inside any
+    // multi-byte char (CJK before a `:`/`=` crashed the process under
+    // panic = "abort"). Skip the whole char instead.
     let start = trimmed
-        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .map(|i| i + 1)
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_'))
+        .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
     let ident = &trimmed[start..];
     (!ident.is_empty() && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
@@ -309,6 +314,18 @@ mod tests {
         let m = EgressMasker::new(vec![]);
         let (out, _) = m.scrub("api_key: very_secret_value_here");
         assert!(out.contains("[REDACTED_SECRET]"));
+    }
+
+    /// The two coredumps: `field: value` where the LHS ends in a CJK char
+    /// right before the identifier (`让`/`）`). `rfind` returned the char's
+    /// byte start and `i + 1` sliced inside it → panic → process abort.
+    #[test]
+    fn cjk_before_a_field_name_does_not_panic() {
+        let out = mask_field_values("中文api_key: very_secret_value_here\n");
+        assert!(out.contains("[REDACTED_SECRET]"), "{out}");
+        // Pure-CJK lhs has no identifier — passes through untouched.
+        let out = mask_field_values("备注说明: some_value\n");
+        assert_eq!(out, "备注说明: some_value\n");
     }
 
     #[test]
