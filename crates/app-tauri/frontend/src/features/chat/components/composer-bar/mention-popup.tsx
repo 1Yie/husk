@@ -3,7 +3,7 @@
  * caret. Mouse-down (not click) so the textarea keeps focus. */
 
 import { useEffect, useRef } from "react";
-import { FileCode, Sparkles, Terminal } from "@keyline-icons/react";
+import { FileCode, Plug, Sparkles, Terminal } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 import { INK_MUTED, SURFACE_OVERLAY } from "@/lib/theme";
 
@@ -16,7 +16,7 @@ export function MentionPopup({
     key: string;
     label: string;
     hint: string;
-    icon: "file" | "cmd" | "skill";
+    icon: "file" | "cmd" | "skill" | "plugin";
     insert: string;
   }[];
   active: number;
@@ -71,6 +71,8 @@ export function MentionPopup({
                 <FileCode className="h-3.5 w-3.5" />
               ) : r.icon === "skill" ? (
                 <Sparkles className="h-3.5 w-3.5" />
+              ) : r.icon === "plugin" ? (
+                <Plug className="h-3.5 w-3.5" />
               ) : (
                 <Terminal className="h-3.5 w-3.5" />
               )}

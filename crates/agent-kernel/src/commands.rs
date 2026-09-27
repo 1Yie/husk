@@ -23,6 +23,10 @@ pub enum CommandResult {
     Reply(String),
     /// Session control — reset/switch-model/undo…
     Control(ControlOp),
+    /// A plugin's `tool:<name>` slash command — the session resolves the
+    /// args and dispatches through the plugin router (async, so it can't
+    /// live in `dispatch` itself). `tool` is the wire name (`id__tool`).
+    PluginTool { tool: String, args: String },
     /// Wrap the result into a normal prompt and continue the turn.
     FeedToAgent(String),
 }
@@ -48,6 +52,9 @@ pub struct CommandCtx<'a> {
     /// Persistent memory handle — `/remember`, `/forget`, `/memory` operate
     /// on the persona k/v table. `None` when the session has no store.
     pub memory: Option<&'a agent_context::memory::MemoryStore>,
+    /// Enabled plugins' declared slash commands — a snapshot the session
+    /// refreshes per dispatch (plugins can reload mid-session).
+    pub plugin_commands: &'a [agent_plugin::PluginCommand],
     /// Emit a UI event (status/system message) — the shared sink keeps the
     /// ctx `Send` so `handle` futures can `tokio::spawn`.
     pub ui_tx: &'a crate::channels::UiSink,
@@ -201,6 +208,35 @@ impl CommandRegistry {
                 CommandResult::Reply("[/diff] file-change report is emitted by the session".into())
             }
             _ => {
+                // Plugin-declared commands — a manifest's `capabilities.commands`
+                // resolves before the skill fallback: an explicit declaration
+                // wins over a heuristic skill load. Both spellings match —
+                // `/id:name` (collision-safe) and bare `/name` (first enabled
+                // plugin's wins when several declare the same name).
+                if let Some(pc) = ctx
+                    .plugin_commands
+                    .iter()
+                    .find(|c| c.name == name || c.qualified() == name)
+                {
+                    if let Some(tool) = pc.action.strip_prefix("tool:") {
+                        return CommandResult::PluginTool {
+                            tool: agent_plugin::wire_tool_name(&pc.plugin_id, tool),
+                            args: args.to_string(),
+                        };
+                    }
+                    if let Some(prompt) = pc.action.strip_prefix("prompt:") {
+                        let body = if args.is_empty() {
+                            prompt.to_string()
+                        } else {
+                            format!("{prompt}\n\n{args}")
+                        };
+                        return CommandResult::FeedToAgent(body);
+                    }
+                    return CommandResult::Reply(format!(
+                        "`/{name}` declared an unrecognized action `{}` — expected `tool:` or `prompt:`",
+                        pc.action
+                    ));
+                }
                 // Skill fallback — `/{name}` resolves against the workspace +
                 // user skill dirs; the skill body is inlined into the turn
                 // so the model follows it as instructions.
@@ -444,6 +480,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: None,
+            plugin_commands: &[],
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("/review", &mut ctx).await.unwrap();
@@ -466,6 +503,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: None,
+            plugin_commands: &[],
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("/review src/", &mut ctx)
@@ -487,6 +525,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: None,
+            plugin_commands: &[],
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("/nonexistent", &mut ctx)
@@ -508,6 +547,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: None,
+            plugin_commands: &[],
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("check @main.rs please", &mut ctx)
@@ -558,6 +598,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: None,
+            plugin_commands: &[],
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("read @../outside.txt", &mut ctx)
@@ -581,6 +622,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: None,
+            plugin_commands: &[],
             ui_tx: &tx,
         };
         // `a@b` — the `@` isn't at a token boundary, so no expansion and the
@@ -620,6 +662,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: None,
+            plugin_commands: &[],
             ui_tx: &tx,
         };
         // `$review` resolves the workspace skill…
@@ -658,6 +701,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: Some(&store),
+            plugin_commands: &[],
             ui_tx: &tx,
         };
 
@@ -720,6 +764,7 @@ mod tests {
             permission_mode: "default",
             workspace_root: &root,
             memory: Some(&store),
+            plugin_commands: &[],
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("/remember", &mut ctx)
@@ -735,6 +780,88 @@ mod tests {
         match res {
             CommandResult::Reply(r) => assert!(r.contains("no memory"), "{r}"),
             _ => panic!("expected Reply"),
+        }
+    }
+
+    fn plugin_cmds() -> Vec<agent_plugin::PluginCommand> {
+        vec![
+            agent_plugin::PluginCommand {
+                plugin_id: "wasm-textutils".into(),
+                name: "slugify".into(),
+                description: "slug".into(),
+                action: "tool:slugify".into(),
+            },
+            agent_plugin::PluginCommand {
+                plugin_id: "docs".into(),
+                name: "guide".into(),
+                description: "guide".into(),
+                action: "prompt:Read the docs.".into(),
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn slash_plugin_tool_command_returns_plugin_tool() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = crate::channels::UiSink::channel();
+        let mut hist = Vec::new();
+        let cmds = plugin_cmds();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            memory: None,
+            plugin_commands: &cmds,
+            ui_tx: &tx,
+        };
+        match CommandRegistry::try_run("/slugify hello world", &mut ctx)
+            .await
+            .unwrap()
+        {
+            CommandResult::PluginTool { tool, args } => {
+                // The wire name is `id__tool` — `dispatch_tool_call`
+                // resolves it, a model call spelled the same way does too.
+                assert_eq!(tool, "wasm-textutils__slugify");
+                assert_eq!(args, "hello world");
+            }
+            _ => panic!("expected PluginTool"),
+        }
+    }
+
+    #[tokio::test]
+    async fn slash_plugin_qualified_and_prompt_forms() {
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = crate::channels::UiSink::channel();
+        let mut hist = Vec::new();
+        let cmds = plugin_cmds();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            memory: None,
+            plugin_commands: &cmds,
+            ui_tx: &tx,
+        };
+        // `/id:name` — the collision-safe spelling.
+        match CommandRegistry::try_run("/wasm-textutils:slugify hi", &mut ctx)
+            .await
+            .unwrap()
+        {
+            CommandResult::PluginTool { tool, .. } => {
+                assert_eq!(tool, "wasm-textutils__slugify")
+            }
+            _ => panic!("expected PluginTool"),
+        }
+        // `prompt:` action — body + typed args feed the agent.
+        match CommandRegistry::try_run("/guide section-2", &mut ctx)
+            .await
+            .unwrap()
+        {
+            CommandResult::FeedToAgent(p) => {
+                assert!(p.contains("Read the docs."));
+                assert!(p.contains("section-2"));
+            }
+            _ => panic!("expected FeedToAgent"),
         }
     }
 }

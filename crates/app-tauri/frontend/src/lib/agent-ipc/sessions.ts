@@ -662,6 +662,23 @@ export function listSkills() {
   return invoke<SkillItem[]>("agent_session", { op: "list_skills" });
 }
 
+/** One plugin-declared slash command — `capabilities.commands` flattened.
+ * `qualified` is `plugin_id:name` — the collision-safe spelling the kernel
+ * also accepts on `/x`. */
+export interface PluginCommand {
+  name: string;
+  qualified: string;
+  pluginId: string;
+  description: string;
+  action: string;
+}
+
+/** Enabled plugins' declared slash commands — the `/` picker's plugin
+ * half. Empty when no plugin is loaded or none declare commands. */
+export function listPluginCommands() {
+  return invoke<PluginCommand[]>("agent_session", { op: "plugin_commands" });
+}
+
 /** One attached file for the composer chips — `kind` decides how the
  * prompt payload inlines it: `text` carries `content` (32KB-capped),
  * `image` rides the wire as a real image part when the model declares

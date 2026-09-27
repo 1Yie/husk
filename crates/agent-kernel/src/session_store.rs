@@ -132,29 +132,7 @@ pub struct SessionStore {
 impl SessionStore {
     /// Open (creating) the store for a workspace root.
     pub fn open(workspace_root: &Path) -> std::io::Result<Self> {
-        let db = global_db()
-            .or_else(|| {
-                // Test builds must not depend on (or lock-fight with the
-                // running app over) the real `sessions.db` — fall back to a
-                // per-process temp db instead. `#[cfg(test)]` keeps this out
-                // of the shipped binary, where "no data dir" is a real error.
-                #[cfg(test)]
-                {
-                    static TMP_DB: OnceLock<Option<Arc<Database>>> = OnceLock::new();
-                    return TMP_DB
-                        .get_or_init(|| {
-                            let path = std::env::temp_dir().join(format!(
-                                "husk-test-{}-sessions.db",
-                                std::process::id()
-                            ));
-                            open_db(&path).ok().map(Arc::new)
-                        })
-                        .clone();
-                }
-                #[cfg(not(test))]
-                None
-            })
-            .ok_or_else(|| std::io::Error::other("no data dir"))?;
+        let db = global_db().ok_or_else(|| std::io::Error::other("no data dir"))?;
         Self::open_with(workspace_root, db)
     }
 
@@ -579,10 +557,26 @@ fn open_db(path: &Path) -> std::io::Result<Database> {
     Ok(db)
 }
 
+/// `cargo test` binaries live under `target/*/deps/`; the app binary sits one
+/// level up. `#[cfg(test)]` only reaches unit tests inside this lib — `tests/`
+/// binaries link us as an external dep — so a runtime marker is the only way
+/// BOTH kinds share the same rule: test code must never touch (or lock-fight
+/// a running husk over) the real `sessions.db`/`memory.db`.
+pub(crate) fn is_test_binary() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().and_then(|d| d.file_name()).map(|n| n == "deps"))
+        .unwrap_or(false)
+}
+
 fn global_db() -> Option<Arc<Database>> {
     static DB: OnceLock<Option<Arc<Database>>> = OnceLock::new();
     DB.get_or_init(|| {
-        let path = app_data_dir()?.join(DB_FILE);
+        let path = if is_test_binary() {
+            std::env::temp_dir().join(format!("husk-test-{}-sessions.db", std::process::id()))
+        } else {
+            app_data_dir()?.join(DB_FILE)
+        };
         open_db(&path).ok().map(Arc::new)
     })
     .clone()

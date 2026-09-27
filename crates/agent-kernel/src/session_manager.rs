@@ -1080,6 +1080,30 @@ impl SessionManager {
         }
     }
 
+    /// The `/` picker's plugin half — enabled plugins' declared slash
+    /// commands, flattened for the composer (discovery order, manifest
+    /// data — not the live connection, same contract as `status()`).
+    pub fn plugin_commands(&self) -> Vec<serde_json::Value> {
+        self.plugins
+            .as_ref()
+            .and_then(|h| h.read().ok().and_then(|g| g.clone()))
+            .map(|m| {
+                m.commands()
+                    .into_iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "name": c.name,
+                            "qualified": c.qualified(),
+                            "pluginId": c.plugin_id,
+                            "description": c.description,
+                            "action": c.action,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
     /// Connect one MCP server and report what it actually is: the server's own
     /// name/version plus its tool names.
     ///

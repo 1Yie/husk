@@ -235,6 +235,27 @@ impl PluginManager {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default(),
+                    // Declared slash commands — `/x` in the composer — read
+                    // from the manifest like hooks (a dead entry still
+                    // shows them).
+                    "commands": self
+                        .manifests
+                        .get(id)
+                        .map(|m| {
+                            m.capabilities
+                                .commands
+                                .iter()
+                                .map(|c| {
+                                    serde_json::json!({
+                                        "name": c.name,
+                                        "qualified": format!("{id}:{}", c.name),
+                                        "description": c.description,
+                                        "action": c.action,
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
                     "error": self.errors.get(id).cloned().unwrap_or_default(),
                 })
             })
@@ -256,6 +277,30 @@ impl PluginManager {
             }
             if let Some(manifest) = self.manifests.get(id) {
                 out.extend(hooks_from_manifest(manifest));
+            }
+        }
+        out
+    }
+
+    /// Every slash command declared by an ENABLED manifest, in discovery
+    /// order — the same gate as `hook_specs`: a disabled plugin's `/x`
+    /// disappears with its tools. Manifest-level, so commands survive a
+    /// failed or absent `entry` (they're dispatched inside the kernel).
+    pub fn commands(&self) -> Vec<PluginCommand> {
+        let mut out = Vec::new();
+        for id in &self.order {
+            if !self.enabled.get(id).copied().unwrap_or(false) {
+                continue;
+            }
+            if let Some(manifest) = self.manifests.get(id) {
+                for c in &manifest.capabilities.commands {
+                    out.push(PluginCommand {
+                        plugin_id: id.clone(),
+                        name: c.name.clone(),
+                        description: c.description.clone(),
+                        action: c.action.clone(),
+                    });
+                }
             }
         }
         out
@@ -530,6 +575,27 @@ pub struct PluginInfo {
 /// names (`list_skills`), so one underscore could not be told apart from the
 /// namespace boundary when resolving a call. Both halves are folded and
 /// truncated so the joined name stays inside 64 chars.
+/// One declared slash command, flattened out of a plugin's
+/// `capabilities.commands`. `qualified` (`plugin_id:name`) is the
+/// collision-safe spelling the kernel's `/x` dispatch also accepts.
+#[derive(Debug, Clone)]
+pub struct PluginCommand {
+    pub plugin_id: String,
+    pub name: String,
+    pub description: String,
+    /// `"tool:<name>"` → dispatch that plugin tool; `"prompt:<text>"` →
+    /// feed the text to the agent with the typed args appended.
+    pub action: String,
+}
+
+impl PluginCommand {
+    /// `plugin_id:name` — unique even when two plugins ship a `name`
+    /// they didn't coordinate on.
+    pub fn qualified(&self) -> String {
+        format!("{}:{}", self.plugin_id, self.name)
+    }
+}
+
 pub fn wire_tool_name(plugin_id: &str, tool: &str) -> String {
     const MAX: usize = 64;
     const SEP: &str = "__";
@@ -851,6 +917,45 @@ mod tests {
         let a = status.iter().find(|v| v["id"] == "a").unwrap();
         assert_eq!(a["hooks"][0]["event"], "before_tool_execute");
         assert_eq!(a["hooks"][0]["command"], "/plugins/a/h.sh");
+    }
+
+    /// Declared `capabilities.commands` surface through `commands()` in
+    /// discovery order and through `status()` as manifest data — a disabled
+    /// plugin's `/x` disappears from both.
+    #[test]
+    fn commands_follow_discovery_order_and_skip_disabled() {
+        let mk = |id: &str, cmd_name: &str| -> crate::PluginManifest {
+            let mut m: crate::PluginManifest = serde_json::from_value(serde_json::json!({
+                "id": id, "name": id,
+                "capabilities": {
+                    "commands": [
+                        {"name": cmd_name, "description": "d", "action": format!("tool:{cmd_name}")}
+                    ]
+                },
+            }))
+            .unwrap();
+            m.dir = PathBuf::from("/plugins").join(id);
+            m
+        };
+
+        let mut mgr = super::PluginManager::new();
+        for (id, cmd) in [("a", "foo"), ("b", "bar")] {
+            mgr.manifests.insert(id.into(), mk(id, cmd));
+            mgr.order.push(id.into());
+            mgr.enabled.insert(id.into(), true);
+        }
+        mgr.disable("b");
+
+        let cmds = mgr.commands();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].plugin_id, "a");
+        assert_eq!(cmds[0].name, "foo");
+        assert_eq!(cmds[0].qualified(), "a:foo");
+        assert_eq!(cmds[0].action, "tool:foo");
+
+        let status = mgr.status();
+        let a = status.iter().find(|v| v["id"] == "a").unwrap();
+        assert_eq!(a["commands"][0]["qualified"], "a:foo");
     }
 
     /// A repo-local plugin is inert until trusted — and the gate is load

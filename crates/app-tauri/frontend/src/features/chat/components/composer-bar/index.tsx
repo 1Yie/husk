@@ -369,6 +369,7 @@ export function ComposerBar({
   const [mentionIndex, setMentionIndex] = useState(0);
   const [files, setFiles] = useState<FileItem[]>([]);
   const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [pluginCmds, setPluginCmds] = useState<agent.PluginCommand[]>([]);
 
   // Recompute the active mention token from the current text + caret.
   // Returns null when the caret isn't inside a `/@/$` token.
@@ -419,6 +420,18 @@ export function ComposerBar({
         .catch(() => {
           if (!dead) setSkills([]);
         });
+      // `/` also surfaces plugin-declared commands (`capabilities.commands`
+      // in manifests) — `$` stays skill-only by contract.
+      if (mentionTrigger === "/") {
+        agent
+          .listPluginCommands()
+          .then((r) => {
+            if (!dead) setPluginCmds(r);
+          })
+          .catch(() => {
+            if (!dead) setPluginCmds([]);
+          });
+      }
     }
     return () => {
       dead = true;
@@ -445,7 +458,7 @@ export function ComposerBar({
         key: string;
         label: string;
         hint: string;
-        icon: "file" | "cmd" | "skill";
+        icon: "file" | "cmd" | "skill" | "plugin";
         insert: string;
       }[];
     const q = mention.query.toLowerCase();
@@ -462,7 +475,7 @@ export function ComposerBar({
       key: string;
       label: string;
       hint: string;
-      icon: "cmd" | "skill";
+      icon: "cmd" | "skill" | "plugin";
       insert: string;
     }[] = [];
     if (mention.trigger === "/") {
@@ -474,6 +487,24 @@ export function ComposerBar({
           hint: c.desc,
           icon: "cmd",
           insert: `/${c.name}`,
+        });
+      }
+      // Plugin-declared commands — bare `/name` when unique across the
+      // list, `/id:name` when two plugins collide on a name.
+      const counts = new Map<string, number>();
+      for (const pc of pluginCmds) {
+        counts.set(pc.name, (counts.get(pc.name) ?? 0) + 1);
+      }
+      for (const pc of pluginCmds) {
+        const collides = (counts.get(pc.name) ?? 0) > 1;
+        const spelling = collides ? pc.qualified : pc.name;
+        if (q && !spelling.toLowerCase().startsWith(q) && !pc.name.toLowerCase().startsWith(q)) continue;
+        rows.push({
+          key: `/${pc.pluginId}:${pc.name}`,
+          label: `/${spelling}`,
+          hint: `${pc.description}${pc.pluginId ? ` · ${pc.pluginId}` : ""}`,
+          icon: "plugin" as const,
+          insert: `/${spelling}`,
         });
       }
     }
@@ -1476,7 +1507,7 @@ function ComposerTextarea({
     key: string;
     label: string;
     hint: string;
-    icon: "file" | "cmd" | "skill";
+    icon: "file" | "cmd" | "skill" | "plugin";
     insert: string;
   }[];
   onRefreshMention: (value: string, caret: number) => void;

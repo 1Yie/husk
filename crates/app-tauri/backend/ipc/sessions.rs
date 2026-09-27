@@ -813,6 +813,11 @@ pub fn agent_session(
         "list_skills" => {
             Ok(serde_json::json!(scan_skills(&mgr.workspace_root)))
         }
+        // `/` picker's plugin half — declared `capabilities.commands` from
+        // enabled plugins, qualified names included for collisions.
+        "plugin_commands" => {
+            Ok(serde_json::json!(mgr.plugin_commands()))
+        }
         // `+` attach button — native file picker, then `read_attachment`
         // per path. `kind` presets the filter list; picked paths come back
         // absolute and may live outside the workspace (unlike `@` mentions).

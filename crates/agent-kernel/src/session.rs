@@ -142,15 +142,15 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
 /// Open the workspace-keyed memory store — `memory.db` under the app's
 /// data dir. Test builds redirect to a per-process temp file so spawned
 /// sessions don't write into the user's real db (nor contend on its
-/// cross-process redb lock while the app is running).
+/// cross-process redb lock while the app is running). The same `deps/`
+/// marker the session store uses covers `tests/` binaries too —
+/// `#[cfg(test)]` alone only reaches unit tests inside this lib.
 fn open_memory_store(workspace_root: &Path) -> Option<MemoryStore> {
-    #[cfg(test)]
-    let db_dir = {
-        let dir = std::env::temp_dir().join(format!("husk-test-{}", std::process::id()));
-        Some(dir)
+    let db_dir = if crate::session_store::is_test_binary() {
+        Some(std::env::temp_dir().join(format!("husk-test-{}", std::process::id())))
+    } else {
+        crate::session_store::app_data_dir()
     };
-    #[cfg(not(test))]
-    let db_dir = crate::session_store::app_data_dir();
     db_dir.and_then(|d| {
         let _ = std::fs::create_dir_all(&d);
         MemoryStore::open(&d.join("memory.db"), workspace_root).ok()
@@ -237,6 +237,10 @@ pub struct SessionActor {
     workspace_root: PathBuf,
     /// Ordered hook chain (lifecycle interception).
     hooks: HookChain,
+    /// Live plugin router — the SAME `Arc` the engine reads per request,
+    /// so a `reload_plugins` swap reaches `/x` dispatch too. `None` = no
+    /// plugin manager installed for this workspace.
+    plugins: Option<crate::engine::PluginHandle>,
     /// Memory store + post-turn distiller (background task).
     memory: Option<Arc<MemoryStore>>,
     distiller: Option<Arc<TurnDistiller>>,
@@ -609,6 +613,7 @@ impl SessionActor {
                 // Empty until `set_hooks` installs the plugin chain — the
                 // manager does it before the actor starts running.
                 hooks: HookChain::new(),
+                plugins: cfg.plugins.clone(),
                 memory,
                 distiller,
                 distill_ctx: (
@@ -1225,6 +1230,35 @@ impl SessionActor {
         }
     }
 
+    /// `/x` → plugin `tool:<name>` — dispatch through the live plugin
+    /// router. The slash remainder is typed text, not JSON: a bare word
+    /// becomes `{"text": args}` (the common one-arg-tool convention), a
+    /// JSON object is used verbatim, and empty means `{}`.
+    async fn run_plugin_command(&mut self, tool: &str, args: &str) {
+        let Some(mgr) = self
+            .plugins
+            .as_ref()
+            .and_then(|h| h.read().ok().and_then(|g| g.clone()))
+        else {
+            let line = "plugin router unavailable — no plugins loaded".to_string();
+            let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+            self.history.push(ChatMessage::notice(line));
+            return;
+        };
+        let trimmed = args.trim();
+        let parsed: serde_json::Value = if trimmed.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(trimmed).unwrap_or_else(|_| serde_json::json!({ "text": trimmed }))
+        };
+        let line = match mgr.dispatch_tool_call(tool, parsed).await {
+            Ok(out) => out,
+            Err(e) => format!("`/{tool}` plugin call failed: {e}"),
+        };
+        let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+        self.history.push(ChatMessage::notice(line));
+    }
+
     /// `UiCommand::Prompt` / `UiCommand::Retry` shared path — slash-command
     /// intercept + the `on_user_input` hook chain, then `run_prompt`. Kept
     /// out of the `match` so `Retry` can re-enter it without recursion.
@@ -1232,12 +1266,21 @@ impl SessionActor {
         // `/x` slash commands intercept before the ReAct loop — zero
         // tokens. Unknown `/x` falls through as a prompt.
         let workspace_root = self.workspace_root.clone();
+        // Snapshot the enabled plugins' declared commands — the live handle
+        // is shared, so a mid-session `reload_plugins` reaches `/x` dispatch.
+        let plugin_commands = self
+            .plugins
+            .as_ref()
+            .and_then(|h| h.read().ok().and_then(|g| g.clone()))
+            .map(|m| m.commands())
+            .unwrap_or_default();
         let cmd_result = {
             let mut ctx = CommandCtx {
                 history: &mut self.history,
                 permission_mode: "default",
                 workspace_root: &workspace_root,
                 memory: self.memory.as_deref(),
+                plugin_commands: &plugin_commands,
                 ui_tx: &self.io.ui_tx,
             };
             CommandRegistry::try_run(&text, &mut ctx).await
@@ -1249,6 +1292,9 @@ impl SessionActor {
             }
             Some(CommandResult::Control(op)) => {
                 self.run_control(op).await;
+            }
+            Some(CommandResult::PluginTool { tool, args }) => {
+                self.run_plugin_command(&tool, &args).await;
             }
             Some(CommandResult::FeedToAgent(prompt)) => {
                 self.run_prompt(prompt).await;
