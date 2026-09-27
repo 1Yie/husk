@@ -162,7 +162,10 @@ mod tests {
     #[test]
     fn fit_dimensions_never_upscales() {
         assert_eq!(fit_dimensions(800, 600, MAX_EDGE), (800, 600));
-        assert_eq!(fit_dimensions(MAX_EDGE, MAX_EDGE, MAX_EDGE), (MAX_EDGE, MAX_EDGE));
+        assert_eq!(
+            fit_dimensions(MAX_EDGE, MAX_EDGE, MAX_EDGE),
+            (MAX_EDGE, MAX_EDGE)
+        );
         assert_eq!(fit_dimensions(0, 0, MAX_EDGE), (0, 0));
     }
 
@@ -208,7 +211,10 @@ mod tests {
             display: [3840, 2160],
             image: [1568, 882],
         };
-        assert_eq!(scaled.map_to_image(scaled.map_to_display([784, 441])), [784, 441]);
+        assert_eq!(
+            scaled.map_to_image(scaled.map_to_display([784, 441])),
+            [784, 441]
+        );
     }
 
     #[test]

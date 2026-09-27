@@ -265,6 +265,7 @@ impl Engine {
 
     /// SessionActor installs the plugin manager once plugins register.
     pub fn set_plugins(&mut self, handle: PluginHandle) {
+        self.ctx = Arc::new(self.ctx.with_plugins(handle.clone()));
         self.plugin_router = Some(handle);
     }
 

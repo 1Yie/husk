@@ -145,7 +145,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         match op {
             FileOp::Add { path, content } => {
                 let abs = ctx.resolve(path)?;
-                let st = load_state(&mut state, &mut order, &abs).await;
+                let st = load_state(&mut state, &mut order, &abs).await?;
                 if st.current.is_some() {
                     return Err(ToolError::Args(format!(
                         "Add File {path}: file already exists — use Update File                          (or Delete File first to recreate)"
@@ -161,7 +161,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             }
             FileOp::Delete { path } => {
                 let abs = ctx.resolve(path)?;
-                let st = load_state(&mut state, &mut order, &abs).await;
+                let st = load_state(&mut state, &mut order, &abs).await?;
                 let old = st.current.clone().ok_or_else(|| {
                     ToolError::Failed(format!("Delete File {path}: does not exist"))
                 })?;
@@ -180,7 +180,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 }
                 let abs = ctx.resolve(path)?;
                 let old = {
-                    let st = load_state(&mut state, &mut order, &abs).await;
+                    let st = load_state(&mut state, &mut order, &abs).await?;
                     st.current.clone().ok_or_else(|| {
                         ToolError::Failed(format!(
                             "Update File {path}: does not exist — use Add File"
@@ -193,7 +193,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                     let dest_abs = ctx.resolve(dest)?;
                     if dest_abs != abs {
                         {
-                            let dst = load_state(&mut state, &mut order, &dest_abs).await;
+                            let dst = load_state(&mut state, &mut order, &dest_abs).await?;
                             if dst.current.is_some() {
                                 return Err(ToolError::Args(format!(
                                     "Move to {dest}: destination already exists"
@@ -253,9 +253,27 @@ async fn load_state<'a>(
     state: &'a mut std::collections::HashMap<std::path::PathBuf, FileState>,
     order: &mut Vec<std::path::PathBuf>,
     abs: &std::path::Path,
-) -> &'a mut FileState {
+) -> Result<&'a mut FileState, ToolError> {
     if !state.contains_key(abs) {
-        let disk = tokio::fs::read_to_string(abs).await.ok();
+        // Missing vs unreadable: read_to_string maps binary bytes AND io
+        // errors to the same None, which `Add File` then treats as "no
+        // file" — silently clobbering an existing binary. Read raw bytes
+        // first so existence is honest, then gate on UTF-8.
+        let disk = match tokio::fs::read(abs).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(ToolError::Failed(format!(
+                    "{}: cannot read — {e}",
+                    abs.display()
+                )))
+            }
+            Ok(bytes) => Some(String::from_utf8(bytes).map_err(|_| {
+                ToolError::Failed(format!(
+                    "{}: not UTF-8 text — apply_patch edits text files only",
+                    abs.display()
+                ))
+            })?),
+        };
         state.insert(
             abs.to_path_buf(),
             FileState {
@@ -265,7 +283,7 @@ async fn load_state<'a>(
         );
         order.push(abs.to_path_buf());
     }
-    state.get_mut(abs).expect("just inserted")
+    Ok(state.get_mut(abs).expect("just inserted"))
 }
 
 /// Split the patch envelope into file operations.

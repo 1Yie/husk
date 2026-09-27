@@ -114,7 +114,7 @@ impl Capabilities {
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Stable adapter id: `"openai_compat" | "anthropic" | "openai_responses" | "gemini"`.
+    /// Stable adapter id: `"openai_completions" | "anthropic" | "openai_responses" | "gemini"`.
     fn id(&self) -> &'static str;
 
     /// Baseline capability table — adapters override; `ProviderCompat`

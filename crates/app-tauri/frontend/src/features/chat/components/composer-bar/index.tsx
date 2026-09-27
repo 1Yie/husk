@@ -491,11 +491,16 @@ export function ComposerBar({
       }
       // Plugin-declared commands — bare `/name` when unique across the
       // list, `/id:name` when two plugins collide on a name.
+      // `tool:` actions are AI-call proxies — the kernel still dispatches
+      // a hand-typed `/name`, but advertising them next to real commands
+      // makes a model-tool masquerade as a user command. Only `prompt:`
+      // and other user-facing actions earn a picker row.
+      const userCmds = pluginCmds.filter((pc) => !pc.action.startsWith("tool:"));
       const counts = new Map<string, number>();
-      for (const pc of pluginCmds) {
+      for (const pc of userCmds) {
         counts.set(pc.name, (counts.get(pc.name) ?? 0) + 1);
       }
-      for (const pc of pluginCmds) {
+      for (const pc of userCmds) {
         const collides = (counts.get(pc.name) ?? 0) > 1;
         const spelling = collides ? pc.qualified : pc.name;
         if (q && !spelling.toLowerCase().startsWith(q) && !pc.name.toLowerCase().startsWith(q)) continue;
@@ -522,7 +527,7 @@ export function ComposerBar({
       });
     }
     return rows;
-  }, [mention, files, skills, BUILTIN_COMMANDS]);
+  }, [mention, files, skills, pluginCmds, BUILTIN_COMMANDS]);
 
   const acceptMention = (row: { insert: string }) => {
     if (!mention) return;
@@ -636,13 +641,23 @@ export function ComposerBar({
       // `Enqueue` (not a whole-list write): the actor's deque is the source
       // of truth — appending there sidesteps the stale-view race where this
       // render's `queued` lags an in-flight echo.
-      agent.enqueue(payload).catch((e) => console.error("enqueue failed:", e));
+      agent.enqueue(payload).catch((e) => {
+        console.error("enqueue failed:", e);
+        // Same silent-death guard as sendPrompt — a failed enqueue leaves
+        // the message invisible and unprocessed.
+        toast.error("入队失败——会话已不可用");
+        setText(trimmed);
+      });
       return;
     }
     try {
       await agent.sendPrompt(payload);
     } catch (e) {
       console.error("agent_cmd failed:", e);
+      // Silent-death guard: when the actor's command channel is gone
+      // (actor crash / session closed), every send fails here — without a
+      // visible notice the message looks sent and the app looks wedged.
+      toast.error("发送失败——会话已不可用，请重启会话");
       setText(trimmed);
     }
   };

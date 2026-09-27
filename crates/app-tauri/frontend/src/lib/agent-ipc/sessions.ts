@@ -184,7 +184,7 @@ export interface PluginItem {
     url?: string;
     /** Present for HTTP servers added with custom headers. */
     headers?: Record<string, string>;
-  } | null;
+  } | string | null;
   /** Tool names from the connection the app loaded at BOOT — reading this does
    *  not reconnect. Empty when the plugin is not loaded. */
   tools: string[];
@@ -201,6 +201,14 @@ export interface PluginItem {
    *  (it would run once the blocker clears). */
   enabled?: boolean;
   commands: number;
+  /** Declared slash commands — name/qualified/description — so a tool or
+   *  wasm plugin card shows what it contributes (hooks stay hook-only). */
+  commandList?: {
+    name: string;
+    qualified: string;
+    description: string;
+    action: string;
+  }[];
   sandboxed: boolean;
   dir: string;
   /** Registered at boot. `false` means it failed to load (`error` explains),
@@ -367,6 +375,11 @@ export interface DefaultPrefs {
   permission_mode?: string;
   thinking_level?: string;
   agent_mode?: string;
+  /** Settings-pane default model (Agent 偏好) — provider/model pair; either
+   * null/absent → the config's own active_provider/active_model wins. Send
+   * both or neither; "" clears. */
+  active_provider?: string | null;
+  active_model?: string | null;
   /** Fraction of the context window that triggers compaction — 0.7/0.8/0.9. */
   compact_at?: number;
   /** Sandbox network override — "auto" (per-command audit) | "allow" | "deny". */

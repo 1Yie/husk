@@ -6,7 +6,7 @@
 
 import { toast } from "sonner";
 import { useState } from "react";
-import { Plug, RefreshCw } from "@keyline-icons/react";
+import { Plug, RefreshCw, Slash, Wrench, Zap } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -88,8 +88,12 @@ export function PluginsPane({
 
   /** Plugin = declares kernel hooks, or has no server entry at all. A bare
    *  `entry` is just a bridge — it stays on the MCP page. */
-  const isPlugin = (p: AgentOverview["plugins"][number]) =>
-    (p.hooks?.length ?? 0) > 0 || !(p.entry?.command || p.entry?.url);
+  const isPlugin = (p: AgentOverview["plugins"][number]) => {
+    const e = p.entry;
+    const hasServer =
+      typeof e === "object" && e !== null && (!!e.command || !!e.url);
+    return (p.hooks?.length ?? 0) > 0 || !hasServer;
+  };
 
   const plugins = ov?.plugins.filter(isPlugin) ?? [];
 
@@ -126,6 +130,11 @@ export function PluginsPane({
                       <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
                         {p.repoLocal ? "仓库内" : "全局"}
                       </Badge>
+                      {p.kind && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
+                          {p.kind}
+                        </Badge>
+                      )}
                       {p.sandboxed && (
                         <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
                           沙箱
@@ -139,6 +148,19 @@ export function PluginsPane({
                           {p.hooks.length} 钩子
                         </span>
                       ) : null}
+                      {p.tools.length > 0 && (
+                        <span
+                          className="text-[11px] text-neutral-500 tabular-nums"
+                          title={p.tools.join("\n")}
+                        >
+                          {p.tools.length} 工具
+                        </span>
+                      )}
+                      {(p.commandList?.length ?? 0) > 0 && (
+                        <span className="text-[11px] text-neutral-500 tabular-nums">
+                          {p.commandList!.length} 命令
+                        </span>
+                      )}
                       {p.enabled === false && (
                         <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
                           已禁用
@@ -179,15 +201,39 @@ export function PluginsPane({
                       <Badge
                         key={`${h.event}-${i}`}
                         variant="outline"
-                        className="h-4 px-1.5 font-mono text-[10px]"
+                        className="h-4 px-1.5 font-mono text-[10px] gap-1"
                         title={h.command || "生命周期钩子（本地命令）"}
                       >
-                        ⚡ {h.event}
+                        <Zap className="h-3 w-3" />
+                        {h.event}
                       </Badge>
                     ))}
-                    {!p.hooks?.length && (
+                    {p.tools.map((name) => (
+                      <Badge
+                        key={`tool-${name}`}
+                        variant="outline"
+                        className="h-4 px-1.5 font-mono text-[10px] gap-1"
+                      >
+                        <Wrench className="h-3 w-3" />
+                        {name}
+                      </Badge>
+                    ))}
+                    {p.commandList?.map((c) => (
+                      <Badge
+                        key={`cmd-${c.name}`}
+                        variant="outline"
+                        className="h-4 px-1.5 font-mono text-[10px] gap-1"
+                        title={c.description || c.action}
+                      >
+                        <Slash className="h-3 w-3" />
+                        {c.name}
+                      </Badge>
+                    ))}
+                    {!p.hooks?.length &&
+                      p.tools.length === 0 &&
+                      !p.commandList?.length && (
                       <span className="text-[11px] text-neutral-500">
-                        未声明钩子
+                        未声明能力
                       </span>
                     )}
                   </div>

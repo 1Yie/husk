@@ -131,7 +131,7 @@ pub struct ChatMessage {
     /// deny, dispatch error, write failure, …). Persisted in the session
     /// snapshot so a reloaded view can re-render the failed capsule —
     /// without it every tool call replays as `ok`. Adapters that forward
-    /// `ChatMessage` raw (`openai_compat`) must strip it before the wire;
+    /// `ChatMessage` raw (`openai_completions`) must strip it before the wire;
     /// strict backends reject unknown fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
@@ -154,7 +154,7 @@ pub struct ChatMessage {
     /// of the live `思考过程` block, so a reopened session replays what the
     /// stream actually drew. Display-only: `reasoning` is a *separate*
     /// reasoning-model input, never a transcript field, so every adapter must
-    /// keep it off the wire (`openai_compat` strips it like `is_error`).
+    /// keep it off the wire (`openai_completions` strips it like `is_error`).
     /// `None` on old snapshots and on rounds that produced no trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
@@ -163,7 +163,7 @@ pub struct ChatMessage {
     /// the reasoning block's first→last delta span. Persisted so a replayed
     /// view can re-render the `思考过程 · 20s` / `工具调用 · 3s` elapsed
     /// labels the live stream drew. Display-only like `reasoning` — every
-    /// adapter must keep it off the wire (`openai_compat` strips it).
+    /// adapter must keep it off the wire (`openai_completions` strips it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
 }

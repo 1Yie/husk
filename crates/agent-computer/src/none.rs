@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 
-use crate::traits::{DesktopBackend, MouseButton, ScrollDir, ScreenshotMeta};
+use crate::traits::{DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir};
 
 pub struct NoneBackend {
     reason: String,

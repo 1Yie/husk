@@ -40,11 +40,7 @@ impl agent_computer::DesktopBackend for FakeDesktop {
             image: [4, 4],
         })
     }
-    async fn click(
-        &self,
-        _b: agent_computer::MouseButton,
-        _at: [i32; 2],
-    ) -> anyhow::Result<()> {
+    async fn click(&self, _b: agent_computer::MouseButton, _at: [i32; 2]) -> anyhow::Result<()> {
         Ok(())
     }
     async fn double_click(&self, _at: [i32; 2]) -> anyhow::Result<()> {
@@ -102,16 +98,11 @@ fn script_screenshot_then_answer() -> Vec<StreamChunk> {
 
 /// Drive one turn against an injected desktop, with `model_input` controlling
 /// the vision gate. Returns the history the turn produced.
-async fn run_one_turn(
-    dir: &std::path::Path,
-    model_input: Vec<String>,
-) -> Vec<ChatMessage> {
+async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<ChatMessage> {
     let stub = Arc::new(ScriptedProvider::new().with_script(script_screenshot_then_answer()));
     stub.script_text("The desktop shows a terminal.");
 
-    let ctx = Arc::new(
-        ToolCtx::new(dir).with_desktop(Arc::new(FakeDesktop)),
-    );
+    let ctx = Arc::new(ToolCtx::new(dir).with_desktop(Arc::new(FakeDesktop)));
     let mut engine = Engine::new(
         stub,
         Arc::new(ToolRegistry::with_builtins()),
@@ -119,7 +110,9 @@ async fn run_one_turn(
         "test-model",
         0.0,
     );
-    engine.set_permissions(agent_kernel::permissions::PermissionGate::from_mode_str("auto"));
+    engine.set_permissions(agent_kernel::permissions::PermissionGate::from_mode_str(
+        "auto",
+    ));
     engine.set_agent_mode(agent_kernel::mode::AgentMode::Build);
     engine.set_model_input(model_input);
     let (ui_tx, _ui_rx) = agent_kernel::channels::UiSink::channel();
@@ -135,7 +128,12 @@ async fn run_one_turn(
     let mut hunks = agent_context::HunkTracker::new(agent_context::TrackingMode::AgentOnly);
     hunks.begin_turn();
     engine
-        .run_turn(&mut io, &mut history, "take a screenshot".into(), &mut hunks)
+        .run_turn(
+            &mut io,
+            &mut history,
+            "take a screenshot".into(),
+            &mut hunks,
+        )
         .await
         .expect("turn must complete");
     history
@@ -159,7 +157,9 @@ async fn screenshot_frame_rides_the_tool_row_for_a_vision_model() {
     assert!(text.contains("image: 4x4"), "{text}");
     // …and the frame is on the row for the adapter to encode.
     assert_eq!(tool_row.images.len(), 1, "the frame must ride the tool row");
-    assert!(tool_row.images[0].path.starts_with(dir.path().join(".husk/attachments")));
+    assert!(tool_row.images[0]
+        .path
+        .starts_with(dir.path().join(".husk/attachments")));
     assert!(
         tool_row.images[0].data_url().is_some(),
         "the staged PNG must be wire-encodable"

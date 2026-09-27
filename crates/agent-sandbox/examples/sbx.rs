@@ -18,11 +18,21 @@ async fn main() {
     println!("--- Sensitive check ---\n{}", out.stdout);
 
     // 2. /tmp check: verify /tmp is writable and isolated
-    let out = backend.run_command("touch /tmp/sbx_test.txt && ls -ld /tmp /tmp/sbx_test.txt", &[], &cfg).await.unwrap();
+    let out = backend
+        .run_command(
+            "touch /tmp/sbx_test.txt && ls -ld /tmp /tmp/sbx_test.txt",
+            &[],
+            &cfg,
+        )
+        .await
+        .unwrap();
     println!("--- /tmp check ---\n{}", out.stdout);
 
     // 3. Dev environment check: node, bun, cargo, python
-    let out = backend.run_command("which node bun cargo python3 2>&1 || true", &[], &cfg).await.unwrap();
+    let out = backend
+        .run_command("which node bun cargo python3 2>&1 || true", &[], &cfg)
+        .await
+        .unwrap();
     println!("--- Dev tools check ---\n{}", out.stdout);
 
     // 4. Runtime execution check: node and bun evaluation

@@ -36,5 +36,5 @@ pub mod macos;
 pub use detect::detect_backend;
 pub use none::NoneBackend;
 pub use traits::{
-    fit_dimensions, Capture, DesktopBackend, MouseButton, ScrollDir, ScreenshotMeta, MAX_EDGE,
+    fit_dimensions, Capture, DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir, MAX_EDGE,
 };

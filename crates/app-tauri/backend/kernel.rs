@@ -20,7 +20,10 @@ impl KernelState {
     /// Each event is tagged `(workspace_root, session_id)` — session ids
     /// are per-workspace, the root keeps a parked workspace's still-running
     /// actors from colliding with the active one's.
-    pub fn spawn() -> (Self, std::sync::mpsc::Receiver<(String, i64, agent_ipc::UiEvent)>) {
+    pub fn spawn() -> (
+        Self,
+        std::sync::mpsc::Receiver<(String, i64, agent_ipc::UiEvent)>,
+    ) {
         let (mgr, rx) = SessionManager::spawn();
         (Self(Arc::new(Mutex::new(mgr))), rx)
     }

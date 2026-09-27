@@ -40,12 +40,7 @@ impl SandboxBackend for NoneBackend {
         // and on this backend they'd execute unsandboxed.
         let mut envs = sanitize_env(&cfg.env_vars);
         let denied = vec![cfg.workspace_dir.clone()];
-        crate::env_sanitize::apply_environment_policy(
-            &mut envs,
-            &cfg.environment,
-            None,
-            &denied,
-        );
+        crate::env_sanitize::apply_environment_policy(&mut envs, &cfg.environment, None, &denied);
 
         // Windows has no `sh` and no process groups — `cmd /C` plus
         // `kill_on_drop` (real tree-kill needs a job object; that lands with
@@ -102,7 +97,12 @@ impl SandboxBackend for NoneBackend {
                 if let Some(id) = child_id {
                     libc_kill_group(id);
                 }
-                (String::new(), "[timeout — process tree killed]".to_string(), -1, true)
+                (
+                    String::new(),
+                    "[timeout — process tree killed]".to_string(),
+                    -1,
+                    true,
+                )
             }
         };
 
@@ -157,10 +157,7 @@ mod tests {
         let marker = dir.path().join("grandchild-alive");
         // Background grandchild writes its marker only if it gets to run; the
         // foreground sleep keeps the group alive past the timeout.
-        let cmd = format!(
-            "sh -c 'sleep 2; touch {}' & sleep 300",
-            marker.display()
-        );
+        let cmd = format!("sh -c 'sleep 2; touch {}' & sleep 300", marker.display());
         let out = NoneBackend
             .run_command(&cmd, &[], &cfg(dir.path(), 1))
             .await

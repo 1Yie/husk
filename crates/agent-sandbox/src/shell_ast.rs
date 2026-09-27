@@ -7,7 +7,6 @@
 //! POSIX-ish subset agents emit. Unparseable fragments degrade to a raw `Simple`
 //! command carrying the literal text, so downstream still sees them.
 
-
 /// A parsed command line — the root is a list of `&&`/`||`/`;`-joined
 /// pipelines (`And`/`Or`/`Seq`), each pipeline a `Pipe` of `Command`s.
 #[derive(Debug, Clone, PartialEq)]
@@ -57,7 +56,10 @@ pub struct Redirect {
 /// `Simple` node holding the raw text so nothing is silently dropped.
 pub fn parse(input: &str) -> Node {
     let tokens = tokenize(input);
-    let mut p = Parser { toks: &tokens, pos: 0 };
+    let mut p = Parser {
+        toks: &tokens,
+        pos: 0,
+    };
     let node = p.parse_list();
     // Trailing tokens → wrap the remainder so nothing is lost.
     if p.pos < p.toks.len() {
@@ -92,27 +94,48 @@ fn tokenize(input: &str) -> Vec<String> {
             // Inside single quotes — everything literal until `'`.
             Some('\'') => {
                 cur.push(c);
-                if c == '\'' { quote = None; }
+                if c == '\'' {
+                    quote = None;
+                }
             }
             // Inside double quotes — `$(`/backtick still active.
             Some('"') => {
                 cur.push(c);
-                if c == '"' { quote = None; }
+                if c == '"' {
+                    quote = None;
+                }
             }
-            Some(_) => { cur.push(c); }
+            Some(_) => {
+                cur.push(c);
+            }
             None => {
                 match c {
-                    '\'' | '"' => { quote = Some(c); cur.push(c); }
+                    '\'' | '"' => {
+                        quote = Some(c);
+                        cur.push(c);
+                    }
                     // Command substitution — keep the delimiters in-token so
                     // the arg parser can spot and recurse into them.
                     '$' if chars.peek() == Some(&'(') => {
-                        cur.push('$'); cur.push('('); subst_depth += 1;
+                        cur.push('$');
+                        cur.push('(');
+                        subst_depth += 1;
                     }
-                    '`' => { cur.push(c); }
-                    '(' if subst_depth > 0 => { cur.push(c); subst_depth += 1; }
-                    ')' if subst_depth > 0 => { cur.push(c); subst_depth -= 1; }
+                    '`' => {
+                        cur.push(c);
+                    }
+                    '(' if subst_depth > 0 => {
+                        cur.push(c);
+                        subst_depth += 1;
+                    }
+                    ')' if subst_depth > 0 => {
+                        cur.push(c);
+                        subst_depth -= 1;
+                    }
                     c if c.is_whitespace() && subst_depth == 0 => {
-                        if !cur.is_empty() { out.push(std::mem::take(&mut cur)); }
+                        if !cur.is_empty() {
+                            out.push(std::mem::take(&mut cur));
+                        }
                     }
                     '|' if subst_depth == 0 => {
                         if chars.peek() == Some(&'|') {
@@ -163,12 +186,16 @@ fn tokenize(input: &str) -> Vec<String> {
             }
         }
     }
-    if !cur.is_empty() { out.push(cur); }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
     out
 }
 
 fn flush(cur: &mut String, out: &mut Vec<String>) {
-    if !cur.is_empty() { out.push(std::mem::take(cur)); }
+    if !cur.is_empty() {
+        out.push(std::mem::take(cur));
+    }
 }
 
 // ---- parser --------------------------------------------------------------
@@ -183,7 +210,9 @@ impl<'a> Parser<'a> {
         self.toks.get(self.pos).map(|s| s.as_str())
     }
     fn next(&mut self) -> Option<String> {
-        let t = self.peek()?.to_string(); self.pos += 1; Some(t)
+        let t = self.peek()?.to_string();
+        self.pos += 1;
+        Some(t)
     }
 
     /// list := pipeline (('&&'|'||'|';'|'&') pipeline)*
@@ -213,7 +242,11 @@ impl<'a> Parser<'a> {
             self.next();
             cmds.push(self.parse_command());
         }
-        if cmds.len() == 1 { cmds.pop().unwrap() } else { Node::Pipe(cmds) }
+        if cmds.len() == 1 {
+            cmds.pop().unwrap()
+        } else {
+            Node::Pipe(cmds)
+        }
     }
 
     /// command := word (word | redirect)* | '(' list ')'
@@ -221,7 +254,9 @@ impl<'a> Parser<'a> {
         if self.peek() == Some("(") {
             self.next();
             let inner = self.parse_list();
-            if self.peek() == Some(")") { self.next(); }
+            if self.peek() == Some(")") {
+                self.next();
+            }
             return Node::Subshell(Box::new(inner));
         }
         let mut words: Vec<String> = Vec::new();
@@ -238,7 +273,9 @@ impl<'a> Parser<'a> {
                         target,
                     });
                 }
-                _ => { words.push(self.next().unwrap()); }
+                _ => {
+                    words.push(self.next().unwrap());
+                }
             }
         }
         // Split program from args; detect + parse `$( )`/backtick substs.
@@ -273,9 +310,15 @@ fn extract_substitutions(word: &str) -> Vec<String> {
             let start = i + 2;
             let mut j = start;
             while j < bytes.len() && depth > 0 {
-                if bytes[j] == b'(' { depth += 1; }
-                if bytes[j] == b')' { depth -= 1; }
-                if depth > 0 { j += 1; }
+                if bytes[j] == b'(' {
+                    depth += 1;
+                }
+                if bytes[j] == b')' {
+                    depth -= 1;
+                }
+                if depth > 0 {
+                    j += 1;
+                }
             }
             out.push(word[start..j].to_string());
             i = j;

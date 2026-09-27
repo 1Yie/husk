@@ -25,8 +25,14 @@ pub enum CommandResult {
     Control(ControlOp),
     /// A plugin's `tool:<name>` slash command — the session resolves the
     /// args and dispatches through the plugin router (async, so it can't
-    /// live in `dispatch` itself). `tool` is the wire name (`id__tool`).
-    PluginTool { tool: String, args: String },
+    /// live in `dispatch` itself). `tool` is the wire name (`id__tool`),
+    /// `name` the command the user typed (for error echo — the wire name
+    /// is meaningless to them).
+    PluginTool {
+        tool: String,
+        name: String,
+        args: String,
+    },
     /// Wrap the result into a normal prompt and continue the turn.
     FeedToAgent(String),
 }
@@ -221,6 +227,7 @@ impl CommandRegistry {
                     if let Some(tool) = pc.action.strip_prefix("tool:") {
                         return CommandResult::PluginTool {
                             tool: agent_plugin::wire_tool_name(&pc.plugin_id, tool),
+                            name: name.to_string(),
                             args: args.to_string(),
                         };
                     }
@@ -818,7 +825,7 @@ mod tests {
             .await
             .unwrap()
         {
-            CommandResult::PluginTool { tool, args } => {
+            CommandResult::PluginTool { tool, args, .. } => {
                 // The wire name is `id__tool` — `dispatch_tool_call`
                 // resolves it, a model call spelled the same way does too.
                 assert_eq!(tool, "wasm-textutils__slugify");

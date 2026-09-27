@@ -89,7 +89,9 @@ async fn exec(ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 /// not worth failing a finished turn over.
 pub fn cleanup_screenshots(workspace_root: &std::path::Path) {
     let dir = workspace_root.join(".husk").join("attachments");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let s = name.to_string_lossy();

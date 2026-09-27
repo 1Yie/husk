@@ -27,7 +27,10 @@ async fn main() {
     manifest.dir = mpath.parent().unwrap().to_path_buf();
 
     let plugin = WasmPlugin::load(manifest).expect("wasm plugin load");
-    println!("── export_tools ──\n{}\n", serde_json::to_string_pretty(&plugin.export_tools()).unwrap());
+    println!(
+        "── export_tools ──\n{}\n",
+        serde_json::to_string_pretty(&plugin.export_tools()).unwrap()
+    );
     println!("── call_tool `{tool}` ──");
     match plugin.call_tool(&tool, args).await {
         Ok(out) => println!("{out}"),

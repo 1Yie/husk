@@ -178,6 +178,20 @@ impl SessionStore {
         let Some(db) = global_db() else {
             return Vec::new();
         };
+        Self::all_on(db)
+    }
+
+    /// Same as `all_workspaces` but on an explicit db file — lets tools and
+    /// tests inspect a COPIED `sessions.db` while the live one is locked by
+    /// a running app (redb takes an exclusive flock for the process).
+    pub fn all_workspaces_at(db_path: &Path) -> Vec<Self> {
+        let Ok(db) = open_db(db_path) else {
+            return Vec::new();
+        };
+        Self::all_on(Arc::new(db))
+    }
+
+    fn all_on(db: Arc<Database>) -> Vec<Self> {
         let Ok(rtx) = db.begin_read() else {
             return Vec::new();
         };
@@ -572,7 +586,12 @@ pub(crate) fn is_test_binary() -> bool {
 fn global_db() -> Option<Arc<Database>> {
     static DB: OnceLock<Option<Arc<Database>>> = OnceLock::new();
     DB.get_or_init(|| {
-        let path = if is_test_binary() {
+        // Debug/test hook: point the shared handle at a COPIED sessions.db
+        // (the live file is flock'd by a running app — a repro binary can
+        // only read a copy).
+        let path = if let Ok(p) = std::env::var("HUSK_SESSION_DB") {
+            std::path::PathBuf::from(p)
+        } else if is_test_binary() {
             std::env::temp_dir().join(format!("husk-test-{}-sessions.db", std::process::id()))
         } else {
             app_data_dir()?.join(DB_FILE)
@@ -737,6 +756,15 @@ pub struct WorkspacePrefs {
 /// Global user default preferences for fresh/new sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultPreferences {
+    /// Default model for sessions whose workspace saved no model —
+    /// a (provider, model) pair validated against `providers` at resolve
+    /// time; absent → the config's own `active_provider`/`active_model`.
+    /// Mirrors the config.toml field names (`active_*`) on purpose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_provider: Option<String>,
+    /// See `active_provider`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<String>,
     #[serde(default = "default_pref_permission_mode")]
     pub permission_mode: String,
     #[serde(default = "default_pref_thinking_level")]
@@ -788,6 +816,8 @@ fn default_pref_thinking_level() -> Option<String> {
 impl Default for DefaultPreferences {
     fn default() -> Self {
         Self {
+            active_provider: None,
+            active_model: None,
             permission_mode: default_pref_permission_mode(),
             thinking_level: default_pref_thinking_level(),
             agent_mode: default_pref_agent_mode(),

@@ -104,7 +104,10 @@ impl SandboxPlan {
         tmp_dir: PathBuf,
     ) -> Self {
         let needs_network = audit.capabilities.iter().any(|c| {
-            matches!(c, Capability::Network { .. } | Capability::PackageInstall { .. })
+            matches!(
+                c,
+                Capability::Network { .. } | Capability::PackageInstall { .. }
+            )
         });
         let network_host = audit.capabilities.iter().find_map(|c| match c {
             Capability::Network { target: Some(t) } => Some(t.clone()),
@@ -114,10 +117,7 @@ impl SandboxPlan {
         // Sensitive paths the sandbox always denies — capability-driven
         // policy can't widen these (OutOfScope/PrivilegeEscalation/Deny
         // capabilities keep them denied even when approved).
-        let mut deny = vec![
-            PathBuf::from("/etc/ssh"),
-            PathBuf::from("/root"),
-        ];
+        let mut deny = vec![PathBuf::from("/etc/ssh"), PathBuf::from("/root")];
         for sub in [".ssh", ".gnupg", ".aws", ".config/agent-rs", ".config/husk"] {
             if let Some(p) = shellexpand_home(sub) {
                 deny.push(p);
@@ -156,7 +156,11 @@ impl SandboxPlan {
                 Some(p) => DevicePolicy::AllowDevice(p),
                 None => DevicePolicy::Standard,
             },
-            syscalls: if needs_network { SyscallPolicy::Networked } else { SyscallPolicy::Baseline },
+            syscalls: if needs_network {
+                SyscallPolicy::Networked
+            } else {
+                SyscallPolicy::Baseline
+            },
             // Dev toolchain by default — a `Runtime` cap is confirmatory
             // signal, not a gate: detection can't see inside build scripts
             // (`make` can run `cargo`), so default-open is the correct

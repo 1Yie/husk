@@ -366,7 +366,12 @@ fn main() {
             #[cfg(target_os = "linux")]
             {
                 use ksni::blocking::TrayMethods as _;
-                app.manage(HuskTray { app: app.handle().clone() }.spawn()?);
+                app.manage(
+                    HuskTray {
+                        app: app.handle().clone(),
+                    }
+                    .spawn()?,
+                );
             }
             #[cfg(not(target_os = "linux"))]
             {

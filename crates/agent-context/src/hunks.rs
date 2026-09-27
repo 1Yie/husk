@@ -108,7 +108,10 @@ impl std::error::Error for UndoError {}
 
 impl HunkTracker {
     pub fn new(mode: TrackingMode) -> Self {
-        Self { mode, ..Default::default() }
+        Self {
+            mode,
+            ..Default::default()
+        }
     }
 
     /// Mark the start of a new user turn — subsequent writes key to it.
@@ -200,12 +203,7 @@ impl HunkTracker {
         new: String,
         origin: impl Into<String>,
     ) {
-        self.record_write(
-            path,
-            old.map(String::into_bytes),
-            new.into_bytes(),
-            origin,
-        );
+        self.record_write(path, old.map(String::into_bytes), new.into_bytes(), origin);
     }
 
     /// Attribute an external (watcher-observed) change — counted, never
@@ -298,7 +296,10 @@ impl HunkTracker {
     pub fn undo_plan(&self, turn: u32) -> Result<Vec<UndoOp>, UndoError> {
         let mut ops = Vec::new();
         for path in self.files_in_turn(turn) {
-            let st = self.file_states.get(path).expect("files_in_turn yields known paths");
+            let st = self
+                .file_states
+                .get(path)
+                .expect("files_in_turn yields known paths");
             // Refuse when the file can't be safely restored: externally
             // modified after our last write, or hunk content evicted for
             // size (no bytes to restore).
@@ -327,7 +328,10 @@ impl HunkTracker {
         let mut ops = Vec::new();
         let mut skipped = Vec::new();
         for path in self.files_in_turn(turn) {
-            let st = self.file_states.get(path).expect("files_in_turn yields known paths");
+            let st = self
+                .file_states
+                .get(path)
+                .expect("files_in_turn yields known paths");
             if st.external_after_last_write
                 || st.hunks.iter().any(|h| h.turn == turn && h.content_dropped)
             {

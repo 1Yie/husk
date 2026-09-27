@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::traits::{
-    fit_dimensions, Capture, DesktopBackend, MouseButton, ScrollDir, ScreenshotMeta, MAX_EDGE,
+    fit_dimensions, Capture, DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir, MAX_EDGE,
 };
 
 /// One Windows session's worth of state — the last capture's scale, so input
@@ -298,10 +298,10 @@ fn grab_primary(w: i32, h: i32) -> Result<Vec<u8>> {
 
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+    SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
+    MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };
 
 /// Absolute pixel move (the whole virtual desktop, so multi-monitor works).
@@ -398,7 +398,11 @@ fn type_unicode(text: &str) -> Result<()> {
 /// Map a key name to a virtual-key code and press/release it.
 fn key_vk(name: &str, down: bool) -> Result<()> {
     let vk = vk_from_name(name).ok_or_else(|| anyhow!("unknown key `{name}`"))?;
-    let flag = if down { KEYBD_EVENT_FLAGS(0) } else { KEYEVENTF_KEYUP };
+    let flag = if down {
+        KEYBD_EVENT_FLAGS(0)
+    } else {
+        KEYEVENTF_KEYUP
+    };
     send(&[key_input(vk, flag, 0)])
 }
 
@@ -427,9 +431,18 @@ fn vk_from_name(n: &str) -> Option<VIRTUAL_KEY> {
         "down" => VK_DOWN,
         "left" => VK_LEFT,
         "right" => VK_RIGHT,
-        "f1" => VK_F1, "f2" => VK_F2, "f3" => VK_F3, "f4" => VK_F4,
-        "f5" => VK_F5, "f6" => VK_F6, "f7" => VK_F7, "f8" => VK_F8,
-        "f9" => VK_F9, "f10" => VK_F10, "f11" => VK_F11, "f12" => VK_F12,
+        "f1" => VK_F1,
+        "f2" => VK_F2,
+        "f3" => VK_F3,
+        "f4" => VK_F4,
+        "f5" => VK_F5,
+        "f6" => VK_F6,
+        "f7" => VK_F7,
+        "f8" => VK_F8,
+        "f9" => VK_F9,
+        "f10" => VK_F10,
+        "f11" => VK_F11,
+        "f12" => VK_F12,
         "printscreen" | "prtsc" => VK_SNAPSHOT,
         _ => {
             // Single char: letters/digits share their ASCII VK code.

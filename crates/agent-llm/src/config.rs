@@ -1214,9 +1214,7 @@ impl InputLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ProviderKind {
     #[serde(
-        rename = "openai_compat",
-        alias = "openai-compat",
-        alias = "openai_completions",
+        rename = "openai_completions",
         alias = "openai-completions"
     )]
     #[default]

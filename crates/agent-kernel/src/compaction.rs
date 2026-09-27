@@ -97,7 +97,7 @@ pub fn sanitize_for_sample(
     keep_images: bool,
 ) {
     // (2) reasoning stays on the message. It is a *display* field: the wire
-    // bodies are built from role/content/tool_calls only, and `openai_compat`
+    // bodies are built from role/content/tool_calls only, and `openai_completions`
     // (the one adapter that serializes the whole struct) strips it. Dropping
     // it here would silently empty every replayed thinking block on the next
     // snapshot — sanitize runs against the real history, not a copy.

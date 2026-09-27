@@ -105,4 +105,3 @@ fn fold_output(raw: &str) -> String {
     out.push_str(crate::tools::util::tail(raw, tail));
     out
 }
-

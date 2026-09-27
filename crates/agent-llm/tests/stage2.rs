@@ -59,12 +59,12 @@ fn config_parses_and_resolves_env() {
         fallback_chain = ["ollama"]
 
         [providers.grok]
-        type = "openai_compat"
+        type = "openai_completions"
         base_url = "https://api.x.ai/v1"
         api_key = "env:STAGE2_TEST_KEY"
 
         [providers.ollama]
-        type = "openai_compat"
+        type = "openai_completions"
         base_url = "http://127.0.0.1:11434/v1"
         api_key = "ollama"
     "#;
@@ -114,7 +114,7 @@ fn factory_builds_providers() {
         ..Default::default()
     };
     let p = ProviderFactory::build(&cfg).unwrap();
-    assert_eq!(p.id(), "openai_compat");
+    assert_eq!(p.id(), "openai_completions");
 
     // Anthropic + Gemini build real providers now (v2 adapters landed).
     for (kind, id) in [

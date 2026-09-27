@@ -49,6 +49,9 @@ image.workspace = true
 async-trait.workspace = true
 
 [features]
+# On by default — WASM plugins are a shipped feature, not an opt-in demo.
+# `--no-default-features` builds without the wasmtime JIT for lean builds.
+default = ["wasm"]
 wasm = ["agent-plugin/wasm"]
 tree-sitter = [
     "dep:tree-sitter",

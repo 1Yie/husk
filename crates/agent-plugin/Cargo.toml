@@ -2,7 +2,7 @@
 name = "agent-plugin"
 version = "0.1.0"
 edition = "2021"
-description = "Plugin system: manifest, Plugin trait, PluginManager, MCP stdio bridge (WASM behind feature)"
+description = "Plugin system: manifest, Plugin trait, PluginManager, MCP stdio bridge, WASM runtime"
 license = "MIT"
 
 [dependencies]
@@ -27,4 +27,9 @@ wasmtime-wasi = { version = "49", optional = true, features = ["p1"] }
 tempfile = "3"
 
 [features]
+# WASM is a first-class plugin kind — on by default so `cargo tauri dev`
+# (and every downstream crate's default feature resolution) gets wasmtime.
+# `--no-default-features` still builds a wasm-free binary for size-sensitive
+# consumers.
+default = ["wasm"]
 wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]

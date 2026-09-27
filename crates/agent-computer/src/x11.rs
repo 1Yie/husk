@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use image::GenericImageView;
 
 use crate::traits::{
-    fit_dimensions, Capture, DesktopBackend, MouseButton, ScrollDir, ScreenshotMeta, MAX_EDGE,
+    fit_dimensions, Capture, DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir, MAX_EDGE,
 };
 
 /// Every one of these commands is short; a hung one is a hung session.
@@ -150,7 +150,16 @@ impl DesktopBackend for X11Backend {
         let [x, y] = self.map(at);
         let (xs, ys) = (x.to_string(), y.to_string());
         self.x(&[
-            "mousemove", "--sync", &xs, &ys, "click", "--repeat", "2", "--delay", "120", "1",
+            "mousemove",
+            "--sync",
+            &xs,
+            &ys,
+            "click",
+            "--repeat",
+            "2",
+            "--delay",
+            "120",
+            "1",
         ])
         .await?;
         Ok(())
@@ -166,10 +175,25 @@ impl DesktopBackend for X11Backend {
     async fn drag(&self, from: [i32; 2], to: [i32; 2]) -> Result<()> {
         let [x1, y1] = self.map(from);
         let [x2, y2] = self.map(to);
-        let (x1s, y1s, x2s, y2s) = (x1.to_string(), y1.to_string(), x2.to_string(), y2.to_string());
+        let (x1s, y1s, x2s, y2s) = (
+            x1.to_string(),
+            y1.to_string(),
+            x2.to_string(),
+            y2.to_string(),
+        );
         self.x(&[
-            "mousemove", "--sync", &x1s, &y1s, "mousedown", "1", "mousemove", "--sync", &x2s,
-            &y2s, "mouseup", "1",
+            "mousemove",
+            "--sync",
+            &x1s,
+            &y1s,
+            "mousedown",
+            "1",
+            "mousemove",
+            "--sync",
+            &x2s,
+            &y2s,
+            "mouseup",
+            "1",
         ])
         .await?;
         Ok(())
@@ -546,7 +570,10 @@ mod tests {
         assert_eq!(meta.image, [ew, eh]);
         assert_eq!(meta.image[0], MAX_EDGE);
         assert!(dest.exists());
-        assert_eq!(image::open(&dest).unwrap().dimensions(), (meta.image[0], meta.image[1]));
+        assert_eq!(
+            image::open(&dest).unwrap().dimensions(),
+            (meta.image[0], meta.image[1])
+        );
     }
 
     /// A capture whose long edge already fits is copied through unscaled —

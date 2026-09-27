@@ -11,28 +11,60 @@
 //! surface. `HOME` stays the real home: mounted toolchains live at real paths, and
 //! sensitive subdirs are masked by the backend instead.
 
-
 /// Names kept from the host env (exact match, case-insensitive).
 const ALLOWLIST: &[&str] = &[
-    "PATH", "LANG", "TERM", "HOME", "TMPDIR", "USER", "SHELL",
-    "COLORTERM", "EDITOR", "VISUAL", "TZ",
+    "PATH",
+    "LANG",
+    "TERM",
+    "HOME",
+    "TMPDIR",
+    "USER",
+    "SHELL",
+    "COLORTERM",
+    "EDITOR",
+    "VISUAL",
+    "TZ",
     // Display session — a GUI-launched Tauri app spawns the agent, and its
     // `bash`/`test_runner` tools must be able to launch GUI binaries (`code`,
     // `firefox`) or drive `xdotool`/`scrot` for computer-use. Stripping these
     // in `none` (loud-unsandboxed) mode breaks the desktop; `bwrap` clears the
     // env itself anyway, so this only reaches the host-spawn path.
-    "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE",
-    "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP", "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY",
+    "XAUTHORITY",
+    "WAYLAND_DISPLAY",
+    "XDG_SESSION_TYPE",
+    "XDG_RUNTIME_DIR",
+    "XDG_CURRENT_DESKTOP",
+    "DBUS_SESSION_BUS_ADDRESS",
     // toolchain vars the workspace needs
-    "CARGO_HOME", "GOPATH", "GOCACHE", "NVM_DIR", "NODE_ENV",
-    "PYTHONPATH", "VIRTUAL_ENV", "RUSTUP_HOME", "JAVA_HOME",
+    "CARGO_HOME",
+    "GOPATH",
+    "GOCACHE",
+    "NVM_DIR",
+    "NODE_ENV",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+    "RUSTUP_HOME",
+    "JAVA_HOME",
     // Node / JS / Bun / Deno runtimes
-    "VOLTA_HOME", "BUN_INSTALL", "FNM_DIR", "PNPM_HOME", "DENO_INSTALL",
+    "VOLTA_HOME",
+    "BUN_INSTALL",
+    "FNM_DIR",
+    "PNPM_HOME",
+    "DENO_INSTALL",
     // Python / Version managers
-    "PYENV_ROOT", "ASDF_DIR", "ASDF_DATA_DIR", "MISE_DATA_DIR",
+    "PYENV_ROOT",
+    "ASDF_DIR",
+    "ASDF_DATA_DIR",
+    "MISE_DATA_DIR",
     // JVM / Mobile / Toolchain SDKs
-    "SDKMAN_DIR", "GRADLE_USER_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT",
-    "FLUTTER_ROOT", "GOROOT", "CARGO_TARGET_DIR",
+    "SDKMAN_DIR",
+    "GRADLE_USER_HOME",
+    "ANDROID_HOME",
+    "ANDROID_SDK_ROOT",
+    "FLUTTER_ROOT",
+    "GOROOT",
+    "CARGO_TARGET_DIR",
 ];
 
 /// Prefixes kept (e.g. `LC_*` locale vars).
@@ -42,9 +74,23 @@ const ALLOW_PREFIXES: &[&str] = &["LC_"];
 /// **uppercased** name and value, so `database_url` and `AWS_*` die the same
 /// as their uppercase forms (Windows env is case-insensitive).
 const DENY_PATTERNS: &[&str] = &[
-    "_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_URL", "_URI", "_DSN",
-    "PRIVATE", "AWS_", "GITHUB_", "OPENAI_", "ANTHROPIC_",
-    "DATABASE_URL", "MONGODB_URI", "REDIS_AUTH", "SENTRY_DSN", "COOKIE",
+    "_KEY",
+    "_TOKEN",
+    "_SECRET",
+    "_PASSWORD",
+    "_URL",
+    "_URI",
+    "_DSN",
+    "PRIVATE",
+    "AWS_",
+    "GITHUB_",
+    "OPENAI_",
+    "ANTHROPIC_",
+    "DATABASE_URL",
+    "MONGODB_URI",
+    "REDIS_AUTH",
+    "SENTRY_DSN",
+    "COOKIE",
 ];
 
 /// Dev-runtime bin dirs that a GUI-launched app's PATH misses — the
@@ -120,10 +166,14 @@ fn dev_bin_dirs() -> Vec<std::path::PathBuf> {
         }
     }
     for (pattern, newest_only) in HOME_BIN_GLOBS {
-        let Some(star) = pattern.find('*') else { continue };
+        let Some(star) = pattern.find('*') else {
+            continue;
+        };
         let parent = home.join(&pattern[..star]);
         let suffix = pattern[star + 1..].trim_start_matches('/');
-        let Ok(rd) = std::fs::read_dir(&parent) else { continue };
+        let Ok(rd) = std::fs::read_dir(&parent) else {
+            continue;
+        };
         let mut cands: Vec<std::path::PathBuf> = rd
             .filter_map(|e| e.ok())
             .map(|e| e.path().join(suffix))
@@ -143,9 +193,7 @@ fn dev_bin_dirs() -> Vec<std::path::PathBuf> {
             }
             // Versioned manager dirs — newest install (mtime) wins;
             // lexicographic order lies (`v9` > `v20` as strings).
-            cands.sort_by_key(|p| {
-                std::fs::metadata(p).and_then(|m| m.modified()).ok()
-            });
+            cands.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
             if let Some(p) = cands.pop() {
                 out.push(p);
             }
@@ -170,8 +218,7 @@ fn nvm_default_bin(home: &std::path::Path) -> Option<std::path::PathBuf> {
     // alias file — resolve up to 3 hops until it looks like a version.
     for _ in 0..3 {
         let normalized = name.trim().trim_start_matches('v');
-        let candidate = home
-            .join(format!(".nvm/versions/node/v{normalized}/bin"));
+        let candidate = home.join(format!(".nvm/versions/node/v{normalized}/bin"));
         if candidate.is_dir() {
             return Some(candidate);
         }
@@ -188,9 +235,7 @@ fn nvm_default_bin(home: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Security model: the **allowlist is the boundary**; the denylist is
 /// heuristic defense-in-depth on name *and* value (a secret named `FOO`
 /// still dies by not being allowlisted, not by pattern luck).
-pub fn sanitize_env(
-    extra: &[(String, String)],
-) -> Vec<(String, String)> {
+pub fn sanitize_env(extra: &[(String, String)]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (name, value) in std::env::vars() {
         if is_denied(&name, &value) {
@@ -239,8 +284,7 @@ pub fn apply_environment_policy(
 /// prefix), case-insensitive.
 pub fn is_allowed(name: &str) -> bool {
     let uname = name.to_uppercase();
-    ALLOWLIST.iter().any(|a| uname == *a)
-        || ALLOW_PREFIXES.iter().any(|p| uname.starts_with(p))
+    ALLOWLIST.iter().any(|a| uname == *a) || ALLOW_PREFIXES.iter().any(|p| uname.starts_with(p))
 }
 
 /// Full policy check for external pre-flight (`bash` tool and friends) —
@@ -337,7 +381,9 @@ fn inject_toolchain_vars(out: &mut Vec<(String, String)>) {
 pub fn is_denied(name: &str, value: &str) -> bool {
     let uname = name.to_uppercase();
     let uvalue = value.to_uppercase();
-    DENY_PATTERNS.iter().any(|p| uname.contains(p) || uvalue.contains(p))
+    DENY_PATTERNS
+        .iter()
+        .any(|p| uname.contains(p) || uvalue.contains(p))
 }
 
 #[cfg(test)]
@@ -405,9 +451,9 @@ mod tests {
     fn is_safe_env_combines_allow_and_deny() {
         assert!(is_safe_env("PATH", "/usr/bin"));
         assert!(is_safe_env("cargo_home", "/h/.cargo")); // case-insensitive
-        assert!(!is_safe_env("FOO", "bar"));             // not allowlisted
+        assert!(!is_safe_env("FOO", "bar")); // not allowlisted
         assert!(!is_safe_env("PATH", "contains_PRIVATE_x")); // value denied
-        assert!(!is_safe_env("API_KEY", "x"));           // name denied
+        assert!(!is_safe_env("API_KEY", "x")); // name denied
     }
 
     #[test]
@@ -444,7 +490,13 @@ mod tests {
             .unwrap_or_default();
         let entries: Vec<&str> = path.split(':').collect();
         // No duplicates.
-        assert_eq!(entries.len(), entries.iter().collect::<std::collections::BTreeSet<_>>().len());
+        assert_eq!(
+            entries.len(),
+            entries
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        );
         // Whatever dev bins exist on this machine are present.
         if let Some(home) = dirs_home() {
             for rel in [".bun/bin", ".volta/bin", ".cargo/bin", ".local/bin"] {
@@ -490,6 +542,9 @@ mod tests {
             .find(|(n, _)| n == "PATH")
             .map(|(_, v)| v.clone())
             .unwrap_or_default();
-        assert_eq!(path, "/usr/bin:/bin", "Minimal must not add dev bins: {path}");
+        assert_eq!(
+            path, "/usr/bin:/bin",
+            "Minimal must not add dev bins: {path}"
+        );
     }
 }

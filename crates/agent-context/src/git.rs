@@ -137,9 +137,7 @@ fn current_branch(repo: &gix::Repository) -> Option<String> {
 /// One pass over `repo.status()` producing both the porcelain lines and the
 /// per-file change counts used for the `--stat` section. Untracked files
 /// have no content diff, so they contribute to `status` only.
-fn collect_status_and_stat(
-    repo: &gix::Repository,
-) -> Result<(Vec<String>, Vec<String>), GitError> {
+fn collect_status_and_stat(repo: &gix::Repository) -> Result<(Vec<String>, Vec<String>), GitError> {
     use gix::status::index_worktree;
     use gix::status::plumbing::index_as_worktree::{Change as WtChange, EntryStatus};
     use gix::status::Item;
@@ -180,10 +178,7 @@ fn collect_status_and_stat(
                         ..
                     } => {
                         let c = if *copy { "C" } else { "R" };
-                        (
-                            c,
-                            format!("{} -> {}", source_location, location),
-                        )
+                        (c, format!("{} -> {}", source_location, location))
                     }
                 };
                 status_lines.push(format!("{code}  {path}"));
@@ -191,7 +186,9 @@ fn collect_status_and_stat(
             }
             Item::IndexWorktree(iw) => match iw {
                 index_worktree::Item::Modification {
-                    rela_path, status: es, ..
+                    rela_path,
+                    status: es,
+                    ..
                 } => {
                     let code = match es {
                         EntryStatus::Change(WtChange::Removed) => "D",
@@ -321,12 +318,16 @@ mod tests {
         fs::write(dir.path().join("new.rs"), "fn main() {}\n").unwrap();
         let snap = git_snapshot(dir.path()).unwrap();
         assert!(
-            snap.status.iter().any(|l| l.starts_with(" M") && l.contains("a.txt")),
+            snap.status
+                .iter()
+                .any(|l| l.starts_with(" M") && l.contains("a.txt")),
             "status: {:?}",
             snap.status
         );
         assert!(
-            snap.status.iter().any(|l| l.starts_with("??") && l.contains("new.rs")),
+            snap.status
+                .iter()
+                .any(|l| l.starts_with("??") && l.contains("new.rs")),
             "status: {:?}",
             snap.status
         );
@@ -347,7 +348,9 @@ mod tests {
             .unwrap();
         let snap = git_snapshot(dir.path()).unwrap();
         assert!(
-            snap.status.iter().any(|l| l.starts_with("M ") && l.contains("a.txt")),
+            snap.status
+                .iter()
+                .any(|l| l.starts_with("M ") && l.contains("a.txt")),
             "status: {:?}",
             snap.status
         );
@@ -358,8 +361,9 @@ mod tests {
         let dir = init_repo();
         for i in 0..500 {
             fs::write(
-                dir.path()
-                    .join(format!("very_long_filename_to_bloat_the_status_block_{i:04}.txt")),
+                dir.path().join(format!(
+                    "very_long_filename_to_bloat_the_status_block_{i:04}.txt"
+                )),
                 "x\n",
             )
             .unwrap();

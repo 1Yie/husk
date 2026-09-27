@@ -32,19 +32,20 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rig_core::client::{self, BearerAuth, Capable, CompletionClient, Nothing};
-use rig_core::completion::{CompletionModel, CompletionRequest, ToolDefinition};
 use rig_core::completion::request::CompletionError;
+use rig_core::completion::{CompletionModel, CompletionRequest, ToolDefinition};
+use rig_core::http_client::{self, HttpClientExt};
 use rig_core::message::{
-    AssistantContent, DocumentSourceKind, Image as RigImage, ImageMediaType,
-    Message as RigMessage, Reasoning, ReasoningContent, Text as RigText,
-    ToolCall as RigToolCall, ToolCallId, ToolFunction, ToolResult as RigToolResult,
-    ToolResultContent, UserContent,
+    AssistantContent, DocumentSourceKind, Image as RigImage, ImageMediaType, Message as RigMessage,
+    Reasoning, ReasoningContent, Text as RigText, ToolCall as RigToolCall, ToolCallId,
+    ToolFunction, ToolResult as RigToolResult, ToolResultContent, UserContent,
 };
 use rig_core::providers::{anthropic, gemini, openai};
-use rig_core::streaming::{StreamedAssistantContent, StreamingCompletionResponse, ToolCallDeltaContent};
-use rig_core::http_client::{self, HttpClientExt};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use rig_core::streaming::{
+    StreamedAssistantContent, StreamingCompletionResponse, ToolCallDeltaContent,
+};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -207,7 +208,11 @@ impl RigProvider {
     /// Build from a resolved provider config. `api_key` is the already-
     /// resolved secret (empty when `auth_header` is false or the provider
     /// needs no key).
-    pub fn new(cfg: &ProviderConfig, api_key: String, http: reqwest::Client) -> anyhow::Result<Self> {
+    pub fn new(
+        cfg: &ProviderConfig,
+        api_key: String,
+        http: reqwest::Client,
+    ) -> anyhow::Result<Self> {
         let kind = WireKind::from(cfg.kind);
         let caps = match kind {
             WireKind::Compat | WireKind::Responses => Capabilities::all(),
@@ -226,7 +231,7 @@ impl RigProvider {
         };
         Ok(Self {
             id: match kind {
-                WireKind::Compat => "openai_compat",
+                WireKind::Compat => "openai_completions",
                 WireKind::Responses => "openai_responses",
                 WireKind::Anthropic => "anthropic",
                 WireKind::Gemini => "gemini",
@@ -264,11 +269,8 @@ impl RigProvider {
         Ok(match self.kind {
             WireKind::Compat => {
                 if self.auth_header && !self.api_key.is_empty() {
-                    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", self.api_key))
-                    {
-                        headers
-                            .entry(reqwest::header::AUTHORIZATION)
-                            .or_insert(v);
+                    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", self.api_key)) {
+                        headers.entry(reqwest::header::AUTHORIZATION).or_insert(v);
                     }
                 }
                 let b = client::Client::<CompatExt>::builder()
@@ -278,7 +280,7 @@ impl RigProvider {
                 let client = b
                     .api_key(Nothing)
                     .build()
-                .map_err(|e| anyhow::anyhow!("openai-compatible client: {e}"))?
+                    .map_err(|e| anyhow::anyhow!("openai-compatible client: {e}"))?
                     .with_ext(CompatExt {
                         compat: Some(compat.clone()),
                     });
@@ -300,11 +302,7 @@ impl RigProvider {
                 .map_err(|e| anyhow::anyhow!("openai-responses client: {e}"))?;
                 // Shims that reject the top-level `instructions` field get
                 // system messages inside `input` instead.
-                let client = if compat
-                    .supports_developer_role
-                    .map(|v| !v)
-                    .unwrap_or(false)
-                {
+                let client = if compat.supports_developer_role.map(|v| !v).unwrap_or(false) {
                     client.with_system_instructions_as_messages()
                 } else {
                     client
@@ -333,7 +331,7 @@ impl RigProvider {
                 };
                 let client = b
                     .build()
-                .map_err(|e| anyhow::anyhow!("anthropic client: {e}"))?;
+                    .map_err(|e| anyhow::anyhow!("anthropic client: {e}"))?;
                 let model = client.completion_model(model.to_string());
                 RigModel::Anthropic(model)
             }
@@ -343,9 +341,11 @@ impl RigProvider {
                     .http_headers(headers)
                     .http_client(http);
                 let client = if self.auth_header && !self.api_key.is_empty() {
-                    b.api_key(gemini::client::GeminiApiKey::from(self.api_key.clone())).build()
+                    b.api_key(gemini::client::GeminiApiKey::from(self.api_key.clone()))
+                        .build()
                 } else {
-                    b.api_key(gemini::client::GeminiApiKey::from(String::new())).build()
+                    b.api_key(gemini::client::GeminiApiKey::from(String::new()))
+                        .build()
                 }
                 .map_err(|e| anyhow::anyhow!("gemini client: {e}"))?;
                 let model = client.completion_model(model.to_string());
@@ -377,9 +377,7 @@ impl LlmProvider for RigProvider {
         // Model-level `compat` merged over the provider's — `maxTokensField`
         // and `supportsReasoningEffort` are commonly declared per model.
         let compat = params.compat_with(self.compat.as_ref());
-        let effort = reasoning_effort.filter(|_| {
-            compat.supports_reasoning_effort.unwrap_or(true)
-        });
+        let effort = reasoning_effort.filter(|_| compat.supports_reasoning_effort.unwrap_or(true));
 
         // ---------- messages ----------
         let chat_history = to_rig_messages(messages, self.kind, &compat);
@@ -388,13 +386,12 @@ impl LlmProvider for RigProvider {
         // Temperature is optional: several backends reject extreme values
         // (devin upstream-errors on temperature=0), and Anthropic rejects it
         // while thinking is enabled — only send when meaningful.
-        let temperature = if temperature > 0.0
-            && !(effort.is_some() && !self.caps.temperature_with_reasoning)
-        {
-            Some(temperature as f64)
-        } else {
-            None
-        };
+        let temperature =
+            if temperature > 0.0 && !(effort.is_some() && !self.caps.temperature_with_reasoning) {
+                Some(temperature as f64)
+            } else {
+                None
+            };
 
         // Output cap. Compat wires disagree on the field name, so the cap is
         // pushed through `additional_params` under whatever name the dialect
@@ -478,8 +475,7 @@ impl LlmProvider for RigProvider {
             temperature,
             max_tokens,
             tool_choice: None,
-            additional_params: (!additional.is_empty())
-                .then(|| Value::Object(additional)),
+            additional_params: (!additional.is_empty()).then(|| Value::Object(additional)),
             output_schema: None,
             record_telemetry_content: false,
         };
@@ -729,10 +725,7 @@ fn compat_body_patches(body: &mut Value, compat: Option<&ProviderCompat>) {
                 // `requiresReasoningContentOnAssistantMessages` — the key must
                 // exist (empty is fine) on every assistant replay while
                 // reasoning is enabled.
-                if effort_on
-                    && replay_empty_reasoning
-                    && !msg.contains_key("reasoning_content")
-                {
+                if effort_on && replay_empty_reasoning && !msg.contains_key("reasoning_content") {
                     msg.insert("reasoning_content".into(), json!(""));
                 }
             }
@@ -784,7 +777,11 @@ fn apply_cache_control_markers(map: &mut Map<String, Value>) {
             }
             Some(Value::String(_)) => {
                 // String content can't carry the marker — wrap into parts.
-                let text = m.get("content").and_then(Value::as_str).unwrap_or_default().to_string();
+                let text = m
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
                 m.insert(
                     "content".into(),
                     json!([{ "type": "text", "text": text, "cache_control": mark }]),
@@ -819,9 +816,7 @@ fn to_rig_messages(
     let mut out: Vec<RigMessage> = Vec::new();
     let mut pending_tool_images: Vec<RigImage> = Vec::new();
     let thinking_as_text = compat.requires_thinking_as_text.unwrap_or(false);
-    let assistant_after_tool = compat
-        .requires_assistant_after_tool_result
-        .unwrap_or(false);
+    let assistant_after_tool = compat.requires_assistant_after_tool_result.unwrap_or(false);
 
     /// flush tool-result images into a user message (openai-chat wire cannot
     /// carry them inside the tool result).
@@ -842,7 +837,10 @@ fn to_rig_messages(
     for m in messages {
         // UI-only rows — render metadata, never context.
         if m.role == Role::System
-            && matches!(m.notice, Some(NoticeKind::Compacted) | Some(NoticeKind::Plan))
+            && matches!(
+                m.notice,
+                Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)
+            )
         {
             continue;
         }
@@ -938,10 +936,7 @@ fn to_rig_messages(
                     }));
                 }
                 if !content.is_empty() {
-                    out.push(RigMessage::Assistant {
-                        id: None,
-                        content,
-                    });
+                    out.push(RigMessage::Assistant { id: None, content });
                 }
             }
             Role::Tool => {
@@ -965,9 +960,10 @@ fn to_rig_messages(
                                     parts.push(ToolResultContent::Image(i));
                                 }
                             }
-                            None => parts.push(ToolResultContent::Text(RigText::new(
-                                format!("(image unavailable: {})", img.path.display()),
-                            ))),
+                            None => parts.push(ToolResultContent::Text(RigText::new(format!(
+                                "(image unavailable: {})",
+                                img.path.display()
+                            )))),
                         }
                     }
                     if parts.is_empty() {
@@ -999,7 +995,10 @@ fn to_rig_messages(
     // Dangling assistant calls still need a result — an interrupted stream
     // or a reconstructed session can leave the pair half-written, and strict
     // backends answer that with a hard 400.
-    for id in pending_order.iter().filter(|i| pending.contains(i.as_str())) {
+    for id in pending_order
+        .iter()
+        .filter(|i| pending.contains(i.as_str()))
+    {
         out.push(RigMessage::User {
             content: vec![UserContent::ToolResult(RigToolResult {
                 call: ToolCallId::new_or_mint(id.clone()),
@@ -1022,10 +1021,9 @@ fn merge_consecutive(messages: Vec<RigMessage>) -> Vec<RigMessage> {
     let mut out: Vec<RigMessage> = Vec::new();
     for m in messages {
         match (out.last_mut(), &m) {
-            (
-                Some(RigMessage::User { content: prev }),
-                RigMessage::User { content },
-            ) => prev.extend(content.iter().cloned()),
+            (Some(RigMessage::User { content: prev }), RigMessage::User { content }) => {
+                prev.extend(content.iter().cloned())
+            }
             (
                 Some(RigMessage::Assistant { content: prev, .. }),
                 RigMessage::Assistant { content, .. },
@@ -1161,7 +1159,10 @@ impl MapState {
         s
     }
 
-    fn map_one(&mut self, item: Result<StreamedAssistantContent, CompletionError>) -> Vec<StreamChunk> {
+    fn map_one(
+        &mut self,
+        item: Result<StreamedAssistantContent, CompletionError>,
+    ) -> Vec<StreamChunk> {
         let mut out = Vec::new();
         match item {
             Ok(StreamedAssistantContent::Text(t)) => {
@@ -1273,7 +1274,7 @@ impl MapState {
                         prompt_tokens: Some(u.input_tokens as u32),
                         completion_tokens: Some(u.output_tokens as u32),
                         cached_tokens: Some(
-                            (u.cached_input_tokens + u.cache_creation_input_tokens) as u32
+                            (u.cached_input_tokens + u.cache_creation_input_tokens) as u32,
                         ),
                     });
                 }
@@ -1285,7 +1286,10 @@ impl MapState {
                 // adapters absorbed them; an abort here ended sessions, so
                 // warn-and-continue.
                 if self.swallow_decode_errors
-                    && matches!(e, CompletionError::JsonError(_) | CompletionError::ResponseError(_))
+                    && matches!(
+                        e,
+                        CompletionError::JsonError(_) | CompletionError::ResponseError(_)
+                    )
                 {
                     tracing::warn!(error = %e, "stream decode error swallowed");
                 } else {
@@ -1606,7 +1610,10 @@ mod tests {
         rig_core::message::ToolCall {
             id: ToolCallId::new_or_mint(id),
             provider: None,
-            function: ToolFunction { name: name.into(), arguments: args },
+            function: ToolFunction {
+                name: name.into(),
+                arguments: args,
+            },
             signature: None,
             additional_params: None,
         }
@@ -1640,26 +1647,43 @@ mod tests {
         let mut feed = |m: &mut MapState, item| {
             seen.extend(m.map_one(item));
         };
-        feed(&mut m, Ok(StreamedAssistantContent::ReasoningDelta {
-            id: "r".into(),
-            provider_id: None,
-            reasoning: "r1".into(),
-        }));
-        feed(&mut m, Ok(StreamedAssistantContent::Text(rig_core::message::Text::new("a".to_string()))));
-        feed(&mut m, Ok(StreamedAssistantContent::ToolCallDelta {
-            internal_call_id: "c".into(),
-            content: ToolCallDeltaContent::Name("f".into()),
-        }));
-        feed(&mut m, Ok(StreamedAssistantContent::ToolCallDelta {
-            internal_call_id: "c".into(),
-            content: ToolCallDeltaContent::Delta("{".into()),
-        }));
+        feed(
+            &mut m,
+            Ok(StreamedAssistantContent::ReasoningDelta {
+                id: "r".into(),
+                provider_id: None,
+                reasoning: "r1".into(),
+            }),
+        );
+        feed(
+            &mut m,
+            Ok(StreamedAssistantContent::Text(
+                rig_core::message::Text::new("a".to_string()),
+            )),
+        );
+        feed(
+            &mut m,
+            Ok(StreamedAssistantContent::ToolCallDelta {
+                internal_call_id: "c".into(),
+                content: ToolCallDeltaContent::Name("f".into()),
+            }),
+        );
+        feed(
+            &mut m,
+            Ok(StreamedAssistantContent::ToolCallDelta {
+                internal_call_id: "c".into(),
+                content: ToolCallDeltaContent::Delta("{".into()),
+            }),
+        );
         // A complete ToolCall for the same slot: id+name emitted, args NOT
         // duplicated (deltas already carried the payload).
-        feed(&mut m, Ok(StreamedAssistantContent::ToolCall {
-            internal_call_id: "c".into(),
-            tool_call: rig_tool_call("c", "f", json!({"x": 1})),
-        }));
+        feed(
+            &mut m,
+            Ok(StreamedAssistantContent::ToolCall {
+                internal_call_id: "c".into(),
+                tool_call: rig_tool_call("c", "f", json!({"x": 1})),
+            }),
+        );
         feed(&mut m, Ok(rig_final(1, 2)));
 
         assert!(matches!(&seen[0], StreamChunk::ReasoningDelta(t) if t == "r1"));
@@ -1672,8 +1696,14 @@ mod tests {
         assert!(matches!(&seen[4],
             StreamChunk::ToolCallDelta { slot: 0, id: Some(i), name: Some(n), args_delta, .. }
             if i == "c" && n == "f" && args_delta.is_empty()));
-        assert!(matches!(&seen[5], StreamChunk::Done {
-            prompt_tokens: Some(1), completion_tokens: Some(2), .. }));
+        assert!(matches!(
+            &seen[5],
+            StreamChunk::Done {
+                prompt_tokens: Some(1),
+                completion_tokens: Some(2),
+                ..
+            }
+        ));
         assert_eq!(seen.len(), 6);
     }
 
@@ -1698,7 +1728,9 @@ mod tests {
     fn to_rig_messages_repairs_pairing() {
         let mut a1 = chat(Role::Assistant, "x");
         a1.tool_calls = Some(vec![crate::types::ToolCall {
-            id: "c1".into(), name: "f".into(), arguments: "{}".into(),
+            id: "c1".into(),
+            name: "f".into(),
+            arguments: "{}".into(),
         }]);
         let mut t1 = chat(Role::Tool, "r");
         t1.tool_call_id = Some("c1".into());
@@ -1706,12 +1738,17 @@ mod tests {
         orphan.tool_call_id = Some("nope".into());
         let mut a2 = chat(Role::Assistant, "");
         a2.tool_calls = Some(vec![crate::types::ToolCall {
-            id: "c2".into(), name: "g".into(), arguments: "{}".into(),
+            id: "c2".into(),
+            name: "g".into(),
+            arguments: "{}".into(),
         }]);
 
         let msgs = vec![
             chat(Role::System, "sys"),
-            a1, t1, orphan, a2,
+            a1,
+            t1,
+            orphan,
+            a2,
             chat(Role::User, "next"),
         ];
         let messages = to_rig_messages(&msgs, WireKind::Compat, &ProviderCompat::default());
@@ -1723,7 +1760,8 @@ mod tests {
         // (+placeholder result merged into the trailing user message)
         assert_eq!(serialized.len(), 5);
         assert!(serde_json::to_string(&serialized[4])
-            .unwrap().contains("call interrupted"));
+            .unwrap()
+            .contains("call interrupted"));
     }
 
     #[test]
@@ -1777,7 +1815,8 @@ mod tests {
         )));
         seen.extend(m.drain());
         assert!(
-            seen.iter().any(|c| matches!(c, StreamChunk::ContentDelta(t) if t.contains("[ca"))),
+            seen.iter()
+                .any(|c| matches!(c, StreamChunk::ContentDelta(t) if t.contains("[ca"))),
             "held prefix text must surface on drain: {seen:?}"
         );
     }
@@ -1794,11 +1833,15 @@ mod tests {
         seen.extend(m.drain());
         // The `[call: bash(...)]` echo recovers as a real call — NOT text.
         assert!(
-            seen.iter().any(|c| matches!(c, StreamChunk::ToolCallDelta { name: Some(n), .. } if n == "bash")),
+            seen.iter().any(
+                |c| matches!(c, StreamChunk::ToolCallDelta { name: Some(n), .. } if n == "bash")
+            ),
             "{seen:?}"
         );
         assert!(
-            !seen.iter().any(|c| matches!(c, StreamChunk::ContentDelta(t) if t.contains("[call:"))),
+            !seen
+                .iter()
+                .any(|c| matches!(c, StreamChunk::ContentDelta(t) if t.contains("[call:"))),
             "call echo must not leak as text: {seen:?}"
         );
     }
@@ -1812,7 +1855,10 @@ mod tests {
         // cap too small for the 1024 minimum → thinking dropped.
         assert_eq!(anthropic_effective_budget(Some("low"), 1_024), None);
         // big cap → table value unchanged.
-        assert_eq!(anthropic_effective_budget(Some("high"), 32_768), Some(16_384));
+        assert_eq!(
+            anthropic_effective_budget(Some("high"), 32_768),
+            Some(16_384)
+        );
         // no effort → nothing.
         assert_eq!(anthropic_effective_budget(None, 32_768), None);
     }

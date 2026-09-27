@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "@keyline-icons/react";
 import { Bot } from "lucide-react";
 import { DiffView } from "@/features/chat/components/diff-view/index";
@@ -75,15 +75,65 @@ function getToolLanguage(detailText: string, label: string, chip: string): strin
  *  output is tens of thousands of nodes (that single-handedly froze the
  *  whole webview). User expands explicitly — no scroll-time mounting. */
 const MAX_DETAIL_LINES = 150;
+/// Expanding reveals in steps, not all-at-once: a single "展开全部" click
+/// on a 10k-line output mounted ~10k nodes + ~10k highlight passes in one
+/// frame (the expand-time freeze). Stepped reveal bounds each click's mount
+/// cost; per-line memoization keeps already-rendered lines from re-highlighting.
+const EXPAND_STEP = 500;
 
-function renderHighlightedLines(
-  detailText: string,
-  label: string,
-  chip: string,
-  maxLines = Number.MAX_SAFE_INTEGER,
-) {
-  if (!detailText) return null;
+/** One rendered output line — memoized per (line, lang) so a reveal click
+ *  only pays highlight cost for the newly mounted page, not the whole body. */
+const HighlightedLine = memo(function HighlightedLine({
+  line,
+  lang,
+}: {
+  line: string;
+  lang: string;
+}) {
+  // 1. Header line (e.g. "path/to/file.tsx (content_hash: ...)")
+  if (/\(content_hash:\s*[a-f0-9]+\)/i.test(line)) {
+    return (
+      <div className="whitespace-pre font-mono text-neutral-500 font-medium pb-1.5 mb-1 border-b border-neutral-200">
+        {line}
+      </div>
+    );
+  }
 
+  // 2. Line number prefix like "   5 | " or " 12 │ " or " 1: "
+  const numMatch = line.match(/^(\s*\d+\s*[│|:]\s?)(.*)$/);
+  if (numMatch) {
+    const prefix = numMatch[1];
+    const code = numMatch[2];
+    const highlighted = highlightCodeToHtml(code, lang);
+    return (
+      <div className="whitespace-pre font-mono leading-5 hover:bg-[color-mix(in_srgb,var(--husk-n200)_40%,transparent)] px-1 -mx-1 rounded-xs transition-colors">
+        <span className="text-neutral-500 select-none mr-2 inline-block min-w-[2.5rem] text-right font-mono">{prefix}</span>
+        <span dangerouslySetInnerHTML={{ __html: highlighted }} />
+      </div>
+    );
+  }
+
+  // 3. Truncation notice
+  if (/^[….]*\s*\[truncated\s*—.*\]\s*[….]*$/i.test(line)) {
+    return (
+      <div className="whitespace-pre font-mono text-amber-600 dark:text-amber-400/90 font-medium pt-1.5 mt-1 border-t border-neutral-200">
+        {line}
+      </div>
+    );
+  }
+
+  // 4. Regular code / text line
+  const highlighted = highlightCodeToHtml(line, lang);
+  return (
+    <div className="whitespace-pre font-mono leading-5 hover:bg-[color-mix(in_srgb,var(--husk-n200)_40%,transparent)] px-1 -mx-1 rounded-xs transition-colors">
+      <span dangerouslySetInnerHTML={{ __html: highlighted }} />
+    </div>
+  );
+});
+
+/** ANSI strip + newline normalization — the cleanup passes run once per
+ *  text change (memoized on detailText), NOT once per reveal click. */
+function normalizeDetailText(detailText: string): string {
   // 1. Strip ANSI escape codes (terminal color/style sequences that cause garbled text)
   let clean = detailText.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, "");
 
@@ -96,51 +146,7 @@ function renderHighlightedLines(
   // 3. Fix squashed output where newlines were collapsed into spaces before line numbers:
   // e.g. "path (content_hash: ...) 5 | func... 13 | func..." -> "...\n 5 | func...\n 13 | func..."
   clean = clean.replace(/([^\n])\s+(\d+\s*[│|:]\s?)/g, "$1\n$2");
-
-  const lang = getToolLanguage(clean, label, chip);
-  const lines = clean.split("\n");
-
-  return lines.slice(0, maxLines).map((line, idx) => {
-    // 1. Header line (e.g. "path/to/file.tsx (content_hash: ...)")
-    if (/\(content_hash:\s*[a-f0-9]+\)/i.test(line)) {
-      return (
-        <div key={idx} className="whitespace-pre font-mono text-neutral-500 font-medium pb-1.5 mb-1 border-b border-neutral-200">
-          {line}
-        </div>
-      );
-    }
-
-    // 2. Line number prefix like "   5 | " or " 12 │ " or " 1: "
-    const numMatch = line.match(/^(\s*\d+\s*[│|:]\s?)(.*)$/);
-    if (numMatch) {
-      const prefix = numMatch[1];
-      const code = numMatch[2];
-      const highlighted = highlightCodeToHtml(code, lang);
-      return (
-        <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-[color-mix(in_srgb,var(--husk-n200)_40%,transparent)] px-1 -mx-1 rounded-xs transition-colors">
-          <span className="text-neutral-500 select-none mr-2 inline-block min-w-[2.5rem] text-right font-mono">{prefix}</span>
-          <span dangerouslySetInnerHTML={{ __html: highlighted }} />
-        </div>
-      );
-    }
-
-    // 3. Truncation notice
-    if (/^[….]*\s*\[truncated\s*—.*\]\s*[….]*$/i.test(line)) {
-      return (
-        <div key={idx} className="whitespace-pre font-mono text-amber-600 dark:text-amber-400/90 font-medium pt-1.5 mt-1 border-t border-neutral-200">
-          {line}
-        </div>
-      );
-    }
-
-    // 4. Regular code / text line
-    const highlighted = highlightCodeToHtml(line, lang);
-    return (
-      <div key={idx} className="whitespace-pre font-mono leading-5 hover:bg-[color-mix(in_srgb,var(--husk-n200)_40%,transparent)] px-1 -mx-1 rounded-xs transition-colors">
-        <span dangerouslySetInnerHTML={{ __html: highlighted }} />
-      </div>
-    );
-  });
+  return clean;
 }
 
 
@@ -269,37 +275,34 @@ function DetailLines({
   label: string;
   chip: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  // Cheap line count for the footer — the real split happens inside
-  // renderHighlightedLines; this is just `\n` accounting.
-  const lineCount = useMemo(
-    () => detailText.split("\n").length,
-    [detailText],
+  // Progressive reveal: `revealed` is a COUNT, not an expand-all boolean —
+  // each click mounts at most EXPAND_STEP new lines, so a huge output
+  // never freezes on the "show everything" frame. Language + split memoize
+  // on the raw text; per-line memoization means re-renders only pay for
+  // the newly revealed lines.
+  const [revealed, setRevealed] = useState(MAX_DETAIL_LINES);
+  const clean = useMemo(() => normalizeDetailText(detailText), [detailText]);
+  const lines = useMemo(() => clean.split("\n"), [clean]);
+  const lang = useMemo(
+    () => getToolLanguage(clean, label, chip),
+    [clean, label, chip],
   );
-  const capped = !expanded && lineCount > MAX_DETAIL_LINES;
-  // Highlighting every line is the expensive part — memoize so a
-  // re-render triggered by a sibling (row open/close, parent re-render)
-  // doesn't redo it. `expanded` participates via `capped`.
-  const highlighted = useMemo(
-    () =>
-      renderHighlightedLines(
-        detailText,
-        label,
-        chip,
-        capped ? MAX_DETAIL_LINES : Number.MAX_SAFE_INTEGER,
-      ),
-    [detailText, label, chip, capped],
-  );
+  const lineCount = lines.length;
+  const shownLines = Math.min(revealed, lineCount);
+  const hidden = lineCount - shownLines;
+  if (!clean) return null;
   return (
     <>
-      {highlighted}
-      {capped && (
+      {lines.slice(0, shownLines).map((line, idx) => (
+        <HighlightedLine key={idx} line={line} lang={lang} />
+      ))}
+      {hidden > 0 && (
         <button
           type="button"
-          onClick={() => setExpanded(true)}
+          onClick={() => setRevealed((r) => r + EXPAND_STEP)}
           className="w-full text-center font-mono text-[11px] text-neutral-500 hover:text-neutral-600 pt-1.5 mt-1 border-t border-neutral-200 select-none"
         >
-          … 还有 {lineCount - MAX_DETAIL_LINES} 行，点击展开全部
+          … 还有 {hidden} 行，点击再展开 {Math.min(EXPAND_STEP, hidden)} 行
         </button>
       )}
     </>

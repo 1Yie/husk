@@ -176,6 +176,11 @@ pub struct ToolCtx {
     /// engine takes the payload at the quiet point for the plan card.
     /// Always present (cheap); only consulted in `plan` mode.
     pub plan: Arc<crate::tools::plan::PlanController>,
+    /// Plugin router handle — `batch_execute` consults it to tell "this name
+    /// is a plugin tool" apart from "this name does not exist" so the
+    /// rejection can tell the model to call it directly instead of claiming
+    /// the tool is missing. `None` where no router is installed.
+    pub plugins: Option<crate::engine::PluginHandle>,
 }
 
 impl ToolCtx {
@@ -197,6 +202,7 @@ impl ToolCtx {
             ui_tx: None,
             goal: Arc::new(crate::tools::goal::GoalController::new()),
             plan: Arc::new(crate::tools::plan::PlanController::new()),
+            plugins: None,
         }
     }
 
@@ -223,6 +229,7 @@ impl ToolCtx {
             ui_tx: None,
             goal: Arc::new(crate::tools::goal::GoalController::new()),
             plan: Arc::new(crate::tools::plan::PlanController::new()),
+            plugins: None,
         }
     }
 
@@ -264,7 +271,20 @@ impl ToolCtx {
             depth: self.depth,
             goal: self.goal.clone(),
             plan: self.plan.clone(),
+            plugins: self.plugins.clone(),
         }
+    }
+
+    /// The engine's `set_plugins` replaces its `Arc<ToolCtx>` wholesale —
+    /// no interior mutability on the ctx itself.
+    pub fn with_plugins(&self, plugins: crate::engine::PluginHandle) -> ToolCtx {
+        let cancel = self
+            .cancel
+            .clone()
+            .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let mut next = self.with_cancel(cancel);
+        next.plugins = Some(plugins);
+        next
     }
 
     pub fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {

@@ -319,6 +319,9 @@ impl SubagentSpawner {
             ui_tx: Some(child_sink.clone()),
             goal: Arc::new(crate::tools::goal::GoalController::new()),
             plan: Arc::new(crate::tools::plan::PlanController::new()),
+            // Subagent engines carry no plugin router, so plugin names
+            // genuinely are unknown here — batch should keep saying so.
+            plugins: None,
         };
         let registry = if readonly {
             self.registry_readonly.clone()

@@ -22,6 +22,11 @@ import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import { addMcp, probeMcp, reloadMcp, removeMcp, setPluginEnabled, trustMcp, type AgentOverview, type McpProbe, type PluginItem } from "@/lib/agent-ipc/sessions";
+
+/** `entry` is a raw manifest blob — a wasm manifest stores a bare string
+ *  (the .wasm filename), only server bridges are objects. */
+const entryObj = (p: PluginItem) =>
+  p.entry && typeof p.entry === "object" ? p.entry : null;
 import { Switch } from "@/components/ui/switch";
 import { Field } from "@/features/settings/pages/agent/shared/index";
 
@@ -126,16 +131,16 @@ export function McpPane({
   /** Prefill the dialog from the stored manifest and remember which plugin is
    *  being edited (its id is the directory name, so it cannot change). */
   const startEdit = (p: PluginItem) => {
-    const http = !!p.entry?.url;
+    const http = !!entryObj(p)?.url;
     setEditId(p.id);
     setId(p.id);
     setName(p.name);
     setTransport(http ? "http" : "stdio");
-    setUrl(p.entry?.url ?? "");
-    setCommand(p.entry?.command ?? "");
-    setArgs((p.entry?.args ?? []).join(" "));
+    setUrl(entryObj(p)?.url ?? "");
+    setCommand(entryObj(p)?.command ?? "");
+    setArgs((entryObj(p)?.args ?? []).join(" "));
     setHeaders(
-      Object.entries(p.entry?.headers ?? {})
+      Object.entries(entryObj(p)?.headers ?? {})
         .map(([k, v]) => `${k}: ${v}`)
         .join("\n")
     );
@@ -199,8 +204,8 @@ export function McpPane({
       </div>
       <KvList>
         <KvListContent>
-          {ov?.plugins.filter((p) => p.entry?.command || p.entry?.url).length ? (
-            ov.plugins.filter((p) => p.entry?.command || p.entry?.url).map((p) => {
+          {ov?.plugins.filter((p) => entryObj(p)?.command || entryObj(p)?.url).length ? (
+            ov.plugins.filter((p) => entryObj(p)?.command || entryObj(p)?.url).map((p) => {
               // Boot state from the overview; a manual reconnect overrides it.
               const re = reconnected[p.id];
               const live = re
@@ -221,16 +226,16 @@ export function McpPane({
                   <KvRow
                 label={`${p.name}${live.version ? ` v${live.version}` : ""}`}
                 description={
-                  p.entry?.url ??
-                  (p.entry?.command
-                    ? `${p.entry.command} ${(p.entry?.args ?? []).join(" ")}`
+                  entryObj(p)?.url ??
+                  (entryObj(p)?.command
+                    ? `${entryObj(p)?.command} ${(entryObj(p)?.args ?? []).join(" ")}`
                     : p.id)
                 }
                 icon={<Wrench className="h-4 w-4" />}
               >
                 <div className="flex items-center gap-2">
                   <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                    {p.entry?.url ? "http" : "stdio"}
+                    {entryObj(p)?.url ? "http" : "stdio"}
                   </Badge>
                   {live.ok ? (
                     <span className="text-[11px] text-neutral-500 tabular-nums">

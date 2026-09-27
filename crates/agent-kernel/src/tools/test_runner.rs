@@ -84,10 +84,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         ));
     }
     if out.is_timeout {
-        content.push_str(&format!(
-            "[timeout {}s — tree killed]\n",
-            TIMEOUT.as_secs()
-        ));
+        content.push_str(&format!("[timeout {}s — tree killed]\n", TIMEOUT.as_secs()));
     }
     content.push_str(&distilled);
     if distilled.len() >= MAX_DIAGNOSTIC_CHARS {

@@ -87,10 +87,14 @@ pub fn audit_command_scoped(cmd: &str, workspace: Option<&std::path::Path>) -> A
     let reasons = reasons_for(&caps);
     // Separate the package-install tier from generic network — a `git push`
     // or `curl` is Elevated (network), NOT a package-manager mutation.
-    let is_package_install = caps.iter().any(|c| matches!(c, Capability::PackageInstall { .. }));
+    let is_package_install = caps
+        .iter()
+        .any(|c| matches!(c, Capability::PackageInstall { .. }));
     let is_network = caps.iter().any(|c| matches!(c, Capability::Network { .. }));
     let needs_network = is_network || is_package_install;
-    let scope_violation = caps.iter().any(|c| matches!(c, Capability::OutOfScope { .. }));
+    let scope_violation = caps
+        .iter()
+        .any(|c| matches!(c, Capability::OutOfScope { .. }));
 
     let level = match risk {
         RiskLevel::Critical => AuditLevel::Critical,
@@ -105,7 +109,11 @@ pub fn audit_command_scoped(cmd: &str, workspace: Option<&std::path::Path>) -> A
         risk,
         reasons,
         level,
-        force_snapshot: if risk == RiskLevel::Critical { Some(SnapshotMode::Required) } else { None },
+        force_snapshot: if risk == RiskLevel::Critical {
+            Some(SnapshotMode::Required)
+        } else {
+            None
+        },
         needs_network_prompt: needs_network,
     }
 }
@@ -116,22 +124,37 @@ fn reasons_for(caps: &[Capability]) -> Vec<String> {
     for c in caps {
         let r = match c {
             Capability::DeleteFile { path, recursive } => format!(
-                "deletes {}{}", path.display(), if *recursive { " recursively" } else { "" }),
-            Capability::WriteFile { path } | Capability::AppendFile { path } =>
-                format!("writes {}", path.display()),
-            Capability::CreateFile { path } | Capability::CreateDirectory { path } =>
-                format!("creates {}", path.display()),
-            Capability::RenameFile { from, to } =>
-                format!("moves {} → {}", from.display(), to.display()),
+                "deletes {}{}",
+                path.display(),
+                if *recursive { " recursively" } else { "" }
+            ),
+            Capability::WriteFile { path } | Capability::AppendFile { path } => {
+                format!("writes {}", path.display())
+            }
+            Capability::CreateFile { path } | Capability::CreateDirectory { path } => {
+                format!("creates {}", path.display())
+            }
+            Capability::RenameFile { from, to } => {
+                format!("moves {} → {}", from.display(), to.display())
+            }
             Capability::ExecuteScript => "executes a script".to_string(),
             Capability::Network { target } => format!(
-                "network access{}", target.as_ref().map(|t| format!(" to {t}")).unwrap_or_default()),
+                "network access{}",
+                target
+                    .as_ref()
+                    .map(|t| format!(" to {t}"))
+                    .unwrap_or_default()
+            ),
             Capability::PackageInstall { manager } => format!("installs packages via {manager}"),
             Capability::PrivilegeEscalation => "escalates privileges (sudo)".to_string(),
             Capability::DeviceAccess { path } => format!("accesses device {}", path.display()),
             Capability::ProcessControl => "controls processes".to_string(),
-            Capability::DestructiveVcs { operation } => format!("rewrites/discards git state ({operation})"),
-            Capability::OutOfScope { path } => format!("touches {} (outside the workspace)", path.display()),
+            Capability::DestructiveVcs { operation } => {
+                format!("rewrites/discards git state ({operation})")
+            }
+            Capability::OutOfScope { path } => {
+                format!("touches {} (outside the workspace)", path.display())
+            }
             Capability::Runtime { toolchain } => format!("needs the {toolchain:?} toolchain"),
             Capability::ReadFile { .. } | Capability::Execute { .. } => continue,
         };
@@ -147,20 +170,32 @@ fn is_out_of_scope(path: &std::path::Path, workspace: &std::path::Path) -> bool 
     use std::path::{Component, PathBuf};
     // Resolve relative paths against the workspace, then normalize so a
     // `..` can't climb above the root.
-    let joined = if path.is_absolute() { path.to_path_buf() } else { workspace.join(path) };
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace.join(path)
+    };
     let mut normalized = PathBuf::new();
     for comp in joined.components() {
         match comp {
-            Component::ParentDir => { normalized.pop(); }
+            Component::ParentDir => {
+                normalized.pop();
+            }
             Component::CurDir => {}
             c => normalized.push(c),
         }
     }
     let s = normalized.to_string_lossy();
     // Sensitive system + secret dirs are always out of scope.
-    let sensitive = ["/etc", "/usr", "/bin", "/sbin", "/boot", "/sys", "/proc", "/dev", "/root", "/var", "/lib"];
-    if sensitive.iter().any(|d| s == *d || s.starts_with(&format!("{d}/")))
-        || s.contains("/.ssh") || s.contains("/.gnupg") || s.contains("/.aws")
+    let sensitive = [
+        "/etc", "/usr", "/bin", "/sbin", "/boot", "/sys", "/proc", "/dev", "/root", "/var", "/lib",
+    ];
+    if sensitive
+        .iter()
+        .any(|d| s == *d || s.starts_with(&format!("{d}/")))
+        || s.contains("/.ssh")
+        || s.contains("/.gnupg")
+        || s.contains("/.aws")
     {
         return true;
     }
@@ -189,13 +224,19 @@ mod tests {
         let v = audit_command("git push --force origin main");
         assert_eq!(v.level, AuditLevel::Elevated);
         assert_eq!(v.risk, RiskLevel::High);
-        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::DestructiveVcs { .. })));
+        assert!(v
+            .capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::DestructiveVcs { .. })));
     }
 
     #[test]
     fn git_reset_hard_is_destructive() {
         let v = audit_command("git reset --hard HEAD~3");
-        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::DestructiveVcs { .. })));
+        assert!(v
+            .capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::DestructiveVcs { .. })));
         assert_eq!(v.risk, RiskLevel::High);
     }
 
@@ -204,7 +245,10 @@ mod tests {
         let v = audit_command("npm install lodash");
         assert_eq!(v.risk, RiskLevel::High);
         assert!(v.needs_network_prompt);
-        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::PackageInstall { .. })));
+        assert!(v
+            .capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::PackageInstall { .. })));
     }
 
     #[test]
@@ -218,7 +262,10 @@ mod tests {
         let ws = PathBuf::from("/home/u/proj");
         let v = audit_command_scoped("cat a > /etc/out", Some(&ws));
         assert_eq!(v.level, AuditLevel::ScopeViolation);
-        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::OutOfScope { .. })));
+        assert!(v
+            .capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::OutOfScope { .. })));
     }
 
     #[test]
@@ -226,8 +273,12 @@ mod tests {
         // ../../etc/shadow escapes the workspace even though it's "relative".
         let ws = PathBuf::from("/home/u/proj");
         let v = audit_command_scoped("cat ../../etc/shadow", Some(&ws));
-        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::OutOfScope { .. })),
-            "relative traversal must flag OutOfScope");
+        assert!(
+            v.capabilities
+                .iter()
+                .any(|c| matches!(c, Capability::OutOfScope { .. })),
+            "relative traversal must flag OutOfScope"
+        );
     }
 
     #[test]
@@ -236,29 +287,55 @@ mod tests {
         // Path::starts_with is component-wise, not a string prefix.
         let ws = PathBuf::from("/home/u/proj");
         let v = audit_command_scoped("cat /home/u/proj_evil/x", Some(&ws));
-        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::OutOfScope { .. })),
-            "/proj_evil must not match /proj");
+        assert!(
+            v.capabilities
+                .iter()
+                .any(|c| matches!(c, Capability::OutOfScope { .. })),
+            "/proj_evil must not match /proj"
+        );
     }
 
     #[test]
     fn rm_recursive_flag_variants() {
-        for cmd in ["rm -rf /tmp/x", "rm --recursive /tmp/x", "rm -r /tmp/x", "rm -Rf /tmp/x"] {
+        for cmd in [
+            "rm -rf /tmp/x",
+            "rm --recursive /tmp/x",
+            "rm -r /tmp/x",
+            "rm -Rf /tmp/x",
+        ] {
             let v = audit_command(cmd);
-            assert!(v.capabilities.iter().any(|c| matches!(c, Capability::DeleteFile { recursive: true, .. })),
-                "{cmd} should mark recursive");
+            assert!(
+                v.capabilities.iter().any(|c| matches!(
+                    c,
+                    Capability::DeleteFile {
+                        recursive: true,
+                        ..
+                    }
+                )),
+                "{cmd} should mark recursive"
+            );
         }
     }
 
     #[test]
     fn python_dash_and_bash_s_are_scripts() {
-        assert!(audit_command("python - < x.py").capabilities.iter().any(|c| matches!(c, Capability::ExecuteScript)));
-        assert!(audit_command("bash -s < x.sh").capabilities.iter().any(|c| matches!(c, Capability::ExecuteScript)));
+        assert!(audit_command("python - < x.py")
+            .capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::ExecuteScript)));
+        assert!(audit_command("bash -s < x.sh")
+            .capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::ExecuteScript)));
     }
 
     #[test]
     fn sudo_escalates() {
         let v = audit_command("sudo apt update");
-        assert!(v.capabilities.iter().any(|c| matches!(c, Capability::PrivilegeEscalation)));
+        assert!(v
+            .capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::PrivilegeEscalation)));
         assert_eq!(v.risk, RiskLevel::High);
     }
 }

@@ -429,7 +429,7 @@ impl PluginManager {
             .map(|p| (p.clone(), name.to_string()))
             .or_else(|| self.resolve_bare(name))
             .or_else(|| self.resolve_legacy(name))
-            .ok_or_else(|| format!("no plugin owns tool `{name}`"))?;
+            .ok_or_else(|| self.tool_dispatch_error(name))?;
         // The tool name the MCP server knows — the advertised name was passed
         // through the wire charset, which is lossy.
         let real = self.real_tool_names.get(&real).cloned().unwrap_or(real);
@@ -439,6 +439,32 @@ impl PluginManager {
             .await
             .map_err(|e| e.to_string())?;
         Ok(truncate(&out, PLUGIN_OUTPUT_CAP))
+    }
+
+    /// Why a `dispatch_tool_call` lookup missed. A plugin that DECLARED the
+    /// tool but never reached the router (load failed — e.g. `wasm` feature
+    /// off, spawn error) gets a message that says so, with the recorded
+    /// failure; a genuinely unknown name keeps the generic wording.
+    fn tool_dispatch_error(&self, name: &str) -> String {
+        // Bare tool names can't be attributed without the router, so the
+        // declaration scan compares both the wire spelling and a suffix
+        // match for `id__tool`/`id:tool` callers.
+        for (id, m) in &self.manifests {
+            let declares = m
+                .capabilities
+                .tools
+                .iter()
+                .any(|t| t.name == name || wire_tool_name(id, &t.name) == name);
+            if declares {
+                let why = self
+                    .errors
+                    .get(id)
+                    .map(|e| format!(" — {e}"))
+                    .unwrap_or_default();
+                return format!("plugin `{id}` declares `{name}` but isn't running{why}");
+            }
+        }
+        format!("no plugin owns tool `{name}`")
     }
 
     /// A bare (`get_skill`) or legacy (`ui-skills:get_skill`) call name →
@@ -956,6 +982,49 @@ mod tests {
         let status = mgr.status();
         let a = status.iter().find(|v| v["id"] == "a").unwrap();
         assert_eq!(a["commands"][0]["qualified"], "a:foo");
+    }
+
+    /// A declared-but-dead plugin's tool gets a *why* on dispatch failure —
+    /// "declares X but isn't running: <load error>" — not a bare
+    /// "no plugin owns tool" that looks like a typo.
+    #[tokio::test]
+    async fn dispatch_error_names_the_dead_plugin() {
+        let mut mgr = super::PluginManager::new();
+        let mut m: crate::PluginManifest = serde_json::from_value(serde_json::json!({
+            "id": "wasm-x", "name": "x",
+            "capabilities": {"tools": [{"name": "slugify", "description": "d", "parameters": {}}]},
+        }))
+        .unwrap();
+        m.dir = PathBuf::from("/plugins/wasm-x");
+        mgr.manifests.insert("wasm-x".into(), m);
+        mgr.order.push("wasm-x".into());
+        mgr.enabled.insert("wasm-x".into(), true);
+        mgr.errors.insert(
+            "wasm-x".into(),
+            "WASM plugins not built (feature wasm off)".into(),
+        );
+
+        // Bare name resolves to the dead plugin, not a generic "unknown".
+        let err = mgr
+            .dispatch_tool_call("slugify", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("wasm-x"), "{err}");
+        assert!(err.contains("WASM plugins not built"), "{err}");
+
+        // Wire spelling gets the same attribution.
+        let err = mgr
+            .dispatch_tool_call("wasm-x__slugify", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("isn't running"), "{err}");
+
+        // A name nobody declared stays generic.
+        let err = mgr
+            .dispatch_tool_call("nonexistent", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no plugin owns tool"), "{err}");
     }
 
     /// A repo-local plugin is inert until trusted — and the gate is load

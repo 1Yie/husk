@@ -83,13 +83,13 @@ pub enum ToolchainKind {
 fn runtime_of(prog: &str) -> Option<ToolchainKind> {
     use ToolchainKind as T;
     Some(match prog {
-        "node" | "npm" | "npx" | "yarn" | "pnpm" | "tsc" | "tsx" | "vite"
-        | "eslint" | "esbuild" | "webpack" | "jest" | "vitest" | "next"
-        | "nuxt" | "turbo" | "corepack" | "nodemon" | "pm2" => T::Node,
+        "node" | "npm" | "npx" | "yarn" | "pnpm" | "tsc" | "tsx" | "vite" | "eslint"
+        | "esbuild" | "webpack" | "jest" | "vitest" | "next" | "nuxt" | "turbo" | "corepack"
+        | "nodemon" | "pm2" => T::Node,
         "bun" | "bunx" => T::Bun,
         "deno" => T::Deno,
-        "python" | "python3" | "pip" | "pip3" | "uv" | "uvx" | "pytest"
-        | "ruff" | "mypy" | "ipython" | "poetry" | "conda" | "pipx" => T::Python,
+        "python" | "python3" | "pip" | "pip3" | "uv" | "uvx" | "pytest" | "ruff" | "mypy"
+        | "ipython" | "poetry" | "conda" | "pipx" => T::Python,
         "cargo" | "rustc" | "rustup" | "rustfmt" | "clippy-driver" => T::Rust,
         "go" | "gofmt" | "golint" | "delve" => T::Go,
         "java" | "javac" | "mvn" | "gradle" | "sdk" | "kotlinc" | "scala" => T::Java,
@@ -124,8 +124,18 @@ pub fn extract(node: &Node) -> Vec<Capability> {
     // script execution — mark it (the `| sh` / `| bash` / `| python` idiom).
     if let Node::Pipe(cmds) = node {
         if let Some(Node::Simple(last)) = cmds.last() {
-            if matches!(last.program.as_str(), "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "bun" | "deno" | "perl" | "ruby")
-                && cmds.len() > 1
+            if matches!(
+                last.program.as_str(),
+                "sh" | "bash"
+                    | "zsh"
+                    | "python"
+                    | "python3"
+                    | "node"
+                    | "bun"
+                    | "deno"
+                    | "perl"
+                    | "ruby"
+            ) && cmds.len() > 1
             {
                 caps.push(Capability::ExecuteScript);
             }
@@ -155,7 +165,9 @@ fn walk(node: &Node, caps: &mut Vec<Capability>) {
 /// the file/network/process capabilities policy actually gates on.
 fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
     let prog = cmd.program.as_str();
-    caps.push(Capability::Execute { program: prog.into() });
+    caps.push(Capability::Execute {
+        program: prog.into(),
+    });
     if let Some(toolchain) = runtime_of(prog) {
         caps.push(Capability::Runtime { toolchain });
     }
@@ -163,22 +175,31 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
     for r in &cmd.redirects {
         let p = PathBuf::from(&r.target);
         caps.push(if r.write {
-            if r.append { Capability::AppendFile { path: p } } else { Capability::WriteFile { path: p } }
+            if r.append {
+                Capability::AppendFile { path: p }
+            } else {
+                Capability::WriteFile { path: p }
+            }
         } else {
             Capability::ReadFile { path: p }
         });
     }
 
-    let arg_path = |i: usize| cmd.args.get(i).map(|a| PathBuf::from(a.trim_matches('"').trim_matches('\'')));
+    let arg_path = |i: usize| {
+        cmd.args
+            .get(i)
+            .map(|a| PathBuf::from(a.trim_matches('"').trim_matches('\'')))
+    };
 
     match prog {
         "rm" | "unlink" | "rmdir" => {
             // Any flag carrying a recursive delete: `-r`, `-rf`, `-R`,
             // `--recursive`. GNU long opts match too.
             let recursive = cmd.args.iter().any(|a| {
-                (a.starts_with('-') && !a.starts_with("--")
+                (a.starts_with('-')
+                    && !a.starts_with("--")
                     && a[1..].chars().any(|c| c == 'r' || c == 'R'))
-                || a == "--recursive"
+                    || a == "--recursive"
             }) || prog == "rmdir";
             for a in &cmd.args {
                 // Skip every flag (incl. `--no-preserve-root`) — only bare
@@ -207,28 +228,36 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         "mkdir" => {
             for a in &cmd.args {
                 if !a.starts_with('-') {
-                    caps.push(Capability::CreateDirectory { path: PathBuf::from(a) });
+                    caps.push(Capability::CreateDirectory {
+                        path: PathBuf::from(a),
+                    });
                 }
             }
         }
         "touch" => {
             for a in &cmd.args {
                 if !a.starts_with('-') {
-                    caps.push(Capability::CreateFile { path: PathBuf::from(a) });
+                    caps.push(Capability::CreateFile {
+                        path: PathBuf::from(a),
+                    });
                 }
             }
         }
         "tee" => {
             for a in &cmd.args {
                 if !a.starts_with('-') {
-                    caps.push(Capability::WriteFile { path: PathBuf::from(a) });
+                    caps.push(Capability::WriteFile {
+                        path: PathBuf::from(a),
+                    });
                 }
             }
         }
         "cat" | "head" | "tail" | "less" | "more" | "file" | "stat" | "wc" => {
             for a in &cmd.args {
                 if !a.starts_with('-') {
-                    caps.push(Capability::ReadFile { path: PathBuf::from(a) });
+                    caps.push(Capability::ReadFile {
+                        path: PathBuf::from(a),
+                    });
                 }
             }
         }
@@ -237,7 +266,9 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
             // that looks like a path is a read target.
             for a in &cmd.args {
                 if a.contains('/') && !a.starts_with('-') {
-                    caps.push(Capability::ReadFile { path: PathBuf::from(a) });
+                    caps.push(Capability::ReadFile {
+                        path: PathBuf::from(a),
+                    });
                 }
             }
         }
@@ -246,12 +277,16 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
             // the wrapped command counts as an execute too — extract it.
             if let Some(first) = cmd.args.first() {
                 if !first.starts_with('-') {
-                    caps.push(Capability::Execute { program: first.clone() });
+                    caps.push(Capability::Execute {
+                        program: first.clone(),
+                    });
                 }
             }
         }
         "curl" | "wget" => {
-            let target = cmd.args.iter()
+            let target = cmd
+                .args
+                .iter()
                 .find(|a| a.contains("://") || a.contains('.'))
                 .and_then(|a| a.split("://").nth(1))
                 .and_then(|h| h.split('/').next())
@@ -261,19 +296,32 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         "ssh" | "scp" | "rsync" | "nc" | "ncat" | "telnet" => {
             caps.push(Capability::Network { target: None });
         }
-        "npm" | "yarn" | "pnpm" | "bun" | "pip" | "pip3" | "cargo" | "apt"
-        | "apt-get" | "brew" | "dnf" | "pacman" | "gem" | "composer" => {
+        "npm" | "yarn" | "pnpm" | "bun" | "pip" | "pip3" | "cargo" | "apt" | "apt-get" | "brew"
+        | "dnf" | "pacman" | "gem" | "composer" => {
             let sub = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
-            if matches!(sub, "install" | "add" | "i" | "remove" | "uninstall" | "update" | "upgrade") {
-                caps.push(Capability::PackageInstall { manager: prog.into() });
+            if matches!(
+                sub,
+                "install" | "add" | "i" | "remove" | "uninstall" | "update" | "upgrade"
+            ) {
+                caps.push(Capability::PackageInstall {
+                    manager: prog.into(),
+                });
                 caps.push(Capability::Network { target: None });
                 // Which dirs the manager actually writes — npm→node_modules,
                 // cargo→target/+Cargo.toml, pip→site-packages, apt→system.
                 let written = match prog {
-                    "npm" | "yarn" | "pnpm" | "bun" => vec![PathBuf::from("node_modules"), PathBuf::from("package.json")],
-                    "cargo" => vec![PathBuf::from("target"), PathBuf::from("Cargo.toml"), PathBuf::from("Cargo.lock")],
+                    "npm" | "yarn" | "pnpm" | "bun" => {
+                        vec![PathBuf::from("node_modules"), PathBuf::from("package.json")]
+                    }
+                    "cargo" => vec![
+                        PathBuf::from("target"),
+                        PathBuf::from("Cargo.toml"),
+                        PathBuf::from("Cargo.lock"),
+                    ],
                     "pip" | "pip3" => vec![PathBuf::from("site-packages")],
-                    "apt" | "apt-get" | "dnf" | "pacman" | "brew" => vec![PathBuf::from("/usr"), PathBuf::from("/var")],
+                    "apt" | "apt-get" | "dnf" | "pacman" | "brew" => {
+                        vec![PathBuf::from("/usr"), PathBuf::from("/var")]
+                    }
                     "gem" => vec![PathBuf::from("gems")],
                     "composer" => vec![PathBuf::from("vendor")],
                     _ => vec![],
@@ -283,9 +331,13 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
                 }
             } else if prog == "bun" {
                 let has_script = cmd.args.iter().any(|a| {
-                    a == "-e" || a == "-c" || a == "run"
-                        || a.ends_with(".js") || a.ends_with(".ts")
-                        || a.ends_with(".mjs") || a.ends_with(".cjs")
+                    a == "-e"
+                        || a == "-c"
+                        || a == "run"
+                        || a.ends_with(".js")
+                        || a.ends_with(".ts")
+                        || a.ends_with(".mjs")
+                        || a.ends_with(".cjs")
                 });
                 if has_script {
                     caps.push(Capability::ExecuteScript);
@@ -295,18 +347,41 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         "git" => {
             let sub = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
             match sub {
-                "push" if cmd.args.iter().any(|a| a == "--force" || a == "-f" || a == "--force-with-lease") => {
-                    caps.push(Capability::DestructiveVcs { operation: "git push --force".into() });
+                "push"
+                    if cmd
+                        .args
+                        .iter()
+                        .any(|a| a == "--force" || a == "-f" || a == "--force-with-lease") =>
+                {
+                    caps.push(Capability::DestructiveVcs {
+                        operation: "git push --force".into(),
+                    });
                     caps.push(Capability::Network { target: None });
                 }
                 "reset" if cmd.args.iter().any(|a| a == "--hard") => {
-                    caps.push(Capability::DestructiveVcs { operation: "git reset --hard".into() });
+                    caps.push(Capability::DestructiveVcs {
+                        operation: "git reset --hard".into(),
+                    });
                 }
-                "clean" if cmd.args.iter().any(|a| a.contains('f') && a.starts_with('-')) => {
-                    caps.push(Capability::DestructiveVcs { operation: "git clean -f".into() });
+                "clean"
+                    if cmd
+                        .args
+                        .iter()
+                        .any(|a| a.contains('f') && a.starts_with('-')) =>
+                {
+                    caps.push(Capability::DestructiveVcs {
+                        operation: "git clean -f".into(),
+                    });
                 }
-                "checkout" | "restore" if cmd.args.iter().any(|a| a == "--" || a.starts_with('-') && a.contains('f')) => {
-                    caps.push(Capability::DestructiveVcs { operation: format!("git {sub} — discards changes") });
+                "checkout" | "restore"
+                    if cmd
+                        .args
+                        .iter()
+                        .any(|a| a == "--" || a.starts_with('-') && a.contains('f')) =>
+                {
+                    caps.push(Capability::DestructiveVcs {
+                        operation: format!("git {sub} — discards changes"),
+                    });
                 }
                 "push" | "pull" | "fetch" | "clone" | "submodule" | "remote" => {
                     caps.push(Capability::Network { target: None });
@@ -318,9 +393,13 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
             for a in &cmd.args {
                 if let Some(rest) = a.strip_prefix("of=") {
                     if rest.starts_with("/dev") {
-                        caps.push(Capability::DeviceAccess { path: PathBuf::from(rest) });
+                        caps.push(Capability::DeviceAccess {
+                            path: PathBuf::from(rest),
+                        });
                     } else {
-                        caps.push(Capability::WriteFile { path: PathBuf::from(rest) });
+                        caps.push(Capability::WriteFile {
+                            path: PathBuf::from(rest),
+                        });
                     }
                 }
             }
@@ -331,7 +410,8 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         // interpreters running a script file / -c / -s / - — ExecuteScript.
         // `bash -s`, `python -` read a script from stdin; `-c "cmd"` is a
         // literal script. Also catch `eval "$(curl …)"` style builtins.
-        "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "deno" | "perl" | "ruby" | "eval" => {
+        "sh" | "bash" | "zsh" | "python" | "python3" | "node" | "deno" | "perl" | "ruby"
+        | "eval" => {
             let has_script = cmd.args.iter().any(|a| {
                 a == "-c" || a == "-s" || a == "-" || a == "-e" // stdin / inline script
                     || a.ends_with(".sh") || a.ends_with(".py")
@@ -370,24 +450,37 @@ pub fn risk_of(caps: &[Capability]) -> RiskLevel {
             Capability::DeleteFile { path, .. } => {
                 // Deleting `/` or `~` is critical; workspace deletes are medium.
                 let s = path.to_string_lossy();
-                if s == "/" || s == "/*" || s == "~" || s.starts_with("/etc") || s.starts_with("/usr") || s.starts_with("/bin") {
+                if s == "/"
+                    || s == "/*"
+                    || s == "~"
+                    || s.starts_with("/etc")
+                    || s.starts_with("/usr")
+                    || s.starts_with("/bin")
+                {
                     RiskLevel::Critical
                 } else {
                     RiskLevel::Medium
                 }
             }
-            Capability::WriteFile { path } | Capability::AppendFile { path }
-            | Capability::CreateFile { path } | Capability::CreateDirectory { path }
+            Capability::WriteFile { path }
+            | Capability::AppendFile { path }
+            | Capability::CreateFile { path }
+            | Capability::CreateDirectory { path }
             | Capability::RenameFile { to: path, .. } => {
                 let s = path.to_string_lossy();
-                if s.starts_with("/etc") || s.starts_with("/usr") || s.starts_with("/bin")
-                    || s.starts_with("~/.ssh") || s.starts_with("$HOME/.ssh") {
+                if s.starts_with("/etc")
+                    || s.starts_with("/usr")
+                    || s.starts_with("/bin")
+                    || s.starts_with("~/.ssh")
+                    || s.starts_with("$HOME/.ssh")
+                {
                     RiskLevel::High
                 } else {
                     RiskLevel::Medium
                 }
             }
-            Capability::ReadFile { .. } | Capability::Execute { .. }
+            Capability::ReadFile { .. }
+            | Capability::Execute { .. }
             | Capability::Runtime { .. } => RiskLevel::Low,
         };
         if r > risk {
@@ -412,7 +505,9 @@ mod tests {
     #[test]
     fn npm_install_is_package_network_write() {
         let caps = extract(&parse("npm install react"));
-        assert!(caps.iter().any(|c| matches!(c, Capability::PackageInstall { .. })));
+        assert!(caps
+            .iter()
+            .any(|c| matches!(c, Capability::PackageInstall { .. })));
         assert!(caps.iter().any(|c| matches!(c, Capability::Network { .. })));
         assert_eq!(risk_of(&caps), RiskLevel::High);
     }
@@ -428,21 +523,29 @@ mod tests {
     #[test]
     fn sudo_is_privilege_escalation() {
         let caps = extract(&parse("sudo apt update"));
-        assert!(caps.iter().any(|c| matches!(c, Capability::PrivilegeEscalation)));
-        assert!(caps.iter().any(|c| matches!(c, Capability::Execute { program } if program == "apt")));
+        assert!(caps
+            .iter()
+            .any(|c| matches!(c, Capability::PrivilegeEscalation)));
+        assert!(caps
+            .iter()
+            .any(|c| matches!(c, Capability::Execute { program } if program == "apt")));
     }
 
     #[test]
     fn redirect_write_is_writefile() {
         let caps = extract(&parse("cat a > /etc/out"));
-        assert!(caps.iter().any(|c| matches!(c, Capability::WriteFile { path } if path == &PathBuf::from("/etc/out"))));
+        assert!(caps.iter().any(
+            |c| matches!(c, Capability::WriteFile { path } if path == &PathBuf::from("/etc/out"))
+        ));
         assert_eq!(risk_of(&caps), RiskLevel::High); // /etc write
     }
 
     #[test]
     fn substitution_recurses() {
         let caps = extract(&parse("echo $(cat /etc/passwd)"));
-        assert!(caps.iter().any(|c| matches!(c, Capability::ReadFile { path } if path == &PathBuf::from("/etc/passwd"))));
+        assert!(caps.iter().any(
+            |c| matches!(c, Capability::ReadFile { path } if path == &PathBuf::from("/etc/passwd"))
+        ));
     }
 
     #[test]

@@ -11,7 +11,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use agent_ipc::UiEvent;
 use agent_kernel::session_manager::SessionManager;
 
-pub fn spawn(app: AppHandle, rx: Receiver<(String, i64, UiEvent)>, mgr: Arc<Mutex<SessionManager>>) {
+pub fn spawn(
+    app: AppHandle,
+    rx: Receiver<(String, i64, UiEvent)>,
+    mgr: Arc<Mutex<SessionManager>>,
+) {
     std::thread::Builder::new()
         .name("tauri-event-fwd".into())
         .spawn(move || {
@@ -88,7 +92,10 @@ pub fn spawn(app: AppHandle, rx: Receiver<(String, i64, UiEvent)>, mgr: Arc<Mute
                 // the text straight into the webview's DOM — no `__TAURI__`
                 // listener to lose, and it lands on the main thread where
                 // webview calls belong.
-                if let UiEvent::ToolCallStarted { name, args_preview, .. } = &ev {
+                if let UiEvent::ToolCallStarted {
+                    name, args_preview, ..
+                } = &ev
+                {
                     if name == "computer" || name == "screenshot" {
                         let js = crate::ipc::overlay::hud_set_status_js(
                             &crate::ipc::overlay::hud_action_label(name, args_preview),
@@ -102,9 +109,8 @@ pub fn spawn(app: AppHandle, rx: Receiver<(String, i64, UiEvent)>, mgr: Arc<Mute
                     }
                 } else if let UiEvent::ToolCallFinished { name, .. } = &ev {
                     if name == "computer" || name == "screenshot" {
-                        let js = crate::ipc::overlay::hud_set_status_js(
-                            crate::ipc::overlay::HUD_IDLE,
-                        );
+                        let js =
+                            crate::ipc::overlay::hud_set_status_js(crate::ipc::overlay::HUD_IDLE);
                         let app2 = app.clone();
                         let _ = app.run_on_main_thread(move || {
                             if let Some(w) = app2.get_webview_window("computer-hud") {
@@ -115,11 +121,14 @@ pub fn spawn(app: AppHandle, rx: Receiver<(String, i64, UiEvent)>, mgr: Arc<Mute
                 }
                 // Small envelope so the frontend routes by workspace +
                 // session without re-parsing the payload.
-                let _ = app.emit("agent://event", serde_json::json!({
-                    "root": root,
-                    "session": session_id,
-                    "event": ev,
-                }));
+                let _ = app.emit(
+                    "agent://event",
+                    serde_json::json!({
+                        "root": root,
+                        "session": session_id,
+                        "event": ev,
+                    }),
+                );
             }
         })
         .expect("spawn tauri event forwarder");

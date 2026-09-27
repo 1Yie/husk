@@ -79,8 +79,8 @@ pub fn spec() -> ToolSpec {
 }
 
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
-    let parsed: ComputerArgs = serde_json::from_value(args)
-        .map_err(|e| ToolError::Args(format!("computer args: {e}")))?;
+    let parsed: ComputerArgs =
+        serde_json::from_value(args).map_err(|e| ToolError::Args(format!("computer args: {e}")))?;
     let action = parsed.action.trim().to_ascii_lowercase();
 
     // `wait` first: it needs no coordinate and must work on any backend? No —
@@ -167,7 +167,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 .coordinate
                 .map(|c| format!(" at ({}, {})", c[0], c[1]))
                 .unwrap_or_default();
-            format!("scrolled {amount} step(s) {}{at}", parsed.scroll_direction.as_deref().unwrap_or(""))
+            format!(
+                "scrolled {amount} step(s) {}{at}",
+                parsed.scroll_direction.as_deref().unwrap_or("")
+            )
         }
         "wait" => {
             let ms = parsed.duration_ms.ok_or_else(|| {
@@ -187,7 +190,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         }
         "cursor_position" => {
             let at = ctx.desktop.cursor_position().await.map_err(fail)?;
-            format!("pointer at ({}, {}) in screenshot coordinates", at[0], at[1])
+            format!(
+                "pointer at ({}, {}) in screenshot coordinates",
+                at[0], at[1]
+            )
         }
         "launch" => {
             let cmd = need_text(&parsed, &action)?;
@@ -237,9 +243,11 @@ mod tests {
     use crate::tools::registry::ToolRegistry;
 
     fn ctx(dir: &std::path::Path) -> Arc<ToolCtx> {
-        Arc::new(ToolCtx::new(dir).with_desktop(Arc::new(agent_computer::NoneBackend::new(
-            "no desktop in tests",
-        ))))
+        Arc::new(
+            ToolCtx::new(dir).with_desktop(Arc::new(agent_computer::NoneBackend::new(
+                "no desktop in tests",
+            ))),
+        )
     }
 
     async fn call(args: serde_json::Value) -> Result<ToolResult, String> {
@@ -254,7 +262,9 @@ mod tests {
     /// exact key it is missing, and no call reaches the backend.
     #[tokio::test]
     async fn missing_arguments_teach_the_fix() {
-        let e = call(serde_json::json!({"action": "left_click"})).await.unwrap_err();
+        let e = call(serde_json::json!({"action": "left_click"}))
+            .await
+            .unwrap_err();
         assert!(e.contains("needs `coordinate`"), "{e}");
 
         let e = call(serde_json::json!({"action": "left_click_drag", "coordinate": [1, 2]}))
@@ -262,13 +272,19 @@ mod tests {
             .unwrap_err();
         assert!(e.contains("start_coordinate"), "{e}");
 
-        let e = call(serde_json::json!({"action": "type", "text": ""})).await.unwrap_err();
+        let e = call(serde_json::json!({"action": "type", "text": ""}))
+            .await
+            .unwrap_err();
         assert!(e.contains("non-empty `text`"), "{e}");
 
-        let e = call(serde_json::json!({"action": "key"})).await.unwrap_err();
+        let e = call(serde_json::json!({"action": "key"}))
+            .await
+            .unwrap_err();
         assert!(e.contains("non-empty `text`"), "{e}");
 
-        let e = call(serde_json::json!({"action": "hold_key", "text": "ctrl"})).await.unwrap_err();
+        let e = call(serde_json::json!({"action": "hold_key", "text": "ctrl"}))
+            .await
+            .unwrap_err();
         assert!(e.contains("duration_ms"), "{e}");
 
         let e = call(serde_json::json!({"action": "scroll", "scroll_direction": "sideways"}))
@@ -276,7 +292,9 @@ mod tests {
             .unwrap_err();
         assert!(e.contains("scroll_direction"), "{e}");
 
-        let e = call(serde_json::json!({"action": "wait"})).await.unwrap_err();
+        let e = call(serde_json::json!({"action": "wait"}))
+            .await
+            .unwrap_err();
         assert!(e.contains("duration_ms"), "{e}");
     }
 
@@ -284,7 +302,9 @@ mod tests {
     /// next round instead of looping on a mystery.
     #[tokio::test]
     async fn unknown_action_lists_the_valid_set() {
-        let e = call(serde_json::json!({"action": "screenshot"})).await.unwrap_err();
+        let e = call(serde_json::json!({"action": "screenshot"}))
+            .await
+            .unwrap_err();
         assert!(e.contains("unknown action `screenshot`"), "{e}");
         assert!(e.contains("left_click"), "{e}");
         assert!(e.contains("`screenshot` tool"), "{e}");
@@ -293,7 +313,9 @@ mod tests {
     /// Bounds on the two time-taking actions.
     #[tokio::test]
     async fn time_arguments_are_bounded() {
-        let e = call(serde_json::json!({"action": "wait", "duration_ms": 0})).await.unwrap_err();
+        let e = call(serde_json::json!({"action": "wait", "duration_ms": 0}))
+            .await
+            .unwrap_err();
         assert!(e.contains("duration_ms must be"), "{e}");
         let e = call(serde_json::json!({"action": "wait", "duration_ms": 999_999}))
             .await

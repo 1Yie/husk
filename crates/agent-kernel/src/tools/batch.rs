@@ -144,15 +144,14 @@ fn normalize_shape(mut item: serde_json::Value) -> serde_json::Value {
     }
     // `{"function": "x"}` or `{"function": {"name", "arguments"}}` —
     // `arguments` folds into `args` when no explicit `args` exists.
-    let hoisted: Option<(Option<String>, Option<serde_json::Value>)> =
-        match obj.get("function") {
-            Some(serde_json::Value::String(s)) => Some((Some(s.clone()), None)),
-            Some(serde_json::Value::Object(f)) => Some((
-                f.get("name").and_then(|v| v.as_str()).map(str::to_string),
-                f.get("arguments").cloned(),
-            )),
-            _ => None,
-        };
+    let hoisted: Option<(Option<String>, Option<serde_json::Value>)> = match obj.get("function") {
+        Some(serde_json::Value::String(s)) => Some((Some(s.clone()), None)),
+        Some(serde_json::Value::Object(f)) => Some((
+            f.get("name").and_then(|v| v.as_str()).map(str::to_string),
+            f.get("arguments").cloned(),
+        )),
+        _ => None,
+    };
     let args_missing = obj.get("args").is_none();
     if let Some((name, fargs)) = hoisted {
         if let Some(n) = name {
@@ -186,8 +185,15 @@ fn normalize_shape(mut item: serde_json::Value) -> serde_json::Value {
                 obj.iter()
                     .filter(|(k, _)| {
                         ![
-                            "args", "arguments", "type", "call", "command", "action",
-                            "function", "name", "tool_name",
+                            "args",
+                            "arguments",
+                            "type",
+                            "call",
+                            "command",
+                            "action",
+                            "function",
+                            "name",
+                            "tool_name",
                         ]
                         .contains(&k.as_str())
                     })
@@ -213,8 +219,14 @@ fn normalize_shape(mut item: serde_json::Value) -> serde_json::Value {
                     .iter()
                     .filter(|(k, _)| {
                         ![
-                            "tool", "type", "call", "command", "action", "function",
-                            "name", "tool_name",
+                            "tool",
+                            "type",
+                            "call",
+                            "command",
+                            "action",
+                            "function",
+                            "name",
+                            "tool_name",
                         ]
                         .contains(&k.as_str())
                     })
@@ -372,10 +384,25 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             continue;
         };
         match registry.spec(&call.tool) {
-            None => eligible_flags.push(Err(format!(
-                "unknown tool `{}` — not in the active registry",
-                call.tool
-            ))),
+            None => {
+                let is_plugin = ctx
+                    .plugins
+                    .as_ref()
+                    .and_then(|h| h.read().ok().and_then(|g| g.clone()))
+                    .is_some_and(|mgr| {
+                        mgr.exported_tools()
+                            .iter()
+                            .any(|t| t["function"]["name"].as_str() == Some(call.tool.as_str()))
+                    });
+                eligible_flags.push(Err(if is_plugin {
+                    format!(
+                        "`{}` is a plugin tool — call it directly; plugin calls can't be batched",
+                        call.tool
+                    )
+                } else {
+                    format!("unknown tool `{}` — not in the active registry", call.tool)
+                }));
+            }
             Some(spec) if !is_batchable(&spec) => eligible_flags.push(Err(format!(
                 "`{}` is not batchable — only Observation tools run in a batch",
                 call.tool
@@ -596,10 +623,8 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     // tool message, so a batched `screenshot` still reaches the model's eyes.
     // The text sections already name each item's tool, so the model can pair
     // a frame with its call.
-    let images: Vec<agent_llm::types::ImageRef> = results
-        .into_iter()
-        .flat_map(|r| r.images)
-        .collect();
+    let images: Vec<agent_llm::types::ImageRef> =
+        results.into_iter().flat_map(|r| r.images).collect();
     let mut res = ToolResult::text(out);
     res.images = images;
     Ok(res)
@@ -690,7 +715,9 @@ mod tests {
         assert_eq!(name_of(&items[4]), "smart_read");
         assert_eq!(name_of(&items[5]), "(unnamed)");
         // The hoisted args reach the call, not a null.
-        let ParsedItem::Call(c) = &items[3] else { unreachable!() };
+        let ParsedItem::Call(c) = &items[3] else {
+            unreachable!()
+        };
         assert_eq!(c.args["url"], "https://x");
     }
 
@@ -704,20 +731,21 @@ mod tests {
         assert_eq!(items.len(), 1);
         // Alternate envelope keys.
         for key in ["items", "tool_calls", "batch", "requests", "operations"] {
-            let items =
-                parse_items(serde_json::json!({key: [{"tool": "list_dir"}]})).unwrap();
+            let items = parse_items(serde_json::json!({key: [{"tool": "list_dir"}]})).unwrap();
             assert_eq!(items.len(), 1, "{key}");
         }
         // A single call object — the model forgot it was batching.
         let items =
-            parse_items(serde_json::json!({"tool": "smart_read", "args": {"path": "a"}}))
-                .unwrap();
+            parse_items(serde_json::json!({"tool": "smart_read", "args": {"path": "a"}})).unwrap();
         assert_eq!(items.len(), 1);
         // `function` alone still counts as a call-shaped object.
         let items = parse_items(serde_json::json!({"function": "smart_read"})).unwrap();
         assert_eq!(items.len(), 1);
         // Truly unrecognised envelopes still name the shape.
-        let e = format!("{}", parse_items(serde_json::json!({"nope": 1})).unwrap_err());
+        let e = format!(
+            "{}",
+            parse_items(serde_json::json!({"nope": 1})).unwrap_err()
+        );
         assert!(e.contains("missing field `calls`"), "{e}");
     }
 

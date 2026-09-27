@@ -23,16 +23,16 @@ import { Field } from "@/features/settings/pages/agent/shared/index";
 /* ============================ 模型 ============================ */
 
 /** Provider kinds the config schema accepts — labeled by their real API
- * names (openai_compat IS the Chat Completions API). */
+ * names (openai_completions IS the Chat Completions API). */
 const KIND_OPTIONS = [
-  { value: "openai_compat", label: "OpenAI Chat Completions" },
+  { value: "openai_completions", label: "OpenAI Chat Completions" },
   { value: "openai_responses", label: "OpenAI Responses" },
   { value: "anthropic", label: "Anthropic (Claude)" },
   { value: "gemini", label: "Google Gemini" },
 ];
 
 const DEFAULT_BASES: Record<string, string> = {
-  openai_compat: "https://api.openai.com/v1",
+  openai_completions: "https://api.openai.com/v1",
   openai_responses: "https://api.openai.com/v1",
   anthropic: "https://api.anthropic.com",
   gemini: "https://generativelanguage.googleapis.com/v1beta",
@@ -75,7 +75,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   // ---- add-provider dialog ----
   const [provOpen, setProvOpen] = useState(false);
   const [provKey, setProvKey] = useState("");
-  const [provKind, setProvKind] = useState("openai_compat");
+  const [provKind, setProvKind] = useState("openai_completions");
   const [provBase, setProvBase] = useState("");
   const [provKey_, setProvKey_] = useState(""); // api key (name clash w/ provKey)
   const [provModels, setProvModels] = useState("");
@@ -335,7 +335,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-xs font-semibold text-neutral-800">{pk}</span>
                 <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-mono">
-                  {p.kind ?? p.type ?? p.api ?? "openai_compat"}
+                  {p.kind ?? p.type ?? p.api ?? "openai_completions"}
                 </Badge>
                 <span className="text-[11px] text-neutral-500 font-mono truncate">
                   {p.base_url ?? p.baseUrl ?? ""}

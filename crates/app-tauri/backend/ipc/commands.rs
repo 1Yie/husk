@@ -105,7 +105,11 @@ pub async fn check_update() -> Result<serde_json::Value, String> {
         .map_err(|e| e.to_string())?;
 
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let res = client.get(RELEASES).send().await.map_err(|e| e.to_string())?;
+    let res = client
+        .get(RELEASES)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !res.status().is_success() {
         // Surface the HTTP status so the UI can say "检查失败 (404)" instead
         // of silently showing "up to date".
@@ -151,7 +155,7 @@ fn is_newer(current: &str, latest: &str) -> bool {
 #[tauri::command]
 pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), String> {
     let mgr = state.0.lock().map_err(|e| e.to_string())?;
-        let (cancel, steer_tx, decision, ask, permissions, agent_mode, ui, cmd_tx) = {
+    let (cancel, steer_tx, decision, ask, permissions, agent_mode, ui, cmd_tx) = {
         let Some(handle) = mgr.active() else {
             return Err("no active session".into());
         };
@@ -161,7 +165,7 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
             handle.decision.clone(),
             handle.ask.clone(),
             handle.permissions.clone(),
-                handle.agent_mode.clone(),
+            handle.agent_mode.clone(),
             handle.ui.clone(),
             handle.cmd_tx.clone(),
         )
@@ -177,7 +181,11 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
         steer_tx.try_send(text.clone()).map_err(|e| e.to_string())?;
         return Ok(());
     }
-    if let UiCommand::ToolDecision { request_id, approved } = &cmd {
+    if let UiCommand::ToolDecision {
+        request_id,
+        approved,
+    } = &cmd
+    {
         *decision.lock().map_err(|e| e.to_string())? = Some((*request_id, *approved));
         return Ok(());
     }

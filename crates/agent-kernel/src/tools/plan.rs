@@ -78,12 +78,14 @@ impl PlanController {
 
     pub fn reset(&self) {
         *self.signal.lock().unwrap() = None;
-        self.state.store(PlanState::Running as u8, Ordering::Release);
+        self.state
+            .store(PlanState::Running as u8, Ordering::Release);
     }
 
     pub fn submit(&self, plan: Plan) {
         *self.signal.lock().unwrap() = Some(plan);
-        self.state.store(PlanState::Submitted as u8, Ordering::Release);
+        self.state
+            .store(PlanState::Submitted as u8, Ordering::Release);
     }
 
     pub fn state(&self) -> PlanState {

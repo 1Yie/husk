@@ -1234,7 +1234,7 @@ impl SessionActor {
     /// router. The slash remainder is typed text, not JSON: a bare word
     /// becomes `{"text": args}` (the common one-arg-tool convention), a
     /// JSON object is used verbatim, and empty means `{}`.
-    async fn run_plugin_command(&mut self, tool: &str, args: &str) {
+    async fn run_plugin_command(&mut self, tool: &str, name: &str, args: &str) {
         let Some(mgr) = self
             .plugins
             .as_ref()
@@ -1252,8 +1252,14 @@ impl SessionActor {
             serde_json::from_str(trimmed).unwrap_or_else(|_| serde_json::json!({ "text": trimmed }))
         };
         let line = match mgr.dispatch_tool_call(tool, parsed).await {
-            Ok(out) => out,
-            Err(e) => format!("`/{tool}` plugin call failed: {e}"),
+            // Frame the result — a bare SystemMessage that echoes the args
+            // reads as "nothing happened" (e.g. a slugifier whose output
+            // equals its input). `/{name}` attributes it to the command.
+            // An empty result still gets labelled — `→ ` alone looks like a
+            // render bug instead of "the tool returned nothing".
+            Ok(out) if out.trim().is_empty() => format!("`/{name}` → (空输出)"),
+            Ok(out) => format!("`/{name}` → {out}"),
+            Err(e) => format!("`/{name}` plugin call failed: {e}"),
         };
         let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
         self.history.push(ChatMessage::notice(line));
@@ -1293,8 +1299,8 @@ impl SessionActor {
             Some(CommandResult::Control(op)) => {
                 self.run_control(op).await;
             }
-            Some(CommandResult::PluginTool { tool, args }) => {
-                self.run_plugin_command(&tool, &args).await;
+            Some(CommandResult::PluginTool { tool, name, args }) => {
+                self.run_plugin_command(&tool, &name, &args).await;
             }
             Some(CommandResult::FeedToAgent(prompt)) => {
                 self.run_prompt(prompt).await;

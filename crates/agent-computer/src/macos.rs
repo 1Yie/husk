@@ -25,7 +25,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use image::GenericImageView;
 
 use crate::traits::{
-    fit_dimensions, Capture, DesktopBackend, MouseButton, ScrollDir, ScreenshotMeta, MAX_EDGE,
+    fit_dimensions, Capture, DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir, MAX_EDGE,
 };
 
 const CMD_TIMEOUT: Duration = Duration::from_secs(15);
@@ -76,9 +76,13 @@ impl DesktopBackend for MacBackend {
         }
         let raw = tmp_sibling(dest);
         // `-x` silent, `-t png` format, `-o` writes to the path.
-        run("screencapture", &["-x", "-t", "png", &raw.to_string_lossy()], CAPTURE_TIMEOUT)
-            .await
-            .context("screencapture")?;
+        run(
+            "screencapture",
+            &["-x", "-t", "png", &raw.to_string_lossy()],
+            CAPTURE_TIMEOUT,
+        )
+        .await
+        .context("screencapture")?;
 
         // Decode + downscale is CPU-bound and takes ~100–300 ms on a 4K grab.
         // The closure owns its copy of `raw`; the local one stays for cleanup.
@@ -175,7 +179,7 @@ impl DesktopBackend for MacBackend {
         let delta = match dir {
             ScrollDir::Up => steps,
             ScrollDir::Down => -steps,
-            ScrollDir::Left => steps,   // wheel1 is vertical; left/right map to wheel2
+            ScrollDir::Left => steps, // wheel1 is vertical; left/right map to wheel2
             ScrollDir::Right => -steps, // via the second axis below.
         };
         cg_scroll(dir, delta)
@@ -215,9 +219,7 @@ fn screen_capture_access() -> Result<()> {
     if ok {
         Ok(())
     } else {
-        Err(anyhow!(
-            "Screen Recording permission not granted"
-        ))
+        Err(anyhow!("Screen Recording permission not granted"))
     }
 }
 
@@ -377,15 +379,8 @@ fn cg_scroll(dir: ScrollDir, delta: i32) -> Result<()> {
         ScrollDir::Up | ScrollDir::Down => (delta, 0),
         ScrollDir::Left | ScrollDir::Right => (0, delta),
     };
-    let ev = CGEvent::new_scroll_event(
-        event_source()?,
-        ScrollEventUnit::LINE,
-        1,
-        w1,
-        w2,
-        0,
-    )
-    .map_err(|_| anyhow!("CGEvent scroll"))?;
+    let ev = CGEvent::new_scroll_event(event_source()?, ScrollEventUnit::LINE, 1, w1, w2, 0)
+        .map_err(|_| anyhow!("CGEvent scroll"))?;
     post(ev)
 }
 
@@ -399,16 +394,16 @@ fn cg_cursor() -> Result<[i32; 2]> {
 /// single chars resolve through the ASCII keypad keys where sensible.
 fn keycode_from_name(n: &str) -> Option<u16> {
     let code = match n.to_ascii_lowercase().as_str() {
-        "ctrl" | "control" => 0x3B, // kVK_Control
-        "shift" => 0x38,            // kVK_Shift
-        "alt" | "option" => 0x3A,   // kVK_Option
+        "ctrl" | "control" => 0x3B,                   // kVK_Control
+        "shift" => 0x38,                              // kVK_Shift
+        "alt" | "option" => 0x3A,                     // kVK_Option
         "meta" | "cmd" | "command" | "super" => 0x37, // kVK_Command
-        "enter" | "return" => 0x24, // kVK_Return
-        "esc" | "escape" => 0x35,   // kVK_Escape
-        "tab" => 0x30,              // kVK_Tab
-        "space" => 0x31,            // kVK_Space
-        "backspace" | "delete" => 0x33, // kVK_Delete (backspace)
-        "fwdel" => 0x75,            // kVK_ForwardDelete
+        "enter" | "return" => 0x24,                   // kVK_Return
+        "esc" | "escape" => 0x35,                     // kVK_Escape
+        "tab" => 0x30,                                // kVK_Tab
+        "space" => 0x31,                              // kVK_Space
+        "backspace" | "delete" => 0x33,               // kVK_Delete (backspace)
+        "fwdel" => 0x75,                              // kVK_ForwardDelete
         "home" => 0x73,
         "end" => 0x77,
         "pageup" | "pgup" => 0x74,
@@ -417,9 +412,18 @@ fn keycode_from_name(n: &str) -> Option<u16> {
         "down" => 0x7D,
         "left" => 0x7B,
         "right" => 0x7C,
-        "f1" => 0x7A, "f2" => 0x78, "f3" => 0x63, "f4" => 0x76,
-        "f5" => 0x60, "f6" => 0x61, "f7" => 0x62, "f8" => 0x64,
-        "f9" => 0x65, "f10" => 0x6D, "f11" => 0x67, "f12" => 0x6F,
+        "f1" => 0x7A,
+        "f2" => 0x78,
+        "f3" => 0x63,
+        "f4" => 0x76,
+        "f5" => 0x60,
+        "f6" => 0x61,
+        "f7" => 0x62,
+        "f8" => 0x64,
+        "f9" => 0x65,
+        "f10" => 0x6D,
+        "f11" => 0x67,
+        "f12" => 0x6F,
         _ => {
             // Letters/digits — macOS keycodes follow the ANSI layout.
             return ansi_keycode(n);
@@ -432,23 +436,60 @@ fn keycode_from_name(n: &str) -> Option<u16> {
 /// CGEvent expects regardless of the user's input source).
 fn ansi_keycode(n: &str) -> Option<u16> {
     let c = match n {
-        "a" => 0x00, "s" => 0x01, "d" => 0x02, "f" => 0x03, "h" => 0x04,
-        "g" => 0x05, "z" => 0x06, "x" => 0x07, "c" => 0x08, "v" => 0x09,
-        "b" => 0x0B, "q" => 0x0C, "w" => 0x0D, "e" => 0x0E, "r" => 0x0F,
-        "y" => 0x10, "t" => 0x11, "1" => 0x12, "2" => 0x13, "3" => 0x14,
-        "4" => 0x15, "6" => 0x17, "5" => 0x16, "=" => 0x18, "9" => 0x19,
-        "7" => 0x1A, "-" => 0x1B, "8" => 0x1C, "0" => 0x1D, "]" => 0x1E,
-        "o" => 0x1F, "u" => 0x20, "[" => 0x21, "i" => 0x22, "p" => 0x23,
-        "l" => 0x25, "j" => 0x26, "'" => 0x27, "k" => 0x28, ";" => 0x29,
-        "\\" => 0x2A, "," => 0x2B, "/" => 0x2C, "n" => 0x2D, "m" => 0x2E,
-        "." => 0x2F, "`" => 0x32,
+        "a" => 0x00,
+        "s" => 0x01,
+        "d" => 0x02,
+        "f" => 0x03,
+        "h" => 0x04,
+        "g" => 0x05,
+        "z" => 0x06,
+        "x" => 0x07,
+        "c" => 0x08,
+        "v" => 0x09,
+        "b" => 0x0B,
+        "q" => 0x0C,
+        "w" => 0x0D,
+        "e" => 0x0E,
+        "r" => 0x0F,
+        "y" => 0x10,
+        "t" => 0x11,
+        "1" => 0x12,
+        "2" => 0x13,
+        "3" => 0x14,
+        "4" => 0x15,
+        "6" => 0x17,
+        "5" => 0x16,
+        "=" => 0x18,
+        "9" => 0x19,
+        "7" => 0x1A,
+        "-" => 0x1B,
+        "8" => 0x1C,
+        "0" => 0x1D,
+        "]" => 0x1E,
+        "o" => 0x1F,
+        "u" => 0x20,
+        "[" => 0x21,
+        "i" => 0x22,
+        "p" => 0x23,
+        "l" => 0x25,
+        "j" => 0x26,
+        "'" => 0x27,
+        "k" => 0x28,
+        ";" => 0x29,
+        "\\" => 0x2A,
+        "," => 0x2B,
+        "/" => 0x2C,
+        "n" => 0x2D,
+        "m" => 0x2E,
+        "." => 0x2F,
+        "`" => 0x32,
         _ => return None,
     };
     Some(c)
 }
 
 /* FFI for CGPreflightScreenCaptureAccess / CGEventGetLocation — the
-   core-graphics crate doesn't re-export these yet. */
+core-graphics crate doesn't re-export these yet. */
 extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGEventGetLocation(event: *const core_graphics::sys::CGEvent) -> CGPoint;

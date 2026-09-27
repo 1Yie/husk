@@ -87,6 +87,32 @@ const SENSITIVE_NAMES: &[&str] = &[
     ".pi/agent/sessions",
     ".claude/.credentials.json",
     ".codex/auth.json",
+    // Mounted-by-name caches whose subtrees hold real credentials — the
+    // parent dir (`.cache`, `.m2`, `.gradle`, `.config/yarn`) is needed
+    // for toolchain speed, but these children are secret material, not
+    // cache: browser login stores, cloud token caches, package-manager
+    // auth, VCS credential files.
+    ".cache/mozilla",
+    ".cache/firefox",
+    ".cache/google-chrome",
+    ".cache/chromium",
+    ".cache/gcloud",
+    ".cache/hub",
+    ".cache/gh",
+    ".cache/msal",
+    ".cache/azure",
+    ".m2/settings.xml",
+    ".gradle/gradle.properties",
+    ".config/yarn/config.yml",
+    ".config/gh",
+    ".config/gcloud",
+    ".docker",
+    ".git-credentials",
+    ".pypirc",
+    ".gem/credentials",
+    ".terraform.d",
+    ".local/share/keyrings",
+    ".password-store",
 ];
 
 /// Common developer toolchain and runtime directories relative to HOME.
@@ -393,8 +419,17 @@ fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path) -> Vec<String> {
     }
 
     for mask in sensitive_masks() {
-        argv.push("--ro-bind".into());
-        argv.push("/dev/null".into());
+        if mask.is_dir() {
+            // `/dev/null` is a FILE — bwrap refuses to bind it over a
+            // directory ("Can't create file at …: Is a directory"), which
+            // used to fail the whole launch on any host where a masked dir
+            // exists (`.ssh` on a dev machine!). An empty tmpfs masks a
+            // dir the same way the null-file masks a file.
+            argv.push("--tmpfs".into());
+        } else {
+            argv.push("--ro-bind".into());
+            argv.push("/dev/null".into());
+        }
         argv.push(mask.to_string_lossy().into_owned());
     }
 

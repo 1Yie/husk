@@ -457,7 +457,10 @@ mod tests {
     #[test]
     fn default_allows_todo_without_asking() {
         let g = gate("default");
-        assert!(matches!(g.decide("todo", None, true, None, ""), Decision::Allow));
+        assert!(matches!(
+            g.decide("todo", None, true, None, ""),
+            Decision::Allow
+        ));
     }
 
     #[test]
@@ -661,6 +664,73 @@ mod tests {
         assert!(matches!(
             g.decide("bash", None, false, Some("cat file.txt"), ""),
             Decision::Allow
+        ));
+    }
+
+    /// `auto` does not flatten rule precedence: an explicit `ask` still
+    /// pauses on a tool the mode would otherwise run, and `deny` still
+    /// wins outright. The mode only defaults the *ungoverned* case.
+    #[test]
+    fn auto_keeps_rule_precedence() {
+        let mut g = gate("auto");
+        g.merge_rules(PermissionRules {
+            ask: ["fuzzy_patch".into()].into_iter().collect(),
+            deny: ["computer".into()].into_iter().collect(),
+            ..Default::default()
+        });
+        // ask > auto-allow
+        assert!(matches!(
+            g.decide("fuzzy_patch", None, false, None, ""),
+            Decision::Ask { .. }
+        ));
+        // deny > every interactive surface (computer would Ask, deny is stronger)
+        assert!(matches!(
+            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            Decision::Deny { .. }
+        ));
+        // ungoverned calls still auto-run
+        assert!(matches!(
+            g.decide("bash", None, false, Some("cargo test"), ""),
+            Decision::Allow
+        ));
+    }
+
+    /// An `allow` rule on `bash` is the documented escape hatch: destructive
+    /// commands then skip the Ask even in `auto`. This locks the contract —
+    /// if it ever changes, this test is where the conversation must happen.
+    #[test]
+    fn allow_rule_overrides_destructive_escalation() {
+        let mut g = gate("auto");
+        g.allow_tool_for_session("bash");
+        assert!(matches!(
+            g.decide("bash", None, false, Some("rm -rf target"), ""),
+            Decision::Allow
+        ));
+    }
+
+    /// Delegated subagents run `auto` + `headless`: everything `auto` would
+    /// still Ask for (destructive shell, `computer`) becomes Deny — nobody
+    /// is there to answer. This is the subagent's whole safety story.
+    #[test]
+    fn headless_auto_denies_what_would_ask() {
+        let g = PermissionGate::for_subagent();
+        // Safe calls still run.
+        assert!(matches!(
+            g.decide("smart_read", None, true, None, ""),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            g.decide("bash", None, false, Some("cargo test"), ""),
+            Decision::Allow
+        ));
+        // Anything interactive-mode-asked denies.
+        assert!(matches!(
+            g.decide("bash", None, false, Some("rm -rf target"), ""),
+            Decision::Deny { .. }
+        ));
+        assert!(matches!(
+            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            Decision::Deny { .. }
         ));
     }
 }

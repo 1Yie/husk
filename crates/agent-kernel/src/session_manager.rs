@@ -168,6 +168,11 @@ pub struct SessionManager {
     /// Active provider + model names — surfaced on the status bar.
     pub provider_name: String,
     pub model_name: String,
+    /// The settings-pane default model (`active_model` in Agent 偏好) —
+    /// fills the gap between a workspace's saved model and the config's
+    /// own `active_*`. `None` → resolve_provider's config default.
+    pub default_provider: Option<String>,
+    pub default_model: Option<String>,
     /// Active thinking intensity level across sessions (e.g. "medium", "high").
     pub active_thinking_level: Option<String>,
     /// Active permission mode across sessions (e.g. "default", "acceptEdits", "auto").
@@ -269,6 +274,15 @@ impl SessionManager {
                     max_processes: d.sandbox_max_processes,
                 });
             }
+            // No workspace yet — the settings-pane default pair is the only
+            // override below config.active_* that can apply here.
+            let (empty_pname, empty_model) = resolve_model_pair(
+                &None,
+                &None,
+                defaults.as_ref(),
+                &cfg.providers,
+                (default_pname.clone(), default_model.clone()),
+            );
             let mgr = Self {
                 plugins: plugins_for_manager.clone(),
                 hooks: hooks_for_manager,
@@ -280,8 +294,10 @@ impl SessionManager {
                 parked: HashMap::new(),
                 event_tx,
                 active_id: 0,
-                provider_name: default_pname,
-                model_name: default_model,
+                provider_name: empty_pname,
+                model_name: empty_model,
+                default_provider: defaults.as_ref().and_then(|d| d.active_provider.clone()),
+                default_model: defaults.as_ref().and_then(|d| d.active_model.clone()),
                 active_thinking_level: defaults.as_ref().and_then(|d| d.thinking_level.clone()),
                 permission_mode: defaults
                     .as_ref()
@@ -321,10 +337,17 @@ impl SessionManager {
         // Global user defaults — the settings window's stored preference —
         // fill any gap the workspace prefs leave. Absent file → built-ins.
         let defaults = crate::session_store::try_load_default_preferences();
-        let (provider_name, model_name) = match (&prefs.provider, &prefs.model) {
-            (Some(p), Some(m)) if cfg.providers.contains_key(p) => (p.clone(), m.clone()),
-            _ => (default_pname, default_model),
-        };
+        // Model resolution order: workspace's saved pair → the settings
+        // pane's default pair (Agent 偏好 active_model) → the config's
+        // active_provider/active_model → first provider fallback. Every
+        // layer validates the provider still exists in `providers`.
+        let (provider_name, model_name) = resolve_model_pair(
+            &prefs.provider,
+            &prefs.model,
+            defaults.as_ref(),
+            &cfg.providers,
+            (default_pname.clone(), default_model.clone()),
+        );
         let permission_mode = prefs
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
@@ -368,6 +391,8 @@ impl SessionManager {
             active_id: 0,
             provider_name,
             model_name,
+            default_provider: defaults.as_ref().and_then(|d| d.active_provider.clone()),
+            default_model: defaults.as_ref().and_then(|d| d.active_model.clone()),
             active_thinking_level,
             permission_mode,
             agent_mode,
@@ -400,12 +425,17 @@ impl SessionManager {
         let prefs = store.load_prefs();
         let defaults = crate::session_store::try_load_default_preferences();
         let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
-        let (provider_name, model_name) = match (&prefs.provider, &prefs.model) {
-            (Some(p), Some(m)) if self.provider_cfg.providers.contains_key(p) => {
-                (p.clone(), m.clone())
-            }
-            _ => (default_pname, default_model),
-        };
+        // Same chain as spawn: workspace pair → Agent 偏好 default →
+        // config active_* → first provider.
+        let (provider_name, model_name) = resolve_model_pair(
+            &prefs.provider,
+            &prefs.model,
+            defaults.as_ref(),
+            &self.provider_cfg.providers,
+            (default_pname, default_model),
+        );
+        self.default_provider = defaults.as_ref().and_then(|d| d.active_provider.clone());
+        self.default_model = defaults.as_ref().and_then(|d| d.active_model.clone());
         self.permission_mode = prefs
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
@@ -774,11 +804,30 @@ impl SessionManager {
 
         // Actor run() on its own tokio thread — a background session keeps
         // running its turn while the UI shows another session.
+        // Panic-safety: a panic inside `actor.run()` unwinds `block_on` and
+        // silently kills the thread — `cmd_rx` then reports Closed and every
+        // later prompt vanishes with zero UI feedback. Catch the unwind so
+        // the crash surfaces as an event instead of a dead session.
+        let crash_sink = channels.event_tx.clone();
         std::thread::Builder::new()
             .name(format!("session-{id}-rt"))
             .spawn(move || {
                 let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-                rt.block_on(async move { actor.run().await });
+                if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    rt.block_on(async move { actor.run().await });
+                })) {
+                    let msg = e
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                        .unwrap_or_else(|| "unknown panic".into());
+                    tracing::error!(session = id, panic = %msg, "session actor crashed");
+                    let _ = crash_sink
+                        .send(agent_ipc::UiEvent::Error(format!("会话执行器崩溃: {msg}")));
+                    let _ = crash_sink.send(agent_ipc::UiEvent::StateChanged(
+                        agent_ipc::AgentState::Idle,
+                    ));
+                }
             })
             .expect("spawn session rt");
 
@@ -1168,11 +1217,16 @@ impl SessionManager {
     /// then reloads so its hooks stop firing and its tools stop advertising
     /// without an app restart. Same write-then-reload shape as `trust_plugin`:
     /// the load path reads the store from disk.
-    pub fn set_plugin_enabled(&self, id: &str, enabled: bool) -> Result<Vec<serde_json::Value>, String> {
+    pub fn set_plugin_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<Vec<serde_json::Value>, String> {
         if self.plugins.is_none() {
             return Err("plugin router not installed for this workspace".into());
         }
-        let path = agent_plugin::disabled_store_path().ok_or("no config dir for the state store")?;
+        let path =
+            agent_plugin::disabled_store_path().ok_or("no config dir for the state store")?;
         let mut store = agent_plugin::DisabledStore::load(&path);
         store.set(id, !enabled);
         store.save(&path);
@@ -1246,6 +1300,21 @@ impl SessionManager {
             // nothing about what the user asked for.
             let enabled = mgr.as_ref().map(|m| !m.is_disabled(&id)).unwrap_or(true);
             let repo_local = m.dir.starts_with(self.workspace_root.join(".husk"));
+            // Declared slash commands — name + action, so a tool/wasm plugin
+            // card can show what it contributes instead of only its hooks.
+            let commands: Vec<serde_json::Value> = m
+                .capabilities
+                .commands
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "qualified": format!("{id}:{}", c.name),
+                        "description": c.description,
+                        "action": c.action,
+                    })
+                })
+                .collect();
             // A plugin that never loaded has no live status — and a
             // TRUST-REFUSED one lands in `errors`, where `status()` emits
             // `hooks: []`. Treat both as "fall back to the manifest" so the
@@ -1271,6 +1340,17 @@ impl SessionManager {
                     }))
                     .collect::<Vec<_>>()),
             };
+            // Same fallback for tools — an unloaded or failed plugin still
+            // shows what it WOULD export (manifest `capabilities.tools`).
+            let tools = match field("tools") {
+                live if live.as_array().map(|a| !a.is_empty()).unwrap_or(false) => live,
+                _ => serde_json::json!(m
+                    .capabilities
+                    .tools
+                    .iter()
+                    .map(|t| serde_json::json!(t.name))
+                    .collect::<Vec<_>>()),
+            };
             out.push(serde_json::json!({
                 "id": id,
                 "name": m.name,
@@ -1282,10 +1362,14 @@ impl SessionManager {
                     agent_plugin::PluginKind::Wasm => "wasm",
                 }),
                 "entry": m.entry,
-                // Live tool names from the loaded handshake (the manifest's
-                // own `capabilities.tools` is empty for HTTP servers).
-                "tools": field("tools"),
+                // Live tool names when connected; manifest `capabilities.tools`
+                // names otherwise (an unloaded wasm/declarative plugin still
+                // shows what it exports).
+                "tools": tools,
                 "commands": m.capabilities.commands.len(),
+                // Full declared command list — `commands` stays a count for
+                // existing readers; the card renders names from this.
+                "commandList": commands,
                 "sandboxed": m.sandboxed,
                 "dir": m.dir.to_string_lossy(),
                 "connected": field("connected"),
@@ -1759,6 +1843,8 @@ impl SessionManager {
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
                 compact_at: self.compact_at,
+                active_provider: self.default_provider.clone(),
+                active_model: self.default_model.clone(),
                 memory_enabled: self.memory_enabled,
                 memory_distill: self.memory_distill,
                 sandbox_network: Some(lim.network_label().into()),
@@ -1773,6 +1859,38 @@ impl SessionManager {
     /// spawned after it (live actors keep their wiring).
     pub fn memory_prefs(&self) -> (bool, bool) {
         (self.memory_enabled, self.memory_distill)
+    }
+
+    /// The settings-pane default model (`active_provider`, `active_model`)
+    /// — what workspaces with no saved pair spawn with. `None` on either
+    /// side means "follow the config's own active_*".
+    pub fn default_model(&self) -> (Option<String>, Option<String>) {
+        (self.default_provider.clone(), self.default_model.clone())
+    }
+
+    /// Update + persist the default model pair. `None` clears the override;
+    /// live sessions keep their live model (the default shapes NEW spawns
+    /// only — same contract as every other Agent 偏好 row).
+    pub fn set_default_model(&mut self, provider: Option<String>, model: Option<String>) {
+        // A pair is only meaningful whole — callers clear both or set both.
+        self.default_provider = provider;
+        self.default_model = model;
+        let lim = crate::sandbox_prefs::current();
+        let _ = crate::session_store::save_default_preferences(
+            &crate::session_store::DefaultPreferences {
+                permission_mode: self.permission_mode.clone(),
+                thinking_level: self.active_thinking_level.clone(),
+                agent_mode: self.agent_mode.clone(),
+                compact_at: self.compact_at,
+                active_provider: self.default_provider.clone(),
+                active_model: self.default_model.clone(),
+                memory_enabled: self.memory_enabled,
+                memory_distill: self.memory_distill,
+                sandbox_network: Some(lim.network_label().into()),
+                sandbox_max_memory_mb: lim.max_memory_mb,
+                sandbox_max_processes: lim.max_processes,
+            },
+        );
     }
 
     /// Update + persist the memory switches. No live-session broadcast —
@@ -1792,6 +1910,8 @@ impl SessionManager {
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
                 compact_at: self.compact_at,
+                active_provider: self.default_provider.clone(),
+                active_model: self.default_model.clone(),
                 memory_enabled: self.memory_enabled,
                 memory_distill: self.memory_distill,
                 sandbox_network: Some(lim.network_label().into()),
@@ -1877,6 +1997,35 @@ impl SessionManager {
 }
 
 /// Resolve the active provider from `config.toml`.
+/// Model resolution order for spawn/switch: a workspace's own saved
+/// provider/model pair wins; then the settings-pane default pair (Agent
+/// 偏好 `active_model`); then the caller's `resolve_provider` fallback,
+/// which itself consults config.toml's `active_provider`/`active_model`
+/// and finally the first buildable provider. Every layer validates the
+/// provider still exists in `providers` — a deleted provider falls
+/// through instead of stranding the session on a dead backend.
+fn resolve_model_pair(
+    ws_provider: &Option<String>,
+    ws_model: &Option<String>,
+    defaults: Option<&crate::session_store::DefaultPreferences>,
+    providers: &std::collections::HashMap<String, agent_llm::ProviderConfig>,
+    fallback: (String, String),
+) -> (String, String) {
+    if let (Some(p), Some(m)) = (ws_provider, ws_model) {
+        if providers.contains_key(p) {
+            return (p.clone(), m.clone());
+        }
+    }
+    if let Some(d) = defaults {
+        if let (Some(p), Some(m)) = (&d.active_provider, &d.active_model) {
+            if providers.contains_key(p) {
+                return (p.clone(), m.clone());
+            }
+        }
+    }
+    fallback
+}
+
 fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String, String) {
     if let Some(name) = &cfg.active_provider {
         if let Some(pcfg) = cfg.providers.get(name) {
@@ -1947,7 +2096,7 @@ mod tests {
             "active_provider": "devin",
             "providers": {
                 "devin": {
-                    "kind": "openai_compat",
+                    "kind": "openai_completions",
                     "base_url": "https://example.invalid",
                     "default_model": "devin/swe-3",
                 }
@@ -1979,7 +2128,7 @@ mod tests {
             format!(
                 "active_provider = \"{provider}\"\n\
                  [providers.{provider}]\n\
-                 kind = \"openai_compat\"\n\
+                 kind = \"openai_completions\"\n\
                  base_url = \"https://example.invalid\"\n\
                  default_model = \"{model}\"\n"
             ),
@@ -2276,5 +2425,52 @@ mod tests {
         assert_eq!(mgr.model_name, "fallback-m");
         assert_eq!(mgr.permission_mode, "auto");
         assert_eq!(mgr.agent_mode, "plan");
+    }
+
+    /// Model selection layers: workspace pair > Agent 偏好 default >
+    /// config fallback, with a deleted provider falling through.
+    #[test]
+    fn resolve_model_pair_layers_workspace_then_settings_then_config() {
+        let providers: std::collections::HashMap<String, agent_llm::ProviderConfig> =
+            serde_json::from_value(serde_json::json!({
+                "a": {"kind": "openai_completions", "base_url": "https://x"},
+                "b": {"kind": "openai_completions", "base_url": "https://y"},
+            }))
+            .unwrap();
+        let defaults: crate::session_store::DefaultPreferences =
+            serde_json::from_value(serde_json::json!({
+                "active_provider": "b",
+                "active_model": "b-model",
+            }))
+            .unwrap();
+        let fb = || ("cfg-p".to_string(), "cfg-m".to_string());
+
+        // Workspace pair wins over everything.
+        let got = resolve_model_pair(
+            &Some("a".into()),
+            &Some("a-model".into()),
+            Some(&defaults),
+            &providers,
+            fb(),
+        );
+        assert_eq!(got, ("a".to_string(), "a-model".to_string()));
+
+        // No workspace pair → the settings-pane default.
+        let got = resolve_model_pair(&None, &None, Some(&defaults), &providers, fb());
+        assert_eq!(got, ("b".to_string(), "b-model".to_string()));
+
+        // A default pair pointing at a deleted provider falls to config.
+        let stale: crate::session_store::DefaultPreferences =
+            serde_json::from_value(serde_json::json!({
+                "active_provider": "gone",
+                "active_model": "m",
+            }))
+            .unwrap();
+        let got = resolve_model_pair(&None, &None, Some(&stale), &providers, fb());
+        assert_eq!(got, ("cfg-p".to_string(), "cfg-m".to_string()));
+
+        // No stored default at all → config.
+        let got = resolve_model_pair(&None, &None, None, &providers, fb());
+        assert_eq!(got, ("cfg-p".to_string(), "cfg-m".to_string()));
     }
 }

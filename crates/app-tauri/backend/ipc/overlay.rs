@@ -16,8 +16,8 @@
 //! app close). They are NOT in `tauri.conf.json`'s `windows` array —
 //! spawned imperatively so they can be brought up / down mid-session.
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use agent_ipc::UiEvent;
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Logical size of the HUD bubble — one line of text plus the stop
 /// button. Height hugs the single-line content so there's no dead
@@ -129,7 +129,10 @@ fn spawn_hud(app: &AppHandle) -> Result<(), String> {
     let monitor = main
         .as_ref()
         .and_then(|w| w.current_monitor().ok().flatten())
-        .or_else(|| main.as_ref().and_then(|w| w.primary_monitor().ok().flatten()));
+        .or_else(|| {
+            main.as_ref()
+                .and_then(|w| w.primary_monitor().ok().flatten())
+        });
     if let Some(monitor) = monitor {
         let scale = monitor.scale_factor();
         let work = monitor.work_area();
@@ -184,9 +187,7 @@ pub const HUD_IDLE: &str = "待命";
 /// public-dir page (the failure mode that left the HUD stuck on idle).
 pub fn hud_set_status_js(text: &str) -> String {
     let lit = serde_json::to_string(text).unwrap_or_else(|_| "\"待命\"".into());
-    format!(
-        "(function(){{var e=document.getElementById('action');if(e)e.textContent={lit};}})();"
-    )
+    format!("(function(){{var e=document.getElementById('action');if(e)e.textContent={lit};}})();")
 }
 
 /// End the computer-control session: revoke the `computer` whitelist,

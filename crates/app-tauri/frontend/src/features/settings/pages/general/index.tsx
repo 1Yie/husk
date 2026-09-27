@@ -1,7 +1,7 @@
 // 「通用」pane — the default permission / thinking / agent-mode / sandbox
 // cards. Owns the prefs it edits; the shell only routes to it.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Archive,
@@ -25,6 +25,7 @@ import {
 import {
   getDefaultPrefs,
   setDefaultPrefs,
+  getAppConfig,
   getSandboxInfo,
   type SandboxInfo,
 } from "@/lib/agent-ipc/sessions";
@@ -115,9 +116,11 @@ const SANDBOX_PROCS_OPTIONS = [
 
 export function GeneralPane() {
   const [permission, setPermission] = useState("auto");
+  const [activeModelKey, setActiveModelKey] = useState("__config__");
   const [thinking, setThinking] = useState("medium");
   const [agentMode, setAgentMode] = useState("build");
   const [compactAt, setCompactAt] = useState("80");
+  const [providers, setProviders] = useState<Record<string, any>>({});
   const [sandboxNetwork, setSandboxNetwork] = useState("auto");
   const [sandboxMem, setSandboxMem] = useState("default");
   const [sandboxProcs, setSandboxProcs] = useState("default");
@@ -128,6 +131,9 @@ export function GeneralPane() {
       try {
         const prefs = await getDefaultPrefs();
         if (prefs.permission_mode) setPermission(prefs.permission_mode);
+        if (prefs.active_provider && prefs.active_model) {
+          setActiveModelKey(`${prefs.active_provider}/${prefs.active_model}`);
+        }
         if (prefs.thinking_level) setThinking(prefs.thinking_level);
         if (prefs.agent_mode) setAgentMode(prefs.agent_mode);
         if (prefs.compact_at) setCompactAt(String(Math.round(prefs.compact_at * 100)));
@@ -138,6 +144,9 @@ export function GeneralPane() {
         setSandboxProcs(
           prefs.sandbox_max_processes ? String(prefs.sandbox_max_processes) : "default",
         );
+        void getAppConfig()
+          .then((r) => setProviders((r.config as any)?.providers ?? {}))
+          .catch(() => {});
         void getSandboxInfo()
           .then(setSandboxInfo)
           .catch(() => {});
@@ -149,6 +158,36 @@ export function GeneralPane() {
 
   const save = (patch: Parameters<typeof setDefaultPrefs>[0]) =>
     setDefaultPrefs(patch).catch((e) => console.error("save prefs failed:", e));
+
+  // Flatten every provider's model list into one select — the value key
+  // doubles as a lookup into `modelPairs` (model ids can contain `/`,
+  // so never split the key back apart).
+  const { modelOptions, modelPairs } = useMemo(() => {
+    const opts: { value: string; label: string; description?: string }[] = [
+      {
+        value: "__config__",
+        label: "跟随配置默认",
+        description: "使用 config.toml 的 active_provider / active_model",
+      },
+    ];
+    const pairs = new Map<string, { provider: string; model: string }>();
+    for (const [pname, p] of Object.entries(providers)) {
+      for (const raw of ((p as any)?.models ?? []) as any[]) {
+        const id = typeof raw === "string" ? raw : raw?.id;
+        if (!id) continue;
+        const key = `${pname}/${id}`;
+        const label = typeof raw === "object" && raw?.name ? raw.name : id;
+        pairs.set(key, { provider: pname, model: id });
+        opts.push({ value: key, label, description: pname });
+      }
+    }
+    // A stored pair whose model was since deleted still needs a row so the
+    // select doesn't render an empty value.
+    if (!pairs.has(activeModelKey) && activeModelKey !== "__config__") {
+      opts.push({ value: activeModelKey, label: activeModelKey, description: "已不存在" });
+    }
+    return { modelOptions: opts, modelPairs: pairs };
+  }, [providers, activeModelKey]);
 
   return (
     <div className="flex flex-col gap-8 w-full">
@@ -185,6 +224,25 @@ export function GeneralPane() {
                   label: t.label,
                   description: t.desc,
                 }))}
+              />
+            </KvRow>
+            <KvRow
+              label="默认模型"
+              description="新会话启动时使用的模型（工作区已保存的模型优先）"
+              icon={<Cpu className="h-4 w-4" />}
+            >
+              <SettingSelect
+                value={activeModelKey}
+                onChange={(v) => {
+                  setActiveModelKey(v);
+                  const pair = modelPairs.get(v);
+                  void save({
+                    active_provider: pair?.provider ?? "",
+                    active_model: pair?.model ?? "",
+                  });
+                }}
+                placeholder="选择默认模型"
+                options={modelOptions}
               />
             </KvRow>
             <KvRow

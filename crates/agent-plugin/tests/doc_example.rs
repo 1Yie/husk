@@ -42,7 +42,9 @@ async fn documented_hook_manifest_validates_and_runs() {
     let text = std::fs::read_to_string(plugin.join("manifest.json")).unwrap();
     let mut manifest: agent_plugin::PluginManifest = serde_json::from_str(&text).unwrap();
     manifest.dir = plugin.clone();
-    manifest.validate().expect("the documented manifest must validate");
+    manifest
+        .validate()
+        .expect("the documented manifest must validate");
 
     let hooks = agent_plugin::hooks_from_manifest(&manifest);
     assert_eq!(hooks.len(), 1);
@@ -52,7 +54,10 @@ async fn documented_hook_manifest_validates_and_runs() {
 
     // The documented case table: a force-push is vetoed with its reason…
     match hook
-        .run_before_tool("bash", &serde_json::json!({"command": "git push --force origin main"}))
+        .run_before_tool(
+            "bash",
+            &serde_json::json!({"command": "git push --force origin main"}),
+        )
         .await
     {
         agent_plugin::ToolVerdict::Veto(r) => assert_eq!(r, "force-push needs a human"),
@@ -60,7 +65,8 @@ async fn documented_hook_manifest_validates_and_runs() {
     }
     // …and everything else continues.
     assert!(matches!(
-        hook.run_before_tool("bash", &serde_json::json!({"command": "ls"})).await,
+        hook.run_before_tool("bash", &serde_json::json!({"command": "ls"}))
+            .await,
         agent_plugin::ToolVerdict::Continue
     ));
 }

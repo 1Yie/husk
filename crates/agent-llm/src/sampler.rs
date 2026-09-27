@@ -25,6 +25,11 @@ use crate::types::{ChatMessage, StreamChunk};
 
 /// No chunk for this long → the stream is wedged; retry.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Stream *establishment* ceiling — `provider.chat_stream` itself is awaited
+/// before `stream.next()` ever runs, so `IDLE_TIMEOUT` never covers a hang in
+/// the request setup (DNS resolve, TLS handshake, pool checkout). A stuck
+/// setup otherwise wedges the turn forever with zero visible feedback.
+pub const ESTABLISH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Identical generation repeated across this many recent BYTES → model is
 /// stuck. Byte-bounded, not chunk-bounded: providers chunk deltas anywhere
 /// from 1 char to whole paragraphs, so a fixed chunk count made the analysis
@@ -188,18 +193,25 @@ impl Sampler {
             })
             .collect();
 
-        let mut stream = self
-            .provider
-            .chat_stream(
+        let mut stream = tokio::time::timeout(
+            ESTABLISH_TIMEOUT,
+            self.provider.chat_stream(
                 req.model,
                 &masked,
                 req.tools.cloned(),
                 req.temperature,
                 req.reasoning_effort,
                 req.params,
-            )
-            .await
-            .map_err(|e| classify_transport_error(&e.to_string()))?;
+            ),
+        )
+        .await
+        .map_err(|_| {
+            SampleError::Stream(format!(
+                "provider did not begin streaming within {}s",
+                ESTABLISH_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|e| classify_transport_error(&e.to_string()))?;
 
         let mut recent: VecDeque<String> = VecDeque::with_capacity(64);
         let mut recent_bytes = 0usize;
@@ -440,5 +452,257 @@ mod tests {
         let mut small = VecDeque::new();
         small.push_back("ab".repeat(30));
         assert!(!doom_detected(&small));
+    }
+
+    // ---- stream-level retry/resume coverage -----------------------------
+    //
+    // `sample` is the only place transport errors turn into retries; a
+    // scripted provider makes the whole attempt stream observable: how many
+    // `chat_stream` calls happened, what `on_chunk`/`on_event` saw, and
+    // which error class ended the run.
+
+    use crate::provider::BoxStream;
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// One scripted attempt: either `chat_stream` itself fails (establish
+    /// phase) or the stream yields these items then closes.
+    enum Script {
+        EstablishFail(&'static str),
+        Chunks(Vec<anyhow::Result<StreamChunk>>),
+    }
+
+    struct ScriptedProvider {
+        calls: AtomicUsize,
+        scripts: Mutex<VecDeque<Script>>,
+    }
+
+    impl ScriptedProvider {
+        fn of(scripts: Vec<Script>) -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                scripts: Mutex::new(scripts.into()),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for ScriptedProvider {
+        fn id(&self) -> &'static str {
+            "scripted"
+        }
+
+        async fn chat_stream(
+            &self,
+            _model: &str,
+            _messages: &[ChatMessage],
+            _tools: Option<serde_json::Value>,
+            _temperature: f32,
+            _reasoning_effort: Option<&str>,
+            _params: &ModelParams,
+        ) -> anyhow::Result<BoxStream<StreamChunk>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let script = self
+                .scripts
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("sampler called chat_stream more times than scripted");
+            match script {
+                Script::EstablishFail(msg) => Err(anyhow::anyhow!(msg.to_string())),
+                Script::Chunks(items) => Ok(Box::pin(futures::stream::iter(items))),
+            }
+        }
+    }
+
+    fn req<'a>() -> SampleRequest<'a> {
+        SampleRequest {
+            model: "m",
+            temperature: 0.0,
+            tools: None,
+            reasoning_effort: None,
+            params: &ModelParams::EMPTY,
+        }
+    }
+
+    fn delta(t: &str) -> anyhow::Result<StreamChunk> {
+        Ok(StreamChunk::ContentDelta(t.to_string()))
+    }
+
+    fn done() -> anyhow::Result<StreamChunk> {
+        Ok(StreamChunk::Done {
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+        })
+    }
+
+    fn stream_err(msg: &str) -> anyhow::Result<StreamChunk> {
+        Err(anyhow::anyhow!(msg.to_string()))
+    }
+
+    /// A retryable mid-stream cut (HTTP 5xx class) retries the SAME request:
+    /// attempt 2 re-establishes, deltas replay, Done still arrives once.
+    #[tokio::test]
+    async fn midstream_transport_cut_retries_and_recovers() {
+        let p = ScriptedProvider::of(vec![
+            Script::Chunks(vec![delta("hel"), stream_err("provider HTTP 503: down")]),
+            Script::Chunks(vec![delta("hel"), delta("lo"), done()]),
+        ]);
+        let sampler = Sampler::new(p.clone());
+
+        let mut chunks: Vec<String> = Vec::new();
+        let mut events: Vec<String> = Vec::new();
+        sampler
+            .sample(
+                req(),
+                &[],
+                |c| {
+                    if let StreamChunk::ContentDelta(t) = c {
+                        chunks.push(t.clone());
+                    }
+                },
+                |e| events.push(format!("{e:?}")),
+            )
+            .await
+            .expect("retry must recover");
+
+        assert_eq!(p.calls.load(Ordering::SeqCst), 2, "one retry, one extra call");
+        // The retry re-streams from scratch — the caller sees "hel" again.
+        assert_eq!(chunks, vec!["hel", "hel", "lo"]);
+        assert!(
+            events.iter().any(|e| e.contains("Retrying")),
+            "a Retrying event must be reported, got: {events:?}"
+        );
+    }
+
+    /// A non-retryable error (4xx) fails on the FIRST attempt — no retry,
+    /// no Retrying event, exactly one provider call.
+    #[tokio::test]
+    async fn non_retryable_error_fails_without_retry() {
+        let p = ScriptedProvider::of(vec![Script::Chunks(vec![stream_err(
+            "provider HTTP 401: invalid key",
+        )])]);
+        let sampler = Sampler::new(p.clone());
+
+        let mut events: Vec<String> = Vec::new();
+        let err = sampler
+            .sample(req(), &[], |_| {}, |e| events.push(format!("{e:?}")))
+            .await
+            .unwrap_err();
+
+        assert_eq!(p.calls.load(Ordering::SeqCst), 1, "401 must not retry");
+        assert!(!events.iter().any(|e| e.contains("Retrying")));
+        assert!(err.to_string().contains("401"));
+    }
+
+    /// Retryable establish-phase failure: `chat_stream` itself returning
+    /// Err classifies and retries like a mid-stream cut.
+    #[tokio::test]
+    async fn establish_phase_error_retries() {
+        let p = ScriptedProvider::of(vec![
+            Script::EstablishFail("provider HTTP 502: bad gateway"),
+            Script::Chunks(vec![done()]),
+        ]);
+        let sampler = Sampler::new(p.clone());
+        sampler
+            .sample(req(), &[], |_| {}, |_| {})
+            .await
+            .expect("establish retry recovers");
+        assert_eq!(p.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// Every attempt a retryable failure → the budget burns to
+    /// `Exhausted { attempts: MAX_RETRIES }` and a `Failed` event lands.
+    #[tokio::test]
+    async fn retryable_failure_exhausts_budget() {
+        let p = ScriptedProvider::of(vec![
+            Script::Chunks(vec![stream_err("provider HTTP 503: a")]),
+            Script::Chunks(vec![stream_err("provider HTTP 503: b")]),
+            Script::Chunks(vec![stream_err("provider HTTP 503: c")]),
+        ]);
+        let sampler = Sampler::new(p.clone());
+
+        let mut events: Vec<String> = Vec::new();
+        let err = sampler
+            .sample(req(), &[], |_| {}, |e| events.push(format!("{e:?}")))
+            .await
+            .unwrap_err();
+
+        match err {
+            SampleError::Exhausted { attempts, .. } => {
+                assert_eq!(attempts, MAX_RETRIES);
+            }
+            other => panic!("expected Exhausted, got {other:?}"),
+        }
+        assert_eq!(
+            p.calls.load(Ordering::SeqCst),
+            MAX_RETRIES as usize,
+            "exactly MAX_RETRIES provider calls"
+        );
+        assert!(events.iter().any(|e| e.contains("Failed")));
+    }
+
+    /// `Done` ordering guarantee: a provider that double-fires is swallowed
+    /// to one; a clean close without `Done` synthesizes one — either way
+    /// the caller's invariant is exactly-one-Done per attempt.
+    #[tokio::test]
+    async fn done_fires_exactly_once_per_attempt() {
+        // Double Done → one reaches on_chunk.
+        let p = ScriptedProvider::of(vec![Script::Chunks(vec![delta("x"), done(), done()])]);
+        let sampler = Sampler::new(p);
+        let mut dones = 0usize;
+        sampler
+            .sample(req(), &[], |c| {
+                if matches!(c, StreamChunk::Done { .. }) {
+                    dones += 1;
+                }
+            }, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(dones, 1, "provider double-Done is swallowed");
+
+        // Clean close, no Done → synthesized.
+        let p = ScriptedProvider::of(vec![Script::Chunks(vec![delta("x")])]);
+        let sampler = Sampler::new(p);
+        let mut dones = 0usize;
+        sampler
+            .sample(req(), &[], |c| {
+                if matches!(c, StreamChunk::Done { .. }) {
+                    dones += 1;
+                }
+            }, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(dones, 1, "missing Done is synthesized");
+    }
+
+    /// An in-stream `StreamChunk::Error` (provider `response.failed` event)
+    /// is forwarded to on_chunk AND treated as a real failure: the retry
+    /// loop re-establishes instead of silently finishing.
+    #[tokio::test]
+    async fn in_stream_error_chunk_forwards_then_retries() {
+        let p = ScriptedProvider::of(vec![
+            Script::Chunks(vec![
+                delta("a"),
+                Ok(StreamChunk::Error("internal_server_error: upstream error".into())),
+            ]),
+            Script::Chunks(vec![done()]),
+        ]);
+        let sampler = Sampler::new(p.clone());
+
+        let mut saw_error_chunk = false;
+        sampler
+            .sample(req(), &[], |c| {
+                if matches!(c, StreamChunk::Error(_)) {
+                    saw_error_chunk = true;
+                }
+            }, |_| {})
+            .await
+            .expect("error chunk is retryable and recovers");
+
+        assert!(saw_error_chunk, "the error chunk must reach on_chunk");
+        assert_eq!(p.calls.load(Ordering::SeqCst), 2);
     }
 }
