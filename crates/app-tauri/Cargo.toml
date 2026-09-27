@@ -45,6 +45,9 @@ libc = "0.2"
 
 [features]
 default = []
+# WASM plugin runtime — compiles wasmtime into the app. Opt-in because it
+# pulls a JIT; plugin manifests `kind = "wasm"` otherwise fail closed.
+wasm = ["agent-kernel/wasm"]
 # Enabled automatically by `tauri build` for production bundles.
 # MUST NOT be a default feature — it makes the app serve `frontendDist`
 # via tauri://localhost and ignores `build.devUrl`, which kills the dev

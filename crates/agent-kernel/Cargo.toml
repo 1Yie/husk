@@ -49,6 +49,7 @@ image.workspace = true
 async-trait.workspace = true
 
 [features]
+wasm = ["agent-plugin/wasm"]
 tree-sitter = [
     "dep:tree-sitter",
     "dep:tree-sitter-rust",
