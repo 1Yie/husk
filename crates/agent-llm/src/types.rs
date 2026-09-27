@@ -115,7 +115,13 @@ pub struct ChatMessage {
     /// (devin verified) treat a literal `content:null` on an assistant
     /// tool-call message as malformed and return an empty stream instead of
     /// an error, which surfaces as "the agent went quiet after a tool".
-    #[serde(serialize_with = "content_as_string")]
+    /// The reverse mapping is `""` → `None`, not `Some("")`: a snapshot
+    /// round-trip then preserves the empty-content invariant the resume
+    /// sanitizer and every `is_empty` guard already rely on.
+    #[serde(
+        serialize_with = "content_as_string",
+        deserialize_with = "empty_string_as_none"
+    )]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -172,6 +178,16 @@ pub fn now_ms() -> i64 {
 
 fn content_as_string<S: serde::Serializer>(c: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(c.as_deref().unwrap_or(""))
+}
+
+/// Paired with `content_as_string` — the persisted `""` means `None`,
+/// never `Some("")`. (A genuinely-empty `Some("")` collapses to `None`
+/// too, which is semantically identical everywhere the value is read.)
+fn empty_string_as_none<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<String>, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(if s.is_empty() { None } else { Some(s) })
 }
 
 impl ChatMessage {
@@ -868,6 +884,33 @@ mod tests {
         let old = r#"{"role":"system","content":"a context note"}"#;
         let back: ChatMessage = serde_json::from_str(old).unwrap();
         assert_eq!(back.notice, None);
+    }
+
+    #[test]
+    fn empty_content_roundtrips_as_none() {
+        // `None` → `""` → `None`, never `Some("")` — the snapshot format
+        // must not manufacture a ghost empty string (resume sanitize and
+        // every `is_empty` guard treat the two identically, so `""` stays
+        // legal on input too).
+        let m = ChatMessage {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            is_error: None,
+            notice: None,
+            ts: None,
+            images: Vec::new(),
+            reasoning: None,
+            duration_ms: None,
+        };
+        let j = serde_json::to_string(&m).unwrap();
+        assert!(j.contains(r#""content":"""#), "None must serialize as \"\"");
+        let back: ChatMessage = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.content, None);
+        let back: ChatMessage =
+            serde_json::from_str(r#"{"role":"assistant","content":""}"#).unwrap();
+        assert_eq!(back.content, None);
     }
 
     // ---- harmony special-token stripper ----

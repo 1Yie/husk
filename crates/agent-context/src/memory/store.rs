@@ -6,13 +6,32 @@
 //! API that mirrors those semantics (facts + episodes + persona + top-k recall).
 //!
 //! Write path: summarize → extract facts → dedupe (`cosine > 0.92` merges). Read path:
-//! embed prompt → top-8 facts + last 3 episodes → a `<memory>` block ≤2 KB.
+//! embed prompt → HNSW top-8 facts + last 3 episodes → a `<memory>` block ≤2 KB.
+//!
+//! Recall runs an in-memory HNSW index over fact embeddings — approximate
+//! nearest-neighbour instead of the old O(N) redb scan. The index is a cache:
+//! writes insert into it after commit, deletes trigger a rebuild, and a 30s
+//! TTL rebuild covers facts written by ANOTHER process (app vs CLI share the
+//! same memory.db handle inside a process, but not across processes).
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+
+/// Approximate index over workspace fact embeddings — cosine ANN.
+type FactsIndex = hnsw_rs::hnsw::Hnsw<'static, f32, hnsw_rs::anndists::dist::DistCosine>;
+
+/// Fresh index — params sized for a personal-scale store (thousands of
+/// facts, not millions): M=16 connections, ef_construction=200.
+fn new_facts_index() -> FactsIndex {
+    hnsw_rs::hnsw::Hnsw::new(16, 10_000, 16, 200, hnsw_rs::anndists::dist::DistCosine {})
+}
+
+/// How long a built index stays authoritative before the read path rebuilds
+/// it — the drift bound for facts written by a different process.
+const INDEX_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// facts table: `id -> Fact` (JSON).
 const FACTS: TableDefinition<u64, &[u8]> = TableDefinition::new("facts");
@@ -84,6 +103,9 @@ pub struct MemoryStore {
     workspace_id: u64,
     /// Embedding dim for the hash-embedder.
     embed_dim: usize,
+    /// In-memory ANN index over THIS workspace's fact embeddings + the
+    /// build timestamp (TTL'd; see INDEX_TTL). Cache, not truth — redb is.
+    index: RwLock<(FactsIndex, std::time::Instant)>,
 }
 
 impl MemoryStore {
@@ -135,10 +157,7 @@ impl MemoryStore {
                 // Migration: a DB written before the counter row existed has
                 // none — seed it above the max persisted id so the first
                 // allocation can't collide with existing facts/episodes.
-                let has_counter = meta
-                    .get(NEXT_ID_KEY)
-                    .map_err(|e| e.to_string())?
-                    .is_some();
+                let has_counter = meta.get(NEXT_ID_KEY).map_err(|e| e.to_string())?.is_some();
                 if !has_counter {
                     let seed = max_persisted_id(&w)? + 1;
                     meta.insert(NEXT_ID_KEY, seed.to_le_bytes().as_slice())
@@ -147,16 +166,54 @@ impl MemoryStore {
             }
             w.commit().map_err(|e| e.to_string())?;
         }
-        Ok(Self {
+        let store = Self {
             db,
             workspace_id: workspace_id(workspace_root),
             embed_dim: 256,
-        })
+            index: RwLock::new((new_facts_index(), std::time::Instant::now())),
+        };
+        store.rebuild_index();
+        Ok(store)
     }
 
     /// `hash(canonical_root)` — stable per-repo partition key.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
+    }
+
+    /// Re-scan the FACTS table into a fresh HNSW — cheap at this scale and
+    /// the only correct move for deletes (HNSW has no remove).
+    fn rebuild_index(&self) {
+        let facts = match self.all_facts() {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let idx = new_facts_index();
+        for f in facts.iter().filter(|f| f.workspace_id == self.workspace_id) {
+            idx.insert((f.embedding.as_slice(), f.id as usize));
+        }
+        *self.index.write().unwrap_or_else(|e| e.into_inner()) = (idx, std::time::Instant::now());
+    }
+
+    /// Rebuild on TTL expiry — facts written by another process land in the
+    /// shared redb file, not in this index.
+    fn index_fresh(&self) {
+        let stale = self
+            .index
+            .read()
+            .map(|g| g.1.elapsed() >= INDEX_TTL)
+            .unwrap_or(true);
+        if stale {
+            self.rebuild_index();
+        }
+    }
+
+    /// Post-commit insert — kept outside the redb txn (the index is a cache;
+    /// a failed insert only means a short-lived recall miss).
+    fn index_insert(&self, emb: &[f32], id: u64) {
+        if let Ok(g) = self.index.write() {
+            g.0.insert((emb, id as usize));
+        }
     }
 
     /// Insert a fact — dedupes vs. existing by `cosine > 0.92` (merge =
@@ -195,6 +252,7 @@ impl MemoryStore {
             })
         };
 
+        let is_new = merged.is_none();
         let id = match merged {
             Some((id, f)) => {
                 let bytes = serde_json::to_vec(&f).map_err(|e| e.to_string())?;
@@ -210,7 +268,8 @@ impl MemoryStore {
                     id,
                     workspace_id: self.workspace_id,
                     text,
-                    embedding: emb,
+                    // `index_insert` still borrows `emb` after commit.
+                    embedding: emb.clone(),
                     confidence,
                     created_at: now(),
                 };
@@ -223,12 +282,52 @@ impl MemoryStore {
             }
         };
         w.commit().map_err(|e| e.to_string())?;
+        // The index is a post-commit cache insert — a merge only bumped
+        // confidence, so only a brand-new fact id needs a node.
+        if is_new {
+            self.index_insert(&emb, id);
+        }
         Ok(id)
     }
 
-    /// Top-k recall: facts for this workspace ranked by `cosine(prompt_emb)`.
+    /// Top-k recall: ANN search over this workspace's facts — the HNSW gives
+    /// approximate neighbours by `DistCosine` (distance = 1 − cosine); ids
+    /// re-resolve through redb so a stale index can never fabricate a fact,
+    /// and a rebuild runs when the index is older than INDEX_TTL. An empty
+    /// index falls back to the linear scan (first-run, post-clear).
     pub fn recall_facts(&self, query: &str, k: usize) -> Result<Vec<Fact>, String> {
         let qemb = self.embed(query);
+        self.index_fresh();
+        let neighbours: Vec<(u64, f32)> = self
+            .index
+            .read()
+            .map(|g| {
+                g.0.search(qemb.as_slice(), k + 8, 40)
+                    .into_iter()
+                    .map(|n| (n.d_id as u64, n.distance))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !neighbours.is_empty() {
+            let r = self.db.begin_read().map_err(|e| e.to_string())?;
+            let t = r.open_table(FACTS).map_err(|e| e.to_string())?;
+            let mut scored: Vec<(f32, Fact)> = Vec::with_capacity(neighbours.len());
+            for (id, dist) in neighbours {
+                let Some(v) = t.get(id).map_err(|e| e.to_string())? else {
+                    continue; // index saw a since-deleted fact — skipped
+                };
+                if let Ok(f) = serde_json::from_slice::<Fact>(v.value()) {
+                    if f.workspace_id == self.workspace_id {
+                        scored.push((1.0 - dist, f));
+                    }
+                }
+            }
+            if !scored.is_empty() {
+                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                return Ok(scored.into_iter().take(k).map(|(_, f)| f).collect());
+            }
+        }
+        // Fallback — empty index (fresh db) or every candidate invalidated.
         let mut scored: Vec<(f32, Fact)> = self
             .all_facts()?
             .into_iter()
@@ -314,6 +413,9 @@ impl MemoryStore {
             .map_err(|e| e.to_string())?
             .is_some();
         w.commit().map_err(|e| e.to_string())?;
+        if removed {
+            self.rebuild_index();
+        }
         Ok(removed)
     }
 
@@ -394,6 +496,9 @@ impl MemoryStore {
             }
         }
         w.commit().map_err(|e| e.to_string())?;
+        if what == "facts" || what == "all" {
+            self.rebuild_index();
+        }
         Ok(removed)
     }
 
@@ -607,16 +712,17 @@ mod tests {
         assert_eq!(read_counter(&s), Some(1)); // fresh DB: next id is 1
 
         let f1 = s.upsert_fact("errors via AppError", 0.6).unwrap();
-        let e1 = s.add_episode(Episode {
-            id: 0,
-            workspace_id: 0,
-            task: "a".into(),
-            outcome: "success".into(),
-            files: vec![],
-            correction: None,
-            created_at: 1,
-        })
-        .unwrap();
+        let e1 = s
+            .add_episode(Episode {
+                id: 0,
+                workspace_id: 0,
+                task: "a".into(),
+                outcome: "success".into(),
+                files: vec![],
+                correction: None,
+                created_at: 1,
+            })
+            .unwrap();
         assert_eq!((f1, e1), (1, 2));
         assert_eq!(read_counter(&s), Some(3));
     }
@@ -630,30 +736,34 @@ mod tests {
         let path = dir.path().join("m.db");
         let a = MemoryStore::open(&path, dir.path()).unwrap();
         let f1 = a.upsert_fact("first", 0.5).unwrap();
-        let e1 = a.add_episode(Episode {
-            id: 0,
-            workspace_id: 0,
-            task: "one".into(),
-            outcome: "success".into(),
-            files: vec![],
-            correction: None,
-            created_at: 1,
-        })
-        .unwrap();
+        let e1 = a
+            .add_episode(Episode {
+                id: 0,
+                workspace_id: 0,
+                task: "one".into(),
+                outcome: "success".into(),
+                files: vec![],
+                correction: None,
+                created_at: 1,
+            })
+            .unwrap();
         drop(a);
 
         let b = MemoryStore::open(&path, dir.path()).unwrap();
-        let f2 = b.upsert_fact("second completely different text", 0.5).unwrap();
-        let e2 = b.add_episode(Episode {
-            id: 0,
-            workspace_id: 0,
-            task: "two".into(),
-            outcome: "success".into(),
-            files: vec![],
-            correction: None,
-            created_at: 2,
-        })
-        .unwrap();
+        let f2 = b
+            .upsert_fact("second completely different text", 0.5)
+            .unwrap();
+        let e2 = b
+            .add_episode(Episode {
+                id: 0,
+                workspace_id: 0,
+                task: "two".into(),
+                outcome: "success".into(),
+                files: vec![],
+                correction: None,
+                created_at: 2,
+            })
+            .unwrap();
         assert!(f2 > f1 && f2 > e1, "fact id reused: {f1}/{e1} → {f2}");
         assert!(e2 > e1 && e2 > f2, "episode id reused: {e1}/{f2} → {e2}");
     }
@@ -666,16 +776,17 @@ mod tests {
         let path = dir.path().join("m.db");
         let s = MemoryStore::open(&path, dir.path()).unwrap();
         s.upsert_fact("first", 0.5).unwrap();
-        let e1 = s.add_episode(Episode {
-            id: 0,
-            workspace_id: 0,
-            task: "one".into(),
-            outcome: "success".into(),
-            files: vec![],
-            correction: None,
-            created_at: 1,
-        })
-        .unwrap();
+        let e1 = s
+            .add_episode(Episode {
+                id: 0,
+                workspace_id: 0,
+                task: "one".into(),
+                outcome: "success".into(),
+                files: vec![],
+                correction: None,
+                created_at: 1,
+            })
+            .unwrap();
         let db = s.db.clone();
         drop(s);
 
@@ -710,12 +821,49 @@ mod tests {
     fn facts_dedupe_by_cosine() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
-        s.upsert_fact("errors via AppError, never unwrap", 0.6).unwrap();
+        s.upsert_fact("errors via AppError, never unwrap", 0.6)
+            .unwrap();
         // Near-identical text → merge, not duplicate.
-        s.upsert_fact("errors via AppError, never unwrap", 0.8).unwrap();
+        s.upsert_fact("errors via AppError, never unwrap", 0.8)
+            .unwrap();
         let facts = s.recall_facts("error handling", 10).unwrap();
         assert_eq!(facts.len(), 1);
         assert!(facts[0].confidence > 0.9); // merged
+    }
+
+    /// ANN recall — the HNSW index must surface the same nearest facts the
+    /// linear scan would (the index is a cache, redb stays the truth).
+    #[test]
+    fn recall_ranks_by_embedding_similarity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        let s = MemoryStore::open(&path, dir.path()).unwrap();
+        s.upsert_fact("rust cargo build workspace", 0.8).unwrap();
+        s.upsert_fact("typescript npm install", 0.8).unwrap();
+        s.upsert_fact("python pip venv setup", 0.8).unwrap();
+        let hits = s.recall_facts("cargo build rust", 2).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].text, "rust cargo build workspace");
+    }
+
+    /// After `remove_fact` the index must not resurface the deleted row —
+    /// the post-remove rebuild is the only correct move (HNSW has no delete).
+    #[test]
+    fn removed_fact_stays_removed_from_recall() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        let s = MemoryStore::open(&path, dir.path()).unwrap();
+        let id = s.upsert_fact("ephemeral build hint", 0.8).unwrap();
+        assert!(!s
+            .recall_facts("ephemeral build hint", 5)
+            .unwrap()
+            .is_empty());
+        s.remove_fact(id).unwrap();
+        assert!(s
+            .recall_facts("ephemeral build hint", 5)
+            .unwrap()
+            .iter()
+            .all(|f| f.id != id));
     }
 
     #[test]
@@ -723,10 +871,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
         s.add_episode(Episode {
-            id: 0, workspace_id: 0, task: "fix engine".into(),
-            outcome: "success".into(), files: vec!["engine.rs".into()],
-            correction: None, created_at: 1,
-        }).unwrap();
+            id: 0,
+            workspace_id: 0,
+            task: "fix engine".into(),
+            outcome: "success".into(),
+            files: vec!["engine.rs".into()],
+            correction: None,
+            created_at: 1,
+        })
+        .unwrap();
         let eps = s.recent_episodes(5).unwrap();
         assert_eq!(eps.len(), 1);
         assert_eq!(eps[0].task, "fix engine");
@@ -737,7 +890,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
         for i in 0..20 {
-            s.upsert_fact(format!("fact number {i} {}" , "pad ".repeat(40)), 0.6).unwrap();
+            s.upsert_fact(format!("fact number {i} {}", "pad ".repeat(40)), 0.6)
+                .unwrap();
         }
         let block = s.memory_block("query").unwrap();
         assert!(block.len() <= 2048);
@@ -794,4 +948,3 @@ mod tests {
         assert_eq!(eps[0].task, "real");
     }
 }
-

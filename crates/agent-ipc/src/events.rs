@@ -139,6 +139,11 @@ pub enum UiCommand {
     SetThinkingLevel { level: String },
     /// Undo/rewind the last turn's hunk set.
     UndoLastTurn,
+    /// Hot-apply the memory preferences (`set_default_prefs` broadcasts
+    /// this so a running session doesn't wait for its next spawn).
+    /// `enabled=false` drops the store + distiller; `enabled=true` opens
+    /// the store if absent and (re)builds the distiller per `distill`.
+    SetMemory { enabled: bool, distill: bool },
     /// Regenerate the last turn — the session rewinds `history` to the
     /// last user prompt's position and re-runs it through the normal
     /// Prompt path. Idle-only; ignored while a turn is active.

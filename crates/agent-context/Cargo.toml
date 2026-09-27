@@ -15,6 +15,7 @@ redb = "4.3.0"
 serde.workspace = true
 serde_json.workspace = true
 xxhash-rust.workspace = true
+hnsw_rs = "0.3"
 tokio.workspace = true
 
 [dev-dependencies]
