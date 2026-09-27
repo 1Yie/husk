@@ -14,7 +14,6 @@
 //!    read-only. A PATH `<root>/bin` expands to `<root>` only for real SDK roots.
 //! 6. The workspace mounts read-write last, so it wins any overlap.
 
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -154,7 +153,8 @@ fn dirs_home() -> Option<PathBuf> {
 fn is_sensitive(path: &Path, home: Option<&Path>) -> bool {
     let s = path.to_string_lossy();
     for name in SENSITIVE_NAMES {
-        if s.ends_with(name) || s.contains(&format!("/{name}/")) || s.contains(&format!("/{name}")) {
+        if s.ends_with(name) || s.contains(&format!("/{name}/")) || s.contains(&format!("/{name}"))
+        {
             return true;
         }
     }
@@ -186,7 +186,7 @@ fn deduplicate_mount_paths(paths: Vec<PathBuf>, home: Option<&Path>) -> Vec<Path
     let mut clean: Vec<PathBuf> = Vec::new();
     for p in sorted {
         if let Some(h) = home {
-            if &p == h {
+            if p == *h {
                 continue; // Never mount entire HOME
             }
         }
@@ -222,7 +222,7 @@ fn dev_environment_binds() -> Vec<PathBuf> {
             let p = PathBuf::from(val);
             if p.exists() && !is_sensitive(&p, home.as_deref()) {
                 if let Some(ref h) = home {
-                    if &p == h {
+                    if p == *h {
                         continue;
                     }
                 }
@@ -256,7 +256,9 @@ fn dev_environment_binds() -> Vec<PathBuf> {
 /// that must be opened by name, never dragged in wholesale by the PATH rule.
 fn is_hidden_home_subtree(p: &Path, home: Option<&Path>) -> bool {
     let Some(home) = home else { return false };
-    let Ok(rel) = p.strip_prefix(home) else { return false };
+    let Ok(rel) = p.strip_prefix(home) else {
+        return false;
+    };
     rel.components()
         .next()
         .is_some_and(|c| c.as_os_str().to_string_lossy().starts_with('.'))
@@ -324,6 +326,166 @@ fn libc_uid() -> u32 {
         .unwrap_or(1000)
 }
 
+/// Assemble the `bwrap` argv up to the `--` separator — shared by
+/// `run_command` (appends `sh -c ulimit…; cmd`) and `wrap_spawn` (appends
+/// the caller's program + args for a long-lived server child).
+fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path) -> Vec<String> {
+    let mut argv: Vec<String> = Vec::with_capacity(128);
+
+    for sys in SYSTEM_RO_DIRS {
+        if Path::new(sys).exists() {
+            argv.push("--ro-bind".into());
+            argv.push((*sys).into());
+            argv.push((*sys).into());
+        }
+    }
+
+    for conf in SYSTEM_CONFIG_PATHS {
+        if Path::new(conf).exists() {
+            argv.push("--ro-bind".into());
+            argv.push((*conf).into());
+            argv.push((*conf).into());
+        }
+    }
+
+    // resolv.conf only when network is allowed — it leaks the resolver.
+    if cfg.allow_network && Path::new("/etc/resolv.conf").exists() {
+        argv.push("--ro-bind".into());
+        argv.push("/etc/resolv.conf".into());
+        argv.push("/etc/resolv.conf".into());
+    }
+
+    argv.push("--proc".into());
+    argv.push("/proc".into());
+    argv.push("--dev".into());
+    argv.push("/dev".into());
+
+    argv.push("--tmpfs".into());
+    argv.push("/tmp".into());
+    if Path::new("/var").exists() {
+        argv.push("--dir".into());
+        argv.push("/var".into());
+        argv.push("--symlink".into());
+        argv.push("/tmp".into());
+        argv.push("/var/tmp".into());
+    }
+
+    // run_dir bound at its host path for XDG_RUNTIME_DIR compatibility.
+    argv.push("--bind".into());
+    argv.push(run_dir.to_string_lossy().into_owned());
+    argv.push(run_dir.to_string_lossy().into_owned());
+
+    let dev_binds = dev_environment_binds();
+    for dev_dir in &dev_binds {
+        if dev_dir.exists() {
+            argv.push("--ro-bind".into());
+            argv.push(dev_dir.to_string_lossy().into_owned());
+            argv.push(dev_dir.to_string_lossy().into_owned());
+        }
+    }
+
+    for extra_ro in &cfg.extra_ro_mounts {
+        if extra_ro.exists() {
+            argv.push("--ro-bind".into());
+            argv.push(extra_ro.to_string_lossy().into_owned());
+            argv.push(extra_ro.to_string_lossy().into_owned());
+        }
+    }
+
+    for mask in sensitive_masks() {
+        argv.push("--ro-bind".into());
+        argv.push("/dev/null".into());
+        argv.push(mask.to_string_lossy().into_owned());
+    }
+
+    for extra_rw in &cfg.extra_rw_mounts {
+        if extra_rw.exists() {
+            argv.push("--bind".into());
+            argv.push(extra_rw.to_string_lossy().into_owned());
+            argv.push(extra_rw.to_string_lossy().into_owned());
+        }
+    }
+
+    // Workspace bind must come last — rw, shadows any overlapping mount.
+    argv.push("--bind".into());
+    argv.push(ws.to_string_lossy().into_owned());
+    argv.push(ws.to_string_lossy().into_owned());
+
+    if !cfg.allow_network {
+        argv.push("--unshare-net".into());
+    }
+
+    // PID namespace — fork-bomb containment.
+    argv.push("--unshare-pid".into());
+
+    argv.push("--clearenv".into());
+    let mut extra = cfg.env_vars.clone();
+    if !extra.iter().any(|(k, _)| k == "TMPDIR") {
+        extra.push(("TMPDIR".into(), "/tmp".into()));
+    }
+    if !extra.iter().any(|(k, _)| k == "TEMP") {
+        extra.push(("TEMP".into(), "/tmp".into()));
+    }
+    if !extra.iter().any(|(k, _)| k == "TMP") {
+        extra.push(("TMP".into(), "/tmp".into()));
+    }
+    if !extra.iter().any(|(k, _)| k == "CARGO_TARGET_DIR") {
+        extra.push((
+            "CARGO_TARGET_DIR".into(),
+            ws.join("target").to_string_lossy().into_owned(),
+        ));
+    }
+    // Package-manager caches → writable /tmp so installs don't EROFS.
+    if !extra.iter().any(|(k, _)| k == "BUN_INSTALL_CACHE_DIR") {
+        extra.push(("BUN_INSTALL_CACHE_DIR".into(), "/tmp/bun-cache".into()));
+    }
+    if !extra.iter().any(|(k, _)| k == "npm_config_cache") {
+        extra.push(("npm_config_cache".into(), "/tmp/npm-cache".into()));
+    }
+    if !extra.iter().any(|(k, _)| k == "YARN_CACHE_FOLDER") {
+        extra.push(("YARN_CACHE_FOLDER".into(), "/tmp/yarn-cache".into()));
+    }
+
+    let mut envs = sanitize_env(&extra);
+    // PATH coherence: keep only entries the namespace can resolve —
+    // an inherited entry under an unmounted dir is dead weight inside
+    // and only widens the executable-hijack surface. Allowed roots =
+    // the same dirs just bound (system + dev); workspace and the
+    // sandbox tmpfs are denied outright (agent-writable).
+    let mut path_roots: Vec<PathBuf> = SYSTEM_RO_DIRS.iter().map(PathBuf::from).collect();
+    path_roots.extend(dev_binds.iter().cloned());
+    let path_denied = vec![
+        ws.to_path_buf(),
+        PathBuf::from("/tmp"),
+        run_dir.to_path_buf(),
+    ];
+    crate::env_sanitize::apply_environment_policy(
+        &mut envs,
+        &cfg.environment,
+        Some(&path_roots),
+        &path_denied,
+    );
+    for (k, v) in envs {
+        argv.push("--setenv".into());
+        argv.push(k);
+        argv.push(v);
+    }
+    // `trusted_env` lands after sanitization, unfiltered — the manifest
+    // declared these literally; the denylist's job is catching *host*
+    // secrets, not the declaring authority's own env block.
+    for (k, v) in &cfg.trusted_env {
+        argv.push("--setenv".into());
+        argv.push(k.clone());
+        argv.push(v.clone());
+    }
+
+    argv.push("--chdir".into());
+    argv.push(ws.to_string_lossy().into_owned());
+    argv.push("--die-with-parent".into());
+    argv.push("--".into());
+    argv
+}
+
 #[async_trait::async_trait]
 impl SandboxBackend for LinuxBwrap {
     fn id(&self) -> &'static str {
@@ -347,149 +509,7 @@ impl SandboxBackend for LinuxBwrap {
             .canonicalize()
             .unwrap_or_else(|_| cfg.workspace_dir.clone());
 
-        let mut argv: Vec<String> = Vec::with_capacity(128);
-
-        for sys in SYSTEM_RO_DIRS {
-            if Path::new(sys).exists() {
-                argv.push("--ro-bind".into());
-                argv.push((*sys).into());
-                argv.push((*sys).into());
-            }
-        }
-
-        for conf in SYSTEM_CONFIG_PATHS {
-            if Path::new(conf).exists() {
-                argv.push("--ro-bind".into());
-                argv.push((*conf).into());
-                argv.push((*conf).into());
-            }
-        }
-
-        // resolv.conf only when network is allowed — it leaks the resolver.
-        if cfg.allow_network && Path::new("/etc/resolv.conf").exists() {
-            argv.push("--ro-bind".into());
-            argv.push("/etc/resolv.conf".into());
-            argv.push("/etc/resolv.conf".into());
-        }
-
-        argv.push("--proc".into());
-        argv.push("/proc".into());
-        argv.push("--dev".into());
-        argv.push("/dev".into());
-
-        argv.push("--tmpfs".into());
-        argv.push("/tmp".into());
-        if Path::new("/var").exists() {
-            argv.push("--dir".into());
-            argv.push("/var".into());
-            argv.push("--symlink".into());
-            argv.push("/tmp".into());
-            argv.push("/var/tmp".into());
-        }
-
-        // run_dir bound at its host path for XDG_RUNTIME_DIR compatibility.
-        argv.push("--bind".into());
-        argv.push(run_dir.to_string_lossy().into_owned());
-        argv.push(run_dir.to_string_lossy().into_owned());
-
-        let dev_binds = dev_environment_binds();
-        for dev_dir in &dev_binds {
-            if dev_dir.exists() {
-                argv.push("--ro-bind".into());
-                argv.push(dev_dir.to_string_lossy().into_owned());
-                argv.push(dev_dir.to_string_lossy().into_owned());
-            }
-        }
-
-        for extra_ro in &cfg.extra_ro_mounts {
-            if extra_ro.exists() {
-                argv.push("--ro-bind".into());
-                argv.push(extra_ro.to_string_lossy().into_owned());
-                argv.push(extra_ro.to_string_lossy().into_owned());
-            }
-        }
-
-        for mask in sensitive_masks() {
-            argv.push("--ro-bind".into());
-            argv.push("/dev/null".into());
-            argv.push(mask.to_string_lossy().into_owned());
-        }
-
-        for extra_rw in &cfg.extra_rw_mounts {
-            if extra_rw.exists() {
-                argv.push("--bind".into());
-                argv.push(extra_rw.to_string_lossy().into_owned());
-                argv.push(extra_rw.to_string_lossy().into_owned());
-            }
-        }
-
-        // Workspace bind must come last — rw, shadows any overlapping mount.
-        argv.push("--bind".into());
-        argv.push(ws.to_string_lossy().into_owned());
-        argv.push(ws.to_string_lossy().into_owned());
-
-        if !cfg.allow_network {
-            argv.push("--unshare-net".into());
-        }
-
-        // PID namespace — fork-bomb containment.
-        argv.push("--unshare-pid".into());
-
-        argv.push("--clearenv".into());
-        let mut extra = cfg.env_vars.clone();
-        if !extra.iter().any(|(k, _)| k == "TMPDIR") {
-            extra.push(("TMPDIR".into(), "/tmp".into()));
-        }
-        if !extra.iter().any(|(k, _)| k == "TEMP") {
-            extra.push(("TEMP".into(), "/tmp".into()));
-        }
-        if !extra.iter().any(|(k, _)| k == "TMP") {
-            extra.push(("TMP".into(), "/tmp".into()));
-        }
-        if !extra.iter().any(|(k, _)| k == "CARGO_TARGET_DIR") {
-            extra.push(("CARGO_TARGET_DIR".into(), ws.join("target").to_string_lossy().into_owned()));
-        }
-        // Package-manager caches → writable /tmp so installs don't EROFS.
-        if !extra.iter().any(|(k, _)| k == "BUN_INSTALL_CACHE_DIR") {
-            extra.push(("BUN_INSTALL_CACHE_DIR".into(), "/tmp/bun-cache".into()));
-        }
-        if !extra.iter().any(|(k, _)| k == "npm_config_cache") {
-            extra.push(("npm_config_cache".into(), "/tmp/npm-cache".into()));
-        }
-        if !extra.iter().any(|(k, _)| k == "YARN_CACHE_FOLDER") {
-            extra.push(("YARN_CACHE_FOLDER".into(), "/tmp/yarn-cache".into()));
-        }
-
-        let mut envs = sanitize_env(&extra);
-        // PATH coherence: keep only entries the namespace can resolve —
-        // an inherited entry under an unmounted dir is dead weight inside
-        // and only widens the executable-hijack surface. Allowed roots =
-        // the same dirs just bound (system + dev); workspace and the
-        // sandbox tmpfs are denied outright (agent-writable).
-        let mut path_roots: Vec<PathBuf> =
-            SYSTEM_RO_DIRS.iter().map(PathBuf::from).collect();
-        path_roots.extend(dev_binds.iter().cloned());
-        let path_denied = vec![
-            ws.clone(),
-            PathBuf::from("/tmp"),
-            run_dir.clone(),
-        ];
-        crate::env_sanitize::apply_environment_policy(
-            &mut envs,
-            &cfg.environment,
-            Some(&path_roots),
-            &path_denied,
-        );
-        for (k, v) in envs {
-            argv.push("--setenv".into());
-            argv.push(k);
-            argv.push(v);
-        }
-
-        argv.push("--chdir".into());
-        argv.push(ws.to_string_lossy().into_owned());
-        argv.push("--die-with-parent".into());
-        argv.push("--".into());
+        let mut argv = sandbox_argv(cfg, &run_dir, &ws);
         argv.push("/bin/sh".into());
         argv.push("-c".into());
 
@@ -541,8 +561,26 @@ impl SandboxBackend for LinuxBwrap {
             elapsed_ms: elapsed,
         })
     }
-}
 
+    fn wrap_spawn(
+        &self,
+        cfg: &SandboxConfig,
+        cmd: &str,
+        args: &[&str],
+    ) -> Option<tokio::process::Command> {
+        let run_dir = run_dir();
+        let ws = cfg
+            .workspace_dir
+            .canonicalize()
+            .unwrap_or_else(|_| cfg.workspace_dir.clone());
+        let mut argv = sandbox_argv(cfg, &run_dir, &ws);
+        argv.push(cmd.into());
+        argv.extend(args.iter().map(|a| (*a).into()));
+        let mut c = tokio::process::Command::new("bwrap");
+        c.args(&argv);
+        Some(c)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -576,9 +614,18 @@ mod tests {
     #[test]
     fn hidden_home_subtree_detection() {
         let home = Path::new("/home/u");
-        assert!(is_hidden_home_subtree(Path::new("/home/u/.pi/agent"), Some(home)));
-        assert!(is_hidden_home_subtree(Path::new("/home/u/.cargo"), Some(home)));
-        assert!(!is_hidden_home_subtree(Path::new("/home/u/Development/flutter"), Some(home)));
+        assert!(is_hidden_home_subtree(
+            Path::new("/home/u/.pi/agent"),
+            Some(home)
+        ));
+        assert!(is_hidden_home_subtree(
+            Path::new("/home/u/.cargo"),
+            Some(home)
+        ));
+        assert!(!is_hidden_home_subtree(
+            Path::new("/home/u/Development/flutter"),
+            Some(home)
+        ));
         assert!(!is_hidden_home_subtree(Path::new("/opt/tool"), Some(home)));
         assert!(!is_hidden_home_subtree(Path::new("/home/u"), None));
     }

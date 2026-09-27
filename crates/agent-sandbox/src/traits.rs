@@ -45,6 +45,13 @@ pub struct SandboxConfig {
     pub timeout_secs: u64,
     /// Extra env vars to inject *after* sanitization (e.g. PATH overrides).
     pub env_vars: Vec<(String, String)>,
+    /// Vars appended to the spawn env **unfiltered** — the plugin manifest's
+    /// own declared `env` block. It bypasses the denylist on purpose: the
+    /// manifest IS the trust authority (a literal `API_KEY=…` written into
+    /// `manifest.json` is an intentional grant, not injected host state),
+    /// so stripping `_TOKEN`-shaped names would silently break plugin auth.
+    /// `env:VAR` indirection is refused upstream, before landing here.
+    pub trusted_env: Vec<(String, String)>,
     /// Environment surface — the plan's decision on vars + PATH
     /// (`Minimal` vs `DevToolchain`). Backends pass it to
     /// `env_sanitize::apply_environment_policy` with their mount roots.
@@ -66,6 +73,7 @@ impl Default for SandboxConfig {
             max_processes: 256,
             timeout_secs: 60,
             env_vars: Vec::new(),
+            trusted_env: Vec::new(),
             environment: crate::plan::EnvironmentPolicy::DevToolchain,
             snapshot: SnapshotMode::Off,
             extra_ro_mounts: Vec::new(),
@@ -107,4 +115,19 @@ pub trait SandboxBackend: Send + Sync {
         args: &[&str],
         cfg: &SandboxConfig,
     ) -> anyhow::Result<CommandOutput>;
+
+    /// Build a long-lived `Command` that runs `cmd args` inside the sandbox
+    /// — for servers the caller keeps alive (MCP stdio children, plugin
+    /// hooks). Unlike `run_command` nothing pipes output or enforces a
+    /// timeout; the caller wires its own stdio and lifetime. `None` means
+    /// the backend cannot wrap spawns — the caller decides whether that is
+    /// a hard error (declared sandbox policy) or a loud fallback.
+    fn wrap_spawn(
+        &self,
+        _cfg: &SandboxConfig,
+        _cmd: &str,
+        _args: &[&str],
+    ) -> Option<tokio::process::Command> {
+        None
+    }
 }
