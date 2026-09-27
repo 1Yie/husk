@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent_computer::{DesktopBackend, MouseButton, ScrollDir, ScreenshotMeta};
+use agent_computer::{DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir};
 use agent_kernel::mode::AgentMode;
 use agent_kernel::permissions::{Decision, PermissionGate, PermissionMode};
 use agent_kernel::tools::registry::ToolClass;
@@ -75,7 +75,12 @@ impl DesktopBackend for FakeDesktop {
         Ok(())
     }
 
-    async fn scroll(&self, _dir: ScrollDir, _amount: i32, _at: Option<[i32; 2]>) -> anyhow::Result<()> {
+    async fn scroll(
+        &self,
+        _dir: ScrollDir,
+        _amount: i32,
+        _at: Option<[i32; 2]>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -101,12 +106,21 @@ fn plan_mode_keeps_the_eyes_and_drops_the_hands() {
     assert!(build.spec("computer").is_some());
 
     let plan = build.readonly_only();
-    assert!(plan.spec("screenshot").is_some(), "plan mode must see the screen");
-    assert!(plan.spec("computer").is_none(), "plan mode must not drive it");
+    assert!(
+        plan.spec("screenshot").is_some(),
+        "plan mode must see the screen"
+    );
+    assert!(
+        plan.spec("computer").is_none(),
+        "plan mode must not drive it"
+    );
 
     // The full registry keeps `computer` out of a readonly batch by class.
     assert_eq!(build.spec("computer").unwrap().class, ToolClass::Process);
-    assert_eq!(build.spec("screenshot").unwrap().class, ToolClass::Observation);
+    assert_eq!(
+        build.spec("screenshot").unwrap().class,
+        ToolClass::Observation
+    );
     assert!(build.spec("screenshot").is_some_and(|s| s.readonly));
 }
 
@@ -119,31 +133,51 @@ fn permission_matrix_for_desktop_tools() {
         .spec("screenshot")
         .map(|s| s.readonly)
         .unwrap();
-    let comp_class = ToolRegistry::with_builtins().spec("computer").map(|s| s.class);
+    let comp_class = ToolRegistry::with_builtins()
+        .spec("computer")
+        .map(|s| s.class);
 
-    for mode in ["default", "acceptEdits", "auto", "dontAsk", "bypassPermissions"] {
+    for mode in [
+        "default",
+        "acceptEdits",
+        "auto",
+        "dontAsk",
+        "bypassPermissions",
+    ] {
         let g = PermissionGate::new(PermissionMode::from_str(mode), Default::default());
-        let shot = g.decide("screenshot", Some(ToolClass::Observation), shot_readonly, None, "");
+        let shot = g.decide(
+            "screenshot",
+            Some(ToolClass::Observation),
+            shot_readonly,
+            None,
+            "",
+        );
         assert_eq!(shot, Decision::Allow, "screenshot must auto-run in {mode}");
     }
 
-    // default / acceptEdits → confirm (a click is not an edit, unlike a patch)
-    for mode in ["default", "acceptEdits"] {
+    // default / acceptEdits / auto / bypass → confirm: `computer` is
+    // elevated above the mode default — synthetic input is the highest-risk
+    // class, so every interactive mode asks (the gate's hardcoded rule).
+    for mode in ["default", "acceptEdits", "auto", "bypassPermissions"] {
         let g = PermissionGate::new(PermissionMode::from_str(mode), Default::default());
         assert!(
-            matches!(g.decide("computer", comp_class, false, None, "left_click"), Decision::Ask { .. }),
+            matches!(
+                g.decide("computer", comp_class, false, None, "click"),
+                Decision::Ask { .. }
+            ),
             "computer must confirm in {mode}"
         );
     }
-    // auto / bypass → run
-    for mode in ["auto", "bypassPermissions"] {
-        let g = PermissionGate::new(PermissionMode::from_str(mode), Default::default());
-        assert_eq!(
-            g.decide("computer", comp_class, false, None, "click"),
-            Decision::Allow,
-            "computer runs in {mode}"
-        );
-    }
+    // …and only the session whitelist (the UI's "本会话允许" button) unlocks
+    // it — `rules.allow` short-circuits the elevated gate.
+    let mut rules = agent_kernel::permissions::PermissionRules::default();
+    rules.allow.insert("computer".to_string());
+    let g = PermissionGate::new(PermissionMode::from_str("auto"), rules);
+    assert_eq!(
+        g.decide("computer", comp_class, false, None, "click"),
+        Decision::Allow,
+        "session-allowed computer must run in auto"
+    );
     // dontAsk → deny outright (not a pre-approved tool)
     let g = PermissionGate::new(PermissionMode::DontAsk, Default::default());
     assert!(matches!(
@@ -161,27 +195,32 @@ fn permission_matrix_for_desktop_tools() {
 fn child_registries_never_carry_desktop_input() {
     let registry = ToolRegistry::with_builtins();
     let child_full = registry.filtered(|s| {
-        s.name != "delegate"
-            && s.name != "computer"
-            && s.class != ToolClass::HumanInteraction
+        s.name != "delegate" && s.name != "computer" && s.class != ToolClass::HumanInteraction
     });
     let child_ro = child_full.readonly_only();
 
     for child in [&child_full, &child_ro] {
-        assert!(child.spec("computer").is_none(), "a child must not drive the desktop");
+        assert!(
+            child.spec("computer").is_none(),
+            "a child must not drive the desktop"
+        );
     }
     // …while the eyes are inherited: a delegated visual check needs to see.
     assert!(child_full.spec("screenshot").is_some());
     assert!(child_ro.spec("screenshot").is_some());
 
-    // And the second guard: a child `ToolCtx` built from a refusing backend
-    // fails loudly even if a future path reaches `computer` by name.
+    // And the second guard: `for_subagent` is `auto`+`headless` — the
+    // elevated `computer` gate produces `Ask` in auto, and `headless`
+    // converts that `Ask` into a `Deny`. Between the registry exclusion
+    // and this, a delegated subagent can't drive the desktop on any path.
     let g = PermissionGate::for_subagent();
     let comp_class = registry.spec("computer").map(|s| s.class);
-    assert_eq!(
-        g.decide("computer", comp_class, false, None, "click"),
-        Decision::Allow,
-        "policy alone allows it — which is exactly why the registry must exclude it"
+    assert!(
+        matches!(
+            g.decide("computer", comp_class, false, None, "click"),
+            Decision::Deny { .. }
+        ),
+        "the headless gate must turn computer's Ask into a Deny"
     );
 }
 
@@ -193,13 +232,21 @@ async fn screenshot_stages_a_png_and_returns_the_frame() {
     let dir = tempfile::tempdir().unwrap();
     let fake = Arc::new(FakeDesktop::default());
     let res = ToolRegistry::with_builtins()
-        .dispatch("screenshot", serde_json::json!({}), ctx_at(dir.path(), fake))
+        .dispatch(
+            "screenshot",
+            serde_json::json!({}),
+            ctx_at(dir.path(), fake),
+        )
         .await
         .unwrap();
 
     assert_eq!(res.ui_type, Some("screenshot"));
     // The text teaches the coordinate contract the model must follow.
-    assert!(res.content.contains("display: 1920x1080"), "{}", res.content);
+    assert!(
+        res.content.contains("display: 1920x1080"),
+        "{}",
+        res.content
+    );
     assert!(res.content.contains("image: 4x4"), "{}", res.content);
     assert!(res.content.contains("computer"), "{}", res.content);
 
@@ -214,7 +261,10 @@ async fn screenshot_stages_a_png_and_returns_the_frame() {
     // …and the frame is attached for a vision model to read.
     assert_eq!(res.images.len(), 1);
     assert_eq!(res.images[0].path, entries[0]);
-    assert!(res.images[0].data_url().is_some(), "frame must be wire-encodable");
+    assert!(
+        res.images[0].data_url().is_some(),
+        "frame must be wire-encodable"
+    );
 }
 
 /// `computer` forwards the action, in screenshot coordinates, to the backend —
@@ -232,7 +282,10 @@ async fn computer_delivers_actions_to_the_backend() {
     )
     .await
     .unwrap();
-    assert_eq!(fake.clicks.lock().unwrap().as_slice(), &[([12, 34], "left")]);
+    assert_eq!(
+        fake.clicks.lock().unwrap().as_slice(),
+        &[([12, 34], "left")]
+    );
 
     let out = r
         .dispatch(
@@ -243,7 +296,10 @@ async fn computer_delivers_actions_to_the_backend() {
         .await
         .unwrap();
     assert!(out.content.contains("5 characters"), "{}", out.content);
-    assert_eq!(fake.typed.lock().unwrap().as_slice(), &["hello".to_string()]);
+    assert_eq!(
+        fake.typed.lock().unwrap().as_slice(),
+        &["hello".to_string()]
+    );
 
     let out = r
         .dispatch(

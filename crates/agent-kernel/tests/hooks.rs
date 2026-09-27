@@ -67,6 +67,8 @@ fn actor_for(
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        memory_enabled: false,
+        memory_distill: false,
         queued_prompts: Vec::new(),
         plugins: None,
         provider_name: "test".into(),
@@ -123,10 +125,18 @@ async fn before_tool_hook_vetoes_with_its_reason() {
             "run": {"command": "./veto.sh"},
         }]),
     );
-    script(ws, "guard", "veto.sh", r#"echo '{"action":"veto","reason":"blocked by guard policy"}'"#);
+    script(
+        ws,
+        "guard",
+        "veto.sh",
+        r#"echo '{"action":"veto","reason":"blocked by guard policy"}'"#,
+    );
 
     let stub = ScriptedProvider::new();
-    stub.push_script(tool_call_script("list_dir", serde_json::json!({"path": "."})));
+    stub.push_script(tool_call_script(
+        "list_dir",
+        serde_json::json!({"path": "."}),
+    ));
     stub.push_script(answer_script("understood"));
     let (mut actor, mut channels) = actor_for(ws, Arc::new(stub));
     actor.set_hooks(chain);
@@ -178,7 +188,10 @@ async fn before_tool_hook_rewrites_arguments() {
 
     let stub = ScriptedProvider::new();
     // The model asks for the workspace root; the hook redirects it.
-    stub.push_script(tool_call_script("list_dir", serde_json::json!({"path": "."})));
+    stub.push_script(tool_call_script(
+        "list_dir",
+        serde_json::json!({"path": "."}),
+    ));
     stub.push_script(answer_script("done"));
     let (mut actor, mut channels) = actor_for(ws, Arc::new(stub));
     actor.set_hooks(chain);
@@ -215,7 +228,12 @@ async fn user_input_hook_blocks_the_turn() {
             "run": {"command": "./block.sh"},
         }]),
     );
-    script(ws, "gate", "block.sh", r#"echo '{"action":"block","reason":"input rejected by gate"}'"#);
+    script(
+        ws,
+        "gate",
+        "block.sh",
+        r#"echo '{"action":"block","reason":"input rejected by gate"}'"#,
+    );
 
     let stub = ScriptedProvider::new();
     stub.push_script(answer_script("should never be sent"));
@@ -260,7 +278,10 @@ async fn state_transition_hook_sees_each_change_once() {
     script(ws, "audit", "log.sh", "cat >> transitions.log");
 
     let stub = ScriptedProvider::new();
-    stub.push_script(tool_call_script("list_dir", serde_json::json!({"path": "."})));
+    stub.push_script(tool_call_script(
+        "list_dir",
+        serde_json::json!({"path": "."}),
+    ));
     stub.push_script(answer_script("done"));
     let (mut actor, mut channels) = actor_for(ws, Arc::new(stub));
     actor.set_hooks(chain);
@@ -284,8 +305,16 @@ async fn state_transition_hook_sees_each_change_once() {
         .filter_map(|v| v["new"].as_str().map(String::from))
         .collect();
     assert!(!states.is_empty(), "no parsable payload in {log:?}");
-    for expected in ["ScanningWorkspace", "Reasoning", "ExecutingTool", "Finished"] {
-        assert!(states.contains(&expected.to_string()), "{expected} missing: {states:?}");
+    for expected in [
+        "ScanningWorkspace",
+        "Reasoning",
+        "ExecutingTool",
+        "Finished",
+    ] {
+        assert!(
+            states.contains(&expected.to_string()),
+            "{expected} missing: {states:?}"
+        );
     }
     // No state repeats back-to-back (the shared slot de-duplicates the
     // engine's announcement and the session's own mirror of it).

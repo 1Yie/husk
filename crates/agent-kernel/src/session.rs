@@ -5,7 +5,7 @@
 //! and — in later stages — permission manager, compaction, hunk tracker.
 //! This is the single writer of `history`: tools never mutate it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_context::{
@@ -88,10 +88,11 @@ fn denied_tools(denials: &[String]) -> Option<String> {
 /// so the distiller falls back to its deterministic path. Captured at
 /// spawn: a later `/model` swap leaves the distiller on the original
 /// provider — acceptable for a background bookkeeping call.
-fn distill_summarizer(cfg: &SessionConfig) -> agent_context::memory::Summarizer {
-    let provider = cfg.provider.clone();
-    let model = cfg.model.clone();
-    let params = cfg.model_params.clone().unwrap_or_default();
+fn distill_summarizer(
+    provider: std::sync::Arc<dyn agent_llm::LlmProvider>,
+    model: String,
+    params: agent_llm::ModelParams,
+) -> agent_context::memory::Summarizer {
     std::sync::Arc::new(move |prompt: String| {
         let provider = provider.clone();
         let model = model.clone();
@@ -136,6 +137,24 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
         "\n\n## User instructions — {label} ({})\n\n{text}",
         path.display()
     ));
+}
+
+/// Open the workspace-keyed memory store — `memory.db` under the app's
+/// data dir. Test builds redirect to a per-process temp file so spawned
+/// sessions don't write into the user's real db (nor contend on its
+/// cross-process redb lock while the app is running).
+fn open_memory_store(workspace_root: &Path) -> Option<MemoryStore> {
+    #[cfg(test)]
+    let db_dir = {
+        let dir = std::env::temp_dir().join(format!("husk-test-{}", std::process::id()));
+        Some(dir)
+    };
+    #[cfg(not(test))]
+    let db_dir = crate::session_store::app_data_dir();
+    db_dir.and_then(|d| {
+        let _ = std::fs::create_dir_all(&d);
+        MemoryStore::open(&d.join("memory.db"), workspace_root).ok()
+    })
 }
 
 /// SessionActor configuration for one workspace.
@@ -221,6 +240,14 @@ pub struct SessionActor {
     /// Memory store + post-turn distiller (background task).
     memory: Option<Arc<MemoryStore>>,
     distiller: Option<Arc<TurnDistiller>>,
+    /// Provider/model/params captured at spawn — the distiller's summarizer
+    /// is rebuilt from these when `SetMemory` toggles memory on mid-session
+    /// (a `/model` swap doesn't follow it, same as the spawn contract).
+    distill_ctx: (
+        std::sync::Arc<dyn agent_llm::LlmProvider>,
+        String,
+        agent_llm::ModelParams,
+    ),
     /// Stable session identity — sidebar ordering + persistence file name.
     session_id: i64,
     /// Per-workspace session store — snapshots history at turn boundaries.
@@ -369,22 +396,7 @@ impl SessionActor {
         let mut skills = crate::skills::SkillManager::new(&cfg.workspace_root);
         let (memory, distiller, initial_memory_block) = {
             let store = if cfg.memory_enabled {
-                // Test builds redirect to a per-process temp file — sessions
-                // spawned in tests must not write into the user's real
-                // memory.db (nor fail its cross-process lock when the app
-                // is running).
-                #[cfg(test)]
-                let db_dir = {
-                    let dir = std::env::temp_dir()
-                        .join(format!("husk-test-{}", std::process::id()));
-                    Some(dir)
-                };
-                #[cfg(not(test))]
-                let db_dir = crate::session_store::app_data_dir();
-                db_dir.and_then(|d| {
-                    let _ = std::fs::create_dir_all(&d);
-                    MemoryStore::open(&d.join("memory.db"), &cfg.workspace_root).ok()
-                })
+                open_memory_store(&cfg.workspace_root)
             } else {
                 None
             };
@@ -393,7 +405,11 @@ impl SessionActor {
                     let s = Arc::new(s);
                     let d = TurnDistiller::new(s.clone());
                     let d = if cfg.memory_distill {
-                        d.with_summarizer(distill_summarizer(&cfg))
+                        d.with_summarizer(distill_summarizer(
+                            cfg.provider.clone(),
+                            cfg.model.clone(),
+                            cfg.model_params.clone().unwrap_or_default(),
+                        ))
                     } else {
                         d
                     };
@@ -426,7 +442,36 @@ impl SessionActor {
         // Fresh session → just the rendered system prompt; resume → the
         // persisted history (its system prompt was rendered at that session's
         // spawn — memory/workspace baked in for that turn).
-        let history = prior_history.unwrap_or_else(|| vec![ChatMessage::system(system_prompt)]);
+        let is_resume = prior_history.is_some();
+        let mut history = prior_history.unwrap_or_else(|| vec![ChatMessage::system(system_prompt)]);
+
+        // A resumed session's system prompt was frozen at ITS spawn —
+        // refresh the volatile regions so a reopened conversation keeps up:
+        //   - `<!-- memory -->` markers let `set_memory_block` swap only the
+        //     recall block (persona/facts/episodes change between sessions);
+        //   - the trailing `## User instructions` sections are re-appended
+        //     from the CURRENT AGENTS.md files (they're always the tail of
+        //     the prompt, so truncating at the first marker restores them
+        //     exactly).
+        if is_resume {
+            if let Some(sys) = history.get_mut(0) {
+                if let Some(c) = sys.content.take() {
+                    let mut c = set_memory_block(&c, &initial_memory_block);
+                    if let Some(idx) = c.find("\n\n## User instructions — ") {
+                        c.truncate(idx);
+                        if let Some(cfg_dir) = dirs::config_dir() {
+                            append_instructions(&mut c, &cfg_dir.join("husk/AGENTS.md"), "user");
+                        }
+                        append_instructions(
+                            &mut c,
+                            &cfg.workspace_root.join("AGENTS.md"),
+                            "project",
+                        );
+                    }
+                    sys.content = Some(c);
+                }
+            }
+        }
 
         // Session persistence — per-workspace store; the actor snapshots
         // `history` at turn boundaries so a crashed/killed app resumes mid-
@@ -566,6 +611,11 @@ impl SessionActor {
                 hooks: HookChain::new(),
                 memory,
                 distiller,
+                distill_ctx: (
+                    cfg.provider.clone(),
+                    cfg.model.clone(),
+                    cfg.model_params.clone().unwrap_or_default(),
+                ),
                 session_id,
                 store,
                 last_usage: None,
@@ -1430,6 +1480,29 @@ impl SessionActor {
             }
             UiCommand::UndoLastTurn => {
                 self.undo_last_turn().await;
+            }
+            UiCommand::SetMemory { enabled, distill } => {
+                if !enabled {
+                    // Off means fully off — no recall block, no writes.
+                    self.memory = None;
+                    self.distiller = None;
+                    return;
+                }
+                if self.memory.is_none() {
+                    let Some(s) = open_memory_store(&self.workspace_root) else {
+                        let line = "记忆功能打开失败：无法打开 memory.db".to_string();
+                        let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+                        self.history.push(ChatMessage::notice_error(line));
+                        return;
+                    };
+                    self.memory = Some(Arc::new(s));
+                }
+                let mut d = TurnDistiller::new(self.memory.clone().unwrap());
+                if distill {
+                    let (p, m, params) = &self.distill_ctx;
+                    d = d.with_summarizer(distill_summarizer(p.clone(), m.clone(), params.clone()));
+                }
+                self.distiller = Some(Arc::new(d));
             }
         }
     }

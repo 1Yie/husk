@@ -16,7 +16,7 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 #[tokio::test]
 async fn registry_lists_builtins() {
     let r = registry();
-    assert_eq!(r.len(), 17);
+    assert_eq!(r.len(), 18);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -35,10 +35,14 @@ async fn registry_lists_builtins() {
         "todo",
         "serena",
         "skill",
+        "remember",
         "web_fetch",
         "webfetch",
         "screenshot",
         "computer",
+        "delegate",
+        "ask_question",
+        "batch_execute",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }

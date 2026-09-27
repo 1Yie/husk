@@ -94,25 +94,8 @@ pub fn should_compact(tokens: usize, window: usize) -> bool {
 pub fn sanitize_for_sample(
     history: &mut Vec<ChatMessage>,
     budget_tokens: usize,
-    native_tool_calls: bool,
     keep_images: bool,
 ) {
-    // (1) flatten tool calls → appended as `[call: name(args)]` text, but
-    // ONLY for text-protocol providers. A native provider needs the
-    // structured `tool_calls` array intact for its `function_call` items.
-    if !native_tool_calls {
-        for m in history.iter_mut() {
-            if let Some(calls) = m.tool_calls.take() {
-                let flat: String = calls
-                    .iter()
-                    .map(|c| format!("\n[call: {}({})]", c.name, abbreviate(&c.arguments, 200)))
-                    .collect();
-                let mut c = m.content.take().unwrap_or_default();
-                c.push_str(&flat);
-                m.content = Some(c);
-            }
-        }
-    }
     // (2) reasoning stays on the message. It is a *display* field: the wire
     // bodies are built from role/content/tool_calls only, and `openai_compat`
     // (the one adapter that serializes the whole struct) strips it. Dropping
@@ -130,6 +113,27 @@ pub fn sanitize_for_sample(
 
     // (4) fit to budget — drop oldest non-system messages.
     fit_conversation_to_budget(history, budget_tokens);
+}
+
+/// Flatten `tool_calls` → `[call: name(args)]` text — the wire shape for
+/// text-protocol providers (they can't read a structured `tool_calls`
+/// array). **Wire-only**: apply on the request clone, never on the live
+/// history — the persisted form keeps structured `tool_calls` so the
+/// snapshot/replay keeps real call structure and `strip_call_echo`
+/// never has to choose between "intentional flatten" and "provider
+/// echo leaked into content" (which was the same text, indistinguishable).
+pub fn flatten_tool_calls_for_wire(history: &mut Vec<ChatMessage>) {
+    for m in history.iter_mut() {
+        if let Some(calls) = m.tool_calls.take() {
+            let flat: String = calls
+                .iter()
+                .map(|c| format!("\n[call: {}({})]", c.name, abbreviate(&c.arguments, 200)))
+                .collect();
+            let mut c = m.content.take().unwrap_or_default();
+            c.push_str(&flat);
+            m.content = Some(c);
+        }
+    }
 }
 
 /// Drop oldest non-system messages until `estimate_tokens(history)` fits
@@ -444,13 +448,14 @@ mod tests {
                 duration_ms: None,
             },
         ];
-        // text-protocol provider → tool_calls flattened into message text.
-        sanitize_for_sample(&mut h, 100_000, /*native_tool_calls*/ false, true);
+        // text-protocol provider → tool_calls flatten into message text on
+        // the wire-only copy (the persisted history keeps structure).
+        flatten_tool_calls_for_wire(&mut h);
         assert!(h[1].tool_calls.is_none());
         assert!(h[1].content.as_deref().unwrap().contains("[call: list_dir"));
 
-        // native provider → tool_calls stay structured (NOT flattened),
-        // else the matching Role::Tool result would orphan (P1-b).
+        // native provider path → no flatten call — tool_calls stay
+        // structured, else the matching Role::Tool result orphans (P1-b).
         let mut h2 = vec![
             msg(Role::System, "sys"),
             ChatMessage {
@@ -471,7 +476,7 @@ mod tests {
                 duration_ms: None,
             },
         ];
-        sanitize_for_sample(&mut h2, 100_000, /*native_tool_calls*/ true, true);
+        sanitize_for_sample(&mut h2, 100_000, true);
         assert!(
             h2[1].tool_calls.is_some(),
             "native tool_calls must not flatten"
@@ -488,7 +493,7 @@ mod tests {
             msg(Role::Assistant, "a"),
         ];
         // Budget so only ~system + last two survive.
-        sanitize_for_sample(&mut h, 200, true, true);
+        sanitize_for_sample(&mut h, 200, true);
         assert!(h.iter().all(|m| m.role != Role::Tool));
         assert!(h[0].role == Role::System); // system never dropped
     }
@@ -542,7 +547,7 @@ mod tests {
         // drop removes it and the orphaned call_a entry, nothing else.
         let total = estimate_tokens(&h);
         let call_a_out = 500 * "output_a ".len() / 4 + 4;
-        sanitize_for_sample(&mut h, total - call_a_out + 50, true, true);
+        sanitize_for_sample(&mut h, total - call_a_out + 50, true);
         // The bulky call_a output is gone; its call must be gone too.
         let assistant = h
             .iter()

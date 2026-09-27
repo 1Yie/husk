@@ -82,6 +82,11 @@ struct Inner {
     /// Last state any clone of this chain observed. Seeded `Idle` so the
     /// first real transition (→ `ScanningWorkspace`) reports its origin.
     last_state: std::sync::Mutex<AgentState>,
+    /// Single-consumer dispatch pump for `observe_nowait` — spawned
+    /// transitions used to race each other, so an R→X→R sequence could log
+    /// `R` twice (X's hook wrote after R's). One channel = arrival order.
+    transition_tx:
+        std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<(AgentState, AgentState)>>>,
 }
 
 impl Default for Inner {
@@ -89,6 +94,7 @@ impl Default for Inner {
         Self {
             hooks: std::sync::RwLock::new(Vec::new()),
             last_state: std::sync::Mutex::new(AgentState::Idle),
+            transition_tx: std::sync::Mutex::new(None),
         }
     }
 }
@@ -113,11 +119,7 @@ impl HookChain {
     /// Swap the whole chain — the reload path. `&self`, so the sessions and
     /// engines already holding a clone see the new hooks immediately.
     pub fn replace(&self, hooks: Vec<Arc<dyn AgentHook>>) {
-        let mut guard = self
-            .inner
-            .hooks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.hooks.write().unwrap_or_else(|e| e.into_inner());
         *guard = hooks;
     }
 
@@ -135,10 +137,7 @@ impl HookChain {
     }
 
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, Vec<Arc<dyn AgentHook>>> {
-        self.inner
-            .hooks
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
+        self.inner.hooks.write().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Clone the hook list out of the lock — the lock is never held across an
@@ -203,9 +202,33 @@ impl HookChain {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let chain = self.clone();
-        let new = new.clone();
-        handle.spawn(async move { chain.run_state_transition(&old, &new).await });
+        // Lazily spawn the single-consumer pump on first use — transitions
+        // then dispatch in arrival order (the old per-transition spawn let
+        // concurrent hook writes reorder).
+        let tx = {
+            let mut slot = self
+                .inner
+                .transition_tx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                let (tx, mut rx) =
+                    tokio::sync::mpsc::unbounded_channel::<(AgentState, AgentState)>();
+                let weak = Arc::downgrade(&self.inner);
+                handle.spawn(async move {
+                    while let Some((old, new)) = rx.recv().await {
+                        let Some(inner) = weak.upgrade() else {
+                            break;
+                        };
+                        let chain = HookChain { inner };
+                        chain.run_state_transition(&old, &new).await;
+                    }
+                });
+                *slot = Some(tx);
+            }
+            slot.as_ref().unwrap().clone()
+        };
+        let _ = tx.send((old, new.clone()));
     }
 
     /// `on_user_input` chain — returns the first non-`Continue` action or
@@ -316,8 +339,8 @@ impl AgentHook for CommandAgentHook {
         }
         // `ToolCall.arguments` is the wire's incremental JSON text, not a
         // value — a rewrite round-trips through `serde_json`.
-        let args: serde_json::Value = serde_json::from_str(&call.arguments)
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let args: serde_json::Value =
+            serde_json::from_str(&call.arguments).unwrap_or_else(|_| serde_json::json!({}));
         match self.spec.run_before_tool(&call.name, &args).await {
             agent_plugin::ToolVerdict::Continue => Ok(()),
             // A veto travels as the trait's `Err` — its text is the reason.
@@ -336,8 +359,8 @@ impl AgentHook for CommandAgentHook {
         if !self.spec.matches(&call.name) {
             return Ok(());
         }
-        let args: serde_json::Value = serde_json::from_str(&call.arguments)
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let args: serde_json::Value =
+            serde_json::from_str(&call.arguments).unwrap_or_else(|_| serde_json::json!({}));
         if let Some(rewritten) = self.spec.run_after_tool(&call.name, &args, output).await {
             *output = rewritten;
         }

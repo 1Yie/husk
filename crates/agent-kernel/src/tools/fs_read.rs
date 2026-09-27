@@ -80,7 +80,12 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let lines: Vec<&str> = content.lines().collect();
 
     match mode {
-        "outline" => Ok(ToolResult::text(outline(&parsed.path, &lines, &hash))),
+        "outline" => Ok(ToolResult::text(outline(
+            &parsed.path,
+            &content,
+            &lines,
+            &hash,
+        ))),
         "search" => {
             let pat = parsed
                 .pattern
@@ -177,8 +182,18 @@ fn search(path: &str, lines: &[&str], pattern: &str, hash: &str) -> String {
 /// `lines` slice for the doc-comment look-back and multi-line signature span,
 /// never rescans `content`. Absorbs up to `MAX_SIG_SPAN` continuation lines
 /// for a signature that doesn't end `{`/`;` on its first line.
-fn outline(path: &str, lines: &[&str], hash: &str) -> String {
+fn outline(path: &str, content: &str, lines: &[&str], hash: &str) -> String {
     let mut out = header(path, hash);
+    // Tree-sitter path (feature-gated): AST-precise when the grammar is
+    // compiled in; `None` — unknown ext, parse failure, no items — falls
+    // through to the heuristic below.
+    #[cfg(not(feature = "tree-sitter"))]
+    let _ = content;
+    #[cfg(feature = "tree-sitter")]
+    if let Some(ts) = super::outline_ts::outline_treesitter(path, content) {
+        out.push_str(&ts);
+        return out;
+    }
     let mut emitted = 0usize;
     let total = lines.len();
     let mut i = 0;
@@ -250,18 +265,39 @@ fn looks_like_signature(trimmed: &str) -> bool {
         "pub type",
         "pub mod",
         "mod ",
+        // Python / Ruby / Elixir
         "def ",
         "class ",
         "async def ",
+        // JS / TypeScript
         "function ",
         "const ",
         "export ",
         "interface ",
         "type ",
+        // Go / Swift / Kotlin
+        "func ",
+        "func(",
+        "fun ",
+        "var ",
+        "val ",
+        "package ",
+        "extension ",
+        "protocol ",
+        "data class",
+        "object ",
+        // Java / C# / C-family
         "public ",
         "private ",
         "protected ",
         "static ",
+        "final ",
+        "abstract ",
+        "synchronized ",
+        "native ",
+        "typedef ",
+        "namespace ",
+        "module ",
     ];
     PREFIXES.iter().any(|p| t.starts_with(p))
         || t.starts_with("#[")
@@ -319,7 +355,7 @@ mod tests {
     #[test]
     fn outline_multiline_signature_is_absorbed() {
         let code = "/// Service entry\npub async fn bootstrap(\n    port: u16,\n    host: &str,\n) -> anyhow::Result<()> {\n    body()\n}\n";
-        let out = outline("s.rs", &lines(code), "h");
+        let out = outline("s.rs", code, &lines(code), "h");
         assert!(out.contains("/// Service entry"));
         assert!(out
             .contains("pub async fn bootstrap( port: u16, host: &str, ) -> anyhow::Result<()> {"));
@@ -328,8 +364,39 @@ mod tests {
     #[test]
     fn outline_single_line_signature_unchanged() {
         let code = "fn foo() {\n    x()\n}\nfn bar() {}\n";
-        let out = outline("s.rs", &lines(code), "h");
+        let out = outline("s.rs", code, &lines(code), "h");
         assert!(out.contains("fn foo() {"));
         assert!(out.contains("fn bar() {}"));
+    }
+
+    /// The prefix table must cover the mainstream languages — the outline
+    /// is a heuristic skeleton, but a Go/Python/Java file that renders
+    /// empty is a broken feature, not a soft one.
+    #[test]
+    fn outline_catches_mainstream_languages() {
+        let go = "package main\n\nfunc serve(port int) error {\n\treturn nil\n}\n\ntype Config struct {\n\tPort int\n}\n";
+        let out = outline("s.go", go, &lines(go), "h");
+        assert!(out.contains("func serve"), "{out}");
+        assert!(out.contains("type Config"), "{out}");
+
+        let py = "class App:\n    pass\n\nasync def main():\n    pass\n";
+        let out = outline("s.py", py, &lines(py), "h");
+        assert!(out.contains("class App"), "{out}");
+        assert!(out.contains("async def main"), "{out}");
+
+        let java =
+            "public class Main {\n    public static void run() {}\n}\nfinal class Const {}\n";
+        let out = outline("s.java", java, &lines(java), "h");
+        assert!(out.contains("public class Main"), "{out}");
+        assert!(out.contains("final class Const"), "{out}");
+
+        let ts = "export interface Opt { x: number }\ntype Id = string\n";
+        let out = outline("s.ts", ts, &lines(ts), "h");
+        assert!(out.contains("export interface Opt"), "{out}");
+
+        let kt = "data class User(val name: String)\nfun main() {}\n";
+        let out = outline("s.kt", kt, &lines(kt), "h");
+        assert!(out.contains("data class User"), "{out}");
+        assert!(out.contains("fun main"), "{out}");
     }
 }

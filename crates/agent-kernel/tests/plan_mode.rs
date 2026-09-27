@@ -15,10 +15,7 @@ use common::ScriptedProvider;
 fn spawn_plan(
     dir: &std::path::Path,
     stub: Arc<ScriptedProvider>,
-) -> (
-    SessionActor,
-    agent_kernel::channels::UiChannels,
-) {
+) -> (SessionActor, agent_kernel::channels::UiChannels) {
     SessionActor::spawn(SessionConfig {
         workspace_root: dir.to_path_buf(),
         provider: stub,
@@ -33,6 +30,8 @@ fn spawn_plan(
         compact_at: None,
         model_input: Vec::new(),
         model_params: None,
+        memory_enabled: false,
+        memory_distill: false,
         queued_prompts: Vec::new(),
         plugins: None,
         provider_name: "test".into(),
@@ -83,7 +82,10 @@ async fn plan_schema_offers_submit_plan_and_no_writers() {
         .expect("a request went out");
     assert!(names.contains(&"submit_plan".to_string()), "{names:?}");
     for readonly in ["smart_read", "smart_grep", "list_dir"] {
-        assert!(names.contains(&readonly.to_string()), "missing {readonly}: {names:?}");
+        assert!(
+            names.contains(&readonly.to_string()),
+            "missing {readonly}: {names:?}"
+        );
     }
     for writer in ["fuzzy_patch", "apply_patch", "bash", "smart_test_runner"] {
         assert!(
@@ -188,13 +190,10 @@ async fn an_unsubmitted_plan_gets_at_most_one_nudge() {
     );
     assert!(
         matches!(
-            events
-                .iter()
-                .rev()
-                .find_map(|e| match e {
-                    UiEvent::StateChanged(s) => Some(s),
-                    _ => None,
-                }),
+            events.iter().rev().find_map(|e| match e {
+                UiEvent::StateChanged(s) => Some(s),
+                _ => None,
+            }),
             Some(agent_ipc::AgentState::Finished)
         ),
         "a nudged turn still finishes cleanly"

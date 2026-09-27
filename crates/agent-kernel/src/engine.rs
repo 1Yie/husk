@@ -559,16 +559,27 @@ impl Engine {
             // oldest messages at 90%. Compacting here keeps the summary (and
             // the card) instead of losing history to truncation.
             self.auto_compact_if_needed(io, history).await;
-            // Sanitize every round (flatten tool calls, strip reasoning,
-            // budget-fit). P1-b: only flatten tool_calls into text for a
-            // text-protocol provider — native function-calling needs the
-            // structured array intact or every Role::Tool result orphans.
+            // Sanitize every round (image policy + budget-fit). Text-
+            // protocol flatten is a wire-only step below — the live
+            // history keeps structured `tool_calls` either way.
             compaction::sanitize_for_sample(
                 history,
                 self.context_window.saturating_mul(9) / 10,
-                native_tc,
                 self.supports_images(),
             );
+            // Text-protocol flatten goes on a *wire-only copy*: the
+            // persisted history keeps structured `tool_calls`, so the
+            // snapshot replays real calls and the resume sanitizer's
+            // `strip_call_echo` can never confuse an intentional flatten
+            // with a provider echo (they were the same text).
+            let mut wire_history;
+            let wire_messages: &[ChatMessage] = if native_tc {
+                history
+            } else {
+                wire_history = history.clone();
+                compaction::flatten_tool_calls_for_wire(&mut wire_history);
+                &wire_history
+            };
 
             let mut assembler = ToolCallAssembler::new();
             let mut round_text = String::new();
@@ -640,7 +651,7 @@ impl Engine {
                 }
                 r = self.sampler.sample(
                     req,
-                    history,
+                    wire_messages,
                     |chunk| {
                         if retry_reset.swap(false, std::sync::atomic::Ordering::Relaxed) {
                             round_text.clear();
@@ -967,7 +978,7 @@ impl Engine {
                 ts: Some(agent_llm::types::now_ms()),
                 images: Vec::new(),
                 reasoning: Some(reasoning),
-                    duration_ms: reasoning_ms,
+                duration_ms: reasoning_ms,
             });
 
             tool_rounds += 1;
@@ -1084,9 +1095,9 @@ impl Engine {
                     continue;
                 }
                 let call = &call_mut; // hooks may have rewritten args
-                // Gate + dispatch must see the *rewritten* arguments; `args`
-                // above is the model's own request, kept for the step card's
-                // preview and the audit trail.
+                                      // Gate + dispatch must see the *rewritten* arguments; `args`
+                                      // above is the model's own request, kept for the step card's
+                                      // preview and the audit trail.
                 let args: serde_json::Value = serde_json::from_str(&call.arguments)
                     .unwrap_or_else(|_| serde_json::json!({ "_malformed": call.arguments }));
 
@@ -1251,7 +1262,9 @@ impl Engine {
                                 } else if let Some(mgr) = self.plugins() {
                                     match mgr.dispatch_tool_call(&call.name, args).await {
                                         Ok(out) => (out, None, true, Vec::new(), Vec::new()),
-                                        Err(_) => (e.to_string(), None, false, Vec::new(), Vec::new()),
+                                        Err(_) => {
+                                            (e.to_string(), None, false, Vec::new(), Vec::new())
+                                        }
                                     }
                                 } else {
                                     (e.to_string(), None, false, Vec::new(), Vec::new())
@@ -1342,9 +1355,9 @@ impl Engine {
                 };
                 // The call's wall time persists with the row — a replayed
                 // tools step re-derives its span from `ts - duration_ms`.
-                history.push(result_msg.with_duration_ms(Some(
-                    call_started.elapsed().as_millis() as i64,
-                )));
+                history.push(
+                    result_msg.with_duration_ms(Some(call_started.elapsed().as_millis() as i64)),
+                );
             }
 
             // If we have reached or exceeded the tool limit, force the next round to be a synthesis round without tools
