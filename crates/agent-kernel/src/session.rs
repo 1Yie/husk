@@ -61,10 +61,67 @@ fn set_memory_block(content: &str, block: &str) -> String {
 /// distiller turns into a `user steered: …` fact — `None` when the turn ran
 /// without steering.
 fn steered_with(steers: &[String]) -> Option<String> {
-    if steers.is_empty() {
+    let kept: Vec<&str> = steers
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if kept.is_empty() {
         return None;
     }
-    Some(steers.join("; "))
+    Some(kept.join("; "))
+}
+
+/// Join the turn's denied tool names into the distiller's correction string —
+/// an approval-card deny is a correction ("don't run that"), so it seeds the
+/// same `user corrected: …` fact a typed steer would.
+fn denied_tools(denials: &[String]) -> Option<String> {
+    if denials.is_empty() {
+        return None;
+    }
+    Some(format!("denied tool(s): {}", denials.join(", ")))
+}
+
+/// The kernel's end of the distill contract — a one-shot completion on the
+/// session's own provider (tools off, temperature 0). `Sampler::sample`
+/// carries the retry policy; an `Err` or an empty body degrades to `None`
+/// so the distiller falls back to its deterministic path. Captured at
+/// spawn: a later `/model` swap leaves the distiller on the original
+/// provider — acceptable for a background bookkeeping call.
+fn distill_summarizer(cfg: &SessionConfig) -> agent_context::memory::Summarizer {
+    let provider = cfg.provider.clone();
+    let model = cfg.model.clone();
+    let params = cfg.model_params.clone().unwrap_or_default();
+    std::sync::Arc::new(move |prompt: String| {
+        let provider = provider.clone();
+        let model = model.clone();
+        let params = params.clone();
+        Box::pin(async move {
+            let sampler = agent_llm::sampler::Sampler::new(provider);
+            let mut out = String::new();
+            let req = agent_llm::sampler::SampleRequest {
+                model: &model,
+                temperature: 0.0,
+                tools: None,
+                reasoning_effort: None,
+                params: &params,
+            };
+            sampler
+                .sample(
+                    req,
+                    &[agent_llm::types::ChatMessage::user(prompt)],
+                    |chunk| {
+                        if let agent_llm::types::StreamChunk::ContentDelta(t) = chunk {
+                            out.push_str(t.as_str());
+                        }
+                    },
+                    |_| {},
+                )
+                .await
+                .ok()?;
+            (!out.trim().is_empty()).then_some(out)
+        })
+    })
 }
 
 fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
@@ -119,6 +176,12 @@ pub struct SessionConfig {
     /// Parked follow-up prompts restored from `SessionMeta` — the
     /// composer's queue survives session switches and app restarts.
     pub queued_prompts: Vec<String>,
+    /// Memory subsystem master switch — `false` opens no `MemoryStore`:
+    /// no `<memory>` block refresh and no episode/fact writes.
+    pub memory_enabled: bool,
+    /// Model distillation switch — `false` keeps the deterministic
+    /// distiller but drops the per-turn summarizer model call.
+    pub memory_distill: bool,
 }
 
 /// One live session: owns history + engine, consumes commands, emits events.
@@ -299,22 +362,43 @@ impl SessionActor {
         // `hash(canonical_root)`. `{{MEMORY_BLOCK}}` is refreshed per-turn
         // (recall happens in `run_prompt`, not once at spawn — the block
         // must track the evolving store).
+        // `memory_enabled` (default prefs) is the master switch: no store
+        // handle → no block refresh and no distill writes. `memory_distill`
+        // gates only the per-turn summarizer call — deterministic
+        // episode/fact writes keep running.
         let mut skills = crate::skills::SkillManager::new(&cfg.workspace_root);
         let (memory, distiller, initial_memory_block) = {
-            let db_dir = crate::session_store::app_data_dir();
-            let store = db_dir.and_then(|d| {
-                let _ = std::fs::create_dir_all(&d);
-                MemoryStore::open(&d.join("memory.db"), &cfg.workspace_root).ok()
-            });
+            let store = if cfg.memory_enabled {
+                // Test builds redirect to a per-process temp file — sessions
+                // spawned in tests must not write into the user's real
+                // memory.db (nor fail its cross-process lock when the app
+                // is running).
+                #[cfg(test)]
+                let db_dir = {
+                    let dir = std::env::temp_dir()
+                        .join(format!("husk-test-{}", std::process::id()));
+                    Some(dir)
+                };
+                #[cfg(not(test))]
+                let db_dir = crate::session_store::app_data_dir();
+                db_dir.and_then(|d| {
+                    let _ = std::fs::create_dir_all(&d);
+                    MemoryStore::open(&d.join("memory.db"), &cfg.workspace_root).ok()
+                })
+            } else {
+                None
+            };
             match store {
                 Some(s) => {
                     let s = Arc::new(s);
+                    let d = TurnDistiller::new(s.clone());
+                    let d = if cfg.memory_distill {
+                        d.with_summarizer(distill_summarizer(&cfg))
+                    } else {
+                        d
+                    };
                     let block = s.memory_block("workspace").unwrap_or_default();
-                    (
-                        Some(s.clone()),
-                        Some(Arc::new(TurnDistiller::new(s))),
-                        block,
-                    )
+                    (Some(s.clone()), Some(Arc::new(d)), block)
                 }
                 None => (None, None, "(no memory)".to_string()),
             }
@@ -378,6 +462,7 @@ impl SessionActor {
         let mut tool_ctx =
             ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
         tool_ctx.cancel = Some(cancel.clone());
+        tool_ctx.memory = memory.clone();
         tool_ctx.subagent = Some(crate::tools::delegate::SubagentSpawner::new(
             cfg.provider.clone(),
             cfg.model.clone(),
@@ -647,7 +732,7 @@ impl SessionActor {
                         .iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect(),
-                    correction: None,
+                    correction: denied_tools(&outcome.denials),
                     steered_with: steered_with(&outcome.steers),
                 });
             }
@@ -669,7 +754,7 @@ impl SessionActor {
                         .iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect(),
-                    correction: None,
+                    correction: denied_tools(self.engine.denials_this_turn()),
                     // The engine keeps the turn's steer record across the error
                     // return — a steer followed by a cancel is exactly the
                     // correction the distiller seeds a fact from.
@@ -1102,6 +1187,7 @@ impl SessionActor {
                 history: &mut self.history,
                 permission_mode: "default",
                 workspace_root: &workspace_root,
+                memory: self.memory.as_deref(),
                 ui_tx: &self.io.ui_tx,
             };
             CommandRegistry::try_run(&text, &mut ctx).await
@@ -1421,7 +1507,10 @@ mod tests {
         assert!(first.ends_with("<!-- /memory -->\ntail"), "{first}");
 
         // A later turn replaces the previous block, not appends.
-        let second = set_memory_block(&first, "── relevant facts ──\n• newer fact (confidence 0.90)");
+        let second = set_memory_block(
+            &first,
+            "── relevant facts ──\n• newer fact (confidence 0.90)",
+        );
         assert!(!second.contains("did a thing"), "{second}");
         assert!(second.contains("• newer fact"), "{second}");
     }
@@ -1454,6 +1543,22 @@ mod tests {
         assert_eq!(
             steered_with(&["use X".to_string(), "never Y".to_string()]),
             Some("use X; never Y".to_string())
+        );
+        // Whitespace-only steers are dropped, not joined as "a; ; b".
+        assert_eq!(
+            steered_with(&["use X".to_string(), "   ".to_string()]),
+            Some("use X".to_string())
+        );
+    }
+
+    /// Denied tools reach the distiller as the correction string; a turn
+    /// with no approval-card denials stays `None`.
+    #[test]
+    fn denials_join_into_correction_string() {
+        assert_eq!(denied_tools(&[]), None);
+        assert_eq!(
+            denied_tools(&["apply_patch".to_string(), "shell".to_string()]),
+            Some("denied tool(s): apply_patch, shell".to_string())
         );
     }
 }

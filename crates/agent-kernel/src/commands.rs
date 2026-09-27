@@ -45,6 +45,9 @@ pub struct CommandCtx<'a> {
     pub history: &'a mut Vec<ChatMessage>,
     pub permission_mode: &'a str,
     pub workspace_root: &'a std::path::Path,
+    /// Persistent memory handle — `/remember`, `/forget`, `/memory` operate
+    /// on the persona k/v table. `None` when the session has no store.
+    pub memory: Option<&'a agent_context::memory::MemoryStore>,
     /// Emit a UI event (status/system message) — the shared sink keeps the
     /// ctx `Send` so `handle` futures can `tokio::spawn`.
     pub ui_tx: &'a crate::channels::UiSink,
@@ -101,6 +104,71 @@ impl CommandRegistry {
             "clear" => CommandResult::Control(ControlOp::ClearHistory),
             "compact" => CommandResult::Control(ControlOp::Compact),
             "undo" => CommandResult::Control(ControlOp::UndoLastTurn),
+            // Memory surface — the user-facing half of the persona table the
+            // `remember` tool and the turn distiller also write.
+            "remember" => {
+                let Some(m) = ctx.memory else {
+                    return CommandResult::Reply("memory store unavailable".into());
+                };
+                let text = args.trim();
+                if text.is_empty() {
+                    return CommandResult::Reply(
+                        "usage: /remember <durable note or preference>".into(),
+                    );
+                }
+                // Keys are user/agent-visible labels — `/remember` takes the
+                // lowest free `note<N>` so `/forget <key>` can address it.
+                let keys: std::collections::BTreeSet<String> = m
+                    .all_persona()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p.key)
+                    .collect();
+                let mut n = 1;
+                while keys.contains(&format!("note{n}")) {
+                    n += 1;
+                }
+                let key = format!("note{n}");
+                match m.set_persona(&key, text) {
+                    Ok(_) => CommandResult::Reply(format!(
+                        "remembered `{key}` — `/forget {key}` removes it"
+                    )),
+                    Err(e) => CommandResult::Reply(format!("memory write failed: {e}")),
+                }
+            }
+            "forget" => {
+                let Some(m) = ctx.memory else {
+                    return CommandResult::Reply("memory store unavailable".into());
+                };
+                let key = args.trim();
+                if key.is_empty() {
+                    return CommandResult::Reply(
+                        "usage: /forget <key> — `/memory` lists keys".into(),
+                    );
+                }
+                match m.remove_persona(key) {
+                    Ok(true) => CommandResult::Reply(format!("forgot `{key}`")),
+                    Ok(false) => CommandResult::Reply(format!("no memory named `{key}`")),
+                    Err(e) => CommandResult::Reply(format!("memory write failed: {e}")),
+                }
+            }
+            "memory" => {
+                let Some(m) = ctx.memory else {
+                    return CommandResult::Reply("memory store unavailable".into());
+                };
+                let persona = m.all_persona().unwrap_or_default();
+                let mut out = String::from("── persona ──\n");
+                if persona.is_empty() {
+                    out.push_str(
+                        "(empty — `/remember <note>` or the agent's `remember` tool adds one)\n",
+                    );
+                } else {
+                    for p in &persona {
+                        out.push_str(&format!("`{}`: {}\n", p.key, p.value));
+                    }
+                }
+                CommandResult::Reply(out)
+            }
             "skills" => {
                 let skills = crate::skills::SkillManager::new(ctx.workspace_root);
                 // One catalog, one rendering — the same listing the `skill`
@@ -375,6 +443,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            memory: None,
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("/review", &mut ctx).await.unwrap();
@@ -396,6 +465,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            memory: None,
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("/review src/", &mut ctx)
@@ -416,6 +486,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            memory: None,
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("/nonexistent", &mut ctx)
@@ -436,6 +507,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            memory: None,
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("check @main.rs please", &mut ctx)
@@ -485,6 +557,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            memory: None,
             ui_tx: &tx,
         };
         let res = CommandRegistry::try_run("read @../outside.txt", &mut ctx)
@@ -507,6 +580,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            memory: None,
             ui_tx: &tx,
         };
         // `a@b` — the `@` isn't at a token boundary, so no expansion and the
@@ -545,6 +619,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            memory: None,
             ui_tx: &tx,
         };
         // `$review` resolves the workspace skill…
@@ -564,6 +639,102 @@ mod tests {
         match res {
             CommandResult::FeedToAgent(p) => assert_eq!(p, "$clear"),
             _ => panic!("$clear must not dispatch the /clear built-in"),
+        }
+    }
+
+    /// `/remember` writes a persona note under an auto `note<N>` key,
+    /// `/memory` renders it, `/forget` removes it — the user-facing surface
+    /// of the same table the `remember` tool and distiller write.
+    #[tokio::test]
+    async fn remember_memory_forget_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            agent_context::memory::MemoryStore::open(&dir.path().join("m.db"), dir.path()).unwrap();
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = crate::channels::UiSink::channel();
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            memory: Some(&store),
+            ui_tx: &tx,
+        };
+
+        let res = CommandRegistry::try_run("/remember 用中文回答", &mut ctx)
+            .await
+            .unwrap();
+        match res {
+            CommandResult::Reply(r) => assert!(r.contains("note1"), "{r}"),
+            _ => panic!("expected Reply"),
+        }
+
+        // A second note takes the next free index.
+        CommandRegistry::try_run("/remember 少写注释", &mut ctx)
+            .await
+            .unwrap();
+        let keys: Vec<String> = store
+            .all_persona()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.key)
+            .collect();
+        assert_eq!(keys, vec!["note1".to_string(), "note2".to_string()]);
+
+        let res = CommandRegistry::try_run("/memory", &mut ctx).await.unwrap();
+        match res {
+            CommandResult::Reply(r) => {
+                assert!(r.contains("`note1`: 用中文回答"), "{r}");
+                assert!(r.contains("`note2`: 少写注释"), "{r}");
+            }
+            _ => panic!("expected Reply"),
+        }
+
+        let res = CommandRegistry::try_run("/forget note1", &mut ctx)
+            .await
+            .unwrap();
+        match res {
+            CommandResult::Reply(r) => assert!(r.contains("forgot"), "{r}"),
+            _ => panic!("expected Reply"),
+        }
+        assert_eq!(store.persona("note1").unwrap(), None);
+
+        // Deleting note1 frees its index — the next /remember reuses note1.
+        CommandRegistry::try_run("/remember 再来一条", &mut ctx)
+            .await
+            .unwrap();
+        assert_eq!(store.persona("note1").unwrap().as_deref(), Some("再来一条"));
+    }
+
+    /// Empty args and missing keys degrade to usage hints, never panics.
+    #[tokio::test]
+    async fn remember_forget_usage_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            agent_context::memory::MemoryStore::open(&dir.path().join("m.db"), dir.path()).unwrap();
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = crate::channels::UiSink::channel();
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            memory: Some(&store),
+            ui_tx: &tx,
+        };
+        let res = CommandRegistry::try_run("/remember", &mut ctx)
+            .await
+            .unwrap();
+        match res {
+            CommandResult::Reply(r) => assert!(r.contains("usage"), "{r}"),
+            _ => panic!("expected Reply"),
+        }
+        let res = CommandRegistry::try_run("/forget nosuch", &mut ctx)
+            .await
+            .unwrap();
+        match res {
+            CommandResult::Reply(r) => assert!(r.contains("no memory"), "{r}"),
+            _ => panic!("expected Reply"),
         }
     }
 }

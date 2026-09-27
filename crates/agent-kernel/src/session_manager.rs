@@ -177,6 +177,12 @@ pub struct SessionManager {
     /// Fraction of the context window that triggers compaction — the
     /// settings UI's 70/80/90% choices; applies to actors spawned after set.
     pub compact_at: f32,
+    /// Memory subsystem master switch — global default from the settings
+    /// window; applies to sessions spawned after set.
+    pub memory_enabled: bool,
+    /// Model distillation switch — `false` keeps deterministic episode/fact
+    /// writes but drops the per-turn summarizer model call.
+    pub memory_distill: bool,
     /// Workspace root (for git branch / cwd display).
     pub workspace_root: std::path::PathBuf,
     /// Workspace is open. `false` = empty state: no actors, no sessions.
@@ -289,6 +295,8 @@ impl SessionManager {
                     .as_ref()
                     .map(|d| d.compact_at)
                     .unwrap_or(crate::compaction::COMPACT_AT),
+                memory_enabled: defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true),
+                memory_distill: defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true),
                 workspace_root: std::path::PathBuf::new(),
                 workspace_active: false,
             };
@@ -297,8 +305,14 @@ impl SessionManager {
 
         let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
         let store = Arc::new(SessionStore::open(&canon).unwrap_or_else(|_| {
-            // Fallback: temp dir so the app still boots without a data dir.
-            SessionStore::open(std::path::Path::new("/tmp")).expect("session store")
+            // Fallback: a temp db so the app still boots without a data dir.
+            // `open_at` is required here — `open` ignores its path and goes
+            // through the app-wide handle, so the old `/tmp` call was dead.
+            SessionStore::open_at(
+                &canon,
+                &std::env::temp_dir().join("husk-fallback-sessions.db"),
+            )
+            .expect("session store")
         }));
 
         crate::session_store::record_recent_workspace(&canon);
@@ -326,6 +340,8 @@ impl SessionManager {
             .as_ref()
             .map(|d| d.compact_at)
             .unwrap_or(crate::compaction::COMPACT_AT);
+        let memory_enabled = defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true);
+        let memory_distill = defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true);
         // Sandbox overrides are process-global — seed the slot once so
         // process tools read them even before the settings window opens.
         if let Some(d) = &defaults {
@@ -356,6 +372,8 @@ impl SessionManager {
             permission_mode,
             agent_mode,
             compact_at,
+            memory_enabled,
+            memory_distill,
             workspace_root: canon,
             workspace_active: true,
         };
@@ -725,6 +743,8 @@ impl SessionManager {
             context_window,
             model_input,
             compact_at: Some(self.compact_at),
+            memory_enabled: self.memory_enabled,
+            memory_distill: self.memory_distill,
             model_params: Some(model_params),
             // Restored queue — prompts parked mid-turn persist like history.
             queued_prompts: meta
@@ -1715,6 +1735,41 @@ impl SessionManager {
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
                 compact_at: self.compact_at,
+                memory_enabled: self.memory_enabled,
+                memory_distill: self.memory_distill,
+                sandbox_network: Some(lim.network_label().into()),
+                sandbox_max_memory_mb: lim.max_memory_mb,
+                sandbox_max_processes: lim.max_processes,
+            },
+        );
+    }
+
+    /// Memory subsystem switches — `(enabled, distill)`. Both are
+    /// app-global defaults read at spawn: a change applies to sessions
+    /// spawned after it (live actors keep their wiring).
+    pub fn memory_prefs(&self) -> (bool, bool) {
+        (self.memory_enabled, self.memory_distill)
+    }
+
+    /// Update + persist the memory switches. No live-session broadcast —
+    /// the store handle and summarizer are fixed at spawn, so the new
+    /// values reach only the next actor.
+    pub fn set_memory_prefs(&mut self, enabled: Option<bool>, distill: Option<bool>) {
+        if let Some(v) = enabled {
+            self.memory_enabled = v;
+        }
+        if let Some(v) = distill {
+            self.memory_distill = v;
+        }
+        let lim = crate::sandbox_prefs::current();
+        let _ = crate::session_store::save_default_preferences(
+            &crate::session_store::DefaultPreferences {
+                permission_mode: self.permission_mode.clone(),
+                thinking_level: self.active_thinking_level.clone(),
+                agent_mode: self.agent_mode.clone(),
+                compact_at: self.compact_at,
+                memory_enabled: self.memory_enabled,
+                memory_distill: self.memory_distill,
                 sandbox_network: Some(lim.network_label().into()),
                 sandbox_max_memory_mb: lim.max_memory_mb,
                 sandbox_max_processes: lim.max_processes,

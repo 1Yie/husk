@@ -132,7 +132,29 @@ pub struct SessionStore {
 impl SessionStore {
     /// Open (creating) the store for a workspace root.
     pub fn open(workspace_root: &Path) -> std::io::Result<Self> {
-        let db = global_db().ok_or_else(|| std::io::Error::other("no data dir"))?;
+        let db = global_db()
+            .or_else(|| {
+                // Test builds must not depend on (or lock-fight with the
+                // running app over) the real `sessions.db` — fall back to a
+                // per-process temp db instead. `#[cfg(test)]` keeps this out
+                // of the shipped binary, where "no data dir" is a real error.
+                #[cfg(test)]
+                {
+                    static TMP_DB: OnceLock<Option<Arc<Database>>> = OnceLock::new();
+                    return TMP_DB
+                        .get_or_init(|| {
+                            let path = std::env::temp_dir().join(format!(
+                                "husk-test-{}-sessions.db",
+                                std::process::id()
+                            ));
+                            open_db(&path).ok().map(Arc::new)
+                        })
+                        .clone();
+                }
+                #[cfg(not(test))]
+                None
+            })
+            .ok_or_else(|| std::io::Error::other("no data dir"))?;
         Self::open_with(workspace_root, db)
     }
 
@@ -739,6 +761,18 @@ pub struct DefaultPreferences {
     /// Per-command sandbox process-count cap override.
     #[serde(default)]
     pub sandbox_max_processes: Option<u32>,
+    /// Memory subsystem master switch — `false` opens no `MemoryStore`: no
+    /// `<memory>` block in the prompt and no episode/fact writes.
+    #[serde(default = "default_pref_bool_true")]
+    pub memory_enabled: bool,
+    /// Model distillation — `false` still writes episodes/facts via the
+    /// deterministic path but skips the per-turn summarizer model call.
+    #[serde(default = "default_pref_bool_true")]
+    pub memory_distill: bool,
+}
+
+fn default_pref_bool_true() -> bool {
+    true
 }
 
 fn default_pref_compact_at() -> f32 {
@@ -767,6 +801,8 @@ impl Default for DefaultPreferences {
             sandbox_network: None,
             sandbox_max_memory_mb: None,
             sandbox_max_processes: None,
+            memory_enabled: true,
+            memory_distill: true,
         }
     }
 }

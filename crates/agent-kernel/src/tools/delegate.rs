@@ -305,6 +305,9 @@ impl SubagentSpawner {
             // behind it for any path that constructs a child ctx itself.
             desktop: parent_ctx.desktop.clone(),
             session: None,
+            // Memory is shared: a subagent's `remember` lands in the same
+            // workspace store, like its todo state would if it had a session.
+            memory: parent_ctx.memory.clone(),
             cancel: Some(cancel.clone()),
             subagent: None,
             depth: parent_ctx.depth + 1,

@@ -48,6 +48,9 @@ pub struct TurnOutcome {
     /// distiller — a mid-turn correction is the highest-value fact seed, and
     /// without this the `TurnRecord.steered_with` branch was dead code.
     pub steers: Vec<String>,
+    /// Tool names the user denied via an approval card this turn — the other
+    /// correction signal the distiller turns into facts.
+    pub denials: Vec<String>,
 }
 
 /// Result of a manual `/compact` — `NothingToDo` is deliberately NOT an
@@ -86,6 +89,9 @@ pub struct Engine {
     /// source for `TurnOutcome::steers` (the error paths keep the record too,
     /// so a cancelled-after-steering turn still reaches the distiller).
     steers_this_turn: Vec<String>,
+    /// Tools the user denied via an approval card this turn — same provenance
+    /// role as `steers_this_turn` for `TurnOutcome::denials`.
+    denials_this_turn: Vec<String>,
     /// Permission gate consulted before every tool dispatch.
     permissions: Arc<std::sync::RwLock<PermissionGate>>,
     /// Decision slot shared with SessionActor — the engine can't hold a
@@ -164,6 +170,7 @@ impl Engine {
             agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
             steer_queue: VecDeque::new(),
             steers_this_turn: Vec::new(),
+            denials_this_turn: Vec::new(),
             permissions: Arc::new(std::sync::RwLock::new(PermissionGate::from_mode_str(
                 "default",
             ))),
@@ -431,6 +438,12 @@ impl Engine {
         &self.steers_this_turn
     }
 
+    /// Tools denied via approval cards in the turn that just ran — read after
+    /// an `Err` return too, like `steers_this_turn`.
+    pub fn denials_this_turn(&self) -> &[String] {
+        &self.denials_this_turn
+    }
+
     /// Run one full user turn: prompt → sample → tools → re-sample … → done.
     ///
     /// `history` is the session's conversation; the engine appends the user
@@ -451,6 +464,7 @@ impl Engine {
         let images = extract_attached_images(&user_text);
         // Fresh provenance record for this turn — see `TurnOutcome::steers`.
         self.steers_this_turn.clear();
+        self.denials_this_turn.clear();
         let mut user_msg = ChatMessage::user(user_text);
         if !images.is_empty() {
             if self.supports_images() {
@@ -935,6 +949,7 @@ impl Engine {
                     usage,
                     tool_calls_run,
                     steers: self.steers_this_turn.clone(),
+                    denials: self.denials_this_turn.clone(),
                 });
             }
 
@@ -1189,6 +1204,7 @@ impl Engine {
                         );
                         if !approved {
                             let msg = format!("user denied {call_name}", call_name = call.name);
+                            self.denials_this_turn.push(call.name.clone());
                             let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                                 name: call.name.clone(),
                                 ok: false,

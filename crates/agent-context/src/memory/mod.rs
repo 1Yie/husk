@@ -8,5 +8,5 @@
 pub mod distill;
 pub mod store;
 
-pub use distill::{TurnDistiller, TurnRecord};
+pub use distill::{Summarizer, TurnDistiller, TurnRecord};
 pub use store::{Episode, Fact, MemoryStore, Persona};

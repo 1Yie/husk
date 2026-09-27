@@ -8,7 +8,9 @@
 //! Write path: summarize → extract facts → dedupe (`cosine > 0.92` merges). Read path:
 //! embed prompt → top-8 facts + last 3 episodes → a `<memory>` block ≤2 KB.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::HashMap;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
@@ -24,6 +26,13 @@ const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// META key holding the next id to hand out — the cross-instance authority for
 /// fact/episode ids.
 const NEXT_ID_KEY: &str = "next_id";
+
+/// Process-wide `Database` cache — redb permits one handle per file, so
+/// every `open` resolves through this map keyed by the canonicalized path.
+fn db_cache() -> &'static Mutex<HashMap<PathBuf, Arc<Database>>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Database>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Current schema version — bump when a table changes; the open path runs
 /// additive-or-transform migrations (never destructive) and backs up the
@@ -67,10 +76,10 @@ pub struct Persona {
     pub value: String,
 }
 
-/// The store — one `redb::Database` per `memory.db`, writes serialized
+/// The store — a shared `redb::Database` per `memory.db`, writes serialized
 /// through a `Mutex` (redb is single-writer by design).
 pub struct MemoryStore {
-    db: Database,
+    pub(crate) db: Arc<Database>,
     /// `hash(canonical_root)` — partitions facts/episodes per workspace.
     workspace_id: u64,
     /// Embedding dim for the hash-embedder.
@@ -80,7 +89,32 @@ pub struct MemoryStore {
 impl MemoryStore {
     /// Open (or create) `memory.db` for `workspace_root`.
     pub fn open(path: &Path, workspace_root: &Path) -> Result<Self, String> {
-        let db = Database::create(path).map_err(|e| e.to_string())?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        // redb permits exactly one `Database` per file per process — every
+        // session actor, the settings IPC and tests all open the same
+        // memory.db, so a second `create` would fail with "cannot acquire
+        // lock". Dedupe through a path-keyed cache instead (the same seam
+        // `SessionStore::open` uses via `global_db`).
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let db = {
+            let mut cache = db_cache().lock().map_err(|e| e.to_string())?;
+            match cache.get(&key) {
+                Some(db) => db.clone(),
+                None => {
+                    let db = Arc::new(Database::create(path).map_err(|e| e.to_string())?);
+                    cache.insert(key, db.clone());
+                    db
+                }
+            }
+        };
+        Self::open_with(db, workspace_root)
+    }
+
+    /// Open on a shared database — `open` funnels through here so every
+    /// caller gets a `MemoryStore` on the same `Database` handle.
+    pub fn open_with(db: Arc<Database>, workspace_root: &Path) -> Result<Self, String> {
         // Create tables + stamp schema_version up-front so reads never race
         // creation and migrations have a version to compare against.
         {
@@ -242,13 +276,125 @@ impl MemoryStore {
         for item in t.iter().map_err(|e| e.to_string())? {
             let (_, v) = item.map_err(|e| e.to_string())?;
             if let Ok(e) = serde_json::from_slice::<Episode>(v.value()) {
-                if e.workspace_id == self.workspace_id {
+                if e.workspace_id == self.workspace_id && !e.task.trim().is_empty() {
                     out.push(e);
                 }
             }
         }
         out.sort_by_key(|e| e.created_at);
         Ok(out.into_iter().rev().take(n).collect())
+    }
+
+    /// All facts for this workspace, newest first — the settings list view
+    /// needs no query embedding, so `recall_facts` doesn't fit.
+    pub fn list_facts(&self, limit: usize) -> Result<Vec<Fact>, String> {
+        let r = self.db.begin_read().map_err(|e| e.to_string())?;
+        let t = r.open_table(FACTS).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for item in t.iter().map_err(|e| e.to_string())? {
+            let (k, v) = item.map_err(|e| e.to_string())?;
+            if let Ok(mut f) = serde_json::from_slice::<Fact>(v.value()) {
+                f.id = k.value();
+                if f.workspace_id == self.workspace_id {
+                    out.push(f);
+                }
+            }
+        }
+        out.sort_by_key(|f| f.created_at);
+        Ok(out.into_iter().rev().take(limit).collect())
+    }
+
+    /// Delete one fact row — the settings pane's per-item remove.
+    pub fn remove_fact(&self, id: u64) -> Result<bool, String> {
+        let w = self.db.begin_write().map_err(|e| e.to_string())?;
+        let removed = w
+            .open_table(FACTS)
+            .map_err(|e| e.to_string())?
+            .remove(id)
+            .map_err(|e| e.to_string())?
+            .is_some();
+        w.commit().map_err(|e| e.to_string())?;
+        Ok(removed)
+    }
+
+    /// Episode row count for this workspace — the pane's stats line.
+    pub fn count_episodes(&self) -> Result<u64, String> {
+        let r = self.db.begin_read().map_err(|e| e.to_string())?;
+        let t = r.open_table(EPISODES).map_err(|e| e.to_string())?;
+        let mut n = 0u64;
+        for item in t.iter().map_err(|e| e.to_string())? {
+            let (_k, v) = item.map_err(|e| e.to_string())?;
+            if let Ok(e) = serde_json::from_slice::<Episode>(v.value()) {
+                if e.workspace_id == self.workspace_id {
+                    n += 1;
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    /// Wipe one area of the store. `facts`/`episodes` clear only THIS
+    /// workspace's rows; `persona` clears the whole table (persona is
+    /// global by design); `all` = facts + episodes + persona.
+    /// Returns rows removed.
+    pub fn clear(&self, what: &str) -> Result<u64, String> {
+        let ws = self.workspace_id;
+        let w = self.db.begin_write().map_err(|e| e.to_string())?;
+        let mut removed = 0u64;
+        if what == "facts" || what == "all" {
+            let mut t = w.open_table(FACTS).map_err(|e| e.to_string())?;
+            let ids: Vec<u64> = t
+                .iter()
+                .map_err(|e| e.to_string())?
+                .filter_map(|kv| kv.ok())
+                .filter(|(_, v)| {
+                    serde_json::from_slice::<Fact>(v.value())
+                        .map(|f| f.workspace_id == ws)
+                        .unwrap_or(false)
+                })
+                .map(|(k, _)| k.value())
+                .collect();
+            for id in ids {
+                if t.remove(id).map_err(|e| e.to_string())?.is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        if what == "episodes" || what == "all" {
+            let mut t = w.open_table(EPISODES).map_err(|e| e.to_string())?;
+            let ids: Vec<u64> = t
+                .iter()
+                .map_err(|e| e.to_string())?
+                .filter_map(|kv| kv.ok())
+                .filter(|(_, v)| {
+                    serde_json::from_slice::<Episode>(v.value())
+                        .map(|e| e.workspace_id == ws)
+                        .unwrap_or(false)
+                })
+                .map(|(k, _)| k.value())
+                .collect();
+            for id in ids {
+                if t.remove(id).map_err(|e| e.to_string())?.is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        if what == "persona" || what == "all" {
+            let mut t = w.open_table(PERSONA).map_err(|e| e.to_string())?;
+            let keys: Vec<String> = t
+                .iter()
+                .map_err(|e| e.to_string())?
+                .filter_map(|kv| kv.ok())
+                .map(|(k, _)| k.value().to_string())
+                .collect();
+            for k in keys {
+                if t.remove(k.as_str()).map_err(|e| e.to_string())?.is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        w.commit().map_err(|e| e.to_string())?;
+        Ok(removed)
     }
 
     pub fn set_persona(&self, key: &str, value: &str) -> Result<(), String> {
@@ -267,6 +413,19 @@ impl MemoryStore {
             Some(v) => Ok(Some(String::from_utf8_lossy(v.value()).into_owned())),
             None => Ok(None),
         }
+    }
+
+    /// Remove a persona key — the `/forget` path. Returns whether it existed.
+    pub fn remove_persona(&self, key: &str) -> Result<bool, String> {
+        let w = self.db.begin_write().map_err(|e| e.to_string())?;
+        let removed = w
+            .open_table(PERSONA)
+            .map_err(|e| e.to_string())?
+            .remove(key)
+            .map_err(|e| e.to_string())?
+            .is_some();
+        w.commit().map_err(|e| e.to_string())?;
+        Ok(removed)
     }
 
     /// All persona entries for the `<memory>` block.
@@ -517,11 +676,13 @@ mod tests {
             created_at: 1,
         })
         .unwrap();
+        let db = s.db.clone();
         drop(s);
 
-        // Simulate the pre-counter schema.
+        // Simulate the pre-counter schema — the shared-handle cache keeps
+        // one `Database` per path, so mutate it directly rather than
+        // opening a second handle (which redb forbids).
         {
-            let db = Database::create(&path).unwrap();
             let w = db.begin_write().unwrap();
             {
                 let mut meta = w.open_table(META).unwrap();
@@ -588,6 +749,49 @@ mod tests {
         let s = store(dir.path());
         s.set_persona("style", "no comments").unwrap();
         assert_eq!(s.persona("style").unwrap().as_deref(), Some("no comments"));
+    }
+
+    /// `remove_persona` is the `/forget` path — present key drops, missing
+    /// key reports false, the table stays usable.
+    #[test]
+    fn remove_persona_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.set_persona("style", "no comments").unwrap();
+        assert!(s.remove_persona("style").unwrap());
+        assert!(!s.remove_persona("style").unwrap()); // already gone
+        assert_eq!(s.persona("style").unwrap(), None);
+    }
+
+    /// Rows written before task normalization (blank/whitespace tasks) are
+    /// filtered on read so they never reach the `<memory>` block.
+    #[test]
+    fn recent_episodes_skips_blank_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.add_episode(Episode {
+            id: 0,
+            workspace_id: 0,
+            task: " \n ".into(),
+            outcome: "success".into(),
+            files: vec![],
+            correction: None,
+            created_at: 1,
+        })
+        .unwrap();
+        s.add_episode(Episode {
+            id: 0,
+            workspace_id: 0,
+            task: "real".into(),
+            outcome: "success".into(),
+            files: vec![],
+            correction: None,
+            created_at: 2,
+        })
+        .unwrap();
+        let eps = s.recent_episodes(5).unwrap();
+        assert_eq!(eps.len(), 1);
+        assert_eq!(eps[0].task, "real");
     }
 }
 

@@ -141,6 +141,9 @@ pub struct ToolCtx {
     /// history file in the app state dir — never into the user's repo.
     /// `None` for unattached contexts (tests, headless spawns).
     pub session: Option<(i64, Arc<crate::session_store::SessionStore>)>,
+    /// The workspace's persistent memory — `remember` writes persona entries
+    /// here. `None` in unattached contexts (tests, headless spawns).
+    pub memory: Option<Arc<agent_context::memory::MemoryStore>>,
     /// Parent turn's cooperative cancel flag — a delegated subagent polls
     /// it so a user cancel propagates into the delegation instead of
     /// orphaning a running child. `None` in unattached contexts.
@@ -185,6 +188,7 @@ impl ToolCtx {
             sandbox: Arc::from(sandbox),
             desktop: agent_computer::detect_backend(),
             session: None,
+            memory: None,
             cancel: None,
             subagent: None,
             depth: 0,
@@ -210,6 +214,7 @@ impl ToolCtx {
             // desktop pairs this with `with_desktop`.
             desktop: agent_computer::detect_backend(),
             session: None,
+            memory: None,
             cancel: None,
             subagent: None,
             depth: 0,
@@ -223,10 +228,7 @@ impl ToolCtx {
 
     /// Explicit desktop backend (tests / custom wiring) — the determinism
     /// seam for the computer-use tools, mirroring `with_sandbox`.
-    pub fn with_desktop(
-        mut self,
-        desktop: Arc<dyn agent_computer::DesktopBackend>,
-    ) -> Self {
+    pub fn with_desktop(mut self, desktop: Arc<dyn agent_computer::DesktopBackend>) -> Self {
         self.desktop = desktop;
         self
     }
@@ -253,6 +255,7 @@ impl ToolCtx {
             sandbox: self.sandbox.clone(),
             desktop: self.desktop.clone(),
             session: self.session.clone(),
+            memory: self.memory.clone(),
             cancel: Some(cancel),
             subagent: self.subagent.clone(),
             ask: self.ask.clone(),
@@ -452,6 +455,7 @@ impl ToolRegistry {
         r.register(crate::tools::bash::spec());
         r.register(crate::tools::todo::spec());
         r.register(crate::tools::skill::spec());
+        r.register(crate::tools::remember::spec());
         r.register(crate::tools::serena::spec());
         r.register(crate::tools::web_fetch::spec());
         r.register(crate::tools::web_fetch::spec_alias());

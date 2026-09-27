@@ -78,6 +78,8 @@ async fn main() -> anyhow::Result<()> {
         model_params: Some(model_params),
         plugins: None,
         queued_prompts: Vec::new(),
+        memory_enabled: true,
+        memory_distill: true,
     };
     let (mut actor, channels) = SessionActor::spawn(cfg);
     let cmd_tx = actor.command_sender();
