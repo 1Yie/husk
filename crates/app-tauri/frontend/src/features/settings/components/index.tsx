@@ -1,15 +1,6 @@
 import * as React from "react";
 import { ChevronsUpDown } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
-import {
-  KvList,
-  KvListContent,
-  KvRow,
-  ColorPill,
-} from "@/components/ui/kv-list";
-import { Input } from "@/components/ui/input";
-import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
 import { Card } from "@/components/ui/card";
 import {
   DropdownMenu,
@@ -100,110 +91,7 @@ export function SettingSelect({
 }
 
 /* ------------------------------------------------------------------ */
-/* Field schema                                                        */
-/* ------------------------------------------------------------------ */
-
-interface FieldBase {
-  /** unique within the section — used as the React key */
-  key: string;
-  label: React.ReactNode;
-  description?: React.ReactNode;
-  icon?: React.ReactNode;
-}
-
-export type SettingField =
-  | (FieldBase & {
-      type: "select";
-      value: string;
-      onChange: (v: string) => void;
-      options: SettingSelectOption[];
-      placeholder?: string;
-      prefix?: React.ReactNode;
-    })
-  | (FieldBase & {
-      type: "color";
-      value: string;
-      onChange: (v: string) => void;
-    })
-  | (FieldBase & {
-      type: "input";
-      value: string;
-      onChange: (v: string) => void;
-      placeholder?: string;
-      /** tailwind width class for the input, defaults to w-64 */
-      width?: string;
-    })
-  | (FieldBase & {
-      type: "slider";
-      value: number;
-      onChange: (v: number) => void;
-      min?: number;
-      max?: number;
-      step?: number;
-    })
-  | (FieldBase & {
-      type: "switch";
-      value: boolean;
-      onChange: (v: boolean) => void;
-    })
-  | (FieldBase & {
-      /** escape hatch for one-off controls — prefer adding a real type */
-      type: "custom";
-      render: () => React.ReactNode;
-    });
-
-function FieldControl({ field }: { field: SettingField }) {
-  switch (field.type) {
-    case "select":
-      return (
-        <SettingSelect
-          value={field.value}
-          onChange={field.onChange}
-          options={field.options}
-          placeholder={field.placeholder}
-          prefix={field.prefix}
-        />
-      );
-    case "color":
-      return <ColorPill value={field.value} onChange={field.onChange} />;
-    case "input":
-      return (
-        <Input
-          value={field.value}
-          onChange={(e) => field.onChange(e.target.value)}
-          placeholder={field.placeholder}
-          className={cn("h-8 text-xs rounded-xl", field.width ?? "w-64")}
-        />
-      );
-    case "slider":
-      return (
-        <div className="flex h-8 items-center gap-4">
-          <Slider
-            value={[field.value]}
-            onValueChange={([v]) => field.onChange(v)}
-            min={field.min ?? 0}
-            max={field.max ?? 100}
-            step={field.step ?? 1}
-            className="w-48"
-          />
-          <span className="w-6 select-none text-right font-mono text-xs font-medium text-neutral-800">
-            {field.value}
-          </span>
-        </div>
-      );
-    case "switch":
-      return (
-        <div className="flex h-8 items-center">
-          <Switch checked={field.value} onCheckedChange={field.onChange} />
-        </div>
-      );
-    case "custom":
-      return <div className="flex min-h-8 items-center">{field.render()}</div>;
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* Section schema + renderer                                           */
+/* Section components                                                  */
 /* ------------------------------------------------------------------ */
 
 export interface SettingsCardOption {
@@ -214,155 +102,107 @@ export interface SettingsCardOption {
   icon?: React.ReactNode;
 }
 
-export type SettingsSection =
-  | {
-      kind: "list";
-      key: string;
-      title: React.ReactNode;
-      description?: React.ReactNode;
-      /** free-form actions rendered in the list header (buttons, SettingSelect…) */
-      actions?: React.ReactNode;
-      fields: SettingField[];
-    }
-  | {
-      kind: "cards";
-      key: string;
-      title: React.ReactNode;
-      description?: React.ReactNode;
-      value: string;
-      onChange: (v: string) => void;
-      options: SettingsCardOption[];
-    };
-
-function CardsSection({
-  section,
+/** Section shell — the title/description/actions header every settings
+ * block shares, with arbitrary content (usually a `KvList`) underneath.
+ * The single section primitive every settings pane composes — put a
+ * `KvList`, `SettingsCards`, or any custom block inside. */
+export function SettingsSection({
+  title,
+  description,
+  actions,
+  children,
 }: {
-  section: Extract<SettingsSection, { kind: "cards" }>;
+  title?: React.ReactNode;
+  description?: React.ReactNode;
+  /** free-form actions rendered in the header's right column (buttons…) */
+  actions?: React.ReactNode;
+  children: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-semibold text-neutral-900">
-          {section.title}
-        </span>
-        {section.description && (
-          <span className="text-xs text-neutral-500">{section.description}</span>
-        )}
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {section.options.map((opt) => {
-          const isSelected = section.value === opt.value;
-          return (
-            <Card
-              key={opt.value}
-              onClick={() => section.onChange(opt.value)}
-              className={cn(
-                "p-4 cursor-pointer transition-all duration-150 shadow-none rounded-2xl flex flex-col justify-between select-none",
-                isSelected
-                  ? "border-accent ring-1 ring-accent/35 bg-[color-mix(in_srgb,var(--husk-accent)_4%,transparent)] shadow-xs"
-                  : "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] bg-white hover:border-neutral-300 hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)]"
-              )}
-            >
-              <div>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    {opt.icon && <div className="shrink-0">{opt.icon}</div>}
-                    <span className="text-sm font-semibold text-neutral-900 truncate">
-                      {opt.label}
-                    </span>
-                    {opt.badge}
-                  </div>
-                  <div className="shrink-0">
-                    <div
-                      className={cn(
-                        "flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
-                        isSelected
-                          ? "border-accent bg-accent"
-                          : "border-neutral-300 bg-white"
-                      )}
-                    >
-                      {isSelected && (
-                        <div className="h-1.5 w-1.5 rounded-full bg-white" />
-                      )}
-                    </div>
-                  </div>
-                </div>
-                {opt.description && (
-                  <p className="mt-2 text-xs leading-relaxed text-neutral-500">
-                    {opt.description}
-                  </p>
-                )}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ListSection({
-  section,
-}: {
-  section: Extract<SettingsSection, { kind: "list" }>;
-}) {
-  return (
-    <div className="flex flex-col gap-3">
-      {(section.title || section.actions) && (
+      {(title || description || actions) && (
         <div className="flex items-center justify-between">
           <div className="flex flex-col gap-0.5">
-            {section.title && (
+            {title && (
               <span className="text-sm font-semibold text-neutral-900">
-                {section.title}
+                {title}
               </span>
             )}
-            {section.description && (
-              <span className="text-xs text-neutral-500">
-                {section.description}
-              </span>
+            {description && (
+              <span className="text-xs text-neutral-500">{description}</span>
             )}
           </div>
-          {section.actions && (
-            <div className="flex items-center gap-2">{section.actions}</div>
+          {actions && (
+            <div className="flex items-center gap-2">{actions}</div>
           )}
         </div>
       )}
-      <KvList>
-        <KvListContent>
-          {section.fields.map((field) => (
-            <KvRow
-              key={field.key}
-              label={field.label}
-              description={field.description}
-              icon={field.icon}
-            >
-              <FieldControl field={field} />
-            </KvRow>
-          ))}
-        </KvListContent>
-      </KvList>
+      {children}
     </div>
   );
 }
 
-/** Declarative settings renderer — declare sections/fields as data, controls
- * and layout render automatically. */
-export function SettingsRenderer({
-  sections,
+/** Grid of selectable cards (radio semantics) — usually sits inside a
+ * `SettingsSection`. */
+export function SettingsCards({
+  value,
+  onChange,
+  options,
   className,
 }: {
-  sections: SettingsSection[];
+  value: string;
+  onChange: (v: string) => void;
+  options: SettingsCardOption[];
   className?: string;
 }) {
   return (
-    <div className={cn("flex flex-col gap-8", className)}>
-      {sections.map((s) =>
-        s.kind === "cards" ? (
-          <CardsSection key={s.key} section={s} />
-        ) : (
-          <ListSection key={s.key} section={s} />
-        )
-      )}
+    <div className={cn("grid grid-cols-1 sm:grid-cols-2 gap-3", className)}>
+      {options.map((opt) => {
+        const isSelected = value === opt.value;
+        return (
+          <Card
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className={cn(
+              "p-4 cursor-pointer transition-all duration-150 shadow-none rounded-2xl flex flex-col justify-between select-none",
+              isSelected
+                ? "border-accent ring-1 ring-accent/35 bg-[color-mix(in_srgb,var(--husk-accent)_4%,transparent)] shadow-xs"
+                : "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] bg-white hover:border-neutral-300 hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)]"
+            )}
+          >
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  {opt.icon && <div className="shrink-0">{opt.icon}</div>}
+                  <span className="text-sm font-semibold text-neutral-900 truncate">
+                    {opt.label}
+                  </span>
+                  {opt.badge}
+                </div>
+                <div className="shrink-0">
+                  <div
+                    className={cn(
+                      "flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
+                      isSelected
+                        ? "border-accent bg-accent"
+                        : "border-neutral-300 bg-white"
+                    )}
+                  >
+                    {isSelected && (
+                      <div className="h-1.5 w-1.5 rounded-full bg-white" />
+                    )}
+                  </div>
+                </div>
+              </div>
+              {opt.description && (
+                <p className="mt-2 text-xs leading-relaxed text-neutral-500">
+                  {opt.description}
+                </p>
+              )}
+            </div>
+          </Card>
+        );
+      })}
     </div>
   );
 }

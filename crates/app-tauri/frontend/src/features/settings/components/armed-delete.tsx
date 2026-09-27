@@ -55,6 +55,22 @@ export function ArmedDeleteButton({
     onConfirm();
   };
 
+  // One armed pill for every variant — the confirm affordance is the same
+  // element at the same size no matter which button spawned it.
+  if (armed) {
+    return (
+      <Button
+        variant="destructive"
+        size="sm"
+        disabled={busy}
+        className={cn("h-6 px-2 text-[11px]", className)}
+        onClick={click}
+      >
+        确认删除？再点一次
+      </Button>
+    );
+  }
+
   if (variant === "text") {
     return (
       <Button
@@ -63,28 +79,15 @@ export function ArmedDeleteButton({
         disabled={busy}
         className={cn(
           "h-8 text-xs text-red-600 hover:text-red-600",
-          armed && "bg-red-50 hover:bg-red-100",
           className
         )}
         onClick={click}
       >
-        {armed ? "确认删除？再点一次" : (label ?? "删除")}
+        {label ?? "删除"}
       </Button>
     );
   }
 
-  if (armed) {
-    return (
-      <Button
-        variant="destructive"
-        size="sm"
-        className={cn("h-6 px-2 text-[11px]", className)}
-        onClick={click}
-      >
-        确认删除？再点一次
-      </Button>
-    );
-  }
   return (
     <Button
       variant="ghost"

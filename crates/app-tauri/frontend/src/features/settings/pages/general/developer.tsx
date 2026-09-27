@@ -4,7 +4,9 @@
 
 import { useEffect, useState } from "react";
 import { Activity, Bug, Monitor, TriangleAlert, Zap } from "@keyline-icons/react";
-import { SettingsRenderer, type SettingsSection } from "@/features/settings/components";
+import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
+import { Switch } from "@/components/ui/switch";
+import { SettingSelect, SettingsSection } from "@/features/settings/components";
 import { getDevConfig, saveDevConfig, type DevConfig } from "@/lib/agent-ipc/sessions";
 import { isLinux } from "@/lib/platform";
 
@@ -41,90 +43,84 @@ export function DeveloperPane() {
     );
   }
 
-  const sections: SettingsSection[] = [
-    // The renderer section is Linux-only — X11 vs Wayland is a GTK /
-    // WebKitGTK concept; macOS (WKWebView) and Windows (WebView2) have
-    // no equivalent. GPU acceleration keys off the same env vars, so it
-    // hides with the picker.
-    ...(isLinux
-      ? [
-          {
-            kind: "list" as const,
-            key: "render",
-            title: "渲染",
-            description: <b>修改后需要重启应用</b>,
-            fields: [
-              {
-                key: "renderer",
-                label: "渲染后端",
-                icon: <Monitor className="h-4 w-4 text-neutral-500" />,
-                type: "select" as const,
-                value: cfg.renderer ?? "x11",
-                onChange: (v: string) =>
-                  update({ renderer: v === "x11" ? null : (v as "x11" | "wayland") }),
-                options: [
-                  { value: "x11", label: "X11" },
-                  { value: "wayland", label: "Wayland" },
-                ],
-              },
-              {
-                key: "gpu",
-                label: "GPU 硬件加速",
-                icon: <Zap className="h-4 w-4 text-neutral-500" />,
-                type: "select" as const,
-                value:
-                  cfg.gpu_acceleration === false
-                    ? "off"
-                    : cfg.gpu_acceleration === true
-                      ? "on"
-                      : "default",
-                onChange: (v: string) =>
-                  update({
-                    gpu_acceleration: v === "off" ? false : v === "on" ? true : null,
-                  }),
-                options: [
-                  { value: "default", label: "默认" },
-                  { value: "on", label: "启用" },
-                  { value: "off", label: "关闭" },
-                ],
-              },
-            ],
-          },
-        ]
-      : []),
-    {
-      kind: "list",
-      key: "monitor",
-      title: "调试",
-      fields: [
-        {
-          key: "monitor_panel",
-          label: "监控面板",
-          description: "按 Shift+Ctrl+P 切换 FPS/事件速率 HUD",
-          icon: <Activity className="h-4 w-4 text-neutral-500" />,
-          type: "switch",
-          value: cfg.monitor_panel === true,
-          onChange: (v) => update({ monitor_panel: v ? true : null }),
-        },
-        {
-          key: "devtools",
-          label: "DevTools 面板",
-          description: "按 Ctrl+Shift+I 打开",
-          icon: <Bug className="h-4 w-4 text-neutral-500" />,
-          type: "switch",
-          value: cfg.devtools === true,
-          onChange: (v) => update({ devtools: v ? true : null }),
-        },
-      ],
-    },
-  ];
-
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8 w-full">
       {!loaded ? (
         <div className="text-xs text-neutral-500">加载中…</div>
       ) : (
-        <SettingsRenderer sections={sections} />
+        <>
+          {/* The render section is Linux-only — X11 vs Wayland is a GTK /
+           *  WebKitGTK concept; macOS (WKWebView) and Windows (WebView2) have
+           *  no equivalent. GPU acceleration keys off the same env vars, so
+           *  it hides with the picker. */}
+          {isLinux && (
+            <SettingsSection title="渲染" description={<b>修改后需要重启应用</b>}>
+              <KvList>
+                <KvListContent>
+                  <KvRow label="渲染后端" icon={<Monitor className="h-4 w-4" />}>
+                    <SettingSelect
+                      value={cfg.renderer ?? "x11"}
+                      onChange={(v) =>
+                        update({ renderer: v === "x11" ? null : (v as "x11" | "wayland") })
+                      }
+                      options={[
+                        { value: "x11", label: "X11" },
+                        { value: "wayland", label: "Wayland" },
+                      ]}
+                    />
+                  </KvRow>
+                  <KvRow label="GPU 硬件加速" icon={<Zap className="h-4 w-4" />}>
+                    <SettingSelect
+                      value={
+                        cfg.gpu_acceleration === false
+                          ? "off"
+                          : cfg.gpu_acceleration === true
+                            ? "on"
+                            : "default"
+                      }
+                      onChange={(v) =>
+                        update({
+                          gpu_acceleration: v === "off" ? false : v === "on" ? true : null,
+                        })
+                      }
+                      options={[
+                        { value: "default", label: "默认" },
+                        { value: "on", label: "启用" },
+                        { value: "off", label: "关闭" },
+                      ]}
+                    />
+                  </KvRow>
+                </KvListContent>
+              </KvList>
+            </SettingsSection>
+          )}
+          <SettingsSection title="调试">
+            <KvList>
+              <KvListContent>
+                <KvRow
+                  label="监控面板"
+                  description="按 Shift+Ctrl+P 切换 FPS/事件速率 HUD"
+                  icon={<Activity className="h-4 w-4" />}
+                >
+                  <Switch
+                    checked={cfg.monitor_panel === true}
+                    onCheckedChange={(v) => update({ monitor_panel: v ? true : null })}
+                  />
+                </KvRow>
+                <KvRow
+                  label="DevTools 面板"
+                  description="按 Ctrl+Shift+I 打开"
+                  icon={<Bug className="h-4 w-4" />}
+                >
+                  <Switch
+                    checked={cfg.devtools === true}
+                    onCheckedChange={(v) => update({ devtools: v ? true : null })}
+                  />
+                </KvRow>
+              </KvListContent>
+            </KvList>
+          </SettingsSection>
+        </>
       )}
     </div>
   );

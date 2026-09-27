@@ -15,18 +15,26 @@ import {
   Zap,
 } from "@keyline-icons/react";
 import { Badge } from "@/components/ui/badge";
-import { SettingsRenderer, type SettingsCardOption } from "@/features/settings/components";
-import { getDefaultPrefs, setDefaultPrefs, getSandboxInfo, type SandboxInfo } from "@/lib/agent-ipc/sessions";
+import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
+import {
+  SettingSelect,
+  SettingsCards,
+  SettingsSection,
+  type SettingsCardOption,
+} from "@/features/settings/components";
+import {
+  getDefaultPrefs,
+  setDefaultPrefs,
+  getSandboxInfo,
+  type SandboxInfo,
+} from "@/lib/agent-ipc/sessions";
 
 const PERMISSION_OPTIONS: SettingsCardOption[] = [
   {
     value: "auto",
     label: "自动",
     badge: (
-      <Badge
-        variant="secondary"
-        className="text-[10px] px-1.5 py-0 font-medium h-4"
-      >
+      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-medium h-4">
         推荐
       </Badge>
     ),
@@ -124,8 +132,12 @@ export function GeneralPane() {
         if (prefs.agent_mode) setAgentMode(prefs.agent_mode);
         if (prefs.compact_at) setCompactAt(String(Math.round(prefs.compact_at * 100)));
         if (prefs.sandbox_network) setSandboxNetwork(prefs.sandbox_network);
-        setSandboxMem(prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default");
-        setSandboxProcs(prefs.sandbox_max_processes ? String(prefs.sandbox_max_processes) : "default");
+        setSandboxMem(
+          prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default",
+        );
+        setSandboxProcs(
+          prefs.sandbox_max_processes ? String(prefs.sandbox_max_processes) : "default",
+        );
         void getSandboxInfo()
           .then(setSandboxInfo)
           .catch(() => {});
@@ -139,140 +151,144 @@ export function GeneralPane() {
     setDefaultPrefs(patch).catch((e) => console.error("save prefs failed:", e));
 
   return (
-            <SettingsRenderer
-                sections={[
-                  {
-                    kind: "cards",
-                    key: "permission",
-                    title: "默认权限模式",
-                    description: "配置 Agent 执行文件修改与终端命令时的默认权限拦截级别",
-                    value: permission,
-                    onChange: (v) => {
-                      setPermission(v);
-                      void save({ permission_mode: v });
-                    },
-                    options: PERMISSION_OPTIONS,
-                  },
-                  {
-                    kind: "list",
-                    key: "agent",
-                    title: "Agent 偏好",
-                    description: "配置新会话启动时的默认运行模式与推理思考深度",
-                    fields: [
-                      {
-                        key: "agentMode",
-                        type: "select",
-                        label: "默认代理模式",
-                        description: "新会话启动时的代理模式；运行中可在输入框随时切换",
-                        icon: <Bot className="h-4 w-4 text-neutral-500" />,
-                        value: agentMode,
-                        onChange: (v) => {
-                          setAgentMode(v);
-                          void save({ agent_mode: v });
-                        },
-                        placeholder: "选择代理模式",
-                        options: AGENT_MODE_OPTIONS.map((t) => ({
-                          value: t.value,
-                          label: t.label,
-                          description: t.desc,
-                        })),
-                      },
-                      {
-                        key: "thinking",
-                        type: "select",
-                        label: "默认思考深度",
-                        description: "新会话启动时的默认推理思考深度",
-                        icon: <Sparkles className="h-4 w-4 text-neutral-500" />,
-                        value: thinking,
-                        onChange: (v) => {
-                          setThinking(v);
-                          void save({ thinking_level: v });
-                        },
-                        placeholder: "选择思考深度",
-                        options: THINKING_OPTIONS.map((t) => ({
-                          value: t.value,
-                          label: t.label,
-                          description: t.desc,
-                        })),
-                      },
-                      {
-                        key: "compactAt",
-                        type: "select",
-                        label: "上下文压缩阈值",
-                        description:
-                          "历史占用达到上下文窗口的该比例时触发自动压缩",
-                        icon: <Archive className="h-4 w-4 text-neutral-500" />,
-                        value: compactAt,
-                        onChange: (v) => {
-                          setCompactAt(v);
-                          void save({ compact_at: Number(v) / 100 });
-                        },
-                        placeholder: "选择阈值",
-                        options: COMPACT_AT_OPTIONS.map((t) => ({
-                          value: t.value,
-                          label: t.label,
-                          description: t.desc,
-                        })),
-                      },
-                    ],
-                  },
-                  {
-                    kind: "list",
-                    key: "sandbox",
-                    title: "沙盒设置",
-                    description: `命令执行的隔离与资源限制${
-                      sandboxInfo ? `（当前后端：${sandboxInfo.backend} · ${sandboxInfo.tier}）` : ""
-                    }`,
-                    fields: [
-                      {
-                        key: "sandboxNetwork",
-                        type: "select",
-                        label: "网络访问",
-                        description: "沙盒内命令的网络放行策略",
-                        icon: <Globe className="h-4 w-4 text-neutral-500" />,
-                        value: sandboxNetwork,
-                        onChange: (v) => {
-                          setSandboxNetwork(v);
-                          void save({ sandbox_network: v as "auto" | "allow" | "deny" });
-                        },
-                        placeholder: "选择网络策略",
-                        options: SANDBOX_NETWORK_OPTIONS.map((t) => ({
-                          value: t.value,
-                          label: t.label,
-                          description: t.desc,
-                        })),
-                      },
-                      {
-                        key: "sandboxMem",
-                        type: "select",
-                        label: "内存上限",
-                        description: "单条命令的常驻内存上限，超出即终止",
-                        icon: <Cpu className="h-4 w-4 text-neutral-500" />,
-                        value: sandboxMem,
-                        onChange: (v) => {
-                          setSandboxMem(v);
-                          void save({ sandbox_max_memory_mb: v === "default" ? null : Number(v) });
-                        },
-                        placeholder: "选择内存上限",
-                        options: SANDBOX_MEMORY_OPTIONS,
-                      },
-                      {
-                        key: "sandboxProcs",
-                        type: "select",
-                        label: "进程数上限",
-                        description: "单条命令可派生的最大进程数",
-                        icon: <Activity className="h-4 w-4 text-neutral-500" />,
-                        value: sandboxProcs,
-                        onChange: (v) => {
-                          setSandboxProcs(v);
-                          void save({ sandbox_max_processes: v === "default" ? null : Number(v) });
-                        },
-                        placeholder: "选择进程数上限",
-                        options: SANDBOX_PROCS_OPTIONS,
-                      },
-                    ],
-                  },
-                ]}
+    <div className="flex flex-col gap-8 w-full">
+      <SettingsSection title="默认权限模式">
+        <SettingsCards
+          value={permission}
+          onChange={(v) => {
+            setPermission(v);
+            void save({ permission_mode: v });
+          }}
+          options={PERMISSION_OPTIONS}
+        />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Agent 偏好"
+      >
+        <KvList>
+          <KvListContent>
+            <KvRow
+              label="默认代理模式"
+              description="新会话启动时的代理模式"
+              icon={<Bot className="h-4 w-4" />}
+            >
+              <SettingSelect
+                value={agentMode}
+                onChange={(v) => {
+                  setAgentMode(v);
+                  void save({ agent_mode: v });
+                }}
+                placeholder="选择代理模式"
+                options={AGENT_MODE_OPTIONS.map((t) => ({
+                  value: t.value,
+                  label: t.label,
+                  description: t.desc,
+                }))}
               />
+            </KvRow>
+            <KvRow
+              label="默认思考深度"
+              description="新会话启动时的默认推理思考深度"
+              icon={<Sparkles className="h-4 w-4" />}
+            >
+              <SettingSelect
+                value={thinking}
+                onChange={(v) => {
+                  setThinking(v);
+                  void save({ thinking_level: v });
+                }}
+                placeholder="选择思考深度"
+                options={THINKING_OPTIONS.map((t) => ({
+                  value: t.value,
+                  label: t.label,
+                  description: t.desc,
+                }))}
+              />
+            </KvRow>
+            <KvRow
+              label="上下文压缩阈值"
+              description="历史占用达到上下文窗口的该比例时触发自动压缩"
+              icon={<Archive className="h-4 w-4" />}
+            >
+              <SettingSelect
+                value={compactAt}
+                onChange={(v) => {
+                  setCompactAt(v);
+                  void save({ compact_at: Number(v) / 100 });
+                }}
+                placeholder="选择阈值"
+                options={COMPACT_AT_OPTIONS.map((t) => ({
+                  value: t.value,
+                  label: t.label,
+                  description: t.desc,
+                }))}
+              />
+            </KvRow>
+          </KvListContent>
+        </KvList>
+      </SettingsSection>
+
+      <SettingsSection
+        title="沙盒设置"
+        description={`命令执行的隔离与资源限制${
+          sandboxInfo ? `（当前后端：${sandboxInfo.backend} · ${sandboxInfo.tier}）` : ""
+        }`}
+      >
+        <KvList>
+          <KvListContent>
+            <KvRow
+              label="网络访问"
+              description="沙盒内命令的网络放行策略"
+              icon={<Globe className="h-4 w-4" />}
+            >
+              <SettingSelect
+                value={sandboxNetwork}
+                onChange={(v) => {
+                  setSandboxNetwork(v);
+                  void save({ sandbox_network: v as "auto" | "allow" | "deny" });
+                }}
+                placeholder="选择网络策略"
+                options={SANDBOX_NETWORK_OPTIONS.map((t) => ({
+                  value: t.value,
+                  label: t.label,
+                  description: t.desc,
+                }))}
+              />
+            </KvRow>
+            <KvRow
+              label="内存上限"
+              description="单条命令的常驻内存上限，超出即终止"
+              icon={<Cpu className="h-4 w-4" />}
+            >
+              <SettingSelect
+                value={sandboxMem}
+                onChange={(v) => {
+                  setSandboxMem(v);
+                  void save({ sandbox_max_memory_mb: v === "default" ? null : Number(v) });
+                }}
+                placeholder="选择内存上限"
+                options={SANDBOX_MEMORY_OPTIONS}
+              />
+            </KvRow>
+            <KvRow
+              label="进程数上限"
+              description="单条命令可派生的最大进程数"
+              icon={<Activity className="h-4 w-4" />}
+            >
+              <SettingSelect
+                value={sandboxProcs}
+                onChange={(v) => {
+                  setSandboxProcs(v);
+                  void save({ sandbox_max_processes: v === "default" ? null : Number(v) });
+                }}
+                placeholder="选择进程数上限"
+                options={SANDBOX_PROCS_OPTIONS}
+              />
+            </KvRow>
+          </KvListContent>
+        </KvList>
+      </SettingsSection>
+    </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { SettingsSection } from "@/features/settings/components";
 import { getAppearance, setAppearance, type AppearanceConfig } from "@/lib/agent-ipc/sessions";
 import { applyAppearance, broadcastAppearance } from "@/lib/appearance";
 
@@ -56,16 +57,7 @@ export function AppearanceSettings() {
 
   return (
     <div className="flex flex-col gap-8 w-full">
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-semibold text-neutral-900">
-            外观模式
-          </span>
-          <span className="text-xs text-neutral-500">
-            选择应用的明暗风格，可固定浅色、深色或跟随系统自适应
-          </span>
-        </div>
-
+      <SettingsSection title="外观模式">
         <div className="grid grid-cols-3 gap-3">
           <Button
             type="button"
@@ -78,7 +70,7 @@ export function AppearanceSettings() {
                 "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex items-end justify-center",
                 themeMode === "system"
                   ? "border-2 border-accent ring-2 ring-accent/25 shadow-xs"
-                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300"
+                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300",
               )}
             >
               <div className="absolute inset-0 flex">
@@ -109,7 +101,7 @@ export function AppearanceSettings() {
             <span
               className={cn(
                 "text-xs mt-2.5 transition-colors",
-                themeMode === "system" ? "text-neutral-900" : "text-neutral-600"
+                themeMode === "system" ? "text-neutral-900" : "text-neutral-600",
               )}
             >
               系统
@@ -127,7 +119,7 @@ export function AppearanceSettings() {
                 "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex flex-col justify-between items-center pt-3.5 bg-[#f2f4f6]",
                 themeMode === "light"
                   ? "border-2 border-accent ring-2 ring-accent/25 shadow-xs"
-                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300"
+                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300",
               )}
             >
               <div className="h-1.5 w-24 bg-[#d4d4d8]/80 rounded-full" />
@@ -141,7 +133,7 @@ export function AppearanceSettings() {
             <span
               className={cn(
                 "text-xs mt-2.5 transition-colors",
-                themeMode === "light" ? "text-neutral-900" : "text-neutral-600"
+                themeMode === "light" ? "text-neutral-900" : "text-neutral-600",
               )}
             >
               浅色
@@ -159,7 +151,7 @@ export function AppearanceSettings() {
                 "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex flex-col justify-between items-center pt-3.5 bg-[#43474d]",
                 themeMode === "dark"
                   ? "border-2 border-accent ring-2 ring-accent/25 shadow-xs"
-                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300"
+                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300",
               )}
             >
               <div className="h-1.5 w-24 bg-[#71717a]/80 rounded-full" />
@@ -173,25 +165,19 @@ export function AppearanceSettings() {
             <span
               className={cn(
                 "text-xs mt-2.5 transition-colors",
-                themeMode === "dark" ? "text-neutral-900" : "text-neutral-600"
+                themeMode === "dark" ? "text-neutral-900" : "text-neutral-600",
               )}
             >
               深色
             </span>
           </Button>
         </div>
-      </div>
+      </SettingsSection>
 
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-semibold text-neutral-900">
-            货币单位
-          </span>
-          <span className="text-xs text-neutral-500">
-            标题栏会话花费的显示符号，仅切换标识不做汇率换算
-          </span>
-        </div>
-
+      <SettingsSection
+        title="货币单位"
+        description="标题栏会话花费的显示符号，仅切换标识不做汇率换算"
+      >
         <div className="flex gap-2">
           {(
             [
@@ -207,14 +193,14 @@ export function AppearanceSettings() {
                 "h-8 px-4 rounded-lg text-xs font-medium transition-colors cursor-pointer select-none",
                 currency === v
                   ? "border-2 border-accent text-neutral-900 bg-accent/5"
-                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] text-neutral-600 hover:border-neutral-300"
+                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] text-neutral-600 hover:border-neutral-300",
               )}
             >
               {label}
             </button>
           ))}
         </div>
-      </div>
+      </SettingsSection>
     </div>
   );
 }

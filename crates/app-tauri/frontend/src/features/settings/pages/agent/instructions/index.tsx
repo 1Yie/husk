@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import { SettingsSection } from "@/features/settings/components";
 import { getInstructions, setInstructions, type InstructionsSet } from "@/lib/agent-ipc/sessions";
 
 /* ============================ 指令 ============================ */
@@ -29,34 +30,37 @@ function InstructionsBlock({
   onSave: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm font-semibold text-neutral-900">{title}</span>
-        {file?.path && (
+    <SettingsSection
+      title={title}
+      actions={
+        file?.path ? (
           <span className="text-[11px] text-neutral-500 font-mono truncate">
             {file.path}
           </span>
-        )}
+        ) : undefined
+      }
+    >
+      <div className="flex flex-col gap-2">
+        <Textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={10}
+          className="font-mono text-[12px] leading-relaxed resize-y min-h-40 dark:bg-active"
+          placeholder="在此编写自定义指令，会追加到每个新会话的系统提示词末尾"
+        />
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            disabled={saving}
+            onClick={onSave}
+          >
+            {saving ? "保存中…" : "保存"}
+          </Button>
+        </div>
       </div>
-      <Textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        rows={10}
-        className="font-mono text-[12px] leading-relaxed resize-y min-h-40 dark:bg-active"
-        placeholder="在此编写自定义指令，会追加到每个新会话的系统提示词末尾"
-      />
-      <div className="flex justify-end">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs"
-          disabled={saving}
-          onClick={onSave}
-        >
-          {saving ? "保存中…" : "保存"}
-        </Button>
-      </div>
-    </div>
+    </SettingsSection>
   );
 }
 
