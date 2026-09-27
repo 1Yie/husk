@@ -1777,6 +1777,23 @@ impl SessionManager {
         );
     }
 
+    /// Push the current memory switches into every LIVE actor — same
+    /// reason `broadcast_compact_at` exists: a settings change only
+    /// reached the next spawn otherwise, and parked sessions keep writing
+    /// episodes/facts under their birth wiring.
+    pub fn broadcast_memory_prefs(&self) {
+        let (enabled, distill) = self.memory_prefs();
+        let live = self
+            .handles
+            .values()
+            .chain(self.parked.values().flat_map(|m| m.values()));
+        for handle in live {
+            let _ = handle
+                .cmd_tx
+                .try_send(agent_ipc::UiCommand::SetMemory { enabled, distill });
+        }
+    }
+
     /// Push the compaction ratio into every LIVE actor — the value is
     /// otherwise only read at spawn, so a settings change left running
     /// sessions on the threshold they were born with. Parked workspaces are
