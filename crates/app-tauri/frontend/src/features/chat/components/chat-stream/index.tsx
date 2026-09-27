@@ -18,6 +18,7 @@ import {
   TextQuote,
   FileArrowRight,
   RotateCcw,
+  GitReturn,
 } from "@keyline-icons/react";
 import { chatMarkdownComponents } from "@/features/chat/components/chat-stream/markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
@@ -44,7 +45,7 @@ import { cn } from "@/lib/utils";
 import { loadStamp } from "@/lib/load-probe";
 import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "@/lib/agent-ipc/sessions";
-import { retryTurn } from "@/lib/agent-ipc/commands";
+import { retryTurn, undoLastTurn } from "@/lib/agent-ipc/commands";
 import { CompactionCard } from "@/features/chat/components/chat-stream/compaction-card";
 import { PlanCard } from "@/features/chat/components/chat-stream/plan-card";
 import type { PlanPayload } from "@/types";
@@ -454,18 +455,21 @@ function TurnFooter({
   ts,
   copyText,
   onRetry,
+  onUndo,
   align,
   durationMs,
 }: {
   ts: number;
   copyText?: string;
   onRetry?: () => void;
+  onUndo?: () => void;
   align: "start" | "end";
   /** Turn wall time (end stamp − user stamp) — rendered as `耗时 Xs`. */
   durationMs?: number;
 }) {
   const [copied, setCopied] = useState(false);
   const [retryOpen, setRetryOpen] = useState(false);
+  const [undoOpen, setUndoOpen] = useState(false);
   const copy = async () => {
     if (!copyText) return;
     try {
@@ -521,6 +525,41 @@ function TurnFooter({
                   }}
                 >
                   重试
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
+      {onUndo && (
+        <>
+          <FooterBtn label="撤销" onClick={() => setUndoOpen(true)}>
+            <GitReturn className="h-3.5 w-3.5" />
+          </FooterBtn>
+          <Dialog open={undoOpen} onOpenChange={setUndoOpen}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle className="text-base">撤销本轮修改</DialogTitle>
+                <DialogDescription>
+                  回滚上一轮 agent 写入的全部文件；之后被外部改过的文件会被跳过。
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setUndoOpen(false)}
+                >
+                  取消
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setUndoOpen(false);
+                    onUndo();
+                  }}
+                >
+                  撤销
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -1150,6 +1189,7 @@ const ChatTurn = memo(function ChatTurn({
                   : undefined
               }
               onRetry={retryable ? () => void retryTurn() : undefined}
+              onUndo={retryable ? () => void undoLastTurn() : undefined}
             />
           </div>
         )}

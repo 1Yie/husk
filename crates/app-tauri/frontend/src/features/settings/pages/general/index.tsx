@@ -232,7 +232,11 @@ export function GeneralPane() {
       <SettingsSection
         title="沙盒设置"
         description={`命令执行的隔离与资源限制${
-          sandboxInfo ? `（当前后端：${sandboxInfo.backend} · ${sandboxInfo.tier}）` : ""
+          sandboxInfo
+            ? `（当前后端：${sandboxInfo.backend} · ${sandboxInfo.tier}${
+                sandboxInfo.is_fallback ? " · 部分隔离" : ""
+              }）`
+            : ""
         }`}
       >
         <KvList>

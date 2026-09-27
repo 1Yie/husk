@@ -555,6 +555,16 @@ pub fn agent_session(
             let mem_di = p.get("memory_distill").and_then(|v| v.as_bool());
             if mem_en.is_some() || mem_di.is_some() {
                 mgr.set_memory_prefs(mem_en, mem_di);
+                // Hot-apply to the running session too — the stored prefs
+                // alone only reach the NEXT spawn; the active actor swaps
+                // its store/distiller on the command.
+                let (enabled, distill) = mgr.memory_prefs();
+                if let Some(h) = mgr.active() {
+                    let _ = h.cmd_tx.try_send(agent_ipc::UiCommand::SetMemory {
+                        enabled,
+                        distill,
+                    });
+                }
             }
             Ok(serde_json::json!({ "success": true }))
         }

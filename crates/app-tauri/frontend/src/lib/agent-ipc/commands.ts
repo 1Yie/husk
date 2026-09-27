@@ -50,6 +50,11 @@ export const answerQuestion = (requestId: number, answer: string) =>
 /** Abort the in-flight turn. */
 export const cancelTurn = () => send("Cancel");
 
+/** Reverse the last turn's file writes via the HunkTracker (the /undo
+ *  slash command's programmatic form). Files modified externally after
+ *  the agent's write are skipped, not clobbered. */
+export const undoLastTurn = () => send("UndoLastTurn");
+
 /** Hot-swap provider/model for the next turn. */
 export const setModel = (provider: string, model: string) =>
   send({ SetModel: { provider, model } });
