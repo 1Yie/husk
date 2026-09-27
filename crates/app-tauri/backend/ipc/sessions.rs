@@ -45,6 +45,14 @@ pub fn agent_session(
         return Ok(serde_json::json!({ "success": true }));
     }
     let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
+    // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
+    // keyed by the active workspace root, same path as the session actor's.
+    let open_memory = |mgr: &agent_kernel::session_manager::SessionManager| {
+        agent_kernel::session_store::app_data_dir().and_then(|d| {
+            agent_context::memory::MemoryStore::open(&d.join("memory.db"), &mgr.workspace_root)
+                .ok()
+        })
+    };
     match op.as_str() {
         "list" => Ok(serde_json::json!(mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
             serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
@@ -488,12 +496,15 @@ pub fn agent_session(
         // SystemMessage in the chat stream).
         "get_default_prefs" => {
             let (permission_mode, thinking_level, agent_mode, compact_at) = mgr.default_prefs();
+            let (memory_enabled, memory_distill) = mgr.memory_prefs();
             let lim = agent_kernel::sandbox_prefs::current();
             Ok(serde_json::json!({
                 "permission_mode": permission_mode,
                 "thinking_level": thinking_level,
                 "agent_mode": agent_mode,
                 "compact_at": compact_at,
+                "memory_enabled": memory_enabled,
+                "memory_distill": memory_distill,
                 "sandbox_network": lim.network_label(),
                 "sandbox_max_memory_mb": lim.max_memory_mb,
                 "sandbox_max_processes": lim.max_processes,
@@ -538,7 +549,84 @@ pub fn agent_session(
                 agent_kernel::sandbox_prefs::set(lim);
             }
             mgr.set_default_prefs(permission_mode, thinking_level, agent_mode, compact_at);
+            // Memory switches ride the same payload — separate setter so the
+            // save lands in one `default_preferences` write.
+            let mem_en = p.get("memory_enabled").and_then(|v| v.as_bool());
+            let mem_di = p.get("memory_distill").and_then(|v| v.as_bool());
+            if mem_en.is_some() || mem_di.is_some() {
+                mgr.set_memory_prefs(mem_en, mem_di);
+            }
             Ok(serde_json::json!({ "success": true }))
+        }
+        // Memory pane — the three write paths (remember tool, /remember,
+        // distill) all land on this store; the pane is its read/delete side.
+        "memory_overview" => {
+            let (enabled, distill) = mgr.memory_prefs();
+            let mut out = serde_json::json!({
+                "enabled": enabled,
+                "distill": distill,
+                "persona": [],
+                "facts": [],
+                "episodes": 0,
+            });
+            if let Some(s) = open_memory(&mgr) {
+                out["persona"] = serde_json::to_value(s.all_persona().unwrap_or_default())
+                    .unwrap_or_default();
+                out["facts"] = s
+                    .list_facts(200)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({
+                            "id": f.id,
+                            "text": f.text,
+                            "confidence": f.confidence,
+                            "created_at": f.created_at,
+                        })
+                    })
+                    .collect();
+                out["episodes"] = serde_json::json!(s.count_episodes().unwrap_or(0));
+            } else {
+                // Honest failure — an empty array would masquerade as
+                // "nothing remembered" when the store simply couldn't open.
+                out["error"] = serde_json::json!("memory.db 打不开（锁定或数据目录不可达）");
+            }
+            Ok(out)
+        }
+        "memory_set" => {
+            let p = payload.clone().ok_or("memory_set needs payload")?;
+            let key = p.get("key").and_then(|v| v.as_str()).ok_or("memory_set needs key")?;
+            let value = p
+                .get("value")
+                .and_then(|v| v.as_str())
+                .ok_or("memory_set needs value")?;
+            let s = open_memory(&mgr).ok_or("memory store unavailable")?;
+            s.set_persona(key, value)?;
+            Ok(serde_json::json!({ "success": true }))
+        }
+        "memory_forget" => {
+            let p = payload.clone().ok_or("memory_forget needs payload")?;
+            let key = p.get("key").and_then(|v| v.as_str()).ok_or("memory_forget needs key")?;
+            let s = open_memory(&mgr).ok_or("memory store unavailable")?;
+            let removed = s.remove_persona(key)?;
+            Ok(serde_json::json!({ "success": true, "removed": removed }))
+        }
+        "memory_remove_fact" => {
+            let p = payload.clone().ok_or("memory_remove_fact needs payload")?;
+            let fid = p.get("id").and_then(|v| v.as_u64()).ok_or("memory_remove_fact needs id")?;
+            let s = open_memory(&mgr).ok_or("memory store unavailable")?;
+            let removed = s.remove_fact(fid)?;
+            Ok(serde_json::json!({ "success": true, "removed": removed }))
+        }
+        "memory_clear" => {
+            let p = payload.clone().ok_or("memory_clear needs payload")?;
+            let table = p
+                .get("table")
+                .and_then(|v| v.as_str())
+                .unwrap_or("all");
+            let s = open_memory(&mgr).ok_or("memory store unavailable")?;
+            let removed = s.clear(table)?;
+            Ok(serde_json::json!({ "success": true, "removed": removed }))
         }
         // Appearance — the settings window's theme/accent/font choices,
         // persisted next to `default_preferences.json`. Both windows read

@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bot,
+  Brain,
   Cpu,
   FileText,
   FlaskConical,
@@ -44,6 +45,7 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
     items: [
       { key: "instructions", label: "指令", icon: <FileText className="h-4 w-4 shrink-0" /> },
       { key: "model", label: "模型", icon: <Cpu className="h-4 w-4 shrink-0" /> },
+      { key: "memory", label: "记忆", icon: <Brain className="h-4 w-4 shrink-0" /> },
       { key: "skills", label: "技能", icon: <Sparkles className="h-4 w-4 shrink-0" /> },
       { key: "plugins", label: "插件", icon: <Plug className="h-4 w-4 shrink-0" /> },
       { key: "mcp", label: "MCP", icon: <Wrench className="h-4 w-4 shrink-0" /> },

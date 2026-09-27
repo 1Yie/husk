@@ -375,6 +375,10 @@ export interface DefaultPrefs {
   sandbox_max_memory_mb?: number | null;
   /** Fork-bomb process cap — null/absent → the audit plan's 256. */
   sandbox_max_processes?: number | null;
+  /** Memory subsystem master switch — off = no <memory> block, no writes. */
+  memory_enabled?: boolean;
+  /** Model distillation — off = deterministic writes only, no extra call. */
+  memory_distill?: boolean;
 }
 
 /** The stored default preferences — what NEWLY created sessions spawn with.
@@ -452,6 +456,66 @@ export function saveAppConfig(payload: any) {
 
 export function getSandboxInfo() {
   return invoke<SandboxInfo>("agent_session", { op: "get_sandbox_info" });
+}
+
+/* ------------------------- memory pane ------------------------- */
+
+export interface PersonaEntry {
+  key: string;
+  value: string;
+}
+
+export interface FactRow {
+  id: number;
+  text: string;
+  confidence: number;
+  created_at: number;
+}
+
+export interface MemoryOverview {
+  /** master switch — off: no MemoryStore opens at spawn. */
+  enabled: boolean;
+  /** model distillation switch — off: deterministic writes only. */
+  distill: boolean;
+  persona: PersonaEntry[];
+  facts: FactRow[];
+  episodes: number;
+  /** set when the store couldn't open — the pane shows this instead of 暂无. */
+  error?: string;
+}
+
+export function getMemoryOverview() {
+  return invoke<MemoryOverview>("agent_session", { op: "memory_overview" });
+}
+
+/** Add or overwrite a persona entry (the manual `/remember` path). */
+export function setMemoryPersona(key: string, value: string) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "memory_set",
+    payload: { key, value },
+  });
+}
+
+export function forgetMemory(key: string) {
+  return invoke<{ success: boolean; removed: boolean }>("agent_session", {
+    op: "memory_forget",
+    payload: { key },
+  });
+}
+
+export function removeMemoryFact(id: number) {
+  return invoke<{ success: boolean; removed: boolean }>("agent_session", {
+    op: "memory_remove_fact",
+    payload: { id },
+  });
+}
+
+/** `table`: "facts" | "episodes" | "persona" | "all". */
+export function clearMemory(table: string) {
+  return invoke<{ success: boolean; removed: number }>("agent_session", {
+    op: "memory_clear",
+    payload: { table },
+  });
 }
 
 /** User-level developer overrides — `~/.config/husk/settings.toml`. Each
