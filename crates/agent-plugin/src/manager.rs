@@ -21,8 +21,8 @@ use anyhow::Result;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::manifest::PluginKind;
 use crate::hooks::{hooks_from_manifest, CommandHook};
+use crate::manifest::PluginKind;
 use crate::{McpClient, McpPlugin, Plugin, PluginManifest};
 
 /// Tool result cap — same as built-ins (kernel-architecture.md §truncation).
@@ -73,7 +73,10 @@ impl TrustStore {
     }
 
     pub fn is_trusted(&self, id: &str, repo: &Path) -> bool {
-        self.trusted.get(&Self::key(id, repo)).copied().unwrap_or(false)
+        self.trusted
+            .get(&Self::key(id, repo))
+            .copied()
+            .unwrap_or(false)
     }
     pub fn trust(&mut self, id: &str, repo: &Path) {
         self.trusted.insert(Self::key(id, repo), true);
@@ -200,11 +203,7 @@ impl PluginManager {
         // Registered manifests ∪ failed registrations — a pure plugin (no
         // `entry`) shows connected:false and no tools, which is correct:
         // there was never anything to connect.
-        let mut ids: Vec<&String> = self
-            .manifests
-            .keys()
-            .chain(self.errors.keys())
-            .collect();
+        let mut ids: Vec<&String> = self.manifests.keys().chain(self.errors.keys()).collect();
         ids.sort();
         ids.dedup();
         ids.into_iter()
@@ -323,7 +322,8 @@ impl PluginManager {
         if !self.order.contains(&id) {
             self.order.push(id.clone());
         }
-        self.enabled.insert(id.clone(), !self.disabled.is_disabled(&id));
+        self.enabled
+            .insert(id.clone(), !self.disabled.is_disabled(&id));
 
         // No `entry` = pure plugin — nothing to connect, done.
         if manifest.entry.is_none() {
@@ -341,13 +341,19 @@ impl PluginManager {
                 Arc::new(McpPlugin { manifest, client })
             }
             PluginKind::Wasm => {
-                // Feature-gated: wasmtime pulls a C toolchain — kept behind
-                // `feature = "wasm"` until the single-binary policy settles.
+                #[cfg(feature = "wasm")]
+                {
+                    Arc::new(
+                        crate::wasm::WasmPlugin::load(manifest)
+                            .map_err(|e| format!("wasm `{id}` load: {e}"))?,
+                    )
+                }
+                #[cfg(not(feature = "wasm"))]
                 return Err("WASM plugins not built (feature `wasm` off)".into());
             }
         };
 
-// Export tools → router, keyed by the SAME name `exported_tools` puts in
+        // Export tools → router, keyed by the SAME name `exported_tools` puts in
         // the request. The two must agree exactly, or the model calls a name
         // the router has never heard of.
         for t in plugin.export_tools() {
@@ -371,11 +377,7 @@ impl PluginManager {
     /// legacy `plugin_id:tool` spelling from a snapshot written before the
     /// colon became wire-illegal. Whichever spelling matched, the SERVER is
     /// called with its own tool name, never with the advertised one.
-    pub async fn dispatch_tool_call(
-        &self,
-        name: &str,
-        args: Value,
-    ) -> Result<String, String> {
+    pub async fn dispatch_tool_call(&self, name: &str, args: Value) -> Result<String, String> {
         let (plugin, real) = self
             .tool_router
             .get(name)
@@ -436,14 +438,12 @@ impl PluginManager {
             }
             let ws = workspace.to_string();
             let p = plugin.clone();
-            let ctx = tokio::time::timeout(
-                CONTEXT_TIMEOUT,
-                p.provide_context(&ws),
-            )
-            .await;
+            let ctx = tokio::time::timeout(CONTEXT_TIMEOUT, p.provide_context(&ws)).await;
             match ctx {
                 Ok(Some(text)) => {
-                    out.push(format!("<plugin_context id=\"{id}\">\n{text}\n</plugin_context>"));
+                    out.push(format!(
+                        "<plugin_context id=\"{id}\">\n{text}\n</plugin_context>"
+                    ));
                 }
                 Ok(None) => {}
                 Err(_) => warn!(plugin = %id, "provide_context timed out"),
@@ -498,7 +498,11 @@ impl PluginManager {
                 id: id.clone(),
                 kind: "mcp".into(), // wasm when that runtime lands
                 enabled: self.enabled.get(id).copied().unwrap_or(false),
-                tool_count: self.tool_router.values().filter(|r| r.id() == p.id()).count(),
+                tool_count: self
+                    .tool_router
+                    .values()
+                    .filter(|r| r.id() == p.id())
+                    .count(),
             })
             .collect()
     }
@@ -548,7 +552,13 @@ pub fn wire_tool_name(plugin_id: &str, tool: &str) -> String {
 fn sanitize_name(s: &str) -> String {
     let folded: String = s
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if folded.is_empty() {
         "_".to_string()
@@ -661,11 +671,15 @@ mod tests {
         let legal = |s: &str| {
             !s.is_empty()
                 && s.len() <= 64
-                && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         };
 
         assert!(legal(&wire_tool_name("ui-skills", "list_skills")));
-        assert_eq!(wire_tool_name("ui-skills", "list_skills"), "ui-skills__list_skills");
+        assert_eq!(
+            wire_tool_name("ui-skills", "list_skills"),
+            "ui-skills__list_skills"
+        );
 
         // The reported shape — a colon is the character that broke it.
         assert!(!wire_tool_name("ui-skills", "list_skills").contains(':'));
@@ -725,7 +739,11 @@ mod tests {
                     .map(|t| serde_json::json!({"type":"function","function":{"name":t}}))
                     .collect()
             }
-            async fn call_tool(&self, name: &str, _args: serde_json::Value) -> anyhow::Result<String> {
+            async fn call_tool(
+                &self,
+                name: &str,
+                _args: serde_json::Value,
+            ) -> anyhow::Result<String> {
                 self.called.lock().unwrap().push(name.to_string());
                 Ok(format!("called {name}"))
             }
@@ -742,12 +760,18 @@ mod tests {
             .iter()
             .map(|t| wire_tool_name(fake.id(), t["function"]["name"].as_str().unwrap()))
             .collect();
-        assert_eq!(advertised, vec!["ui_skills__list_skills", "ui_skills__get_skill"]);
+        assert_eq!(
+            advertised,
+            vec!["ui_skills__list_skills", "ui_skills__get_skill"]
+        );
 
         // Drive the real registration/dispatch path via a manager.
         let mut mgr = super::PluginManager::new();
         let plugin: Arc<dyn Plugin> = fake.clone();
-        for (real, adv) in [("list_skills", &advertised[0]), ("get_skill", &advertised[1])] {
+        for (real, adv) in [
+            ("list_skills", &advertised[0]),
+            ("get_skill", &advertised[1]),
+        ] {
             mgr.real_tool_names.insert(adv.clone(), real.to_string());
             mgr.tool_router.insert(adv.clone(), plugin.clone());
         }
@@ -756,21 +780,30 @@ mod tests {
 
         // Advertised spelling.
         assert_eq!(
-            mgr.dispatch_tool_call("ui_skills__get_skill", serde_json::json!({})).await.unwrap(),
+            mgr.dispatch_tool_call("ui_skills__get_skill", serde_json::json!({}))
+                .await
+                .unwrap(),
             "called get_skill"
         );
         // Bare spelling (a model that drops the namespace).
         assert_eq!(
-            mgr.dispatch_tool_call("list_skills", serde_json::json!({})).await.unwrap(),
+            mgr.dispatch_tool_call("list_skills", serde_json::json!({}))
+                .await
+                .unwrap(),
             "called list_skills"
         );
         // Legacy colon spelling from a pre-fix snapshot.
         assert_eq!(
-            mgr.dispatch_tool_call("ui:skills:list_skills", serde_json::json!({})).await.unwrap(),
+            mgr.dispatch_tool_call("ui:skills:list_skills", serde_json::json!({}))
+                .await
+                .unwrap(),
             "called list_skills"
         );
         // An unknown tool is refused, not silently misrouted.
-        assert!(mgr.dispatch_tool_call("nope", serde_json::json!({})).await.is_err());
+        assert!(mgr
+            .dispatch_tool_call("nope", serde_json::json!({}))
+            .await
+            .is_err());
     }
 
     /// The hook chain is assembled from enabled plugins, in registration
@@ -800,7 +833,10 @@ mod tests {
         mgr.disable("b");
 
         let events: Vec<String> = mgr.hook_specs().iter().map(|h| h.id()).collect();
-        assert_eq!(events, vec!["a:before_tool_execute", "c:before_tool_execute"]);
+        assert_eq!(
+            events,
+            vec!["a:before_tool_execute", "c:before_tool_execute"]
+        );
 
         // A plugin absent from the chain contributes nothing even if its
         // registration skipped `order` (the old bug shape).
@@ -845,7 +881,10 @@ mod tests {
         // which is exactly the proof that trust was satisfied).
         mgr.trust.trust("local", &repo);
         let err = mgr.register_plugin(mk(), &repo).await.unwrap_err();
-        assert!(err.contains("WASM"), "gate did not pass: {err}");
+        assert!(
+            err.to_lowercase().contains("wasm"),
+            "gate did not pass: {err}"
+        );
 
         // Home-dir plugins (~/.config/husk/plugins) are never gated: they are
         // not inside the repo, so `dir` cannot start with `<repo>/.husk`.
@@ -856,7 +895,10 @@ mod tests {
         .unwrap();
         m.dir = home;
         let err = mgr.register_plugin(m, &repo).await.unwrap_err();
-        assert!(err.contains("WASM"), "home plugin was gated: {err}");
+        assert!(
+            err.to_lowercase().contains("wasm"),
+            "home plugin was gated: {err}"
+        );
     }
 
     /// Consent has to survive a restart, or every boot re-refuses.
@@ -927,7 +969,10 @@ mod tests {
             ("ui:skills", vec!["list_skills", "get_skill"]),
             ("fs.reader", vec!["read/file", "list.dir"]),
         ] {
-            let p: Arc<dyn Plugin> = Arc::new(Fake { id: id.into(), tools });
+            let p: Arc<dyn Plugin> = Arc::new(Fake {
+                id: id.into(),
+                tools,
+            });
             mgr.plugins.insert(id.into(), p.clone());
             mgr.enabled.insert(id.into(), true);
             for t in p.export_tools() {
@@ -945,11 +990,16 @@ mod tests {
             assert!(
                 !name.is_empty()
                     && name.len() <= 64
-                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
                 "the engine would send an illegal function.name: {name:?}"
             );
             // …and the advertised name is actually callable.
-            assert!(mgr.dispatch_tool_call(name, serde_json::json!({})).await.is_ok());
+            assert!(mgr
+                .dispatch_tool_call(name, serde_json::json!({}))
+                .await
+                .is_ok());
         }
         assert!(advertised
             .iter()

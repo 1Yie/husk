@@ -85,7 +85,6 @@ pub struct McpClient {
     /// resource uri → metadata (from `resources/list`, when declared).
     pub resources: Mutex<Vec<Value>>,
     /// stderr ring buffer (surfaced on error cards) — stdio only.
-
     pub stderr_log: Arc<Mutex<Vec<String>>>,
 }
 
@@ -141,11 +140,37 @@ impl McpClient {
         // HTTP transport — `entry.url` means streamable HTTP instead of a
         // spawned child. No env/stdin machinery applies.
         if let Some(url) = entry["url"].as_str() {
+            // Declared `permissions.network` is the host allowlist for the
+            // transport itself — a manifest that says `permissions: {}`
+            // grants NO network, so its http entry would fail closed.
+            // Loopback hosts always pass: a same-machine server is not
+            // outbound network in any sandbox model.
+            if let Some(perms) = &manifest.permissions {
+                let host = reqwest::Url::parse(url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(String::from))
+                    .unwrap_or_default();
+                let ok = is_loopback_host(&host) || host_allowed(&host, &perms.network);
+                if !ok {
+                    return Err(anyhow::anyhow!(
+                        "MCP `{}` url host `{host}` is not in its declared \
+                         permissions.network allowlist ({} entries) — refusing \
+                         to connect; add the host or drop the permissions block",
+                        manifest.id,
+                        perms.network.len(),
+                    ));
+                }
+            }
             let headers: HashMap<String, String> = entry["headers"]
                 .as_object()
                 .map(|o| {
                     o.iter()
-                        .map(|(k, v)| (k.clone(), resolve_indirect(v.as_str().unwrap_or(""), "header")))
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                resolve_indirect(v.as_str().unwrap_or(""), "header"),
+                            )
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -175,7 +200,11 @@ impl McpClient {
         let command = entry["command"].as_str().context("mcp entry.command")?;
         let args: Vec<String> = entry["args"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         // Child env = manifest env only — never inherit host env.
         // `env:VAR` indirection resolves from host env, but a manifest can
@@ -187,19 +216,59 @@ impl McpClient {
             .as_object()
             .map(|o| {
                 o.iter()
-                    .map(|(k, v)| {
-                        (k.clone(), resolve_indirect(v.as_str().unwrap_or(""), "env"))
-                    })
+                    .map(|(k, v)| (k.clone(), resolve_indirect(v.as_str().unwrap_or(""), "env")))
                     .collect()
             })
             .unwrap_or_default();
 
         let stderr_log = Arc::new(Mutex::new(Vec::<String>::new()));
-        let mut cmd = tokio::process::Command::new(command);
-        cmd.args(&args)
-            .env_clear()
-            .envs(&env)
-            .stdin(std::process::Stdio::piped())
+        // `sandboxed` or a declared `permissions` block → the child spawns
+        // through the process sandbox instead of naked: filesystem grants
+        // become mounts, `network` non-empty becomes allow_network (bwrap
+        // can't host-filter — widened with a warn), `env` rides the
+        // trusted-env channel so the manifest's own literals survive.
+        let mut cmd = if manifest.wants_sandbox() {
+            let perms = manifest.permissions.clone().unwrap_or_default();
+            let (ro, rw) = perms.fs_mounts();
+            if !perms.network.is_empty() {
+                warn!(
+                    plugin = %manifest.id,
+                    "permissions.network has no host filtering in the process \
+                     sandbox — widened to allow-all for this spawn"
+                );
+            }
+            let ws = if manifest.dir.is_absolute() && manifest.dir.exists() {
+                manifest.dir.clone()
+            } else {
+                std::env::temp_dir()
+            };
+            let cfg = agent_sandbox::SandboxConfig {
+                workspace_dir: ws,
+                allow_network: !perms.network.is_empty(),
+                environment: agent_sandbox::plan::EnvironmentPolicy::Minimal,
+                trusted_env: env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                extra_ro_mounts: ro,
+                extra_rw_mounts: rw,
+                ..Default::default()
+            };
+            let (backend, _loud) = agent_sandbox::detect_backend();
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            backend
+                .wrap_spawn(&cfg, command, &arg_refs)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "MCP `{}` declared sandboxed spawn but this platform has \
+                         no sandbox backend — refusing instead of spawning \
+                         unsandboxed",
+                        manifest.id
+                    )
+                })?
+        } else {
+            let mut c = tokio::process::Command::new(command);
+            c.args(&args).env_clear().envs(&env);
+            c
+        };
+        cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
@@ -260,7 +329,9 @@ impl McpClient {
                     let Ok(v) = serde_json::from_str::<Value>(&line) else {
                         continue;
                     };
-                    if v.get("id").is_some() && (v.get("result").is_some() || v.get("error").is_some()) {
+                    if v.get("id").is_some()
+                        && (v.get("result").is_some() || v.get("error").is_some())
+                    {
                         // Response → resolve the pending oneshot. The lock is
                         // dropped before sending (the send is synchronous).
                         let tx = response_id(&v).and_then(|id| {
@@ -294,11 +365,14 @@ impl McpClient {
     /// wire differs, the sequence doesn't).
     async fn handshake(self: &Arc<Self>) -> Result<Arc<Self>> {
         let init = self
-            .call_rpc("initialize", json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "husk", "version": env!("CARGO_PKG_VERSION")},
-            }))
+            .call_rpc(
+                "initialize",
+                json!({
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "husk", "version": env!("CARGO_PKG_VERSION")},
+                }),
+            )
             .await
             .context("MCP initialize")?;
 
@@ -326,20 +400,15 @@ impl McpClient {
             let tools = r["tools"].as_array().cloned().unwrap_or_default();
             // Publish the table the model-visible read paths consult. Written
             // only on success, so a failed refresh keeps the previous listing.
-            *self
-                .tool_cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner()) = Arc::new(tools);
+            *self.tool_cache.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(tools);
         }
         if caps.resources {
             let r = self.call_rpc("resources/list", json!({})).await?;
-            *self.resources.lock().await =
-                r["resources"].as_array().cloned().unwrap_or_default();
+            *self.resources.lock().await = r["resources"].as_array().cloned().unwrap_or_default();
         }
         if caps.prompts {
             let r = self.call_rpc("prompts/list", json!({})).await?;
-            *self.prompts.lock().await =
-                r["prompts"].as_array().cloned().unwrap_or_default();
+            *self.prompts.lock().await = r["prompts"].as_array().cloned().unwrap_or_default();
         }
         Ok(())
     }
@@ -407,9 +476,10 @@ impl McpClient {
                     .await?;
                 // Same demux contract as stdio: result or error.message.
                 if let Some(err) = msg.get("error") {
-                    return Err(anyhow::anyhow!(
-                        err["message"].as_str().unwrap_or("rpc error").to_string()
-                    ));
+                    return Err(anyhow::anyhow!(err["message"]
+                        .as_str()
+                        .unwrap_or("rpc error")
+                        .to_string()));
                 }
                 Ok(msg.get("result").cloned().unwrap_or(Value::Null))
             }
@@ -477,8 +547,7 @@ impl McpClient {
             }
             return Err(anyhow::anyhow!("MCP SSE stream had no matching response"));
         }
-        let v: Value = serde_json::from_str(text.trim())
-            .context("MCP http response parse")?;
+        let v: Value = serde_json::from_str(text.trim()).context("MCP http response parse")?;
         Ok(v)
     }
 
@@ -613,18 +682,59 @@ pub(crate) fn resolve_indirect(val: &str, kind: &str) -> String {
 fn host_env_is_secret(name: &str) -> bool {
     let u = name.to_uppercase();
     const SECRET_SUFFIXES: &[&str] = &[
-        "_KEY", "_SECRET", "_TOKEN", "_PASSWORD", "_PASSWD", "_CREDENTIAL",
-        "_CREDENTIALS", "_AUTH", "_PRIVATE", "_CERT", "_PEM",
+        "_KEY",
+        "_SECRET",
+        "_TOKEN",
+        "_PASSWORD",
+        "_PASSWD",
+        "_CREDENTIAL",
+        "_CREDENTIALS",
+        "_AUTH",
+        "_PRIVATE",
+        "_CERT",
+        "_PEM",
     ];
     const SECRET_EXACT: &[&str] = &[
-        "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GITHUB_TOKEN",
-        "GH_TOKEN", "GITLAB_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-        "XAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
-        "NPM_TOKEN", "CARGO_REGISTRY_TOKEN", "DOCKER_PASSWORD",
-        "KUBECONFIG", "PRIVATE_KEY", "SECRET_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITLAB_TOKEN",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "XAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "NPM_TOKEN",
+        "CARGO_REGISTRY_TOKEN",
+        "DOCKER_PASSWORD",
+        "KUBECONFIG",
+        "PRIVATE_KEY",
+        "SECRET_KEY",
     ];
-    SECRET_EXACT.contains(&u.as_str())
-        || SECRET_SUFFIXES.iter().any(|s| u.ends_with(s))
+    SECRET_EXACT.contains(&u.as_str()) || SECRET_SUFFIXES.iter().any(|s| u.ends_with(s))
+}
+
+/// Loopback hosts bypass `permissions.network` — a same-machine MCP server
+/// is a local process in every sandbox model, not outbound network.
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host == "[::1]"
+        || host == "0.0.0.0"
+}
+
+/// `host` ∈ allowlist — suffix match with a label boundary, so
+/// `example.com` covers `api.example.com` but never `badexample.com`. An
+/// entry may itself be `*.`-prefixed (same semantics either way).
+fn host_allowed(host: &str, allow: &[String]) -> bool {
+    allow.iter().any(|e| {
+        let e = e.trim_start_matches("*.");
+        !e.is_empty() && (host == e || host.ends_with(&format!(".{e}")))
+    })
 }
 
 #[cfg(test)]
@@ -654,13 +764,19 @@ mod tests {
         let (tx, _rx) = oneshot::channel();
         map.lock().unwrap().insert(1, tx);
 
-        let slot = PendingSlot { map: map.clone(), id: 1 };
+        let slot = PendingSlot {
+            map: map.clone(),
+            id: 1,
+        };
         assert!(map.lock().unwrap().contains_key(&1));
         drop(slot);
         assert!(!map.lock().unwrap().contains_key(&1));
 
         // Dropping an already-resolved slot is a no-op, not an error.
-        drop(PendingSlot { map: map.clone(), id: 99 });
+        drop(PendingSlot {
+            map: map.clone(),
+            id: 99,
+        });
         assert!(map.lock().unwrap().is_empty());
     }
 }

@@ -47,6 +47,26 @@ pub struct PluginPermissions {
     pub filesystem: Vec<String>,
 }
 
+impl PluginPermissions {
+    /// `read:<path>`/`write:<path>` entries → (read-only, read-write) mount
+    /// lists for the process sandbox. Bare paths without a prefix are read-
+    /// only (a grant without a mode never widens to write).
+    pub fn fs_mounts(&self) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let mut ro = Vec::new();
+        let mut rw = Vec::new();
+        for e in &self.filesystem {
+            match e.strip_prefix("write:").or_else(|| e.strip_prefix("rw:")) {
+                Some(p) => rw.push(PathBuf::from(p)),
+                None => match e.strip_prefix("read:").or_else(|| e.strip_prefix("ro:")) {
+                    Some(p) => ro.push(PathBuf::from(p)),
+                    None => ro.push(PathBuf::from(e)),
+                },
+            }
+        }
+        (ro, rw)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolDecl {
     pub name: String,
@@ -133,8 +153,12 @@ pub struct PluginManifest {
     /// connect, only host-side capabilities.
     #[serde(default)]
     pub entry: Option<serde_json::Value>,
+    /// `Some` means the manifest **declared** a permission set — the spawn
+    /// paths then enforce it (sandboxed stdio child, HTTP host allowlist).
+    /// `None` (key absent) keeps the legacy permissive posture: UI-registered
+    /// servers write no `permissions` key and behave exactly as before.
     #[serde(default)]
-    pub permissions: PluginPermissions,
+    pub permissions: Option<PluginPermissions>,
     #[serde(default)]
     pub capabilities: Capabilities,
     /// MCP: run under the process sandbox when the server is local-safe.
@@ -145,7 +169,18 @@ pub struct PluginManifest {
     pub dir: PathBuf,
 }
 
-fn v1() -> String { "1.0.0".into() }
+fn v1() -> String {
+    "1.0.0".into()
+}
+
+impl PluginManifest {
+    /// Whether the spawn path must run under the process sandbox — an
+    /// explicit `sandboxed` flag, or a declared `permissions` block (a
+    /// capability grant is meaningless unless the sandbox enforces it).
+    pub fn wants_sandbox(&self) -> bool {
+        self.sandboxed || self.permissions.is_some()
+    }
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Capabilities {
@@ -206,12 +241,7 @@ impl PluginManifest {
                     let expected = match h.event.as_str() {
                         "before_tool_execute" | "after_tool_execute" => "tool",
                         "on_state_transition" => "state",
-                        _ => {
-                            return Err(format!(
-                                "hook `{}` takes no filter (got `{k}`)",
-                                h.event
-                            ))
-                        }
+                        _ => return Err(format!("hook `{}` takes no filter (got `{k}`)", h.event)),
                     };
                     if k != expected {
                         return Err(format!(
@@ -251,7 +281,7 @@ impl PluginManifest {
             entry: Some(serde_json::json!({
                 "command": e.command, "args": e.args, "env": e.env,
             })),
-            permissions: PluginPermissions::default(),
+            permissions: None,
             capabilities: Capabilities::default(),
             sandboxed: e.sandboxed.unwrap_or(false),
             dir: PathBuf::new(),
@@ -295,7 +325,10 @@ mod tests {
              "filter": {"tool": "bash"}}
         ]));
         assert!(m.validate().is_ok());
-        assert_eq!(m.capabilities.hooks[0].timeout_ms(), HOOK_DEFAULT_TIMEOUT_MS);
+        assert_eq!(
+            m.capabilities.hooks[0].timeout_ms(),
+            HOOK_DEFAULT_TIMEOUT_MS
+        );
     }
 
     /// A declaration with nothing to execute can never fire — refuse it
@@ -319,9 +352,21 @@ mod tests {
     #[test]
     fn filter_keys_are_checked_against_the_event() {
         for (event, filter, needle) in [
-            ("before_tool_execute", serde_json::json!({"state": "Failed"}), "`tool`"),
-            ("on_state_transition", serde_json::json!({"tool": "bash"}), "`state`"),
-            ("on_user_input", serde_json::json!({"tool": "bash"}), "no filter"),
+            (
+                "before_tool_execute",
+                serde_json::json!({"state": "Failed"}),
+                "`tool`",
+            ),
+            (
+                "on_state_transition",
+                serde_json::json!({"tool": "bash"}),
+                "`state`",
+            ),
+            (
+                "on_user_input",
+                serde_json::json!({"tool": "bash"}),
+                "no filter",
+            ),
         ] {
             let m = manifest_with(serde_json::json!([
                 {"event": event, "run": {"command": "x"}, "filter": filter}

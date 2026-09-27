@@ -11,19 +11,21 @@ pub mod hooks;
 pub mod manager;
 pub mod manifest;
 pub mod mcp;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::Value;
 
+pub use hooks::{hooks_from_manifest, CommandHook, InputVerdict, ToolVerdict};
 pub use manager::{
-    discover, disabled_store_path, load_all, trust_store_path, wire_tool_name, DisabledStore,
+    disabled_store_path, discover, load_all, trust_store_path, wire_tool_name, DisabledStore,
     PluginInfo, PluginManager, TrustStore,
 };
 pub use manifest::{HookDecl, HookRun, McpServerEntry, PluginKind, PluginManifest, HOOK_EVENTS};
 pub use mcp::McpClient;
-pub use hooks::{hooks_from_manifest, CommandHook, InputVerdict, ToolVerdict};
 
 /// One plugin — WASM or MCP, mapped onto the same trait so the manager,
 /// permission pipeline, and tool router can't tell them apart.
@@ -116,6 +118,10 @@ impl Plugin for McpPlugin {
                 out.push_str(&format!("── {uri} ──\n{text}\n"));
             }
         }
-        if out.is_empty() { None } else { Some(out) }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     }
 }

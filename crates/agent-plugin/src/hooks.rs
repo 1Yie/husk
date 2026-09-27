@@ -70,6 +70,10 @@ pub struct CommandHook {
     /// Working directory for the child — the plugin's own directory, so a
     /// hook script's relative file access is predictable.
     dir: PathBuf,
+    /// Process-sandbox config when the manifest asks for it (`sandboxed` or
+    /// a declared `permissions` block). `trusted_env` carries this hook's own
+    /// env — inside the sandbox it lands unfiltered like the declared block.
+    sandbox: Option<agent_sandbox::SandboxConfig>,
 }
 
 impl CommandHook {
@@ -96,7 +100,15 @@ impl CommandHook {
                 .collect(),
             timeout: Duration::from_millis(decl.timeout_ms()),
             dir: dir.to_path_buf(),
+            sandbox: None,
         })
+    }
+
+    /// Attach the manifest's sandbox posture — `hooks_from_manifest` folds
+    /// `wants_sandbox()` + `permissions` into this per-hook config.
+    pub fn with_sandbox(mut self, cfg: agent_sandbox::SandboxConfig) -> Self {
+        self.sandbox = Some(cfg);
+        self
     }
 
     /// `<plugin_id>:<event>` — what the log line and the UI marker show.
@@ -204,13 +216,32 @@ impl CommandHook {
         // then read a torn line).
         let mut body = serde_json::to_vec(payload).ok()?;
         body.push(b'\n');
-        let mut cmd = tokio::process::Command::new(&self.command);
-        cmd.args(&self.args)
-            .current_dir(&self.dir)
-            // Child env = declared env only, never inherited — the same
-            // posture as an MCP child (a hook is arbitrary local code).
-            .env_clear()
-            .envs(&self.env)
+        // Sandbox path: declared `permissions`/`sandboxed` wrap the spawn
+        // in the process sandbox (fs mounts + net gate + trusted env). No
+        // backend on this platform → loud warn and the legacy spawn — a
+        // hook that cannot start degrades to Continue anyway.
+        let mut cmd = match self.sandbox.as_ref().and_then(|cfg| {
+            let (backend, _loud) = agent_sandbox::detect_backend();
+            let arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+            backend.wrap_spawn(cfg, &self.command.to_string_lossy(), &arg_refs)
+        }) {
+            Some(c) => c,
+            None => {
+                if self.sandbox.is_some() {
+                    warn!(
+                        hook = %self.id(),
+                        "manifest requests sandboxed spawn but no sandbox \
+                         backend on this platform — running unsandboxed"
+                    );
+                }
+                let mut c = tokio::process::Command::new(&self.command);
+                // Child env = declared env only, never inherited — the same
+                // posture as an MCP child (a hook is arbitrary local code).
+                c.args(&self.args).env_clear().envs(&self.env);
+                c
+            }
+        };
+        cmd.current_dir(&self.dir)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -348,9 +379,35 @@ pub fn hooks_from_manifest(manifest: &crate::PluginManifest) -> Vec<CommandHook>
         .hooks
         .iter()
         .filter_map(|d| CommandHook::new(&manifest.id, d, &manifest.dir))
+        .map(|h| with_manifest_sandbox(h, manifest))
         .collect()
 }
 
+/// Fold the manifest's sandbox posture into one hook's spawn config.
+/// `trusted_env` carries this hook's declared env — inside the sandbox it
+/// lands unfiltered (the manifest is the declaring authority; the env
+/// denylist's job is host secrets, not the plugin's own literals).
+fn with_manifest_sandbox(hook: CommandHook, manifest: &crate::PluginManifest) -> CommandHook {
+    if !manifest.wants_sandbox() {
+        return hook;
+    }
+    let perms = manifest.permissions.clone().unwrap_or_default();
+    let (ro, rw) = perms.fs_mounts();
+    let trusted_env: Vec<(String, String)> = hook
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    hook.with_sandbox(agent_sandbox::SandboxConfig {
+        workspace_dir: manifest.dir.clone(),
+        allow_network: !perms.network.is_empty(),
+        environment: agent_sandbox::plan::EnvironmentPolicy::Minimal,
+        trusted_env,
+        extra_ro_mounts: ro,
+        extra_rw_mounts: rw,
+        ..Default::default()
+    })
+}
 
 #[cfg(all(test, unix))]
 mod tests {
@@ -388,28 +445,54 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
 
-        script(dir, "veto.sh", r#"echo '{"action":"veto","reason":"no git push"}'"#);
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./veto.sh"},
-        }));
-        match h.run_before_tool("bash", &serde_json::json!({"cmd": "git push"})).await {
+        script(
+            dir,
+            "veto.sh",
+            r#"echo '{"action":"veto","reason":"no git push"}'"#,
+        );
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./veto.sh"},
+            }),
+        );
+        match h
+            .run_before_tool("bash", &serde_json::json!({"cmd": "git push"}))
+            .await
+        {
             ToolVerdict::Veto(r) => assert_eq!(r, "no git push"),
             other => panic!("expected veto, got {other:?}"),
         }
 
-        script(dir, "rewrite.sh", r#"echo '{"action":"rewrite","args":{"cmd":"ls"}}'"#);
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./rewrite.sh"},
-        }));
-        match h.run_before_tool("bash", &serde_json::json!({"cmd": "rm -rf /"})).await {
+        script(
+            dir,
+            "rewrite.sh",
+            r#"echo '{"action":"rewrite","args":{"cmd":"ls"}}'"#,
+        );
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./rewrite.sh"},
+            }),
+        );
+        match h
+            .run_before_tool("bash", &serde_json::json!({"cmd": "rm -rf /"}))
+            .await
+        {
             ToolVerdict::Rewrite(args) => assert_eq!(args["cmd"], "ls"),
             other => panic!("expected rewrite, got {other:?}"),
         }
 
         script(dir, "pass.sh", r#"echo '{"action":"continue"}'"#);
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./pass.sh"},
-        }));
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./pass.sh"},
+            }),
+        );
         assert!(matches!(
             h.run_before_tool("bash", &serde_json::json!({})).await,
             ToolVerdict::Continue
@@ -423,12 +506,21 @@ mod tests {
     async fn payload_is_delivered_and_cwd_is_the_plugin_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        script(dir, "dump.sh", "cat > got.json\necho '{\"action\":\"continue\"}'");
+        script(
+            dir,
+            "dump.sh",
+            "cat > got.json\necho '{\"action\":\"continue\"}'",
+        );
 
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./dump.sh"},
-        }));
-        h.run_before_tool("read", &serde_json::json!({"path": "a.rs"})).await;
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./dump.sh"},
+            }),
+        );
+        h.run_before_tool("read", &serde_json::json!({"path": "a.rs"}))
+            .await;
 
         let got: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("got.json")).unwrap()).unwrap();
@@ -449,9 +541,13 @@ mod tests {
             "redact.sh",
             r#"echo '{"action":"rewrite_output","output":"[redacted]"}'"#,
         );
-        let h = hook(dir, "after_tool_execute", serde_json::json!({
-            "run": {"command": "./redact.sh"},
-        }));
+        let h = hook(
+            dir,
+            "after_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./redact.sh"},
+            }),
+        );
         let out = h
             .run_after_tool("read", &serde_json::json!({}), "AKIA-secret")
             .await
@@ -459,10 +555,18 @@ mod tests {
         assert_eq!(out, "[redacted]");
 
         // A transition hook's stdout is ignored, but the command must run.
-        script(dir, "mark.sh", "echo seen > marker.txt\necho 'not json at all'");
-        let h = hook(dir, "on_state_transition", serde_json::json!({
-            "run": {"command": "./mark.sh"},
-        }));
+        script(
+            dir,
+            "mark.sh",
+            "echo seen > marker.txt\necho 'not json at all'",
+        );
+        let h = hook(
+            dir,
+            "on_state_transition",
+            serde_json::json!({
+                "run": {"command": "./mark.sh"},
+            }),
+        );
         h.run_transition("Reasoning", "ExecutingTool").await;
         assert!(dir.join("marker.txt").exists(), "transition hook never ran");
     }
@@ -476,9 +580,13 @@ mod tests {
 
         // Non-zero exit.
         script(dir, "fail.sh", "echo '{\"action\":\"veto\"}'\nexit 3");
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./fail.sh"},
-        }));
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./fail.sh"},
+            }),
+        );
         assert!(matches!(
             h.run_before_tool("bash", &serde_json::json!({})).await,
             ToolVerdict::Continue
@@ -486,9 +594,13 @@ mod tests {
 
         // Unparsable stdout.
         script(dir, "garbage.sh", "echo 'this is not JSON'");
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./garbage.sh"},
-        }));
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./garbage.sh"},
+            }),
+        );
         assert!(matches!(
             h.run_before_tool("bash", &serde_json::json!({})).await,
             ToolVerdict::Continue
@@ -496,9 +608,13 @@ mod tests {
 
         // Unknown action.
         script(dir, "alien.sh", r#"echo '{"action":"approve"}'"#);
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./alien.sh"},
-        }));
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./alien.sh"},
+            }),
+        );
         assert!(matches!(
             h.run_before_tool("bash", &serde_json::json!({})).await,
             ToolVerdict::Continue
@@ -506,18 +622,26 @@ mod tests {
 
         // A rewrite with no usable args is not a rewrite.
         script(dir, "hollow.sh", r#"echo '{"action":"rewrite"}'"#);
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./hollow.sh"},
-        }));
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./hollow.sh"},
+            }),
+        );
         assert!(matches!(
             h.run_before_tool("bash", &serde_json::json!({})).await,
             ToolVerdict::Continue
         ));
 
         // Missing executable.
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./not-here.sh"},
-        }));
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./not-here.sh"},
+            }),
+        );
         assert!(matches!(
             h.run_before_tool("bash", &serde_json::json!({})).await,
             ToolVerdict::Continue
@@ -532,10 +656,14 @@ mod tests {
         let dir = tmp.path();
         script(dir, "spin.sh", "while :; do :; done");
 
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "./spin.sh"},
-            "timeout_ms": 150,
-        }));
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "./spin.sh"},
+                "timeout_ms": 150,
+            }),
+        );
         let started = std::time::Instant::now();
         assert!(matches!(
             h.run_before_tool("bash", &serde_json::json!({})).await,
@@ -549,22 +677,34 @@ mod tests {
     #[test]
     fn filters_narrow_by_tool_or_state() {
         let dir = Path::new("/tmp");
-        let h = hook(dir, "before_tool_execute", serde_json::json!({
-            "run": {"command": "guard"},
-            "filter": {"tool": "bash"},
-        }));
+        let h = hook(
+            dir,
+            "before_tool_execute",
+            serde_json::json!({
+                "run": {"command": "guard"},
+                "filter": {"tool": "bash"},
+            }),
+        );
         assert!(h.matches("bash"));
         assert!(!h.matches("read"));
 
-        let h = hook(dir, "on_state_transition", serde_json::json!({
-            "run": {"command": "guard"},
-            "filter": {"state": "Failed"},
-        }));
+        let h = hook(
+            dir,
+            "on_state_transition",
+            serde_json::json!({
+                "run": {"command": "guard"},
+                "filter": {"state": "Failed"},
+            }),
+        );
         assert!(h.matches("Failed"));
         assert!(!h.matches("Reasoning"));
 
         // No filter = every occurrence of the event.
-        let h = hook(dir, "on_user_input", serde_json::json!({"run": {"command": "guard"}}));
+        let h = hook(
+            dir,
+            "on_user_input",
+            serde_json::json!({"run": {"command": "guard"}}),
+        );
         assert!(h.matches("anything"));
     }
 
@@ -584,12 +724,16 @@ mod tests {
             "env.sh",
             r#"echo "{\"action\":\"rewrite_output\",\"output\":\"$REFUSED:$PLAIN\"}""#,
         );
-        let h = hook(dir, "after_tool_execute", serde_json::json!({
-            "run": {
-                "command": "./env.sh",
-                "env": {"REFUSED": "env:HOOK_TEST_FAKE_TOKEN", "PLAIN": "env:HOOK_TEST_PLAIN"},
-            },
-        }));
+        let h = hook(
+            dir,
+            "after_tool_execute",
+            serde_json::json!({
+                "run": {
+                    "command": "./env.sh",
+                    "env": {"REFUSED": "env:HOOK_TEST_FAKE_TOKEN", "PLAIN": "env:HOOK_TEST_PLAIN"},
+                },
+            }),
+        );
         let out = h
             .run_after_tool("read", &serde_json::json!({}), "")
             .await
@@ -604,8 +748,14 @@ mod tests {
         let dir = Path::new("/plugins/p");
         assert_eq!(resolve_command(dir, "guard.sh"), PathBuf::from("guard.sh"));
         assert_eq!(resolve_command(dir, "./guard.sh"), dir.join("guard.sh"));
-        assert_eq!(resolve_command(dir, "sub/guard.sh"), dir.join("sub/guard.sh"));
-        assert_eq!(resolve_command(dir, "/usr/bin/guard"), PathBuf::from("/usr/bin/guard"));
+        assert_eq!(
+            resolve_command(dir, "sub/guard.sh"),
+            dir.join("sub/guard.sh")
+        );
+        assert_eq!(
+            resolve_command(dir, "/usr/bin/guard"),
+            PathBuf::from("/usr/bin/guard")
+        );
     }
 
     /// A declaration without a command can't produce a hook (validation
