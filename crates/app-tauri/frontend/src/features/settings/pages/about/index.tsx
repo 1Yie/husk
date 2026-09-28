@@ -4,11 +4,12 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  User,
   Code,
   Heart,
   RefreshCw,
   ArrowUpRight,
+  Globe,
+  BookOpen,
 } from "@keyline-icons/react";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,8 @@ import { toast } from "sonner";
 import iconUrl from "@/assets/husk-icon.png";
 
 const REPO_URL = "https://github.com/1Yie/husk";
-const AUTHOR_URL = "https://github.com/1Yie";
+const WEBSITE_URL = "https://husk.ingstar.im";
+const DOCS_URL = "https://husk.ingstar.im/docs";
 
 export function AboutSettings() {
   const [version, setVersion] = useState("");
@@ -74,13 +76,24 @@ export function AboutSettings() {
 
       <KvList className="w-full max-w-md">
         <KvListContent>
-          <KvRow label="作者" icon={<User className="h-4 w-4" />}>
+          <KvRow label="官网" icon={<Globe className="h-4 w-4" />}>
             <button
               type="button"
-              onClick={() => void openUrl(AUTHOR_URL)}
+              onClick={() => void openUrl(WEBSITE_URL)}
               className="flex items-center gap-1 text-[13px] text-accent hover:underline cursor-pointer"
             >
-              1Yie
+              husk.ingstar.im
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </button>
+          </KvRow>
+
+          <KvRow label="文档" icon={<BookOpen className="h-4 w-4" />}>
+            <button
+              type="button"
+              onClick={() => void openUrl(DOCS_URL)}
+              className="flex items-center gap-1 text-[13px] text-accent hover:underline cursor-pointer"
+            >
+              husk.ingstar.im/docs
               <ArrowUpRight className="h-3.5 w-3.5" />
             </button>
           </KvRow>
