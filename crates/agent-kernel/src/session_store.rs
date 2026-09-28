@@ -120,6 +120,12 @@ struct WorkspaceRow {
     root: Option<String>,
     #[serde(default)]
     last_active: Option<i64>,
+    /// Monotonic session-id counter — survives deletes. Without it
+    /// `next_id` would reuse the id of a just-deleted session, and
+    /// `root:id`-keyed frontend state could resurface as a "restored"
+    /// session.
+    #[serde(default)]
+    next_id: i64,
 }
 
 /// Per-workspace session store — one row namespace (`<ws>/…`) inside the
@@ -384,6 +390,17 @@ impl SessionStore {
         self.put_workspace_row(&row)
     }
 
+    /// Whether this workspace has ever allocated a session id. Separates
+    /// "fresh workspace" (boot/focus auto-creates a first session) from
+    /// "user deleted every session" (stays empty until they make one).
+    pub fn ever_used(&self) -> bool {
+        self.workspace_row()
+            .ok()
+            .flatten()
+            .map(|r| r.next_id > 0)
+            .unwrap_or(false)
+    }
+
     /// Load the latest history snapshot for a session.
     pub fn load_history(&self, id: i64) -> Option<Vec<ChatMessage>> {
         let rtx = self.db.begin_read().ok()?;
@@ -419,9 +436,16 @@ impl SessionStore {
         wtx.commit().map_err(io_err)
     }
 
-    /// Allocate a fresh session id (max existing + 1, starting at 1).
+    /// Allocate a fresh session id — monotonic, persisted on the workspace
+    /// row so deleting a session can never make its id get reissued. Stores
+    /// written before this field existed start at 0 and are floored past
+    /// every live meta on first allocation.
     pub fn next_id(&self) -> i64 {
-        self.metas().iter().map(|s| s.id).max().unwrap_or(0) + 1
+        let mut row = self.workspace_row().ok().flatten().unwrap_or_default();
+        let floor = self.metas().iter().map(|s| s.id).max().unwrap_or(0);
+        row.next_id = row.next_id.max(floor) + 1;
+        let _ = self.put_workspace_row(&row);
+        row.next_id
     }
 
     /// Remove a session entirely — meta, history, and its `<id>/<name>`
@@ -995,6 +1019,46 @@ pub fn remove_recent_workspace(workspace_root: &Path) {
     let mut list = load_recent_workspaces();
     list.retain(|w| w.path != canon);
     let _ = put_global("recent_workspaces", &list);
+}
+
+/// Every workspace that still has session data on disk — the welcome's
+/// 「最近打开」source once the sidebar's 项目 list is empty. Removing a
+/// project drops its recents record but NOT the store, so this is how a
+/// removed project stays one click away.
+pub fn known_workspaces() -> Vec<RecentWorkspace> {
+    let mut out: Vec<RecentWorkspace> = Vec::new();
+    for store in SessionStore::all_workspaces() {
+        let Some(row) = store.workspace_row().ok().flatten() else {
+            continue;
+        };
+        let Some(root) = row.root.clone() else {
+            continue;
+        };
+        let path = std::path::PathBuf::from(&root);
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| root.clone());
+        // No `last_opened` on the workspace row — the newest session's
+        // `updated_at` is the closest stamp of real activity.
+        let last_opened = store
+            .list()
+            .iter()
+            .map(|m| m.updated_at)
+            .max()
+            .unwrap_or(0);
+        out.push(RecentWorkspace {
+            path,
+            name,
+            last_opened,
+        });
+    }
+    out.sort_by(|a, b| b.last_opened.cmp(&a.last_opened));
+    out
 }
 
 pub fn load_default_preferences() -> DefaultPreferences {

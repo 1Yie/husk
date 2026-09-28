@@ -253,7 +253,19 @@ impl SessionManager {
         let hooks = crate::hooks::HookChain::new();
         let plugins = cwd.as_ref().map(|root| {
             let handle: crate::engine::PluginHandle = Arc::new(std::sync::RwLock::new(None));
-            *handle.write().unwrap() = Self::load_plugins(root, &hooks);
+            // Background the load: a wedged MCP handshake must not hold up
+            // boot — the router starts empty and the swap lands whenever the
+            // registrations finish. A turn taken before then just sees no
+            // plugin tools.
+            let h = handle.clone();
+            let hooks_bg = hooks.clone();
+            let root = root.clone();
+            std::thread::Builder::new()
+                .name("mcp-boot-load".into())
+                .spawn(move || {
+                    *h.write().unwrap() = Self::load_plugins(&root, &hooks_bg);
+                })
+                .expect("mcp boot loader");
             handle
         });
         let plugins_for_manager = plugins;
@@ -417,7 +429,14 @@ impl SessionManager {
             .or_else(|| mgr.metas.first().map(|m| m.id));
         match first {
             Some(id) => mgr.open_session(id),
-            None => mgr.new_session(),
+            // Auto-create only for a workspace that has NEVER had a session —
+            // one the user emptied by deleting them all stays empty until
+            // they make a new one themselves.
+            None => {
+                if !mgr.store.ever_used() {
+                    mgr.new_session();
+                }
+            }
         }
         (mgr, event_rx)
     }
@@ -484,7 +503,15 @@ impl SessionManager {
             .or_else(|| self.metas.first().map(|m| m.id));
         match first {
             Some(id) => self.open_session(id),
-            None => self.new_session(),
+            // Same never-used gate as spawn — and a workspace that was
+            // emptied by deletes leaves `active_id` cleared, not pointed
+            // at the previous workspace's session.
+            None => {
+                self.active_id = 0;
+                if !self.store.ever_used() {
+                    self.new_session();
+                }
+            }
         }
         Ok(())
     }
@@ -1027,8 +1054,9 @@ impl SessionManager {
 
     /// Delete a session — abort its turn, drop the actor handle (closing
     /// the command channel ends its loop), and remove the store data.
-    /// If it was active, switch to the most recent remaining session, or
-    /// open a fresh one when none are left.
+    /// If it was active, switch to the most recent remaining session —
+    /// when none are left the workspace stays empty (`active_id = 0`)
+    /// until the user creates one.
     pub fn delete_session(&mut self, id: i64) {
         if !self.workspace_active {
             return;
@@ -1041,7 +1069,10 @@ impl SessionManager {
         if self.active_id == id {
             match self.metas.first().map(|m| m.id) {
                 Some(next) => self.open_session(next),
-                None => self.new_session(),
+                // Deleting the last session leaves the workspace empty —
+                // no auto-created replacement; the user makes the next
+                // one explicitly.
+                None => self.active_id = 0,
             }
         }
     }
@@ -1127,13 +1158,78 @@ impl SessionManager {
     pub fn reload_plugins(&self) -> Vec<serde_json::Value> {
         match &self.plugins {
             Some(handle) => {
-                let loaded = Self::load_plugins(&self.workspace_root, &self.hooks);
-                let summary = loaded.as_ref().map(|m| m.status()).unwrap_or_default();
-                *handle.write().unwrap() = loaded;
-                summary
+                Self::reload_plugins_detached(&(handle.clone(), self.hooks.clone(), self.workspace_root.clone()))
             }
             None => Vec::new(),
         }
+    }
+
+    /// Snapshot the shared plugin plumbing — `plugins` handle, hook chain,
+    /// workspace root — so the IPC layer can drop the manager guard BEFORE a
+    /// reload. `load_all` runs seconds of subprocess/MCP handshake I/O per
+    /// plugin; holding the manager mutex through it dead-queued every other
+    /// op (workspace open, session switch, UI stats) behind it.
+    pub fn plugin_reload_parts(
+        &self,
+    ) -> Option<(
+        crate::engine::PluginHandle,
+        crate::hooks::HookChain,
+        std::path::PathBuf,
+    )> {
+        self.plugins
+            .clone()
+            .map(|h| (h, self.hooks.clone(), self.workspace_root.clone()))
+    }
+
+    /// `reload_plugins` over a snapshot — same swap, no manager borrow.
+    pub fn reload_plugins_detached(
+        parts: &(
+            crate::engine::PluginHandle,
+            crate::hooks::HookChain,
+            std::path::PathBuf,
+        ),
+    ) -> Vec<serde_json::Value> {
+        let (handle, hooks, root) = parts;
+        let loaded = Self::load_plugins(root, hooks);
+        let summary = loaded.as_ref().map(|m| m.status()).unwrap_or_default();
+        *handle.write().unwrap() = loaded;
+        summary
+    }
+
+    /// `trust_plugin` over a snapshot — the grant is persisted BEFORE the
+    /// reload so the load path (which reads grants from disk) sees it.
+    pub fn trust_plugin_detached(
+        parts: &(
+            crate::engine::PluginHandle,
+            crate::hooks::HookChain,
+            std::path::PathBuf,
+        ),
+        id: &str,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let path = agent_plugin::trust_store_path().ok_or("no config dir for the trust store")?;
+        let mut store = agent_plugin::TrustStore::load(&path);
+        store.trust(id, &parts.2);
+        store.save(&path);
+        Ok(Self::reload_plugins_detached(parts))
+    }
+
+    /// `set_plugin_enabled` over a snapshot — flag write then reload, off
+    /// the manager lock.
+    pub fn set_plugin_enabled_detached(
+        parts: &(
+            crate::engine::PluginHandle,
+            crate::hooks::HookChain,
+            std::path::PathBuf,
+        ),
+        id: &str,
+        enabled: bool,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let path =
+            agent_plugin::disabled_store_path().ok_or("no config dir for the state store")?;
+        let mut store = agent_plugin::DisabledStore::load(&path);
+        store.set(id, !enabled);
+        store.save(&path);
+        Ok(Self::reload_plugins_detached(parts))
     }
 
     /// The `/` picker's plugin half — enabled plugins' declared slash
@@ -1743,16 +1839,36 @@ impl SessionManager {
             }
         }
 
+        // `active_*` must describe the ACTIVE SESSION — `SetModel` persists
+        // the pick to the session's own meta row, not the manager's
+        // workspace default, so reporting `self.model_name` here names the
+        // model the session was SPAWNED with and every model_info refresh
+        // snaps the pickers/chips back to it. Same rule as the live
+        // permission/thinking/agent-mode reads below.
+        let (active_provider, active_model) = self
+            .store
+            .list()
+            .into_iter()
+            .find(|m| m.id == self.active_id)
+            .map(|m| (m.provider, m.model))
+            .map(|(p, m)| {
+                (
+                    p.unwrap_or_else(|| self.provider_name.clone()),
+                    m.unwrap_or_else(|| self.model_name.clone()),
+                )
+            })
+            .unwrap_or_else(|| (self.provider_name.clone(), self.model_name.clone()));
+
         if !models
             .iter()
-            .any(|m| m.provider == self.provider_name && m.model == self.model_name)
+            .any(|m| m.provider == active_provider && m.model == active_model)
         {
             models.insert(
                 0,
                 ModelDetails {
-                    provider: self.provider_name.clone(),
-                    model: self.model_name.clone(),
-                    name: Some(self.model_name.clone()),
+                    provider: active_provider.clone(),
+                    model: active_model.clone(),
+                    name: Some(active_model.clone()),
                     reasoning: false,
                     thinking_level_map: None,
                     available_levels: Vec::new(),
@@ -1766,7 +1882,7 @@ impl SessionManager {
         if self.active_thinking_level.is_none() {
             if let Some(m) = models
                 .iter()
-                .find(|m| m.provider == self.provider_name && m.model == self.model_name)
+                .find(|m| m.provider == active_provider && m.model == active_model)
             {
                 if m.reasoning {
                     if m.available_levels.contains(&"medium".to_string()) {
@@ -1806,8 +1922,8 @@ impl SessionManager {
 
         let path = AppConfig::default_path().map(|p| p.to_string_lossy().to_string());
         SessionModelInfo {
-            active_provider: self.provider_name.clone(),
-            active_model: self.model_name.clone(),
+            active_provider,
+            active_model,
             active_thinking_level: live_level.or_else(|| self.active_thinking_level.clone()),
             active_permission_mode: live_mode.or_else(|| Some(self.permission_mode.clone())),
             // Same rule as the gate/level above. Reporting the manager-level
