@@ -97,6 +97,7 @@ export function App() {
   const setActiveId = useAgentStore((s) => s.setActiveId);
   const loadView = useAgentStore((s) => s.loadView);
   const prependItems = useAgentStore((s) => s.prependItems);
+  const dropView = useAgentStore((s) => s.dropView);
   const runningKeys = useRunningKeys();
 
   // The store keys every view by `root:id`, and it is the only place the active
@@ -112,7 +113,7 @@ export function App() {
   // stale view re-fetches the SAME page and duplicates it (→ duplicate `hi`
   // → several black marks in the rail). The store is read AT CALL TIME — the
   // ref this used to need is exactly what `activeViewNow()` returns.
-  const { projects, sessions, refresh, newSession, openSession } = useAgentSession();
+  const { projects, sessions, loaded: sessionsLoaded, refresh, newSession, openSession } = useAgentSession();
   // True while a session/workspace switch is fetching history + rebuilding
   // the view — the stream renders a skeleton instead of a stale/empty pane.
   const [viewLoading, setViewLoading] = useState(false);
@@ -304,6 +305,10 @@ export function App() {
 
   const handleDeleteSession = (id: number) => {
     setViewLoading(true);
+    // Evict the cached view NOW — `loadView` never overwrites an existing
+    // entry, so a stale buffer would resurface the deleted session the
+    // next time its key is mounted.
+    dropView(workspace.root, id);
     void deleteSession(id).then((r) => {
       void refresh();
       // If the deleted session was on screen, the backend already
@@ -430,7 +435,6 @@ export function App() {
 
   return (
     <>
-      <Toaster />
       <MainLayout
         sidebar={
         <SessionSidebar
@@ -464,6 +468,8 @@ export function App() {
           workspaceRoot={workspace.root}
           loading={viewLoading}
           sessionKey={`${workspace.root}:${activeId}`}
+          sessionsEmpty={sessionsLoaded && sessions.length === 0}
+          onNewSession={handleNewSession}
           onLoadOlder={handleLoadOlder}
           onShowRaw={handleShowRaw}
           onOpenWorkspace={handlePickWorkspace}
@@ -602,6 +608,11 @@ export function App() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Keep last in the tree: sonner renders its <ol> in place here, so
+          if its stylesheet ever fails to apply the unstyled element lands
+          below the shell instead of shoving it down from the top. */}
+      <Toaster />
     </>
   );
 }

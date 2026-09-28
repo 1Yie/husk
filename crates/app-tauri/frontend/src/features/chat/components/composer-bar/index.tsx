@@ -42,6 +42,7 @@ import type { PlanPayload } from "@/types";
 import { pendingApprovalOf } from "@/features/chat/hooks/stream-view";
 import { planToMarkdown } from "@/features/chat/components/chat-stream/plan-card";
 import { onQuoteRequest } from "@/lib/selection-bus";
+import { useAgentStore } from "@/stores/agent-store";
 import { toast } from "sonner";
 import {
   ClipboardPaste,
@@ -332,9 +333,18 @@ export function ComposerBar({
   const handleSelectModel = async (provider: string, model: string) => {
     setActiveModel(model);
     setActiveProvider(provider);
+    const target = models.find((m) => m.model === model && m.provider === provider);
+    // SetModel is a fire-and-forget session command — getModelInfo can race
+    // it and hand back the OLD active model, so the chips are set straight
+    // from the list entry we already hold instead of re-reading the backend.
+    if (target) {
+      useAgentStore.setState((s) => ({
+        ctxWindow: target.context_window ?? s.ctxWindow,
+        modelCost: target.cost ?? s.modelCost,
+      }));
+    }
     try {
       await agent.setModel(provider, model);
-      const target = models.find((m) => m.model === model && m.provider === provider);
       if (target?.available_levels && target.available_levels.length > 0) {
         if (!target.available_levels.includes(activeThinkingLevel)) {
           const nextLevel = target.available_levels.includes("medium")

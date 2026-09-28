@@ -82,6 +82,11 @@ interface AgentStore {
     historyStart: number,
     turnOffset?: number
   ) => void;
+  /** Drop a session's cached view — session ids are never reused after
+   *  deletion, but the map would otherwise keep dead buffers forever, and
+   *  `loadView`'s no-overwrite rule would resurrect one if an id ever did
+   *  collide again. */
+  dropView: (root: string, id: number) => void;
 }
 
 export const useAgentStore = create<AgentStore>((set) => ({
@@ -115,6 +120,16 @@ export const useAgentStore = create<AgentStore>((set) => ({
       const next = new Map(s.views);
       next.set(k, { ...v, items: [...items, ...v.items], historyStart, turnOffset: turnOffset ?? v.turnOffset });
       return { views: next };
+    }),
+
+  dropView: (root, id) =>
+    set((s) => {
+      const k = viewKey(root, id);
+      if (!s.views.has(k)) return s;
+      const next = new Map(s.views);
+      next.delete(k);
+      const keys = runningKeysOf(next);
+      return { views: next, runningKeys: sameKeys(s.runningKeys, keys) ? s.runningKeys : keys };
     }),
 }));
 
@@ -161,7 +176,9 @@ export function activeViewNow(): SessionView {
 
 /** Git + model chips: refreshed on session switch and at every streaming edge
  *  (a turn is the main thing that dirties the tree and may switch the model). */
-function refreshAgentChips() {
+/** Exported for the composer: `setModel` is a fire-and-forget session command
+ *  with no event to key off, so the picker triggers the refresh itself. */
+export function refreshAgentChips() {
   void agent
     .getGitInfo()
     .then((g) => useAgentStore.setState({ gitInfo: g }))

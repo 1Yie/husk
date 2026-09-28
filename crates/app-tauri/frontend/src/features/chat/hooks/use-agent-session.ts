@@ -8,11 +8,15 @@ import type { ProjectOverview } from "@/types";
 
 export function useAgentSession() {
   const [projects, setProjects] = useState<ProjectOverview[]>([]);
+  /** First `listProjects` resolved — until then `sessions === []` means
+   *  "still loading", not "workspace has no sessions". */
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const rows = await agent.listProjects();
       setProjects(rows);
+      setLoaded(true);
       return rows;
     } catch {
       // The 2s poll races backend ops (a switch holds the kernel lock) —
@@ -50,5 +54,5 @@ export function useAgentSession() {
     [projects]
   );
 
-  return { projects, sessions, refresh, newSession, openSession };
+  return { projects, sessions, loaded, refresh, newSession, openSession };
 }

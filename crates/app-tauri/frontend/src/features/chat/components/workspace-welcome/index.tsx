@@ -35,6 +35,15 @@ interface Props {
   onOpenWorkspace: () => void;
   /** Open a workspace straight from the recents grid. */
   onOpenRecent: (path: string) => void;
+  /** Replace the primary CTA — the zero-session workspace offers
+   *  「新建会话」instead of the folder picker. `hint` is the line under
+   *  the button (shown unconditionally when a custom CTA is set). */
+  cta?: {
+    Icon: ComponentType<{ className?: string }>;
+    label: string;
+    onClick: () => void;
+    hint: string;
+  };
 }
 
 /** What the agent can do once a project is open. Titles are nouns, lines are
@@ -62,8 +71,9 @@ function timeAgo(seconds: number): string {
   return new Date(seconds * 1000).toLocaleDateString();
 }
 
-export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Props) {
+export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, cta }: Props) {
   const { label, tail, Icon, tone } = timeGreeting();
+  const CtaIcon = cta?.Icon ?? FolderOpen;
   // Activity is read here too (not only in settings): the empty workspace is the
   // one screen with room for it. Best-effort — a failure just hides the block.
   const [records, setRecords] = useState<UsageRecord[] | null>(null);
@@ -94,13 +104,13 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent }: Pro
             {tail}
           </span>
           <div className="flex flex-col items-center gap-2">
-            <Button size="lg" className="rounded-full px-6" onClick={onOpenWorkspace}>
-              <FolderOpen className="h-4 w-4" />
-              打开工作区…
+            <Button size="lg" className="rounded-full px-6" onClick={cta?.onClick ?? onOpenWorkspace}>
+              <CtaIcon className="h-4 w-4" />
+              {cta?.label ?? "打开工作区…"}
             </Button>
-            {recents.length === 0 && (
+            {(cta || recents.length === 0) && (
               <span className="text-[12px] text-neutral-500">
-                或从左侧「项目」打开最近的工作区
+                {cta ? cta.hint : "或从左侧「项目」打开最近的工作区"}
               </span>
             )}
           </div>

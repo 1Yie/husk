@@ -32,6 +32,10 @@ interface TitleBarProps {
   onToggleChanges?: () => void;
   /** No workspace open — hide title, raw button and the stats cluster. */
   noWorkspace?: boolean;
+  /** No ACTIVE session (workspace open, zero sessions) — git stays, the
+   *  session-scoped stats (ctx/tokens/cost/rate, raw-JSON) would only show
+   *  config defaults, so they hide. */
+  noSession?: boolean;
 }
 
 function fmtK(n: number) {
@@ -72,12 +76,16 @@ function turnCost(
   );
 }
 
-export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, changesOpen, changesCount = 0, onToggleChanges, noWorkspace = false }: TitleBarProps) {
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, changesOpen, changesCount = 0, onToggleChanges, noWorkspace = false, noSession = false }: TitleBarProps) {
   const prompt = view?.usage.prompt ?? 0;
   const completion = view?.usage.completion ?? 0;
   const cached = view?.usage.cachedTokens ?? 0;
   const uncached = Math.max(0, prompt - cached);
-  const ctxWin = view?.usage.contextWindow || contextWindowHint || 256000;
+  // The hint (active model's window) wins over the turn-level usage: usage
+  // remembers whatever model produced the LAST turn, so after a mid-session
+  // model switch it would keep showing the old window until the next turn.
+  // Switching down past current usage just reads ">100%" and goes red.
+  const ctxWin = contextWindowHint || view?.usage.contextWindow || 256000;
   const pct = Math.round((prompt / ctxWin) * 100);
   const toks = view?.toksPerSec ?? 0;
   const cost = turnCost(prompt, cached, completion, modelCost);
@@ -106,7 +114,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   // dropdown, so it's built once and dropped into whichever slot fits.
   const statsChips = (
     <>
-      <StreamHealth />
+      {!noSession && <StreamHealth />}
       {gitInfo?.branch && (
         <TooltipSimple content={`Git 分支: ${gitInfo.branch}${gitInfo.dirty > 0 ? ` (${gitInfo.dirty} 处未提交修改)` : ""}`} side="bottom">
           <span className="flex items-center gap-1 cursor-default">
@@ -118,6 +126,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
           </span>
         </TooltipSimple>
       )}
+      {!noSession && (<>
       <TooltipSimple content={`上下文窗口占用: ${fmtK(prompt)}/${fmtK(ctxWin)} (${pct}%)`} side="bottom">
         <span
           className={`flex items-center gap-1 cursor-default ${ctxColor ?? ""}`}
@@ -162,6 +171,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
           {fmtRate(toks)} tok/s
         </span>
       </TooltipSimple>
+      </>)}
     </>
   );
 
@@ -171,7 +181,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
       data-tauri-drag-region="deep"
       className="flex items-center h-9 flex-none bg-white border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] select-none px-3 justify-between"
     >
-      {isMac && <div className="w-[78px] shrink-0" />}
+      {isMac && <div className="w-[60px] shrink-0" />}
 
       {!noWorkspace && (
       <div className="flex items-center min-w-0 max-w-[500px]">
@@ -182,7 +192,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
             {title}
           </span>
         </TooltipSimple>
-        {onShowRaw && (
+        {onShowRaw && !noSession && (
           <TooltipSimple content="查看原始对话 (JSON)" side="bottom">
             <button
               type="button"
