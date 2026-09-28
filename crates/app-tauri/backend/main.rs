@@ -207,44 +207,116 @@ fn exempt_self_from_proxy() {
 /// renderer sidesteps the conflict without giving up GPU acceleration,
 /// and `__GLX_VENDOR_LIBRARY_NAME` keeps GLX on the NVIDIA vendor library.
 ///
+/// **Auto-detection:** every launch probes the session type and the GPU
+/// vendor, then picks the whole env set in one shot — no restart, no
+/// config needed:
+///
+/// | session | GPU     | backend  | dmabuf | extra env                      |
+/// |---------|---------|----------|--------|--------------------------------|
+/// | wayland | NVIDIA  | wayland  | on     | `__NV_DISABLE_EXPLICIT_SYNC=1` |
+/// | wayland | other   | wayland  | on     | —                              |
+/// | x11     | NVIDIA  | x11      | off    | GLX vendor pin                 |
+/// | x11     | other   | x11      | on     | —                              |
+///
+/// `__NV_DISABLE_EXPLICIT_SYNC` works around WebKitGTK bug 324551: under
+/// Wayland, egl-wayland enables linux-drm-syncobj on the toplevel surface
+/// and WebKit then commits a wl_shm buffer with no acquire point, so KWin
+/// kills the client ("Error 71 (protocol error)"). Under X11 the dmabuf
+/// renderer's GBM allocation fails EINVAL on NVIDIA, so auto mode keeps
+/// dmabuf off there (WebKitGTK falls back to its non-dmabuf GPU path).
+///
 /// **Override path:** `~/.config/husk/settings.toml` — user-level config
 /// the user can flip even when the GUI is dead (edit the file, relaunch).
-/// Defaults below are the conservative NVIDIA-safe set; explicit opt-ins
-/// (`renderer = "wayland"`, `gpu_acceleration = true`) are honoured.
+/// Explicit `renderer = "wayland" | "x11"` wins over session detection;
+/// `gpu_acceleration = true` forces the dmabuf renderer on (pairing it
+/// with `WEBKIT_DMABUF_RENDERER_DISABLE_GBM=1` under X11, where NVIDIA's
+/// GBM backend rejects WebKitGTK's buffer flags); `false` forces pure
+/// software rendering as a debugging floor.
+///
+/// **Window alpha:** the main window is created OPAQUE on Linux
+/// (`tauri.linux.conf.json` flips the config's `transparent: true`). WebKitGTK
+/// never paints a transparent GTK window on this stack: the surface comes up
+/// with alpha=0 and WebKit's content never lands in it, so the compositor
+/// shows the desktop (or the stale buffer) through the window and only the
+/// rects WebKit damages on hover survive — highlights appear under the cursor
+/// and vanish when it leaves. Reproduced with x11 and Wayland, software GL and
+/// `WEBKIT_DISABLE_COMPOSITING_MODE=1`; `transparent: false` renders the whole
+/// UI every time. The shell paints edge-to-edge (no rounded corners, no
+/// shadow), so the window's alpha was never carrying any pixels.
+#[cfg(target_os = "linux")]
+fn linux_wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v == "wayland")
+}
+
+/// Any DRM card driven by NVIDIA (PCI vendor 0x10de). Skips connector
+/// entries (`card0-DP-1` etc.) — only whole-card nodes carry `device/vendor`.
+#[cfg(target_os = "linux")]
+fn linux_nvidia_gpu() -> bool {
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("card")
+            && !name.contains('-')
+            && std::fs::read_to_string(e.path().join("device/vendor"))
+                .is_ok_and(|v| v.trim() == "0x10de")
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn pin_linux_rendering_env() {
     let dev = agent_llm::config::DevConfig::load().unwrap_or_default();
+    let nvidia = linux_nvidia_gpu();
 
-    // GDK_BACKEND — the conservative default is X11; `wayland` is opt-in.
-    match dev.renderer.as_deref() {
-        Some("wayland") => std::env::set_var("GDK_BACKEND", "wayland"),
-        Some("x11") | None => std::env::set_var("GDK_BACKEND", "x11"),
+    // GDK_BACKEND — auto-detect the session; settings.toml overrides.
+    let wayland = match dev.renderer.as_deref() {
+        Some("wayland") => true,
+        Some("x11") => false,
+        None => linux_wayland_session(),
         Some(other) => {
-            eprintln!("husk: unknown dev.renderer {other:?} — falling back to x11");
-            std::env::set_var("GDK_BACKEND", "x11");
+            eprintln!("husk: unknown dev.renderer {other:?} — auto-detecting");
+            linux_wayland_session()
         }
-    }
+    };
+    std::env::set_var("GDK_BACKEND", if wayland { "wayland" } else { "x11" });
 
-    // Hardware-acceleration kill switch. Default is the NVIDIA-safe set
-    // (dmabuf off so WebKitGTK falls back to its non-dmabuf GPU path).
-    // `gpu_acceleration = false` additionally forces software GL; `true`
-    // opts into the dmabuf renderer (the user accepts the NVIDIA breakage).
+    // Hardware acceleration. `false` is the software floor for driver
+    // debugging. `true` and the auto default both want the dmabuf renderer;
+    // the only exception is auto mode on X11+NVIDIA, where dmabuf's GBM
+    // allocation fails EINVAL and the non-dmabuf GLX path is healthier.
     match dev.gpu_acceleration {
-        Some(true) => {
-            // Opted into dmabuf — leave the var unset so WebKitGTK picks it.
-            std::env::remove_var("WEBKIT_DISABLE_DMABUF_RENDERER");
-            std::env::remove_var("LIBGL_ALWAYS_SOFTWARE");
-            std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
-        }
         Some(false) => {
             // Software rendering — the safest floor, useful when debugging
             // driver-level GPU issues.
             std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
             std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
         }
-        None => {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        Some(true) | None => {
+            if nvidia && !wayland && dev.gpu_acceleration.is_none() {
+                // Auto mode on X11+NVIDIA: keep the classic non-dmabuf
+                // GLX path; dmabuf-under-X11 floods `Failed to create GBM
+                // buffer` (EINVAL) on this driver.
+                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+                std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
+                return;
+            }
+            // dmabuf renderer on.
+            std::env::remove_var("WEBKIT_DISABLE_DMABUF_RENDERER");
+            std::env::remove_var("LIBGL_ALWAYS_SOFTWARE");
+            if !nvidia {
+                return;
+            }
             std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
+            if wayland {
+                std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+            } else {
+                // Explicit opt-in under X11: non-GBM dmabuf buffers avoid
+                // NVIDIA GBM's EINVAL flood.
+                std::env::set_var("WEBKIT_DMABUF_RENDERER_DISABLE_GBM", "1");
+            }
         }
     }
 }
