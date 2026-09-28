@@ -1,4 +1,9 @@
 import { Toaster as Sonner } from "sonner";
+// Statically bundle sonner's stylesheet instead of relying on its runtime
+// <style> injection — inside WKWebView the injected rules can fail to
+// apply, which leaves the toast <ol> in the normal flow at the top of
+// #root and wrecks the whole layout.
+import "sonner/dist/styles.css";
 
 type ToasterProps = React.ComponentProps<typeof Sonner>;
 

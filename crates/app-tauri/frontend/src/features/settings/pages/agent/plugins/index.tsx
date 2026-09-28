@@ -15,6 +15,7 @@ import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { reloadMcp, removeMcp, setPluginEnabled, trustMcp, type AgentOverview } from "@/lib/agent-ipc/sessions";
 import { Switch } from "@/components/ui/switch";
+import { TooltipSimple } from "@/components/ui/tooltip";
 
 /* ============================ 插件 ============================ */
 
@@ -30,20 +31,28 @@ export function PluginsPane({
   /** Repo-local plugin awaiting consent — its hooks are local commands, so it
    *  stays inert until the user grants trust. */
   const [trusting, setTrusting] = useState<string | null>(null);
-  const [toggling, setToggling] = useState<string | null>(null);
+
+  /** Optimistic enable flags — the flag write is a file touch; the reload
+   *  runs in the background and the overview lands when it finishes. */
+  const [optimisticEnabled, setOptimisticEnabled] = useState<Record<string, boolean>>({});
+  const pluginEnabled = (p: AgentOverview["plugins"][number]) =>
+    optimisticEnabled[p.id] ?? p.enabled ?? true;
 
   /** Enable/disable — persisted (plugin-state.json), reloads so hooks
    *  actually stop/start firing on the next turn. */
   const toggle = async (pluginId: string, enabled: boolean) => {
-    setToggling(pluginId);
+    setOptimisticEnabled((m) => ({ ...m, [pluginId]: enabled }));
+    toast.success(enabled ? `已启用 ${pluginId}` : `已禁用 ${pluginId}`);
     try {
       await setPluginEnabled(pluginId, enabled);
-      toast.success(enabled ? `已启用 ${pluginId}` : `已禁用 ${pluginId}`);
       void reload();
     } catch (e) {
+      setOptimisticEnabled((m) => {
+        const n = { ...m };
+        delete n[pluginId];
+        return n;
+      });
       toast.error("切换失败", { description: String(e) });
-    } finally {
-      setToggling(null);
     }
   };
   /** Full reload in flight — re-reads every manifest and swaps the live router
@@ -141,55 +150,64 @@ export function PluginsPane({
                         </Badge>
                       )}
                       {p.hooks?.length ? (
-                        <span
-                          className="text-[11px] text-neutral-500 tabular-nums"
-                          title={p.hooks.map((h) => `${h.event}: ${h.command}`).join("\n")}
+                        <TooltipSimple
+                          className="whitespace-pre-line"
+                          content={p.hooks.map((h) => `${h.event}: ${h.command}`).join("\n")}
                         >
-                          {p.hooks.length} 钩子
-                        </span>
+                          <span className="text-[11px] text-neutral-500 tabular-nums">
+                            {p.hooks.length} 钩子
+                          </span>
+                        </TooltipSimple>
                       ) : null}
                       {p.tools.length > 0 && (
-                        <span
-                          className="text-[11px] text-neutral-500 tabular-nums"
-                          title={p.tools.join("\n")}
+                        <TooltipSimple
+                          className="whitespace-pre-line"
+                          content={p.tools.join("\n")}
                         >
-                          {p.tools.length} 工具
-                        </span>
+                          <span className="text-[11px] text-neutral-500 tabular-nums">
+                            {p.tools.length} 工具
+                          </span>
+                        </TooltipSimple>
                       )}
                       {(p.commandList?.length ?? 0) > 0 && (
                         <span className="text-[11px] text-neutral-500 tabular-nums">
                           {p.commandList!.length} 命令
                         </span>
                       )}
-                      {p.enabled === false && (
+                      {!pluginEnabled(p) && (
                         <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
                           已禁用
                         </Badge>
                       )}
-                      <Switch
-                        checked={p.enabled ?? true}
-                        disabled={toggling === p.id}
-                        title="禁用后该插件的钩子不再生效（持久化）"
-                        onClick={(e) => e.stopPropagation()}
-                        onCheckedChange={(v) => void toggle(p.id, v)}
-                      />
+                      {/* span is the anchor — `asChild` merging onto Switch
+                          clobbers its `data-[state=checked]` styling. */}
+                      <TooltipSimple content="禁用后该插件的钩子不再生效（持久化）">
+                        <span className="inline-flex shrink-0">
+                          <Switch
+                            checked={pluginEnabled(p)}
+                            onClick={(e) => e.stopPropagation()}
+                            onCheckedChange={(v) => void toggle(p.id, v)}
+                          />
+                        </span>
+                      </TooltipSimple>
                       {p.repoLocal &&
                         (p.trusted ? (
                           <span className="text-[11px] text-neutral-400">已信任</span>
                         ) : (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-[11px]"
-                            title="仓库内插件在信任前不会加载（其钩子会执行本地命令）"
-                            disabled={trusting === p.id}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void trust(p.id);
-                            }}
-                          >
-                            信任
-                          </Button>
+                          <TooltipSimple content="仓库内插件在信任前不会加载（其钩子会执行本地命令）">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-[11px]"
+                              disabled={trusting === p.id}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void trust(p.id);
+                              }}
+                            >
+                              信任
+                            </Button>
+                          </TooltipSimple>
                         ))}
                       <ArmedDeleteButton stopPropagation onConfirm={() => void doDelete(p.id)} />
                     </div>
@@ -198,15 +216,18 @@ export function PluginsPane({
                 <CollapsibleContent>
                   <div className="flex flex-wrap items-center gap-1.5 px-5 pb-3.5">
                     {p.hooks?.map((h, i) => (
-                      <Badge
+                      <TooltipSimple
                         key={`${h.event}-${i}`}
-                        variant="outline"
-                        className="h-4 px-1.5 font-mono text-[10px] gap-1"
-                        title={h.command || "生命周期钩子（本地命令）"}
+                        content={h.command || "生命周期钩子（本地命令）"}
                       >
-                        <Zap className="h-3 w-3" />
-                        {h.event}
-                      </Badge>
+                        <Badge
+                          variant="outline"
+                          className="h-4 px-1.5 font-mono text-[10px] gap-1"
+                        >
+                          <Zap className="h-3 w-3" />
+                          {h.event}
+                        </Badge>
+                      </TooltipSimple>
                     ))}
                     {p.tools.map((name) => (
                       <Badge
@@ -219,15 +240,18 @@ export function PluginsPane({
                       </Badge>
                     ))}
                     {p.commandList?.map((c) => (
-                      <Badge
+                      <TooltipSimple
                         key={`cmd-${c.name}`}
-                        variant="outline"
-                        className="h-4 px-1.5 font-mono text-[10px] gap-1"
-                        title={c.description || c.action}
+                        content={c.description || c.action}
                       >
-                        <Slash className="h-3 w-3" />
-                        {c.name}
-                      </Badge>
+                        <Badge
+                          variant="outline"
+                          className="h-4 px-1.5 font-mono text-[10px] gap-1"
+                        >
+                          <Slash className="h-3 w-3" />
+                          {c.name}
+                        </Badge>
+                      </TooltipSimple>
                     ))}
                     {!p.hooks?.length &&
                       p.tools.length === 0 &&

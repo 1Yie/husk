@@ -28,6 +28,7 @@ import { addMcp, probeMcp, reloadMcp, removeMcp, setPluginEnabled, trustMcp, typ
 const entryObj = (p: PluginItem) =>
   p.entry && typeof p.entry === "object" ? p.entry : null;
 import { Switch } from "@/components/ui/switch";
+import { TooltipSimple } from "@/components/ui/tooltip";
 import { Field } from "@/features/settings/pages/agent/shared/index";
 
 /* ============================ MCP ============================ */
@@ -68,21 +69,30 @@ export function McpPane({
   /** Repo-local plugin awaiting consent — the trust gate is load-level, so an
    *  untrusted repo-local MCP service can't even connect until this passes. */
   const [trusting, setTrusting] = useState<string | null>(null);
-  const [toggling, setToggling] = useState<string | null>(null);
+
+  /** Optimistic enable flags — the flag write is a file touch and shouldn't
+   *  wait on the MCP reload, so the switch flips instantly and the overview
+   *  lands when the background reload finishes. */
+  const [optimisticEnabled, setOptimisticEnabled] = useState<Record<string, boolean>>({});
+  const pluginEnabled = (p: PluginItem) =>
+    optimisticEnabled[p.id] ?? p.enabled ?? true;
 
   /** Enable/disable — persisted (plugin-state.json), reloads so the bridge's
    *  tools actually stop/start advertising on the next turn. */
   const toggle = async (pluginId: string, enabled: boolean) => {
-    setToggling(pluginId);
+    setOptimisticEnabled((m) => ({ ...m, [pluginId]: enabled }));
+    toast.success(enabled ? `已启用 ${pluginId}` : `已禁用 ${pluginId}`);
     try {
       await setPluginEnabled(pluginId, enabled);
-      toast.success(enabled ? `已启用 ${pluginId}` : `已禁用 ${pluginId}`);
       setReconnected({});
       onReload();
     } catch (e) {
+      setOptimisticEnabled((m) => {
+        const n = { ...m };
+        delete n[pluginId];
+        return n;
+      });
       toast.error("切换失败", { description: String(e) });
-    } finally {
-      setToggling(null);
     }
   };
 
@@ -242,59 +252,67 @@ export function McpPane({
                       {live.tools.length} 工具
                     </span>
                   ) : (
-                    <span
-                      className="max-w-[240px] truncate text-[11px] text-red-500"
-                      title={live.error}
-                    >
-                      {live.error || "未连接"}
-                    </span>
+                    <TooltipSimple content={live.error}>
+                      <span className="max-w-[240px] truncate text-[11px] text-red-500">
+                        {live.error || "未连接"}
+                      </span>
+                    </TooltipSimple>
                   )}
                   {p.repoLocal && !p.trusted && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-[11px] text-amber-600"
-                      title="仓库内插件在信任前不会加载"
-                      disabled={trusting === p.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void trust(p.id);
-                      }}
-                    >
-                      信任
-                    </Button>
+                    <TooltipSimple content="仓库内插件在信任前不会加载">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[11px] text-amber-600"
+                        disabled={trusting === p.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void trust(p.id);
+                        }}
+                      >
+                        信任
+                      </Button>
+                    </TooltipSimple>
                   )}
-                  {p.enabled === false && (
+                  {!pluginEnabled(p) && (
                     <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
                       已禁用
                     </Badge>
                   )}
-                  <Switch
-                    checked={p.enabled ?? true}
-                    disabled={toggling === p.id}
-                    title="禁用后该服务的工具不再提供给模型（持久化）"
-                    onClick={(e) => e.stopPropagation()}
-                    onCheckedChange={(v) => void toggle(p.id, v)}
-                  />
+                  {/* The span is the tooltip anchor — `asChild` would merge
+                      the tooltip's own data-state onto Switch and clobber its
+                      `data-[state=checked]` styling (the white-blob bug). */}
+                  <TooltipSimple content="禁用后该服务的工具不再提供给模型（持久化）">
+                    <span className="inline-flex shrink-0">
+                      <Switch
+                        checked={pluginEnabled(p)}
+                        onClick={(e) => e.stopPropagation()}
+                        onCheckedChange={(v) => void toggle(p.id, v)}
+                      />
+                    </span>
+                  </TooltipSimple>
                   {!(live.ok && live.tools.length) && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6"
-                      title="重连"
-                      disabled={reconnecting === p.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void reconnect(p.id);
-                      }}
-                    >
-                      <RefreshCw className={cn("h-3.5 w-3.5", reconnecting === p.id && "animate-spin")} />
-                    </Button>
+                    <TooltipSimple content="重连">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        disabled={reconnecting === p.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void reconnect(p.id);
+                        }}
+                      >
+                        <RefreshCw className={cn("h-3.5 w-3.5", reconnecting === p.id && "animate-spin")} />
+                      </Button>
+                    </TooltipSimple>
                   )}
-                  <Button variant="ghost" size="icon" className="h-6 w-6" title="编辑"
-                    onClick={(e) => { e.stopPropagation(); startEdit(p); }}>
-                    <SquarePen className="h-3.5 w-3.5" />
-                  </Button>
+                  <TooltipSimple content="编辑">
+                    <Button variant="ghost" size="icon" className="h-6 w-6"
+                      onClick={(e) => { e.stopPropagation(); startEdit(p); }}>
+                      <SquarePen className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipSimple>
                   <ArmedDeleteButton stopPropagation onConfirm={() => void doDelete(p.id)} />
 
                 </div>
