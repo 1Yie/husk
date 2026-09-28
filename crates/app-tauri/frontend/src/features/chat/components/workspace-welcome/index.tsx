@@ -172,7 +172,7 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, cta }
           </div>
         )}
 
-        <div className="grid w-full grid-cols-2 gap-2.5">
+        {/* <div className="grid w-full grid-cols-2 gap-2.5">
           {CAPABILITIES.map(({ Icon, title, desc }) => (
             <div
               key={title}
@@ -193,7 +193,7 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, cta }
           <Sigil k="@" label="引用文件" />
           <Sigil k="/" label="命令" />
           <Sigil k="$" label="技能" />
-        </div>
+        </div> */}
       </div>
     </div>
   );
