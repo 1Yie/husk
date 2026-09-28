@@ -167,7 +167,6 @@ export function GeneralPane() {
       {
         value: "__config__",
         label: "跟随配置默认",
-        description: "使用 config.toml 的 active_provider / active_model",
       },
     ];
     const pairs = new Map<string, { provider: string; model: string }>();
@@ -228,7 +227,7 @@ export function GeneralPane() {
             </KvRow>
             <KvRow
               label="默认模型"
-              description="新会话启动时使用的模型（工作区已保存的模型优先）"
+              description="新会话启动时使用的模型"
               icon={<Cpu className="h-4 w-4" />}
             >
               <SettingSelect
@@ -320,7 +319,7 @@ export function GeneralPane() {
             </KvRow>
             <KvRow
               label="内存上限"
-              description="单条命令的常驻内存上限，超出即终止"
+              description="单条命令的常驻内存上限"
               icon={<Cpu className="h-4 w-4" />}
             >
               <SettingSelect
