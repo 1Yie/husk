@@ -47,10 +47,10 @@
         background: currentColor; border-radius: 2px;
         animation: husk-splash-slide 1.15s ease-in-out infinite;
       }
-      /* Frameless window (decorations:false): the splash covers the whole
-         viewport while booting, so without this strip there's no
-         data-tauri-drag-region to grab until React mounts. Same 36px as
-         the app's title bar. */
+      /* The splash covers the whole viewport while booting — until React
+         mounts there is no title bar carrying a data-tauri-drag-region, so
+         nothing is grabbable without this strip (frameless on Windows/Linux,
+         overlay titlebar on macOS). Same 36px height as the app's bar. */
       #husk-splash .drag {
         position: absolute; top: 0; left: 0; right: 0; height: 36px;
         pointer-events: auto;
