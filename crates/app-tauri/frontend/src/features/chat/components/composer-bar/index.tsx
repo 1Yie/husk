@@ -1200,7 +1200,7 @@ export function ComposerBar({
                             }
                           }}
                           onBlur={() => commitEditQueued(i)}
-                          className="font-mono text-[11px] text-neutral-700 min-w-0 flex-1 bg-white border border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)] px-2 py-0.5 rounded outline-none focus:border-neutral-400 resize-none"
+                          className="font-mono text-[11px] text-neutral-700 min-w-0 flex-1 bg-white border border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)] px-2 py-0.5 rounded outline-none focus:border-neutral-400 resize-none overflow-x-hidden"
                         />
                       ) : (
                         <span
