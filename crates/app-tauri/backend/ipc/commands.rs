@@ -63,11 +63,20 @@ pub async fn paste_clipboard(
 /// deepening queue) is visible instead of silent. Control events are never
 /// dropped, so `dropped > 0` always means *text* was lost.
 #[tauri::command]
-pub fn get_ui_stats(
+pub async fn get_ui_stats(
     state: State<'_, KernelState>,
 ) -> Result<agent_kernel::channels::UiStatsSnapshot, String> {
-    let mgr = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(mgr.ui_stats())
+    // The StreamHealth chip polls this on an interval — a SYNC command waits
+    // on the main thread while a worker holds the manager through an MCP
+    // handshake, freezing the UI. Same `spawn_blocking` rule as
+    // `agent_session`.
+    let kernel = state.inner().0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mgr = kernel.lock().map_err(|e| e.to_string())?;
+        Ok(mgr.ui_stats())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// `check_update` — query the GitHub Releases API for the newest published
@@ -153,8 +162,21 @@ fn is_newer(current: &str, latest: &str) -> bool {
 }
 
 #[tauri::command]
-pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), String> {
-    let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
+pub async fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), String> {
+    // Sync commands run on the main thread — locking the manager here while a
+    // spawn_blocking worker holds it through an MCP handshake freezes the UI.
+    // Forward off-thread instead; the mutex keeps per-sender ordering.
+    let kernel = state.inner().0.clone();
+    tauri::async_runtime::spawn_blocking(move || agent_cmd_inner(kernel, cmd))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn agent_cmd_inner(
+    kernel: std::sync::Arc<std::sync::Mutex<agent_kernel::session_manager::SessionManager>>,
+    cmd: UiCommand,
+) -> Result<(), String> {
+    let mut mgr = kernel.lock().map_err(|e| e.to_string())?;
     let (cancel, steer_tx, decision, ask, permissions, agent_mode, ui, cmd_tx, queue) = {
         let Some(handle) = mgr.active() else {
             return Err("no active session".into());

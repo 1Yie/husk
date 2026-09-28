@@ -202,17 +202,23 @@ pub fn end_computer_control(app: &AppHandle) {
     // falls back to Ask. Routed through `agent_cmd`'s normal path so the
     // gate write lands on the active session (the overlay has no idea
     // which session is controlling; kernel resolves `active()`).
-    if let Ok(mgr) = app.state::<crate::kernel::KernelState>().0.lock() {
-        if let Some(handle) = mgr.active() {
-            if let Ok(mut gate) = handle.permissions.write() {
-                gate.revoke_tool_for_session("computer");
+    // The manager lock may sit with a spawn_blocking worker for seconds (MCP
+    // handshakes); this runs on the main thread, so the gate write hops to a
+    // detached thread — windows close NOW, the revoke lands when the lock frees.
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        if let Ok(mgr) = app2.state::<crate::kernel::KernelState>().0.lock() {
+            if let Some(handle) = mgr.active() {
+                if let Ok(mut gate) = handle.permissions.write() {
+                    gate.revoke_tool_for_session("computer");
+                }
+                let _ = handle.ui.send(UiEvent::SessionToolWhitelisted {
+                    tool_name: "computer".to_string(),
+                    stopped: true,
+                });
             }
-            let _ = handle.ui.send(UiEvent::SessionToolWhitelisted {
-                tool_name: "computer".to_string(),
-                stopped: true,
-            });
         }
-    }
+    });
     close_computer_overlay(app);
     // Bring the main window back — it was hidden behind the fullscreen
     // glow while the agent drove; on release the user should land back on

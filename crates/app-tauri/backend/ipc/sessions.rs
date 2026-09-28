@@ -11,18 +11,112 @@ use crate::kernel::KernelState;
 const HISTORY_PAGE: usize = 80;
 
 #[tauri::command]
-pub fn agent_session(
-    _app: tauri::AppHandle,
+pub async fn agent_session(
+    app: tauri::AppHandle,
     state: State<'_, KernelState>,
     op: String,
     id: Option<i64>,
     path: Option<String>,
     payload: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    // Before the kernel lock: the dialog stays up until the user answers, and the rest
-    // of this IPC must keep flowing.
+    // Sync commands run on the main thread — and ops like
+    // `set_plugin_enabled`/`reload_mcp` block for up to 8s per plugin on
+    // MCP handshakes, freezing the whole UI until they finish. Shunt the
+    // entire dispatch onto a blocking thread: the UI stays live while the
+    // kernel lock is held, and `Runtime::new().block_on` inside
+    // `load_plugins` still works because spawn_blocking threads are not a
+    // tokio context.
+    let kernel = state.inner().0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_session_inner(app, kernel, op, id, path, payload)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn agent_session_inner(
+    app: tauri::AppHandle,
+    state: std::sync::Arc<std::sync::Mutex<agent_kernel::session_manager::SessionManager>>,
+    op: String,
+    id: Option<i64>,
+    path: Option<String>,
+    payload: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    // Native dialogs (rfd → AppKit `runModal`) run on the MAIN thread via a
+    // channel, and never while the kernel mutex is held: the modal loop's
+    // nested runloop pumps webview IPC callbacks, and a re-entrant
+    // `state.lock()` self-deadlocks the main thread (the 0.1.11 spindump:
+    // NSSavePanel runModal → WebKit work → pthread mutex wait).
     if op == "save_download" {
-        return save_download(payload);
+        return save_download(&app, payload);
+    }
+    if op == "pick_attachments" {
+        let kind = payload
+            .as_ref()
+            .and_then(|p| p.get("kind"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("any")
+            .to_string();
+        let picked = dialog_on_main(&app, move || {
+            let mut dlg = rfd::FileDialog::new().set_title("添加附件");
+            dlg = match kind.as_str() {
+                "image" => dlg.add_filter(
+                    "图片",
+                    &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"],
+                ),
+                "text" => dlg.add_filter(
+                    "文本",
+                    &[
+                        "txt", "md", "markdown", "json", "yaml", "yml", "toml", "xml", "csv",
+                        "log", "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "c", "cc",
+                        "cpp", "h", "hpp", "css", "html", "sh", "sql", "ini", "conf", "env",
+                    ],
+                ),
+                _ => dlg,
+            };
+            dlg.pick_files().unwrap_or_default()
+        })
+        .unwrap_or_default();
+        return Ok(serde_json::json!(picked
+            .iter()
+            .map(|p: &std::path::PathBuf| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()));
+    }
+    // The pick itself is the dialog half; only `switch_workspace` and the
+    // response reads need the manager — lock after the user answers.
+    if op == "pick_workspace" {
+        let picked = dialog_on_main(&app, || {
+            rfd::FileDialog::new()
+                .set_title("Open Workspace Directory")
+                .pick_folder()
+        })
+        .flatten();
+        let Some(target) = picked else {
+            return Ok(serde_json::json!(null));
+        };
+        let mut mgr = state.lock().map_err(|e| e.to_string())?;
+        mgr.switch_workspace(target).map_err(|e| e.to_string())?;
+        let name = mgr
+            .workspace_root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let (history, total, turns, turn_from) =
+            mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
+        return Ok(serde_json::json!({
+            "root": mgr.workspace_root.to_string_lossy(),
+            "name": name,
+            "active": mgr.active_id,
+            "history": history,
+            "history_total": total,
+            "turn_total": turns,
+            "turn_offset": turn_from,
+            "usage": mgr.store_usage(mgr.active_id),
+            "queued_prompts": mgr.store_queued(mgr.active_id),
+            "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
+                serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
+            }).collect::<Vec<_>>(),
+        }));
     }
     // Same reason: filesystem work that has nothing to do with the running
     // session must not block behind the kernel lock.
@@ -38,13 +132,13 @@ pub fn agent_session(
             return Err("插件 ID 只能是小写字母/数字/-/ _".into());
         }
         let root = {
-            let m = state.0.lock().map_err(|e| e.to_string())?;
+            let m = state.lock().map_err(|e| e.to_string())?;
             m.workspace_root.clone()
         };
         agent_kernel::session_manager::SessionManager::remove_plugin(&root, &id)?;
         return Ok(serde_json::json!({ "success": true }));
     }
-    let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
+    let mut mgr = state.lock().map_err(|e| e.to_string())?;
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
     // keyed by the active workspace root, same path as the session actor's.
     let open_memory = |mgr: &agent_kernel::session_manager::SessionManager| {
@@ -173,10 +267,19 @@ pub fn agent_session(
             } else {
                 String::new()
             };
+            // 「最近打开」is the fallback for an EMPTY sidebar 项目 list —
+            // when the sidebar already lists the recents the grid is a
+            // duplicate, and a removed project's store stays on disk so
+            // the empty sidebar still has something to reopen.
+            let recents = if mgr.recent_workspaces().is_empty() {
+                agent_kernel::session_store::known_workspaces()
+            } else {
+                Vec::new()
+            };
             Ok(serde_json::json!({
                 "root": if mgr.workspace_active { mgr.workspace_root.to_string_lossy().to_string() } else { String::new() },
                 "name": name,
-                "recents": mgr.recent_workspaces().iter().map(|w| {
+                "recents": recents.iter().map(|w| {
                     serde_json::json!({ "path": w.path.to_string_lossy(), "name": w.name, "last_opened": w.last_opened })
                 }).collect::<Vec<_>>()
             }))
@@ -199,37 +302,6 @@ pub fn agent_session(
                     "dirty": snap.dirty_count(),
                 })),
                 Err(_) => Ok(serde_json::json!({ "branch": serde_json::Value::Null, "dirty": 0 })),
-            }
-        }
-        "pick_workspace" => {
-            let picked = rfd::FileDialog::new()
-                .set_title("Open Workspace Directory")
-                .pick_folder();
-            if let Some(target) = picked {
-                mgr.switch_workspace(target).map_err(|e| e.to_string())?;
-                let name = mgr
-                    .workspace_root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let (history, total, turns, turn_from) =
-                    mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
-                Ok(serde_json::json!({
-                    "root": mgr.workspace_root.to_string_lossy(),
-                    "name": name,
-                    "active": mgr.active_id,
-                    "history": history,
-                    "history_total": total,
-                    "turn_total": turns,
-                "turn_offset": turn_from,
-                    "usage": mgr.store_usage(mgr.active_id),
-                    "queued_prompts": mgr.store_queued(mgr.active_id),
-                    "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
-                        serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
-                    }).collect::<Vec<_>>(),
-                }))
-            } else {
-                Ok(serde_json::json!(null))
             }
         }
         "switch_workspace" => {
@@ -265,9 +337,19 @@ pub fn agent_session(
         // Agent overview — the settings page's read-only display of the
         // agent's configuration surfaces: system-prompt template, live
         // model info, skills, discovered MCP plugins, and the subagent spec.
-        // `reload_mcp` — re-read the plugin dirs and swap the live router, so a
-        // server added or fixed in settings reaches the agent without a restart.
-        "reload_mcp" => Ok(serde_json::json!({ "plugins": mgr.reload_plugins() })),
+        // `reload_mcp`/`trust_mcp`/`set_plugin_enabled`: snapshot the shared
+        // plugin handles, DROP the manager guard, then run the reload —
+        // `load_all` is seconds of MCP handshake I/O per plugin and holding
+        // the mutex through it dead-queued every other op behind it.
+        "reload_mcp" => {
+            let parts = mgr.plugin_reload_parts();
+            drop(mgr);
+            let plugins = parts
+                .as_ref()
+                .map(agent_kernel::session_manager::SessionManager::reload_plugins_detached)
+                .unwrap_or_default();
+            Ok(serde_json::json!({ "plugins": plugins }))
+        }
         // `trust_mcp` — record consent for a repo-local plugin, then reload so
         // it loads without an app restart. Its hooks run local commands, so
         // this is the gate that stands between a cloned repo and code exec.
@@ -282,7 +364,16 @@ pub fn agent_session(
             if !valid_slug(&id) {
                 return Err("插件 ID 只能是小写字母/数字/-/ _".into());
             }
-            Ok(serde_json::json!({ "plugins": mgr.trust_plugin(&id)? }))
+            let parts = mgr.plugin_reload_parts();
+            drop(mgr);
+            let Some(parts) = parts else {
+                return Err("plugin router not installed for this workspace".into());
+            };
+            Ok(serde_json::json!({
+                "plugins": agent_kernel::session_manager::SessionManager::trust_plugin_detached(
+                    &parts, &id,
+                )?,
+            }))
         }
         // `set_plugin_enabled` — persist the toggle (plugin-state.json) and
         // reload: hooks stop firing / tools stop advertising on the next turn.
@@ -302,7 +393,16 @@ pub fn agent_session(
             if !valid_slug(&id) {
                 return Err("插件 ID 只能是小写字母/数字/-/ _".into());
             }
-            Ok(serde_json::json!({ "plugins": mgr.set_plugin_enabled(&id, enabled)? }))
+            let parts = mgr.plugin_reload_parts();
+            drop(mgr);
+            let Some(parts) = parts else {
+                return Err("plugin router not installed for this workspace".into());
+            };
+            Ok(serde_json::json!({
+                "plugins": agent_kernel::session_manager::SessionManager::set_plugin_enabled_detached(
+                    &parts, &id, enabled,
+                )?,
+            }))
         }
         // `usage_stats` — raw per-session token records across workspaces.
         "usage_stats" => Ok(serde_json::json!({ "sessions": mgr.usage_stats() })),
@@ -991,36 +1091,6 @@ pub fn agent_session(
         // `/` picker's plugin half — declared `capabilities.commands` from
         // enabled plugins, qualified names included for collisions.
         "plugin_commands" => Ok(serde_json::json!(mgr.plugin_commands())),
-        // `+` attach button — native file picker, then `read_attachment`
-        // per path. `kind` presets the filter list; picked paths come back
-        // absolute and may live outside the workspace (unlike `@` mentions).
-        "pick_attachments" => {
-            let kind = payload
-                .as_ref()
-                .and_then(|p| p.get("kind"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("any");
-            let mut dlg = rfd::FileDialog::new().set_title("添加附件");
-            dlg = match kind {
-                "image" => {
-                    dlg.add_filter("图片", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"])
-                }
-                "text" => dlg.add_filter(
-                    "文本",
-                    &[
-                        "txt", "md", "markdown", "json", "yaml", "yml", "toml", "xml", "csv",
-                        "log", "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "c", "cc",
-                        "cpp", "h", "hpp", "css", "html", "sh", "sql", "ini", "conf", "env",
-                    ],
-                ),
-                _ => dlg,
-            };
-            let picked = dlg.pick_files().unwrap_or_default();
-            Ok(serde_json::json!(picked
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect::<Vec<_>>()))
-        }
         // Read one picked file for the attachment chips. Picked paths may
         // live outside the workspace — the sandbox's rw mounts are the
         // workspace + a per-run tmp dir, so an outside path is invisible
@@ -1232,7 +1302,26 @@ fn stage_clipboard_payload(
 /// Base64 bytes → an `rfd` save dialog → `std::fs::write`. The webview's own
 /// `<a download>` never reaches the filesystem (Tauri wires no handler); `data` is
 /// the envelope `attach_bytes` takes.
-fn save_download(payload: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+/// Run a blocking `rfd` dialog on the MAIN thread and wait on a channel for
+/// the answer. AppKit panels are main-thread-only, and — per the header of
+/// `agent_session_inner` — must never run while the kernel mutex is held.
+/// Dispatch failure or a closed app both read as "cancelled" (None).
+fn dialog_on_main<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f());
+    })
+    .ok()?;
+    rx.recv().ok()
+}
+
+fn save_download(
+    app: &tauri::AppHandle,
+    payload: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     let p = payload.ok_or("save_download needs a payload")?;
     let name = p
         .get("name")
@@ -1250,10 +1339,15 @@ fn save_download(payload: Option<serde_json::Value>) -> Result<serde_json::Value
         return Err("save_download: empty payload".into());
     }
     // The extension comes from the caller; the dialog decides the real path.
-    let Some(target) = rfd::FileDialog::new()
-        .set_title("保存文件")
-        .set_file_name(name)
-        .save_file()
+    // AppKit panels are main-thread-only → hop over via the channel helper.
+    let name = name.to_string();
+    let Some(target) = dialog_on_main(app, move || {
+        rfd::FileDialog::new()
+            .set_title("保存文件")
+            .set_file_name(&name)
+            .save_file()
+    })
+    .flatten()
     else {
         // Cancelled — not an error, nothing written.
         return Ok(serde_json::json!({ "saved": false }));
