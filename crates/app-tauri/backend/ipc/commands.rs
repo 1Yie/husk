@@ -154,8 +154,8 @@ fn is_newer(current: &str, latest: &str) -> bool {
 
 #[tauri::command]
 pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), String> {
-    let mgr = state.0.lock().map_err(|e| e.to_string())?;
-    let (cancel, steer_tx, decision, ask, permissions, agent_mode, ui, cmd_tx) = {
+    let mut mgr = state.0.lock().map_err(|e| e.to_string())?;
+    let (cancel, steer_tx, decision, ask, permissions, agent_mode, ui, cmd_tx, queue) = {
         let Some(handle) = mgr.active() else {
             return Err("no active session".into());
         };
@@ -168,6 +168,7 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
             handle.agent_mode.clone(),
             handle.ui.clone(),
             handle.cmd_tx.clone(),
+            handle.queue.clone(),
         )
     };
 
@@ -201,6 +202,33 @@ pub fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<(), St
                 request_id: *request_id,
             });
         }
+        return Ok(());
+    }
+    // Queue ops bypass the pump too: the deque is shared with the actor, so
+    // an `Enqueue`/`SetQueued` applies instantly — a pump-carried write would
+    // sit behind the running turn and the `QueuedPrompts` echo (the queue
+    // panel's only data source) would not surface until the turn ended.
+    // `Enqueue` still forwards a `DrainQueue` marker so the parked item runs
+    // the moment a slot frees up; `SetQueued` is a pure list write.
+    if let UiCommand::Enqueue { text } = &cmd {
+        let session_id = mgr.active_id;
+        let items = {
+            let mut q = queue.lock().map_err(|e| e.to_string())?;
+            q.push_back(text.clone());
+            q.iter().cloned().collect::<Vec<_>>()
+        };
+        let _ = ui.send(UiEvent::QueuedPrompts { items: items.clone() });
+        mgr.set_session_queued(session_id, items);
+        cmd_tx
+            .try_send(UiCommand::DrainQueue)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    if let UiCommand::SetQueued { items } = &cmd {
+        let session_id = mgr.active_id;
+        *queue.lock().map_err(|e| e.to_string())? = items.clone().into();
+        let _ = ui.send(UiEvent::QueuedPrompts { items: items.clone() });
+        mgr.set_session_queued(session_id, items.clone());
         return Ok(());
     }
     // Composer settings are PER-SESSION: the command goes only to the active

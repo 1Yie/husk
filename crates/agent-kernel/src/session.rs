@@ -264,7 +264,11 @@ pub struct SessionActor {
     /// in the webview) so it survives session switches: the actor stays
     /// alive in `handles`/`parked`, drains at turn end no matter which
     /// session is on screen, and mirrors into `SessionMeta` for restarts.
-    queued: std::collections::VecDeque<String>,
+    /// Shared with `SessionHandle` so `Enqueue`/`SetQueued` apply directly
+    /// from IPC — the command pump blocks behind a running `run_turn`, and
+    /// a pump-carried write would keep the queue panel hidden for the whole
+    /// turn (the `QueuedPrompts` echo is what lights it up).
+    queued: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
     /// Skill backend — owns the cached prompt catalog and its change stamp, so
     /// a large tree is not re-read on every prompt.
     skills: crate::skills::SkillManager,
@@ -624,7 +628,7 @@ impl SessionActor {
                 session_id,
                 store,
                 last_usage: None,
-                queued: cfg.queued_prompts.into(),
+                queued: Arc::new(std::sync::Mutex::new(cfg.queued_prompts.into())),
                 skills,
             },
             channels,
@@ -693,6 +697,16 @@ impl SessionActor {
     /// turns a Steer is a Prompt — the bridge checks `state().is_active()`.
     pub fn steer_writer(&self) -> mpsc::Sender<String> {
         self.steer_tx.clone()
+    }
+
+    /// The shared queued-prompt deque — the IPC layer writes `Enqueue` /
+    /// `SetQueued` ops here directly so the list (and its `QueuedPrompts`
+    /// echo) updates instantly even mid-turn; a `DrainQueue` marker down
+    /// `cmd_tx` then schedules the drain for when the pump is free.
+    pub fn queue_writer(
+        &self,
+    ) -> Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
+        self.queued.clone()
     }
 
     /// The shared cancel flag — the UI writes `true` here **directly** to
@@ -926,7 +940,13 @@ impl SessionActor {
             permission_mode: Some(self.current_permission_mode()),
             agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
             thinking_level: self.engine.thinking_level(),
-            queued_prompts: self.queued.iter().cloned().collect(),
+            queued_prompts: self
+                .queued
+                .lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect(),
         });
     }
 
@@ -943,7 +963,7 @@ impl SessionActor {
     /// `SessionMeta` — the two copies keep a switched-away view and a
     /// reopened session in sync with the actor's deque.
     fn emit_queued(&mut self) {
-        let items: Vec<String> = self.queued.iter().cloned().collect();
+        let items: Vec<String> = self.queued.lock().unwrap().iter().cloned().collect();
         let _ = self.io.ui_tx.send(UiEvent::QueuedPrompts {
             items: items.clone(),
         });
@@ -977,7 +997,7 @@ impl SessionActor {
     /// `UiCommand::SetQueued` — the composer replaces the whole parked
     /// list (enqueue/edit/remove/reorder are all list ops client-side).
     fn set_queued(&mut self, items: Vec<String>) {
-        self.queued = items.into();
+        *self.queued.lock().unwrap() = items.into();
         self.emit_queued();
     }
 
@@ -987,7 +1007,7 @@ impl SessionActor {
     /// a turn; a mid-turn call is a no-op (`is_active` guard).
     async fn drain_queue(&mut self) {
         while !self.state.is_active() {
-            let Some(next) = self.queued.pop_front() else {
+            let Some(next) = self.queued.lock().unwrap().pop_front() else {
                 break;
             };
             self.emit_queued();
@@ -1025,7 +1045,13 @@ impl SessionActor {
             permission_mode: Some(self.current_permission_mode()),
             agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
             thinking_level: self.engine.thinking_level(),
-            queued_prompts: self.queued.iter().cloned().collect(),
+            queued_prompts: self
+                .queued
+                .lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect(),
         });
     }
 
@@ -1396,11 +1422,19 @@ impl SessionActor {
                 self.engine.set_compact_at(fraction);
             }
             UiCommand::Enqueue { text } => {
-                self.queued.push_back(text);
+                // Direct cmd_tx path (tests, internal callers). The app's IPC
+                // layer pushes to the shared deque itself and sends
+                // `DrainQueue` — see `queue_writer`.
+                self.queued.lock().unwrap().push_back(text);
                 self.emit_queued();
                 // Idle + enqueue = send now — covers the race where the UI
                 // still showed streaming when the user hit queue but the
                 // turn had already finished.
+                self.drain_queue().await;
+            }
+            UiCommand::DrainQueue => {
+                // The deque already changed via the shared endpoint — this
+                // only schedules the drain for when the pump is free.
                 self.drain_queue().await;
             }
             UiCommand::SetModel { provider, model } => {

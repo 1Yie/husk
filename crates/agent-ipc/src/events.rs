@@ -167,6 +167,12 @@ pub enum UiCommand {
     /// *later* turn ended. (`SetQueued` — the edit/remove/reorder path —
     /// deliberately never drains on its own.)
     Enqueue { text: String },
+    /// Run the queue drain — nothing more. `Enqueue`/`SetQueued` mutate the
+    /// session's shared deque directly through the IPC fast path (the command
+    /// pump blocks behind a running turn, so a pump-carried write would hide
+    /// the queue panel until turn end); this marker just wakes `drain_queue`
+    /// once the pump is free. A no-op while a turn is live.
+    DrainQueue,
 }
 
 /// One offered answer on an `ask_question` card.

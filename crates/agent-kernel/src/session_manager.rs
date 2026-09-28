@@ -119,6 +119,11 @@ pub struct SessionHandle {
     /// differ from the stored default after a prefs change.
     pub thinking_level: Arc<std::sync::RwLock<Option<String>>>,
     pub steer_tx: tokio::sync::mpsc::Sender<String>,
+    /// The session's parked-prompt deque, shared with the actor — the IPC
+    /// layer mutates it directly (`Enqueue`/`SetQueued` bypass the command
+    /// pump, which blocks behind a running turn) and echoes the change via
+    /// `ui`; the actor drains from the same deque on `DrainQueue`/turn end.
+    pub queue: Arc<Mutex<std::collections::VecDeque<String>>>,
     /// Direct cancel flag — set `true` to abort the in-flight turn. Bypasses
     /// the command pump so a Cancel isn't queued behind `run_turn`.
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -797,6 +802,7 @@ impl SessionManager {
         let thinking_level = actor.thinking_writer();
         let steer_tx = actor.steer_writer();
         let cancel = actor.cancel_writer();
+        let queue = actor.queue_writer();
 
         // Lifecycle hooks, installed before the actor starts: the shared chain
         // may gain hooks later (`reload_plugins`) without a restart.
@@ -875,6 +881,7 @@ impl SessionManager {
                 agent_mode,
                 thinking_level,
                 steer_tx,
+                queue,
                 cancel,
                 preview,
                 running: false,
@@ -1517,6 +1524,28 @@ impl SessionManager {
             .unwrap_or_default()
     }
 
+    /// Persist a session's queued-prompt list into its `SessionMeta` — used
+    /// by the IPC fast path (`Enqueue`/`SetQueued` write the shared deque
+    /// directly), where the actor's own `emit_queued` can't be reached until
+    /// the pump frees up — possibly a whole turn later.
+    pub fn set_session_queued(&mut self, id: i64, items: Vec<String>) {
+        if !self.workspace_active {
+            return;
+        }
+        let Some(mut meta) = self.store.list().into_iter().find(|m| m.id == id) else {
+            return;
+        };
+        meta.queued_prompts = items;
+        meta.updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = self.store.upsert_meta(meta.clone());
+        if let Some(m) = self.metas.iter_mut().find(|m| m.id == id) {
+            *m = meta;
+        }
+    }
+
     /// Sidebar rows — persisted metas overlaid with live running/preview.
     /// Tuple: (id, title, preview, active, running, pinned).
     pub fn sidebar_rows(&self) -> Vec<(i64, String, String, bool, bool, bool)> {
@@ -2084,6 +2113,7 @@ mod tests {
                 agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
                 steer_tx: tokio::sync::mpsc::channel(1).0,
+                queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 preview: String::new(),
                 running: false,
@@ -2268,6 +2298,7 @@ mod tests {
                     agent_mode: Arc::new(std::sync::RwLock::new(mode)),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
                     steer_tx: tokio::sync::mpsc::channel(1).0,
+                    queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     preview: String::new(),
                     running: false,
@@ -2343,6 +2374,7 @@ mod tests {
                     agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
                     steer_tx: tokio::sync::mpsc::channel(1).0,
+                    queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     preview: String::new(),
                     running: false,
@@ -2411,6 +2443,7 @@ mod tests {
                 agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Plan)),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
                 steer_tx: tokio::sync::mpsc::channel(1).0,
+                queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 preview: String::new(),
                 running: false,
