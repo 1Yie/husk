@@ -87,13 +87,22 @@ pub struct ProjectOverview {
     pub last_opened: u64,
     /// This is the kernel's active workspace.
     pub current: bool,
+    /// The built-in office pseudo-workspace (`~/.local/share/husk/office`)
+    /// — the sidebar renders it as a fixed「办公」section instead of a
+    /// regular project, and its sessions stay readable from every mode.
+    #[serde(default)]
+    pub office: bool,
     /// Every persisted conversation, newest first.
     pub sessions: Vec<ProjectSessionRow>,
 }
 
 /// Display name for a workspace — its final path component, or the full
-/// path when there is none (filesystem root).
+/// path when there is none (filesystem root). The office pseudo-workspace
+/// gets a fixed「办公」label instead of the directory name.
 fn project_name(root: &std::path::Path) -> String {
+    if crate::session_store::is_office_root(root) {
+        return "办公".into();
+    }
     root.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|n| !n.is_empty())
@@ -337,6 +346,11 @@ impl SessionManager {
         };
 
         let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+        if crate::session_store::is_office_root(&canon) {
+            // The office dir lives under the app data dir and is created
+            // lazily — a boot landing here needs it to exist.
+            let _ = std::fs::create_dir_all(&canon);
+        }
         let store = Arc::new(SessionStore::open(&canon).unwrap_or_else(|_| {
             // Fallback: a temp db so the app still boots without a data dir.
             // `open_at` is required here — `open` ignores its path and goes
@@ -369,10 +383,11 @@ impl SessionManager {
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
             .unwrap_or_else(|| "default".into());
-        let agent_mode = prefs
-            .agent_mode
-            .or_else(|| defaults.as_ref().map(|d| d.agent_mode.clone()))
-            .unwrap_or_else(|| "build".into());
+        let agent_mode = resolve_agent_mode(
+            &canon,
+            &prefs.agent_mode,
+            defaults.as_ref().map(|d| &d.agent_mode),
+        );
         let active_thinking_level = prefs
             .thinking_level
             .or_else(|| defaults.as_ref().and_then(|d| d.thinking_level.clone()));
@@ -444,6 +459,12 @@ impl SessionManager {
     /// Switch to another workspace directory: opens that workspace's session store,
     /// sets active workspace, records in recents, and loads or creates its session.
     pub fn switch_workspace(&mut self, new_root: std::path::PathBuf) -> std::io::Result<()> {
+        // The office pseudo-workspace lives under the app data dir and is
+        // created lazily on first entry — canonicalize + the workspace
+        // scan need a real directory.
+        if crate::session_store::is_office_root(&new_root) {
+            let _ = std::fs::create_dir_all(&new_root);
+        }
         let canon = new_root.canonicalize().unwrap_or_else(|_| new_root.clone());
         let store = Arc::new(SessionStore::open(&canon)?);
         let prefs = store.load_prefs();
@@ -464,10 +485,11 @@ impl SessionManager {
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
             .unwrap_or_else(|| "default".into());
-        self.agent_mode = prefs
-            .agent_mode
-            .or_else(|| defaults.as_ref().map(|d| d.agent_mode.clone()))
-            .unwrap_or_else(|| "build".into());
+        self.agent_mode = resolve_agent_mode(
+            &canon,
+            &prefs.agent_mode,
+            defaults.as_ref().map(|d| &d.agent_mode),
+        );
         self.active_thinking_level = prefs
             .thinking_level
             .or_else(|| defaults.and_then(|d| d.thinking_level));
@@ -529,6 +551,12 @@ impl SessionManager {
         let canon = std::path::Path::new(root)
             .canonicalize()
             .unwrap_or_else(|_| std::path::PathBuf::from(root));
+        // The office pseudo-workspace is built-in — it can't be removed
+        // from recents or torn down; its sessions live under its own
+        // `office` namespace.
+        if crate::session_store::is_office_root(&canon) {
+            return false;
+        }
         let key = canon.to_string_lossy().into_owned();
         if let Some(handles) = self.parked.remove(&key) {
             for h in handles.values() {
@@ -561,6 +589,11 @@ impl SessionManager {
     /// recent workspace, each carrying its full persisted conversation list
     /// (newest first).
     ///
+    /// The office pseudo-workspace is always present — it's the sidebar's
+    ///「办公」section, the entry point into office mode. Its sessions are
+    /// listed (and openable) from every mode: reading the list never
+    /// requires switching into it first.
+    ///
     /// The active workspace is read from the *store* rather than
     /// `self.metas` — metas only refresh on structural ops and go stale the
     /// moment an actor persists a turn — and is overlaid with the live
@@ -571,6 +604,10 @@ impl SessionManager {
             .workspace_root
             .canonicalize()
             .unwrap_or_else(|_| self.workspace_root.clone());
+        let office_root =
+            crate::session_store::office_root().map(|p| p.canonicalize().unwrap_or(p));
+        let office_is_current =
+            self.workspace_active && office_root.as_ref().is_some_and(|o| *o == canon);
 
         let mut out = Vec::new();
         if self.workspace_active {
@@ -579,12 +616,64 @@ impl SessionManager {
                 name: project_name(&canon),
                 last_opened: 0,
                 current: true,
+                office: office_is_current,
                 sessions: self.current_workspace_rows(),
             });
         }
 
+        // Office entry — pinned right after the current project. When office
+        // IS the current workspace the entry above already carries it (with
+        // `current: true`), so nothing is injected twice.
+        if !office_is_current {
+            if let Some(o) = office_root.as_ref() {
+                let key = o.to_string_lossy().into_owned();
+                let parked_handles = self.parked.get(&key);
+                let sessions = SessionStore::open_existing(o)
+                    .map(|store| {
+                        store
+                            .list()
+                            .into_iter()
+                            .map(|m| {
+                                let live = parked_handles.and_then(|h| h.get(&m.id));
+                                ProjectSessionRow {
+                                    id: m.id,
+                                    title: m.title,
+                                    preview: live
+                                        .map(|h| h.preview.clone())
+                                        .unwrap_or_else(|| m.preview.clone()),
+                                    updated_at: m.updated_at,
+                                    active: false,
+                                    running: live.map(|h| h.running).unwrap_or(false),
+                                    pinned: m.pinned,
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let last_opened = self
+                    .recent_workspaces()
+                    .iter()
+                    .find(|w| w.path.canonicalize().unwrap_or_else(|_| w.path.clone()) == *o)
+                    .map(|w| w.last_opened)
+                    .unwrap_or(0);
+                out.push(ProjectOverview {
+                    root: key,
+                    name: project_name(o),
+                    last_opened,
+                    current: false,
+                    office: true,
+                    sessions,
+                });
+            }
+        }
+
         for w in self.recent_workspaces() {
             let w_canon = w.path.canonicalize().unwrap_or_else(|_| w.path.clone());
+            // Office came out as its own entry above — a recents row for the
+            // same path would double-list it as a regular project.
+            if office_root.as_ref().is_some_and(|o| *o == w_canon) {
+                continue;
+            }
             if self.workspace_active && w_canon == canon {
                 // Already first — borrow its recency stamp instead of
                 // listing the same project twice.
@@ -622,6 +711,7 @@ impl SessionManager {
                 name: w.name,
                 last_opened: w.last_opened,
                 current: false,
+                office: false,
                 sessions,
             });
         }
@@ -741,10 +831,16 @@ impl SessionManager {
             .as_ref()
             .and_then(|m| m.permission_mode.clone())
             .unwrap_or_else(|| self.permission_mode.clone());
-        let sess_agent_mode = meta
-            .as_ref()
-            .and_then(|m| m.agent_mode.clone())
-            .unwrap_or_else(|| self.agent_mode.clone());
+        // Office sessions are always office mode — the picker isn't offered
+        // in the office workspace at all, so a stale per-session value from
+        // before office became workspace-scoped can't survive a respawn.
+        let sess_agent_mode = if crate::session_store::is_office_root(&self.workspace_root) {
+            "office".to_string()
+        } else {
+            meta.as_ref()
+                .and_then(|m| m.agent_mode.clone())
+                .unwrap_or_else(|| self.agent_mode.clone())
+        };
         // `thinking_level` is itself an Option: `and_then` flattens
         // `Option<Option<String>>` so a session that never set one (meta
         // present, field None) still falls back to the workspace default —
@@ -2661,5 +2757,25 @@ mod tests {
         // No stored default at all → config.
         let got = resolve_model_pair(&None, &None, None, &providers, fb());
         assert_eq!(got, ("cfg-p".to_string(), "cfg-m".to_string()));
+    }
+
+    /// Office mode is workspace-scoped: the office pseudo-workspace is
+    /// pinned to `office` regardless of stored prefs, and a stored `office`
+    /// value on a regular project degrades to `build` — the mode switch
+    /// lives in the sidebar, not the per-session picker.
+    #[test]
+    fn office_workspace_pins_agent_mode_to_office() {
+        let office = crate::session_store::office_root().unwrap();
+        assert_eq!(resolve_agent_mode(&office, &None, None), "office");
+
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_agent_mode(dir.path(), &Some("office".to_string()), None),
+            "build"
+        );
+        assert_eq!(
+            resolve_agent_mode(dir.path(), &Some("plan".to_string()), None),
+            "plan"
+        );
     }
 }

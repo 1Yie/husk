@@ -73,10 +73,12 @@ pub type PluginHandle = Arc<std::sync::RwLock<Option<Arc<agent_plugin::PluginMan
 pub struct Engine {
     sampler: Sampler,
     /// Mode-scoped registries — `set_agent_mode` swaps `registry` between
-    /// these. `plan` = readonly view; `goal` = full + goal contract tools.
+    /// these. `plan` = readonly view; `goal` = full + goal contract tools;
+    /// `office` = full + `office_*` document tools.
     registry_full: Arc<ToolRegistry>,
     registry_plan: Arc<ToolRegistry>,
     registry_goal: Arc<ToolRegistry>,
+    registry_office: Arc<ToolRegistry>,
     ctx: Arc<ToolCtx>,
     model: String,
     temperature: f32,
@@ -159,11 +161,23 @@ impl Engine {
         goal_reg.register(crate::tools::goal::spec_complete());
         goal_reg.register(crate::tools::goal::spec_blocked());
         let registry_goal = Arc::new(goal_reg);
+        // Office mode = full set + the `office_*` document tools (officecli
+        // wrappers). Same write surface as build — the difference is the
+        // document-producing contract in the prompt, not a narrower toolbox.
+        let mut office_reg = (*registry).clone();
+        for spec in crate::tools::office::specs() {
+            office_reg.register(spec);
+        }
+        for spec in crate::tools::assets::specs() {
+            office_reg.register(spec);
+        }
+        let registry_office = Arc::new(office_reg);
         Self {
             sampler: Sampler::new(provider),
             registry_full: registry.clone(),
             registry_plan,
             registry_goal,
+            registry_office,
             ctx,
             model: model.into(),
             temperature,
@@ -372,6 +386,7 @@ impl Engine {
         let reg = match self.agent_mode() {
             crate::mode::AgentMode::Plan => self.registry_plan.clone(),
             crate::mode::AgentMode::Goal => self.registry_goal.clone(),
+            crate::mode::AgentMode::Office => self.registry_office.clone(),
             crate::mode::AgentMode::Build => self.registry_full.clone(),
         };
         // Refresh the ctx slot — `batch_execute` dispatches through the

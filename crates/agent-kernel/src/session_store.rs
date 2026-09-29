@@ -543,8 +543,14 @@ impl SessionStore {
     }
 }
 
-/// Stable per-workspace key — xxh3 of the canonical root.
+/// Stable per-workspace key — xxh3 of the canonical root. The office
+/// pseudo-workspace keeps a literal `office` key instead, so its sessions
+/// sit at `metas/office/<id>` — the same `office/<id>` layout the UI
+/// describes (`~/.local/share/husk/office/<id>`).
 pub fn workspace_key(root: &Path) -> String {
+    if is_office_root(root) {
+        return "office".into();
+    }
     let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let h = xxhash_rust::xxh3::xxh3_64(canon.to_string_lossy().as_bytes());
     format!("{h:016x}")
@@ -568,6 +574,31 @@ pub fn app_data_dir() -> Option<PathBuf> {
         let _ = std::fs::rename(&legacy, &dir);
     }
     Some(dir)
+}
+
+/// The office-mode pseudo-workspace root: `~/.local/share/husk/office`.
+/// Every office session shares this directory as its workspace root, so a
+/// document one session produced is readable/writable by all the others
+/// (the `resolve` sandbox only confines paths to the workspace root).
+/// Created lazily — `SessionManager::switch_workspace` makes it on the
+/// first switch.
+pub fn office_root() -> Option<PathBuf> {
+    app_data_dir().map(|d| d.join("office"))
+}
+
+/// Whether `root` is the office pseudo-workspace. Compared both raw and
+/// canonicalized — the dir may not exist yet on a first switch, which
+/// makes `canonicalize` fail on one or both sides.
+pub fn is_office_root(root: &Path) -> bool {
+    let Some(office) = office_root() else {
+        return false;
+    };
+    if root == office {
+        return true;
+    }
+    let r = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let o = office.canonicalize().unwrap_or(office);
+    r == o
 }
 
 /// Open (creating) the sessions database at `path`, running the legacy
@@ -985,11 +1016,17 @@ pub fn record_recent_workspace(workspace_root: &Path) {
     let canon = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
-    let name = canon
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| canon.to_string_lossy().to_string());
+    let name = if is_office_root(&canon) {
+        // The office pseudo-workspace is a mode, not a folder — display
+        // name stays stable instead of reading "office" off the dir.
+        "办公".to_string()
+    } else {
+        canon
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| canon.to_string_lossy().to_string())
+    };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1038,19 +1075,17 @@ pub fn known_workspaces() -> Vec<RecentWorkspace> {
         if !path.is_dir() {
             continue;
         }
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| root.clone());
+        let name = if is_office_root(&path) {
+            "办公".to_string()
+        } else {
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| root.clone())
+        };
         // No `last_opened` on the workspace row — the newest session's
         // `updated_at` is the closest stamp of real activity.
-        let last_opened = store
-            .list()
-            .iter()
-            .map(|m| m.updated_at)
-            .max()
-            .unwrap_or(0);
+        let last_opened = store.list().iter().map(|m| m.updated_at).max().unwrap_or(0);
         out.push(RecentWorkspace {
             path,
             name,

@@ -703,9 +703,7 @@ impl SessionActor {
     /// `SetQueued` ops here directly so the list (and its `QueuedPrompts`
     /// echo) updates instantly even mid-turn; a `DrainQueue` marker down
     /// `cmd_tx` then schedules the drain for when the pump is free.
-    pub fn queue_writer(
-        &self,
-    ) -> Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
+    pub fn queue_writer(&self) -> Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
         self.queued.clone()
     }
 
@@ -940,13 +938,7 @@ impl SessionActor {
             permission_mode: Some(self.current_permission_mode()),
             agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
             thinking_level: self.engine.thinking_level(),
-            queued_prompts: self
-                .queued
-                .lock()
-                .unwrap()
-                .iter()
-                .cloned()
-                .collect(),
+            queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
         });
     }
 
@@ -1045,13 +1037,7 @@ impl SessionActor {
             permission_mode: Some(self.current_permission_mode()),
             agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
             thinking_level: self.engine.thinking_level(),
-            queued_prompts: self
-                .queued
-                .lock()
-                .unwrap()
-                .iter()
-                .cloned()
-                .collect(),
+            queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
         });
     }
 
@@ -1498,6 +1484,7 @@ impl SessionActor {
                     crate::mode::AgentMode::Build => "构建",
                     crate::mode::AgentMode::Plan => "计划",
                     crate::mode::AgentMode::Goal => "目标",
+                    crate::mode::AgentMode::Office => "办公",
                 };
                 let line = format!("模式已切换为: {label}");
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));

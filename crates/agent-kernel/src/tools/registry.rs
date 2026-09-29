@@ -295,19 +295,32 @@ impl ToolCtx {
             self.workspace_root.join(p)
         };
         // Canonicalize requires the path to exist; for writes to new files,
-        // canonicalize the parent and re-attach the filename.
+        // canonicalize the deepest existing ancestor and re-attach the
+        // missing tail. Checking only the immediate parent made any
+        // `<new-dir>/file` path report PathEscape.
         let canon = match joined.canonicalize() {
             Ok(c) => c,
             Err(_) => {
-                let parent = joined
-                    .parent()
-                    .and_then(|p| p.canonicalize().ok())
-                    .ok_or_else(|| ToolError::PathEscape(path.to_string()))?;
-                parent.join(
-                    joined
-                        .file_name()
-                        .ok_or_else(|| ToolError::PathEscape(path.to_string()))?,
-                )
+                let mut tail: Vec<std::ffi::OsString> = Vec::new();
+                let mut cursor: &Path = joined.as_path();
+                let base = loop {
+                    if let Ok(c) = cursor.canonicalize() {
+                        break c;
+                    }
+                    let Some(name) = cursor.file_name() else {
+                        return Err(ToolError::PathEscape(path.to_string()));
+                    };
+                    tail.push(name.to_os_string());
+                    let Some(parent) = cursor.parent() else {
+                        return Err(ToolError::PathEscape(path.to_string()));
+                    };
+                    cursor = parent;
+                };
+                let mut canon = base;
+                for seg in tail.iter().rev() {
+                    canon.push(seg);
+                }
+                canon
             }
         };
         if !canon.starts_with(&*self.workspace_root) {
@@ -579,4 +592,33 @@ pub fn schema_for<T: schemars::JsonSchema>(description: &str) -> serde_json::Val
     let params = schemars::schema_for!(T);
     let params = serde_json::to_value(params).unwrap_or_default();
     serde_json::json!({ "description": description, "parameters": params })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `resolve` must accept a file whose parent directories do not exist yet —
+    /// the canonicalize walk climbs to the deepest existing ancestor.
+    #[test]
+    fn resolve_new_file_in_missing_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolCtx::new(tmp.path());
+        let got = ctx.resolve("brand-new/nested/out.docx").unwrap();
+        assert_eq!(
+            got,
+            tmp.path()
+                .canonicalize()
+                .unwrap()
+                .join("brand-new/nested/out.docx")
+        );
+    }
+
+    /// Paths that escape the workspace still fail even through the walk.
+    #[test]
+    fn resolve_escape_still_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolCtx::new(tmp.path());
+        assert!(ctx.resolve("../../outside.txt").is_err());
+    }
 }

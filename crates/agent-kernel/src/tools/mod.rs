@@ -5,6 +5,7 @@
 
 pub mod apply_patch;
 pub mod ask;
+pub mod assets;
 pub mod bash;
 pub mod batch;
 pub mod computer;
@@ -15,6 +16,7 @@ pub mod goal;
 pub mod grep;
 pub mod list_dir;
 pub(crate) mod net;
+pub mod office;
 #[cfg(feature = "tree-sitter")]
 pub mod outline_ts;
 pub mod plan;
