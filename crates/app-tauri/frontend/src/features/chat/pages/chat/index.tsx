@@ -1,18 +1,28 @@
 // Chat page — the conversation column of the main window: window title
 // bar (with the git/usage meter), the scrollable stream, and the composer.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus } from "@keyline-icons/react";
+import { toast } from "sonner";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/features/chat/components/chat-stream";
 import { ChangesPanel } from "@/features/chat/components/changes-panel";
+import { ArtifactsPanel } from "@/features/chat/components/artifacts-panel";
 import { ComposerBar } from "@/features/chat/components/composer-bar";
 import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/components/workspace-welcome";
 import { useActiveView, useAgentChips, useHasMoreHistory } from "@/stores/agent-store";
+import { openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
 import { cn } from "@/lib/utils";
+
+/** Document extensions that pop the ready-toast — the office deliverable.
+ *  Downloaded assets (images etc.) register silently in the dock. */
+const DOC_EXTS = new Set(["pptx", "ppt", "docx", "doc", "xlsx", "xls", "pdf"]);
 
 interface ChatPageProps {
   title: string;
   workspaceRoot: string;
+  /** Active workspace is the office pseudo-workspace — the composer's
+   *  mode dropdown only offers「工作」in this state. */
+  officeMode?: boolean;
   /** Session/workspace switch in flight — the stream shows a skeleton. */
   loading?: boolean;
   /** Active session key (`root:id`) — resets the stream's incremental
@@ -40,7 +50,7 @@ interface ChatPageProps {
   onToggleChanges?: () => void;
 }
 
-export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true, sessionsEmpty = false, onNewSession, changesOpen, onToggleChanges }: ChatPageProps) {
+export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true, sessionsEmpty = false, onNewSession, changesOpen, onToggleChanges }: ChatPageProps) {
   // The conversation's live data comes from the store, not from props: the
   // shell must not be a subscriber of the 60 fps stream (it used to re-render —
   // and drag the sidebar with it — for a whole turn).
@@ -84,11 +94,39 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
     composerRoRef.current = ro;
   }, []);
 
+  // Ghost-filter — artifact rows register from tool args, so a file the
+  // session later renamed or deleted (`web_download` wrote x.png → `mv`
+  // made it .jpg) would still list. Stat the paths and drop the missing;
+  // the filtered list feeds the dock, the title-bar count and the toast.
+  const [missingArtifacts, setMissingArtifacts] = useState<Set<string>>(new Set());
+  const artifactRels = view.artifacts.map((a) => a.path).join("\n");
+  useEffect(() => {
+    const paths = artifactRels.split("\n").filter(Boolean);
+    if (paths.length === 0) {
+      setMissingArtifacts(new Set());
+      return;
+    }
+    let live = true;
+    void statPaths(paths)
+      .then((res) => {
+        if (!live) return;
+        setMissingArtifacts(new Set(paths.filter((p) => res[p] !== true)));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [artifactRels]);
+  const artifacts = useMemo(
+    () => view.artifacts.filter((a) => !missingArtifacts.has(a.path)),
+    [view.artifacts, missingArtifacts],
+  );
+
   // Auto-open the panel once per session on the first file change; a
   // manual close (dismissedRef) suppresses the auto-open afterwards.
-  const changeCount = view.changes.length;
+  const panelCount = officeMode ? artifacts.length : view.changes.length;
   // `changesOpen` alone isn't enough — an empty list hides the panel too.
-  const changesVisible = !!changesOpen && changeCount > 0;
+  const changesVisible = !!changesOpen && panelCount > 0;
   const dismissedRef = useRef(false);
   const autoOpenedRef = useRef(false);
   useEffect(() => {
@@ -96,16 +134,50 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
     autoOpenedRef.current = false;
   }, [sessionKey]);
   useEffect(() => {
-    if (changeCount > 0 && !autoOpenedRef.current && !dismissedRef.current && !changesOpen) {
+    if (panelCount > 0 && !autoOpenedRef.current && !dismissedRef.current && !changesOpen) {
       autoOpenedRef.current = true;
       onToggleChanges?.();
     }
-  }, [changeCount, changesOpen, onToggleChanges]);
+  }, [panelCount, changesOpen, onToggleChanges]);
   const handleToggleChanges = useCallback(() => {
     if (changesOpen) dismissedRef.current = true;
     else dismissedRef.current = false;
     onToggleChanges?.();
   }, [changesOpen, onToggleChanges]);
+
+  const seenArtifactsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    seenArtifactsRef.current = new Set(artifacts.map((a) => a.path));
+  }, [sessionKey]);
+  useEffect(() => {
+    const seen = seenArtifactsRef.current;
+    if (!view.turnOpen) {
+      artifacts.forEach((a) => seen.add(a.path));
+      return;
+    }
+    for (const a of artifacts) {
+      if (seen.has(a.path)) continue;
+      seen.add(a.path);
+      if (!DOC_EXTS.has(a.ext)) continue;
+      toast.success("产物已生成", {
+        description: a.path,
+        duration: 15000,
+        action: {
+          label: "打开",
+          onClick: () => void openPath(a.path).catch((e) => toast.error(`打开失败：${e}`)),
+        },
+        cancel: {
+          label: "另存为",
+          onClick: () =>
+            void saveArtifact(a.path)
+              .then((r) => {
+                if (r.saved) toast.success("已另存", { description: r.path });
+              })
+              .catch((e) => toast.error(`另存失败：${e}`)),
+        },
+      });
+    }
+  }, [artifacts, view.turnOpen]);
 
   return (
     <>
@@ -121,7 +193,8 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
         // only show config defaults; git is workspace-level and stays.
         noSession={sessionsEmpty}
         changesOpen={changesVisible}
-        changesCount={changeCount}
+        changesCount={panelCount}
+        changesLabel={officeMode ? "产物" : "改动"}
         onToggleChanges={workspaceRoot ? handleToggleChanges : undefined}
       />
       {!workspaceRoot ? (
@@ -144,6 +217,7 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
           recents={[]}
           onOpenWorkspace={() => onOpenWorkspace?.()}
           onOpenRecent={(path) => onOpenRecent?.(path)}
+          office={officeMode}
           cta={{
             Icon: Plus,
             label: "新建会话",
@@ -179,7 +253,7 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
             />
 
             <div ref={measureComposer} className="absolute inset-x-0 bottom-0 pointer-events-none z-20">
-              <ComposerBar view={view} workspaceRoot={workspaceRoot} sessionKey={sessionKey} />
+              <ComposerBar view={view} workspaceRoot={workspaceRoot} sessionKey={sessionKey} officeMode={officeMode} />
             </div>
           </div>
 
@@ -198,7 +272,11 @@ export function ChatPage({ title, workspaceRoot, loading, sessionKey, onLoadOlde
                 changesVisible ? "translate-x-0" : "translate-x-full",
               )}
             >
-              <ChangesPanel changes={view.changes} onClose={handleToggleChanges} />
+              {officeMode ? (
+                <ArtifactsPanel artifacts={view.artifacts} onClose={handleToggleChanges} />
+              ) : (
+                <ChangesPanel changes={view.changes} onClose={handleToggleChanges} />
+              )}
             </div>
           </div>
         </div>

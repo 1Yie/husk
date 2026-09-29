@@ -133,6 +133,26 @@ export interface FileChange {
   pending?: boolean;
 }
 
+/** A workspace file the session produced — office documents
+ *  (pptx/docx/xlsx), downloaded assets, etc. Office mode's counterpart to
+ *  `changes`: those tools write whole files, never emit diffs. Registered
+ *  by `recordArtifact` on mutating tool results (the args locator IS the
+ *  file path), rebuilt from persisted history the same way. */
+export interface Artifact {
+  /** Workspace-relative path (office sessions resolve it under the
+   *  office workspace root). */
+  path: string;
+  /** Basename — the row label. */
+  name: string;
+  /** Lowercased extension — picks the row icon; gates the ready-toast to
+   *  document types (asset downloads list quietly). */
+  ext: string;
+  /** Tool that last wrote it (`office_create`, `web_download`, …). */
+  tool: string;
+  /** Epoch ms of the last write event. */
+  updatedAt: number;
+}
+
 export interface SessionView {
   /** An unresolved `QuestionAsked` — the composer renders it in the same
    * slot as an approval strip. Cleared when answered (locally), when the
@@ -185,6 +205,10 @@ export interface SessionView {
   /** Files the agent wrote this session — feeds the changes panel.
    *  Accumulated live by `applyEvent`, rebuilt by `viewFromHistory`. */
   changes: FileChange[];
+  /** Files the session PRODUCED whole — office docs + downloads. Feeds
+   *  the office artifacts dock; a new document registration also fires
+   *  the ready-toast. */
+  artifacts: Artifact[];
   /** Parked follow-up prompts — the kernel's queue (`SetQueued` writes,
    *  `QueuedPrompts` events echo it back, `open` seeds it from
    *  `SessionMeta`). Lives on the view so a session switch preserves it. */
@@ -194,6 +218,7 @@ export interface SessionView {
 export const emptyView = (): SessionView => ({
   items: [],
   changes: [],
+  artifacts: [],
   queuedPrompts: [],
   state: null,
   streaming: false,

@@ -4,6 +4,7 @@
 
 import type { AgentEventEnvelope } from "@/types";
 import type {
+  Artifact,
   ChangeKind,
   ChangePatch,
   FileChange,
@@ -123,6 +124,62 @@ function dropPendingChanges(changes: FileChange[], tool: string) {
     if (fc.patches.length === 0) changes.splice(i, 1);
     else fc.pending = false;
   }
+}
+
+// ---------------------------------------------------------------- artifacts
+// Office mode's counterpart to `changes`: document/asset tools write whole
+// files, never diffs. The call's args locator (`args_preview` live,
+// `extractArgsPreview` on history replay) IS the file path for every
+// office_*/web_download arg shape, so a string is all registration needs.
+
+/** Tools whose `file`/`path` arg names a file the session WROTE — the
+ *  first ok call registers it as an artifact, later ones bump the stamp. */
+const ARTIFACT_WRITERS = new Set([
+  "office_create",
+  "office_set",
+  "office_add",
+  "office_remove",
+  "office_move",
+  "office_batch",
+  "office_merge",
+  "office_import",
+  "office_save",
+  "web_download",
+]);
+/** The escape hatches can write, but they can also just READ — they bump
+ *  a tracked path's stamp but never register a new artifact (a read-only
+ *  `office_exec view …` must not pop "产物已生成"). */
+const ARTIFACT_TOUCHERS = new Set(["office_raw", "office_exec"]);
+
+/** Fold a finished tool call into `view.artifacts`. `locator` is the
+ *  call's args preview — the workspace-relative file path for every
+ *  office/asset tool shape. */
+export function recordArtifact(
+  artifacts: Artifact[],
+  tool: string,
+  locator?: string,
+) {
+  const writer = ARTIFACT_WRITERS.has(tool);
+  if (!writer && !ARTIFACT_TOUCHERS.has(tool)) return;
+  const rel = locator?.trim();
+  // A locator that isn't a workspace-relative path (command text, a url,
+  // an absolute path) can't be an artifact row.
+  if (!rel || rel.startsWith("/") || rel.includes("://")) return;
+  const i = artifacts.findIndex((a) => a.path === rel);
+  if (i >= 0) {
+    artifacts[i] = { ...artifacts[i], tool, updatedAt: Date.now() };
+    return;
+  }
+  if (!writer) return;
+  const name = rel.split("/").pop() ?? rel;
+  const dot = name.lastIndexOf(".");
+  artifacts.push({
+    path: rel,
+    name,
+    ext: dot >= 0 ? name.slice(dot + 1).toLowerCase() : "",
+    tool,
+    updatedAt: Date.now(),
+  });
 }
 
 function closeOpenThinking(items: StreamItem[]) {
@@ -346,6 +403,7 @@ export function applyEvent(
     const changes = [...v.changes];
     if (t.ok && t.content) recordFileChanges(changes, t.name, t.content, false);
     else if (!t.ok) dropPendingChanges(changes, t.name);
+    const artifacts = [...v.artifacts];
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (it.kind === "approval" && !it.resolved && it.toolName === t.name) {
@@ -374,10 +432,13 @@ export function applyEvent(
             ? { ...it.approval, resolved: true, approved: t.ok }
             : undefined,
         };
+        // Only the matched tool's locator is a real file path — read it
+        // off the started row's args before the loop ends.
+        if (t.ok) recordArtifact(artifacts, t.name, it.args);
         break;
       }
     }
-    return { ...v, items, changes };
+    return { ...v, items, changes, artifacts };
   }
   if ("ApprovalRequested" in ev) {
     closeOpenThinking(items);

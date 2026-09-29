@@ -19,9 +19,11 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { timeGreeting } from "@/lib/greeting";
-import { getUsageStats, type UsageRecord } from "@/lib/agent-ipc/sessions";
+import { getUsageStats, openPath, recentArtifacts, type RecentArtifact, type UsageRecord } from "@/lib/agent-ipc/sessions";
 import { aggregate, fmtTokens } from "@/features/settings/usage";
 import { ActivityHeatmap } from "@/features/settings/components/activity-heatmap";
+import { ExtIcon } from "@/features/chat/components/artifacts-panel";
+import { toast } from "sonner";
 
 export interface RecentWorkspace {
   path: string;
@@ -35,6 +37,9 @@ interface Props {
   onOpenWorkspace: () => void;
   /** Open a workspace straight from the recents grid. */
   onOpenRecent: (path: string) => void;
+  /**「工作」variant — the recents/activity blocks swap for a 最近产物
+   *  grid of the newest files under the office workspace. */
+  office?: boolean;
   /** Replace the primary CTA — the zero-session workspace offers
    *  「新建会话」instead of the folder picker. `hint` is the line under
    *  the button (shown unconditionally when a custom CTA is set). */
@@ -71,13 +76,14 @@ function timeAgo(seconds: number): string {
   return new Date(seconds * 1000).toLocaleDateString();
 }
 
-export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, cta }: Props) {
+export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, office = false, cta }: Props) {
   const { label, tail, Icon, tone } = timeGreeting();
   const CtaIcon = cta?.Icon ?? FolderOpen;
   // Activity is read here too (not only in settings): the empty workspace is the
   // one screen with room for it. Best-effort — a failure just hides the block.
   const [records, setRecords] = useState<UsageRecord[] | null>(null);
   useEffect(() => {
+    if (office) return; //「工作」shows 最近产物 instead of build-mode stats
     let alive = true;
     void getUsageStats()
       .then((r) => alive && setRecords(r.sessions ?? []))
@@ -85,8 +91,21 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, cta }
     return () => {
       alive = false;
     };
-  }, []);
-  const stats = useMemo(() => (records ? aggregate(records) : null), [records]);
+  }, [office]);
+  const stats = useMemo(() => (office || !records ? null : aggregate(records)), [records, office]);
+
+  //「工作」: newest produced files under the office workspace.
+  const [artifacts, setArtifacts] = useState<RecentArtifact[] | null>(null);
+  useEffect(() => {
+    if (!office) return;
+    let alive = true;
+    void recentArtifacts()
+      .then((r) => alive && setArtifacts(r))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [office]);
   return (
     // `main-col` paints `bg-workspace` (#16161a dark) but the open-session
     // stream covers it with `bg-white` (#232329). Without its own surface
@@ -116,7 +135,53 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, cta }
           </div>
         </div>
 
-        {recents.length > 0 && (
+        {/*「工作」: the recents/activity grids mean little here — the
+            deliverables a session produced matter instead. */}
+        {office ? (
+          artifacts && artifacts.length > 0 && (
+            <div className="w-full flex flex-col gap-2">
+              <span className="flex items-center gap-1.5 px-1 text-[12px] text-neutral-500">
+                <Clock className="h-3.5 w-3.5" />
+                最近产物
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                {artifacts.slice(0, 6).map((a) => {
+                  const dir = a.path.includes("/")
+                    ? a.path.slice(0, a.path.lastIndexOf("/"))
+                    : "";
+                  return (
+                    <button
+                      key={a.path}
+                      type="button"
+                      title={a.path}
+                      onClick={() =>
+                        void openPath(a.path).catch((err) =>
+                          toast.error(`打开失败：${err instanceof Error ? err.message : err}`),
+                        )
+                      }
+                      className="group flex items-center gap-3 rounded-[14px] border border-hairline bg-card px-3 py-2.5 text-left cursor-pointer transition-colors hover:bg-hover"
+                    >
+                      <ExtIcon ext={a.name.split(".").pop() ?? ""} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] text-neutral-800">
+                          {a.name}
+                        </span>
+                        <span className="block truncate text-[11px] text-neutral-500">
+                          {dir || a.path}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-[11px] text-neutral-500">
+                        {timeAgo(a.mtime)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )
+        ) : (
+          <>
+            {recents.length > 0 && (
           <div className="w-full flex flex-col gap-2">
             <span className="flex items-center gap-1.5 px-1 text-[12px] text-neutral-500">
               <Clock className="h-3.5 w-3.5" />
@@ -154,7 +219,7 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, cta }
             line saying so, rather than the whole block disappearing (which read
             as "this app has no stats"). The numbers are TOTALS across every
             project — the empty workspace has no project to scope them to. */}
-        {stats && (
+            {stats && (
           <div className="w-full rounded-[14px] border border-hairline bg-card px-4 py-3.5">
             <header className="mb-3 flex items-baseline justify-between">
               <span className="text-[13px] font-medium text-neutral-800">活跃对话</span>
@@ -170,6 +235,8 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, cta }
               </p>
             )}
           </div>
+        )}
+          </>
         )}
 
         {/* <div className="grid w-full grid-cols-2 gap-2.5">

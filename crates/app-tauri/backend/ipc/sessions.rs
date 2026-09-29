@@ -60,10 +60,9 @@ fn agent_session_inner(
         let picked = dialog_on_main(&app, move || {
             let mut dlg = rfd::FileDialog::new().set_title("添加附件");
             dlg = match kind.as_str() {
-                "image" => dlg.add_filter(
-                    "图片",
-                    &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"],
-                ),
+                "image" => {
+                    dlg.add_filter("图片", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"])
+                }
                 "text" => dlg.add_filter(
                     "文本",
                     &[
@@ -137,6 +136,131 @@ fn agent_session_inner(
         };
         agent_kernel::session_manager::SessionManager::remove_plugin(&root, &id)?;
         return Ok(serde_json::json!({ "success": true }));
+    }
+    // Artifact actions for the office dock — open / reveal / save-as on a
+    // workspace-relative path the session produced. All three resolve under
+    // the CURRENT workspace root (office mode included — the office root IS
+    // the active workspace then); `..` and absolute paths are refused.
+    if op == "open_path" || op == "reveal_path" {
+        let rel = payload
+            .as_ref()
+            .and_then(|p| p.get("path"))
+            .and_then(|v| v.as_str())
+            .ok_or(format!("{op} needs payload.path"))?;
+        let root = {
+            let m = state.lock().map_err(|e| e.to_string())?;
+            m.workspace_root.clone()
+        };
+        let target = resolve_workspace_path(&root, rel)?;
+        if op == "reveal_path" {
+            // macOS has a real "reveal" — elsewhere the parent dir opens.
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open")
+                .args(["-R"])
+                .arg(&target)
+                .spawn();
+            #[cfg(target_os = "linux")]
+            {
+                let dir = target.parent().unwrap_or(target.as_path()).to_path_buf();
+                let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+            }
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("explorer")
+                .arg("/select,")
+                .arg(&target)
+                .spawn();
+        } else {
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open").arg(&target).spawn();
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("xdg-open").arg(&target).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", &target.to_string_lossy()])
+                .spawn();
+        }
+        return Ok(serde_json::json!({ "success": true }));
+    }
+    // Save-as is a modal dialog → runs through `dialog_on_main`, kernel
+    // mutex dropped between the root read and the copy (see the header).
+    if op == "save_artifact" {
+        let rel = payload
+            .as_ref()
+            .and_then(|p| p.get("path"))
+            .and_then(|v| v.as_str())
+            .ok_or("save_artifact needs payload.path")?;
+        let root = {
+            let m = state.lock().map_err(|e| e.to_string())?;
+            m.workspace_root.clone()
+        };
+        let src = resolve_workspace_path(&root, rel)?;
+        let name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "artifact".into());
+        let Some(target) = dialog_on_main(&app, move || {
+            rfd::FileDialog::new()
+                .set_title("另存为")
+                .set_file_name(&name)
+                .save_file()
+        })
+        .flatten() else {
+            return Ok(serde_json::json!({ "saved": false }));
+        };
+        std::fs::copy(&src, &target).map_err(|e| format!("save_artifact: {e}"))?;
+        return Ok(serde_json::json!({
+            "saved": true,
+            "path": target.to_string_lossy(),
+        }));
+    }
+    // Existence check for the artifacts dock — entries come from tool args,
+    // so a file renamed/deleted afterwards (e.g. `web_download` wrote
+    // lemonade.png and bash renamed it to .jpg) would list a ghost row.
+    // The panel filters these out; the check is a stat under the same
+    // workspace-containment rules as the open/reveal ops.
+    if op == "stat_paths" {
+        let rels: Vec<String> = payload
+            .as_ref()
+            .and_then(|p| p.get("paths"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let root = {
+            let m = state.lock().map_err(|e| e.to_string())?;
+            m.workspace_root.clone()
+        };
+        let mut out = serde_json::Map::new();
+        for rel in rels {
+            let exists = resolve_workspace_path(&root, &rel)
+                .map(|p| p.is_file())
+                .unwrap_or(false);
+            out.insert(rel, serde_json::Value::Bool(exists));
+        }
+        return Ok(serde_json::Value::Object(out));
+    }
+    //「工作」empty state — the most recent files produced under the office
+    // workspace (deliverables + downloaded assets), newest first. Walks the
+    // office root directly; no kernel lock needed. Hidden entries
+    // (.dashi-ppt-project) and officecli crash logs are noise, not deliverables.
+    if op == "recent_artifacts" {
+        let mut found: Vec<(String, String, u64)> = Vec::new();
+        if let Some(root) = agent_kernel::session_store::office_root() {
+            collect_recent_files(&root, &root, 3, &mut found);
+        }
+        found.sort_by(|a, b| b.2.cmp(&a.2));
+        found.truncate(100);
+        return Ok(serde_json::Value::Array(
+            found
+                .into_iter()
+                .map(|(path, name, mtime)| {
+                    serde_json::json!({ "path": path, "name": name, "mtime": mtime })
+                })
+                .collect(),
+        ));
     }
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
@@ -279,6 +403,12 @@ fn agent_session_inner(
             Ok(serde_json::json!({
                 "root": if mgr.workspace_active { mgr.workspace_root.to_string_lossy().to_string() } else { String::new() },
                 "name": name,
+                // The office pseudo-workspace root — the sidebar's「办公」
+                // block and the composer compare against it to know when
+                // they're rendering office mode.
+                "office_root": agent_kernel::session_store::office_root()
+                    .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().to_string())
+                    .unwrap_or_default(),
                 "recents": recents.iter().map(|w| {
                     serde_json::json!({ "path": w.path.to_string_lossy(), "name": w.name, "last_opened": w.last_opened })
                 }).collect::<Vec<_>>()
@@ -1318,6 +1448,39 @@ fn dialog_on_main<T: Send + 'static>(
     rx.recv().ok()
 }
 
+/// Workspace-relative path → absolute, canonicalized and contained —
+/// the artifact actions (`open_path` / `reveal_path` / `save_artifact`)
+/// accept `path` strings the model wrote as tool args, so absolute paths,
+/// `..` escapes and symlink escapes are all refused up front.
+fn resolve_workspace_path(root: &std::path::Path, rel: &str) -> Result<std::path::PathBuf, String> {
+    let rel = rel.trim();
+    if rel.is_empty() {
+        return Err("empty path".into());
+    }
+    let p = std::path::Path::new(rel);
+    if p.is_absolute()
+        || p.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err("path escapes workspace".into());
+    }
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let canon = root
+        .join(p)
+        .canonicalize()
+        .map_err(|e| format!("{rel}: {e}"))?;
+    if !canon.starts_with(&root) {
+        return Err("path escapes workspace".into());
+    }
+    Ok(canon)
+}
+
 fn save_download(
     app: &tauri::AppHandle,
     payload: Option<serde_json::Value>,
@@ -1347,8 +1510,7 @@ fn save_download(
             .set_file_name(&name)
             .save_file()
     })
-    .flatten()
-    else {
+    .flatten() else {
         // Cancelled — not an error, nothing written.
         return Ok(serde_json::json!({ "saved": false }));
     };
@@ -1458,6 +1620,50 @@ fn valid_slug(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// Recursive walk for `recent_artifacts` — `(rel path, file name, mtime
+/// secs)` per file, depth-capped so a stray deep tree can't stall the UI.
+fn collect_recent_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<(String, String, u64)>,
+) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Hidden entries (`.dashi-ppt-project`) and officecli's own crash
+        // dumps are workspace bookkeeping, not produced files.
+        if name.starts_with('.') || name.starts_with("hs_err") {
+            continue;
+        }
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => {
+                collect_recent_files(root, &path, depth - 1, out);
+            }
+            Ok(ft) if ft.is_file() => {
+                let Ok(rel) = path.strip_prefix(root) else {
+                    continue;
+                };
+                let mtime = path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                out.push((rel.to_string_lossy().replace('\\', "/"), name, mtime));
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

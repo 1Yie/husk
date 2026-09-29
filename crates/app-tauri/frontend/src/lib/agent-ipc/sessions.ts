@@ -91,6 +91,9 @@ export async function pinSession(id: number, pinned: boolean) {
 export interface WorkspaceInfo {
   root: string;
   name: string;
+  /** `~/.local/share/husk/office` — the office pseudo-workspace root; the
+   *  composer/sidebar compare `root` against it to detect office mode. */
+  office_root?: string;
   recents: { path: string; name: string; last_opened: number }[];
 }
 
@@ -421,6 +424,56 @@ export function openUrl(url: string) {
     op: "open_url",
     payload: { url },
   });
+}
+
+/** Open a workspace-relative artifact with the system handler (xdg-open /
+ *  open / cmd start) — the office dock's「打开」. */
+export function openPath(path: string) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "open_path",
+    payload: { path },
+  });
+}
+
+/** Reveal a workspace-relative artifact in the file manager — `open -R`
+ *  on macOS, the parent folder elsewhere. */
+export function revealPath(path: string) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "reveal_path",
+    payload: { path },
+  });
+}
+
+/** Copy a workspace-relative artifact to a user-picked path — the
+ *  office dock's「另存为」. Same main-thread rfd channel as
+ *  `saveDownload`; cancelled returns `{saved:false}`. */
+export function saveArtifact(path: string) {
+  return invoke<{ saved: boolean; path?: string }>("agent_session", {
+    op: "save_artifact",
+    payload: { path },
+  });
+}
+
+/** Existence check for workspace-relative paths — the artifacts dock
+ *  filters rows whose file was renamed/deleted after registration
+ *  (tool args don't track later `mv`). `{path: exists}` per input. */
+export function statPaths(paths: string[]) {
+  return invoke<Record<string, boolean>>("agent_session", {
+    op: "stat_paths",
+    payload: { paths },
+  });
+}
+
+/** Newest files under the office workspace — the「工作」empty state's
+ *  最近产物 grid. `path` is workspace-relative (feeds `openPath`). */
+export interface RecentArtifact {
+  path: string;
+  name: string;
+  /** Epoch seconds (file mtime). */
+  mtime: number;
+}
+export function recentArtifacts() {
+  return invoke<RecentArtifact[]>("agent_session", { op: "recent_artifacts" });
 }
 
 /** Result of a real update check against the GitHub Releases API. `latest`

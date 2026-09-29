@@ -367,9 +367,11 @@ export function App() {
   const activeSession =
     sessions.find((s) => (activeId ? s.id === activeId : s.active)) || sessions[0];
   const sessionTitle =
-    activeSession?.title === "new session" || !activeSession?.title
-      ? "新会话"
-      : activeSession.title;
+    sessions.length === 0
+      ? "" // zero sessions: no phantom "新会话" in the title bar
+      : activeSession?.title === "new session" || !activeSession?.title
+        ? "新会话"
+        : activeSession.title;
   const pendingDeleteTitle = !pendingDelete
     ? ""
     : pendingDelete.title === "new session" || !pendingDelete.title
@@ -433,6 +435,13 @@ export function App() {
     })),
   }));
 
+  // Office mode IS a workspace (the `~/.local/share/husk/office`
+  // pseudo-workspace) — the composer only offers「办公」in its mode
+  // dropdown while that workspace is active; everywhere else switching
+  // happens through the sidebar's 办公 block.
+  const officeMode =
+    !!workspace.office_root && workspace.root === workspace.office_root;
+
   return (
     <>
       <MainLayout
@@ -466,6 +475,7 @@ export function App() {
         <ChatPage
           title={sessionTitle}
           workspaceRoot={workspace.root}
+          officeMode={officeMode}
           loading={viewLoading}
           sessionKey={`${workspace.root}:${activeId}`}
           sessionsEmpty={sessionsLoaded && sessions.length === 0}

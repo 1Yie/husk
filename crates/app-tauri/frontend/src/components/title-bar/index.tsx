@@ -1,6 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { WindowControls } from "@/components/window-controls";
-import { isMac } from "@/lib/platform";
 import { useCurrencySymbol } from "@/lib/appearance";
 import { GitBranch, ChartPie, Zap, BarChartHorizontalStart, Inbox, MoreHorizontal } from "@keyline-icons/react";
 import { BrainCircuit, FileDiff } from "lucide-react";
@@ -29,6 +28,9 @@ interface TitleBarProps {
   /** Changes panel toggle — only rendered when provided. */
   changesOpen?: boolean;
   changesCount?: number;
+  /** Word the toggle's labels are built from —「改动」for the diff dock,
+   * 「产物」for the office artifacts dock. */
+  changesLabel?: string;
   onToggleChanges?: () => void;
   /** No workspace open — hide title, raw button and the stats cluster. */
   noWorkspace?: boolean;
@@ -76,7 +78,7 @@ function turnCost(
   );
 }
 
-export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, changesOpen, changesCount = 0, onToggleChanges, noWorkspace = false, noSession = false }: TitleBarProps) {
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, changesOpen, changesCount = 0, changesLabel = "改动", onToggleChanges, noWorkspace = false, noSession = false }: TitleBarProps) {
   const prompt = view?.usage.prompt ?? 0;
   const completion = view?.usage.completion ?? 0;
   const cached = view?.usage.cachedTokens ?? 0;
@@ -181,8 +183,6 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
       data-tauri-drag-region="deep"
       className="flex items-center h-9 flex-none bg-white border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] select-none px-3 justify-between"
     >
-      {isMac && <div className="w-[60px] shrink-0" />}
-
       {!noWorkspace && (
       <div className="flex items-center min-w-0 max-w-[500px]">
         <TooltipSimple content={title} side="bottom">
@@ -245,14 +245,14 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
        * action, not a stat, so it never folds into the "…" overflow menu. */}
       {onToggleChanges && changesCount > 0 && (
         <TooltipSimple
-          content={changesOpen ? "关闭改动面板" : `查看改动${changesCount > 0 ? ` (${changesCount} 个文件)` : ""}`}
+          content={changesOpen ? `关闭${changesLabel}面板` : `查看${changesLabel}${changesCount > 0 ? ` (${changesCount} 个文件)` : ""}`}
           side="bottom"
         >
           <button
             type="button"
             data-tauri-drag-region="false"
             onClick={onToggleChanges}
-            aria-label="改动面板"
+            aria-label={`${changesLabel}面板`}
             aria-pressed={changesOpen}
             className={`relative mr-2 flex-none flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors cursor-pointer text-[11px] font-mono ${
               changesOpen

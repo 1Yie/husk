@@ -6,7 +6,7 @@
 
 import * as agent from "@/lib/agent-ipc/index";
 import { emptyView, type SessionView } from "@/features/chat/hooks/stream-view";
-import { recordFileChanges } from "@/features/chat/hooks/apply-event";
+import { recordArtifact, recordFileChanges } from "@/features/chat/hooks/apply-event";
 import type { ChatMessage } from "@/types";
 
 /** Strip persisted `[call: …]` text-protocol echoes from an assistant
@@ -409,6 +409,11 @@ function foldMessage(
       // Rebuild the changes panel from the persisted write-tool result.
       if (m.is_error !== true && m.content) {
         recordFileChanges(v.changes, toolInfo.name, m.content, false);
+      }
+      // Same for the artifacts dock — office/asset writers register the
+      // locator path on their first ok call, later writes just bump it.
+      if (m.is_error !== true) {
+        recordArtifact(v.artifacts, toolInfo.name, toolInfo.args);
       }
       // A batch's inner items were live-only events — they're not in
       // history. Rebuild them from the persisted call list + the
