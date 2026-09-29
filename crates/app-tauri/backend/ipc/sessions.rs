@@ -860,6 +860,7 @@ fn agent_session_inner(
                 "permission_mode": permission_mode,
                 "thinking_level": thinking_level,
                 "agent_mode": agent_mode,
+                "default_workspace_mode": mgr.default_workspace_mode(),
                 "compact_at": compact_at,
                 "active_provider": active_provider,
                 "active_model": active_model,
@@ -888,6 +889,11 @@ fn agent_session_inner(
                 .get("compact_at")
                 .and_then(|v| v.as_f64())
                 .map(|f| f as f32);
+            // Boot-only preference — stored so the NEXT launch opens in the
+            // chosen mode; the running workspace is untouched.
+            if let Some(v) = p.get("default_workspace_mode").and_then(|v| v.as_str()) {
+                mgr.set_default_workspace_mode(v.to_string());
+            }
             // Sandbox overrides live in the process-wide slot — apply them
             // BEFORE mgr.set_default_prefs so its persist captures the
             // effective values. Any sandbox key in the payload rewrites all

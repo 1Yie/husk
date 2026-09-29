@@ -378,6 +378,10 @@ export interface DefaultPrefs {
   permission_mode?: string;
   thinking_level?: string;
   agent_mode?: string;
+  /** Which mode the app opens in — "last" (上次使用) | "build" (编程) |
+   * "office" (工作). Read only at launch: the running window is not
+   * switched. */
+  default_workspace_mode?: string;
   /** Settings-pane default model (Agent 偏好) — provider/model pair; either
    * null/absent → the config's own active_provider/active_model wins. Send
    * both or neither; "" clears. */

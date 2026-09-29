@@ -193,6 +193,12 @@ pub struct SessionManager {
     pub permission_mode: String,
     /// Active agent mode across sessions (`build` | `plan` | `goal`).
     pub agent_mode: String,
+    /// Which mode the app opens in — `last` (上次使用) | `build` (编程) |
+    /// `office` (工作).
+    /// Mirrored from the persisted defaults so the settings pane can
+    /// round-trip it; the boot decision itself already happened in
+    /// `spawn_at`.
+    pub default_workspace_mode: String,
     /// Fraction of the context window that triggers compaction — the
     /// settings UI's 70/80/90% choices; applies to actors spawned after set.
     pub compact_at: f32,
@@ -243,13 +249,18 @@ impl SessionManager {
     pub fn spawn_at(
         root: Option<std::path::PathBuf>,
     ) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
-        // No explicit root → MRU recents head. No recents → empty state
-        // (no cwd fallback — don't silently attach the launch directory).
+        // Global user defaults — the settings window's stored preference.
+        // Loaded up here because the「默认进入」row decides the boot root
+        // below; every later layer reads this same snapshot.
+        let defaults = crate::session_store::try_load_default_preferences();
+        // No explicit root → the boot workspace `default_workspace_mode`
+        // asks for. Nothing to open → empty state (no cwd fallback — don't
+        // silently attach the launch directory).
         let cwd: Option<std::path::PathBuf> = root.or_else(|| {
-            crate::session_store::load_recent_workspaces()
-                .first()
-                .map(|w| w.path.clone())
-                .filter(|p| p.is_dir())
+            boot_workspace(
+                defaults.as_ref(),
+                &crate::session_store::load_recent_workspaces(),
+            )
         });
         let cfg = AppConfig::load(None).unwrap_or_default();
         let (event_tx, event_rx) = std_mpsc::channel();
@@ -333,6 +344,10 @@ impl SessionManager {
                     .as_ref()
                     .map(|d| d.agent_mode.clone())
                     .unwrap_or_else(|| "build".into()),
+                default_workspace_mode: defaults
+                    .as_ref()
+                    .map(|d| d.default_workspace_mode.clone())
+                    .unwrap_or_else(|| "last".into()),
                 compact_at: defaults
                     .as_ref()
                     .map(|d| d.compact_at)
@@ -365,9 +380,8 @@ impl SessionManager {
         crate::session_store::record_recent_workspace(&canon);
 
         let prefs = store.load_prefs();
-        // Global user defaults — the settings window's stored preference —
-        // fill any gap the workspace prefs leave. Absent file → built-ins.
-        let defaults = crate::session_store::try_load_default_preferences();
+        // `defaults` (loaded at the top of `spawn_at`) fills any gap the
+        // workspace prefs leave. Absent file → built-ins.
         // Model resolution order: workspace's saved pair → the settings
         // pane's default pair (Agent 偏好 active_model) → the config's
         // active_provider/active_model → first provider fallback. Every
@@ -428,6 +442,10 @@ impl SessionManager {
             active_thinking_level,
             permission_mode,
             agent_mode,
+            default_workspace_mode: defaults
+                .as_ref()
+                .map(|d| d.default_workspace_mode.clone())
+                .unwrap_or_else(|| "last".into()),
             compact_at,
             memory_enabled,
             memory_distill,
@@ -2053,6 +2071,36 @@ impl SessionManager {
         )
     }
 
+    /// The「默认进入」preference — `last` (上次使用) | `build` (编程) |
+    /// `office` (工作). Only the next launch obeys it: the current boot
+    /// already picked its workspace.
+    pub fn default_workspace_mode(&self) -> String {
+        self.default_workspace_mode.clone()
+    }
+
+    /// Store the「默认进入」preference. Boot-only — no live session or
+    /// workspace is touched; the value takes effect at the next launch.
+    pub fn set_default_workspace_mode(&mut self, mode: String) {
+        self.default_workspace_mode = mode;
+        let lim = crate::sandbox_prefs::current();
+        let _ = crate::session_store::save_default_preferences(
+            &crate::session_store::DefaultPreferences {
+                permission_mode: self.permission_mode.clone(),
+                thinking_level: self.active_thinking_level.clone(),
+                agent_mode: self.agent_mode.clone(),
+                default_workspace_mode: self.default_workspace_mode.clone(),
+                compact_at: self.compact_at,
+                active_provider: self.default_provider.clone(),
+                active_model: self.default_model.clone(),
+                memory_enabled: self.memory_enabled,
+                memory_distill: self.memory_distill,
+                sandbox_network: Some(lim.network_label().into()),
+                sandbox_max_memory_mb: lim.max_memory_mb,
+                sandbox_max_processes: lim.max_processes,
+            },
+        );
+    }
+
     /// Update the stored default preferences. Permission mode, thinking
     /// level and agent mode are per-session composer choices, so live
     /// sessions are untouched by those; the compaction ratio has no
@@ -2091,6 +2139,7 @@ impl SessionManager {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
+                default_workspace_mode: self.default_workspace_mode.clone(),
                 compact_at: self.compact_at,
                 active_provider: self.default_provider.clone(),
                 active_model: self.default_model.clone(),
@@ -2130,6 +2179,7 @@ impl SessionManager {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
+                default_workspace_mode: self.default_workspace_mode.clone(),
                 compact_at: self.compact_at,
                 active_provider: self.default_provider.clone(),
                 active_model: self.default_model.clone(),
@@ -2171,6 +2221,7 @@ impl SessionManager {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
+                default_workspace_mode: self.default_workspace_mode.clone(),
                 compact_at: self.compact_at,
                 active_provider: self.default_provider.clone(),
                 active_model: self.default_model.clone(),
@@ -2304,6 +2355,32 @@ fn resolve_agent_mode(
     match prefs_mode.as_ref().or(defaults_mode) {
         Some(m) if m != "office" => m.clone(),
         _ => "build".into(),
+    }
+}
+
+/// Where to boot when the caller named no root — the「默认进入」choice.
+/// `office` (工作) opens the office pseudo-workspace; `build` (编程) the most
+/// recent real project, skipping office (a mode, not a project — booting
+/// into it records it as the newest recent, so taking the head verbatim
+/// would ignore the setting); `last` (上次使用) the MRU head as-is, which is
+/// what an untouched install has always done. `None` → empty state.
+fn boot_workspace(
+    defaults: Option<&crate::session_store::DefaultPreferences>,
+    recents: &[crate::session_store::RecentWorkspace],
+) -> Option<std::path::PathBuf> {
+    match defaults.map(|d| d.default_workspace_mode.as_str()) {
+        // The office dir is created lazily by `spawn_at` — a boot landing
+        // there needs nothing pre-existing.
+        Some("office") => crate::session_store::office_root()
+            .or_else(|| recents.first().map(|w| w.path.clone())),
+        Some("build") => recents
+            .iter()
+            .map(|w| w.path.clone())
+            .find(|p| p.is_dir() && !crate::session_store::is_office_root(p)),
+        _ => recents
+            .iter()
+            .map(|w| w.path.clone())
+            .find(|p| p.is_dir()),
     }
 }
 
@@ -2777,5 +2854,49 @@ mod tests {
             resolve_agent_mode(dir.path(), &Some("plan".to_string()), None),
             "plan"
         );
+    }
+
+    /// The「默认进入」preference picks the boot workspace: 工作 opens the
+    /// office pseudo-workspace, 编程 the most recent real project (office
+    /// skipped — boot records it as the newest recent, so taking the head
+    /// verbatim would ignore the setting), 上次使用 the MRU head as-is.
+    #[test]
+    fn default_workspace_mode_picks_the_boot_root() {
+        let recent = |path: &std::path::Path| crate::session_store::RecentWorkspace {
+            path: path.to_path_buf(),
+            name: "p".into(),
+            last_opened: 0,
+        };
+        let office = crate::session_store::office_root().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir(&project).unwrap();
+        // MRU head is the office workspace — what a previous 工作 boot leaves.
+        let recents = vec![recent(&office), recent(&project)];
+
+        let prefs = |mode: &str| -> crate::session_store::DefaultPreferences {
+            serde_json::from_value(serde_json::json!({ "default_workspace_mode": mode })).unwrap()
+        };
+
+        // 工作 boots into office — recents don't matter.
+        assert_eq!(
+            boot_workspace(Some(&prefs("office")), &[]),
+            Some(office.clone())
+        );
+        // 编程 skips the office head for the real project below it.
+        assert_eq!(
+            boot_workspace(Some(&prefs("build")), &recents),
+            Some(project.clone())
+        );
+        // 上次使用 (default) resumes whatever was open — office included.
+        assert_eq!(
+            boot_workspace(Some(&prefs("last")), &recents),
+            Some(office.clone())
+        );
+        // An untouched install stores nothing: same as 上次使用.
+        assert_eq!(boot_workspace(None, &recents), Some(office));
+        // Nothing to open → empty state.
+        assert_eq!(boot_workspace(None, &[]), None);
+        assert_eq!(boot_workspace(Some(&prefs("build")), &[]), None);
     }
 }

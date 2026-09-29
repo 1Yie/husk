@@ -826,6 +826,13 @@ pub struct DefaultPreferences {
     pub thinking_level: Option<String>,
     #[serde(default = "default_pref_agent_mode")]
     pub agent_mode: String,
+    /// Which mode the app opens in: "last" (上次使用 — the most recent
+    /// workspace, office included) | "build" (编程 — the most recent real
+    /// project) | "office" (工作 — the office pseudo-workspace). Read once
+    /// at boot by `SessionManager::spawn_at`; it picks the boot workspace,
+    /// so nothing downstream consults it.
+    #[serde(default = "default_pref_workspace_mode")]
+    pub default_workspace_mode: String,
     /// Fraction of the context window that triggers compaction (0.70/0.80/0.90).
     #[serde(default = "default_pref_compact_at")]
     pub compact_at: f32,
@@ -864,6 +871,10 @@ fn default_pref_agent_mode() -> String {
     "build".into()
 }
 
+fn default_pref_workspace_mode() -> String {
+    "last".into()
+}
+
 fn default_pref_thinking_level() -> Option<String> {
     Some("medium".into())
 }
@@ -876,6 +887,7 @@ impl Default for DefaultPreferences {
             permission_mode: default_pref_permission_mode(),
             thinking_level: default_pref_thinking_level(),
             agent_mode: default_pref_agent_mode(),
+            default_workspace_mode: default_pref_workspace_mode(),
             compact_at: default_pref_compact_at(),
             sandbox_network: None,
             sandbox_max_memory_mb: None,

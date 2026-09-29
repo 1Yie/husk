@@ -7,6 +7,7 @@ import {
   Archive,
   Bot,
   Cpu,
+  FileText,
   Globe,
   ShieldCheck,
   Sparkles,
@@ -86,6 +87,12 @@ const AGENT_MODE_OPTIONS = [
   { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
 ];
 
+const WORKSPACE_MODE_OPTIONS = [
+  { value: "last", label: "上次使用", desc: "继续上次退出时的模式" },
+  { value: "build", label: "编程", desc: "上次打开的项目" },
+  { value: "office", label: "工作", desc: "Word / Excel / PPT 办公空间" },
+];
+
 const COMPACT_AT_OPTIONS = [
   { value: "70", label: "70%", desc: "更早压缩，给后续轮次留足余量" },
   { value: "80", label: "80%", desc: "默认平衡值" },
@@ -119,6 +126,7 @@ export function GeneralPane() {
   const [activeModelKey, setActiveModelKey] = useState("__config__");
   const [thinking, setThinking] = useState("medium");
   const [agentMode, setAgentMode] = useState("build");
+  const [workspaceMode, setWorkspaceMode] = useState("last");
   const [compactAt, setCompactAt] = useState("80");
   const [providers, setProviders] = useState<Record<string, any>>({});
   const [sandboxNetwork, setSandboxNetwork] = useState("auto");
@@ -136,6 +144,7 @@ export function GeneralPane() {
         }
         if (prefs.thinking_level) setThinking(prefs.thinking_level);
         if (prefs.agent_mode) setAgentMode(prefs.agent_mode);
+        if (prefs.default_workspace_mode) setWorkspaceMode(prefs.default_workspace_mode);
         if (prefs.compact_at) setCompactAt(String(Math.round(prefs.compact_at * 100)));
         if (prefs.sandbox_network) setSandboxNetwork(prefs.sandbox_network);
         setSandboxMem(
@@ -206,6 +215,25 @@ export function GeneralPane() {
       >
         <KvList>
           <KvListContent>
+            <KvRow
+              label="默认进入"
+              description="启动应用时打开的模式（下次启动生效）"
+              icon={<FileText className="h-4 w-4" />}
+            >
+              <SettingSelect
+                value={workspaceMode}
+                onChange={(v) => {
+                  setWorkspaceMode(v);
+                  void save({ default_workspace_mode: v });
+                }}
+                placeholder="选择启动模式"
+                options={WORKSPACE_MODE_OPTIONS.map((t) => ({
+                  value: t.value,
+                  label: t.label,
+                  description: t.desc,
+                }))}
+              />
+            </KvRow>
             <KvRow
               label="默认代理模式"
               description="新会话启动时的代理模式"
