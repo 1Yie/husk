@@ -113,7 +113,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
             data-tauri-drag-region="deep"
             className="h-9 flex-none flex items-center px-3 gap-2 bg-panel select-none cursor-default"
           >
-            {isMac && <div className="w-[60px] shrink-0" />}
+            {isMac && <div className="w-[55px] shrink-0" />}
             <span className="text-[12px] font-semibold text-neutral-700 tracking-tight">
               设置
             </span>

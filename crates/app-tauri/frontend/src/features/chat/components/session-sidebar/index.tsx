@@ -337,7 +337,7 @@ export function SessionSidebar({
           data-tauri-drag-region="deep"
           className="h-9 flex-none flex items-center px-3 gap-2 border-b border-hairline bg-panel select-none cursor-default"
         >
-          {isMac && <div className="w-[60px] shrink-0" />}
+          {isMac && <div className="w-[55px] shrink-0" />}
 
           <img src={iconUrl} alt="" draggable={false} className="h-4 w-4 shrink-0" />
           <span className="text-[12px] font-semibold text-neutral-700 tracking-tight">
