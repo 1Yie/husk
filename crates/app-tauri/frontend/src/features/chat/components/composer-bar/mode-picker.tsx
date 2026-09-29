@@ -16,6 +16,7 @@ import {
   Check,
   Brain,
   Bot,
+  FileText,
 } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 
@@ -28,9 +29,10 @@ export const PERMISSION_MODES = [
 ] as const;
 
 export const AGENT_MODES = [
-  { value: "build", label: "构建", desc: "完整工具集 — 读写、执行、验证" },
+  { value: "build", label: "编程", desc: "完整工具集 — 读写、执行、验证" },
   { value: "plan", label: "计划", desc: "只读分析，产出实施方案，批准后执行" },
   { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
+  { value: "office", label: "工作", desc: "Word / Excel / PPT — 创建与编辑 Office 文档" },
 ] as const;
 
 export const THINKING_LEVELS = [
@@ -61,6 +63,7 @@ export function ModePicker({
   agentMode,
   agentModeLabel,
   switchAgentMode,
+  officeMode,
   mode,
   modeLabel,
   switchMode,
@@ -74,6 +77,10 @@ export function ModePicker({
   agentMode: string;
   agentModeLabel: string;
   switchAgentMode: (m: string) => Promise<void>;
+  /** The active workspace IS the office pseudo-workspace — office is only
+   *  pickable there; elsewhere it's a sidebar-level switch, not a
+   *  per-session composer option. */
+  officeMode?: boolean;
   mode: string;
   modeLabel: string;
   switchMode: (m: string) => Promise<void>;
@@ -86,13 +93,21 @@ export function ModePicker({
 }) {
   return (
     <>
+        {/* Office mode is workspace-scoped — every session there is
+            `office` by construction, so neither the agent-mode nor the
+            permission picker applies. The thinking-level picker stays. */}
+        {!officeMode && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               aria-label="代理模式"
               className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
             >
-              <Bot className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              {agentMode === "office" ? (
+                <FileText className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              ) : (
+                <Bot className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              )}
               <span className="truncate max-w-[7em]">{agentModeLabel}</span>
               <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
@@ -103,7 +118,9 @@ export function ModePicker({
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              {AGENT_MODES.map((m) => {
+              {/* `office` never appears here — it's a workspace-level mode
+                  switched from the sidebar tab, not a per-session pick. */}
+              {AGENT_MODES.filter((m) => m.value !== "office").map((m) => {
                 const active = m.value === agentMode;
                 return (
                   <DropdownMenuItem
@@ -126,7 +143,9 @@ export function ModePicker({
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
+        )}
 
+        {!officeMode && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -167,6 +186,7 @@ export function ModePicker({
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
+        )}
 
         {hasReasoning && effectiveThinkingLevels.length > 0 && (
           <DropdownMenu>

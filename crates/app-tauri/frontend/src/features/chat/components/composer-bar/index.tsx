@@ -185,11 +185,16 @@ export function ComposerBar({
   view,
   workspaceRoot,
   sessionKey,
+  officeMode = false,
 }: {
   view: SessionView;
   workspaceRoot?: string;
   /** `root:id` — queued drafts belong to a session; switching drops them. */
   sessionKey?: string;
+  /** True when the active workspace IS the office pseudo-workspace — the
+   *  only place where「工作」appears in the mode dropdown (elsewhere it's a
+   *  sidebar-level switch into office mode). */
+  officeMode?: boolean;
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<string>("default");
@@ -384,6 +389,10 @@ export function ComposerBar({
   // Recompute the active mention token from the current text + caret.
   // Returns null when the caret isn't inside a `/@/$` token.
   const detectMention = (value: string, caret: number): Mention | null => {
+    // 工作 mode: no coding pickers — `@` file mentions, `/` commands and
+    // `$` skills all stay plain text (the model reaches the same files
+    // and skills through its office tools anyway).
+    if (officeMode) return null;
     const upto = value.slice(0, caret);
     // Token = last whitespace-delimited word before the caret. The query may
     // itself contain `/`/`@`/`$` — file paths like `@src/main` or `@pkg/@scope`
@@ -859,7 +868,7 @@ export function ComposerBar({
   };
 
   const modeLabel = PERMISSION_MODES.find((m) => m.value === mode)?.label ?? "默认";
-  const agentModeLabel = AGENT_MODES.find((m) => m.value === agentMode)?.label ?? "构建";
+  const agentModeLabel = AGENT_MODES.find((m) => m.value === agentMode)?.label ?? "编程";
 
   // Plan → build handoff: a finished plan-mode turn ends on an assistant
   // block (the plan). Approving flips to build and feeds the plan back as
@@ -943,7 +952,7 @@ export function ComposerBar({
                     计划已就绪
                   </span>
                   <span className="min-w-0 flex-1 truncate font-normal text-neutral-500">
-                    审核方案，批准后切到构建模式执行
+                    审核方案，批准后切到编程模式执行
                   </span>
                   <TooltipSimple content="复制计划">
                     <button
@@ -1274,12 +1283,14 @@ export function ComposerBar({
                   onAcceptMention={acceptMention}
                   onDismissMention={() => setMention(null)}
                   onPopQueued={popQueuedToDraft}
+                  officeMode={officeMode}
                 />
 
                 <ComposerToolbar
                   agentMode={agentMode}
                   agentModeLabel={agentModeLabel}
                   switchAgentMode={switchAgentMode}
+                  officeMode={officeMode}
                   modeLabel={modeLabel}
                   mode={mode}
                   switchMode={switchMode}
@@ -1327,12 +1338,14 @@ export function ComposerBar({
                 onAcceptMention={acceptMention}
                 onDismissMention={() => setMention(null)}
                 onPopQueued={popQueuedToDraft}
+                officeMode={officeMode}
               />
 
               <ComposerToolbar
                 agentMode={agentMode}
                 agentModeLabel={agentModeLabel}
                 switchAgentMode={switchAgentMode}
+                officeMode={officeMode}
                 modeLabel={modeLabel}
                 mode={mode}
                 switchMode={switchMode}
@@ -1511,6 +1524,7 @@ function ComposerTextarea({
   onAcceptMention,
   onDismissMention,
   onPopQueued,
+  officeMode,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -1541,6 +1555,9 @@ function ComposerTextarea({
   /** Alt+↑ on an empty composer pops the newest parked prompt back into the
    *  draft — returns its text (null when the queue is empty). */
   onPopQueued: () => string | null;
+  /** 工作 mode — mention triggers are off, so the placeholder drops the
+   *  `@`/`/`/`$` grammar hints. */
+  officeMode?: boolean;
 }) {
   const mirrorRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1733,7 +1750,11 @@ function ComposerTextarea({
             }
           }}
           placeholder={
-            streaming ? "插入指示引导生成 (Steer)…" : "输入消息… @ 引用文件 · / 命令 · $ 技能"
+            streaming
+              ? "插入指示引导生成 (Steer)…"
+              : officeMode
+                ? "输入消息…"
+                : "输入消息… @ 引用文件 · / 命令 · $ 技能"
           }
           rows={1}
           // `dark:bg-transparent` is load-bearing: the base Textarea carries an opaque
@@ -1841,6 +1862,7 @@ function ComposerToolbar({
   agentMode,
   agentModeLabel,
   switchAgentMode,
+  officeMode,
   modeLabel,
   mode,
   switchMode,
@@ -1864,6 +1886,8 @@ function ComposerToolbar({
   agentMode: string;
   agentModeLabel: string;
   switchAgentMode: (m: string) => Promise<void>;
+  /** Office workspace —「工作」only appears in the mode dropdown there. */
+  officeMode?: boolean;
   modeLabel: string;
   mode: string;
   switchMode: (m: string) => Promise<void>;
@@ -1942,6 +1966,7 @@ function ComposerToolbar({
           agentMode={agentMode}
           agentModeLabel={agentModeLabel}
           switchAgentMode={switchAgentMode}
+          officeMode={officeMode}
           mode={mode}
           modeLabel={modeLabel}
           switchMode={switchMode}

@@ -64,9 +64,9 @@ export const setModel = (provider: string, model: string) =>
 export const setPermissionMode = (mode: string) =>
   send({ SetPermissionMode: { mode } });
 
-/** Switch the agent mode (`build` | `plan` | `goal`) — swaps the session's
- * tool registry immediately (plan drops write tools; goal adds the
- * goal_complete contract). */
+/** Switch the agent mode (`build` | `plan` | `goal` | `office`) — swaps the
+ * session's tool registry immediately (plan drops write tools; goal adds the
+ * goal_complete contract; office adds the `office_*` document tools). */
 export const setAgentMode = (mode: string) =>
   send({ SetAgentMode: { mode } });
 

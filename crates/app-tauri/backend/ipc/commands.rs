@@ -239,7 +239,9 @@ fn agent_cmd_inner(
             q.push_back(text.clone());
             q.iter().cloned().collect::<Vec<_>>()
         };
-        let _ = ui.send(UiEvent::QueuedPrompts { items: items.clone() });
+        let _ = ui.send(UiEvent::QueuedPrompts {
+            items: items.clone(),
+        });
         mgr.set_session_queued(session_id, items);
         cmd_tx
             .try_send(UiCommand::DrainQueue)
@@ -249,7 +251,9 @@ fn agent_cmd_inner(
     if let UiCommand::SetQueued { items } = &cmd {
         let session_id = mgr.active_id;
         *queue.lock().map_err(|e| e.to_string())? = items.clone().into();
-        let _ = ui.send(UiEvent::QueuedPrompts { items: items.clone() });
+        let _ = ui.send(UiEvent::QueuedPrompts {
+            items: items.clone(),
+        });
         mgr.set_session_queued(session_id, items.clone());
         return Ok(());
     }

@@ -146,6 +146,9 @@ export interface ProjectOverview {
   last_opened: number;
   /** This is the kernel's active workspace. */
   current: boolean;
+  /** The built-in office pseudo-workspace — rendered as the sidebar's
+   *  fixed「工作」section rather than a regular project row. */
+  office?: boolean;
   /** Every persisted conversation, newest first. */
   sessions: ProjectSessionRow[];
 }
