@@ -37,6 +37,7 @@ use rig_core::client::{self, BearerAuth, Capable, CompletionClient, Nothing};
 use rig_core::completion::request::CompletionError;
 use rig_core::completion::{CompletionModel, CompletionRequest, ToolDefinition};
 use rig_core::http_client::{self, HttpClientExt};
+use rig_core::http_client::sse::BoxedStream;
 use rig_core::message::{
     AssistantContent, DocumentSourceKind, Image as RigImage, ImageMediaType, Message as RigMessage,
     Reasoning, ReasoningContent, Text as RigText, ToolCall as RigToolCall, ToolCallId,
@@ -46,6 +47,7 @@ use rig_core::providers::{anthropic, gemini, openai};
 use rig_core::streaming::{
     StreamedAssistantContent, StreamingCompletionResponse, ToolCallDeltaContent,
 };
+use rig_core::wasm_compat::WasmCompatSend;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -180,10 +182,186 @@ impl WireKind {
     }
 }
 
+// ================================================================
+// SsePatchClient — byte-level repair for out-of-contract Responses SSE
+// ================================================================
+
+/// `reqwest::Client` wrapper used only for the Responses wire. Some
+/// OpenAI-compatible gateways (observed: devin-style shims) stream `response.*`
+/// frames whose `response` object omits `created_at` — a field rig's typed
+/// `ResponseChunk` decode requires. The terminal `response.completed` frame
+/// then classified `WireEvent::Corrupt`, was swallowed by
+/// `swallow_decode_errors`, and `saw_terminal` never flipped: no `Final`, no
+/// `Done`, no usage — title-bar meters sat at 0 while deltas streamed fine.
+///
+/// The patch repairs the wire rather than the decode: `data:` frames whose
+/// JSON carries a `response` object lacking `created_at` get `"created_at":0`
+/// injected before rig's SSE parser sees them. Every other byte — and every
+/// conformant frame — passes through untouched.
+#[derive(Clone, Debug)]
+struct SsePatchClient {
+    inner: reqwest::Client,
+}
+
+impl Default for SsePatchClient {
+    fn default() -> Self {
+        Self {
+            inner: reqwest::Client::new(),
+        }
+    }
+}
+
+impl HttpClientExt for SsePatchClient {
+    fn send<T, U>(
+        &self,
+        req: http_client::Request<T>,
+    ) -> impl std::future::Future<
+        Output = http_client::Result<http_client::Response<http_client::LazyBody<U>>>,
+    > + WasmCompatSend
+           + 'static
+    where
+        T: Into<bytes::Bytes>,
+        T: WasmCompatSend,
+        U: From<bytes::Bytes>,
+        U: WasmCompatSend + 'static,
+    {
+        HttpClientExt::send(&self.inner, req)
+    }
+
+    fn send_multipart<U>(
+        &self,
+        req: http_client::Request<http_client::MultipartForm>,
+    ) -> impl std::future::Future<
+        Output = http_client::Result<http_client::Response<http_client::LazyBody<U>>>,
+    > + WasmCompatSend
+           + 'static
+    where
+        U: From<bytes::Bytes>,
+        U: WasmCompatSend + 'static,
+    {
+        HttpClientExt::send_multipart(&self.inner, req)
+    }
+
+    fn send_streaming<T>(
+        &self,
+        req: http_client::Request<T>,
+    ) -> impl std::future::Future<Output = http_client::Result<http_client::StreamingResponse>>
+           + WasmCompatSend
+    where
+        T: Into<bytes::Bytes>,
+        T: WasmCompatSend,
+    {
+        let inner = self.inner.clone();
+        async move {
+            HttpClientExt::send_streaming(&inner, req)
+                .await
+                .map(patch_streaming_response)
+        }
+    }
+}
+
+fn patch_streaming_response(
+    resp: http_client::StreamingResponse,
+) -> http_client::StreamingResponse {
+    let (parts, body) = resp.into_parts();
+    http_client::Response::from_parts(parts, patch_sse_stream(body))
+}
+
+/// One line at a time: complete lines are patched as they arrive, a partial
+/// tail stays buffered until its `\n` lands or the stream ends.
+fn patch_sse_stream(inner: BoxedStream) -> BoxedStream {
+    struct St {
+        inner: BoxedStream,
+        buf: Vec<u8>,
+        pending: std::collections::VecDeque<http_client::Result<bytes::Bytes>>,
+        done: bool,
+    }
+    let s = futures::stream::unfold(
+        St {
+            inner,
+            buf: Vec::new(),
+            pending: std::collections::VecDeque::new(),
+            done: false,
+        },
+        |mut st| async move {
+            loop {
+                if let Some(item) = st.pending.pop_front() {
+                    return Some((item, st));
+                }
+                if st.done {
+                    return None;
+                }
+                match st.inner.next().await {
+                    Some(Ok(chunk)) => {
+                        st.buf.extend_from_slice(&chunk);
+                        while let Some(pos) = st.buf.iter().position(|&b| b == b'\n') {
+                            let line: Vec<u8> = st.buf.drain(..=pos).collect();
+                            st.pending
+                                .push_back(Ok(bytes::Bytes::from(patch_sse_line(&line))));
+                        }
+                    }
+                    Some(Err(e)) => st.pending.push_back(Err(e)),
+                    None => {
+                        st.done = true;
+                        if !st.buf.is_empty() {
+                            let tail = std::mem::take(&mut st.buf);
+                            st.pending
+                                .push_back(Ok(bytes::Bytes::from(patch_sse_line(&tail))));
+                        }
+                    }
+                }
+            }
+        },
+    );
+    Box::pin(s)
+}
+
+/// Inject `"created_at": 0` into the `response` object of a `response.*`
+/// `data:` frame that lacks it. Any other line (including unparseable
+/// payloads — let rig classify them itself) is returned byte-identical.
+fn patch_sse_line(line: &[u8]) -> Vec<u8> {
+    let (body, eol): (&[u8], &[u8]) = match line.strip_suffix(b"\n") {
+        Some(rest) => match rest.strip_suffix(b"\r") {
+            Some(r) => (r, b"\r\n"),
+            None => (rest, b"\n"),
+        },
+        None => (line, b""),
+    };
+    let Some(rest) = body.strip_prefix(b"data:") else {
+        return line.to_vec();
+    };
+    // SSE strips one optional space after the colon — do the same so the
+    // payload parse sees the JSON start.
+    let json_bytes = match rest.first() {
+        Some(b' ') => &rest[1..],
+        _ => rest,
+    };
+    let Ok(mut value) = serde_json::from_slice::<Value>(json_bytes) else {
+        return line.to_vec();
+    };
+    let patchable = value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t.starts_with("response."))
+        && value
+            .get("response")
+            .and_then(Value::as_object)
+            .is_some_and(|o| !o.contains_key("created_at"));
+    if !patchable {
+        return line.to_vec();
+    }
+    value["response"]["created_at"] = Value::from(0);
+    let mut out = Vec::with_capacity(line.len() + 20);
+    out.extend_from_slice(b"data: ");
+    out.extend_from_slice(&serde_json::to_vec(&value).unwrap_or_default());
+    out.extend_from_slice(eol);
+    out
+}
+
 /// A rig completion-model handle, one enum arm per wire.
 enum RigModel {
     Compat(openai::completion::GenericCompletionModel<CompatExt>),
-    Responses(openai::responses_api::ResponsesCompletionModel),
+    Responses(openai::responses_api::ResponsesCompletionModel<SsePatchClient>),
     Anthropic(anthropic::completion::CompletionModel),
     Gemini(gemini::completion::CompletionModel),
 }
@@ -291,7 +469,10 @@ impl RigProvider {
                 let b = openai::Client::builder()
                     .base_url(&self.base_url)
                     .http_headers(headers)
-                    .http_client(http);
+                    // `SsePatchClient` repairs out-of-contract terminal frames
+                    // on the byte stream before rig's SSE decoder sees them —
+                    // see its docs. `send`/`send_multipart` delegate as-is.
+                    .http_client(SsePatchClient { inner: http });
                 let client = if self.auth_header && !self.api_key.is_empty() {
                     b.api_key(BearerAuth::from(self.api_key.clone())).build()
                 } else {
@@ -1874,5 +2055,90 @@ mod tests {
         assert!(p.ends_with('…'));
         // 1999 bytes of text + the 3-byte ellipsis.
         assert_eq!(p.len(), 2002);
+    }
+
+    // --- SsePatchClient wire repair ---
+
+    /// A `response.*` frame missing `response.created_at` gets the field
+    /// injected; every other field survives untouched.
+    #[test]
+    fn patch_sse_line_injects_missing_created_at() {
+        let line = br#"data: {"type":"response.completed","sequence_number":51,"response":{"id":"r_1","object":"response","status":"completed","model":"devin","usage":{"input_tokens":546,"output_tokens":126}}}
+"#;
+        let out = patch_sse_line(line);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("data: "));
+        assert!(text.ends_with('\n'));
+        let v: Value = serde_json::from_str(text["data: ".len()..text.len() - 1].trim()).unwrap();
+        assert_eq!(v["response"]["created_at"], Value::from(0));
+        assert_eq!(v["response"]["usage"]["input_tokens"], Value::from(546));
+        assert_eq!(v["response"]["id"], Value::from("r_1"));
+    }
+
+    /// Conformant frames pass through byte-identical — the patch never
+    /// rewrites a `created_at` the provider actually sent.
+    #[test]
+    fn patch_sse_line_leaves_conformant_frames_alone() {
+        let line = br#"data: {"type":"response.completed","response":{"created_at":1771482906}}
+"#;
+        assert_eq!(patch_sse_line(line), line.to_vec());
+        // Non-response types, non-data lines, unparseable payloads, [DONE].
+        for other in [
+            &b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n"[..],
+            b"event: keepalive\n",
+            b"data: [DONE]\n",
+            b"data: {not json}\n",
+            b"\r\n",
+        ] {
+            assert_eq!(patch_sse_line(other), other.to_vec());
+        }
+        // `response` present but not an object → no patch.
+        let weird = b"data: {\"type\":\"response.completed\",\"response\":null}\n";
+        assert_eq!(patch_sse_line(weird), weird.to_vec());
+    }
+
+    /// A frame split across transport chunks reassembles and patches — the
+    /// byte-level contract that made this bug invisible (one partial line at
+    /// a time is normal SSE framing).
+    #[tokio::test]
+    async fn patch_sse_stream_reassembles_split_lines() {
+        use futures::stream;
+        let payload = br#"data: {"type":"response.completed","response":{"id":"r"}}
+
+"#;
+        // Split mid-line.
+        let a: Vec<u8> = payload[..20].to_vec();
+        let b: Vec<u8> = payload[20..].to_vec();
+        let inner: BoxedStream = Box::pin(stream::iter(vec![
+            Ok::<_, http_client::Error>(bytes::Bytes::from(a)),
+            Ok(bytes::Bytes::from(b)),
+        ]));
+        let mut patched = patch_sse_stream(inner);
+        let mut all = Vec::new();
+        while let Some(item) = patched.next().await {
+            all.extend_from_slice(&item.unwrap());
+        }
+        let text = String::from_utf8(all).unwrap();
+        let v: Value = serde_json::from_str(
+            text.trim_start_matches("data: ").trim_end(),
+        )
+        .unwrap();
+        assert_eq!(v["response"]["created_at"], Value::from(0));
+    }
+
+    /// Stream-end flush: a final line without `\n` still gets patched.
+    #[tokio::test]
+    async fn patch_sse_stream_flushes_unterminated_tail() {
+        use futures::stream;
+        let payload = b"data: {\"type\":\"response.completed\",\"response\":{}}"; // no \n
+        let inner: BoxedStream = Box::pin(stream::iter(vec![Ok::<_, http_client::Error>(
+            bytes::Bytes::from(payload.to_vec()),
+        )]));
+        let mut patched = patch_sse_stream(inner);
+        let mut all = Vec::new();
+        while let Some(item) = patched.next().await {
+            all.extend_from_slice(&item.unwrap());
+        }
+        assert!(String::from_utf8_lossy(&all).contains("\"created_at\":0"));
     }
 }
