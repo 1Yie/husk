@@ -1131,7 +1131,13 @@ const ChatTurn = memo(function ChatTurn({
                 <div
                   key={`step-${stepIdx}`}
                   id={`chat-turn-${turn.id}-step-${stepIdx}`}
-                  className="text-xs text-neutral-500 font-mono py-1 select-none"
+                  // `w-full` + `min-w-0` + `overflow-wrap:anywhere` — an
+                  // upstream error carries a compact JSON blob whose
+                  // unbreakable tail (the whole `)","param":null,...}` run)
+                  // otherwise becomes this row's min-content width, pushing
+                  // it past the column and clipping the tail of every
+                  // wrapped line. Same fix as the user bubble above.
+                  className="w-full min-w-0 text-xs text-neutral-500 font-mono py-1 select-none [overflow-wrap:anywhere] break-words"
                 >
                   {step.text}
                 </div>
