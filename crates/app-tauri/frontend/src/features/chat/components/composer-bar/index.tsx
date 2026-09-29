@@ -868,7 +868,7 @@ export function ComposerBar({
   };
 
   const modeLabel = PERMISSION_MODES.find((m) => m.value === mode)?.label ?? "默认";
-  const agentModeLabel = AGENT_MODES.find((m) => m.value === agentMode)?.label ?? "编程";
+  const agentModeLabel = AGENT_MODES.find((m) => m.value === agentMode)?.label ?? "构建";
 
   // Plan → build handoff: a finished plan-mode turn ends on an assistant
   // block (the plan). Approving flips to build and feeds the plan back as
@@ -952,7 +952,7 @@ export function ComposerBar({
                     计划已就绪
                   </span>
                   <span className="min-w-0 flex-1 truncate font-normal text-neutral-500">
-                    审核方案，批准后切到编程模式执行
+                    审核方案，批准后切到构建模式执行
                   </span>
                   <TooltipSimple content="复制计划">
                     <button

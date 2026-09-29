@@ -82,7 +82,7 @@ const THINKING_OPTIONS = [
 ];
 
 const AGENT_MODE_OPTIONS = [
-  { value: "build", label: "编程", desc: "完整工具集 — 读写、执行、验证" },
+  { value: "build", label: "构建", desc: "完整工具集 — 读写、执行、验证" },
   { value: "plan", label: "计划", desc: "只读分析，产出实施方案，批准后执行" },
   { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
 ];
