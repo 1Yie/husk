@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Husk",
-  "version": "0.1.13",
   "identifier": "husk.ingstar.im",
   "build": {
     "frontendDist": "./frontend/dist",
