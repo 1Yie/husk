@@ -24,5 +24,6 @@ commit_parsers = [
   { message = "^docs", group = "Documentation" },
   { message = "^test", group = "Testing" },
   { message = "^chore\\(release\\)", skip = true },
+  { message = ".*\\bbump version\\b", skip = true },
   { message = "^chore", group = "Miscellaneous" },
 ]
