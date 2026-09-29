@@ -1031,22 +1031,28 @@ impl SessionManager {
         let prefs = self.store.load_prefs();
         let defaults = crate::session_store::try_load_default_preferences();
         let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
-        let (provider_name, model_name) = match (&prefs.provider, &prefs.model) {
-            (Some(p), Some(m)) if self.provider_cfg.providers.contains_key(p) => {
-                (p.clone(), m.clone())
-            }
-            _ => (default_pname, default_model),
-        };
+        // Same three-layer chain as spawn_at/switch_workspace — the previous
+        // hand-rolled match skipped the Agent 偏好 layer entirely, so a
+        // settings-pane default could never reach a *new* session (only the
+        // boot path honored it).
+        let (provider_name, model_name) = resolve_model_pair(
+            &prefs.provider,
+            &prefs.model,
+            defaults.as_ref(),
+            &self.provider_cfg.providers,
+            (default_pname, default_model),
+        );
         self.provider_name = provider_name;
         self.model_name = model_name;
         self.permission_mode = prefs
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
             .unwrap_or_else(|| "default".into());
-        self.agent_mode = prefs
-            .agent_mode
-            .or_else(|| defaults.as_ref().map(|d| d.agent_mode.clone()))
-            .unwrap_or_else(|| "build".into());
+        self.agent_mode = resolve_agent_mode(
+            &self.workspace_root,
+            &prefs.agent_mode,
+            defaults.as_ref().map(|d| &d.agent_mode),
+        );
         self.active_thinking_level = prefs
             .thinking_level
             .or_else(|| defaults.and_then(|d| d.thinking_level));
@@ -1157,9 +1163,11 @@ impl SessionManager {
     /// so the swap takes effect on the next turn — nothing is restarted.
     pub fn reload_plugins(&self) -> Vec<serde_json::Value> {
         match &self.plugins {
-            Some(handle) => {
-                Self::reload_plugins_detached(&(handle.clone(), self.hooks.clone(), self.workspace_root.clone()))
-            }
+            Some(handle) => Self::reload_plugins_detached(&(
+                handle.clone(),
+                self.hooks.clone(),
+                self.workspace_root.clone(),
+            )),
             None => Vec::new(),
         }
     }
@@ -2036,6 +2044,19 @@ impl SessionManager {
                 sandbox_max_processes: lim.max_processes,
             },
         );
+        // A workspace pin (`prefs.provider`/`prefs.model`, written whenever a
+        // model is picked in the composer) silently outranks the pair the
+        // user just chose as the default — from their view "new sessions use
+        // X" must mean exactly that. Drop THIS workspace's pin so the new
+        // default reaches the next session here; other workspaces keep
+        // theirs, and any model picked from the composer re-pins it.
+        let mut prefs = self.store.load_prefs();
+        if prefs.provider.is_some() || prefs.model.is_some() {
+            prefs.provider = None;
+            prefs.model = None;
+            let _ = self.store.save_prefs(&prefs);
+        }
+        self.restore_workspace_default_settings();
     }
 
     /// Update + persist the memory switches. No live-session broadcast —
@@ -2169,6 +2190,25 @@ fn resolve_model_pair(
         }
     }
     fallback
+}
+
+/// The workspace's default agent mode. Office is pinned to the office
+/// pseudo-workspace — it's switched from the sidebar as an app-level mode,
+/// not picked per session in the composer, so a stored `office` value on a
+/// regular project (workspace prefs / global defaults) falls back to
+/// `build` instead of leaking document sessions into a code workspace.
+fn resolve_agent_mode(
+    root: &std::path::Path,
+    prefs_mode: &Option<String>,
+    defaults_mode: Option<&String>,
+) -> String {
+    if crate::session_store::is_office_root(root) {
+        return "office".into();
+    }
+    match prefs_mode.as_ref().or(defaults_mode) {
+        Some(m) if m != "office" => m.clone(),
+        _ => "build".into(),
+    }
 }
 
 fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String, String) {
