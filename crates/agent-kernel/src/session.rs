@@ -430,6 +430,10 @@ impl SessionActor {
         let system_prompt = set_memory_block(&system_prompt, &initial_memory_block)
             .replace("{{SKILLS_BLOCK}}", skills.catalog())
             .replace(
+                "{{BLUEPRINT_BLOCK}}",
+                &crate::blueprint::prompt_block(&cfg.workspace_root),
+            )
+            .replace(
                 "{{SUBAGENTS_BLOCK}}",
                 &crate::tools::delegate::catalog(&cfg.workspace_root),
             );
@@ -758,6 +762,19 @@ impl SessionActor {
             if let Some(content) = sys.content.take() {
                 let block = crate::tools::delegate::catalog(&self.workspace_root);
                 sys.content = Some(replace_block(&content, "subagents", &block));
+            }
+        }
+
+        // Blueprint index — re-rendered every turn so a `.blueprint/` edit
+        // (by the agent last turn, or the user in an editor) reaches the
+        // next request. An unchanged directory renders byte-identical text,
+        // so the cached prompt prefix is untouched. Pre-marker prompts
+        // (sessions persisted before the layer existed) carry no region and
+        // stay as they are.
+        if let Some(sys) = self.history.get_mut(0) {
+            if let Some(content) = sys.content.take() {
+                let block = crate::blueprint::prompt_block(&self.workspace_root);
+                sys.content = Some(replace_block(&content, "blueprint", &block));
             }
         }
 

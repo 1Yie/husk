@@ -196,6 +196,12 @@ impl CommandRegistry {
                     CommandResult::Reply(skills.catalog_listing())
                 }
             }
+            // Architecture blueprint — index/check/graph answer locally;
+            // `init` hands the model a bootstrap prompt.
+            "blueprint" => match crate::blueprint::command(ctx.workspace_root, args) {
+                Ok(reply) => CommandResult::Reply(reply),
+                Err(prompt) => CommandResult::FeedToAgent(prompt),
+            },
             "model" => {
                 // `/model provider/model` or bare `/model provider model`
                 let parts: Vec<&str> = args.splitn(2, |c| c == '/' || c == ' ').collect();

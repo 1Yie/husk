@@ -72,6 +72,28 @@ Husk 是一个在本机运行的编码 Agent。它能读代码、改代码、跑
 - 会话按工作区保存为 JSONL 文件，侧栏可以置顶会话、查看历史。
 - 粘贴到输入框的图片会存到 `<workspace>/.husk/attachments/`。
 
+### 架构蓝图
+
+工作区根目录有 `.blueprint/` 时自动启用，没有这个目录则零开销。每个节点是一个 Markdown 文件，开头是 TOML frontmatter：
+
+```markdown
++++
+owns = ["crates/agent-kernel/**"]
+forbidden_deps = ["iced*", "tauri*"]
+invariants = ["工具输出必须经过截断预算"]
++++
+纯异步编排引擎：ReAct 循环、工具注册表、权限门。
+
+## 职责
+## 不做
+```
+
+- 文件里只写代码推导不出的意图。依赖图每次从包清单（Cargo / npm / Go / Python）和源码 import 现算，不落盘，所以不会与代码漂移。
+- 节点索引常驻系统提示词。`blueprint` 工具（所有模式可用）提供 `locate` / `read` / `check` / `graph`。修改节点文件走普通补丁工具，与代码改动一起过 diff 审阅。
+- 回合结束时检查本轮写过的文件（`bash` 新建的文件通过回合起止的文件快照比对补查）：违反 `forbidden_deps`、新文件不属于任何节点算错误，给模型一次隐藏的返工机会；仍未修正则发出 `BlueprintReport`。`/blueprint check` 另会对匹配不到文件的 `owns`、被多个节点同时拥有的文件和围栏写坏的节点文件给出提示。goal 模式下会撤回已宣告的完成。改了包清单但节点文件没动，只给警告。
+- 计划卡的步骤带 `nodes`，`architecture` 字段描述拟议的节点变更，执行时先改蓝图再改代码。
+- `/blueprint` 查看索引，`/blueprint check` 做全量检查，`/blueprint graph` 输出 Mermaid 依赖图，`/blueprint init` 让 agent 起草初版。设置 → 通用 → 架构蓝图 可整体关闭。
+
 ### 权限与沙箱
 
 权限分五档，从宽到严依次为 `bypassPermissions`、`auto`、`acceptEdits`、`default`、`dontAsk`。规则优先级为 `deny > ask > allow`。

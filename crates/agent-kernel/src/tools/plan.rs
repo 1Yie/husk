@@ -43,6 +43,10 @@ pub struct PlanStep {
     /// Repo-relative paths the step touches.
     #[serde(default)]
     pub files: Vec<String>,
+    /// `.blueprint/` nodes the step changes — code or node file. Empty in
+    /// a workspace without a blueprint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<String>,
 }
 
 /// The submitted deliverable — `Serialize` so the engine can hand it to the
@@ -59,6 +63,11 @@ pub struct Plan {
     /// Known risks and open questions the approver should weigh.
     #[serde(default)]
     pub risks: Vec<String>,
+    /// Proposed `.blueprint/` changes — new nodes, moved responsibilities,
+    /// added/removed rules. Plan mode can't write them; the executor
+    /// applies this first, before any code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
 }
 
 /// The control channel between `submit_plan` and the engine — same shape as
@@ -116,6 +125,11 @@ struct SubmitPlanArgs {
     /// Known risks and open questions the approver should weigh.
     #[serde(default)]
     risks: Vec<String>,
+    /// Workspaces with a `.blueprint/` only: the node-file changes this plan
+    /// needs (new node, moved responsibility, new rule), stated before any
+    /// code change. Omit when the architecture stays as is.
+    #[serde(default)]
+    architecture: Option<String>,
 }
 
 pub fn spec_submit() -> ToolSpec {
@@ -123,8 +137,10 @@ pub fn spec_submit() -> ToolSpec {
         name: "submit_plan",
         schema: schema_for::<SubmitPlanArgs>(
             "Submit the implementation plan — the plan-mode deliverable. Call ONCE when the \
-             analysis is complete: summary, ordered steps (title/detail/files), verification, \
-             risks. The user reviews this card and decides whether to execute it in build mode.",
+             analysis is complete: summary, ordered steps (title/detail/files, plus the \
+             blueprint `nodes` each touches when the workspace has a `.blueprint/`), \
+             verification, risks, and `architecture` for any node-file change. The user \
+             reviews this card and decides whether to execute it in build mode.",
         ),
         readonly: true, // control signal — declares, never mutates
         class: super::registry::ToolClass::Control,
@@ -152,6 +168,10 @@ async fn exec_submit(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolEr
             .collect(),
         verification: parsed.verification,
         risks: parsed.risks,
+        architecture: parsed
+            .architecture
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty()),
     };
     let step_count = plan.steps.len();
     ctx.plan.submit(plan);

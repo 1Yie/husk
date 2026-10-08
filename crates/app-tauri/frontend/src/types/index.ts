@@ -29,6 +29,8 @@ export interface PlanStep {
   title: string;
   detail?: string;
   files?: string[];
+  /** `.blueprint/` nodes the step changes. */
+  nodes?: string[];
 }
 
 /** The structured plan the plan-mode turn delivers via `submit_plan`. */
@@ -37,6 +39,8 @@ export interface PlanPayload {
   steps: PlanStep[];
   verification?: string[];
   risks?: string[];
+  /** Proposed `.blueprint/` node-file changes — applied before any code. */
+  architecture?: string;
 }
 
 export type UiEvent =
@@ -87,6 +91,7 @@ export type UiEvent =
     }
   | { CompactionStarted: { manual: boolean } }
   | { PlanSubmitted: { plan: string } }
+  | { BlueprintReport: { errors: number; warnings: number; text: string } }
   | "TurnRetry"
   | { QueuedPrompts: { items: string[] } };
 

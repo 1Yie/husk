@@ -516,6 +516,15 @@ impl Engine {
         // without `submit_plan`; a plain question must not pay a second.
         let mut plan_followups = 0usize;
         const MAX_PLAN_FOLLOWUPS: usize = 1;
+        // Blueprint rework — one hidden follow-up when the turn's writes
+        // break `.blueprint/` rules; a second failure lands as a report.
+        let mut blueprint_followups = 0usize;
+        const MAX_BLUEPRINT_FOLLOWUPS: usize = 1;
+        // File list taken lazily, right before the first tool that can create
+        // files outside the hunk tracker (`bash`, orchestration). A turn that
+        // only uses patch tools never pays for the scan.
+        let mut blueprint_baseline: Option<std::collections::BTreeSet<String>> = None;
+        let mut blueprint_baseline_taken = false;
         // A fresh turn starts with a clean goal signal — a leftover
         // `goal_complete` from an earlier turn must not short-circuit this
         // one (the contract is per-turn: each goal prompt ends declared).
@@ -939,6 +948,60 @@ impl Engine {
                     continue;
                 }
 
+                // Blueprint contract — the files this turn wrote are checked
+                // against `.blueprint/` (no-op without the directory). Errors
+                // buy one rework round; in goal mode a declared completion is
+                // re-opened so the model has to declare again after fixing.
+                // Warnings never block — they ride out as a report.
+                let blueprint_report = {
+                    let root = self.ctx.workspace_root.to_path_buf();
+                    let mut touched: Vec<std::path::PathBuf> = hunks
+                        .files_in_turn(hunks.current_turn())
+                        .into_iter()
+                        .map(|p| p.to_path_buf())
+                        .collect();
+                    let baseline = blueprint_baseline.clone();
+                    if touched.is_empty() && baseline.is_none() {
+                        None
+                    } else {
+                        tokio::task::spawn_blocking(move || {
+                            if let Some(before) = baseline {
+                                for p in crate::blueprint::created_since(&root, &before) {
+                                    if !touched.contains(&p) {
+                                        touched.push(p);
+                                    }
+                                }
+                            }
+                            crate::blueprint::check_turn(&root, &touched)
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                };
+                if let Some(report) = blueprint_report
+                    .as_ref()
+                    .filter(|r| r.errors() > 0 && blueprint_followups < MAX_BLUEPRINT_FOLLOWUPS)
+                {
+                    blueprint_followups += 1;
+                    if !final_text.is_empty() {
+                        history.push(
+                            ChatMessage::assistant(final_text)
+                                .with_reasoning(Some(reasoning))
+                                .with_duration_ms(reasoning_ms),
+                        );
+                    }
+                    let mut nudge = crate::blueprint::nudge(report);
+                    if self.agent_mode() == crate::mode::AgentMode::Goal
+                        && self.ctx.goal.state() != crate::tools::goal::GoalState::Running
+                    {
+                        self.ctx.goal.reset();
+                        nudge.push_str("\n目标的完成宣告已撤回 — 修正后重新调用 `goal_complete`。");
+                    }
+                    history.push(ChatMessage::user_hidden(nudge));
+                    continue;
+                }
+
                 // `on_response` hooks — the last mutation point before the
                 // answer lands in history and on screen. Runs only on the
                 // finishing path: the nudge branches above pushed pre-hook
@@ -964,6 +1027,19 @@ impl Engine {
                 });
                 self.set_state(io, AgentState::Finished);
                 let _ = io.ui_tx.send(UiEvent::AssistantMessage(final_text));
+                if let Some(report) = blueprint_report {
+                    let text = report.render();
+                    history.push(if report.errors() > 0 {
+                        ChatMessage::notice_error(text.clone())
+                    } else {
+                        ChatMessage::notice(text.clone())
+                    });
+                    let _ = io.ui_tx.send(UiEvent::BlueprintReport {
+                        errors: report.errors(),
+                        warnings: report.issues.len() - report.errors(),
+                        text,
+                    });
+                }
                 // The plan card lands last — it IS the turn's deliverable and
                 // the composer's action strip keys off it being the last item.
                 if let Some(plan) = submitted_plan {
@@ -1124,6 +1200,24 @@ impl Engine {
                 // `WorkspaceMutation`, so the gate does not depend on
                 // `is_file_edit`'s name table learning about it.
                 let class = registry.spec(&call.name).map(|s| s.class);
+                if !blueprint_baseline_taken
+                    && matches!(
+                        class,
+                        Some(
+                            crate::tools::registry::ToolClass::Process
+                                | crate::tools::registry::ToolClass::Orchestration
+                        )
+                    )
+                {
+                    blueprint_baseline_taken = true;
+                    let root = self.ctx.workspace_root.to_path_buf();
+                    blueprint_baseline = tokio::task::spawn_blocking(move || {
+                        crate::blueprint::snapshot(&root)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                }
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
                 let diff_summary = args
                     .get("path")

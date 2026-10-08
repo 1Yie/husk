@@ -7,6 +7,7 @@ pub mod apply_patch;
 pub mod ask;
 pub mod assets;
 pub mod bash;
+pub mod blueprint;
 pub mod batch;
 pub mod computer;
 pub mod delegate;

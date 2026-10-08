@@ -8,6 +8,7 @@
 //! Stage 4 scope: `AgentState` machine + `SessionActor` + `channels` — the
 //! ReAct loop runs headless on a scripted provider (`cargo test -p agent-kernel`).
 
+pub mod blueprint;
 pub mod channels;
 pub mod commands;
 pub mod compaction;

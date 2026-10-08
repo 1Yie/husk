@@ -497,6 +497,7 @@ impl ToolRegistry {
         r.register(crate::tools::delegate::spec());
         r.register(crate::tools::ask::spec());
         r.register(crate::tools::batch::spec());
+        r.register(crate::tools::blueprint::spec());
         r
     }
 

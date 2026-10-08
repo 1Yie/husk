@@ -2,7 +2,7 @@
 // payload (live `PlanSubmitted` event or the persisted `NoticeKind::Plan`
 // row on replay). Always expanded: the plan IS the answer, not a footnote.
 import { memo } from "react";
-import { ClipboardList, CheckCircle2, AlertTriangle, FileCode2 } from "lucide-react";
+import { ClipboardList, CheckCircle2, AlertTriangle, FileCode2, Boxes } from "lucide-react";
 import type { PlanPayload } from "@/types";
 import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
 
@@ -42,9 +42,18 @@ export const PlanCard = memo(function PlanCard({ plan }: { plan: PlanPayload }) 
                     <MemoStreamdown text={s.detail} animating={false} />
                   </div>
                 )}
-                {s.files && s.files.length > 0 && (
+                {((s.nodes?.length ?? 0) > 0 || (s.files?.length ?? 0) > 0) && (
                   <div className="mt-0.5 flex flex-wrap gap-1">
-                    {s.files.map((f) => (
+                    {(s.nodes ?? []).map((n) => (
+                      <span
+                        key={`node:${n}`}
+                        className="inline-flex items-center gap-1 rounded bg-[color-mix(in_srgb,var(--husk-n300)_55%,transparent)] px-1.5 py-px text-[10px] font-medium text-neutral-700"
+                      >
+                        <Boxes className="h-2.5 w-2.5" />
+                        {n}
+                      </span>
+                    ))}
+                    {(s.files ?? []).map((f) => (
                       <span
                         key={f}
                         className="inline-flex items-center gap-1 rounded bg-[color-mix(in_srgb,var(--husk-n200)_55%,transparent)] px-1.5 py-px font-mono text-[10px] text-neutral-600"
@@ -59,6 +68,19 @@ export const PlanCard = memo(function PlanCard({ plan }: { plan: PlanPayload }) 
             </li>
           ))}
         </ol>
+      )}
+
+      {/* Blueprint changes — applied first when the plan executes. */}
+      {plan.architecture && (
+        <div className="border-t border-[color-mix(in_srgb,var(--husk-n300)_50%,transparent)] px-3 py-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-neutral-600">
+            <Boxes className="h-3 w-3" />
+            架构变更
+          </div>
+          <div className="select-text pl-4 text-[12px] leading-relaxed text-neutral-600">
+            <MemoStreamdown text={plan.architecture} animating={false} />
+          </div>
+        </div>
       )}
 
       {/* Verification + risks — two slim footer sections. */}
@@ -102,10 +124,16 @@ export const PlanCard = memo(function PlanCard({ plan }: { plan: PlanPayload }) 
 /** Serialize the structured plan back to markdown — the approve prompt and
  * the copy button both hand the executor this exact text. */
 export function planToMarkdown(plan: PlanPayload): string {
-  const lines: string[] = [`## 实施方案\n`, plan.summary, `\n### 步骤`];
+  const lines: string[] = [`## 实施方案\n`, plan.summary];
+  if (plan.architecture) {
+    // The executor applies node-file changes before touching code.
+    lines.push(`\n### 架构变更（先更新 .blueprint/，再改代码）`, plan.architecture);
+  }
+  lines.push(`\n### 步骤`);
   (plan.steps ?? []).forEach((s, i) => {
     lines.push(`${i + 1}. **${s.title}**`);
     if (s.detail) lines.push(`   ${s.detail}`);
+    if (s.nodes?.length) lines.push(`   节点：${s.nodes.join("、")}`);
     if (s.files?.length) lines.push(`   文件：${s.files.join("、")}`);
   });
   if (plan.verification?.length) {

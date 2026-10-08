@@ -609,6 +609,14 @@ export function applyEvent(
     }
     return { ...v, items };
   }
+  if ("BlueprintReport" in ev) {
+    // Same shape the persisted notice row replays as: errors draw as a
+    // `⚠` line, warnings-only as a plain system line.
+    closeOpenThinking(items);
+    const { errors, text } = ev.BlueprintReport;
+    items.push({ kind: "system", text: errors > 0 ? `⚠ ${text}` : text, standalone: !v.turnOpen, ts: Date.now() });
+    return { ...v, items };
+  }
   if ("QueuedPrompts" in ev) {
     // The kernel's parked list is the single source of truth — every
     // SetQueued write and each drain pop echoes the new list here.

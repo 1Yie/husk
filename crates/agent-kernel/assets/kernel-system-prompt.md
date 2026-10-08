@@ -52,6 +52,12 @@ what is missing.
 {{SKILLS_BLOCK}}
 <!-- /skills -->
 
+## Architecture Blueprint
+
+<!-- blueprint -->
+{{BLUEPRINT_BLOCK}}
+<!-- /blueprint -->
+
 ## Tool Execution Semantics
 
 Tools are classified by execution semantics, not merely by whether they modify files.

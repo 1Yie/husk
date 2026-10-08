@@ -302,6 +302,15 @@ pub enum UiEvent {
     /// and the composer can offer the approve/revise/discard strip off the
     /// last item.
     PlanSubmitted { plan: String },
+    /// The turn's writes broke `.blueprint/` rules or moved code without
+    /// its node file — emitted after the final `AssistantMessage`. `text` is
+    /// the rendered report (also persisted as a notice row, so the model
+    /// sees it next turn and a replay draws it as a system line).
+    BlueprintReport {
+        errors: usize,
+        warnings: usize,
+        text: String,
+    },
     /// A `Retry` command rewound the session to the last user prompt —
     /// the UI drops the retried turn's items before the fresh
     /// `UserPrompt` echo lands on the same stream.
