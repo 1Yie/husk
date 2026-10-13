@@ -38,52 +38,140 @@ const CONTEXT_TIMEOUT: Duration = Duration::from_secs(2);
 /// hook runs local code, so the gate is worth having).
 #[derive(Default)]
 pub struct TrustStore {
-    /// `<plugin_id>@<repo_path>` → trusted.
-    trusted: HashMap<String, bool>,
+    /// `<plugin_id>@<repo_path>` → the content hash that was reviewed. A grant
+    /// is only honoured while the plugin still hashes to this value.
+    trusted: HashMap<String, String>,
 }
 
 impl TrustStore {
+    /// `<id>@<canonical repo>`. The repo is canonicalized so every spelling of
+    /// one directory (trailing slash, `..`, symlink alias) keys the same grant.
+    /// A path that cannot be canonicalized keeps its spelling — a missing repo
+    /// simply has no grant.
     pub fn key(id: &str, repo: &Path) -> String {
-        format!("{}@{}", id, repo.display())
+        let canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+        format!("{}@{}", id, canon.display())
     }
 
     /// Grants recorded on disk. A missing or corrupt file is simply an empty
     /// store — reading consent is never a load-bearing parse.
+    ///
+    /// Two shapes are accepted. The current one is an object of key → hash.
+    /// The legacy one is a bare array of keys, written before grants were
+    /// bound to content; those map to an empty hash, which no real content
+    /// ever produces, so they grant nothing and the user re-confirms once.
     pub fn load(path: &Path) -> Self {
-        let keys: Vec<String> = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        Self {
-            trusted: keys.into_iter().map(|k| (k, true)).collect(),
-        }
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let trusted = if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&text) {
+            map
+        } else if let Ok(keys) = serde_json::from_str::<Vec<String>>(&text) {
+            keys.into_iter().map(|k| (k, String::new())).collect()
+        } else {
+            HashMap::new()
+        };
+        Self { trusted }
     }
 
     /// Persist the grants. Best-effort: a read-only config dir must not make
     /// plugin loading fail.
     pub fn save(&self, path: &Path) {
-        let mut keys: Vec<&String> = self.trusted.keys().collect();
-        keys.sort();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Ok(text) = serde_json::to_string_pretty(&keys) {
+        let sorted: std::collections::BTreeMap<&String, &String> = self.trusted.iter().collect();
+        if let Ok(text) = serde_json::to_string_pretty(&sorted) {
             let _ = std::fs::write(path, text);
         }
     }
 
-    pub fn is_trusted(&self, id: &str, repo: &Path) -> bool {
+    /// Grant trust for the manifest exactly as it is now.
+    pub fn trust_content(&mut self, id: &str, repo: &Path, manifest: &PluginManifest) {
+        self.trusted
+            .insert(Self::key(id, repo), content_hash(manifest));
+    }
+
+    /// Trusted only while the plugin still hashes to what was reviewed.
+    pub fn is_trusted_content(&self, id: &str, repo: &Path, manifest: &PluginManifest) -> bool {
         self.trusted
             .get(&Self::key(id, repo))
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|h| !h.is_empty() && *h == content_hash(manifest))
     }
-    pub fn trust(&mut self, id: &str, repo: &Path) {
-        self.trusted.insert(Self::key(id, repo), true);
-    }
+
     pub fn untrust(&mut self, id: &str, repo: &Path) {
         self.trusted.remove(&Self::key(id, repo));
     }
+
+    /// Whether a grant exists for this id and repo, whatever its content hash.
+    /// Lets the refusal say "changed since you trusted it" rather than the
+    /// first-time wording, which would read as a fresh install.
+    pub fn has_grant(&self, id: &str, repo: &Path) -> bool {
+        self.trusted
+            .get(&Self::key(id, repo))
+            .is_some_and(|h| !h.is_empty())
+    }
+}
+
+/// SHA-256 over what the plugin will execute: its manifest (the declared
+/// command, args, env, timeouts, permissions) plus the bytes of every hook
+/// script that lives inside the plugin directory. A `run.command` that resolves
+/// outside the plugin dir (a bare PATH name such as `python3`) cannot be
+/// covered by content, so it is left out and the UI says so.
+
+pub fn content_hash(manifest: &PluginManifest) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    // The fields that decide what runs. `serde_json::Value` sorts object keys,
+    // so the encoding does not depend on the on-disk key order.
+    let hooks: Vec<serde_json::Value> = manifest
+        .capabilities
+        .hooks
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "event": d.event,
+                "filter": d.filter,
+                "run": d.run.as_ref().map(|r| serde_json::json!({
+                    "command": r.command, "args": r.args, "env": r.env,
+                })),
+                "timeout_ms": d.timeout_ms(),
+            })
+        })
+        .collect();
+    let canon = serde_json::json!({
+        "entry": manifest.entry,
+        "kind": manifest.kind.map(|k| format!("{k:?}")),
+        "sandboxed": manifest.sandboxed,
+        "permissions": manifest.permissions.as_ref().map(|p| serde_json::json!({
+            "network": p.network, "filesystem": p.filesystem,
+        })),
+        "hooks": hooks,
+    });
+    h.update(canon.to_string().as_bytes());
+    for hook in &manifest.capabilities.hooks {
+        let Some(run) = &hook.run else { continue };
+        let cmd = Path::new(&run.command);
+        let rel = if cmd.is_absolute() {
+            continue;
+        } else {
+            cmd.strip_prefix("./").unwrap_or(cmd)
+        };
+        let path = manifest.dir.join(rel);
+        // Only files that really live inside the plugin directory count.
+        let inside = path
+            .canonicalize()
+            .ok()
+            .zip(manifest.dir.canonicalize().ok())
+            .is_some_and(|(p, d)| p.starts_with(&d));
+        if inside {
+            if let Ok(bytes) = std::fs::read(&path) {
+                h.update(b"\0script:");
+                h.update(run.command.as_bytes());
+                h.update(b"\0");
+                h.update(&bytes);
+            }
+        }
+    }
+    format!("{:x}", h.finalize())
 }
 
 /// Where trust grants live — `<config>/husk/plugin-trust.json`.
@@ -354,11 +442,16 @@ impl PluginManager {
         // Repo-local plugins need explicit trust before they're live.
         if !manifest.dir.as_os_str().is_empty()
             && manifest.dir.starts_with(repo.join(".husk"))
-            && !self.trust.is_trusted(&id, repo)
+            && !self.trust.is_trusted_content(&id, repo, &manifest)
         {
-            return Err(format!(
-                "plugin `{id}` is repo-local — trust consent required before load"
-            ));
+            return Err(if self.trust.has_grant(&id, repo) {
+                format!(
+                    "plugin `{id}` is repo-local and its code changed since you trusted \
+                     it — review it again to re-enable"
+                )
+            } else {
+                format!("plugin `{id}` is repo-local — trust consent required before load")
+            });
         }
 
         // Kernel-side capabilities are manifest-level: hooks intercept in the
@@ -373,6 +466,13 @@ impl PluginManager {
         // No `entry` = pure plugin — nothing to connect, done.
         if manifest.entry.is_none() {
             info!(plugin = %id, "plugin registered (no entry — host-side only)");
+            return Ok(());
+        }
+
+        // A plugin the user switched off must not run: no subprocess, no
+        // router entries. `enable` followed by a reload registers it again.
+        if self.disabled.is_disabled(&id) {
+            info!(plugin = %id, "plugin registered but disabled — runtime not started");
             return Ok(());
         }
 
@@ -430,6 +530,11 @@ impl PluginManager {
             .or_else(|| self.resolve_bare(name))
             .or_else(|| self.resolve_legacy(name))
             .ok_or_else(|| self.tool_dispatch_error(name))?;
+        // Defense in depth: even if a stale router entry survives (e.g. a
+        // disable racing a registration), a disabled plugin never executes.
+        if !self.enabled.get(plugin.id()).copied().unwrap_or(false) {
+            return Err(format!("plugin `{}` is disabled", plugin.id()));
+        }
         // The tool name the MCP server knows — the advertised name was passed
         // through the wire charset, which is lossy.
         let real = self.real_tool_names.get(&real).cloned().unwrap_or(real);
@@ -898,6 +1003,42 @@ mod tests {
             .is_err());
     }
 
+    /// P4: a stale router entry for a disabled plugin must not execute.
+    #[tokio::test]
+    async fn dispatch_refuses_a_disabled_plugin() {
+        struct Fake;
+        #[async_trait::async_trait]
+        impl Plugin for Fake {
+            fn id(&self) -> &str {
+                "off"
+            }
+            fn export_tools(&self) -> Vec<serde_json::Value> {
+                vec![serde_json::json!({"type":"function","function":{"name":"echo"}})]
+            }
+            async fn call_tool(
+                &self,
+                _name: &str,
+                _args: serde_json::Value,
+            ) -> anyhow::Result<String> {
+                panic!("a disabled plugin must never be called");
+            }
+        }
+        let mut mgr = super::PluginManager::new();
+        let plugin: Arc<dyn Plugin> = Arc::new(Fake);
+        let adv = wire_tool_name("off", "echo");
+        mgr.real_tool_names.insert(adv.clone(), "echo".into());
+        mgr.tool_router.insert(adv.clone(), plugin.clone());
+        mgr.plugins.insert("off".into(), plugin);
+        mgr.enabled.insert("off".into(), false);
+        for name in [adv.as_str(), "echo"] {
+            let err = mgr
+                .dispatch_tool_call(name, serde_json::json!({}))
+                .await
+                .unwrap_err();
+            assert!(err.contains("disabled"), "{err}");
+        }
+    }
+
     /// The hook chain is assembled from enabled plugins, in registration
     /// order — not `HashMap` order, which would make two hooks that both
     /// rewrite the same tool apply unpredictably.
@@ -1053,7 +1194,7 @@ mod tests {
 
         // With consent the gate passes (the kind check rejects WASM next,
         // which is exactly the proof that trust was satisfied).
-        mgr.trust.trust("local", &repo);
+        mgr.trust.trust_content("local", &repo, &mk());
         let err = mgr.register_plugin(mk(), &repo).await.unwrap_err();
         assert!(
             err.to_lowercase().contains("wasm"),
@@ -1078,33 +1219,43 @@ mod tests {
     /// Consent has to survive a restart, or every boot re-refuses.
     #[test]
     fn trust_store_round_trips_through_disk() {
+        use crate::PluginManifest;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/plugin-trust.json");
         let repo = Path::new("/ws/repo");
+        let manifest = |id: &str| -> PluginManifest {
+            let mut m: PluginManifest = serde_json::from_value(serde_json::json!({
+                "id": id, "name": id, "entry": { "command": "x" },
+            }))
+            .unwrap();
+            m.dir = PathBuf::from("/nonexistent");
+            m
+        };
 
         let mut store = super::TrustStore::default();
-        store.trust("a", repo);
-        store.trust("b", repo);
+        store.trust_content("a", repo, &manifest("a"));
+        store.trust_content("b", repo, &manifest("b"));
         store.save(&path);
 
         let loaded = super::TrustStore::load(&path);
-        assert!(loaded.is_trusted("a", repo));
-        assert!(loaded.is_trusted("b", repo));
+        assert!(loaded.is_trusted_content("a", repo, &manifest("a")));
+        assert!(loaded.is_trusted_content("b", repo, &manifest("b")));
         // Scope is path-keyed: another checkout of the same plugin id is a
         // different grant.
-        assert!(!loaded.is_trusted("a", Path::new("/other/repo")));
+        assert!(!loaded.is_trusted_content("a", Path::new("/other/repo"), &manifest("a")));
 
         let mut store = loaded;
         store.untrust("a", repo);
         store.save(&path);
         let loaded = super::TrustStore::load(&path);
-        assert!(!loaded.is_trusted("a", repo));
-        assert!(loaded.is_trusted("b", repo));
+        assert!(!loaded.is_trusted_content("a", repo, &manifest("a")));
+        assert!(loaded.is_trusted_content("b", repo, &manifest("b")));
 
         // A missing file is an empty store, not an error.
-        assert!(!super::TrustStore::load(&dir.path().join("nope.json")).is_trusted("a", repo));
+        assert!(!super::TrustStore::load(&dir.path().join("nope.json"))
+            .is_trusted_content("a", repo, &manifest("a")));
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(!super::TrustStore::load(&path).is_trusted("b", repo));
+        assert!(!super::TrustStore::load(&path).is_trusted_content("b", repo, &manifest("b")));
     }
 
     /// End-to-end on the real manager (not hand-populated maps): registration
@@ -1186,5 +1337,190 @@ mod tests {
             .dispatch_tool_call("ui_skills__list_skills", serde_json::json!({}))
             .await
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod trust_content_tests {
+    use super::*;
+
+    /// A repo-local plugin with one hook whose script lives in its own dir.
+    fn repo_plugin(repo: &Path, script_body: &str) -> PluginManifest {
+        let dir = repo.join(".husk/plugins/guard");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("h.sh"), script_body).unwrap();
+        let mut m: PluginManifest = serde_json::from_value(serde_json::json!({
+            "id": "guard", "name": "guard",
+            "capabilities": { "hooks": [{ "event": "on_user_input", "run": { "command": "./h.sh" } }] },
+        }))
+        .unwrap();
+        m.dir = dir;
+        m
+    }
+
+    /// Trust is granted for the content that was reviewed. Swapping the script
+    /// afterwards must withdraw it — a `git pull` cannot silently change code
+    /// the user already approved.
+    #[tokio::test]
+    async fn changed_script_loses_trust() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let mut mgr = PluginManager::new();
+        mgr.trust.trust_content("guard", &repo, &repo_plugin(&repo, "echo reviewed"));
+        assert!(mgr.trust.is_trusted_content("guard", &repo, &repo_plugin(&repo, "echo reviewed")));
+
+        // Same manifest, different script: no longer the reviewed content.
+        assert!(!mgr.trust.is_trusted_content(
+            "guard",
+            &repo,
+            &repo_plugin(&repo, "echo swapped"),
+        ));
+    }
+
+    /// Unchanged content keeps its trust across a reload.
+    #[tokio::test]
+    async fn unchanged_content_stays_trusted() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let m = repo_plugin(&repo, "echo reviewed");
+
+        let mut store = TrustStore::default();
+        store.trust_content("guard", &repo, &m);
+        let path = t.path().join("trust.json");
+        store.save(&path);
+
+        let loaded = TrustStore::load(&path);
+        assert!(loaded.is_trusted_content("guard", &repo, &m));
+    }
+
+    /// Grants written before content hashes existed are a bare list of keys.
+    /// They must not count as trust for any content — the user re-confirms once.
+    #[test]
+    fn legacy_key_list_grants_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let path = t.path().join("trust.json");
+        std::fs::write(&path, format!(r#"["guard@{}"]"#, repo.display())).unwrap();
+
+        let loaded = TrustStore::load(&path);
+        let m = repo_plugin(&repo, "echo whatever");
+        assert!(!loaded.is_trusted_content("guard", &repo, &m));
+    }
+
+    /// The hash covers what the manifest actually runs, so it changes when the
+    /// declared command or args change, not only when the script bytes do.
+    #[test]
+    fn manifest_edits_change_the_hash() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let a = repo_plugin(&repo, "echo same");
+        let mut b = repo_plugin(&repo, "echo same");
+        b.capabilities.hooks[0].timeout_ms = Some(9_000);
+        assert_ne!(
+            content_hash(&a),
+            content_hash(&b),
+            "a manifest change must invalidate trust"
+        );
+    }
+}
+
+/// The manifest a repo-local plugin with `id` would load right now — read
+/// from disk the way discovery reads it. Granting trust and checking it both
+/// go through here, so they hash the same bytes the loader will run.
+pub fn current_manifest(id: &str, repo: &Path) -> Option<PluginManifest> {
+    discover(repo).into_iter().find_map(|mpath| {
+        let text = std::fs::read_to_string(&mpath).ok()?;
+        let mut m: PluginManifest = serde_json::from_str(&text).ok()?;
+        if m.id != id {
+            return None;
+        }
+        m.dir = mpath.parent().unwrap_or(Path::new("")).to_path_buf();
+        Some(m)
+    })
+}
+
+#[cfg(test)]
+mod changed_content_message_tests {
+    use super::*;
+
+    /// A grant that no longer matches must read as "changed", not as a first
+    /// install — otherwise the user has no reason to look at what moved.
+    #[tokio::test]
+    async fn changed_plugin_says_it_changed() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path().join("repo");
+        let dir = repo.join(".husk/plugins/guard");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("h.sh"), "echo new").unwrap();
+        // A pure hook plugin (no `entry`): the trust gate is the only thing
+        // that can refuse it, so the assertion really tests the gate.
+        let hook_manifest = || -> PluginManifest {
+            let mut m: PluginManifest = serde_json::from_value(serde_json::json!({
+                "id": "guard", "name": "guard",
+                "capabilities": { "hooks": [{ "event": "on_user_input", "run": { "command": "./h.sh" } }] },
+            }))
+            .unwrap();
+            m.dir = dir.clone();
+            m
+        };
+        let m = hook_manifest();
+
+        // A grant exists, but for different content.
+        let mut mgr = PluginManager::new();
+        mgr.trust.trust_content("guard", &repo, &m);
+        std::fs::write(dir.join("h.sh"), "echo swapped").unwrap();
+        let err = mgr.register_plugin(m, &repo).await.unwrap_err();
+        assert!(err.contains("changed since you trusted"), "{err}");
+
+        // No grant at all keeps the first-time wording.
+        let err = PluginManager::new()
+            .register_plugin(hook_manifest(), &repo)
+            .await
+            .unwrap_err();
+        assert!(err.contains("trust consent required"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod trust_key_spelling_tests {
+    use super::*;
+
+    /// One directory spelled several ways is one grant. A trailing slash, a
+    /// `..` detour and a symlink alias used to read as "not trusted", which
+    /// asked the user to approve the same checkout again.
+    #[test]
+    fn grant_survives_alternate_spellings_of_the_same_repo() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let alias = t.path().join("alias");
+        std::os::unix::fs::symlink(&repo, &alias).unwrap();
+
+        let mut m: PluginManifest = serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "p", "entry": { "command": "x" },
+        }))
+        .unwrap();
+        m.dir = repo.clone();
+
+        let mut store = TrustStore::default();
+        store.trust_content("p", &repo, &m);
+
+        let spellings = [
+            repo.clone(),
+            PathBuf::from(format!("{}/", repo.display())),
+            t.path().join("repo/../repo"),
+            alias,
+        ];
+        for s in spellings {
+            assert!(
+                store.is_trusted_content("p", &s, &m),
+                "same directory not trusted as {s:?}"
+            );
+        }
     }
 }

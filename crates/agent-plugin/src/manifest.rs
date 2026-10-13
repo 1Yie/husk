@@ -441,3 +441,22 @@ mod tests {
             .contains("entry` or a declared capability"));
     }
 }
+
+#[cfg(test)]
+mod declared_sandbox_tests {
+    use super::*;
+
+    /// The shape `add_mcp` writes for a local stdio server must load as a
+    /// declared, sandboxed plugin. Without `permissions` the child runs naked.
+    #[test]
+    fn ui_added_stdio_manifest_loads_sandboxed() {
+        let m: PluginManifest = serde_json::from_value(serde_json::json!({
+            "id": "fs", "name": "fs", "kind": "mcp",
+            "entry": { "command": "npx", "args": ["-y", "server"] },
+            "permissions": {},
+        }))
+        .unwrap();
+        assert!(m.wants_sandbox());
+        assert!(m.permissions.is_some());
+    }
+}
