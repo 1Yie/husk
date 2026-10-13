@@ -33,6 +33,12 @@ fn new_facts_index() -> FactsIndex {
 /// it — the drift bound for facts written by a different process.
 const INDEX_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Minimum cosine similarity for a fact to enter the prompt block. Measured
+/// on the hash embedding: related questions scored 0.30–0.45, unrelated ones
+/// 0.00, and a single stray shared bigram reached ~0.15. 0.2 sits between the
+/// noise and the weakest real match.
+const RELEVANCE_FLOOR: f32 = 0.2;
+
 /// facts table: `id -> Fact` (JSON).
 const FACTS: TableDefinition<u64, &[u8]> = TableDefinition::new("facts");
 /// episodes table: `id -> Episode` (JSON).
@@ -56,7 +62,7 @@ fn db_cache() -> &'static Mutex<HashMap<PathBuf, Arc<Database>>> {
 /// Current schema version — bump when a table changes; the open path runs
 /// additive-or-transform migrations (never destructive) and backs up the
 /// file before a failed migrate rather than crashing.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Semantic memory fact — distilled convention/env/architecture note.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -172,8 +178,57 @@ impl MemoryStore {
             embed_dim: 256,
             index: RwLock::new((new_facts_index(), std::time::Instant::now())),
         };
+        store.migrate_embeddings()?;
         store.rebuild_index();
         Ok(store)
+    }
+
+    /// Schema 2 changed how text becomes a vector (CJK bigrams). Vectors stored
+    /// under schema 1 live in the old space and would score against new queries
+    /// as noise, so every fact is re-embedded from its own text. IDs, text and
+    /// confidence stay put, so dedupe and references are unaffected. One write
+    /// transaction: either every vector moves to the new space or none does.
+    fn migrate_embeddings(&self) -> Result<(), String> {
+        let stored: u32 = {
+            let r = self.db.begin_read().map_err(|e| e.to_string())?;
+            let m = r.open_table(META).map_err(|e| e.to_string())?;
+            m.get("schema_version")
+                .map_err(|e| e.to_string())?
+                .and_then(|v| String::from_utf8_lossy(v.value()).parse().ok())
+                .unwrap_or(1)
+        };
+        if stored >= SCHEMA_VERSION {
+            return Ok(());
+        }
+        let w = self.db.begin_write().map_err(|e| e.to_string())?;
+        {
+            let mut facts = w.open_table(FACTS).map_err(|e| e.to_string())?;
+            let ids: Vec<u64> = facts
+                .iter()
+                .map_err(|e| e.to_string())?
+                .filter_map(|kv| kv.ok())
+                .map(|(k, _)| k.value())
+                .collect();
+            for id in ids {
+                let Some(raw) = facts.get(id).map_err(|e| e.to_string())?.map(|v| v.value().to_vec()) else {
+                    continue;
+                };
+                let Ok(mut f) = serde_json::from_slice::<Fact>(&raw) else {
+                    continue;
+                };
+                f.embedding = self.embed(&f.text);
+                let bytes = serde_json::to_vec(&f).map_err(|e| e.to_string())?;
+                facts
+                    .insert(id, bytes.as_slice())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        {
+            let mut meta = w.open_table(META).map_err(|e| e.to_string())?;
+            meta.insert("schema_version", SCHEMA_VERSION.to_string().as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        w.commit().map_err(|e| e.to_string())
     }
 
     /// `hash(canonical_root)` — stable per-repo partition key.
@@ -296,6 +351,17 @@ impl MemoryStore {
     /// and a rebuild runs when the index is older than INDEX_TTL. An empty
     /// index falls back to the linear scan (first-run, post-clear).
     pub fn recall_facts(&self, query: &str, k: usize) -> Result<Vec<Fact>, String> {
+        Ok(self
+            .recall_scored(query, k)?
+            .into_iter()
+            .map(|(_, f)| f)
+            .collect())
+    }
+
+    /// Top-`k` facts with their cosine similarity to `query`, best first.
+    /// Callers that gate on relevance (the prompt block) need the score; the
+    /// rest use [`Self::recall_facts`].
+    pub fn recall_scored(&self, query: &str, k: usize) -> Result<Vec<(f32, Fact)>, String> {
         let qemb = self.embed(query);
         self.index_fresh();
         let neighbours: Vec<(u64, f32)> = self
@@ -324,7 +390,7 @@ impl MemoryStore {
             }
             if !scored.is_empty() {
                 scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                return Ok(scored.into_iter().take(k).map(|(_, f)| f).collect());
+                return Ok(scored.into_iter().take(k).collect());
             }
         }
         // Fallback — empty index (fresh db) or every candidate invalidated.
@@ -335,7 +401,7 @@ impl MemoryStore {
             .map(|f| (cosine(&f.embedding, &qemb), f))
             .collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(scored.into_iter().take(k).map(|(_, f)| f).collect())
+        Ok(scored.into_iter().take(k).collect())
     }
 
     fn all_facts(&self) -> Result<Vec<Fact>, String> {
@@ -553,8 +619,8 @@ impl MemoryStore {
     /// identical so the swap is a backend change, not an API change.
     fn embed(&self, text: &str) -> Vec<f32> {
         let mut v = vec![0f32; self.embed_dim];
-        for tok in text.split_whitespace() {
-            let h = xxhash_rust::xxh3::xxh3_64(tok.as_bytes());
+        for feat in features(text) {
+            let h = xxhash_rust::xxh3::xxh3_64(feat.as_bytes());
             let idx = (h as usize) % self.embed_dim;
             v[idx] += 1.0;
         }
@@ -571,7 +637,14 @@ impl MemoryStore {
     /// capped 2 KB (capability-roadmap.md §Read path).
     pub fn memory_block(&self, prompt: &str) -> Result<String, String> {
         let mut out = String::new();
-        let facts = self.recall_facts(prompt, 8)?;
+        // Only facts that actually relate to the prompt. Without a floor the
+        // block always carried the 8 nearest facts, even at similarity 0.
+        let facts: Vec<Fact> = self
+            .recall_scored(prompt, 8)?
+            .into_iter()
+            .filter(|(score, _)| *score >= RELEVANCE_FLOOR)
+            .map(|(_, f)| f)
+            .collect();
         if !facts.is_empty() {
             out.push_str("── relevant facts ──\n");
             for f in &facts {
@@ -603,6 +676,49 @@ impl MemoryStore {
         }
         Ok(out)
     }
+}
+
+/// Hashing features for one text. ASCII runs split on whitespace, as before.
+/// CJK has no spaces, so each run of CJK characters yields its character
+/// bigrams (a lone character stands alone): "安装依赖" and "来安装依赖" then
+/// share most features, and unrelated questions share almost none.
+fn features(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in text.split_whitespace() {
+        let chars: Vec<char> = word.chars().collect();
+        let mut ascii = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if is_cjk(chars[i]) {
+                if !ascii.is_empty() {
+                    out.push(std::mem::take(&mut ascii));
+                }
+                if i + 1 < chars.len() && is_cjk(chars[i + 1]) {
+                    out.push(chars[i..i + 2].iter().collect());
+                } else {
+                    out.push(chars[i].to_string());
+                }
+            } else {
+                ascii.push(chars[i]);
+            }
+            i += 1;
+        }
+        if !ascii.is_empty() {
+            out.push(ascii);
+        }
+    }
+    out
+}
+
+/// CJK ideographs, kana and hangul — the scripts written without spaces.
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{3040}'..='\u{30FF}'   // hiragana, katakana
+        | '\u{3400}'..='\u{4DBF}' // CJK ext A
+        | '\u{4E00}'..='\u{9FFF}' // CJK unified
+        | '\u{AC00}'..='\u{D7AF}' // hangul
+        | '\u{F900}'..='\u{FAFF}' // CJK compatibility
+    )
 }
 
 /// `hash(canonical_root)` — stable per-workspace partition.
@@ -946,5 +1062,117 @@ mod tests {
         let eps = s.recent_episodes(5).unwrap();
         assert_eq!(eps.len(), 1);
         assert_eq!(eps[0].task, "real");
+    }
+
+    /// CJK text has no spaces, so a whitespace tokenizer makes each sentence
+    /// one token. A near-duplicate Chinese fact must still merge.
+    #[test]
+    fn chinese_near_duplicate_facts_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6).unwrap();
+        s.upsert_fact("项目使用 pnpm 而不是 npm 来安装依赖", 0.6).unwrap();
+        assert_eq!(s.list_facts(20).unwrap().len(), 1);
+    }
+
+    /// Different questions that share wording with different facts must
+    /// surface different top hits. Before the fix every Chinese query returned
+    /// the same first fact, because the vectors were near-orthogonal and
+    /// ranking fell back to insertion order.
+    ///
+    /// This is lexical overlap, not semantics: "提交规范" does not reach
+    /// "约定式提交" (one shared bigram, no shared meaning). Semantic recall
+    /// needs a real embedding model, which is out of scope here.
+    #[test]
+    fn chinese_recall_follows_shared_wording() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6).unwrap();
+        s.upsert_fact("测试命令是 cargo test --workspace", 0.6).unwrap();
+
+        let install = s.recall_facts("怎么安装依赖", 1).unwrap();
+        let test = s.recall_facts("测试命令怎么跑", 1).unwrap();
+        assert!(install[0].text.contains("安装依赖"), "{:?}", install[0].text);
+        assert!(test[0].text.contains("测试命令"), "{:?}", test[0].text);
+    }
+
+    /// A schema-1 database holds vectors from the old whitespace-only embed.
+    /// Reopening must re-embed every fact in place: same ids, same text, and
+    /// a vector that matches what the current `embed` produces. The version
+    /// stamp moves to the current schema so the pass runs once.
+    #[test]
+    fn reopen_migrates_schema1_vectors_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        let db_key = {
+            let s = MemoryStore::open(&path, dir.path()).unwrap();
+            s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6).unwrap();
+            let f = s.list_facts(10).unwrap().remove(0);
+            // Simulate a schema-1 file: a stale vector and the old stamp.
+            let stale = vec![0.0f32; 256];
+            let w = s.db.begin_write().unwrap();
+            {
+                let mut t = w.open_table(FACTS).unwrap();
+                let bytes = serde_json::to_vec(&Fact { embedding: stale, ..f.clone() }).unwrap();
+                t.insert(f.id, bytes.as_slice()).unwrap();
+            }
+            {
+                let mut m = w.open_table(META).unwrap();
+                m.insert("schema_version", b"1".as_slice()).unwrap();
+            }
+            w.commit().unwrap();
+            f.id
+        };
+
+        let s = MemoryStore::open(&path, dir.path()).unwrap();
+        let f = s
+            .list_facts(10)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.id == db_key)
+            .expect("fact survives migration");
+        assert_eq!(f.text, "项目使用 pnpm 而不是 npm 安装依赖");
+        assert_eq!(f.embedding, s.embed(&f.text), "vector re-embedded");
+        assert!(f.embedding.iter().any(|x| *x != 0.0), "not left stale");
+        let r = s.db.begin_read().unwrap();
+        let v = r.open_table(META).unwrap().get("schema_version").unwrap().unwrap();
+        assert_eq!(v.value(), SCHEMA_VERSION.to_string().as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod relevance_tests {
+    use super::*;
+
+    fn store(dir: &Path) -> MemoryStore {
+        MemoryStore::open(&dir.join("m.db"), dir).unwrap()
+    }
+
+    /// A question with no overlap with anything stored must not pull facts
+    /// into the prompt. Before the floor, the block always carried the top 8
+    /// neighbours even at similarity 0.
+    #[test]
+    fn unrelated_query_injects_no_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        for i in 0..4 {
+            s.upsert_fact(format!("unrelated fact number {i} about apples"), 0.6)
+                .unwrap();
+        }
+        let block = s.memory_block("completely different topic zebra").unwrap();
+        assert!(
+            !block.contains("relevant facts"),
+            "unrelated question leaked facts: {block:?}"
+        );
+    }
+
+    /// A question that does share wording with a stored fact still gets it.
+    #[test]
+    fn related_query_still_injects_the_fact() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6).unwrap();
+        let block = s.memory_block("怎么安装依赖").unwrap();
+        assert!(block.contains("pnpm"), "related fact dropped: {block:?}");
     }
 }

@@ -22,6 +22,13 @@
 //!
 //! Markdown files without a frontmatter block (a `README.md` in the directory)
 //! are prose, not nodes, and are skipped.
+//!
+//! Precision limits of the derived graph: source imports are read line by line
+//! rather than parsed, so `use super::`, `mod` declarations and macro-generated
+//! references are invisible; cross-package edges come only from manifests, so a
+//! `forbidden_deps` entry naming a node applies to the node's own manifests and
+//! imports. A manifest that cannot be read or parsed is reported as a warning,
+//! and its dependencies go unchecked until it is fixed.
 
 pub mod imports;
 pub mod manifest;
@@ -150,6 +157,10 @@ pub struct Graph {
     pub requires: BTreeMap<String, BTreeSet<String>>,
     /// node → other nodes it depends on (requires ∩ their provides).
     pub edges: BTreeMap<String, BTreeSet<String>>,
+    /// Owned manifests that could not be read — their deps are unknown.
+    pub unreadable: Vec<String>,
+    /// Owned manifests that failed to parse — their deps are unknown.
+    pub unparsed: Vec<String>,
 }
 
 impl Graph {
@@ -212,10 +223,14 @@ impl Blueprint {
         let mut owners = Vec::new();
         let mut load_errors = Vec::new();
         for path in files {
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             let rel = rel_str(root, &path);
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) => {
+                    load_errors.push((rel, format!("cannot read node file: {e}")));
+                    continue;
+                }
+            };
             let Some((front, body)) = split_frontmatter(&text) else {
                 if looks_like_node(&path, &text) {
                     load_errors.push((
@@ -314,6 +329,12 @@ impl Blueprint {
         WorkspaceScanner::build_file_index(&self.root, 0).unwrap_or_default()
     }
 
+    /// Whether the file index hit its cap — then every file-based check is
+    /// partial, and the report says so.
+    fn index_truncated(files: &[String]) -> bool {
+        files.len() >= crate::workspace::MAX_INDEX_ENTRIES
+    }
+
     /// Derive the dependency graph: package manifests (attributed to the
     /// node(s) owning them) plus source-level imports between nodes.
     pub fn graph(&self) -> Graph {
@@ -333,9 +354,11 @@ impl Blueprint {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(self.root.join(rel)) else {
+                g.unreadable.push(rel.clone());
                 continue;
             };
             let Some(m) = manifest::parse(Path::new(fname), &text) else {
+                g.unparsed.push(rel.clone());
                 continue;
             };
             if fname == "go.mod" {
@@ -492,6 +515,16 @@ impl Blueprint {
         let files = self.files();
         let graph = self.graph_from(&files);
         let mut r = self.check_rules(&graph);
+        if Self::index_truncated(&files) {
+            r.push(
+                Severity::Warning,
+                None,
+                format!(
+                    "workspace index hit its {} entry cap — files past it are not checked",
+                    crate::workspace::MAX_INDEX_ENTRIES
+                ),
+            );
+        }
         let unowned: Vec<&String> = files
             .iter()
             .filter(|f| !exempt(f) && self.owners_of(f).is_empty())
@@ -648,6 +681,20 @@ impl Blueprint {
         let mut r = Report::default();
         for (file, err) in &self.load_errors {
             r.push(Severity::Error, None, format!("{file}: {err}"));
+        }
+        for file in &graph.unreadable {
+            r.push(
+                Severity::Warning,
+                None,
+                format!("`{file}` could not be read — its dependencies are not checked"),
+            );
+        }
+        for file in &graph.unparsed {
+            r.push(
+                Severity::Warning,
+                None,
+                format!("`{file}` does not parse — its dependencies are not checked"),
+            );
         }
         for n in &self.nodes {
             if n.owns.is_empty() {
@@ -954,6 +1001,36 @@ mod tests {
         );
         assert!(r.errors() >= 2);
         assert_eq!(r.issues[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn unparsed_manifest_is_a_warning_not_a_silent_skip() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        write(
+            r,
+            ".blueprint/ui.md",
+            "+++\nowns = [\"ui/**\"]\nforbidden_deps = [\"reqwest\"]\n+++\nUi.\n",
+        );
+        write(r, "ui/Cargo.toml", "[package\nname = \"ui\"\n");
+        let text = Blueprint::load(r).unwrap().check().render();
+        assert!(text.contains("`ui/Cargo.toml` does not parse"), "{text}");
+    }
+
+    #[test]
+    fn unreadable_node_file_is_a_load_error() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        write(
+            r,
+            ".blueprint/ok.md",
+            "+++\nowns = [\"src/**\"]\n+++\nOk.\n",
+        );
+        // Invalid UTF-8 makes `read_to_string` fail; it used to vanish silently.
+        std::fs::write(r.join(".blueprint/bin.md"), [0xff, 0xfe, 0x00]).unwrap();
+        let text = Blueprint::load(r).unwrap().check().render();
+        assert!(text.contains(".blueprint/bin.md"), "{text}");
+        assert!(text.contains("cannot read node file"), "{text}");
     }
 
     #[test]

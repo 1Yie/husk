@@ -262,10 +262,13 @@ fn one_line(text: &str, cap: usize) -> String {
     line[..end].to_string()
 }
 
-/// Never distill secrets — the same denylist patterns as env sanitization.
-fn looks_secret(text: &str) -> bool {
+/// Never distill or remember secrets. Two checks, because either alone misses
+/// real cases: the env-var name denylist catches `OPENAI_API_KEY=…`, and the
+/// value-shape check catches a bare `sk-…` token or `password: …` pasted into
+/// a sentence. Ordinary preferences pass both.
+pub fn looks_secret(text: &str) -> bool {
     let t = text.to_uppercase();
-    [
+    let by_name = [
         "_KEY",
         "_TOKEN",
         "_SECRET",
@@ -275,7 +278,36 @@ fn looks_secret(text: &str) -> bool {
         "GITHUB_",
     ]
     .iter()
-    .any(|p| t.contains(p))
+    .any(|p| t.contains(p));
+    by_name || has_credential_shape(text)
+}
+
+/// Known credential prefixes, and a secret keyword followed by `:` or `=`
+/// and a value. The keyword must be followed by an assignment, so a sentence
+/// that merely mentions a password is not flagged.
+fn has_credential_shape(text: &str) -> bool {
+    const PREFIXES: [&str; 6] = ["sk-", "ghp_", "github_pat_", "AKIA", "xox", "AIza"];
+    for word in text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
+        if PREFIXES.iter().any(|p| word.starts_with(p)) && word.len() >= 16 {
+            return true;
+        }
+    }
+    let lower = text.to_lowercase();
+    for kw in ["password", "passwd", "token", "secret", "api key", "api_key", "apikey"] {
+        let mut from = 0;
+        while let Some(pos) = lower[from..].find(kw) {
+            let after = &lower[from + pos + kw.len()..];
+            let after = after.trim_start();
+            if let Some(rest) = after.strip_prefix(':').or_else(|| after.strip_prefix('=')) {
+                let value = rest.trim_start();
+                if value.chars().take_while(|c| !c.is_whitespace()).count() >= 4 {
+                    return true;
+                }
+            }
+            from += pos + kw.len();
+        }
+    }
+    false
 }
 
 fn now() -> u64 {
@@ -440,5 +472,46 @@ mod tests {
         assert_eq!(persona_key(" Prefers Chinese "), "Prefers_Chinese");
         assert_eq!(persona_key("a".repeat(60).as_str()), "a".repeat(40));
         assert_eq!(persona_key("not:allowed chars!"), "not:allowed_chars_");
+    }
+
+    /// Real credential shapes must be refused — the old name-only denylist let
+    /// every one of these through.
+    #[test]
+    fn looks_secret_catches_credential_values() {
+        for v in [
+            "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "github_pat_11ABCDEFG0123456789_abcdefghijklmnop",
+            "AKIAIOSFODNN7EXAMPLE",
+            "xoxb-1234-5678-abcdefghijkl",
+            "password: hunter2",
+            "my token = xyz123",
+            "api_key=abc123def456",
+        ] {
+            assert!(looks_secret(v), "should refuse {v:?}");
+        }
+    }
+
+    /// Ordinary preferences and project facts must still be kept — a filter
+    /// that refuses everything would silently empty the memory.
+    #[test]
+    fn looks_secret_keeps_ordinary_preferences() {
+        for v in [
+            "使用中文回答",
+            "测试命令是 cargo test --workspace",
+            "先跑 fmt 再 test",
+            "project uses pnpm instead of npm",
+            "commit messages follow conventional commits",
+        ] {
+            assert!(!looks_secret(v), "should keep {v:?}");
+        }
+    }
+
+    /// Multi-byte text around a keyword must not panic on a byte-offset slice.
+    #[test]
+    fn looks_secret_is_safe_on_multibyte_text() {
+        assert!(!looks_secret("请记住：我的密码管理器是 1Password，不要存明文"));
+        assert!(looks_secret("密码是 password: hunter22 请记住"));
+        assert!(!looks_secret("İİİ token 使用说明"));
     }
 }
