@@ -69,7 +69,9 @@ Husk 是一个在本机运行的编码 Agent。它能读代码、改代码、跑
 ### 上下文与持久化
 
 - 上下文用到约 80% 时自动压缩，前面的内容会被压成一条 `NOTE`。压缩检查点设在每个回合开始时，以及每两个工具轮之间。界面会显示压缩卡片，也可以用 `/compact` 手动触发。
-- 会话按工作区保存为 JSONL 文件，侧栏可以置顶会话、查看历史。
+- 会话按工作区保存为独立 JSONL 文件，桌面端、CLI 和 TUI 可同时访问。历史按消息追加，通过独立索引按页读取；只有写入同一会话时才短暂加锁，不持有全局数据库锁。
+- 旧 redb `sessions.db` 和 JSONL 记录首次启动时从校验过的副本导入，原文件保留，不要求关闭占用旧库的进程。
+- `husk --new-window` 打开独立窗口和新会话；开发窗口启动时不会结束已有窗口。两个窗口同时修改同一会话时，较旧的历史提交会被拒绝，避免覆盖另一个窗口的记录。
 - 粘贴到输入框的图片会存到 `<workspace>/.husk/attachments/`。
 
 ### 架构蓝图
@@ -116,7 +118,7 @@ invariants = ["工具输出必须经过截断预算"]
 
 ```
 ┌──────────────────────── 前端 ─────────────────────────┐
-│        husk (Tauri 2 + React)   │    agent-cli        │
+│        husk (Tauri 2 + React)   │    husk-cli         │
 └────────────────┬────────────────┴──────────┬──────────┘
                  │        agent-ipc          │
                  │   UiCommand  /  UiEvent   │
@@ -258,7 +260,10 @@ run()
 | `~/.config/husk/config.toml` | Provider 与全局偏好 |
 | `~/.config/husk/AGENTS.md` | 全局指令 |
 | `~/.config/husk/{plugins,mcp,agents}` | 用户级插件、MCP 服务器、子代理 |
-| `~/.local/share/husk/sessions/<ws_hash>/` | 会话 JSONL、`index.json` 索引、会话级状态 |
+| `~/.local/share/husk/conversations/<ws_hash>/<id>.jsonl` | 会话消息及状态变更，每会话独立文件 |
+| `~/.local/share/husk/conversations/<ws_hash>/<id>.index.json` | 可重建的消息偏移索引和元数据，支持分页 |
+| `~/.local/share/husk/conversations/globals/` | 独立 JSON 偏好与外观设置 |
+| `~/.local/share/husk/sessions.db` | 旧 redb 数据库，迁移后保留作为备份 |
 | `<workspace>/.husk/` | 附件、工作区插件与 MCP、子代理 |
 
 ## 项目结构
@@ -273,7 +278,7 @@ run()
 | `agent-computer` | 桌面控制后端，包括抓屏（纯 Rust 缩放）和合成输入，支持 X11 与 `none` |
 | `agent-plugin` | 插件清单、MCP stdio 桥、hook 链 |
 | `app-tauri`（`husk`） | Tauri 后端，以及 React / Tailwind / Radix 前端 |
-| `app-cli`（`agent-cli`） | headless 事件泵 |
+| `app-cli`（`husk-cli`） | headless 事件泵 |
 
 ## 许可证
 
