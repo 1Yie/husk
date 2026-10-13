@@ -346,12 +346,13 @@ fn rebuild_path(out: &mut Vec<(String, String)>) {
             .map(std::path::PathBuf::from)
             .collect();
     }
-    let seen: BTreeSet<std::path::PathBuf> = parts.iter().cloned().collect();
     for dir in dev_bin_dirs() {
-        if !seen.contains(&dir) {
-            parts.push(dir);
-        }
+        parts.push(dir);
     }
+    // Dedup the whole list, keeping first occurrence, so inherited duplicates
+    // and discovered dirs that were already present both collapse.
+    let mut seen = BTreeSet::new();
+    parts.retain(|p| seen.insert(p.clone()));
     let merged = std::env::join_paths(parts)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| inherited.clone());

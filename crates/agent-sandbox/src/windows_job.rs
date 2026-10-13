@@ -154,7 +154,7 @@ impl SandboxBackend for WindowsJob {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = command.spawn().context("spawn cmd")?;
+        let child = command.spawn().context("spawn cmd")?;
         if let Some(h) = child.raw_handle() {
             let ok = unsafe { AssignProcessToJobObject(job.0, h) };
             if ok == 0 {
@@ -184,6 +184,7 @@ impl SandboxBackend for WindowsJob {
             stdout: out,
             stderr: err,
             is_timeout,
+            sandbox_denials: Vec::new(),
             peak_memory_mb: None,
             elapsed_ms: elapsed,
         })

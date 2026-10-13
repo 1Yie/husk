@@ -1,20 +1,35 @@
-//! `linux_bwrap.rs` — bubblewrap backend (primary on Linux).
+//! `linux_bwrap.rs` — bubblewrap backend (primary on Linux), ported to the
+//! `@anthropic-ai/sandbox-runtime` architecture.
 //!
-//! 1. System libraries, binaries and essential config (`/usr`, `/lib`, `/bin`,
-//!    `/etc/ssl`, `/etc/passwd`, `/etc/ld.so.cache`, …) are mounted read-only so
-//!    linking, TLS and DNS resolution work.
-//! 2. A tmpfs `/tmp` (with `/var/tmp` symlinked) is writable, plus a per-run dir
-//!    for `XDG_RUNTIME_DIR`.
-//! 3. Discovered toolchains (bun, volta, cargo, rustup, python, go, …) mount
-//!    read-only, and their cache env vars point at `/tmp` so host caches stay
-//!    immutable.
-//! 4. Credentials (`.ssh`, `.gnupg`, `.aws`, `.npmrc`, agent auth/session state,
-//!    …) are masked with `/dev/null`: the content is withheld, not the name.
-//! 5. `extra_ro_mounts` — callers pass the user-level skill roots — mount
-//!    read-only. A PATH `<root>/bin` expands to `<root>` only for real SDK roots.
-//! 6. The workspace mounts read-write last, so it wins any overlap.
+//! 1. `--ro-bind / /` — the whole host mounts read-only. Read access is the
+//!    default; *write* is the privilege, granted only to the workspace, the
+//!    per-run dir, tmpfs `/tmp`/`/var/tmp`, and a small toolchain-cache
+//!    list (package caches must be writable for installs to work).
+//! 2. `deny_write` — config a sandboxed command could edit to widen its own
+//!    access (`.git/hooks`, shell rc files, agent config dirs, `.mcp.json`,
+//!    `.vscode`/`.idea`) re-binds read-only after the rw binds, so it wins
+//!    the overlap. Ancestor dirs get writable *self-binds*: a mountpoint
+//!    can't be renamed or removed, which closes the `mv .git aside` escape
+//!    — while keeping `git add`/`npm install` working inside `.git`
+//!    (srt pins ancestors read-only; we keep them writable deliberately).
+//! 3. `deny_read` — credential dirs (`~/.ssh`, `~/.aws`, …) mask with a
+//!    tmpfs (dir) or `/dev/null` re-bind (file), applied *after* the rw
+//!    binds so they can mask paths inside writable roots too. `allow_read`
+//!    entries re-bind on top as carve-outs.
+//! 4. Network — three modes, srt-shaped:
+//!    `allow_network` → host network shared, no proxy;
+//!    `allowed_domains` empty → `--unshare-net`, full deny;
+//!    `allowed_domains` set → `--unshare-net` + the host-side
+//!    [`crate::proxy::SandboxProxy`] unix socket bind-mounted in, plus
+//!    in-sandbox `socat` loopback listeners (3128 HTTP, 1080 SOCKS5)
+//!    and `*_PROXY` env vars. Egress narrows to the domain allowlist,
+//!    with DNS, resolved-address and per-run attribution enforced by
+//!    the host proxy.
+//! 5. socat missing → degrade to full deny + a warn log (loud, never
+//!    silently open).
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -24,415 +39,222 @@ use crate::traits::{CommandOutput, SandboxBackend, SandboxConfig, SandboxTier};
 
 pub struct LinuxBwrap;
 
-/// Base system roots mounted read-only (if they exist on the host).
-const SYSTEM_RO_DIRS: &[&str] = &[
-    "/usr",
-    "/lib",
-    "/bin",
-    "/lib64",
-    "/opt",
-    "/snap",
-    "/var/lib/snapd/snap",
-];
+use crate::shared::{
+    cache_mounts, format_denials, net_mode, register_egress, run_dir, sensitive_masks, NetMode,
+};
 
-/// Essential system configuration files/dirs mounted read-only (if they exist).
-const SYSTEM_CONFIG_PATHS: &[&str] = &[
-    // SSL / TLS certificates & PKI (crucial for curl, git, bun, npm, pip, cargo)
-    "/etc/ssl",
-    "/etc/pki",
-    "/etc/ca-certificates",
-    "/etc/crypto-policies",
-    // Name resolution & user/group databases
-    "/etc/hosts",
-    "/etc/passwd",
-    "/etc/group",
-    "/etc/nsswitch.conf",
-    // Dynamic linker configuration and alternatives
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/etc/alternatives",
-    // Timezone and system profiles
-    "/etc/localtime",
-    "/etc/zoneinfo",
-    "/etc/profile",
-    "/etc/profile.d",
-    "/etc/environment",
-    "/etc/mime.types",
-    // System git config
-    "/etc/gitconfig",
-];
-
-/// Sensitive dirs and files denied outright — masked with /dev/null or never mounted.
-const SENSITIVE_NAMES: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".azure",
-    ".kube",
-    ".bash_history",
-    ".zsh_history",
-    ".history",
-    ".config/agent-rs",
-    ".config/husk",
-    ".cargo/credentials",
-    ".cargo/credentials.toml",
-    ".npmrc",
-    ".netrc",
-    // Agent-harness state: credentials (and, for pi, every session transcript)
-    // live next to the skills these sandboxes deliberately expose, so they are
-    // masked by name even when a discovery rule would have pulled the root in.
-    ".pi/agent/auth.json",
-    ".pi/agent/.env",
-    ".pi/agent/sessions",
-    ".claude/.credentials.json",
-    ".codex/auth.json",
-    // Mounted-by-name caches whose subtrees hold real credentials — the
-    // parent dir (`.cache`, `.m2`, `.gradle`, `.config/yarn`) is needed
-    // for toolchain speed, but these children are secret material, not
-    // cache: browser login stores, cloud token caches, package-manager
-    // auth, VCS credential files.
-    ".cache/mozilla",
-    ".cache/firefox",
-    ".cache/google-chrome",
-    ".cache/chromium",
-    ".cache/gcloud",
-    ".cache/hub",
-    ".cache/gh",
-    ".cache/msal",
-    ".cache/azure",
-    ".m2/settings.xml",
-    ".gradle/gradle.properties",
-    ".config/yarn/config.yml",
-    ".config/gh",
-    ".config/gcloud",
-    ".docker",
-    ".git-credentials",
-    ".pypirc",
-    ".gem/credentials",
-    ".terraform.d",
-    ".local/share/keyrings",
-    ".password-store",
-];
-
-/// Common developer toolchain and runtime directories relative to HOME.
-const HOME_DEV_DIRS: &[&str] = &[
-    ".cargo",
-    ".rustup",
-    ".volta",
-    ".bun",
-    ".nvm",
-    ".fnm",
-    ".deno",
-    ".pnpm",
-    ".yarn",
-    ".config/yarn",
-    ".npm",
-    ".cache",
-    ".pyenv",
-    "miniconda3",
-    "anaconda3",
-    ".conda",
-    ".rye",
-    ".local/share/uv",
-    ".local/pipx",
-    "go",
-    ".config/go",
-    ".sdkman",
-    ".gradle",
-    ".m2",
-    ".asdf",
-    ".mise",
-    ".local/share/mise",
-    ".config/mise",
-    // Common user binaries and libraries
-    ".local/bin",
-    ".local/lib",
-    ".local/share/pnpm",
-    ".local/share/fnm",
-];
-
-/// Toolchain root environment variables to check for custom installation paths.
-const ENV_TOOLCHAIN_VARS: &[&str] = &[
-    "VOLTA_HOME",
-    "BUN_INSTALL",
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "NVM_DIR",
-    "FNM_DIR",
-    "PNPM_HOME",
-    "DENO_INSTALL",
-    "PYENV_ROOT",
-    "GOROOT",
-    "GOPATH",
-    "JAVA_HOME",
-    "ANDROID_HOME",
-    "ANDROID_SDK_ROOT",
-    "FLUTTER_ROOT",
-];
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+/// `socat` presence — required in-sandbox for the proxied mode's
+/// loopback listeners. Cached.
+fn have_socat() -> bool {
+    static HAVE: OnceLock<bool> = OnceLock::new();
+    *HAVE.get_or_init(|| {
+        std::process::Command::new("socat")
+            .arg("-V")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
 }
 
-/// Check if a candidate path is sensitive or contains sensitive data.
-fn is_sensitive(path: &Path, home: Option<&Path>) -> bool {
-    let s = path.to_string_lossy();
-    for name in SENSITIVE_NAMES {
-        if s.ends_with(name) || s.contains(&format!("/{name}/")) || s.contains(&format!("/{name}"))
-        {
-            return true;
-        }
-    }
-    if let Some(h) = home {
-        if let Ok(rel) = path.strip_prefix(h) {
-            let rel_str = rel.to_string_lossy();
-            for name in SENSITIVE_NAMES {
-                if rel_str == *name || rel_str.starts_with(&format!("{name}/")) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+/// What this run's network should look like.
+enum NetPlan {
+    /// `--unshare-net`, no proxy env.
+    Deny,
+    /// Shared host network (`allow_network: true`).
+    Allow,
+    /// Proxied egress — unix socket + in-sandbox socat + `*_PROXY` env.
+    Proxied {
+        run_key: String,
+        sock: PathBuf,
+        user: String,
+        pass: String,
+    },
 }
 
-/// Check if a path is within the base system mounts (already mounted).
-fn is_in_base_system(p: &Path) -> bool {
-    SYSTEM_RO_DIRS.iter().any(|sys| p.starts_with(sys))
+fn net_plan(cfg: &SandboxConfig, _run_dir: &Path) -> NetPlan {
+    match net_mode(cfg) {
+        NetMode::Open => return NetPlan::Allow,
+        // No allowlist => deny-all; denied_domains alone can only subtract.
+        NetMode::Closed => return NetPlan::Deny,
+        NetMode::Proxied => {}
+    }
+    if !have_socat() {
+        tracing::warn!(
+            "sandbox: egress policy configured but `socat` is missing — \
+             degrading to full network deny for this run"
+        );
+        return NetPlan::Deny;
+    }
+    let Some(run) = register_egress(cfg) else {
+        tracing::warn!(
+            "sandbox: egress proxy unavailable — degrading to full network deny"
+        );
+        return NetPlan::Deny;
+    };
+    NetPlan::Proxied {
+        run_key: run.key,
+        sock: run.proxy.unix_path().to_path_buf(),
+        user: run.user,
+        pass: run.pass,
+    }
 }
 
-/// Deduplicate mount paths so that parent mounts supersede child mounts,
-/// and HOME itself is never mounted wholesale.
-fn deduplicate_mount_paths(paths: Vec<PathBuf>, home: Option<&Path>) -> Vec<PathBuf> {
-    let mut sorted = paths;
-    sorted.sort_by_key(|p| p.as_os_str().len());
-    sorted.dedup();
-
-    let mut clean: Vec<PathBuf> = Vec::new();
-    for p in sorted {
-        if let Some(h) = home {
-            if p == *h {
-                continue; // Never mount entire HOME
-            }
-        }
-        let already_covered = clean.iter().any(|existing| p.starts_with(existing));
-        if !already_covered {
-            clean.push(p);
-        }
-    }
-    clean
+/// Proxy env vars for a proxied run — injected after sanitization so the
+/// denylist can't strip them. Port of srt's `generateProxyEnvVars`.
+/// Proxy env vars for a proxied run — injected after sanitization so the
+/// denylist can't strip them. Ports 3128/1080 are the in-sandbox socat
+/// listeners bridging to the proxy's unix socket.
+fn proxy_env_vars(net: &NetPlan) -> Vec<(String, String)> {
+    let NetPlan::Proxied { user, pass, .. } = net else {
+        return Vec::new();
+    };
+    // git-over-ssh rides the HTTP CONNECT listener via socat PROXY
+    // (portable across socat versions; SOCKS5-CONNECT needs ≥1.8).
+    let ssh = format!(
+        "ssh -o ControlMaster=no -o ControlPath=none \
+         -o ProxyCommand='socat - PROXY:localhost:%h:%p,proxyport=3128,proxyauth={user}:{pass}'"
+    );
+    let mut v = crate::shared::proxy_env_vars(user, pass, "localhost:3128", Some(&ssh));
+    v.push(("RSYNC_PROXY".into(), "localhost:1080".into()));
+    v
 }
 
-/// Discover host development environments, toolchains, and runtimes.
-fn dev_environment_binds() -> Vec<PathBuf> {
-    let mut mounts = Vec::new();
-    let home = dirs_home();
+/// `p` lies at or under `root` by path segments.
+fn at_or_under(p: &Path, root: &Path) -> bool {
+    p == root || p.starts_with(root)
+}
 
-    if let Some(ref h) = home {
-        for rel in HOME_DEV_DIRS {
-            let p = h.join(rel);
-            if p.exists() && !is_sensitive(&p, home.as_deref()) {
-                mounts.push(p);
+/// Writable self-bind pins for every directory between a deny-write seed
+/// and the writable root covering it — a mountpoint can't be renamed or
+/// removed, so `mv .git aside; mkdir .git` can't unwrap the deny. Writable
+/// (not ro like srt): `.git` must stay writable for `git add`/`git commit`.
+fn ancestor_pins(seeds: &[PathBuf], writable_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut pins = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for seed in seeds {
+        let mut dir = seed.parent().map(Path::to_path_buf);
+        while let Some(d) = dir {
+            if d.as_os_str() == "/" {
+                break;
             }
-        }
-        // ~/.gitconfig lets git know author identity inside the sandbox.
-        let gitconfig = h.join(".gitconfig");
-        if gitconfig.is_file() {
-            mounts.push(gitconfig);
+            if !writable_roots.iter().any(|r| at_or_under(&d, r)) {
+                break; // above the writable root — nothing to pin
+            }
+            if writable_roots.contains(&d) {
+                break; // the root itself is already a live rw mountpoint
+            }
+            if seen.insert(d.clone()) && d.is_dir() {
+                pins.push(d.clone());
+            }
+            dir = d.parent().map(Path::to_path_buf);
         }
     }
+    pins.sort();
+    pins
+}
 
-    for var in ENV_TOOLCHAIN_VARS {
-        if let Some(val) = std::env::var_os(var) {
-            let p = PathBuf::from(val);
-            if p.exists() && !is_sensitive(&p, home.as_deref()) {
-                if let Some(ref h) = home {
-                    if p == *h {
-                        continue;
-                    }
-                }
-                mounts.push(p);
+/// How deep below `$HOME` host Unix sockets are searched for, and the work
+/// caps that keep a huge home directory from slowing every command down.
+const SOCKET_SCAN_DEPTH: usize = 4;
+const SOCKET_SCAN_BUDGET: usize = 200_000;
+const SOCKET_MASK_CAP: usize = 512;
+
+/// Host pathname Unix sockets under `root` that the sandbox must not reach.
+///
+/// `--ro-bind / /` keeps them connectable: `connect()` on a path never goes
+/// through the network namespace, and a read-only mount does not stop it
+/// either. `skip` roots (the workspace, writable mounts) are the sandbox's
+/// own territory — masking a pre-existing socket there would make a server
+/// that unlinks and rebinds it fail with EBUSY.
+///
+/// Bounded by depth, entries visited and result count; symlinks are never
+/// followed. Anything beyond the bounds stays reachable, which is logged.
+fn host_socket_masks(root: &Path, skip: &[PathBuf]) -> Vec<PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+    let mut found = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut visited = 0usize;
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            visited += 1;
+            if visited > SOCKET_SCAN_BUDGET || found.len() >= SOCKET_MASK_CAP {
+                tracing::warn!(
+                    root = %root.display(),
+                    "sandbox: host socket scan hit its bound — some sockets stay reachable"
+                );
+                return found;
             }
-        }
-    }
-
-    if let Some(path_var) = std::env::var_os("PATH") {
-        for entry in std::env::split_paths(&path_var) {
-            if entry.is_dir() && !is_sensitive(&entry, home.as_deref()) {
-                if let Some(ref h) = home {
-                    if &entry == h {
-                        continue;
-                    }
-                }
-                if is_in_base_system(&entry) {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if ft.is_socket() {
+                found.push(path);
+            } else if ft.is_dir() && depth + 1 < SOCKET_SCAN_DEPTH {
+                let name = entry.file_name();
+                if name == ".git" || name == "node_modules" {
                     continue;
                 }
-                mounts.extend(bin_entry_mounts(&entry, home.as_deref()));
+                if skip.iter().any(|s| at_or_under(&path, s)) {
+                    continue;
+                }
+                stack.push((path, depth + 1));
             }
         }
     }
-
-    deduplicate_mount_paths(mounts, home.as_deref())
-}
-
-/// True when `p` sits under a hidden entry inside HOME — `~/.pi/agent`,
-/// `~/.cargo`, `~/.config/mise`. Such a subtree is either already mounted
-/// explicitly ([`HOME_DEV_DIRS`]/[`ENV_TOOLCHAIN_VARS`]) or agent/tool *state*
-/// that must be opened by name, never dragged in wholesale by the PATH rule.
-fn is_hidden_home_subtree(p: &Path, home: Option<&Path>) -> bool {
-    let Some(home) = home else { return false };
-    let Ok(rel) = p.strip_prefix(home) else {
-        return false;
-    };
-    rel.components()
-        .next()
-        .is_some_and(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-}
-
-/// One PATH entry → the directories to mount for it.
-///
-/// A `<root>/bin` entry normally expands to the whole `<root>`: that is how SDK
-/// roots register (Flutter, Android, a version manager's toolchain). Two
-/// exceptions, both falling back to the `bin` dir alone: HOME itself, and roots
-/// inside a hidden HOME entry. Without the latter, `~/.pi/agent/bin` on PATH
-/// mounted the entire agent state directory read-only — `auth.json`, `.env` and
-/// every session transcript included.
-fn bin_entry_mounts(entry: &Path, home: Option<&Path>) -> Vec<PathBuf> {
-    if entry.file_name().is_some_and(|n| n == "bin") {
-        if let Some(parent) = entry.parent() {
-            if parent.is_dir() && Some(parent) != home && !is_hidden_home_subtree(parent, home) {
-                return vec![parent.to_path_buf()];
-            }
-        }
-    }
-    vec![entry.to_path_buf()]
-}
-
-/// Collect sensitive files/directories that exist on host and must be masked.
-fn sensitive_masks() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(home) = dirs_home() {
-        for name in SENSITIVE_NAMES {
-            let p = home.join(name);
-            if p.exists() {
-                out.push(p);
-            }
-        }
-    }
-    let etc_ssh = PathBuf::from("/etc/ssh");
-    if etc_ssh.exists() {
-        out.push(etc_ssh);
-    }
-    out
-}
-
-/// Per-run tmp dir — `/run/user/$UID/agent-run-<pid>` (tmpfs-scoped,
-/// auto-cleaned on logout). Falls back to `std::env::temp_dir` when the XDG
-/// runtime dir is absent.
-fn run_dir() -> PathBuf {
-    let uid = libc_uid();
-    let xdg = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}")));
-    let dir = xdg.join(format!("agent-run-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    dir
-}
-
-/// `getuid` without pulling libc — read `/proc/self/status`'s Uid line.
-fn libc_uid() -> u32 {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("Uid:"))
-                .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
-        })
-        .unwrap_or(1000)
+    found.sort();
+    found
 }
 
 /// Assemble the `bwrap` argv up to the `--` separator — shared by
-/// `run_command` (appends `sh -c ulimit…; cmd`) and `wrap_spawn` (appends
-/// the caller's program + args for a long-lived server child).
-fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path) -> Vec<String> {
-    let mut argv: Vec<String> = Vec::with_capacity(128);
+/// `run_command` (appends `sh -c …`) and `wrap_spawn`.
+fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path, net: &NetPlan) -> Vec<String> {
+    let mut argv: Vec<String> = Vec::with_capacity(160);
 
-    for sys in SYSTEM_RO_DIRS {
-        if Path::new(sys).exists() {
-            argv.push("--ro-bind".into());
-            argv.push((*sys).into());
-            argv.push((*sys).into());
-        }
-    }
-
-    for conf in SYSTEM_CONFIG_PATHS {
-        if Path::new(conf).exists() {
-            argv.push("--ro-bind".into());
-            argv.push((*conf).into());
-            argv.push((*conf).into());
-        }
-    }
-
-    // resolv.conf only when network is allowed — it leaks the resolver.
-    if cfg.allow_network && Path::new("/etc/resolv.conf").exists() {
-        argv.push("--ro-bind".into());
-        argv.push("/etc/resolv.conf".into());
-        argv.push("/etc/resolv.conf".into());
-    }
-
-    argv.push("--proc".into());
-    argv.push("/proc".into());
+    // The flip: everything readable, nothing writable.
+    argv.push("--ro-bind".into());
+    argv.push("/".into());
+    argv.push("/".into());
     argv.push("--dev".into());
     argv.push("/dev".into());
-
+    argv.push("--proc".into());
+    argv.push("/proc".into());
     argv.push("--tmpfs".into());
     argv.push("/tmp".into());
-    if Path::new("/var").exists() {
-        argv.push("--dir".into());
-        argv.push("/var".into());
-        argv.push("--symlink".into());
-        argv.push("/tmp".into());
+    // /run holds the host's service sockets — docker, system and session
+    // dbus, ssh-agent, snapd, libvirt. Reachable through a read-only bind
+    // whatever the network mode, so replace it with an empty tmpfs. It goes
+    // in before every later bind: the run dir and the proxy socket live
+    // under it and are re-mounted on top.
+    if Path::new("/run").is_dir() {
+        argv.push("--tmpfs".into());
+        argv.push("/run".into());
+        // /etc/resolv.conf usually points into /run (systemd-resolved).
+        // Bring back just that file, never its neighbours.
+        if let Ok(resolv) = Path::new("/etc/resolv.conf").canonicalize() {
+            if resolv.starts_with("/run") && resolv.is_file() {
+                argv.push("--ro-bind".into());
+                argv.push(resolv.to_string_lossy().into_owned());
+                argv.push(resolv.to_string_lossy().into_owned());
+            }
+        }
+    }
+    // /var/tmp: tmpfs'd by srt; a bound dir works and keeps it on disk.
+    if Path::new("/var/tmp").exists() {
+        argv.push("--bind".into());
+        argv.push(run_dir.to_string_lossy().into_owned());
         argv.push("/var/tmp".into());
     }
 
-    // run_dir bound at its host path for XDG_RUNTIME_DIR compatibility.
+    // Writable roots.
     argv.push("--bind".into());
     argv.push(run_dir.to_string_lossy().into_owned());
     argv.push(run_dir.to_string_lossy().into_owned());
-
-    let dev_binds = dev_environment_binds();
-    for dev_dir in &dev_binds {
-        if dev_dir.exists() {
-            argv.push("--ro-bind".into());
-            argv.push(dev_dir.to_string_lossy().into_owned());
-            argv.push(dev_dir.to_string_lossy().into_owned());
-        }
-    }
-
-    for extra_ro in &cfg.extra_ro_mounts {
-        if extra_ro.exists() {
-            argv.push("--ro-bind".into());
-            argv.push(extra_ro.to_string_lossy().into_owned());
-            argv.push(extra_ro.to_string_lossy().into_owned());
-        }
-    }
-
-    for mask in sensitive_masks() {
-        if mask.is_dir() {
-            // `/dev/null` is a FILE — bwrap refuses to bind it over a
-            // directory ("Can't create file at …: Is a directory"), which
-            // used to fail the whole launch on any host where a masked dir
-            // exists (`.ssh` on a dev machine!). An empty tmpfs masks a
-            // dir the same way the null-file masks a file.
-            argv.push("--tmpfs".into());
-        } else {
-            argv.push("--ro-bind".into());
-            argv.push("/dev/null".into());
-        }
-        argv.push(mask.to_string_lossy().into_owned());
-    }
-
     for extra_rw in &cfg.extra_rw_mounts {
         if extra_rw.exists() {
             argv.push("--bind".into());
@@ -440,74 +262,157 @@ fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path) -> Vec<String> {
             argv.push(extra_rw.to_string_lossy().into_owned());
         }
     }
-
-    // Workspace bind must come last — rw, shadows any overlapping mount.
+    for cache in cache_mounts() {
+        argv.push("--bind".into());
+        argv.push(cache.to_string_lossy().into_owned());
+        argv.push(cache.to_string_lossy().into_owned());
+    }
+    for extra_ro in &cfg.extra_ro_mounts {
+        if extra_ro.exists() {
+            argv.push("--ro-bind".into());
+            argv.push(extra_ro.to_string_lossy().into_owned());
+            argv.push(extra_ro.to_string_lossy().into_owned());
+        }
+    }
+    // Workspace bind last among the writable roots.
     argv.push("--bind".into());
     argv.push(ws.to_string_lossy().into_owned());
     argv.push(ws.to_string_lossy().into_owned());
 
-    if !cfg.allow_network {
-        argv.push("--unshare-net".into());
+    // denyWrite — mandatory protected set + caller's. Pins first so the
+    // denies' ancestors can't be moved aside.
+    let writable_roots: Vec<PathBuf> = {
+        let mut v = cfg.extra_rw_mounts.clone();
+        v.push(ws.to_path_buf());
+        v
+    };
+    let deny_write: Vec<PathBuf> = cfg
+        .deny_write
+        .iter()
+        .filter(|p| p.exists())
+        .cloned()
+        .collect();
+    for pin in ancestor_pins(&deny_write, &writable_roots) {
+        argv.push("--bind".into());
+        argv.push(pin.to_string_lossy().into_owned());
+        argv.push(pin.to_string_lossy().into_owned());
+    }
+    for p in &deny_write {
+        argv.push("--ro-bind".into());
+        argv.push(p.to_string_lossy().into_owned());
+        argv.push(p.to_string_lossy().into_owned());
     }
 
-    // PID namespace — fork-bomb containment.
-    argv.push("--unshare-pid".into());
+    // denyRead — masks land after every rw bind so they cover paths inside
+    // writable roots too. A dir gets a tmpfs (empty), a file gets
+    // /dev/null re-bound over it.
+    let mut deny_read: Vec<PathBuf> = sensitive_masks();
+    deny_read.extend(cfg.deny_read.iter().cloned());
+    for mask in &deny_read {
+        if !mask.exists() {
+            continue;
+        }
+        if mask.is_dir() {
+            argv.push("--tmpfs".into());
+            argv.push(mask.to_string_lossy().into_owned());
+        } else {
+            argv.push("--ro-bind".into());
+            argv.push("/dev/null".into());
+            argv.push(mask.to_string_lossy().into_owned());
+        }
+    }
+    // Host Unix sockets under $HOME (terminal multiplexers, editor and IPC
+    // daemons). /run is already empty; these are the ones outside it.
+    if let Some(home) = crate::shared::dirs_home() {
+        let mut own: Vec<PathBuf> = writable_roots.clone();
+        own.push(run_dir.to_path_buf());
+        for sock in host_socket_masks(&home, &own) {
+            // A socket can vanish between the scan and this mount (a temp
+            // dir removed mid-run). bwrap then cannot create the mount point
+            // and refuses to start, so only mask what still exists.
+            if at_or_under(&sock, ws) || !sock.exists() {
+                continue;
+            }
+            argv.push("--ro-bind".into());
+            argv.push("/dev/null".into());
+            argv.push(sock.to_string_lossy().into_owned());
+        }
+    }
+    // allowRead carve-outs re-bind over the masks.
+    for p in &cfg.allow_read {
+        if p.exists() {
+            argv.push("--ro-bind".into());
+            argv.push(p.to_string_lossy().into_owned());
+            argv.push(p.to_string_lossy().into_owned());
+        }
+    }
 
+    // Network.
+    match net {
+        NetPlan::Allow => {}
+        NetPlan::Deny => {
+            argv.push("--unshare-net".into());
+        }
+        NetPlan::Proxied { sock, .. } => {
+            argv.push("--unshare-net".into());
+            // The egress proxy's unix socket — the sandbox's only way out.
+            argv.push("--bind".into());
+            argv.push(sock.to_string_lossy().into_owned());
+            argv.push(sock.to_string_lossy().into_owned());
+        }
+    }
+
+    argv.push("--unshare-pid".into());
+    argv.push("--new-session".into());
+    argv.push("--die-with-parent".into());
+
+    // Environment.
     argv.push("--clearenv".into());
     let mut extra = cfg.env_vars.clone();
-    if !extra.iter().any(|(k, _)| k == "TMPDIR") {
-        extra.push(("TMPDIR".into(), "/tmp".into()));
-    }
-    if !extra.iter().any(|(k, _)| k == "TEMP") {
-        extra.push(("TEMP".into(), "/tmp".into()));
-    }
-    if !extra.iter().any(|(k, _)| k == "TMP") {
-        extra.push(("TMP".into(), "/tmp".into()));
-    }
-    if !extra.iter().any(|(k, _)| k == "CARGO_TARGET_DIR") {
-        extra.push((
-            "CARGO_TARGET_DIR".into(),
+    let defaults: Vec<(String, String)> = [
+        ("TMPDIR", "/tmp"),
+        ("TEMP", "/tmp"),
+        ("TMP", "/tmp"),
+        ("BUN_INSTALL_CACHE_DIR", "/tmp/bun-cache"),
+        ("npm_config_cache", "/tmp/npm-cache"),
+        ("YARN_CACHE_FOLDER", "/tmp/yarn-cache"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .chain([
+        ("XDG_RUNTIME_DIR".to_string(), run_dir.to_string_lossy().into_owned()),
+        (
+            "CARGO_TARGET_DIR".to_string(),
             ws.join("target").to_string_lossy().into_owned(),
-        ));
+        ),
+    ])
+    .collect();
+    for (k, v) in defaults {
+        if !extra.iter().any(|(ek, _)| *ek == k) {
+            extra.push((k, v));
+        }
     }
-    // Package-manager caches → writable /tmp so installs don't EROFS.
-    if !extra.iter().any(|(k, _)| k == "BUN_INSTALL_CACHE_DIR") {
-        extra.push(("BUN_INSTALL_CACHE_DIR".into(), "/tmp/bun-cache".into()));
-    }
-    if !extra.iter().any(|(k, _)| k == "npm_config_cache") {
-        extra.push(("npm_config_cache".into(), "/tmp/npm-cache".into()));
-    }
-    if !extra.iter().any(|(k, _)| k == "YARN_CACHE_FOLDER") {
-        extra.push(("YARN_CACHE_FOLDER".into(), "/tmp/yarn-cache".into()));
-    }
-
     let mut envs = sanitize_env(&extra);
-    // PATH coherence: keep only entries the namespace can resolve —
-    // an inherited entry under an unmounted dir is dead weight inside
-    // and only widens the executable-hijack surface. Allowed roots =
-    // the same dirs just bound (system + dev); workspace and the
-    // sandbox tmpfs are denied outright (agent-writable).
-    let mut path_roots: Vec<PathBuf> = SYSTEM_RO_DIRS.iter().map(PathBuf::from).collect();
-    path_roots.extend(dev_binds.iter().cloned());
-    let path_denied = vec![
-        ws.to_path_buf(),
-        PathBuf::from("/tmp"),
-        run_dir.to_path_buf(),
-    ];
+    // PATH coherence under the new mount model: `/` is bound, so every
+    // entry resolves — the only pruning left is agent-writable roots
+    // (workspace/tmp/run-dir binaries stay off PATH).
     crate::env_sanitize::apply_environment_policy(
         &mut envs,
         &cfg.environment,
-        Some(&path_roots),
-        &path_denied,
+        Some(&[PathBuf::from("/")]),
+        &[ws.to_path_buf(), PathBuf::from("/tmp"), run_dir.to_path_buf()],
     );
     for (k, v) in envs {
         argv.push("--setenv".into());
         argv.push(k);
         argv.push(v);
     }
-    // `trusted_env` lands after sanitization, unfiltered — the manifest
-    // declared these literally; the denylist's job is catching *host*
-    // secrets, not the declaring authority's own env block.
+    // Proxy vars after sanitization — they must survive the denylist.
+    for (k, v) in proxy_env_vars(net) {
+        argv.push("--setenv".into());
+        argv.push(k);
+        argv.push(v);
+    }
     for (k, v) in &cfg.trusted_env {
         argv.push("--setenv".into());
         argv.push(k.clone());
@@ -516,11 +421,38 @@ fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path) -> Vec<String> {
 
     argv.push("--chdir".into());
     argv.push(ws.to_string_lossy().into_owned());
-    argv.push("--die-with-parent".into());
     argv.push("--".into());
     argv
 }
 
+
+/// POSIX single-quote a string for `sh -c` embedding.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The in-sandbox preamble for proxied runs: two socat loopback listeners
+/// (3128 HTTP/CONNECT — also the mux's SOCKS endpoint via sniffing; 1080
+/// advertised SOCKS) forwarding to the bound unix socket, then a trap that
+/// kills them when the user command exits (srt's shape).
+fn sandbox_preamble(net: &NetPlan) -> String {
+    let NetPlan::Proxied { sock, .. } = net else {
+        return String::new();
+    };
+    let sock = sock.to_string_lossy();
+    format!(
+        "socat TCP-LISTEN:3128,fork,reuseaddr,bind=127.0.0.1 UNIX-CONNECT:{sock} \
+         >/dev/null 2>&1 &\n\
+         socat TCP-LISTEN:1080,fork,reuseaddr,bind=127.0.0.1 UNIX-CONNECT:{sock} \
+         >/dev/null 2>&1 &\n\
+         trap 'rc=$?; kill %1 %2 2>/dev/null; exit $rc' EXIT\n\
+         n=0; while [ $n -lt 100 ]; do \
+         socat -u /dev/null TCP:127.0.0.1:3128 >/dev/null 2>&1 && break; \
+         n=$((n+1)); sleep 0.02; done\n"
+    )
+}
+
+/// Format proxy denials into the human-facing list on `CommandOutput`.
 #[async_trait::async_trait]
 impl SandboxBackend for LinuxBwrap {
     fn id(&self) -> &'static str {
@@ -543,8 +475,13 @@ impl SandboxBackend for LinuxBwrap {
             .workspace_dir
             .canonicalize()
             .unwrap_or_else(|_| cfg.workspace_dir.clone());
+        let net = net_plan(cfg, &run_dir);
+        let run_key = match &net {
+            NetPlan::Proxied { run_key, .. } => Some(run_key.clone()),
+            _ => None,
+        };
 
-        let mut argv = sandbox_argv(cfg, &run_dir, &ws);
+        let mut argv = sandbox_argv(cfg, &run_dir, &ws, &net);
         argv.push("/bin/sh".into());
         argv.push("-c".into());
 
@@ -555,6 +492,7 @@ impl SandboxBackend for LinuxBwrap {
         if cfg.max_processes > 0 {
             inner.push_str(&format!("ulimit -u {}; ", cfg.max_processes));
         }
+        inner.push_str(&sandbox_preamble(&net));
         inner.push_str(cmd);
         argv.push(inner);
 
@@ -586,12 +524,26 @@ impl SandboxBackend for LinuxBwrap {
             ),
         };
 
-        let _ = std::fs::remove_dir_all(&run_dir);
+        // Drain this run's egress denials + drop its policy. The run dir
+        // is intentionally left in place — the process-global proxy's
+        // unix socket lives there, and other commands may be in flight.
+        let denials = if let Some(k) = run_key.as_deref() {
+            crate::shared::global_proxy(&run_dir)
+                .map(|p| {
+                    let d = format_denials(&p.denials_for(k));
+                    p.unregister(k);
+                    d
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Ok(CommandOutput {
             status: code,
             stdout: out,
             stderr: err,
             is_timeout,
+            sandbox_denials: denials,
             peak_memory_mb: None,
             elapsed_ms: elapsed,
         })
@@ -608,9 +560,26 @@ impl SandboxBackend for LinuxBwrap {
             .workspace_dir
             .canonicalize()
             .unwrap_or_else(|_| cfg.workspace_dir.clone());
-        let mut argv = sandbox_argv(cfg, &run_dir, &ws);
-        argv.push(cmd.into());
-        argv.extend(args.iter().map(|a| (*a).into()));
+        let net = net_plan(cfg, &run_dir);
+        let mut argv = sandbox_argv(cfg, &run_dir, &ws, &net);
+        let preamble = sandbox_preamble(&net);
+        if preamble.is_empty() {
+            argv.push(cmd.into());
+            argv.extend(args.iter().map(|a| (*a).into()));
+        } else {
+            // Long-lived child still needs the in-sandbox listeners —
+            // wrap in sh -c, exec the command so signals reach it.
+            let mut quoted = String::from(preamble.as_str());
+            quoted.push_str("exec ");
+            quoted.push_str(&shell_quote(cmd));
+            for a in args {
+                quoted.push(' ');
+                quoted.push_str(&shell_quote(a));
+            }
+            argv.push("/bin/sh".into());
+            argv.push("-c".into());
+            argv.push(quoted);
+        }
         let mut c = tokio::process::Command::new("bwrap");
         c.args(&argv);
         Some(c)
@@ -618,50 +587,32 @@ impl SandboxBackend for LinuxBwrap {
 }
 
 #[cfg(test)]
-mod tests {
+mod socket_mask_tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
 
-    /// PATH registration must expand to a real SDK root, but never to agent
-    /// state: `~/.pi/agent/bin` on PATH used to mount `~/.pi/agent` — auth.json,
-    /// .env and session transcripts included.
     #[test]
-    fn bin_entries_expand_to_sdk_roots_but_not_hidden_home_state() {
-        let base = std::env::temp_dir().join(format!("sbx-bind-{}", std::process::id()));
-        let sdk_bin = base.join("Development/flutter/bin");
-        let agent_bin = base.join(".pi/agent/bin");
-        std::fs::create_dir_all(&sdk_bin).unwrap();
-        std::fs::create_dir_all(&agent_bin).unwrap();
-        let home = Some(base.as_path());
+    fn finds_sockets_within_depth_and_skips_owned_roots() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join(".config/app")).unwrap();
+        std::fs::create_dir_all(h.join("ws")).unwrap();
+        std::fs::create_dir_all(h.join("a/b/c/d")).unwrap();
+        let _s1 = UnixListener::bind(h.join(".config/app/ipc.sock")).unwrap();
+        let _s2 = UnixListener::bind(h.join("ws/own.sock")).unwrap();
+        let _s3 = UnixListener::bind(h.join("a/b/c/d/too-deep.sock")).unwrap();
+        std::fs::write(h.join("plain.txt"), "x").unwrap();
 
-        assert_eq!(
-            bin_entry_mounts(&sdk_bin, home),
-            vec![base.join("Development/flutter")]
-        );
-        assert_eq!(bin_entry_mounts(&agent_bin, home), vec![agent_bin.clone()]);
-        // HOME as the parent root is also refused (mount the bin dir only).
-        let home_bin = base.join("bin");
-        std::fs::create_dir_all(&home_bin).unwrap();
-        assert_eq!(bin_entry_mounts(&home_bin, home), vec![home_bin]);
-
-        std::fs::remove_dir_all(&base).ok();
+        let got = host_socket_masks(h, &[h.join("ws")]);
+        assert_eq!(got, vec![h.join(".config/app/ipc.sock")]);
     }
 
     #[test]
-    fn hidden_home_subtree_detection() {
-        let home = Path::new("/home/u");
-        assert!(is_hidden_home_subtree(
-            Path::new("/home/u/.pi/agent"),
-            Some(home)
-        ));
-        assert!(is_hidden_home_subtree(
-            Path::new("/home/u/.cargo"),
-            Some(home)
-        ));
-        assert!(!is_hidden_home_subtree(
-            Path::new("/home/u/Development/flutter"),
-            Some(home)
-        ));
-        assert!(!is_hidden_home_subtree(Path::new("/opt/tool"), Some(home)));
-        assert!(!is_hidden_home_subtree(Path::new("/home/u"), None));
+    fn does_not_follow_symlinked_dirs() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let _s = UnixListener::bind(outside.path().join("x.sock")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("link")).unwrap();
+        assert!(host_socket_masks(home.path(), &[]).is_empty());
     }
 }

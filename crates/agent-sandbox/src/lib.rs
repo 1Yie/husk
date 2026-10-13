@@ -8,6 +8,11 @@ pub mod audit;
 pub mod env_sanitize;
 #[cfg(target_os = "linux")]
 pub mod linux_bwrap;
+pub mod netpolicy;
+#[cfg(unix)]
+pub mod proxy;
+#[cfg(unix)]
+mod shared;
 #[cfg(target_os = "linux")]
 pub mod linux_landlock;
 #[cfg(target_os = "macos")]

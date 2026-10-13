@@ -36,7 +36,28 @@ pub struct SandboxConfig {
     pub workspace_dir: PathBuf,
     /// Whether the sandboxed process may reach the network.
     pub allow_network: bool,
-    /// Max resident memory (MB) — 2048 default.
+    /// Egress allowlist (srt `allowedDomains` semantics: `example.com`,
+    /// `*.example.com`, `host:443`, IP literals). When `allow_network` is
+    /// false and this is non-empty, capable backends route egress through
+    /// the per-process [`crate::proxy::SandboxProxy`] instead of cutting
+    /// the network outright — the command reaches the listed hosts and
+    /// nothing else. Empty + `allow_network: false` = full deny.
+    pub allowed_domains: Vec<String>,
+    /// Egress denylist — checked before the allowlist, always wins.
+    pub denied_domains: Vec<String>,
+    /// Extra read-deny paths beyond the backend's built-in secrets set
+    /// (srt `denyRead`). Backends mask these — a denied dir reads as empty.
+    pub deny_read: Vec<PathBuf>,
+    /// Re-allowed reads inside denied regions (srt `allowRead` —
+    /// narrower path wins over a covering deny).
+    pub allow_read: Vec<PathBuf>,
+    /// Write-denied paths *inside* writable roots (srt `denyWrite` —
+    /// `.git/hooks`, shell rc files, agent config dirs). Re-bound
+    /// read-only after the rw binds so they win the overlap.
+    pub deny_write: Vec<PathBuf>,
+    /// Max virtual memory (MB) via `ulimit -v`. 0 (default) = no cap —
+    /// `-v` measures virtual size (jemalloc/mmap-heavy tools trip it);
+    /// callers that want a cap set it via prefs.
     pub max_memory_mb: u64,
     /// Max spawned processes (fork-bomb guard) — backends that can enforce
     /// it do (bwrap: `--unshare-pid` + `ulimit -u`); 0 = no explicit cap.
@@ -69,8 +90,13 @@ impl Default for SandboxConfig {
         Self {
             workspace_dir: PathBuf::from("."),
             allow_network: false,
-            max_memory_mb: 2048,
-            max_processes: 256,
+            allowed_domains: Vec::new(),
+            denied_domains: Vec::new(),
+            deny_read: Vec::new(),
+            allow_read: Vec::new(),
+            deny_write: Vec::new(),
+            max_memory_mb: 0,
+            max_processes: 0,
             timeout_secs: 60,
             env_vars: Vec::new(),
             trusted_env: Vec::new(),
@@ -91,6 +117,11 @@ pub struct CommandOutput {
     pub stderr: String,
     /// True when the wall timeout fired (tree killed).
     pub is_timeout: bool,
+    /// Hosts/ports the egress proxy refused during this run — the raw
+    /// material for the "command needed network X, approve to widen"
+    /// escalation path. Empty when the run never hit the allowlist
+    /// (or the backend has no proxy).
+    pub sandbox_denials: Vec<String>,
     /// Peak RSS if the platform reports it.
     pub peak_memory_mb: Option<u64>,
     /// Wall-clock elapsed.

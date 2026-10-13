@@ -111,9 +111,42 @@ impl SandboxBackend for NoneBackend {
             stdout: out,
             stderr: err,
             is_timeout,
+            sandbox_denials: Vec::new(),
             peak_memory_mb: None,
             elapsed_ms: elapsed,
         })
+    }
+
+    /// Persistent spawn — same loud-unsandboxed contract as `run_command`
+    /// but caller-owned: no `kill_on_drop`. PDEATHSIG still applies so the
+    /// service dies with the agent process.
+    fn wrap_spawn(
+        &self,
+        cfg: &SandboxConfig,
+        cmd: &str,
+        args: &[&str],
+    ) -> Option<tokio::process::Command> {
+        let mut envs = sanitize_env(&cfg.env_vars);
+        let denied = vec![cfg.workspace_dir.clone()];
+        crate::env_sanitize::apply_environment_policy(&mut envs, &cfg.environment, None, &denied);
+        let mut command = tokio::process::Command::new(cmd);
+        command
+            .args(args)
+            .current_dir(&cfg.workspace_dir)
+            .env_clear()
+            .envs(envs);
+        #[cfg(unix)]
+        command.process_group(0);
+        #[cfg(target_os = "linux")]
+        unsafe {
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Some(command)
     }
 }
 
@@ -187,4 +220,5 @@ mod tests {
         assert_eq!(out.status, 0);
         assert!(out.stdout.contains("ready"));
     }
+
 }

@@ -428,6 +428,7 @@ impl SandboxBackend for LinuxLandlock {
             stdout: out,
             stderr: err,
             is_timeout,
+            sandbox_denials: Vec::new(),
             peak_memory_mb: None,
             elapsed_ms: elapsed,
         })
