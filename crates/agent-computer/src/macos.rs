@@ -150,14 +150,15 @@ impl DesktopBackend for MacBackend {
         }
         match hold_ms {
             Some(ms) => {
-                for p in &parts {
-                    cg_key(p, true)?;
-                }
-                tokio::time::sleep(Duration::from_millis(ms.min(30_000))).await;
-                for p in parts.iter().rev() {
-                    cg_key(p, false)?;
-                }
-                Ok(())
+                crate::keys::hold_chord(
+                    &parts,
+                    Duration::from_millis(ms),
+                    |k| cg_key(k, true),
+                    |k| {
+                        let _ = cg_key(k, false);
+                    },
+                )
+                .await
             }
             None => {
                 for p in &parts {
@@ -194,16 +195,16 @@ impl DesktopBackend for MacBackend {
     }
 
     async fn launch_app(&self, command: &str) -> Result<()> {
-        let trimmed = command.trim();
-        if trimmed.is_empty() {
-            bail!("empty launch command");
+        let spec = crate::traits::parse_launch(command)?;
+        // A command-line tool on PATH (`code`, `kwrite`) is exec'd directly,
+        // like on Linux. Anything else is an application name or bundle
+        // (`Safari`, `/Applications/Foo.app`) — LaunchServices resolves those.
+        if !spec.program.ends_with(".app") && crate::launch::program_exists(&spec.program) {
+            return crate::launch::spawn_detached(&spec).await;
         }
-        if trimmed.contains(['|', '&', ';', '>', '<', '`', '$', '(', ')']) {
-            bail!("launch takes a single program + args — no shell metacharacters");
-        }
-        // `open -a App` or `open path` detaches the GUI from the agent's
-        // process — the LaunchServices route is the macOS `setsid`/`start`.
-        run("open", &[trimmed], CMD_TIMEOUT).await?;
+        let mut args: Vec<&str> = vec!["-a", &spec.program];
+        args.extend(spec.args.iter().map(String::as_str));
+        run("open", &args, CMD_TIMEOUT).await?;
         Ok(())
     }
 }

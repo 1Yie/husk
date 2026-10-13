@@ -7,16 +7,28 @@ use crate::traits::DesktopBackend;
 
 /// Pick the best implemented desktop backend for this host.
 ///
-/// Linux → X11 when `$DISPLAY` + `xdotool` + a capture tool are all present,
-/// otherwise `none` carrying the reason. Detection never guesses: a session
+/// Linux → libei on Wayland (with `spectacle` for capture), X11 when `$DISPLAY`
+/// + `xdotool` + a capture tool are all present, otherwise `none` carrying the
+/// reason. Detection never guesses: a session
 /// that cannot control the desktop says so instead of failing mid-click.
 pub fn detect_backend() -> Arc<dyn DesktopBackend> {
     #[cfg(target_os = "linux")]
     fn pick() -> Result<Arc<dyn DesktopBackend>, String> {
-        // Wayland is a later stage: wlroots has grim + ydotool, but ydotool
-        // needs uinput access and GNOME/KDE expose neither — the honest
-        // answer today is the X11 probe (XWayland still answers when
-        // `$DISPLAY` is set) and otherwise a refusal that names the gap.
+        // Wayland: input goes through libei (the portal grants it once and the
+        // compositor remembers). xdotool is NOT used here — XWayland clients
+        // only, so its clicks never reach native windows. Screenshots still
+        // need an external grabber that understands Wayland (spectacle).
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            let tool = crate::x11::capture_tool_on_path()
+                .filter(|t| *t == crate::x11::CaptureTool::Spectacle)
+                .ok_or_else(|| {
+                    "Wayland session: install `spectacle` (KDE) so screenshots can see \
+                     native windows — `scrot`/`import` only capture a black frame here"
+                        .to_string()
+                })?;
+            return Ok(Arc::new(crate::libei::LibeiBackend::new(tool)));
+        }
+        // X11 session: the xdotool path, unchanged.
         crate::x11::X11Backend::probe()
             .map(|b| Arc::new(b) as Arc<dyn DesktopBackend>)
             .map_err(|e| e.to_string())
@@ -67,6 +79,6 @@ mod tests {
     #[test]
     fn detect_always_returns_a_backend() {
         let b = detect_backend();
-        assert!(matches!(b.id(), "x11" | "windows" | "macos" | "none"));
+        assert!(matches!(b.id(), "x11" | "wayland" | "windows" | "macos" | "none"));
     }
 }

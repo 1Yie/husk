@@ -131,14 +131,15 @@ impl DesktopBackend for WindowsBackend {
         }
         match hold_ms {
             Some(ms) => {
-                for p in &parts {
-                    key_vk(p, true)?;
-                }
-                tokio::time::sleep(Duration::from_millis(ms.min(30_000))).await;
-                for p in parts.iter().rev() {
-                    key_vk(p, false)?;
-                }
-                Ok(())
+                crate::keys::hold_chord(
+                    &parts,
+                    Duration::from_millis(ms),
+                    |k| key_vk(k, true),
+                    |k| {
+                        let _ = key_vk(k, false);
+                    },
+                )
+                .await
             }
             None => {
                 for p in &parts {
@@ -174,24 +175,8 @@ impl DesktopBackend for WindowsBackend {
     }
 
     async fn launch_app(&self, command: &str) -> Result<()> {
-        let trimmed = command.trim();
-        if trimmed.is_empty() {
-            bail!("empty launch command");
-        }
-        if trimmed.contains(['|', '&', ';', '>', '<', '`', '$', '(', ')']) {
-            bail!("launch takes a single program + args — no shell metacharacters");
-        }
-        // `cmd /c start "" <cmd>` detaches the GUI like `setsid` does on
-        // Linux — the child outlives the tool call.
-        let mut c = tokio::process::Command::new("cmd");
-        c.args(["/c", "start", "", trimmed])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(false);
-        c.spawn()
-            .with_context(|| format!("spawn `cmd /c start {trimmed}`"))?;
-        Ok(())
+        // Direct exec, no `cmd /c start` — see `launch::spawn_detached`.
+        crate::launch::spawn_detached(&crate::traits::parse_launch(command)?).await
     }
 }
 

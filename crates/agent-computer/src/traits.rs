@@ -9,12 +9,18 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
-/// Long-edge cap for the PNG handed to the model. 1568 px is the widest
-/// common provider bound (Anthropic's stated recommendation); an unscaled 4K
-/// capture would cost megabytes of base64 per frame.
+/// Long-edge cap for the PNG handed to the model.
 pub const MAX_EDGE: u32 = 1568;
+
+/// Total-pixel cap for the PNG handed to the model. Providers resize any
+/// image above ~1.15 megapixels (Anthropic: 1568 px long edge *and* ≈1.15 MP;
+/// newer tiers accept more). A frame past that is silently rescaled
+/// server-side, so the grid the model reads coordinates from no longer matches
+/// the `image` size we reported and every click lands off target. Staying
+/// inside the tighter limit keeps the two identical for every model.
+pub const MAX_PIXELS: u64 = 1_150_000;
 
 /// Which mouse button an action presses. The wire numbers are the backend's
 /// business (X11: 1/2/3) — this enum stays protocol-agnostic.
@@ -98,25 +104,136 @@ impl ScreenshotMeta {
     }
 }
 
-/// Downscale `(w, h)` so its long edge is ≤ `max_edge`, preserving aspect.
-/// Never upscales; a zero dimension passes through untouched.
+/// Downscale `(w, h)` so its long edge is ≤ `max_edge` **and** its area is
+/// ≤ [`MAX_PIXELS`], preserving aspect. Never upscales; a zero dimension
+/// passes through untouched.
 pub fn fit_dimensions(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
     let long = w.max(h);
-    if long <= max_edge || long == 0 {
+    if long == 0 || w == 0 || h == 0 {
         return (w, h);
     }
-    let scale = max_edge as f64 / long as f64;
-    (
-        ((w as f64 * scale).round() as u32).max(1),
-        ((h as f64 * scale).round() as u32).max(1),
-    )
+    let edge_scale = max_edge as f64 / long as f64;
+    let pixel_scale = (MAX_PIXELS as f64 / (w as f64 * h as f64)).sqrt();
+    let scale = edge_scale.min(pixel_scale);
+    if scale >= 1.0 {
+        return (w, h);
+    }
+    // Floor (with a hair of slack for float undershoot) so the area bound
+    // can never be exceeded by rounding up.
+    let dim = |v: u32| (((v as f64) * scale + 1e-6).floor() as u32).max(1);
+    (dim(w), dim(h))
+}
+
+/// A parsed `launch` request: one program plus its arguments, ready to be
+/// exec'd **directly** — never through a shell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchSpec {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+/// Programs that are shells, not applications. `launch` exists to put a GUI
+/// on screen; a shell here is `bash -c '<anything>'` outside the sandbox.
+/// This is a guard against the obvious misuse, not a boundary — `launch` can
+/// still start any other program, which is why it is approved on its own
+/// terms (see `permissions.rs`).
+const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "cmd", "powershell", "pwsh",
+];
+
+/// Split a `launch` command into program + args **without a shell**.
+///
+/// Grammar: tokens are separated by spaces/tabs; `'…'` is literal; `"…"`
+/// allows `"` for a quote; a leading `~`/`~/` expands to the home directory
+/// (nothing else does — `$VAR`, globs and operators are plain characters).
+/// Control characters (newline, NUL, …) are refused outright: they are how a
+/// second command rides along in a string a shell would parse.
+pub fn parse_launch(command: &str) -> Result<LaunchSpec> {
+    if command.trim().is_empty() {
+        bail!("empty launch command");
+    }
+    if let Some(c) = command.chars().find(|c| c.is_control() && *c != '\t') {
+        bail!("launch takes one line — control character {c:?} is not allowed");
+    }
+
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    // `started` distinguishes an empty quoted token (`''`) from no token.
+    let mut started = false;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' => {
+                if started {
+                    tokens.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            '\'' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => cur.push(c),
+                        None => bail!("launch command has an unterminated quote"),
+                    }
+                }
+            }
+            '"' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') if chars.peek() == Some(&'"') => {
+                            cur.push('"');
+                            chars.next();
+                        }
+                        Some(c) => cur.push(c),
+                        None => bail!("launch command has an unterminated quote"),
+                    }
+                }
+            }
+            c => {
+                started = true;
+                cur.push(c);
+            }
+        }
+    }
+    if started {
+        tokens.push(cur);
+    }
+
+    let mut it = tokens.into_iter();
+    let program = it.next().unwrap_or_default();
+    let args: Vec<String> = it.map(expand_home).collect();
+    let base = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&program)
+        .to_ascii_lowercase();
+    let base = base.strip_suffix(".exe").unwrap_or(&base);
+    if SHELLS.contains(&base) {
+        bail!("`{program}` is a shell — launch starts applications; run shell commands with `bash`");
+    }
+    Ok(LaunchSpec { program, args })
+}
+
+/// `~` and `~/x` → the home directory; anything else untouched.
+fn expand_home(arg: String) -> String {
+    if arg != "~" && !arg.starts_with("~/") {
+        return arg;
+    }
+    match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        Some(h) => format!("{}{}", h.to_string_lossy(), &arg[1..]),
+        None => arg,
+    }
 }
 
 /// One desktop backend. Everything a computer-use loop needs, nothing more —
 /// `screenshot` feeds the model's eyes, the rest are its hands.
 #[async_trait::async_trait]
 pub trait DesktopBackend: Send + Sync {
-    /// Stable id for telemetry/UI (`"x11"`, `"none"`).
+    /// Stable id for telemetry/UI (`"x11"`, `"wayland"`, `"none"`).
     fn id(&self) -> &'static str;
 
     /// Capture the screen, write a PNG (long edge ≤ [`MAX_EDGE`]) to `dest`,
@@ -147,12 +264,23 @@ pub trait DesktopBackend: Send + Sync {
     /// Pointer position in screenshot coordinates.
     async fn cursor_position(&self) -> Result<[i32; 2]>;
 
-    /// Launch a GUI application by name (`"kwrite"`, `"code"`, `"firefox"`).
-    /// The process is detached from the agent — it outlives the tool call.
+    /// Launch a GUI application: a program plus args, parsed by
+    /// [`parse_launch`] and exec'd directly — never through a shell. The
+    /// process is detached from the agent — it outlives the tool call.
     /// Runs outside the sandbox on the real display session: launching is
     /// the "I want a GUI on screen" escape hatch the `bash` tool cannot be
     /// (its sandbox would hide `$DISPLAY`/`/tmp/.X11-unix` by construction).
     async fn launch_app(&self, command: &str) -> Result<()>;
+
+    /// Acquire whatever the backend needs before the user is asked to approve
+    /// a `computer` call — on Wayland, the compositor's input grant. Lets the
+    /// system permission prompt come first, so an approval the user has
+    /// already given in Husk is not followed by a second, unexpected prompt.
+    /// Errors here mean the action cannot run at all, so the approval card is
+    /// never shown. Default: nothing to acquire.
+    async fn prepare(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -162,23 +290,41 @@ mod tests {
     #[test]
     fn fit_dimensions_never_upscales() {
         assert_eq!(fit_dimensions(800, 600, MAX_EDGE), (800, 600));
-        assert_eq!(
-            fit_dimensions(MAX_EDGE, MAX_EDGE, MAX_EDGE),
-            (MAX_EDGE, MAX_EDGE)
-        );
+        // Exactly on both limits (1568 long edge, 1568×733 ≈ 1.149 MP).
+        assert_eq!(fit_dimensions(1568, 733, MAX_EDGE), (1568, 733));
         assert_eq!(fit_dimensions(0, 0, MAX_EDGE), (0, 0));
+        assert_eq!(fit_dimensions(0, 500, MAX_EDGE), (0, 500));
     }
 
     #[test]
     fn fit_dimensions_caps_the_long_edge_keeping_aspect() {
-        // 4K landscape → 1568×882 (16:9), the size the model is billed for.
-        assert_eq!(fit_dimensions(3840, 2160, MAX_EDGE), (1568, 882));
-        // Portrait caps by height instead.
-        assert_eq!(fit_dimensions(1080, 1920, MAX_EDGE), (882, 1568));
-        // Odd aspect ratios still land inside the bound.
+        // Edge-bound: a wide strip is limited by its long edge.
+        assert_eq!(fit_dimensions(3000, 300, MAX_EDGE), (1568, 156));
+        // Odd aspect ratios still land inside both bounds.
         let (w, h) = fit_dimensions(3000, 1000, MAX_EDGE);
         assert_eq!(w, 1568);
         assert!(h <= MAX_EDGE && h > 0);
+    }
+
+    /// Pixel-bound: 16:9 frames hit the area cap before the edge cap, which
+    /// is exactly what a server-side rescale would otherwise do for us.
+    #[test]
+    fn fit_dimensions_caps_total_pixels() {
+        assert_eq!(fit_dimensions(3840, 2160, MAX_EDGE), (1429, 804));
+        assert_eq!(fit_dimensions(2560, 1440, MAX_EDGE), (1429, 804));
+        assert_eq!(fit_dimensions(1920, 1080, MAX_EDGE), (1429, 804));
+        // Portrait caps by height instead.
+        assert_eq!(fit_dimensions(1080, 1920, MAX_EDGE), (804, 1429));
+        // A frame already inside both bounds is untouched.
+        assert_eq!(fit_dimensions(1280, 720, MAX_EDGE), (1280, 720));
+        for (w, h) in [(3840, 2160), (2560, 1600), (5120, 1440), (1081, 1921), (7680, 4320)] {
+            let (tw, th) = fit_dimensions(w, h, MAX_EDGE);
+            assert!(tw as u64 * th as u64 <= MAX_PIXELS, "{w}x{h} -> {tw}x{th}");
+            assert!(tw.max(th) <= MAX_EDGE, "{w}x{h} -> {tw}x{th}");
+            // Aspect ratio is preserved to within a pixel.
+            let drift = (tw as f64 / th as f64 - w as f64 / h as f64).abs();
+            assert!(drift < 0.02, "{w}x{h} -> {tw}x{th}");
+        }
     }
 
     #[test]
@@ -225,5 +371,56 @@ mod tests {
         };
         assert_eq!(cap.map_to_display([10, 10]), [0, 0]);
         assert_eq!(cap.map_to_image([10, 10]), [0, 0]);
+    }
+    #[test]
+    fn launch_splits_program_and_args_without_a_shell() {
+        let s = parse_launch("kwrite /tmp/a.txt").unwrap();
+        assert_eq!(s.program, "kwrite");
+        assert_eq!(s.args, ["/tmp/a.txt"]);
+
+        let s = parse_launch("code 'my dir/x y' \"say \\\"hi\\\"\" ''").unwrap();
+        assert_eq!(s.args, ["my dir/x y", "say \"hi\"", ""]);
+
+        // Shell syntax is just characters here — nothing interprets it.
+        let s = parse_launch("app $HOME a;b `c` d|e >f").unwrap();
+        assert_eq!(s.args, ["$HOME", "a;b", "`c`", "d|e", ">f"]);
+    }
+
+    #[test]
+    fn launch_refuses_a_second_command_riding_a_newline() {
+        for cmd in ["kwrite\ntouch /tmp/x", "kwrite\rtouch /tmp/x", "kwrite\0x", "kwrite\x1b[0m"] {
+            let e = parse_launch(cmd).unwrap_err().to_string();
+            assert!(e.contains("control character"), "{cmd:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn launch_refuses_shells_by_name_path_and_exe_suffix() {
+        for cmd in [
+            "bash -c 'touch /tmp/x'",
+            "/bin/sh -c id",
+            "ZSH -c id",
+            "C:\\Windows\\System32\\cmd.exe /c calc",
+            "pwsh -Command x",
+        ] {
+            let e = parse_launch(cmd).unwrap_err().to_string();
+            assert!(e.contains("is a shell"), "{cmd}: {e}");
+        }
+        // A program that merely *contains* a shell name is fine.
+        assert!(parse_launch("bashful-gui").is_ok());
+    }
+
+    #[test]
+    fn launch_rejects_empty_and_unterminated_quotes() {
+        assert!(parse_launch("   ").is_err());
+        assert!(parse_launch("app 'oops").unwrap_err().to_string().contains("unterminated"));
+        assert!(parse_launch("app \"oops").unwrap_err().to_string().contains("unterminated"));
+    }
+
+    #[test]
+    fn launch_expands_only_a_leading_tilde() {
+        std::env::set_var("HOME", "/home/u");
+        let s = parse_launch("code ~/proj ~ a~b ~x").unwrap();
+        assert_eq!(s.args, ["/home/u/proj", "/home/u", "a~b", "~x"]);
     }
 }

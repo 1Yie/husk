@@ -16,9 +16,15 @@
 //! [`traits::Capture`].
 
 pub mod detect;
+mod keys;
+mod launch;
 pub mod none;
 pub mod traits;
 pub mod x11;
+
+// Wayland input over libei (portal-granted). Linux only.
+#[cfg(target_os = "linux")]
+pub mod libei;
 
 // Per-OS backends — only compiled (and only link their OS APIs) on their
 // own target, the same way `detect` only probes them there.
@@ -36,5 +42,6 @@ pub mod macos;
 pub use detect::detect_backend;
 pub use none::NoneBackend;
 pub use traits::{
-    fit_dimensions, Capture, DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir, MAX_EDGE,
+    fit_dimensions, parse_launch, Capture, DesktopBackend, LaunchSpec, MouseButton, ScreenshotMeta,
+    ScrollDir, MAX_EDGE, MAX_PIXELS,
 };
