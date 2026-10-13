@@ -397,6 +397,7 @@ mod tests {
             name: "read".into(),
             args_preview: "x.rs".into(),
             parent: None,
+            child_id: None,
         })
         .unwrap();
         tx.send(delta("b")).unwrap();

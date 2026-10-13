@@ -469,6 +469,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                 name: tool.clone(),
                                 parent: Some("batch_execute".into()),
                                 args_preview: String::new(),
+                                child_id: None,
                             });
                             let _ = ui.send(agent_ipc::events::UiEvent::ToolCallFinished {
                                 name: tool.clone(),
@@ -478,6 +479,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                 // not 已中断: the call never ran.
                                 ui_type: Some("rejected".into()),
                                 parent: Some("batch_execute".into()),
+                                child_id: None,
                             });
                         }
                         ItemOut {
@@ -507,6 +509,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                     .chars()
                                     .take(120)
                                     .collect(),
+                                child_id: None,
                             });
                         }
                         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -557,6 +560,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                 content,
                                 ui_type: None,
                                 parent: Some("batch_execute".into()),
+                                child_id: None,
                             });
                         }
                         out

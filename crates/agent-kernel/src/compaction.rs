@@ -84,6 +84,34 @@ pub fn should_compact(tokens: usize, window: usize) -> bool {
     should_compact_at(tokens, window, COMPACT_AT)
 }
 
+/// How many of the newest tool-result frames (screenshots) stay on the wire.
+/// A computer-use loop takes a fresh screenshot after every action and each
+/// one is re-encoded into every later request — without a bound a long loop
+/// ships dozens of stale desktop frames the model no longer needs. The newest
+/// frame is the one coordinates are read from; one extra gives it the
+/// before/after pair that shows what the last action changed.
+pub const KEEP_TOOL_IMAGES: usize = 2;
+
+/// Drop the image off every tool result except the newest `keep` frames,
+/// leaving a one-line note so the text still says why the picture is gone.
+/// Only `Role::Tool` rows are touched — images the user attached stay.
+/// Idempotent: a row already stripped has no images and is skipped.
+pub fn prune_stale_tool_images(history: &mut [ChatMessage], keep: usize) {
+    let mut seen = 0usize;
+    for m in history.iter_mut().rev() {
+        if m.role != Role::Tool || m.images.is_empty() {
+            continue;
+        }
+        seen += 1;
+        if seen > keep {
+            m.images.clear();
+            if let Some(c) = m.content.as_mut() {
+                c.push_str("\n[frame dropped: superseded by a newer screenshot]");
+            }
+        }
+    }
+}
+
 /// Sanitize + budget-fit the history in place; runs before every sample.
 ///
 /// Tool calls are flattened into text only for providers without native tool
@@ -109,6 +137,8 @@ pub fn sanitize_for_sample(
         for m in history.iter_mut() {
             m.images.clear();
         }
+    } else {
+        prune_stale_tool_images(history, KEEP_TOOL_IMAGES);
     }
 
     // (4) fit to budget — drop oldest non-system messages.
@@ -675,5 +705,55 @@ mod tests {
         let r = render_for_summary(&m);
         assert!(r.starts_with("assistant: checking"));
         assert!(r.contains("[call: fs_read("));
+    }
+    fn frame_row(id: &str) -> ChatMessage {
+        let mut m = msg(Role::Tool, "screenshot saved: shot.png");
+        m.tool_call_id = Some(id.into());
+        m.images = vec![agent_llm::types::ImageRef::for_path("/ws/shot.png".into()).unwrap()];
+        m
+    }
+
+    #[test]
+    fn only_the_newest_frames_stay_on_the_wire() {
+        let mut h = vec![msg(Role::System, "sys")];
+        for i in 0..5 {
+            h.push(frame_row(&format!("c{i}")));
+        }
+        prune_stale_tool_images(&mut h, 2);
+        let kept: Vec<bool> = h.iter().skip(1).map(|m| !m.images.is_empty()).collect();
+        assert_eq!(kept, [false, false, false, true, true]);
+        // The stripped rows say why, once; the kept rows are untouched.
+        assert!(h[1].content.as_deref().unwrap().contains("frame dropped"));
+        assert!(!h[5].content.as_deref().unwrap().contains("frame dropped"));
+        // Idempotent: a second pass appends nothing.
+        let before = h[1].content.clone();
+        prune_stale_tool_images(&mut h, 2);
+        assert_eq!(h[1].content, before);
+    }
+
+    #[test]
+    fn user_attached_images_are_never_pruned() {
+        let mut user = msg(Role::User, "look at this");
+        user.images = vec![agent_llm::types::ImageRef::for_path("/ws/a.png".into()).unwrap()];
+        let mut h = vec![msg(Role::System, "sys"), user];
+        for i in 0..4 {
+            h.push(frame_row(&format!("c{i}")));
+        }
+        prune_stale_tool_images(&mut h, 1);
+        assert_eq!(h[1].images.len(), 1, "the user's image must survive");
+        assert_eq!(h.iter().filter(|m| !m.images.is_empty()).count(), 2);
+    }
+
+    #[test]
+    fn sanitize_applies_the_frame_bound_for_vision_models() {
+        let mut h = vec![msg(Role::System, "sys")];
+        for i in 0..6 {
+            h.push(frame_row(&format!("c{i}")));
+        }
+        sanitize_for_sample(&mut h, 1_000_000, true);
+        assert_eq!(
+            h.iter().filter(|m| !m.images.is_empty()).count(),
+            KEEP_TOOL_IMAGES
+        );
     }
 }

@@ -111,6 +111,26 @@ impl AskChannel {
     }
 }
 
+/// Shared, swappable handle to the workspace memory store. Cloning shares the
+/// same slot, so a subagent or a tool sees the owning actor's current switch
+/// state rather than a snapshot from spawn time.
+#[derive(Clone, Default)]
+pub struct MemoryHandle(Arc<std::sync::RwLock<Option<Arc<agent_context::memory::MemoryStore>>>>);
+
+impl MemoryHandle {
+    /// The store as of now — `None` while memory is switched off.
+    pub fn get(&self) -> Option<Arc<agent_context::memory::MemoryStore>> {
+        self.0.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Replace the store (`None` switches memory off).
+    pub fn set(&self, store: Option<Arc<agent_context::memory::MemoryStore>>) {
+        if let Ok(mut g) = self.0.write() {
+            *g = store;
+        }
+    }
+}
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
@@ -142,8 +162,10 @@ pub struct ToolCtx {
     /// `None` for unattached contexts (tests, headless spawns).
     pub session: Option<(i64, Arc<crate::session_store::SessionStore>)>,
     /// The workspace's persistent memory — `remember` writes persona entries
-    /// here. `None` in unattached contexts (tests, headless spawns).
-    pub memory: Option<Arc<agent_context::memory::MemoryStore>>,
+    /// here. Shared with the owning actor: the 启用记忆 switch swaps the
+    /// inner store, so a `remember` after "off" sees `None` and is refused.
+    /// `None` inside the handle in unattached contexts (tests, headless spawns).
+    pub memory: MemoryHandle,
     /// Parent turn's cooperative cancel flag — a delegated subagent polls
     /// it so a user cancel propagates into the delegation instead of
     /// orphaning a running child. `None` in unattached contexts.
@@ -184,6 +206,20 @@ pub struct ToolCtx {
 }
 
 impl ToolCtx {
+    /// The sandbox a process tool should dispatch through — the detected
+    /// backend when enabled, the loud `none` backend when the user turned
+    /// the master switch off. Read per-call so toggling the pref hits the
+    /// very next `bash`/`service`/`test_runner` spawn, not just new
+    /// sessions.
+    pub fn effective_sandbox(&self) -> &dyn agent_sandbox::SandboxBackend {
+        static NONE: agent_sandbox::NoneBackend = agent_sandbox::NoneBackend;
+        if crate::sandbox_prefs::current().enabled() {
+            &*self.sandbox
+        } else {
+            &NONE
+        }
+    }
+
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let root = root.canonicalize().unwrap_or(root);
@@ -193,7 +229,7 @@ impl ToolCtx {
             sandbox: Arc::from(sandbox),
             desktop: agent_computer::detect_backend(),
             session: None,
-            memory: None,
+            memory: MemoryHandle::default(),
             cancel: None,
             subagent: None,
             depth: 0,
@@ -220,7 +256,7 @@ impl ToolCtx {
             // desktop pairs this with `with_desktop`.
             desktop: agent_computer::detect_backend(),
             session: None,
-            memory: None,
+            memory: MemoryHandle::default(),
             cancel: None,
             subagent: None,
             depth: 0,
@@ -306,6 +342,18 @@ impl ToolCtx {
                 let base = loop {
                     if let Ok(c) = cursor.canonicalize() {
                         break c;
+                    }
+                    // `canonicalize` also fails for a *dangling* symlink
+                    // (its target does not exist). Treating that as a
+                    // plain missing path would return the in-workspace
+                    // link path, and the later write follows the link to
+                    // wherever it points — possibly outside the workspace.
+                    if cursor
+                        .symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                    {
+                        return Err(ToolError::PathEscape(path.to_string()));
                     }
                     let Some(name) = cursor.file_name() else {
                         return Err(ToolError::PathEscape(path.to_string()));
@@ -486,6 +534,7 @@ impl ToolRegistry {
         r.register(crate::tools::grep::spec());
         r.register(crate::tools::test_runner::spec());
         r.register(crate::tools::bash::spec());
+        r.register(crate::tools::services::spec());
         r.register(crate::tools::todo::spec());
         r.register(crate::tools::skill::spec());
         r.register(crate::tools::remember::spec());
@@ -499,6 +548,20 @@ impl ToolRegistry {
         r.register(crate::tools::batch::spec());
         r.register(crate::tools::blueprint::spec());
         r
+    }
+
+    /// The registry a delegated child may draw from: builtins minus the tools no
+    /// child may hold. `delegate` is the recursion guard, `computer` and
+    /// `HumanInteraction` need a human a child cannot reach, and `remember` writes
+    /// the persona every later parent turn reads — a child works on untrusted
+    /// content, so it must not write that.
+    pub fn child_builtins() -> Self {
+        Self::with_builtins().filtered(|s| {
+            s.name != "delegate"
+                && s.name != "remember"
+                && s.name != "computer"
+                && s.class != ToolClass::HumanInteraction
+        })
     }
 
     pub fn register(&mut self, spec: ToolSpec) {
@@ -602,6 +665,15 @@ mod tests {
     /// `resolve` must accept a file whose parent directories do not exist yet —
     /// the canonicalize walk climbs to the deepest existing ancestor.
     #[test]
+    fn unknown_tool_is_not_readonly() {
+        // The turn-start baseline keys off `is_readonly`: a plugin/MCP tool
+        // has no built-in spec, so it must count as a potential write.
+        let reg = ToolRegistry::with_builtins();
+        assert!(!reg.is_readonly("plugin__tool_that_does_not_exist"));
+        assert!(reg.is_readonly("smart_read"));
+    }
+
+    #[test]
     fn resolve_new_file_in_missing_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ToolCtx::new(tmp.path());
@@ -621,5 +693,37 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ToolCtx::new(tmp.path());
         assert!(ctx.resolve("../../outside.txt").is_err());
+    }
+
+    /// A dangling symlink whose target lies outside the workspace must not
+    /// resolve: the later write would follow the link out of the sandbox.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_rejects_dangling_symlink_to_outside() {
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("not-yet.txt");
+        std::os::unix::fs::symlink(&target, ws.path().join("link.txt")).unwrap();
+        let ctx = ToolCtx::new(ws.path());
+        assert!(ctx.resolve("link.txt").is_err());
+        assert!(ctx.resolve("link.txt/child").is_err());
+        assert!(!target.exists());
+    }
+
+    /// A child can read and search, but never persist memory, recurse, or reach
+    /// the human. Those are exactly the tools excluded from `child_builtins`.
+    #[test]
+    fn child_builtins_exclude_persistence_recursion_and_human_tools() {
+        let child = ToolRegistry::child_builtins();
+        for banned in ["remember", "delegate", "computer", "ask_question"] {
+            assert!(
+                child.spec(banned).is_none(),
+                "child registry must not hold `{banned}`"
+            );
+        }
+        assert!(child.spec("smart_read").is_some());
+        assert!(child.spec("bash").is_some());
+        // The parent still has the full set, so the exclusion is the child's alone.
+        assert!(ToolRegistry::with_builtins().spec("remember").is_some());
     }
 }

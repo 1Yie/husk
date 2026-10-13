@@ -136,6 +136,7 @@ pub struct SessionHandle {
     /// Direct cancel flag — set `true` to abort the in-flight turn. Bypasses
     /// the command pump so a Cancel isn't queued behind `run_turn`.
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub shutdown: Arc<tokio::sync::Notify>,
     /// Sidebar preview — updated from events + turn boundaries.
     pub preview: String,
     /// True while this session's actor is mid-turn (drives the ⟳ marker).
@@ -208,10 +209,27 @@ pub struct SessionManager {
     /// Model distillation switch — `false` keeps deterministic episode/fact
     /// writes but drops the per-turn summarizer model call.
     pub memory_distill: bool,
+    /// `.blueprint/` switch — the default for sessions spawned from now on,
+    /// and broadcast to live sessions when it changes.
+    pub blueprint_enabled: bool,
     /// Workspace root (for git branch / cwd display).
     pub workspace_root: std::path::PathBuf,
     /// Workspace is open. `false` = empty state: no actors, no sessions.
     pub workspace_active: bool,
+}
+
+/// Process-lifetime runtime that owns plugin (MCP) background tasks.
+/// Must outlive every `load_all`: the stdio demux reader is spawned on it.
+fn plugin_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("plugin-rt")
+            .enable_all()
+            .build()
+            .expect("plugin runtime")
+    })
 }
 
 impl SessionManager {
@@ -219,6 +237,16 @@ impl SessionManager {
     /// (sidebar running/preview).
     pub fn handle_mut(&mut self, id: i64) -> Option<&mut SessionHandle> {
         self.handles.get_mut(&id)
+    }
+
+    /// Read-only twin of [`Self::handle_mut_at`] — a session's live handle
+    /// wherever it lives (active workspace or `parked`).
+    pub fn handle_at(&self, root: &str, id: i64) -> Option<&SessionHandle> {
+        if self.workspace_root.to_string_lossy() == root {
+            self.handles.get(&id)
+        } else {
+            self.parked.get(root)?.get(&id)
+        }
     }
 
     /// Mutable access to a session's live handle wherever it lives — the
@@ -294,21 +322,24 @@ impl SessionManager {
         // Empty boot: inert store, no actors, no metas.
         let Some(cwd) = cwd else {
             let store = Arc::new(
-                SessionStore::open(
+                SessionStore::open_or_transient(
                     &crate::session_store::app_data_dir()
                         .unwrap_or_else(|| std::path::PathBuf::from("/tmp")),
                 )
-                .expect("session store"),
+                .expect("initialize shared session store"),
             );
             let defaults = crate::session_store::try_load_default_preferences();
             if let Some(d) = &defaults {
                 crate::sandbox_prefs::set(crate::sandbox_prefs::SandboxLimits {
+                    enabled: d.sandbox_enabled,
                     network: d
                         .sandbox_network
                         .as_deref()
                         .and_then(crate::sandbox_prefs::network_from_label),
                     max_memory_mb: d.sandbox_max_memory_mb,
                     max_processes: d.sandbox_max_processes,
+                    allowed_domains: d.sandbox_allowed_domains.clone().unwrap_or_default(),
+                    denied_domains: d.sandbox_denied_domains.clone().unwrap_or_default(),
                 });
             }
             // No workspace yet — the settings-pane default pair is the only
@@ -354,6 +385,10 @@ impl SessionManager {
                     .unwrap_or(crate::compaction::COMPACT_AT),
                 memory_enabled: defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true),
                 memory_distill: defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true),
+                blueprint_enabled: defaults
+                    .as_ref()
+                    .map(|d| d.blueprint_enabled)
+                    .unwrap_or(true),
                 workspace_root: std::path::PathBuf::new(),
                 workspace_active: false,
             };
@@ -366,16 +401,9 @@ impl SessionManager {
             // lazily — a boot landing here needs it to exist.
             let _ = std::fs::create_dir_all(&canon);
         }
-        let store = Arc::new(SessionStore::open(&canon).unwrap_or_else(|_| {
-            // Fallback: a temp db so the app still boots without a data dir.
-            // `open_at` is required here — `open` ignores its path and goes
-            // through the app-wide handle, so the old `/tmp` call was dead.
-            SessionStore::open_at(
-                &canon,
-                &std::env::temp_dir().join("husk-fallback-sessions.db"),
-            )
-            .expect("session store")
-        }));
+        let store = Arc::new(
+            SessionStore::open_or_transient(&canon).expect("initialize shared session store"),
+        );
 
         crate::session_store::record_recent_workspace(&canon);
 
@@ -415,12 +443,15 @@ impl SessionManager {
         // process tools read them even before the settings window opens.
         if let Some(d) = &defaults {
             crate::sandbox_prefs::set(crate::sandbox_prefs::SandboxLimits {
+                enabled: d.sandbox_enabled,
                 network: d
                     .sandbox_network
                     .as_deref()
                     .and_then(crate::sandbox_prefs::network_from_label),
                 max_memory_mb: d.sandbox_max_memory_mb,
                 max_processes: d.sandbox_max_processes,
+                allowed_domains: d.sandbox_allowed_domains.clone().unwrap_or_default(),
+                denied_domains: d.sandbox_denied_domains.clone().unwrap_or_default(),
             });
         }
 
@@ -449,6 +480,10 @@ impl SessionManager {
             compact_at,
             memory_enabled,
             memory_distill,
+            blueprint_enabled: defaults
+                .as_ref()
+                .map(|d| d.blueprint_enabled)
+                .unwrap_or(true),
             workspace_root: canon,
             workspace_active: true,
         };
@@ -943,11 +978,13 @@ impl SessionManager {
         let thinking_level = actor.thinking_writer();
         let steer_tx = actor.steer_writer();
         let cancel = actor.cancel_writer();
+        let shutdown = actor.shutdown_writer();
         let queue = actor.queue_writer();
 
         // Lifecycle hooks, installed before the actor starts: the shared chain
         // may gain hooks later (`reload_plugins`) without a restart.
         actor.set_hooks(self.hooks.clone());
+        actor.set_blueprint_enabled(self.blueprint_enabled);
 
         // Actor run() on its own tokio thread — a background session keeps
         // running its turn while the UI shows another session.
@@ -955,11 +992,22 @@ impl SessionManager {
         // silently kills the thread — `cmd_rx` then reports Closed and every
         // later prompt vanishes with zero UI feedback. Catch the unwind so
         // the crash surfaces as an event instead of a dead session.
+        // NOTE: only effective under `panic = "unwind"` (dev/test). The
+        // release profile sets `panic = "abort"`, where an actor panic ends
+        // the whole process instead of reaching this handler.
         let crash_sink = channels.event_tx.clone();
         std::thread::Builder::new()
             .name(format!("session-{id}-rt"))
             .spawn(move || {
-                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                // `Runtime::new()` sizes the worker pool to the core count;
+                // with one runtime per live session that multiplies into
+                // hundreds of idle threads. Two workers are enough for one
+                // actor (turn task + cancel/approval watchers).
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime");
                 if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     rt.block_on(async move { actor.run().await });
                 })) {
@@ -993,7 +1041,11 @@ impl SessionManager {
             std::thread::Builder::new()
                 .name(format!("session-{id}-fwd"))
                 .spawn(move || {
-                    let rt = tokio::runtime::Runtime::new().expect("tokio rt");
+                    // Pure `recv → send` pump: no worker pool needed.
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("tokio rt");
                     rt.block_on(async move {
                         while let Some(ev) = rx.recv().await {
                             if tx.send((root.clone(), id, ev)).is_err() {
@@ -1024,6 +1076,7 @@ impl SessionManager {
                 steer_tx,
                 queue,
                 cancel,
+                shutdown,
                 preview,
                 running: false,
                 ui,
@@ -1181,10 +1234,14 @@ impl SessionManager {
         if !self.workspace_active {
             return;
         }
+        if let Err(error) = self.store.remove(id) {
+            tracing::error!(%error, session=id, "session deletion failed");
+            return;
+        }
         if let Some(h) = self.handles.remove(&id) {
             h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            h.shutdown.notify_one();
         }
-        let _ = self.store.remove(id);
         self.metas = self.store.list();
         if self.active_id == id {
             match self.metas.first().map(|m| m.id) {
@@ -1258,8 +1315,11 @@ impl SessionManager {
             hooks.replace(Vec::new());
             return None;
         }
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let mgr = rt.block_on(agent_plugin::load_all(root));
+        // The MCP stdio reader/stderr tasks are `tokio::spawn`ed on whichever
+        // runtime runs `load_all`. A runtime dropped after the handshake
+        // kills them, leaving clients that list tools but never see a
+        // response. Run on a process-lifetime runtime instead.
+        let mgr = plugin_runtime().block_on(agent_plugin::load_all(root));
         hooks.replace(crate::hooks::manifest_hooks(mgr.hook_specs()));
         tracing::info!(
             tools = mgr.exported_tools().len(),
@@ -1328,9 +1388,13 @@ impl SessionManager {
         ),
         id: &str,
     ) -> Result<Vec<serde_json::Value>, String> {
+        // Hash the manifest as it is on disk right now: the grant must cover
+        // exactly what the loader will run next.
+        let manifest = agent_plugin::current_manifest(id, &parts.2)
+            .ok_or_else(|| format!("no manifest for plugin `{id}` in this workspace"))?;
         let path = agent_plugin::trust_store_path().ok_or("no config dir for the trust store")?;
         let mut store = agent_plugin::TrustStore::load(&path);
-        store.trust(id, &parts.2);
+        store.trust_content(id, &parts.2, &manifest);
         store.save(&path);
         Ok(Self::reload_plugins_detached(parts))
     }
@@ -1431,9 +1495,11 @@ impl SessionManager {
         }
         // Record the grant first, then reload: the load path reads grants from
         // disk, so persisting before it runs is what makes the plugin load.
+        let manifest = agent_plugin::current_manifest(id, &self.workspace_root)
+            .ok_or_else(|| format!("no manifest for plugin `{id}` in this workspace"))?;
         let path = agent_plugin::trust_store_path().ok_or("no config dir for the trust store")?;
         let mut store = agent_plugin::TrustStore::load(&path);
-        store.trust(id, &self.workspace_root);
+        store.trust_content(id, &self.workspace_root, &manifest);
         store.save(&path);
         Ok(self.reload_plugins())
     }
@@ -1515,10 +1581,11 @@ impl SessionManager {
                 .plugins
                 .as_ref()
                 .and_then(|h| h.read().ok().and_then(|g| g.clone()));
-            let trusted = mgr
-                .as_ref()
-                .map(|m| m.trust.is_trusted(&id, &self.workspace_root))
-                .unwrap_or(false);
+            let trusted = agent_plugin::current_manifest(&id, &self.workspace_root)
+                .zip(mgr.as_ref())
+                .is_some_and(|(manifest, m)| {
+                    m.trust.is_trusted_content(&id, &self.workspace_root, &manifest)
+                });
             // The toggle binds the PERSISTED intent, not the live flag — a
             // failed or untrusted plugin reads "on" (it would run once the
             // blocker clears), because live `enabled` being false there says
@@ -1672,6 +1739,12 @@ impl SessionManager {
         self.handles.get(&self.active_id)
     }
 
+    /// Steer one subagent of the active session. The owner is `active_id`, read
+    /// here on the server; the caller names only the child.
+    pub fn steer_active_child(&self, child_id: u64, text: String) -> Result<(), String> {
+        crate::tools::delegate::steer_child(self.active_id, child_id, text)
+    }
+
     /// Load a session's persisted history (for rebuilding a closed view).
     pub fn store_history(&self, id: i64) -> Option<Vec<agent_llm::types::ChatMessage>> {
         self.store.load_history(id)
@@ -1692,24 +1765,11 @@ impl SessionManager {
         id: i64,
         before: Option<usize>,
         count: usize,
-    ) -> (Vec<agent_llm::types::ChatMessage>, usize, usize, usize) {
+    ) -> std::io::Result<(Vec<agent_llm::types::ChatMessage>, usize, usize, usize)> {
         if !self.workspace_active {
-            return (Vec::new(), 0, 0, 0);
+            return Ok((Vec::new(), 0, 0, 0));
         }
-        let hist = self.store.load_history(id).unwrap_or_default();
-        let total = hist.len();
-        // Visible turns ≈ non-hidden user messages — the rail sizes its
-        // overview track against this so unloaded history still occupies
-        // its true share of the strip.
-        fn is_turn(m: &agent_llm::types::ChatMessage) -> bool {
-            m.role == agent_llm::types::Role::User
-                && m.notice != Some(agent_llm::types::NoticeKind::Hidden)
-        }
-        let turn_total = hist.iter().filter(|m| is_turn(m)).count();
-        let end = before.map(|b| b.min(total)).unwrap_or(total);
-        let start = end.saturating_sub(count);
-        let turn_offset = hist[..start].iter().filter(|m| is_turn(m)).count();
-        (hist[start..end].to_vec(), total, turn_total, turn_offset)
+        self.store.load_history_page(id, before, count)
     }
 
     /// A session's persisted last-turn usage — seeds the header meter when
@@ -1750,17 +1810,12 @@ impl SessionManager {
         if !self.workspace_active {
             return;
         }
-        let Some(mut meta) = self.store.list().into_iter().find(|m| m.id == id) else {
+        if let Err(error) = self.store.update_queue(id, items.clone()) {
+            tracing::error!(%error, session=id, "queued prompts persistence failed");
             return;
-        };
-        meta.queued_prompts = items;
-        meta.updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = self.store.upsert_meta(meta.clone());
+        }
         if let Some(m) = self.metas.iter_mut().find(|m| m.id == id) {
-            *m = meta;
+            m.queued_prompts = items;
         }
     }
 
@@ -2094,9 +2149,15 @@ impl SessionManager {
                 active_model: self.default_model.clone(),
                 memory_enabled: self.memory_enabled,
                 memory_distill: self.memory_distill,
+                blueprint_enabled: self.blueprint_enabled,
+                sandbox_enabled: lim.enabled,
                 sandbox_network: Some(lim.network_label().into()),
                 sandbox_max_memory_mb: lim.max_memory_mb,
                 sandbox_max_processes: lim.max_processes,
+                sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
+                    .then(|| lim.allowed_domains.clone()),
+                sandbox_denied_domains: (!lim.denied_domains.is_empty())
+                    .then(|| lim.denied_domains.clone()),
             },
         );
     }
@@ -2145,9 +2206,15 @@ impl SessionManager {
                 active_model: self.default_model.clone(),
                 memory_enabled: self.memory_enabled,
                 memory_distill: self.memory_distill,
+                blueprint_enabled: self.blueprint_enabled,
+                sandbox_enabled: lim.enabled,
                 sandbox_network: Some(lim.network_label().into()),
                 sandbox_max_memory_mb: lim.max_memory_mb,
                 sandbox_max_processes: lim.max_processes,
+                sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
+                    .then(|| lim.allowed_domains.clone()),
+                sandbox_denied_domains: (!lim.denied_domains.is_empty())
+                    .then(|| lim.denied_domains.clone()),
             },
         );
     }
@@ -2157,6 +2224,12 @@ impl SessionManager {
     /// spawned after it (live actors keep their wiring).
     pub fn memory_prefs(&self) -> (bool, bool) {
         (self.memory_enabled, self.memory_distill)
+    }
+
+    /// The blueprint default — unlike memory, a change is broadcast to live
+    /// sessions by `set_blueprint_enabled`, so this is the settings echo.
+    pub fn blueprint_pref(&self) -> bool {
+        self.blueprint_enabled
     }
 
     /// The settings-pane default model (`active_provider`, `active_model`)
@@ -2185,9 +2258,15 @@ impl SessionManager {
                 active_model: self.default_model.clone(),
                 memory_enabled: self.memory_enabled,
                 memory_distill: self.memory_distill,
+                blueprint_enabled: self.blueprint_enabled,
+                sandbox_enabled: lim.enabled,
                 sandbox_network: Some(lim.network_label().into()),
                 sandbox_max_memory_mb: lim.max_memory_mb,
                 sandbox_max_processes: lim.max_processes,
+                sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
+                    .then(|| lim.allowed_domains.clone()),
+                sandbox_denied_domains: (!lim.denied_domains.is_empty())
+                    .then(|| lim.denied_domains.clone()),
             },
         );
         // A workspace pin (`prefs.provider`/`prefs.model`, written whenever a
@@ -2203,6 +2282,25 @@ impl SessionManager {
             let _ = self.store.save_prefs(&prefs);
         }
         self.restore_workspace_default_settings();
+    }
+
+    /// Update + persist the blueprint switch. It becomes the default for new
+    /// sessions and is pushed to every live and parked session, so each one
+    /// follows it from its next turn — the same reach the old global had.
+    pub fn set_blueprint_enabled(&mut self, v: bool) {
+        self.blueprint_enabled = v;
+        let live = self
+            .handles
+            .values()
+            .chain(self.parked.values().flat_map(|m| m.values()));
+        for h in live {
+            let _ = h
+                .cmd_tx
+                .try_send(agent_ipc::UiCommand::SetBlueprintEnabled { enabled: v });
+        }
+        // A no-op memory update re-saves the whole prefs row — which now
+        // carries the flag.
+        self.set_memory_prefs(None, None);
     }
 
     /// Update + persist the memory switches. No live-session broadcast —
@@ -2227,9 +2325,15 @@ impl SessionManager {
                 active_model: self.default_model.clone(),
                 memory_enabled: self.memory_enabled,
                 memory_distill: self.memory_distill,
+                blueprint_enabled: self.blueprint_enabled,
+                sandbox_enabled: lim.enabled,
                 sandbox_network: Some(lim.network_label().into()),
                 sandbox_max_memory_mb: lim.max_memory_mb,
                 sandbox_max_processes: lim.max_processes,
+                sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
+                    .then(|| lim.allowed_domains.clone()),
+                sandbox_denied_domains: (!lim.denied_domains.is_empty())
+                    .then(|| lim.denied_domains.clone()),
             },
         );
     }
@@ -2444,6 +2548,7 @@ mod tests {
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                shutdown: Arc::new(tokio::sync::Notify::new()),
                 preview: String::new(),
                 running: false,
                 ui,
@@ -2629,6 +2734,7 @@ mod tests {
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                shutdown: Arc::new(tokio::sync::Notify::new()),
                     preview: String::new(),
                     running: false,
                     ui,
@@ -2705,6 +2811,7 @@ mod tests {
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                shutdown: Arc::new(tokio::sync::Notify::new()),
                     preview: String::new(),
                     running: false,
                     ui,
@@ -2774,6 +2881,7 @@ mod tests {
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                shutdown: Arc::new(tokio::sync::Notify::new()),
                 preview: String::new(),
                 running: false,
                 ui,

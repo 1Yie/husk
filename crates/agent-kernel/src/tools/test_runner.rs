@@ -59,7 +59,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), TIMEOUT);
 
     let out = ctx
-        .sandbox
+        .effective_sandbox()
         .run_command(&parsed.command, &[], &cfg)
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
@@ -247,6 +247,7 @@ mod tests {
         ) -> anyhow::Result<CommandOutput> {
             self.calls.lock().unwrap().push(cmd.to_string());
             Ok(CommandOutput {
+                sandbox_denials: Vec::new(),
                 status: self.status,
                 stdout: self.stdout.to_string(),
                 stderr: self.stderr.to_string(),

@@ -65,6 +65,11 @@ pub enum CompactOutcome {
     NothingToDo,
 }
 
+/// Hard cap on `computer` calls in one turn. A session grant removes the
+/// per-call prompt, so this is what bounds a runaway or injected loop of
+/// synthetic input; the model is told to stop and report instead.
+const MAX_COMPUTER_ACTIONS_PER_TURN: usize = 60;
+
 /// Handle to the live plugin router. `None` = no plugin dir discovered; `Some`
 /// with an inner `None` = a plugin manager existed but failed to load, which a
 /// later reload can still fill in.
@@ -94,6 +99,9 @@ pub struct Engine {
     /// Tools the user denied via an approval card this turn — same provenance
     /// role as `steers_this_turn` for `TurnOutcome::denials`.
     denials_this_turn: Vec<String>,
+    /// `computer` calls that reached dispatch this turn — bounded by
+    /// [`MAX_COMPUTER_ACTIONS_PER_TURN`].
+    computer_actions_this_turn: usize,
     /// Permission gate consulted before every tool dispatch.
     permissions: Arc<std::sync::RwLock<PermissionGate>>,
     /// Decision slot shared with SessionActor — the engine can't hold a
@@ -130,6 +138,10 @@ pub struct Engine {
     /// runtime (a plugin added in settings). Read per request, never cached, so
     /// a live session picks up a reload without being restarted.
     plugin_router: Option<PluginHandle>,
+    /// This session's `.blueprint/` switch (settings 偏好). Off hides the
+    /// prompt index, the turn-end check and the baseline — per session, so a
+    /// toggle never reaches another session in the same process.
+    blueprint_enabled: bool,
     /// Thinking / reasoning intensity level (e.g. "off", "low", "medium",
     /// "high", "max"). Shared slot like `permissions` — the bridge reads it
     /// to report a session's live level back to the UI.
@@ -185,6 +197,7 @@ impl Engine {
             steer_queue: VecDeque::new(),
             steers_this_turn: Vec::new(),
             denials_this_turn: Vec::new(),
+            computer_actions_this_turn: 0,
             permissions: Arc::new(std::sync::RwLock::new(PermissionGate::from_mode_str(
                 "default",
             ))),
@@ -198,6 +211,7 @@ impl Engine {
             last_prompt_tokens: 0,
             hooks: crate::hooks::HookChain::new(),
             plugin_router: None,
+            blueprint_enabled: true,
             thinking_level: Arc::new(std::sync::RwLock::new(None)),
             thinking_level_map: None,
             model_params: agent_llm::ModelParams::EMPTY,
@@ -316,6 +330,15 @@ impl Engine {
     /// SessionActor installs the hook chain (registered plugins/built-ins).
     pub fn set_hooks(&mut self, chain: crate::hooks::HookChain) {
         self.hooks = chain;
+    }
+
+    /// Per-session `.blueprint/` switch — SessionActor forwards the preference.
+    pub fn set_blueprint_enabled(&mut self, enabled: bool) {
+        self.blueprint_enabled = enabled;
+    }
+
+    pub fn blueprint_enabled(&self) -> bool {
+        self.blueprint_enabled
     }
 
     /// The active model's context window — SessionActor sets it from config.
@@ -481,6 +504,7 @@ impl Engine {
         // Fresh provenance record for this turn — see `TurnOutcome::steers`.
         self.steers_this_turn.clear();
         self.denials_this_turn.clear();
+        self.computer_actions_this_turn = 0;
         let mut user_msg = ChatMessage::user(user_text);
         if !images.is_empty() {
             if self.supports_images() {
@@ -520,10 +544,10 @@ impl Engine {
         // break `.blueprint/` rules; a second failure lands as a report.
         let mut blueprint_followups = 0usize;
         const MAX_BLUEPRINT_FOLLOWUPS: usize = 1;
-        // File list taken lazily, right before the first tool that can create
-        // files outside the hunk tracker (`bash`, orchestration). A turn that
-        // only uses patch tools never pays for the scan.
-        let mut blueprint_baseline: Option<std::collections::BTreeSet<String>> = None;
+        // Baseline taken lazily, right before the first tool that can change
+        // the workspace — before any write lands, so it is the state the turn
+        // started from. A read-only turn never pays for it.
+        let mut blueprint_baseline: Option<crate::blueprint::Baseline> = None;
         let mut blueprint_baseline_taken = false;
         // A fresh turn starts with a clean goal signal — a leftover
         // `goal_complete` from an earlier turn must not short-circuit this
@@ -620,11 +644,13 @@ impl Engine {
             let mut saw_done = false;
             // Delta coalescing — the UI doesn't need one event per SSE
             // chunk (often 1-5 chars). Buffer text/reasoning deltas and
-            // flush at ~120 chars or on any non-delta chunk so the
+            // flush at ~120 bytes, after 40ms, or on any non-delta chunk so the
             // bounded UI channel never sees a per-token burst large
             // enough to push out control events via try_send.
             let mut pending_text_delta = String::new();
             let mut pending_reasoning_delta = String::new();
+            let mut text_flushed_at = std::time::Instant::now();
+            let mut reasoning_flushed_at = std::time::Instant::now();
             // A provider-level `StreamChunk::Error` (e.g. devin's
             // `internal_server_error … upstream error`) arrives inside the
             // stream, not as a transport `Err` — without this flag the turn
@@ -699,7 +725,11 @@ impl Engine {
                                     reasoning_first = Some(now);
                                 }
                                 reasoning_last = now;
-                                if pending_reasoning_delta.len() >= 120 {
+                                if should_flush_delta(
+                                    pending_reasoning_delta.len(),
+                                    reasoning_flushed_at.elapsed(),
+                                ) {
+                                    reasoning_flushed_at = std::time::Instant::now();
                                     let _ = io.ui_tx.send(UiEvent::ReasoningDelta {
                                         text: std::mem::take(&mut pending_reasoning_delta),
                                         parent: None,
@@ -709,7 +739,11 @@ impl Engine {
                             StreamChunk::ContentDelta(t) => {
                                 round_text.push_str(t);
                                 pending_text_delta.push_str(t);
-                                if pending_text_delta.len() >= 120 {
+                                if should_flush_delta(
+                                    pending_text_delta.len(),
+                                    text_flushed_at.elapsed(),
+                                ) {
+                                    text_flushed_at = std::time::Instant::now();
                                     let _ = io.ui_tx.send(UiEvent::TextDelta {
                                         text: std::mem::take(&mut pending_text_delta),
                                         parent: None,
@@ -955,6 +989,7 @@ impl Engine {
                 // Warnings never block — they ride out as a report.
                 let blueprint_report = {
                     let root = self.ctx.workspace_root.to_path_buf();
+                    let enabled = self.blueprint_enabled;
                     let mut touched: Vec<std::path::PathBuf> = hunks
                         .files_in_turn(hunks.current_turn())
                         .into_iter()
@@ -965,14 +1000,14 @@ impl Engine {
                         None
                     } else {
                         tokio::task::spawn_blocking(move || {
-                            if let Some(before) = baseline {
-                                for p in crate::blueprint::created_since(&root, &before) {
+                            if let Some(before) = &baseline {
+                                for p in crate::blueprint::changed_since(&root, before) {
                                     if !touched.contains(&p) {
                                         touched.push(p);
                                     }
                                 }
                             }
-                            crate::blueprint::check_turn(&root, &touched)
+                            crate::blueprint::check_turn(&root, enabled, &touched, baseline.as_ref())
                         })
                         .await
                         .ok()
@@ -1109,6 +1144,7 @@ impl Engine {
                         content: msg.clone(),
                         ui_type: None,
                         parent: None,
+                        child_id: None,
                     });
                     history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                     continue;
@@ -1121,7 +1157,9 @@ impl Engine {
                 // Primary locator (path/command/pattern) for the tool call —
                 // preserved in full so audit/confirmation tooltips can display
                 // the complete command or path without losing critical arguments.
-                let args_preview = args
+                let computer_summary =
+                    (call.name == "computer").then(|| crate::tools::computer::describe(&args));
+                let args_preview = computer_summary.clone().unwrap_or_else(|| args
                     .get("path")
                     .or_else(|| args.get("command"))
                     .or_else(|| args.get("pattern"))
@@ -1160,11 +1198,12 @@ impl Engine {
                             }
                         }
                         String::new()
-                    });
+                    }));
                 let _ = io.ui_tx.send(UiEvent::ToolCallStarted {
                     name: call.name.clone(),
                     args_preview,
                     parent: None,
+                    child_id: None,
                 });
                 self.set_state(
                     io,
@@ -1182,6 +1221,7 @@ impl Engine {
                         content: msg.clone(),
                         ui_type: None,
                         parent: None,
+                        child_id: None,
                     });
                     history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                     continue;
@@ -1200,30 +1240,27 @@ impl Engine {
                 // `WorkspaceMutation`, so the gate does not depend on
                 // `is_file_edit`'s name table learning about it.
                 let class = registry.spec(&call.name).map(|s| s.class);
-                if !blueprint_baseline_taken
-                    && matches!(
-                        class,
-                        Some(
-                            crate::tools::registry::ToolClass::Process
-                                | crate::tools::registry::ToolClass::Orchestration
-                        )
-                    )
-                {
+                // Anything not declared read-only may write, and a plugin/MCP
+                // tool has no built-in spec at all — so the baseline keys off
+                // `readonly`, not `class`, and an unknown name counts as a write.
+                if !blueprint_baseline_taken && !is_readonly {
                     blueprint_baseline_taken = true;
                     let root = self.ctx.workspace_root.to_path_buf();
+                    let enabled = self.blueprint_enabled;
                     blueprint_baseline = tokio::task::spawn_blocking(move || {
-                        crate::blueprint::snapshot(&root)
+                        crate::blueprint::snapshot(&root, enabled)
                     })
                     .await
                     .ok()
                     .flatten();
                 }
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
-                let diff_summary = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(|p| format!("{p}"))
-                    .unwrap_or_else(|| call.name.clone());
+                let diff_summary = computer_summary.clone().unwrap_or_else(|| {
+                    args.get("path")
+                        .and_then(|v| v.as_str())
+                        .map(|p| format!("{p}"))
+                        .unwrap_or_else(|| call.name.clone())
+                });
 
                 // P1-c: write tools (fuzzy_patch/apply_patch/write_file) are
                 // dispatched EARLY — they return a `PendingWrite` instead of
@@ -1255,6 +1292,7 @@ impl Engine {
                                 content: msg.clone(),
                                 ui_type: None,
                                 parent: None,
+                                child_id: None,
                             });
                             history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                             continue;
@@ -1266,6 +1304,7 @@ impl Engine {
                 let real_diff = staged
                     .as_ref()
                     .map(|r| r.content.clone())
+                    .or_else(|| computer_summary.clone())
                     .unwrap_or_else(|| {
                         args.get("replace")
                             .and_then(|v| v.as_str())
@@ -1274,11 +1313,32 @@ impl Engine {
                     });
                 let real_fuzzy = staged.as_ref().map(|r| r.fuzzy).unwrap_or(false);
 
-                let decision = self
-                    .permissions
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .decide(&call.name, class, is_readonly, shell_cmd, diff_summary);
+                // K1: the preview was computed against the file as it is NOW.
+                // Remember that pre-image so the commit can refuse to overwrite
+                // an edit made while the approval card was open.
+                let staged_preimages: Option<Vec<Option<Vec<u8>>>> = staged.as_ref().map(|r| {
+                    r.pending_write
+                        .iter()
+                        .map(|pw| std::fs::read(&pw.path).ok())
+                        .collect()
+                });
+
+                let computer_action =
+                    (call.name == "computer").then(|| crate::tools::computer::action_of(&args));
+                let decision = {
+                    let gate = self.permissions.read().unwrap_or_else(|e| e.into_inner());
+                    let d = gate.decide(
+                        &call.name,
+                        class,
+                        is_readonly,
+                        shell_cmd,
+                        diff_summary.clone(),
+                    );
+                    match &computer_action {
+                        Some(a) => gate.escalate_computer(a, d, diff_summary.clone()),
+                        None => d,
+                    }
+                };
 
                 match decision {
                     Decision::Deny { reason } => {
@@ -1288,11 +1348,33 @@ impl Engine {
                             content: reason.clone(),
                             ui_type: None,
                             parent: None,
+                            child_id: None,
                         });
                         history.push(ChatMessage::tool_result_err(call.id.clone(), reason));
                         continue;
                     }
                     Decision::Ask { diff_summary } => {
+                        // Desktop input needs the compositor's grant before the
+                        // in-app approval. Acquire it first so the system prompt
+                        // comes ahead of the app card, not after the user has
+                        // already said yes. A refusal ends the call here — there
+                        // is no point asking the user about an action that cannot
+                        // run.
+                        if call.name == "computer" {
+                            if let Err(e) = self.ctx.desktop.prepare().await {
+                                let msg = format!("computer control unavailable: {e:#}");
+                                let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
+                                    name: call.name.clone(),
+                                    ok: false,
+                                    content: msg.clone(),
+                                    ui_type: None,
+                                    parent: None,
+                                    child_id: None,
+                                });
+                                history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
+                                continue;
+                            }
+                        }
                         // Pause in AwaitingToolConfirmation; the UI's
                         // ToolDecision writes the shared slot via
                         // decision_slot(). P1-a: a fresh request_id ties
@@ -1332,12 +1414,78 @@ impl Engine {
                                 content: msg.clone(),
                                 ui_type: None,
                                 parent: None,
+                                child_id: None,
+                            });
+                            history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
+                            continue;
+                        }
+                        // K3: approval and cancel/policy change can race —
+                        // `wait_for_decision` returns a verdict that was already
+                        // in the slot. Re-check both right before side effects.
+                        let post_deny: Option<String> =
+                            if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                                Some(format!("{} cancelled before it ran", call.name))
+                            } else if let Decision::Deny { reason } = {
+                                let gate =
+                                    self.permissions.read().unwrap_or_else(|e| e.into_inner());
+                                let d = gate.decide(
+                                    &call.name,
+                                    class,
+                                    is_readonly,
+                                    shell_cmd,
+                                    diff_summary.clone(),
+                                );
+                                match &computer_action {
+                                    Some(a) => {
+                                        // A revoke that landed while the card was open
+                                        // still wins; a launch that was approved by
+                                        // this card is not re-asked here.
+                                        match gate.escalate_computer(a, d, diff_summary.clone()) {
+                                            Decision::Ask { .. } => Decision::Allow,
+                                            d => d,
+                                        }
+                                    }
+                                    None => d,
+                                }
+                            } {
+                                Some(reason)
+                            } else {
+                                None
+                            };
+                        if let Some(msg) = post_deny {
+                            let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
+                                name: call.name.clone(),
+                                ok: false,
+                                content: msg.clone(),
+                                ui_type: None,
+                                parent: None,
+                                child_id: None,
                             });
                             history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
                             continue;
                         }
                     }
                     Decision::Allow => {}
+                }
+
+                if computer_action.is_some() {
+                    self.computer_actions_this_turn += 1;
+                    if self.computer_actions_this_turn > MAX_COMPUTER_ACTIONS_PER_TURN {
+                        let msg = format!(
+                            "computer action limit reached ({MAX_COMPUTER_ACTIONS_PER_TURN} per turn) — \
+                             stop driving the desktop and report progress to the user"
+                        );
+                        let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
+                            name: call.name.clone(),
+                            ok: false,
+                            content: msg.clone(),
+                            ui_type: None,
+                            parent: None,
+                            child_id: None,
+                        });
+                        history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
+                        continue;
+                    }
                 }
 
                 // Staged write tools already hold their result; dispatch the
@@ -1370,11 +1518,18 @@ impl Engine {
                                 if self.plan_mode() {
                                     (e.to_string(), None, false, Vec::new(), Vec::new())
                                 } else if let Some(mgr) = self.plugins() {
+                                    // Report the plugin's own failure. Its message names the
+                                    // real cause (server error, dead bridge); the built-in
+                                    // "unknown tool" text would send the model hunting for a
+                                    // tool that exists.
                                     match mgr.dispatch_tool_call(&call.name, args).await {
                                         Ok(out) => (out, None, true, Vec::new(), Vec::new()),
-                                        Err(_) => {
+                                        // "No plugin owns it" says nothing about why a built-in
+                                        // failed, so surface the built-in's real error instead.
+                                        Err(msg) if msg.starts_with("no plugin owns tool") => {
                                             (e.to_string(), None, false, Vec::new(), Vec::new())
                                         }
+                                        Err(msg) => (msg, None, false, Vec::new(), Vec::new()),
                                     }
                                 } else {
                                     (e.to_string(), None, false, Vec::new(), Vec::new())
@@ -1388,6 +1543,25 @@ impl Engine {
                 // permission decision. A multi-file tool (`apply_patch`)
                 // stages one `PendingWrite` per file op; each op captures
                 // its own pre-image for the hunk record (binary-safe).
+                // All-or-nothing: validate every staged pre-image first, so a
+                // multi-file patch is never left half-applied.
+                let drifted = staged_preimages.as_ref().and_then(|pre| {
+                    pending_write
+                        .iter()
+                        .zip(pre.iter())
+                        .find(|(pw, expected)| **expected != std::fs::read(&pw.path).ok())
+                        .map(|(pw, _)| pw.path.display().to_string())
+                });
+                let pending_write = if let Some(path) = drifted {
+                    ok = false;
+                    content = format!(
+                        "{path} changed after the preview was generated; \
+                         nothing was written — re-read the file and retry"
+                    );
+                    Vec::new()
+                } else {
+                    pending_write
+                };
                 for pw in pending_write {
                     let old_content = std::fs::read(&pw.path).ok();
                     match pw.op {
@@ -1442,6 +1616,7 @@ impl Engine {
                     content: content.clone(),
                     ui_type,
                     parent: None,
+                    child_id: None,
                 });
 
                 // `ok` survives into the snapshot via `is_error` so a
@@ -1735,10 +1910,34 @@ fn extract_attached_images(text: &str) -> Vec<agent_llm::types::ImageRef> {
     out
 }
 
+/// Coalescing bounds for streamed text/reasoning deltas: the bounded UI
+/// channel must not see a per-token burst, but a slow model must not leave
+/// the UI idle until a size threshold fills either.
+const DELTA_FLUSH_BYTES: usize = 120;
+const DELTA_FLUSH_AFTER: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// Flush a pending delta once it is big enough OR has waited long enough.
+/// Evaluated when a chunk arrives, so an empty buffer never flushes.
+fn should_flush_delta(pending_bytes: usize, since_last_flush: std::time::Duration) -> bool {
+    pending_bytes >= DELTA_FLUSH_BYTES
+        || (pending_bytes > 0 && since_last_flush >= DELTA_FLUSH_AFTER)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn delta_flushes_on_size_or_age_but_never_when_empty() {
+        use std::time::Duration;
+        let young = Duration::from_millis(5);
+        let old = Duration::from_millis(40);
+        assert!(!should_flush_delta(0, old), "empty buffer must not flush");
+        assert!(!should_flush_delta(10, young), "small + young waits");
+        assert!(should_flush_delta(10, old), "small but old flushes");
+        assert!(should_flush_delta(DELTA_FLUSH_BYTES, young), "full flushes immediately");
+    }
 
     #[test]
     fn test_thinking_level_resolution() {

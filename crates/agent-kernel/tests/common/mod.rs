@@ -25,6 +25,14 @@ pub struct ScriptedProvider {
     /// what the model could actually call (mode-scoped registries are
     /// otherwise a private engine detail).
     pub tool_names: Mutex<Vec<Vec<String>>>,
+    /// Reasoning effort each request carried (`None` = no effort on the wire).
+    pub reasoning_efforts: Mutex<Vec<Option<String>>>,
+    /// Every request's message bodies, in order — lets a test check what the
+    /// model was actually shown (e.g. a steer that reached the child).
+    pub seen_messages: Mutex<Vec<Vec<String>>>,
+    /// When set, each request waits on this before answering. Lets a test hold a
+    /// child mid-turn so it can act while the child is still running.
+    pub gate: Mutex<Option<std::sync::Arc<tokio::sync::Notify>>>,
 }
 
 impl ScriptedProvider {
@@ -33,6 +41,9 @@ impl ScriptedProvider {
             scripts: Mutex::new(VecDeque::new()),
             calls: Mutex::new(Vec::new()),
             tool_names: Mutex::new(Vec::new()),
+            reasoning_efforts: Mutex::new(Vec::new()),
+            seen_messages: Mutex::new(Vec::new()),
+            gate: Mutex::new(None),
         }
     }
 
@@ -80,9 +91,25 @@ impl LlmProvider for ScriptedProvider {
         messages: &[ChatMessage],
         tools: Option<serde_json::Value>,
         _temperature: f32,
-        _reasoning_effort: Option<&str>,
+        reasoning_effort: Option<&str>,
         _params: &agent_llm::ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        self.reasoning_efforts
+            .lock()
+            .unwrap()
+            .push(reasoning_effort.map(String::from));
+        // The gate holds only the first request, then clears itself: a test
+        // releases the child once, and later requests answer straight away.
+        let gate = self.gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
+        self.seen_messages.lock().unwrap().push(
+            messages
+                .iter()
+                .filter_map(|m| m.content.clone())
+                .collect(),
+        );
         self.calls
             .lock()
             .unwrap()

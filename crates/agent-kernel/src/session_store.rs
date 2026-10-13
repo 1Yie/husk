@@ -1,38 +1,20 @@
-//! `session_store` — per-workspace session persistence.
-//!
-//! All state lives in a single redb database at
-//! `~/.local/share/husk/sessions.db`. It replaces the old
-//! `sessions/<ws_hash>/` tree — `index.json`, append-only `<id>.jsonl`,
-//! `prefs.json`, and `<id>.todos.json` siblings — which is imported once
-//! at first open and then renamed aside (`sessions.legacy/`, `*.json.bak`).
-//!
-//! Tables:
-//!   - `metas/<ws>/<id>`        — `SessionMeta` JSON (sidebar index rows)
-//!   - `history/<ws>/<id>`      — latest `Vec<ChatMessage>` snapshot,
-//!                                OVERWRITTEN per turn. The .jsonl file grew
-//!                                with `turns × history` because every line
-//!                                was a full copy; an atomic `put` keeps one
-//!                                copy, so rotation and torn-tail recovery
-//!                                are unnecessary — a crash costs at most
-//!                                the uncommitted turn, never earlier state.
-//!   - `state/<ws>/<id>/<name>` — per-session scratch blobs (todos, …)
-//!   - `prefs/<ws>`             — `WorkspacePrefs` JSON
-//!   - `workspaces/<ws>`        — `{root, last_active}`
-//!   - `globals/<name>`         — `recent_workspaces` | `default_preferences`
-//!                                | `appearance`
-//!
-//! The owning `SessionActor` writes on turn boundaries only (single writer,
-//! never mid-turn); redb commits are atomic, so readers always see the last
-//! completed state — never a half-written record.
+//! File-based session repository: independent JSONL journals and atomic indexes.
+//! Each window opens files on demand; only individual writes use short locks.
+//! Old redb data is imported from a verified snapshot without locking the live
+//! database or stopping another frontend. Original sources remain unchanged.
+
+mod files;
+mod migration;
+pub use files::SessionDatabase;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use agent_llm::types::ChatMessage;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-const DB_FILE: &str = "sessions.db";
+const DB_FILE: &str = "conversations";
 
 const METAS: TableDefinition<&str, &[u8]> = TableDefinition::new("metas");
 const HISTORY: TableDefinition<&str, &[u8]> = TableDefinition::new("history");
@@ -132,415 +114,7 @@ struct WorkspaceRow {
 /// shared `sessions.db`.
 pub struct SessionStore {
     ws: String,
-    db: Arc<Database>,
-}
-
-impl SessionStore {
-    /// Open (creating) the store for a workspace root.
-    pub fn open(workspace_root: &Path) -> std::io::Result<Self> {
-        let db = global_db().ok_or_else(|| std::io::Error::other("no data dir"))?;
-        Self::open_with(workspace_root, db)
-    }
-
-    /// Open on a caller-supplied database — the injection seam tests use to
-    /// keep stores on an isolated temp db instead of the app-wide one.
-    pub fn open_with(workspace_root: &Path, db: Arc<Database>) -> std::io::Result<Self> {
-        let store = Self {
-            ws: workspace_key(workspace_root),
-            db,
-        };
-        store.ensure_workspace(workspace_root)?;
-        Ok(store)
-    }
-
-    /// Open on a database at an explicit path — a convenience over
-    /// `open_with` for tests/tools that want a self-contained store.
-    pub fn open_at(workspace_root: &Path, db_path: &Path) -> std::io::Result<Self> {
-        let db = Arc::new(open_db(db_path)?);
-        Self::open_with(workspace_root, db)
-    }
-
-    /// Open an *existing* store without creating the workspace row — `None`
-    /// when this workspace has never persisted anything. Read-only listings
-    /// (the sidebar's project tree) use this so enumerating projects doesn't
-    /// materialize rows for every workspace the user merely opened.
-    pub fn open_existing(workspace_root: &Path) -> Option<Self> {
-        let db = global_db()?;
-        let store = Self {
-            ws: workspace_key(workspace_root),
-            db,
-        };
-        store.workspace_row().ok()??;
-        store.record_root(workspace_root);
-        Some(store)
-    }
-
-    /// Every workspace store on record (`workspaces` table keys). The 统计
-    /// pane aggregates across ALL of them: recents only remembers the
-    /// projects the user opened through this install, so anything older — or
-    /// any project whose recent entry was pruned — was invisible in the
-    /// totals.
-    pub fn all_workspaces() -> Vec<Self> {
-        let Some(db) = global_db() else {
-            return Vec::new();
-        };
-        Self::all_on(db)
-    }
-
-    /// Same as `all_workspaces` but on an explicit db file — lets tools and
-    /// tests inspect a COPIED `sessions.db` while the live one is locked by
-    /// a running app (redb takes an exclusive flock for the process).
-    pub fn all_workspaces_at(db_path: &Path) -> Vec<Self> {
-        let Ok(db) = open_db(db_path) else {
-            return Vec::new();
-        };
-        Self::all_on(Arc::new(db))
-    }
-
-    fn all_on(db: Arc<Database>) -> Vec<Self> {
-        let Ok(rtx) = db.begin_read() else {
-            return Vec::new();
-        };
-        let Ok(t) = rtx.open_table(WORKSPACES) else {
-            return Vec::new();
-        };
-        let Ok(iter) = t.iter() else {
-            return Vec::new();
-        };
-        iter.flatten()
-            .map(|(k, _)| Self {
-                ws: k.value().to_string(),
-                db: db.clone(),
-            })
-            .collect()
-    }
-
-    /// This store's workspace key hash.
-    pub fn dir_name(&self) -> Option<String> {
-        Some(self.ws.clone())
-    }
-
-    fn workspace_row(&self) -> std::io::Result<Option<WorkspaceRow>> {
-        let rtx = self.db.begin_read().map_err(io_err)?;
-        let t = rtx.open_table(WORKSPACES).map_err(io_err)?;
-        match t.get(self.ws.as_str()).map_err(io_err)? {
-            Some(g) => Ok(serde_json::from_slice(g.value()).ok()),
-            None => Ok(None),
-        }
-    }
-
-    fn put_workspace_row(&self, row: &WorkspaceRow) -> std::io::Result<()> {
-        let json = serde_json::to_vec(row).map_err(io_err)?;
-        let wtx = self.db.begin_write().map_err(io_err)?;
-        {
-            let mut t = wtx.open_table(WORKSPACES).map_err(io_err)?;
-            t.insert(self.ws.as_str(), json.as_slice())
-                .map_err(io_err)?;
-        }
-        wtx.commit().map_err(io_err)
-    }
-
-    /// Create the workspace row if absent; also records the root (write-once).
-    fn ensure_workspace(&self, root: &Path) -> std::io::Result<()> {
-        let mut row = self.workspace_row()?.unwrap_or_default();
-        if row.root.is_some() {
-            return Ok(()); // row exists with root recorded — nothing to write
-        }
-        row.root = Some(root.to_string_lossy().into_owned());
-        self.put_workspace_row(&row)
-    }
-
-    /// The workspace root this store belongs to, if it was ever recorded.
-    pub fn recorded_root(&self) -> Option<PathBuf> {
-        self.workspace_row()
-            .ok()
-            .flatten()
-            .and_then(|r| r.root)
-            .map(PathBuf::from)
-    }
-
-    /// Remember which project a workspace key belongs to — the key is a
-    /// hash, so without this a per-workspace breakdown can only show ids.
-    /// Write-once: the value never changes for a given key.
-    pub fn record_root(&self, root: &Path) {
-        let Ok(Some(mut row)) = self.workspace_row() else {
-            return;
-        };
-        if row.root.is_some() {
-            return;
-        }
-        row.root = Some(root.to_string_lossy().into_owned());
-        let _ = self.put_workspace_row(&row);
-    }
-
-    /// Last resort for workspaces imported before roots were recorded: the
-    /// session's system prompt names the workspace (`Workspace root: <path>`),
-    /// and it sits in the first message of a history snapshot. Only a handful
-    /// of sessions are checked — this is a bounded read.
-    pub fn recover_root_from_history(&self) -> Option<PathBuf> {
-        let rtx = self.db.begin_read().ok()?;
-        let t = rtx.open_table(HISTORY).ok()?;
-        let prefix = format!("{}/", self.ws);
-        let iter = t.range::<&str>(prefix.as_str()..).ok()?;
-        for e in iter.flatten().take(4) {
-            let Ok(hist) = serde_json::from_slice::<Vec<ChatMessage>>(e.1.value()) else {
-                continue;
-            };
-            for msg in hist.iter().take(2) {
-                let Some(c) = msg.content.as_deref() else {
-                    continue;
-                };
-                if let Some(rest) = c.split("Workspace root: ").nth(1) {
-                    let path = rest.split(&['\\', '"', '\n'][..]).next()?.trim();
-                    if !path.is_empty() {
-                        return Some(PathBuf::from(path));
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Read a per-session scratch blob (`todos.json`, …) — replaces the
-    /// sibling `<id>.<name>` files.
-    pub fn read_state(&self, id: i64, name: &str) -> std::io::Result<Option<Vec<u8>>> {
-        let key = format!("{}/{}/{}", self.ws, id, name);
-        let rtx = self.db.begin_read().map_err(io_err)?;
-        let t = rtx.open_table(STATE).map_err(io_err)?;
-        Ok(t.get(key.as_str())
-            .map_err(io_err)?
-            .map(|g| g.value().to_vec()))
-    }
-
-    /// Write a per-session scratch blob — a single atomic commit.
-    pub fn write_state(&self, id: i64, name: &str, bytes: &[u8]) -> std::io::Result<()> {
-        let key = format!("{}/{}/{}", self.ws, id, name);
-        let wtx = self.db.begin_write().map_err(io_err)?;
-        {
-            let mut t = wtx.open_table(STATE).map_err(io_err)?;
-            t.insert(key.as_str(), bytes).map_err(io_err)?;
-        }
-        wtx.commit().map_err(io_err)
-    }
-
-    /// All metas for this workspace (unsorted).
-    fn metas(&self) -> Vec<SessionMeta> {
-        let Ok(rtx) = self.db.begin_read() else {
-            return Vec::new();
-        };
-        let Ok(t) = rtx.open_table(METAS) else {
-            return Vec::new();
-        };
-        let prefix = format!("{}/", self.ws);
-        let Ok(iter) = t.range::<&str>(prefix.as_str()..) else {
-            return Vec::new();
-        };
-        iter.flatten()
-            .take_while(|(k, _)| k.value().starts_with(&prefix))
-            .filter_map(|(_, v)| serde_json::from_slice::<SessionMeta>(v.value()).ok())
-            .collect()
-    }
-
-    /// List sessions — pinned first, then newest activity within each tier.
-    pub fn list(&self) -> Vec<SessionMeta> {
-        let mut sessions = self.metas();
-        sessions.sort_by(|a, b| {
-            b.pinned
-                .cmp(&a.pinned)
-                .then(b.updated_at.cmp(&a.updated_at))
-        });
-        sessions
-    }
-
-    /// Toggle a session's pinned flag; returns whether the session existed.
-    pub fn set_pinned(&self, id: i64, pinned: bool) -> std::io::Result<bool> {
-        let key = format!("{}/{}", self.ws, id);
-        let wtx = self.db.begin_write().map_err(io_err)?;
-        let found = {
-            let mut t = wtx.open_table(METAS).map_err(io_err)?;
-            let Some(g) = t.get(key.as_str()).map_err(io_err)? else {
-                return Ok(false);
-            };
-            let mut meta: SessionMeta = serde_json::from_slice(g.value()).map_err(io_err)?;
-            drop(g);
-            meta.pinned = pinned;
-            let json = serde_json::to_vec(&meta).map_err(io_err)?;
-            t.insert(key.as_str(), json.as_slice()).map_err(io_err)?;
-            true
-        };
-        wtx.commit().map_err(io_err)?;
-        Ok(found)
-    }
-
-    /// The session the user last had open — `None` on a fresh store.
-    pub fn last_active(&self) -> Option<i64> {
-        self.workspace_row()
-            .ok()
-            .flatten()
-            .and_then(|r| r.last_active)
-    }
-
-    /// Record which session is open — restored on next launch.
-    pub fn set_last_active(&self, id: i64) -> std::io::Result<()> {
-        let mut row = self.workspace_row()?.unwrap_or_default();
-        if row.last_active == Some(id) {
-            return Ok(());
-        }
-        row.last_active = Some(id);
-        self.put_workspace_row(&row)
-    }
-
-    /// Whether this workspace has ever allocated a session id. Separates
-    /// "fresh workspace" (boot/focus auto-creates a first session) from
-    /// "user deleted every session" (stays empty until they make one).
-    pub fn ever_used(&self) -> bool {
-        self.workspace_row()
-            .ok()
-            .flatten()
-            .map(|r| r.next_id > 0)
-            .unwrap_or(false)
-    }
-
-    /// Load the latest history snapshot for a session.
-    pub fn load_history(&self, id: i64) -> Option<Vec<ChatMessage>> {
-        let rtx = self.db.begin_read().ok()?;
-        let t = rtx.open_table(HISTORY).ok()?;
-        let key = format!("{}/{}", self.ws, id);
-        let g = t.get(key.as_str()).ok()??;
-        serde_json::from_slice(g.value()).ok()
-    }
-
-    /// Store the latest history snapshot for a session (overwrites). Called
-    /// at turn boundaries — the commit is atomic, so a crash mid-write leaves
-    /// the PREVIOUS snapshot intact instead of a torn record.
-    pub fn snapshot(&self, id: i64, history: &[ChatMessage]) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec(history)?;
-        let key = format!("{}/{}", self.ws, id);
-        let wtx = self.db.begin_write().map_err(io_err)?;
-        {
-            let mut t = wtx.open_table(HISTORY).map_err(io_err)?;
-            t.insert(key.as_str(), bytes.as_slice()).map_err(io_err)?;
-        }
-        wtx.commit().map_err(io_err)
-    }
-
-    /// Update sidebar metadata for a session (insert or replace by id).
-    pub fn upsert_meta(&self, meta: SessionMeta) -> std::io::Result<()> {
-        let key = format!("{}/{}", self.ws, meta.id);
-        let json = serde_json::to_vec(&meta)?;
-        let wtx = self.db.begin_write().map_err(io_err)?;
-        {
-            let mut t = wtx.open_table(METAS).map_err(io_err)?;
-            t.insert(key.as_str(), json.as_slice()).map_err(io_err)?;
-        }
-        wtx.commit().map_err(io_err)
-    }
-
-    /// Allocate a fresh session id — monotonic, persisted on the workspace
-    /// row so deleting a session can never make its id get reissued. Stores
-    /// written before this field existed start at 0 and are floored past
-    /// every live meta on first allocation.
-    pub fn next_id(&self) -> i64 {
-        let mut row = self.workspace_row().ok().flatten().unwrap_or_default();
-        let floor = self.metas().iter().map(|s| s.id).max().unwrap_or(0);
-        row.next_id = row.next_id.max(floor) + 1;
-        let _ = self.put_workspace_row(&row);
-        row.next_id
-    }
-
-    /// Remove a session entirely — meta, history, and its `<id>/<name>`
-    /// scratch rows. `last_active` pointing at it is cleared, matching the
-    /// old index surgery.
-    pub fn remove(&self, id: i64) -> std::io::Result<()> {
-        let meta_key = format!("{}/{}", self.ws, id);
-        let state_prefix = format!("{}/{}/", self.ws, id);
-        let wtx = self.db.begin_write().map_err(io_err)?;
-        {
-            let mut t = wtx.open_table(METAS).map_err(io_err)?;
-            t.remove(meta_key.as_str()).map_err(io_err)?;
-        }
-        {
-            let mut t = wtx.open_table(HISTORY).map_err(io_err)?;
-            t.remove(meta_key.as_str()).map_err(io_err)?;
-        }
-        {
-            let mut t = wtx.open_table(STATE).map_err(io_err)?;
-            t.retain(|k, _| !k.starts_with(&state_prefix))
-                .map_err(io_err)?;
-        }
-        {
-            let mut t = wtx.open_table(WORKSPACES).map_err(io_err)?;
-            let row: Option<WorkspaceRow> = t
-                .get(self.ws.as_str())
-                .map_err(io_err)?
-                .and_then(|g| serde_json::from_slice(g.value()).ok());
-            if let Some(mut row) = row {
-                if row.last_active == Some(id) {
-                    row.last_active = None;
-                    let json = serde_json::to_vec(&row).map_err(io_err)?;
-                    t.insert(self.ws.as_str(), json.as_slice())
-                        .map_err(io_err)?;
-                }
-            }
-        }
-        wtx.commit().map_err(io_err)
-    }
-
-    /// Drop EVERY row under this workspace's namespace — sessions, history,
-    /// scratch state, prefs, and the workspace row itself. Used by tests to
-    /// undo `open()` on a throwaway root.
-    pub fn delete_workspace(&self) -> std::io::Result<()> {
-        let prefix = format!("{}/", self.ws);
-        let wtx = self.db.begin_write().map_err(io_err)?;
-        {
-            let mut t = wtx.open_table(METAS).map_err(io_err)?;
-            t.retain(|k, _| !k.starts_with(&prefix)).map_err(io_err)?;
-        }
-        {
-            let mut t = wtx.open_table(HISTORY).map_err(io_err)?;
-            t.retain(|k, _| !k.starts_with(&prefix)).map_err(io_err)?;
-        }
-        {
-            let mut t = wtx.open_table(STATE).map_err(io_err)?;
-            t.retain(|k, _| !k.starts_with(&prefix)).map_err(io_err)?;
-        }
-        {
-            let mut t = wtx.open_table(PREFS).map_err(io_err)?;
-            t.remove(self.ws.as_str()).map_err(io_err)?;
-        }
-        {
-            let mut t = wtx.open_table(WORKSPACES).map_err(io_err)?;
-            t.remove(self.ws.as_str()).map_err(io_err)?;
-        }
-        wtx.commit().map_err(io_err)
-    }
-
-    /// Load persisted prefs (empty if absent/corrupt).
-    pub fn load_prefs(&self) -> WorkspacePrefs {
-        let Ok(rtx) = self.db.begin_read() else {
-            return WorkspacePrefs::default();
-        };
-        let Ok(t) = rtx.open_table(PREFS) else {
-            return WorkspacePrefs::default();
-        };
-        t.get(self.ws.as_str())
-            .ok()
-            .flatten()
-            .and_then(|g| serde_json::from_slice(g.value()).ok())
-            .unwrap_or_default()
-    }
-
-    /// Persist prefs (overwrite).
-    pub fn save_prefs(&self, prefs: &WorkspacePrefs) -> std::io::Result<()> {
-        let json = serde_json::to_vec(prefs)?;
-        let wtx = self.db.begin_write().map_err(io_err)?;
-        {
-            let mut t = wtx.open_table(PREFS).map_err(io_err)?;
-            t.insert(self.ws.as_str(), json.as_slice())
-                .map_err(io_err)?;
-        }
-        wtx.commit().map_err(io_err)
-    }
+    db: Arc<SessionDatabase>,
 }
 
 /// Stable per-workspace key — xxh3 of the canonical root. The office
@@ -604,25 +178,25 @@ pub fn is_office_root(root: &Path) -> bool {
 /// Open (creating) the sessions database at `path`, running the legacy
 /// file import once. `path.parent()` is the data dir — the legacy
 /// `sessions/` tree and the global `*.json` files live next to the db.
-fn open_db(path: &Path) -> std::io::Result<Database> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut db = Database::create(path).map_err(io_err)?;
-    // Materialize every table eagerly — a fresh db has none, and a read-tx
-    // `open_table` on a missing table errors instead of reading empty.
-    {
-        let wtx = db.begin_write().map_err(io_err)?;
-        for def in [METAS, HISTORY, STATE, PREFS, WORKSPACES, GLOBALS] {
-            wtx.open_table(def).map_err(io_err)?;
-        }
-        wtx.commit().map_err(io_err)?;
-    }
-    if migrate_legacy(&db, path) {
-        // The one-shot import leaves the file at ~3× payload (CoW pages);
-        // compact it while nothing else holds the handle.
-        let _ = db.compact();
-    }
+fn open_db(path: &Path) -> std::io::Result<Arc<SessionDatabase>> {
+    let (directory, source) = if path.is_file() {
+        (
+            path.with_extension("jsonl-sessions"),
+            Some(path.to_path_buf()),
+        )
+    } else {
+        let source = path
+            .parent()
+            .map(|p| p.join("sessions.db"))
+            .filter(|p| p.is_file());
+        (path.to_path_buf(), source)
+    };
+    let db = SessionDatabase::open(&directory)?;
+    migration::import(
+        &db,
+        directory.parent().unwrap_or(Path::new(".")),
+        source.as_deref(),
+    )?;
     Ok(db)
 }
 
@@ -638,22 +212,68 @@ pub(crate) fn is_test_binary() -> bool {
         .unwrap_or(false)
 }
 
-fn global_db() -> Option<Arc<Database>> {
-    static DB: OnceLock<Option<Arc<Database>>> = OnceLock::new();
-    DB.get_or_init(|| {
-        // Debug/test hook: point the shared handle at a COPIED sessions.db
-        // (the live file is flock'd by a running app — a repro binary can
-        // only read a copy).
-        let path = if let Ok(p) = std::env::var("HUSK_SESSION_DB") {
-            std::path::PathBuf::from(p)
-        } else if is_test_binary() {
-            std::env::temp_dir().join(format!("husk-test-{}-sessions.db", std::process::id()))
-        } else {
-            app_data_dir()?.join(DB_FILE)
-        };
-        open_db(&path).ok().map(Arc::new)
+/// The db file the shared handle binds — the env override and test-binary
+/// temp copy mirror `global_db`'s own rules so diagnostics name the right
+/// file.
+pub(crate) fn sessions_db_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("HUSK_SESSION_DB") {
+        Some(std::path::PathBuf::from(p))
+    } else if is_test_binary() {
+        Some(std::env::temp_dir().join(format!("husk-test-{}-jsonl-sessions", std::process::id())))
+    } else {
+        app_data_dir().map(|d| d.join(DB_FILE))
+    }
+}
+
+#[derive(Default)]
+struct SharedDb {
+    db: Option<Arc<SessionDatabase>>,
+    warning: Option<String>,
+}
+
+fn shared_db() -> &'static Mutex<SharedDb> {
+    static DB: OnceLock<Mutex<SharedDb>> = OnceLock::new();
+    DB.get_or_init(|| Mutex::new(SharedDb::default()))
+}
+
+fn open_persistent_db() -> std::io::Result<Arc<SessionDatabase>> {
+    let path = sessions_db_path().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "无法确定会话数据库的数据目录")
+    })?;
+    open_db(&path).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("打开 {} 失败: {error}", path.display()),
+        )
     })
-    .clone()
+}
+
+fn try_global_db() -> std::io::Result<Arc<SessionDatabase>> {
+    let mut shared = shared_db().lock().map_err(io_err)?;
+    if let Some(db) = &shared.db {
+        return Ok(db.clone());
+    }
+    let db = open_persistent_db()?;
+    // Cache successful opens only: a lock or path failure can be retried.
+    shared.db = Some(db.clone());
+    Ok(db)
+}
+
+fn global_db() -> Option<Arc<SessionDatabase>> {
+    try_global_db().ok()
+}
+
+/// Present on every workspace while the app uses a transient database.
+/// Exposed through workspace_info so startup notices cannot be lost before
+/// the frontend's event subscription is ready.
+pub fn session_storage_warning() -> Option<String> {
+    shared_db().lock().ok().and_then(|db| db.warning.clone())
+}
+
+/// Run the same validated one-time migration used by app startup. A CLI
+/// entry point can surface errors without silently entering temporary mode.
+pub fn migrate_session_database() -> std::io::Result<PathBuf> {
+    Ok(try_global_db()?.root.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -662,113 +282,6 @@ fn global_db() -> Option<Arc<Database>> {
 // leaves nothing half-migrated. Files are renamed aside only after the commit
 // succeeds; a failure simply retries on the next open.
 // ---------------------------------------------------------------------------
-
-/// Returns whether anything was migrated (the caller compacts afterwards).
-fn migrate_legacy(db: &Database, db_path: &Path) -> bool {
-    let Some(data_dir) = db_path.parent() else {
-        return false;
-    };
-    let sessions_dir = data_dir.join("sessions");
-    const GLOBAL_FILES: [(&str, &str); 3] = [
-        ("recent_workspaces.json", "recent_workspaces"),
-        ("default_preferences.json", "default_preferences"),
-        ("appearance.json", "appearance"),
-    ];
-    let has_sessions = sessions_dir.is_dir();
-    let has_globals = GLOBAL_FILES.iter().any(|(f, _)| data_dir.join(f).is_file());
-    if !has_sessions && !has_globals {
-        return false;
-    }
-
-    let Ok(wtx) = db.begin_write() else {
-        return false;
-    };
-    let imported = (|| -> std::io::Result<()> {
-        if has_sessions {
-            let mut metas = wtx.open_table(METAS).map_err(io_err)?;
-            let mut history = wtx.open_table(HISTORY).map_err(io_err)?;
-            let mut state = wtx.open_table(STATE).map_err(io_err)?;
-            let mut prefs = wtx.open_table(PREFS).map_err(io_err)?;
-            let mut workspaces = wtx.open_table(WORKSPACES).map_err(io_err)?;
-            for e in std::fs::read_dir(&sessions_dir)?.flatten() {
-                let dir = e.path();
-                if !dir.is_dir() {
-                    continue;
-                }
-                let ws = e.file_name().to_string_lossy().into_owned();
-                let mut row = WorkspaceRow::default();
-                if let Ok(text) = std::fs::read_to_string(dir.join("workspace.json")) {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                        row.root = v
-                            .get("root")
-                            .and_then(|r| r.as_str())
-                            .map(|s| s.to_string());
-                    }
-                }
-                if let Ok(text) = std::fs::read_to_string(dir.join("index.json")) {
-                    if let Ok(idx) = serde_json::from_str::<SessionIndex>(&text) {
-                        row.last_active = idx.last_active;
-                        for meta in idx.sessions {
-                            let key = format!("{}/{}", ws, meta.id);
-                            if let Ok(j) = serde_json::to_vec(&meta) {
-                                let _ = metas.insert(key.as_str(), j.as_slice());
-                            }
-                        }
-                    }
-                }
-                if let Ok(bytes) = std::fs::read(dir.join("prefs.json")) {
-                    let _ = prefs.insert(ws.as_str(), bytes.as_slice());
-                }
-                let _ = workspaces.insert(ws.as_str(), {
-                    serde_json::to_vec(&row).unwrap_or_default().as_slice()
-                });
-                for e in std::fs::read_dir(&dir)?.flatten() {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    if let Some(id) = name
-                        .strip_suffix(".jsonl")
-                        .and_then(|s| s.parse::<i64>().ok())
-                    {
-                        if let Some(bytes) = last_intact_jsonl_line(&e.path()) {
-                            let key = format!("{}/{}", ws, id);
-                            let _ = history.insert(key.as_str(), bytes.as_slice());
-                        }
-                    } else if let Some(rest) = name.split_once('.').map(|(_, r)| r) {
-                        // `<id>.<name>` siblings (todos, scratch) — the first
-                        // dot splits id from name; index/prefs/workspace
-                        // aren't id-prefixed and were handled above.
-                        if let Ok(id) = name.split('.').next().unwrap_or("").parse::<i64>() {
-                            if let Ok(bytes) = std::fs::read(e.path()) {
-                                let key = format!("{}/{}/{}", ws, id, rest);
-                                let _ = state.insert(key.as_str(), bytes.as_slice());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        {
-            let mut globals = wtx.open_table(GLOBALS).map_err(io_err)?;
-            for (file, key) in GLOBAL_FILES {
-                if let Ok(bytes) = std::fs::read(data_dir.join(file)) {
-                    let _ = globals.insert(key, bytes.as_slice());
-                }
-            }
-        }
-        Ok(())
-    })();
-    if imported.is_err() || wtx.commit().is_err() {
-        // Nothing committed — the files stay, the next open retries.
-        return false;
-    }
-
-    // Commit landed: move the sources aside (recoverable, and it marks the
-    // import done — a later `sessions/` dir would simply re-import).
-    let _ = std::fs::rename(&sessions_dir, data_dir.join("sessions.legacy"));
-    for (file, _) in GLOBAL_FILES {
-        let _ = std::fs::rename(data_dir.join(file), data_dir.join(format!("{file}.bak")));
-    }
-    true
-}
 
 /// The newest complete line in an append-only `.jsonl` — the migration
 /// equivalent of the old `load_history` tail scan. A torn trailing line is
@@ -836,6 +349,10 @@ pub struct DefaultPreferences {
     /// Fraction of the context window that triggers compaction (0.70/0.80/0.90).
     #[serde(default = "default_pref_compact_at")]
     pub compact_at: f32,
+    /// Sandbox master switch — absent/true = sandboxed (default);
+    /// `false` = process tools run through the loud `none` backend.
+    #[serde(default)]
+    pub sandbox_enabled: Option<bool>,
     /// Sandbox network override: "auto" (audit decides) | "allow" | "deny".
     #[serde(default)]
     pub sandbox_network: Option<String>,
@@ -845,6 +362,14 @@ pub struct DefaultPreferences {
     /// Per-command sandbox process-count cap override.
     #[serde(default)]
     pub sandbox_max_processes: Option<u32>,
+    /// Extra egress allowlist merged into every sandboxed run's
+    /// `allowed_domains` (srt-style entries: `example.com`, `*.example.com`,
+    /// `host:443`). The user's standing "these hosts are always fine" list.
+    #[serde(default)]
+    pub sandbox_allowed_domains: Option<Vec<String>>,
+    /// Standing egress denylist — checked before the allowlist.
+    #[serde(default)]
+    pub sandbox_denied_domains: Option<Vec<String>>,
     /// Memory subsystem master switch — `false` opens no `MemoryStore`: no
     /// `<memory>` block in the prompt and no episode/fact writes.
     #[serde(default = "default_pref_bool_true")]
@@ -853,6 +378,10 @@ pub struct DefaultPreferences {
     /// deterministic path but skips the per-turn summarizer model call.
     #[serde(default = "default_pref_bool_true")]
     pub memory_distill: bool,
+    /// `.blueprint/` architecture layer — `false` ignores the directory
+    /// everywhere (prompt index, `blueprint` tool, turn-end check).
+    #[serde(default = "default_pref_bool_true")]
+    pub blueprint_enabled: bool,
 }
 
 fn default_pref_bool_true() -> bool {
@@ -889,11 +418,15 @@ impl Default for DefaultPreferences {
             agent_mode: default_pref_agent_mode(),
             default_workspace_mode: default_pref_workspace_mode(),
             compact_at: default_pref_compact_at(),
+            sandbox_enabled: None,
             sandbox_network: None,
             sandbox_max_memory_mb: None,
             sandbox_max_processes: None,
+            sandbox_allowed_domains: None,
+            sandbox_denied_domains: None,
             memory_enabled: true,
             memory_distill: true,
+            blueprint_enabled: true,
         }
     }
 }
@@ -989,24 +522,11 @@ impl Default for AppearanceSettings {
 // ---------------------------------------------------------------------------
 
 fn get_global<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
-    let db = global_db()?;
-    let rtx = db.begin_read().ok()?;
-    let t = rtx.open_table(GLOBALS).ok()?;
-    let g = t.get(key).ok()??;
-    serde_json::from_slice(g.value()).ok()
+    files::get(global_db()?.as_ref(), key)
 }
 
 fn put_global(key: &str, value: &impl Serialize) -> std::io::Result<()> {
-    let Some(db) = global_db() else {
-        return Ok(());
-    };
-    let json = serde_json::to_vec(value)?;
-    let wtx = db.begin_write().map_err(io_err)?;
-    {
-        let mut t = wtx.open_table(GLOBALS).map_err(io_err)?;
-        t.insert(key, json.as_slice()).map_err(io_err)?;
-    }
-    wtx.commit().map_err(io_err)
+    files::put(try_global_db()?.as_ref(), key, value)
 }
 
 /// Recently opened workspace entry.
@@ -1045,19 +565,24 @@ pub fn record_recent_workspace(workspace_root: &Path) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let mut list = load_recent_workspaces();
-    list.retain(|w| w.path != canon);
-    list.insert(
-        0,
-        RecentWorkspace {
-            path: canon,
-            name,
-            last_opened: now,
-        },
-    );
-    list.truncate(15);
-
-    let _ = put_global("recent_workspaces", &list);
+    if let Ok(db) = try_global_db() {
+        let _ = files::update_global(
+            &db,
+            "recent_workspaces",
+            |list: &mut Vec<RecentWorkspace>| {
+                list.retain(|w| w.path != canon && w.path.is_dir());
+                list.insert(
+                    0,
+                    RecentWorkspace {
+                        path: canon,
+                        name,
+                        last_opened: now,
+                    },
+                );
+                list.truncate(15);
+            },
+        );
+    }
 }
 
 /// Drop a workspace from recents; session rows are left in the db.
@@ -1065,9 +590,13 @@ pub fn remove_recent_workspace(workspace_root: &Path) {
     let canon = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
-    let mut list = load_recent_workspaces();
-    list.retain(|w| w.path != canon);
-    let _ = put_global("recent_workspaces", &list);
+    if let Ok(db) = try_global_db() {
+        let _ = files::update_global(
+            &db,
+            "recent_workspaces",
+            |list: &mut Vec<RecentWorkspace>| list.retain(|w| w.path != canon),
+        );
+    }
 }
 
 /// Every workspace that still has session data on disk — the welcome's
@@ -1138,7 +667,7 @@ mod tests {
 
     /// An isolated store: temp db file + the tempdir as the workspace root.
     fn test_store(dir: &tempfile::TempDir) -> SessionStore {
-        let db = Arc::new(open_db(&dir.path().join("t.db")).unwrap());
+        let db = open_db(&dir.path().join("conversations")).unwrap();
         SessionStore::open_with(dir.path(), db).unwrap()
     }
 
@@ -1293,7 +822,7 @@ mod tests {
         // the legacy DIRECTORY name, so bind a store straight to that key.
         let store = SessionStore {
             ws: "aa11bb22cc33dd44".into(),
-            db: Arc::new(open_db(&data.join(DB_FILE)).unwrap()),
+            db: open_db(&data.join(DB_FILE)).unwrap(),
         };
         let hist = store.load_history(7).expect("imported history");
         assert_eq!(hist.len(), 2);
@@ -1305,11 +834,11 @@ mod tests {
         assert_eq!(store.recorded_root(), Some(PathBuf::from("/proj/demo")));
         assert!(store.read_state(7, "todos.json").unwrap().is_some());
 
-        // Sources were moved aside after the commit.
-        assert!(!data.join("sessions").exists());
-        assert!(data.join("sessions.legacy").is_dir());
-        assert!(!data.join("recent_workspaces.json").exists());
-        assert!(data.join("recent_workspaces.json.bak").is_file());
-        assert!(data.join("appearance.json.bak").is_file());
+        // Migration is marked in the file store; original sources remain recoverable.
+        assert!(data.join("sessions").exists());
+        assert!(!data.join("sessions.legacy").exists());
+        assert!(data.join("recent_workspaces.json").exists());
+        assert!(!data.join("recent_workspaces.json.bak").exists());
+        assert!(!data.join("appearance.json.bak").exists());
     }
 }

@@ -299,3 +299,126 @@ async fn bash_created_file_outside_every_node_is_caught() {
     assert_eq!(hidden.len(), 1, "{hidden:?}");
     assert!(hidden[0].contains("loose/b.rs"), "{}", hidden[0]);
 }
+
+const APP_NODE: &str = "+++\nowns = [\"app/**\"]\nforbidden_deps = [\"tauri*\"]\n+++\nApp.\n";
+
+/// `cargo add`-style edit: bash rewrites an EXISTING manifest to pull in a
+/// forbidden dependency. The file was not created, so only the baseline's
+/// mtime/size diff can see it.
+#[tokio::test]
+async fn bash_edit_of_existing_manifest_is_caught() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), ".blueprint/app.md", APP_NODE);
+    write(
+        dir.path(),
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\n[dependencies]\n",
+    );
+    write(dir.path(), "app/src/lib.rs", "");
+    let stub = Arc::new(ScriptedProvider::new().with_script(tool_call(
+        "bash",
+        serde_json::json!({"command": "printf 'tauri = \"2\"\\n' >> app/Cargo.toml"}),
+    )));
+    stub.script_text("added tauri");
+    stub.script_text("left as is");
+    let (mut actor, _ch) = spawn(dir.path(), stub.clone(), "build");
+
+    actor
+        .handle(UiCommand::Prompt {
+            text: "add tauri".into(),
+        })
+        .await;
+
+    let hidden = hidden_texts(&actor);
+    assert_eq!(hidden.len(), 1, "{hidden:?}");
+    assert!(hidden[0].contains("tauri"), "{}", hidden[0]);
+    assert_eq!(stub.calls.lock().unwrap().len(), 3, "one rework round");
+}
+
+/// A violation that already existed before the turn is not this turn's to
+/// fix: an unrelated new file in the same node must not buy a rework round.
+#[tokio::test]
+async fn preexisting_violation_does_not_block_unrelated_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), ".blueprint/app.md", APP_NODE);
+    write(
+        dir.path(),
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\n[dependencies]\ntauri = \"2\"\n",
+    );
+    let stub = Arc::new(ScriptedProvider::new().with_script(tool_call(
+        "apply_patch",
+        serde_json::json!({"patch": "*** Begin Patch\n*** Add File: app/src/b.rs\n+fn b() {}\n*** End Patch\n"}),
+    )));
+    stub.script_text("added b");
+    let (mut actor, _ch) = spawn(dir.path(), stub.clone(), "build");
+
+    actor
+        .handle(UiCommand::Prompt {
+            text: "add b".into(),
+        })
+        .await;
+
+    assert_eq!(stub.calls.lock().unwrap().len(), 2, "no rework round");
+    assert!(hidden_texts(&actor).is_empty());
+}
+
+/// The switch is per session: a session switched off sees no index, runs no
+/// turn-end check, and a bad write in it is not reworked — while the same
+/// workspace's default session still is.
+#[tokio::test]
+async fn switch_off_session_skips_index_and_check() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        ".blueprint/core.md",
+        "+++\nowns = [\"src/**\"]\n+++\nCore engine.\n",
+    );
+    let stub = Arc::new(ScriptedProvider::new().with_script(tool_call(
+        "apply_patch",
+        serde_json::json!({"patch": "*** Begin Patch\n*** Add File: loose/a.rs\n+fn a() {}\n*** End Patch\n"}),
+    )));
+    stub.script_text("added it");
+    let (mut actor, _ch) = spawn(dir.path(), stub.clone(), "build");
+
+    actor
+        .handle(UiCommand::SetBlueprintEnabled { enabled: false })
+        .await;
+
+    assert!(system_prompt(&actor).contains("architecture layer off"));
+    assert!(!system_prompt(&actor).contains("- core —"));
+
+    actor
+        .handle(UiCommand::Prompt {
+            text: "add a".into(),
+        })
+        .await;
+
+    assert_eq!(stub.calls.lock().unwrap().len(), 2, "no rework round");
+    assert!(hidden_texts(&actor).is_empty());
+}
+
+/// Switching a live session back on re-renders its index at once, so the
+/// next request already carries the nodes.
+#[tokio::test]
+async fn switch_on_renders_index_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        ".blueprint/core.md",
+        "+++\nowns = [\"src/**\"]\n+++\nCore engine.\n",
+    );
+    let stub = Arc::new(ScriptedProvider::new());
+    stub.script_text("ok");
+    let (mut actor, _ch) = spawn(dir.path(), stub.clone(), "build");
+
+    actor
+        .handle(UiCommand::SetBlueprintEnabled { enabled: false })
+        .await;
+    assert!(!system_prompt(&actor).contains("- core —"));
+
+    actor
+        .handle(UiCommand::SetBlueprintEnabled { enabled: true })
+        .await;
+    assert!(system_prompt(&actor).contains("- core — Core engine. [src/**]"));
+}

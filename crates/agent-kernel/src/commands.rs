@@ -64,6 +64,9 @@ pub struct CommandCtx<'a> {
     /// Emit a UI event (status/system message) — the shared sink keeps the
     /// ctx `Send` so `handle` futures can `tokio::spawn`.
     pub ui_tx: &'a crate::channels::UiSink,
+    /// The session's `.blueprint/` switch — `/blueprint` answers "off" when
+    /// it is false.
+    pub blueprint_enabled: bool,
 }
 
 /// The registry — built-ins first; plugin commands register under
@@ -127,6 +130,15 @@ impl CommandRegistry {
                 if text.is_empty() {
                     return CommandResult::Reply(
                         "usage: /remember <durable note or preference>".into(),
+                    );
+                }
+                // Same gate as the `remember` tool: a pasted credential would be
+                // injected into every later prompt.
+                if agent_context::memory::distill::looks_secret(text) {
+                    return CommandResult::Reply(
+                        "refused: this looks like a credential — memory keeps preferences \
+                         and project facts, never secrets."
+                            .into(),
                     );
                 }
                 // Keys are user/agent-visible labels — `/remember` takes the
@@ -198,7 +210,11 @@ impl CommandRegistry {
             }
             // Architecture blueprint — index/check/graph answer locally;
             // `init` hands the model a bootstrap prompt.
-            "blueprint" => match crate::blueprint::command(ctx.workspace_root, args) {
+            "blueprint" => match crate::blueprint::command(
+                ctx.workspace_root,
+                ctx.blueprint_enabled,
+                args,
+            ) {
                 Ok(reply) => CommandResult::Reply(reply),
                 Err(prompt) => CommandResult::FeedToAgent(prompt),
             },
@@ -495,6 +511,7 @@ mod tests {
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         let res = CommandRegistry::try_run("/review", &mut ctx).await.unwrap();
         match res {
@@ -518,6 +535,7 @@ mod tests {
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         let res = CommandRegistry::try_run("/review src/", &mut ctx)
             .await
@@ -540,6 +558,7 @@ mod tests {
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         let res = CommandRegistry::try_run("/nonexistent", &mut ctx)
             .await
@@ -562,6 +581,7 @@ mod tests {
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         let res = CommandRegistry::try_run("check @main.rs please", &mut ctx)
             .await
@@ -613,6 +633,7 @@ mod tests {
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         let res = CommandRegistry::try_run("read @../outside.txt", &mut ctx)
             .await
@@ -637,6 +658,7 @@ mod tests {
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         // `a@b` — the `@` isn't at a token boundary, so no expansion and the
         // text falls through unchanged (None → normal prompt path).
@@ -677,6 +699,7 @@ mod tests {
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         // `$review` resolves the workspace skill…
         let res = CommandRegistry::try_run("$review src/", &mut ctx)
@@ -702,6 +725,36 @@ mod tests {
     /// `/memory` renders it, `/forget` removes it — the user-facing surface
     /// of the same table the `remember` tool and distiller write.
     #[tokio::test]
+    async fn remember_refuses_a_credential_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            agent_context::memory::MemoryStore::open(&dir.path().join("m.db"), dir.path()).unwrap();
+        let (_d, root) = skill_ws();
+        let (tx, _rx) = crate::channels::UiSink::channel();
+        let mut hist = Vec::new();
+        let mut ctx = CommandCtx {
+            history: &mut hist,
+            permission_mode: "default",
+            workspace_root: &root,
+            memory: Some(&store),
+            plugin_commands: &[],
+            ui_tx: &tx,
+            blueprint_enabled: true,
+        };
+
+        let res = CommandRegistry::try_run(
+            "/remember sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+        match res {
+            CommandResult::Reply(r) => assert!(r.contains("credential"), "{r}"),
+            _ => panic!("expected Reply"),
+        }
+        assert!(store.all_persona().unwrap().is_empty(), "credential was stored");
+    }
+
     async fn remember_memory_forget_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store =
@@ -716,6 +769,7 @@ mod tests {
             memory: Some(&store),
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
 
         let res = CommandRegistry::try_run("/remember 用中文回答", &mut ctx)
@@ -779,6 +833,7 @@ mod tests {
             memory: Some(&store),
             plugin_commands: &[],
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         let res = CommandRegistry::try_run("/remember", &mut ctx)
             .await
@@ -826,6 +881,7 @@ mod tests {
             memory: None,
             plugin_commands: &cmds,
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         match CommandRegistry::try_run("/slugify hello world", &mut ctx)
             .await
@@ -854,6 +910,7 @@ mod tests {
             memory: None,
             plugin_commands: &cmds,
             ui_tx: &tx,
+            blueprint_enabled: true,
         };
         // `/id:name` — the collision-safe spelling.
         match CommandRegistry::try_run("/wasm-textutils:slugify hi", &mut ctx)

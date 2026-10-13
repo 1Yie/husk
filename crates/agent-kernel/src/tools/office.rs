@@ -53,7 +53,7 @@ async fn run(
     let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), timeout);
 
     let output = ctx
-        .sandbox
+        .effective_sandbox()
         .run_command(&cmd, &[], &cfg)
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
@@ -100,8 +100,11 @@ async fn run(
 fn shell_join(argv: &[String]) -> String {
     argv.iter()
         .map(|a| {
-            if a.chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_./:@".contains(c))
+            // An empty token must still be quoted: a bare nothing vanishes and
+            // every later positional argument shifts one slot left.
+            if !a.is_empty()
+                && a.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./:@".contains(c))
             {
                 a.clone()
             } else {
@@ -289,7 +292,9 @@ struct ViewArgs {
     start: Option<u32>,
     /// Last page/slide — `--end` (text/svg ranges).
     end: Option<u32>,
-    /// Output file for screenshot/svg/pdf modes — `-o`.
+    /// Not accepted — this tool is read-only. Use `office_exec` for an
+    /// output file (screenshot/svg/pdf). Kept so an old call gets a clear
+    /// error instead of a silent drop.
     output: Option<String>,
     timeout_secs: Option<u64>,
 }
@@ -803,6 +808,20 @@ fn office_import() -> ToolSpec {
     }
 }
 
+/// Reject any `office_view` call that would write a file. Kept separate from
+/// the exec closure so the rule is testable without a tool context.
+fn view_read_only(a: &ViewArgs) -> Result<(), ToolError> {
+    if a.output.is_some() {
+        return Err(ToolError::Args(
+            "office_view is read-only and cannot write `output`. To save a \
+             rendered file, use office_exec with an explicit -o argv (gated \
+             by approval)."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn office_view() -> ToolSpec {
     ToolSpec {
         name: "office_view",
@@ -817,6 +836,11 @@ fn office_view() -> ToolSpec {
             async move {
                 let a: ViewArgs = serde_json::from_value(args)
                     .map_err(|e| ToolError::Args(format!("office_view args: {e}")))?;
+                // This tool is read-only and auto-runs without approval. `-o`
+                // writes a file, and the shared office root means that could
+                // overwrite another session's deliverable — so refuse it here.
+                // Writing a render is an `office_exec` call, which is gated.
+                view_read_only(&a)?;
                 let file = resolve_file(&ctx, &a.file)?;
                 let mut argv = vec!["officecli".into(), "view".into(), file];
                 // `mode` is a required positional in officecli; default to text.
@@ -829,9 +853,6 @@ fn office_view() -> ToolSpec {
                 }
                 if let Some(e) = a.end {
                     argv.extend(["--end".into(), e.to_string()]);
-                }
-                if let Some(o) = a.output {
-                    argv.extend(["-o".into(), resolve_file(&ctx, &o)?]);
                 }
                 argv.push("--json".into());
                 run(ctx, argv, timeout_of(a.timeout_secs)).await
@@ -846,10 +867,10 @@ fn office_validate() -> ToolSpec {
         name: "office_validate",
         schema: schema_for::<FileArgs>(
             "Validate the document against the OpenXML schema. Run before \
-             delivery — any schema error must be fixed first.",
+             delivery — any schema error must be fixed first. Read-only.",
         ),
-        readonly: false,
-        class: super::registry::ToolClass::Process,
+        readonly: true,
+        class: super::registry::ToolClass::Observation,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -967,6 +988,24 @@ fn office_raw() -> ToolSpec {
     }
 }
 
+/// Refuse an `office_exec` argument that names a file outside the workspace:
+/// a `..` path segment, or a leading `/` that is an existing host path.
+/// A leading `/` that is not on the host (`/body`, `/slide[1]`) is an
+/// officecli document path and is allowed. Symlinks are not resolved here —
+/// the sandbox mount policy is the backstop for those.
+fn check_exec_arg(arg: &str) -> Result<(), ToolError> {
+    let has_parent = std::path::Path::new(arg)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    if has_parent {
+        return Err(ToolError::PathEscape(arg.to_string()));
+    }
+    if arg.starts_with('/') && std::path::Path::new(arg).exists() {
+        return Err(ToolError::PathEscape(arg.to_string()));
+    }
+    Ok(())
+}
+
 fn office_exec() -> ToolSpec {
     ToolSpec {
         name: "office_exec",
@@ -987,6 +1026,12 @@ fn office_exec() -> ToolSpec {
                     return Err(ToolError::Args(
                         "office_exec needs a non-empty `args` argv".into(),
                     ));
+                }
+                // Argv is free-form, so a file path can sit in any slot. Refuse
+                // the two forms that name a file outside the workspace; in-document
+                // paths like `/body` or `/slide[1]` are legitimate and pass.
+                for arg in &a.args {
+                    check_exec_arg(arg)?;
                 }
                 let mut argv = vec!["officecli".into()];
                 argv.extend(a.args);
@@ -1009,5 +1054,111 @@ fn push_props(
             other => other.to_string(),
         };
         argv.extend(["--prop".into(), format!("{k}={val}")]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Plain tokens pass through unquoted — the common case stays readable.
+    #[test]
+    fn shell_join_leaves_plain_tokens_bare() {
+        assert_eq!(
+            shell_join(&argv(&["officecli", "get", "a.docx", "/body", "--json"])),
+            "officecli get a.docx /body --json"
+        );
+    }
+
+    /// Anything with spaces or JSON is single-quoted so the shell sees one word.
+    #[test]
+    fn shell_join_quotes_spaces_and_json() {
+        assert_eq!(
+            shell_join(&argv(&["officecli", "set", "my deck.pptx", r#"{"a":1}"#])),
+            r#"officecli set 'my deck.pptx' '{"a":1}'"#
+        );
+    }
+
+    /// An embedded single quote is closed, escaped, and reopened.
+    #[test]
+    fn shell_join_escapes_single_quotes() {
+        assert_eq!(
+            shell_join(&argv(&["officecli", "set", "it's.docx"])),
+            r"officecli set 'it'\''s.docx'"
+        );
+    }
+
+    /// An empty argument must survive as an explicit empty word. Dropping it
+    /// shifts every following positional argument one slot left.
+    #[test]
+    fn shell_join_keeps_empty_argument() {
+        assert_eq!(
+            shell_join(&argv(&["officecli", "set", "f.docx", "", "--json"])),
+            "officecli set f.docx '' --json"
+        );
+    }
+
+    /// Short output is returned untouched.
+    #[test]
+    fn fold_passes_short_output_through() {
+        assert_eq!(fold("hello"), "hello");
+    }
+
+    /// Long output keeps its head and tail and names what was dropped.
+    #[test]
+    fn fold_truncates_middle_and_reports_bytes() {
+        let s = "a".repeat(MAX_OUTPUT_CHARS * 2);
+        let out = fold(&s);
+        assert!(out.len() < s.len());
+        assert!(out.contains("[truncated"));
+        assert!(out.starts_with('a') && out.ends_with('a'));
+    }
+
+    /// `office_view` is read-only: an `output` path would overwrite a file,
+    /// so it is refused, while a plain read still goes through.
+    #[test]
+    fn view_refuses_output_path() {
+        let read = ViewArgs {
+            file: "a.docx".into(),
+            mode: Some("text".into()),
+            page: None,
+            start: None,
+            end: None,
+            output: None,
+            timeout_secs: None,
+        };
+        assert!(view_read_only(&read).is_ok());
+
+        let writing = ViewArgs {
+            output: Some("victim.txt".into()),
+            ..read
+        };
+        let err = view_read_only(&writing).unwrap_err();
+        assert!(err.to_string().contains("read-only"), "{err}");
+    }
+
+    /// `office_exec` must refuse a `..` escape and a real host absolute path,
+    /// but let an in-document path (`/body`) and ordinary values through.
+    #[test]
+    fn exec_arg_guard_blocks_escapes_but_keeps_document_paths() {
+        assert!(check_exec_arg("/body").is_ok());
+        assert!(check_exec_arg("/slide[1]").is_ok());
+        assert!(check_exec_arg("text=hello").is_ok());
+        assert!(check_exec_arg("deck.pptx").is_ok());
+        assert!(check_exec_arg("../secret.docx").is_err());
+        assert!(check_exec_arg("assets/../../x").is_err());
+        assert!(check_exec_arg("/etc/hostname").is_err());
+    }
+
+    /// Missing timeout uses the default; an oversized one is clamped.
+    #[test]
+    fn timeout_of_defaults_and_clamps() {
+        assert_eq!(timeout_of(None), DEFAULT_TIMEOUT);
+        assert_eq!(timeout_of(Some(5)), Duration::from_secs(5));
+        assert_eq!(timeout_of(Some(10_000)), Duration::from_secs(600));
     }
 }

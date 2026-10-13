@@ -32,7 +32,7 @@ pub fn spec() -> ToolSpec {
             }
         };
         async move {
-            let Some(memory) = ctx.memory.clone() else {
+            let Some(memory) = ctx.memory.get() else {
                 return Err(ToolError::Failed(
                     // `None` = the session spawned without a store: the
                     // memory toggle is off, or the db failed to open.
@@ -44,6 +44,18 @@ pub fn spec() -> ToolSpec {
             if key.is_empty() || value.is_empty() {
                 return Err(ToolError::Args(
                     "`remember` needs a non-empty `key` and `value`".into(),
+                ));
+            }
+            // Memory is injected into every later system prompt, so a pasted
+            // credential would travel with every request. Only the value is
+            // checked: a key is a user-facing label, and the name denylist
+            // would wrongly refuse a legitimate label like `toggle_on_key`.
+            if agent_context::memory::distill::looks_secret(value) {
+                return Err(ToolError::Args(
+                    "refused: this looks like a credential — memory keeps preferences \
+                     and project facts, never secrets. Store the reference (e.g. the \
+                     env var name) instead."
+                        .into(),
                 ));
             }
             memory

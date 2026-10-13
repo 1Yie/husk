@@ -383,6 +383,15 @@ fn web_download() -> ToolSpec {
                         resp.status
                     )));
                 }
+                // `fetch` stops reading at the size cap. Writing that prefix
+                // would leave a corrupt file that still reports success.
+                if resp.body_truncated {
+                    return Err(ToolError::Failed(format!(
+                        "download exceeds the 10 MB limit — nothing was written. \
+                         Pick a smaller file (URL: {})",
+                        a.url
+                    )));
+                }
                 let dest = ctx.resolve(&a.path)?;
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)

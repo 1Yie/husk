@@ -24,6 +24,12 @@ struct BashArgs {
     command: String,
     /// Timeout in seconds (default 120, max 600).
     timeout_secs: Option<u64>,
+    /// Launch as a persistent background service instead of a one-shot:
+    /// the command survives past this call (dev server, database, watcher)
+    /// via the sandbox's `wrap_spawn` channel — same sandbox policy, no
+    /// process-tree kill at call end. Returns a `svc-N` id + log path;
+    /// manage it with the `service` tool. Dies when the agent exits.
+    persistent: Option<bool>,
 }
 
 pub fn spec() -> ToolSpec {
@@ -35,7 +41,15 @@ pub fn spec() -> ToolSpec {
              (smart_read/smart_grep/fuzzy_patch/apply_patch) for file IO —
              never `cat`/`echo`/`sed` to create or edit files; use apply_patch
              to create new files/folders, fuzzy_patch for in-place edits.
-             bash is for builds, tests, and commands those don't cover.",
+             bash is for builds, tests, and commands those don't cover.
+             Set persistent=true for long-lived services (dev servers, DBs,
+             watchers): the process survives across calls under the same
+             sandbox, output goes to a log file, manage via the `service`
+             tool. Network topology: recognized server commands (php -S,
+             python -m http.server, npm run dev, nginx, redis-server, …)
+             get shared host network so the host can connect; other
+             persistent commands run in the private netns and can only
+             reach out through the domain-allowlist proxy.",
         ),
         readonly: false,
         class: super::registry::ToolClass::Process,
@@ -60,8 +74,12 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 
     let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), timeout);
 
+    if parsed.persistent.unwrap_or(false) {
+        return super::services::spawn_persistent(&ctx, &cfg, &parsed.command).await;
+    }
+
     let output = ctx
-        .sandbox
+        .effective_sandbox()
         .run_command(&parsed.command, &[], &cfg)
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
@@ -84,6 +102,18 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     }
     if output.is_timeout {
         content.push_str(&format!("[timeout {}s — tree killed]\n", timeout.as_secs()));
+    }
+    // Egress denials the proxy recorded — the model sees *which* host was
+    // refused and can ask for escalation (or a narrower rerun) instead of
+    // guessing at a generic "network unreachable".
+    if !output.sandbox_denials.is_empty() {
+        content.push_str("[sandbox network denials:\n");
+        for d in &output.sandbox_denials {
+            content.push_str(&format!("  {d}\n"));
+        }
+        content.push_str(
+            "  → retry with a narrower command, or ask the user to widen the egress allowlist]\n",
+        );
     }
     content.push_str(&fold_output(&raw));
     Ok(ToolResult::text(content))

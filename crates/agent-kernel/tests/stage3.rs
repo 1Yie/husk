@@ -16,7 +16,7 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 #[tokio::test]
 async fn registry_lists_builtins() {
     let r = registry();
-    assert_eq!(r.len(), 19);
+    assert_eq!(r.len(), 20);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -32,6 +32,7 @@ async fn registry_lists_builtins() {
         "list_dir",
         "smart_grep",
         "bash",
+        "service",
         "todo",
         "serena",
         "skill",

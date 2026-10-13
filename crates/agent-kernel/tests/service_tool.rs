@@ -1,0 +1,148 @@
+//! End-to-end: bash(persistent) → service registry → logs/stop,
+//! through the real sandbox backend (bwrap on Linux).
+#![cfg(unix)]
+
+use std::sync::Arc;
+
+use agent_kernel::tools::registry::ToolCtx;
+
+fn call(spec_name: &str, args: serde_json::Value, ctx: Arc<ToolCtx>) -> String {
+    let spec = match spec_name {
+        "bash" => agent_kernel::tools::bash::spec(),
+        "service" => agent_kernel::tools::services::spec(),
+        _ => unreachable!(),
+    };
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on((spec.exec)(args, ctx))
+        .map(|r| r.content)
+        .unwrap_or_else(|e| format!("ERR {e:?}"))
+}
+
+#[test]
+fn persistent_service_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Arc::new(ToolCtx::new(dir.path()));
+
+    // spawn: a loop that prints immediately then idles.
+    let out = call(
+        "bash",
+        serde_json::json!({
+            "command": "for i in 1 2 3; do echo tick$i; sleep 0.2; done; echo ready; sleep 60",
+            "persistent": true
+        }),
+        ctx.clone(),
+    );
+    assert!(out.contains("svc-"), "spawn should return a service id: {out}");
+    let id = out.split_whitespace()
+        .find(|t| t.starts_with("id="))
+        .unwrap()
+        .trim_start_matches("id=")
+        .to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    // list shows it running.
+    let out = call("service", serde_json::json!({"action": "list"}), ctx.clone());
+    assert!(out.contains(&id), "list should contain {id}: {out}");
+    assert!(out.contains("running"), "{id} should be running: {out}");
+
+    // logs show its output.
+    let out = call(
+        "service",
+        serde_json::json!({"action": "logs", "id": id}),
+        ctx.clone(),
+    );
+    assert!(out.contains("ready"), "log should have 'ready': {out}");
+
+    // stop kills it.
+    let out = call(
+        "service",
+        serde_json::json!({"action": "stop", "id": id}),
+        ctx.clone(),
+    );
+    assert!(out.contains("stopped"), "stop should report: {out}");
+
+    // gone from the registry.
+    let out = call("service", serde_json::json!({"action": "list"}), ctx);
+    assert!(!out.contains(&id), "{id} should be gone: {out}");
+}
+
+/// A listener launched `persistent` must be reachable FROM THE HOST —
+/// that is the whole point of the audit's server→shared-network mapping
+/// (a private netns would strand it on a loopback nobody else can see).
+#[test]
+fn persistent_server_reachable_from_host() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), "hello-host").unwrap();
+    let ctx = Arc::new(ToolCtx::new(dir.path()));
+
+    let out = call(
+        "bash",
+        serde_json::json!({
+            "command": "python3 -m http.server 18723 --bind 127.0.0.1",
+            "persistent": true
+        }),
+        ctx.clone(),
+    );
+    assert!(out.contains("svc-"), "spawn failed: {out}");
+    let id = out.split_whitespace()
+        .find(|t| t.starts_with("id="))
+        .unwrap()
+        .trim_start_matches("id=")
+        .to_string();
+
+    // Give it a moment, then hit it from the host (this test process).
+    let mut got = String::new();
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Ok(mut s) = std::net::TcpStream::connect("127.0.0.1:18723") {
+            use std::io::{Read, Write};
+            let _ = s.write_all(b"GET / HTTP/1.0\r\n\r\n");
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf);
+            got = buf;
+            if got.contains("hello-host") {
+                break;
+            }
+        }
+    }
+    assert!(
+        got.contains("hello-host"),
+        "host should reach the service — got: {got}"
+    );
+
+    let out = call(
+        "service",
+        serde_json::json!({"action": "stop", "id": id}),
+        ctx,
+    );
+    assert!(out.contains("stopped"), "{out}");
+}
+
+/// The master switch: `enabled:false` routes process tools to the loud
+/// `none` backend — same ToolCtx, live toggle, no session restart.
+#[test]
+fn sandbox_disabled_routes_to_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Arc::new(ToolCtx::new(dir.path()));
+    let detected = ctx.effective_sandbox().id();
+    assert_ne!(detected, "none-simulated");
+
+    agent_kernel::sandbox_prefs::set(agent_kernel::sandbox_prefs::SandboxLimits {
+        enabled: Some(false),
+        ..Default::default()
+    });
+    assert_eq!(ctx.effective_sandbox().id(), "none");
+
+    // off → command runs unsandboxed (HOME is visible again on `none`)
+    let out = call(
+        "bash",
+        serde_json::json!({"command": "echo $HOME | head -c 5"}),
+        ctx.clone(),
+    );
+    assert!(out.contains("/home") || out.contains("/root"), "{out}");
+
+    agent_kernel::sandbox_prefs::set(agent_kernel::sandbox_prefs::SandboxLimits::default());
+    assert_eq!(ctx.effective_sandbox().id(), detected);
+}

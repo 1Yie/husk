@@ -145,6 +145,32 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
 /// cross-process redb lock while the app is running). The same `deps/`
 /// marker the session store uses covers `tests/` binaries too —
 /// `#[cfg(test)]` alone only reaches unit tests inside this lib.
+/// Every model the named provider declares, resolved the same way a hot-swap
+/// resolves one. A manifest `model:` may only name an id from this table, so
+/// the child can never run on a model the config does not describe.
+fn child_models(provider_name: &str) -> std::collections::HashMap<String, crate::tools::delegate::ChildModel> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(cfg) = agent_llm::AppConfig::load(None) else {
+        return out;
+    };
+    let Some(pcfg) = cfg.providers.get(provider_name) else {
+        return out;
+    };
+    for id in pcfg.model_ids() {
+        let d = pcfg.model_opts(&id);
+        out.insert(
+            id,
+            crate::tools::delegate::ChildModel {
+                context_window: d.context_window.unwrap_or(256_000) as usize,
+                thinking_level_map: d.thinking_level_map.clone(),
+                model_params: agent_llm::ProviderFactory::model_params_from(&d),
+                model_input: d.input.clone(),
+            },
+        );
+    }
+    out
+}
+
 fn open_memory_store(workspace_root: &Path) -> Option<MemoryStore> {
     let db_dir = if crate::session_store::is_test_binary() {
         Some(std::env::temp_dir().join(format!("husk-test-{}", std::process::id())))
@@ -222,6 +248,9 @@ pub struct SessionActor {
     ask_channel: Arc<crate::tools::registry::AskChannel>,
     /// Engine's permissions slot — permission mode updates apply immediately mid-turn.
     permissions_slot: Arc<std::sync::RwLock<crate::permissions::PermissionGate>>,
+    /// Child-engine configuration shared with `delegate` — rewritten on
+    /// hot-swap so a live session's children track its current model.
+    child_route: Arc<std::sync::RwLock<crate::tools::delegate::ChildRoute>>,
     /// Engine's thinking-level slot — read by the manager to report the
     /// session's live level (defaults may differ once prefs change).
     thinking_slot: Arc<std::sync::RwLock<Option<String>>>,
@@ -233,6 +262,7 @@ pub struct SessionActor {
     cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Actor-owned command receiver — `run()` drains it.
     cmd_rx: mpsc::Receiver<UiCommand>,
+    shutdown: Arc<tokio::sync::Notify>,
     /// Workspace root (undo writes resolve against it).
     workspace_root: PathBuf,
     /// Ordered hook chain (lifecycle interception).
@@ -241,8 +271,11 @@ pub struct SessionActor {
     /// so a `reload_plugins` swap reaches `/x` dispatch too. `None` = no
     /// plugin manager installed for this workspace.
     plugins: Option<crate::engine::PluginHandle>,
-    /// Memory store + post-turn distiller (background task).
+    /// Memory store + post-turn distiller (background task). `memory` is the
+    /// actor's own view; `memory_handle` is the same slot the engine's tools
+    /// read, so one switch covers recall, distillation and the `remember` tool.
     memory: Option<Arc<MemoryStore>>,
+    memory_handle: crate::tools::registry::MemoryHandle,
     distiller: Option<Arc<TurnDistiller>>,
     /// Provider/model/params captured at spawn — the distiller's summarizer
     /// is rebuilt from these when `SetMemory` toggles memory on mid-session
@@ -256,6 +289,7 @@ pub struct SessionActor {
     session_id: i64,
     /// Per-workspace session store — snapshots history at turn boundaries.
     store: Option<Arc<crate::session_store::SessionStore>>,
+    history_revision: u64,
     /// Last completed turn's `(prompt, completion)` tokens — persisted
     /// into `SessionMeta` so a reopened session's header meter shows real
     /// numbers before the next `Usage` event.
@@ -431,7 +465,7 @@ impl SessionActor {
             .replace("{{SKILLS_BLOCK}}", skills.catalog())
             .replace(
                 "{{BLUEPRINT_BLOCK}}",
-                &crate::blueprint::prompt_block(&cfg.workspace_root),
+                &crate::blueprint::prompt_block(&cfg.workspace_root, true),
             )
             .replace(
                 "{{SUBAGENTS_BLOCK}}",
@@ -455,6 +489,7 @@ impl SessionActor {
         // persisted history (its system prompt was rendered at that session's
         // spawn — memory/workspace baked in for that turn).
         let is_resume = prior_history.is_some();
+        let mut history_revision=prior_history.as_deref().map(crate::session_store::SessionStore::history_revision_of).unwrap_or(0);
         let mut history = prior_history.unwrap_or_else(|| vec![ChatMessage::system(system_prompt)]);
 
         // A resumed session's system prompt was frozen at ITS spawn —
@@ -488,9 +523,24 @@ impl SessionActor {
         // Session persistence — per-workspace store; the actor snapshots
         // `history` at turn boundaries so a crashed/killed app resumes mid-
         // conversation from the last completed turn.
-        let store = crate::session_store::SessionStore::open(&cfg.workspace_root)
-            .ok()
-            .map(Arc::new);
+        let store = match crate::session_store::SessionStore::open(&cfg.workspace_root) {
+            Ok(store) => Some(Arc::new(store)),
+            Err(error) => {
+                let _ = channels.event_tx.send(UiEvent::SystemMessage(format!(
+                    "会话存储不可用: {error}；todo 与历史持久化暂不可用，修复后重新打开会话"
+                )));
+                None
+            }
+        };
+        if let Some(warning) = crate::session_store::session_storage_warning() {
+            let _ = channels.event_tx.send(UiEvent::SystemMessage(warning));
+        }
+        // Forks/importers may supply prior history before any journal exists.
+        // Existing journals still compare against the supplied revision, so
+        // a concurrently updated persisted session cannot be overwritten.
+        if store.as_ref().is_some_and(|s|s.has_history(session_id).ok()==Some(false)) {
+            history_revision=0;
+        }
 
         // Cooperative cancel flag — hoisted above `ToolCtx` so delegated
         // subagents inherit it (a user cancel tears down in-flight child
@@ -510,21 +560,29 @@ impl SessionActor {
         // child's `ToolCtx` carries a refusing desktop backend as the second
         // one. `screenshot` stays: looking at the screen is an observation a
         // delegated visual check legitimately needs.
-        let child_full = registry.filtered(|s| {
-            s.name != "delegate"
-                && s.name != "computer"
-                && s.class != crate::tools::registry::ToolClass::HumanInteraction
-        });
+        let child_full = crate::tools::registry::ToolRegistry::child_builtins();
         let child_ro = child_full.readonly_only();
         let mut tool_ctx =
             ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
         tool_ctx.cancel = Some(cancel.clone());
-        tool_ctx.memory = memory.clone();
+        let memory_handle = crate::tools::registry::MemoryHandle::default();
+        memory_handle.set(memory.clone());
+        tool_ctx.memory = memory_handle.clone();
+        // The child route starts from the session's own settings and is
+        // rewritten by `apply_model_switch`, so children follow a hot-swap.
+        let child_route = Arc::new(std::sync::RwLock::new(crate::tools::delegate::ChildRoute {
+            provider: cfg.provider.clone(),
+            model: cfg.model.clone(),
+            temperature: cfg.temperature,
+            context_window: cfg.context_window.unwrap_or(256_000) as usize,
+            thinking_level: cfg.thinking_level.clone(),
+            thinking_level_map: cfg.thinking_level_map.clone(),
+            model_params: cfg.model_params.clone().unwrap_or_default(),
+            model_input: cfg.model_input.clone(),
+            models: child_models(&cfg.provider_name),
+        }));
         tool_ctx.subagent = Some(crate::tools::delegate::SubagentSpawner::new(
-            cfg.provider.clone(),
-            cfg.model.clone(),
-            cfg.temperature,
-            cfg.context_window.unwrap_or(256_000) as usize,
+            child_route.clone(),
             Arc::new(child_full),
             Arc::new(child_ro),
         ));
@@ -614,15 +672,18 @@ impl SessionActor {
                 ask_channel,
                 permissions_slot,
                 thinking_slot,
+                child_route,
                 steer_tx,
                 cancel,
                 cmd_rx,
+                shutdown: Arc::new(tokio::sync::Notify::new()),
                 workspace_root: cfg.workspace_root,
                 // Empty until `set_hooks` installs the plugin chain — the
                 // manager does it before the actor starts running.
                 hooks: HookChain::new(),
                 plugins: cfg.plugins.clone(),
                 memory,
+                memory_handle,
                 distiller,
                 distill_ctx: (
                     cfg.provider.clone(),
@@ -631,6 +692,7 @@ impl SessionActor {
                 ),
                 session_id,
                 store,
+                history_revision,
                 last_usage: None,
                 queued: Arc::new(std::sync::Mutex::new(cfg.queued_prompts.into())),
                 skills,
@@ -646,9 +708,21 @@ impl SessionActor {
     /// they would block behind the running turn. They arrive via the shared
     /// `decision_slot`, the `EngineIo::cancel` flag and `steer_tx` instead.
     pub async fn run(&mut self) {
-        while let Some(cmd) = self.cmd_rx.recv().await {
+        loop {
+            let cmd = tokio::select! {
+                biased;
+                _ = self.shutdown.notified() => break,
+                cmd = self.cmd_rx.recv() => cmd,
+            };
+            let Some(cmd) = cmd else { break };
+            if self.store.as_ref().is_some_and(|s|s.is_deleted(self.session_id)) { break; }
             self.handle(cmd).await;
         }
+        self.io.ui_tx.close();
+    }
+
+    pub fn shutdown_writer(&self) -> Arc<tokio::sync::Notify> {
+        self.shutdown.clone()
     }
 
     /// The frontend's command sender — the bridge clones this.
@@ -664,6 +738,20 @@ impl SessionActor {
     pub fn set_hooks(&mut self, chain: HookChain) {
         self.hooks = chain.clone();
         self.engine.set_hooks(chain);
+    }
+
+    /// The session's `.blueprint/` switch. Forwarded to the engine (which
+    /// gates the turn-end check and baseline), and the system prompt's
+    /// blueprint region is re-rendered at once so the index never shows for
+    /// a session that turned the layer off.
+    pub fn set_blueprint_enabled(&mut self, enabled: bool) {
+        self.engine.set_blueprint_enabled(enabled);
+        if let Some(sys) = self.history.get_mut(0) {
+            if let Some(content) = sys.content.take() {
+                let block = crate::blueprint::prompt_block(&self.workspace_root, enabled);
+                sys.content = Some(replace_block(&content, "blueprint", &block));
+            }
+        }
     }
 
     /// The shared tool-decision slot — the bridge writes `ToolDecision`
@@ -773,7 +861,10 @@ impl SessionActor {
         // stay as they are.
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
-                let block = crate::blueprint::prompt_block(&self.workspace_root);
+                let block = crate::blueprint::prompt_block(
+                    &self.workspace_root,
+                    self.engine.blueprint_enabled(),
+                );
                 sys.content = Some(replace_block(&content, "blueprint", &block));
             }
         }
@@ -851,6 +942,22 @@ impl SessionActor {
         // session would re-shoot rather than trust a stale frame anyway).
         crate::tools::screenshot::cleanup_screenshots(&self.workspace_root);
 
+        // A `computer` grant covers the task it was given for. Ending it here —
+        // in the kernel, not in whichever shell happens to be attached — means
+        // the Tauri overlay, the TUI and the CLI all see the same lifecycle,
+        // and a grant can never carry into an unrelated next prompt.
+        let had_grant = self
+            .permissions_slot
+            .write()
+            .map(|mut g| g.revoke_computer_grants())
+            .unwrap_or(false);
+        if had_grant {
+            let _ = self.io.ui_tx.send(UiEvent::SessionToolWhitelisted {
+                tool_name: "computer".into(),
+                stopped: true,
+            });
+        }
+
         // Persist at the turn boundary — the store's last JSONL line is the
         // resumable state; sidebar meta updates so the session list reflects
         // the latest preview even if this session isn't the visible one.
@@ -882,7 +989,6 @@ impl SessionActor {
                 }
             })
             .collect();
-        let _ = store.snapshot(id, &sanitized);
 
         // Title = first user prompt (truncated); preview = last agent text.
         let title = self
@@ -943,7 +1049,7 @@ impl SessionActor {
         // live slots (updated by `apply_model_switch` mid-session), not the
         // spawn-time snapshot.
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
-        let _ = store.upsert_meta(crate::session_store::SessionMeta {
+        let result = store.commit_turn_checked(&sanitized, crate::session_store::SessionMeta {
             id,
             title,
             preview,
@@ -956,7 +1062,11 @@ impl SessionActor {
             agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
             thinking_level: self.engine.thinking_level(),
             queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
-        });
+        },self.history_revision);
+        match result {
+            Ok(revision)=>self.history_revision=revision,
+            Err(error)=>{let _ = self.io.ui_tx.send(UiEvent::SystemMessage(format!("保存会话失败: {error}")));}
+        }
     }
 
     /// The permission mode the engine is currently dispatching under —
@@ -977,29 +1087,9 @@ impl SessionActor {
             items: items.clone(),
         });
         if let Some(store) = &self.store {
-            let id = self.session_id;
-            let old = store.list().into_iter().find(|m| m.id == id);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let _ = store.upsert_meta(crate::session_store::SessionMeta {
-                id,
-                title: old
-                    .as_ref()
-                    .map(|m| m.title.clone())
-                    .unwrap_or_else(|| "新会话".into()),
-                preview: old.as_ref().map(|m| m.preview.clone()).unwrap_or_default(),
-                updated_at: now,
-                pinned: old.as_ref().map(|m| m.pinned).unwrap_or(false),
-                usage: old.as_ref().and_then(|m| m.usage),
-                model: old.as_ref().and_then(|m| m.model.clone()),
-                provider: old.as_ref().and_then(|m| m.provider.clone()),
-                permission_mode: old.as_ref().and_then(|m| m.permission_mode.clone()),
-                agent_mode: old.as_ref().and_then(|m| m.agent_mode.clone()),
-                thinking_level: old.as_ref().and_then(|m| m.thinking_level.clone()),
-                queued_prompts: items,
-            });
+            if let Err(error) = store.update_queue(self.session_id, items) {
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(format!("保存待执行任务失败: {error}")));
+            }
         }
     }
 
@@ -1016,6 +1106,10 @@ impl SessionActor {
     /// a turn; a mid-turn call is a no-op (`is_active` guard).
     async fn drain_queue(&mut self) {
         while !self.state.is_active() {
+            if self.store.as_ref().is_some_and(|s|s.is_deleted(self.session_id)) {
+                self.queued.lock().unwrap().clear();
+                break;
+            }
             let Some(next) = self.queued.lock().unwrap().pop_front() else {
                 break;
             };
@@ -1039,7 +1133,7 @@ impl SessionActor {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
-        let _ = store.upsert_meta(crate::session_store::SessionMeta {
+        let result = store.update_settings(crate::session_store::SessionMeta {
             id,
             title: old
                 .as_ref()
@@ -1056,6 +1150,9 @@ impl SessionActor {
             thinking_level: self.engine.thinking_level(),
             queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
         });
+        if let Err(error) = result {
+            let _ = self.io.ui_tx.send(UiEvent::SystemMessage(format!("保存会话设置失败: {error}")));
+        }
     }
 
     /// Session identity — the sidebar/store key.
@@ -1146,32 +1243,57 @@ impl SessionActor {
     fn apply_model_switch(&mut self, provider: &str, model: &str) {
         if let Ok(cfg) = agent_llm::AppConfig::load(None) {
             if let Some(pcfg) = cfg.providers.get(provider) {
-                if let Ok(p) = agent_llm::ProviderFactory::build(pcfg) {
-                    self.engine.set_provider(p);
+                let built = agent_llm::ProviderFactory::build(pcfg).ok();
+                if let Some(p) = &built {
+                    self.engine.set_provider(p.clone());
                 }
                 let resolved = pcfg
                     .find_model(model)
                     .is_some()
                     .then(|| pcfg.model_opts(model));
+                // Children read this route, so it must match what the parent just got.
+                let mut route = self
+                    .child_route
+                    .write()
+                    .expect("child route lock poisoned");
+                if let Some(p) = built {
+                    route.provider = p;
+                }
+                // The model table belongs to the provider, so it moves with it.
+                route.models = child_models(provider);
                 match resolved {
                     Some(d) => {
-                        self.engine
-                            .set_thinking_level_map(d.thinking_level_map.clone());
-                        self.engine
-                            .set_context_window(d.context_window.unwrap_or(256_000) as usize);
-                        self.engine.set_model_input(d.input.clone());
-                        self.engine
-                            .set_model_params(agent_llm::ProviderFactory::model_params_from(&d));
+                        let map = d.thinking_level_map.clone();
+                        let window = d.context_window.unwrap_or(256_000) as usize;
+                        let input = d.input.clone();
+                        let params = agent_llm::ProviderFactory::model_params_from(&d);
+                        self.engine.set_thinking_level_map(map.clone());
+                        self.engine.set_context_window(window);
+                        self.engine.set_model_input(input.clone());
+                        self.engine.set_model_params(params.clone());
+                        route.thinking_level_map = map;
+                        route.context_window = window;
+                        route.model_input = input;
+                        route.model_params = params;
                     }
                     None => {
                         self.engine.set_thinking_level_map(None);
                         self.engine.set_context_window(256_000);
                         self.engine.set_model_input(Vec::new());
                         self.engine.set_model_params(agent_llm::ModelParams::EMPTY);
+                        route.thinking_level_map = None;
+                        route.context_window = 256_000;
+                        route.model_input = Vec::new();
+                        route.model_params = agent_llm::ModelParams::EMPTY;
                     }
                 }
             }
         }
+        // The parent's model changes unconditionally, so the children's must too.
+        self.child_route
+            .write()
+            .expect("child route lock poisoned")
+            .model = model.to_string();
         self.engine.set_model(model.to_string());
         // Keep the actor's own identity fields in step — they feed both the
         // usage attribution on `persist_turn` and the `SessionMeta` row a
@@ -1190,6 +1312,7 @@ impl SessionActor {
                 let line = "会话历史已清空".to_string();
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
+                self.persist_turn("已清空历史");
             }
             ControlOp::Compact => {
                 // `/compact` bypasses the threshold AND the suppressor —
@@ -1298,6 +1421,9 @@ impl SessionActor {
     /// intercept + the `on_user_input` hook chain, then `run_prompt`. Kept
     /// out of the `match` so `Retry` can re-enter it without recursion.
     async fn handle_prompt(&mut self, text: String) {
+        if self.store.as_ref().is_some_and(|s|s.is_deleted(self.session_id)) {
+            return;
+        }
         // `/x` slash commands intercept before the ReAct loop — zero
         // tokens. Unknown `/x` falls through as a prompt.
         let workspace_root = self.workspace_root.clone();
@@ -1317,6 +1443,7 @@ impl SessionActor {
                 memory: self.memory.as_deref(),
                 plugin_commands: &plugin_commands,
                 ui_tx: &self.io.ui_tx,
+                blueprint_enabled: self.engine.blueprint_enabled(),
             };
             CommandRegistry::try_run(&text, &mut ctx).await
         }; // ctx dropped here — the history/ui_tx borrows end
@@ -1366,6 +1493,10 @@ impl SessionActor {
                 self.handle_prompt(text).await;
                 self.drain_queue().await;
             }
+            // Routed around this pump by the IPC layer, the same as `Steer`. Queued
+            // here it would wait behind the turn it is meant to interrupt, so it is
+            // never handled on this path.
+            UiCommand::SteerChild { .. } => {}
             UiCommand::Retry => {
                 // Regenerate the last turn: rewind `history` to just before
                 // its user prompt and re-run the text through the full
@@ -1472,15 +1603,20 @@ impl SessionActor {
             }
             UiCommand::SetPermissionMode { mode } => {
                 info!(%mode, "permission mode switch");
-                self.engine
-                    .set_permissions(crate::permissions::PermissionGate::from_mode_str(&mode));
+                // Switch the mode IN the live gate so a "本会话允许" grant
+                // survives it (rebuilding the gate wiped the rules).
+                let slot = self.engine.permissions_writer();
+                let parsed = crate::permissions::PermissionMode::from_str(&mode);
+                if let Ok(mut gate) = slot.write() {
+                    gate.set_mode(parsed);
+                }
                 self.persist_settings();
-                let _ = self
-                    .io
-                    .ui_tx
-                    .send(UiEvent::SystemMessage(format!("权限模式已切换为: {mode}")));
-                self.history
-                    .push(ChatMessage::notice(format!("权限模式已切换为: {mode}")));
+                let line = format!("权限模式已切换为: {}", parsed.label());
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
+                self.history.push(ChatMessage::notice(line));
+            }
+            UiCommand::SetBlueprintEnabled { enabled } => {
+                self.set_blueprint_enabled(enabled);
             }
             UiCommand::SetAgentMode { mode } => {
                 let new = crate::mode::AgentMode::from_str(&mode);
@@ -1573,8 +1709,10 @@ impl SessionActor {
             }
             UiCommand::SetMemory { enabled, distill } => {
                 if !enabled {
-                    // Off means fully off — no recall block, no writes.
+                    // Off means fully off — no recall block, no writes, and no
+                    // `remember` either: the tools read the shared handle.
                     self.memory = None;
+                    self.memory_handle.set(None);
                     self.distiller = None;
                     return;
                 }
@@ -1586,6 +1724,7 @@ impl SessionActor {
                         return;
                     };
                     self.memory = Some(Arc::new(s));
+                    self.memory_handle.set(self.memory.clone());
                 }
                 let mut d = TurnDistiller::new(self.memory.clone().unwrap());
                 if distill {

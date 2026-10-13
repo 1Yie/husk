@@ -63,13 +63,14 @@ fn child_label(agent: Option<&str>, index: usize, total: usize) -> String {
 
 /// One child card, nested under the `delegate` row — a fan-out reads as N
 /// capsules instead of one silent multi-minute wait. `ok: None` starts the card.
-fn emit_child(parent_ctx: &ToolCtx, label: &str, ok: Option<bool>, body: &str) {
+fn emit_child(parent_ctx: &ToolCtx, child: u64, label: &str, ok: Option<bool>, body: &str) {
     let Some(ui) = &parent_ctx.ui_tx else { return };
     let event = match ok {
         None => UiEvent::ToolCallStarted {
             name: label.to_string(),
             parent: Some("delegate".into()),
             args_preview: body.chars().take(120).collect(),
+            child_id: Some(child),
         },
         Some(ok) => UiEvent::ToolCallFinished {
             name: label.to_string(),
@@ -77,6 +78,7 @@ fn emit_child(parent_ctx: &ToolCtx, label: &str, ok: Option<bool>, body: &str) {
             content: body.chars().take(CHILD_CARD_MAX).collect(),
             ui_type: None,
             parent: Some("delegate".into()),
+            child_id: Some(child),
         },
     };
     let _ = ui.send(event);
@@ -94,14 +96,155 @@ impl Drop for FlagOnDrop {
     }
 }
 
+/// What a named agent (or the builtin default) contributes to a child: the
+/// system body and an optional tool allowlist from its manifest.
+#[derive(Clone, Default)]
+pub struct ChildSpec {
+    /// Custom body appended after the fixed contract. `None` = contract only.
+    pub prompt: Option<String>,
+    /// Manifest `tools:` allowlist. `None` = no narrowing.
+    pub tools: Option<Vec<String>>,
+    /// Manifest asks for the read-only child registry.
+    pub readonly: bool,
+    /// Manifest `model:` — a model id declared under the parent's provider.
+    pub model: Option<String>,
+    /// Manifest `thinking:` — one of [`THINKING_LEVELS`].
+    pub thinking: Option<String>,
+    /// Manifest `context_files:` as written. `None` = not stated, which resolves
+    /// by `readonly` (see [`ChildSpec::inherits_context_files`]).
+    pub context_files: Option<bool>,
+}
+
+impl ChildSpec {
+    /// Whether the repository's `AGENTS.md` / `CLAUDE.md` instructions reach the
+    /// child. An investigation should not inherit repo rules that could bias it;
+    /// a writer should, because it is the one that has to follow them. Only the
+    /// manifest decides, never the call, so a model cannot widen its own child.
+    pub fn inherits_context_files(&self) -> bool {
+        self.context_files.unwrap_or(!self.readonly)
+    }
+}
+
+/// Reasoning levels a manifest may name. Anything else is refused up front so a
+/// typo never silently falls back to the parent's level.
+pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Per-model settings a child needs when it runs on a model other than the
+/// parent's. Built from the parent provider's declared models at session spawn,
+/// so a manifest `model:` can only name something the provider actually has.
+#[derive(Clone)]
+pub struct ChildModel {
+    pub context_window: usize,
+    pub thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
+    pub model_params: agent_llm::ModelParams,
+    pub model_input: Vec<String>,
+}
+
+/// The model-dependent half of a child's configuration. Mirrors the parent
+/// engine's hot-swappable settings so a child runs on whatever the parent is
+/// running now, not the model it was born with.
+#[derive(Clone)]
+pub struct ChildRoute {
+    pub provider: Arc<dyn agent_llm::LlmProvider>,
+    pub model: String,
+    pub temperature: f32,
+    pub context_window: usize,
+    pub thinking_level: Option<String>,
+    pub thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
+    pub model_params: agent_llm::ModelParams,
+    pub model_input: Vec<String>,
+    /// Models the parent's provider declares, keyed by id — the only ids a
+    /// manifest `model:` may name.
+    pub models: std::collections::HashMap<String, ChildModel>,
+}
+
+/// Live children's steering channels, keyed by child id. A child is in this map
+/// only while its `run` is in flight, so a steer can never queue for a finished
+/// child and sit there unread.
+static ACTIVE_STEERS: std::sync::Mutex<Option<ActiveSteers>> = std::sync::Mutex::new(None);
+
+/// Next id to hand out, plus the live channels.
+#[derive(Default)]
+struct ActiveSteers {
+    next: u64,
+    channels: std::collections::HashMap<u64, ActiveChild>,
+}
+
+/// One live child: the session that owns it, and the channel that steers it.
+/// Kept together so a child can never be registered without its owner.
+struct ActiveChild {
+    session: i64,
+    tx: tokio::sync::mpsc::Sender<String>,
+}
+
+/// `session` is the parent's session id, or `0` when the parent has none (a test
+/// or a headless caller). Ownership is checked against it on every steer.
+fn register_steer(session: i64, tx: tokio::sync::mpsc::Sender<String>) -> u64 {
+    let mut guard = ACTIVE_STEERS.lock().unwrap_or_else(|e| e.into_inner());
+    let active = guard.get_or_insert_with(Default::default);
+    active.next += 1;
+    let id = active.next;
+    active.channels.insert(id, ActiveChild { session, tx });
+    id
+}
+
+/// Removes a child from the registry on every exit, including when its future
+/// is dropped mid-poll by a parallel batch timeout.
+struct SteerGuard(u64);
+
+impl Drop for SteerGuard {
+    fn drop(&mut self) {
+        let mut guard = ACTIVE_STEERS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(active) = guard.as_mut() {
+            active.channels.remove(&self.0);
+        }
+    }
+}
+
+/// Ids of the running children owned by `session`, in no particular order. A
+/// session only ever sees its own children, so the list cannot leak another's.
+pub fn active_children(session: i64) -> Vec<u64> {
+    let guard = ACTIVE_STEERS.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .as_ref()
+        .map(|active| {
+            active
+                .channels
+                .iter()
+                .filter(|(_, c)| c.session == session)
+                .map(|(id, _)| *id)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Deliver a steering message to a running child owned by `session`. Between tool
+/// calls the child drains it into its history, the same way a parent steer lands
+/// on its engine.
+///
+/// A child owned by another session gets the same error as an unknown id. Saying
+/// "that child exists, but not yours" would confirm to one session what another
+/// one is running.
+pub fn steer_child(session: i64, id: u64, text: String) -> Result<(), String> {
+    let tx = {
+        let guard = ACTIVE_STEERS.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .and_then(|active| active.channels.get(&id))
+            .filter(|c| c.session == session)
+            .map(|c| c.tx.clone())
+            .ok_or_else(|| format!("no running subagent with id {id}"))?
+    };
+    tx.try_send(text)
+        .map_err(|e| format!("subagent {id} did not accept the steer: {e}"))
+}
+
 /// Everything `delegate` needs to spawn a child engine — built once per
 /// session and carried on `ToolCtx` so the tool can clone it per call.
+/// `route` is shared with the session so a `SetModel` reaches live children.
 #[derive(Clone)]
 pub struct SubagentSpawner {
-    provider: Arc<dyn agent_llm::LlmProvider>,
-    model: String,
-    temperature: f32,
-    context_window: usize,
+    route: Arc<std::sync::RwLock<ChildRoute>>,
     /// Builtins minus `delegate` — the recursion guard.
     registry_full: Arc<ToolRegistry>,
     /// `registry_full` minus non-readonly tools — `readonly: true` calls.
@@ -110,21 +253,31 @@ pub struct SubagentSpawner {
 
 impl SubagentSpawner {
     pub fn new(
-        provider: Arc<dyn agent_llm::LlmProvider>,
-        model: impl Into<String>,
-        temperature: f32,
-        context_window: usize,
+        route: Arc<std::sync::RwLock<ChildRoute>>,
         registry_full: Arc<ToolRegistry>,
         registry_readonly: Arc<ToolRegistry>,
     ) -> Self {
         Self {
-            provider,
-            model: model.into(),
-            temperature,
-            context_window,
+            route,
             registry_full,
             registry_readonly,
         }
+    }
+
+    /// Whether a tool name exists in the child registry at all. Used to refuse a
+    /// manifest `tools:` entry that names nothing, instead of silently running
+    /// with fewer tools than the author wrote.
+    fn knows_tool(&self, name: &str) -> bool {
+        self.registry_full.filtered(|s| s.name == name).len() > 0
+    }
+
+    /// Whether the parent's provider declares this model id. Read from the live
+    /// route, so a `SetModel` that changed the provider is reflected here too.
+    fn knows_model(&self, id: &str) -> bool {
+        self.route
+            .read()
+            .map(|r| r.models.contains_key(id))
+            .unwrap_or(false)
     }
 
     /// Run 2–3 read-only children at once, input order preserved in the report.
@@ -137,7 +290,7 @@ impl SubagentSpawner {
         &self,
         parent_ctx: Arc<ToolCtx>,
         tasks: Vec<String>,
-        agent_prompt: Option<String>,
+        spec: ChildSpec,
         agent_name: Option<String>,
     ) -> Result<String, String> {
         let batch_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -164,12 +317,12 @@ impl SubagentSpawner {
         let total = tasks.len();
         let runs = futures::future::join_all(tasks.iter().cloned().enumerate().map(|(i, task)| {
             let ctx = parent_ctx.clone();
-            let prompt = agent_prompt.clone();
+            let spec = spec.clone();
             let cancel = batch_cancel.clone();
             let label = child_label(agent_name.as_deref(), i, total);
             async move {
                 let started = std::time::Instant::now();
-                let out = self.run(ctx, task, true, prompt, cancel, &label).await;
+                let out = self.run(ctx, task, true, spec, cancel, &label).await;
                 (i, started.elapsed().as_secs_f32(), out)
             }
         }));
@@ -212,9 +365,8 @@ impl SubagentSpawner {
         parent_ctx: Arc<ToolCtx>,
         task: String,
         readonly: bool,
-        // Custom agent manifest body — replaces SUBAGENT_PROMPT when the
-        // caller named a `*.md` agent via `agent`.
-        agent_prompt: Option<String>,
+        // Named agent's body and tool allowlist (empty = builtin contract only).
+        spec: ChildSpec,
         // Cancellation for this child specifically: the parent's flag for a
         // single call, the batch's own flag (parent OR deadline) for a fan-out.
         cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -256,17 +408,22 @@ impl SubagentSpawner {
                     {
                         let forwarded = match ev {
                             UiEvent::ToolCallStarted {
-                                name, args_preview, ..
+                                name,
+                                args_preview,
+                                child_id,
+                                ..
                             } => UiEvent::ToolCallStarted {
                                 name,
                                 args_preview,
                                 parent: Some(tag.clone()),
+                                child_id,
                             },
                             UiEvent::ToolCallFinished {
                                 name,
                                 ok,
                                 content,
                                 ui_type,
+                                child_id,
                                 ..
                             } => UiEvent::ToolCallFinished {
                                 name,
@@ -274,6 +431,7 @@ impl SubagentSpawner {
                                 content,
                                 ui_type,
                                 parent: Some(tag.clone()),
+                                child_id,
                             },
                             UiEvent::TextDelta { text, .. } => UiEvent::TextDelta {
                                 text,
@@ -323,36 +481,86 @@ impl SubagentSpawner {
             // genuinely are unknown here — batch should keep saying so.
             plugins: None,
         };
-        let registry = if readonly {
+        // Either side can ask for read-only; the manifest cannot grant write back.
+        let base = if readonly || spec.readonly {
             self.registry_readonly.clone()
         } else {
             self.registry_full.clone()
         };
+        // The `tools:` allowlist narrows whichever base was chosen; it never widens.
+        let registry = match &spec.tools {
+            Some(allow) => Arc::new(base.filtered(|s| allow.iter().any(|n| n.as_str() == s.name))),
+            None => base,
+        };
+        // Snapshot once per child: a hot-swap mid-run must not change the model
+        // under a turn already in flight.
+        let mut route = self.route.read().map_err(|e| e.to_string())?.clone();
+        // A manifest `model:` swaps every per-model setting together, so the child
+        // never runs model B under model A's window or modalities.
+        if let Some(id) = &spec.model {
+            let m = route
+                .models
+                .get(id)
+                .cloned()
+                .ok_or_else(|| format!("model `{id}` is not declared under this provider"))?;
+            route.model = id.clone();
+            route.context_window = m.context_window;
+            route.thinking_level_map = m.thinking_level_map;
+            route.model_params = m.model_params;
+            route.model_input = m.model_input;
+        }
+        if let Some(level) = &spec.thinking {
+            route.thinking_level = Some(level.clone());
+        }
         let mut engine = Engine::new(
-            self.provider.clone(),
+            route.provider,
             registry,
             Arc::new(child_ctx),
-            self.model.clone(),
-            self.temperature,
+            route.model,
+            route.temperature,
         );
         engine.set_permissions(PermissionGate::for_subagent());
-        engine.set_context_window(self.context_window);
+        engine.set_context_window(route.context_window);
+        engine.set_thinking_level(route.thinking_level);
+        engine.set_thinking_level_map(route.thinking_level_map);
+        engine.set_model_params(route.model_params);
+        engine.set_model_input(route.model_input);
         engine.set_max_tool_rounds(SUBAGENT_TOOL_ROUNDS);
 
         let ui_tx = child_sink;
-        let (_steer_tx, steer_rx) = tokio::sync::mpsc::channel(1);
+        let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(8);
+        // Owned by the parent's session. A context with no session registers as 0,
+        // which only another session-less caller can match.
+        let owner = parent_ctx.session.as_ref().map(|(id, _)| *id).unwrap_or(0);
+        let child_id = register_steer(owner, steer_tx);
+        let _steer_guard = SteerGuard(child_id);
         let mut io = EngineIo {
             ui_tx,
             steer_rx,
             cancel,
         };
-        let system = agent_prompt.unwrap_or_else(|| SUBAGENT_PROMPT.to_string());
+        // The contract is always present; a custom manifest body is appended to
+        // it, never substituted, so the no-questions and untrusted-data rules
+        // survive any manifest.
+        let mut system = SUBAGENT_PROMPT.to_string();
+        if spec.inherits_context_files() {
+            // Same two files the parent session reads, in the same order and under
+            // the same section label, so the child sees the rules the way the parent does.
+            if let Some(cfg_dir) = dirs::config_dir() {
+                append_repo_instructions(&mut system, &cfg_dir.join("husk/AGENTS.md"), "user");
+            }
+            append_repo_instructions(&mut system, &parent_ctx.workspace_root.join("AGENTS.md"), "project");
+        }
+        if let Some(body) = spec.prompt {
+            system.push_str("\n\n");
+            system.push_str(&body);
+        }
         let task_preview = task.clone();
         let mut history = vec![ChatMessage::system(system)];
         let mut hunks = HunkTracker::new(agent_context::TrackingMode::AgentOnly);
 
         let start = std::time::Instant::now();
-        emit_child(parent_ctx.as_ref(), label, None, &task_preview);
+        emit_child(parent_ctx.as_ref(), child_id, label, None, &task_preview);
         let ran = tokio::time::timeout(
             SUBAGENT_TIMEOUT,
             engine.run_turn(&mut io, &mut history, task, &mut hunks),
@@ -373,6 +581,9 @@ impl SubagentSpawner {
                 outcome.text
             )),
         };
+        // Kept whatever the outcome: a timed-out or failed child is exactly the
+        // one an operator wants to read back.
+        persist_transcript(&parent_ctx.workspace_root, child_id, label, &history);
         // Close the child's stream first: dropping the engine and io releases
         // every sink clone, so the forwarder drains and exits, and only then
         // does the card finish.
@@ -385,8 +596,8 @@ impl SubagentSpawner {
             let _ = task.await;
         }
         match &report {
-            Ok(text) => emit_child(parent_ctx.as_ref(), label, Some(true), text),
-            Err(e) => emit_child(parent_ctx.as_ref(), label, Some(false), e),
+            Ok(text) => emit_child(parent_ctx.as_ref(), child_id, label, Some(true), text),
+            Err(e) => emit_child(parent_ctx.as_ref(), child_id, label, Some(false), e),
         }
         report
     }
@@ -402,6 +613,18 @@ pub struct SubagentInfo {
     pub prompt: String,
     pub path: String,
     pub global: bool,
+    /// `tools:` allowlist from the manifest. `None` = no restriction beyond the
+    /// registry the spawn mode already picks.
+    pub tools: Option<Vec<String>>,
+    /// Manifest asks for the read-only child registry, same as `readonly: true`
+    /// on the call. A call's own `readonly: true` still wins either way.
+    pub readonly: bool,
+    /// Manifest `model:` override, validated against the parent's provider at call time.
+    pub model: Option<String>,
+    /// Manifest `thinking:` override, validated against [`THINKING_LEVELS`].
+    pub thinking: Option<String>,
+    /// Manifest `context_files:` as written; resolved by [`ChildSpec`].
+    pub context_files: Option<bool>,
 }
 
 /// Built-in subagents — always available to `delegate { agent: "<name>" }`
@@ -512,6 +735,7 @@ pub fn discover_subagents(root: &Path) -> Vec<SubagentInfo> {
                 }
                 let content = std::fs::read_to_string(&p).unwrap_or_default();
                 let (fm_name, fm_desc, body) = split_agent(&content);
+                let fm = agent_frontmatter(&content);
                 let name = fm_name
                     .or_else(|| p.file_stem().map(|n| n.to_string_lossy().into_owned()))
                     .unwrap_or_default();
@@ -524,6 +748,11 @@ pub fn discover_subagents(root: &Path) -> Vec<SubagentInfo> {
                     prompt: body,
                     path: p.to_string_lossy().into_owned(),
                     global,
+                    tools: fm.tools,
+                    readonly: fm.readonly,
+                    model: fm.model,
+                    thinking: fm.thinking,
+                    context_files: fm.context_files,
                 });
             }
         }
@@ -584,8 +813,110 @@ fn find_subagent(root: &Path, name: &str) -> Option<SubagentInfo> {
                     prompt: (*p).to_string(),
                     path: String::new(),
                     global: true,
+                    tools: None,
+                    readonly: BUILTIN_READONLY.contains(n),
+                    model: None,
+                    thinking: None,
+                    context_files: None,
                 })
         })
+}
+
+/// Builtins that must never write. Their prompts say 不修改任何文件, but a
+/// prompt is not a guard, so the registry they run on is read-only.
+const BUILTIN_READONLY: &[&str] = &["review"];
+
+/// Write one child's full history to `.husk/subagents/` as JSONL, one message
+/// per line. Best effort: a write failure is logged and never fails the delegate
+/// call, because the report the parent needs does not depend on this file.
+fn persist_transcript(root: &Path, child_id: u64, label: &str, history: &[ChatMessage]) {
+    let dir = root.join(".husk/subagents");
+    // Zero-padded epoch milliseconds: file names sort in the order children ran,
+    // without pulling a date crate into the kernel for one timestamp.
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let stamp = format!("{millis:015}");
+    let safe: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let path = dir.join(format!("{stamp}-{child_id}-{safe}.jsonl"));
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        let mut out = String::new();
+        for msg in history {
+            out.push_str(&serde_json::to_string(msg).map_err(std::io::Error::other)?);
+            out.push('\n');
+        }
+        std::fs::write(&path, out)
+    };
+    if let Err(e) = write() {
+        tracing::warn!(path = %path.display(), error = %e, "subagent transcript not saved");
+    }
+}
+
+/// Append one instruction file as a labelled section, matching the parent
+/// session's format. A missing or empty file adds nothing.
+fn append_repo_instructions(out: &mut String, path: &Path, label: &str) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    out.push_str(&format!(
+        "\n\n## User instructions — {label} ({})\n\n{text}",
+        path.display()
+    ));
+}
+
+/// The fields a manifest's frontmatter can constrain. Parsed separately from
+/// `split_agent` so that function's tuple shape stays put for its callers.
+#[derive(Debug, Default, PartialEq)]
+pub struct AgentFrontmatter {
+    pub tools: Option<Vec<String>>,
+    pub readonly: bool,
+    pub model: Option<String>,
+    pub thinking: Option<String>,
+    pub context_files: Option<bool>,
+}
+
+/// Read the constraining frontmatter keys. Unknown keys are ignored (other
+/// tools' manifests share the convention); `tools` is a comma list or a
+/// `[a, b]` flow list.
+pub fn agent_frontmatter(content: &str) -> AgentFrontmatter {
+    let mut out = AgentFrontmatter::default();
+    let trimmed = content.trim_start();
+    let Some(fm) = trimmed.strip_prefix("---") else {
+        return out;
+    };
+    let Some(end) = fm.find("\n---") else {
+        return out;
+    };
+    for line in fm[..end].lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("tools:") {
+            let v = v.trim().trim_start_matches('[').trim_end_matches(']');
+            let list: Vec<String> = v
+                .split(',')
+                .map(|t| t.trim().trim_matches('"').trim_matches('\'').to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            out.tools = Some(list);
+        } else if let Some(v) = line.strip_prefix("readonly:") {
+            out.readonly = v.trim().eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("model:") {
+            out.model = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
+        } else if let Some(v) = line.strip_prefix("context_files:") {
+            out.context_files = Some(v.trim().eq_ignore_ascii_case("true"));
+        } else if let Some(v) = line.strip_prefix("thinking:") {
+            out.thinking = Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
+        }
+    }
+    out
 }
 
 /// `name`/`description` frontmatter split — same `---` convention skills use.
@@ -730,8 +1061,46 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         })
         .transpose()
         .map_err(ToolError::Failed)?;
+    if let Some(allow) = resolved.as_ref().and_then(|s| s.tools.as_ref()) {
+        if let Some(unknown) = allow.iter().find(|t| !spawner.knows_tool(t)) {
+            return Err(ToolError::Failed(format!(
+                "subagent `{}` lists unknown tool `{unknown}` in `tools:`",
+                resolved.as_ref().map(|s| s.name.as_str()).unwrap_or_default()
+            )));
+        }
+    }
+    // Overrides are checked here, before anything spawns, so a typo in a manifest
+    // surfaces as an error on the first call rather than a weaker or wrong child.
+    if let Some(s) = resolved.as_ref() {
+        if let Some(level) = &s.thinking {
+            if !THINKING_LEVELS.contains(&level.as_str()) {
+                return Err(ToolError::Failed(format!(
+                    "subagent `{}` sets unknown `thinking: {level}` (expected one of {})",
+                    s.name,
+                    THINKING_LEVELS.join(", ")
+                )));
+            }
+        }
+        if let Some(model) = &s.model {
+            if !spawner.knows_model(model) {
+                return Err(ToolError::Failed(format!(
+                    "subagent `{}` sets `model: {model}`, which this provider does not declare",
+                    s.name
+                )));
+            }
+        }
+    }
     let agent_name = resolved.as_ref().map(|s| s.name.clone());
-    let agent_prompt = resolved.map(|s| s.prompt);
+    let spec = resolved
+        .map(|s| ChildSpec {
+            prompt: Some(s.prompt).filter(|p| !p.trim().is_empty()),
+            tools: s.tools,
+            readonly: s.readonly,
+            model: s.model,
+            thinking: s.thinking,
+            context_files: s.context_files,
+        })
+        .unwrap_or_default();
     // Single-child calls inherit the parent's cancel flag; a parallel batch gets
     // its own flag so the batch can also stop on its own deadline.
     let cancel = ctx
@@ -745,7 +1114,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 ctx,
                 tasks[0].clone(),
                 parsed.readonly,
-                agent_prompt,
+                spec,
                 cancel,
                 &label,
             )
@@ -753,7 +1122,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             .map_err(ToolError::Failed)?
     } else {
         spawner
-            .run_parallel(ctx, tasks, agent_prompt, agent_name)
+            .run_parallel(ctx, tasks, spec, agent_name)
             .await
             .map_err(ToolError::Failed)?
     };
@@ -805,6 +1174,74 @@ mod tests {
         let err = resolve_tasks(&args(None, Some(&["a", "b", "c", "d"]), true)).unwrap_err();
         assert!(err.contains("at most 3"), "{err}");
         assert!(resolve_tasks(&args(None, Some(&["ok", "  "]), true)).is_err());
+    }
+
+    /// `tools:` and `readonly:` are the only frontmatter keys that constrain a
+    /// child. A manifest with neither must not narrow anything by accident.
+    #[test]
+    fn frontmatter_reads_tools_and_readonly() {
+        let flow = agent_frontmatter("---\nname: x\ntools: [read, grep]\nreadonly: true\n---\nbody");
+        assert_eq!(flow.tools, Some(vec!["read".to_string(), "grep".to_string()]));
+        assert!(flow.readonly);
+
+        let bare = agent_frontmatter("---\nname: x\n---\nbody");
+        assert_eq!(bare, AgentFrontmatter::default());
+
+        let no_fm = agent_frontmatter("just a body");
+        assert_eq!(no_fm, AgentFrontmatter::default());
+    }
+
+    /// The builtin review agent is read-only by registry, not only by its prompt.
+    #[test]
+    fn builtin_review_is_read_only() {
+        let review = find_subagent(std::path::Path::new("/nonexistent-root"), "review")
+            .expect("review builtin");
+        assert!(review.readonly);
+        assert!(review.tools.is_none());
+    }
+
+    /// The steer registry is process-wide, so these tests share one lock and clean
+    /// up their own children. Otherwise a child from one test is visible to another.
+    static REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Owner-checked steering: the owning session reaches its child, and every
+    /// other session gets exactly the error an unknown id gets.
+    #[test]
+    fn steer_is_only_delivered_to_the_owning_session() {
+        let _lock = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let id = register_steer(7, tx);
+        let _guard = SteerGuard(id);
+
+        steer_child(7, id, "mine".into()).expect("owner must reach its child");
+        assert_eq!(rx.try_recv().unwrap(), "mine");
+
+        let foreign = steer_child(8, id, "theirs".into()).unwrap_err();
+        let unknown = steer_child(7, 9_999_999, "nope".into()).unwrap_err();
+        // Only the id differs between the two messages; the wording must not.
+        let digits = |m: &str| m.chars().filter(|c| !c.is_ascii_digit()).collect::<String>();
+        assert_eq!(
+            digits(&foreign),
+            digits(&unknown),
+            "a foreign child must look exactly like an unknown one"
+        );
+        assert!(rx.try_recv().is_err(), "a foreign steer must not be delivered");
+    }
+
+    /// A session lists only its own running children.
+    #[test]
+    fn active_children_lists_only_the_callers_session() {
+        let _lock = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx_a, _rx_a) = tokio::sync::mpsc::channel(8);
+        let (tx_b, _rx_b) = tokio::sync::mpsc::channel(8);
+        let mine = register_steer(41, tx_a);
+        let _g_a = SteerGuard(mine);
+        let theirs = register_steer(42, tx_b);
+        let _g_b = SteerGuard(theirs);
+
+        let listed = active_children(41);
+        assert!(listed.contains(&mine), "{listed:?}");
+        assert!(!listed.contains(&theirs), "{listed:?}");
     }
 
     /// The catalog has to list what `agent:` can resolve — builtins, plus a

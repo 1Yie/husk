@@ -7,27 +7,17 @@
 //! point loads first and returns the empty/neutral value on `None`, so the
 //! feature costs one `is_dir` per turn there.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 use agent_context::blueprint::{Blueprint, Report, BLUEPRINT_DIR};
 
-/// Process-wide master switch (settings 偏好) — seeded from persisted prefs
-/// at boot, flipped live by the settings pane. On by default: the layer is
-/// already opt-in per workspace through the directory itself.
-static ENABLED: AtomicBool = AtomicBool::new(true);
-
-pub fn enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed)
-}
-
-pub fn set_enabled(v: bool) {
-    ENABLED.store(v, Ordering::Relaxed);
-}
-
-fn load(root: &Path) -> Option<Blueprint> {
-    if !enabled() {
+/// Load the blueprint for a session. `enabled` is that session's switch
+/// (settings 偏好, copied into its config) — it lives on the session, not in
+/// process-global state, so one session's toggle never reaches another.
+fn load(root: &Path, enabled: bool) -> Option<Blueprint> {
+    if !enabled {
         return None;
     }
     Blueprint::load(root)
@@ -37,8 +27,8 @@ fn load(root: &Path) -> Option<Blueprint> {
 /// a one-line "off" marker. Rebuilt every turn by the session but swapped
 /// into the system prompt only when the text changed, so the cached prompt
 /// prefix survives every turn that didn't edit `.blueprint/`.
-pub fn prompt_block(root: &Path) -> String {
-    let Some(bp) = load(root) else {
+pub fn prompt_block(root: &Path, enabled: bool) -> String {
+    let Some(bp) = load(root, enabled) else {
         return "(no `.blueprint/` in this workspace — architecture layer off)".into();
     };
     format!(
@@ -65,39 +55,73 @@ pub fn prompt_block(root: &Path) -> String {
     )
 }
 
-/// Workspace file list — the baseline [`created_since`] diffs against.
-/// Taken lazily by the engine before the first process/orchestration tool.
-/// `None` when the layer is off, so workspaces without a `.blueprint/` pay
-/// one `is_dir`.
-pub fn snapshot(root: &Path) -> Option<BTreeSet<String>> {
-    if !enabled() || !root.join(BLUEPRINT_DIR).is_dir() {
-        return None;
-    }
-    agent_context::WorkspaceScanner::build_file_index(root, 0)
-        .ok()
-        .map(|files| files.into_iter().collect())
+/// The workspace as the turn found it, taken before the turn's first write:
+/// each file's mtime and size, plus the full check's findings. The turn end
+/// diffs against it, so it reports only what this turn introduced.
+#[derive(Debug, Clone)]
+pub struct Baseline {
+    files: BTreeMap<String, (Option<SystemTime>, u64)>,
+    report: Report,
 }
 
-/// Files that appeared since `before` — what `bash` and other tools that
-/// bypass the hunk tracker created. Creations only: they are what the
-/// "every file belongs to a node" rule needs, and a set diff stays cheap.
-pub fn created_since(root: &Path, before: &BTreeSet<String>) -> Vec<PathBuf> {
+/// Baseline for the turn about to write. Taken lazily by the engine right
+/// before the first tool that can change the workspace. `None` when the
+/// layer is off, so workspaces without a `.blueprint/` pay one `is_dir`.
+pub fn snapshot(root: &Path, enabled: bool) -> Option<Baseline> {
+    if !enabled || !root.join(BLUEPRINT_DIR).is_dir() {
+        return None;
+    }
+    let files = agent_context::WorkspaceScanner::build_file_index(root, 0).ok()?;
+    Some(Baseline {
+        files: files
+            .into_iter()
+            .map(|f| {
+                let stamp = stamp(&root.join(&f));
+                (f, stamp)
+            })
+            .collect(),
+        report: load(root, enabled)?.check(),
+    })
+}
+
+fn stamp(path: &Path) -> (Option<SystemTime>, u64) {
+    std::fs::metadata(path).map_or((None, 0), |m| (m.modified().ok(), m.len()))
+}
+
+/// Files written since the baseline — created, or rewritten in place (a
+/// `bash` `cargo add` edits an existing manifest). What `bash` and other
+/// tools that bypass the hunk tracker changed. Deletions are not reported.
+pub fn changed_since(root: &Path, before: &Baseline) -> Vec<PathBuf> {
     let Ok(now) = agent_context::WorkspaceScanner::build_file_index(root, 0) else {
         return Vec::new();
     };
     now.into_iter()
-        .filter(|f| !before.contains(f))
+        .filter(|f| {
+            before
+                .files
+                .get(f)
+                .map_or(true, |old| *old != stamp(&root.join(f)))
+        })
         .map(|f| root.join(f))
         .collect()
 }
 
-/// Turn-end check over the files the agent wrote this turn. `None` when the
-/// layer is off or there is nothing to report.
-pub fn check_turn(root: &Path, touched: &[PathBuf]) -> Option<Report> {
+/// Turn-end check over the files the agent wrote this turn. Findings the
+/// baseline already had are dropped: a rule broken before the turn began is
+/// not this turn's to fix. `None` when the layer is off or nothing is new.
+pub fn check_turn(
+    root: &Path,
+    enabled: bool,
+    touched: &[PathBuf],
+    before: Option<&Baseline>,
+) -> Option<Report> {
     if touched.is_empty() {
         return None;
     }
-    let report = load(root)?.check_turn(touched);
+    let mut report = load(root, enabled)?.check_turn(touched);
+    if let Some(before) = before {
+        report.issues.retain(|i| !before.report.issues.contains(i));
+    }
     (!report.is_clean()).then_some(report)
 }
 
@@ -114,12 +138,12 @@ pub fn nudge(report: &Report) -> String {
 
 /// `/blueprint [check|graph|init]` — `Ok` is a local reply, `Err` a prompt
 /// to feed the agent (`init` needs the model to draft nodes).
-pub fn command(root: &Path, args: &str) -> Result<String, String> {
+pub fn command(root: &Path, enabled: bool, args: &str) -> Result<String, String> {
     let sub = args.split_whitespace().next().unwrap_or("");
     if sub == "init" {
         return Err(init_prompt(root));
     }
-    if !enabled() {
+    if !enabled {
         return Ok("架构蓝图已在设置中关闭".into());
     }
     let Some(bp) = Blueprint::load(root) else {
@@ -188,10 +212,12 @@ mod tests {
     #[test]
     fn absent_dir_renders_off_marker_and_no_report() {
         let d = tempfile::tempdir().unwrap();
-        assert!(prompt_block(d.path()).contains("architecture layer off"));
-        assert!(check_turn(d.path(), &[d.path().join("x.rs")]).is_none());
-        assert!(command(d.path(), "").unwrap().contains("/blueprint init"));
-        assert!(command(d.path(), "init")
+        assert!(prompt_block(d.path(), true).contains("architecture layer off"));
+        assert!(check_turn(d.path(), true, &[d.path().join("x.rs")], None).is_none());
+        assert!(command(d.path(), true, "")
+            .unwrap()
+            .contains("/blueprint init"));
+        assert!(command(d.path(), true, "init")
             .unwrap_err()
             .contains("from scratch"));
     }
@@ -205,21 +231,50 @@ mod tests {
             "+++\nowns = [\"src/**\"]\n+++\nCore engine.\n",
         )
         .unwrap();
-        let block = prompt_block(d.path());
+        let block = prompt_block(d.path(), true);
         assert!(block.contains("- core — Core engine. [src/**]"), "{block}");
-        assert!(command(d.path(), "graph").unwrap().contains("graph LR"));
-        assert!(command(d.path(), "init").unwrap_err().contains("extend it"));
+        assert!(command(d.path(), true, "graph")
+            .unwrap()
+            .contains("graph LR"));
+        assert!(command(d.path(), true, "init")
+            .unwrap_err()
+            .contains("extend it"));
     }
+
+    /// A session whose switch is off sees the layer as absent, even though the
+    /// directory exists — and another session in the same process is unaffected.
     #[test]
-    fn created_since_sees_files_outside_the_hunk_tracker() {
+    fn switch_is_per_session_not_process_wide() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".blueprint")).unwrap();
+        std::fs::write(
+            d.path().join(".blueprint/core.md"),
+            "+++\nowns = [\"src/**\"]\n+++\nCore.\n",
+        )
+        .unwrap();
+        assert!(prompt_block(d.path(), false).contains("architecture layer off"));
+        assert!(prompt_block(d.path(), true).contains("- core"));
+        assert!(snapshot(d.path(), false).is_none());
+        assert!(command(d.path(), false, "check")
+            .unwrap()
+            .contains("架构蓝图已在设置中关闭"));
+    }
+
+    #[test]
+    fn changed_since_sees_new_and_rewritten_files_outside_the_hunk_tracker() {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join(".blueprint")).unwrap();
         std::fs::write(d.path().join("old.rs"), "").unwrap();
-        let before = snapshot(d.path()).expect("blueprint present");
+        std::fs::write(d.path().join("manifest.toml"), "a").unwrap();
+        let before = snapshot(d.path(), true).expect("blueprint present");
         std::fs::write(d.path().join("loose.rs"), "").unwrap();
-        let made = created_since(d.path(), &before);
-        assert_eq!(made, [d.path().join("loose.rs")]);
+        std::fs::write(d.path().join("manifest.toml"), "a longer body").unwrap();
+        let made = changed_since(d.path(), &before);
+        assert_eq!(
+            made,
+            [d.path().join("loose.rs"), d.path().join("manifest.toml")]
+        );
         let empty = tempfile::tempdir().unwrap();
-        assert!(snapshot(empty.path()).is_none());
+        assert!(snapshot(empty.path(), true).is_none());
     }
 }

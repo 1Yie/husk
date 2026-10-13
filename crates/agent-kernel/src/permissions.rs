@@ -48,7 +48,24 @@ impl PermissionMode {
             Self::Bypass => "bypassPermissions",
         }
     }
+
+    /// The Chinese name the UI shows for this mode — the same wording as the
+    /// composer's permission picker, so a switch notice reads like the menu.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Default => "默认",
+            Self::AcceptEdits => "接受编辑",
+            Self::Auto => "自动",
+            Self::DontAsk => "不询问",
+            Self::Bypass => "跳过权限",
+        }
+    }
 }
+
+/// Allow-rule name that pre-approves `computer`'s `launch` action. A session
+/// grant of `computer` deliberately does NOT cover it: starting a program is
+/// the one action that reaches outside the screen being driven.
+pub const COMPUTER_LAUNCH_RULE: &str = "computer:launch";
 
 /// What the gate returns for one tool call.
 #[derive(Debug, Clone, PartialEq)]
@@ -157,12 +174,60 @@ impl PermissionGate {
         self.rules.allow.extend(rules.allow);
     }
 
+    /// Switch the permission mode in place, keeping the session's rules. A
+    /// mode change must not silently drop a "本会话允许" grant the user gave
+    /// (the overlay is still up and says the agent is allowed to drive).
+    pub fn set_mode(&mut self, mode: PermissionMode) {
+        self.mode = mode;
+    }
+
+    /// Per-action escalation for `computer`, applied on top of [`decide`]:
+    /// `launch` asks every time even under a session grant — unless the
+    /// explicit [`COMPUTER_LAUNCH_RULE`] allow rule is present. Under
+    /// `dontAsk` (and in a headless subagent) nobody can answer, so it is
+    /// denied instead. Every other action passes through unchanged.
+    pub fn escalate_computer(
+        &self,
+        action: &str,
+        decision: Decision,
+        diff_summary: impl Into<String>,
+    ) -> Decision {
+        if action != "launch" {
+            return decision;
+        }
+        match decision {
+            Decision::Allow if !self.rules.allow.contains(COMPUTER_LAUNCH_RULE) => {
+                if self.mode == PermissionMode::DontAsk || self.headless {
+                    Decision::Deny {
+                        reason: "`launch` starts a program and needs its own approval".into(),
+                    }
+                } else {
+                    Decision::Ask {
+                        diff_summary: diff_summary.into(),
+                    }
+                }
+            }
+            d => d,
+        }
+    }
+
     /// Whitelist `tool_name` for the rest of this session — the
     /// "本会话允许" path for computer-use. The decision is session-scoped:
     /// `rules.allow` lives on this gate, dies with the actor, and never
     /// touches `~/.config/husk`. Idempotent.
     pub fn allow_tool_for_session(&mut self, tool_name: &str) {
         self.rules.allow.insert(tool_name.to_string());
+    }
+
+    /// Drop every `computer` grant — the tool itself and the `launch`
+    /// pre-approval. Returns whether the tool was granted, so the caller knows
+    /// whether a "grant ended" notice is due. Run at the end of each turn: a
+    /// grant covers the task it was given for, not whatever the session is
+    /// asked next.
+    pub fn revoke_computer_grants(&mut self) -> bool {
+        let was = self.rules.allow.remove("computer");
+        self.rules.allow.remove(COMPUTER_LAUNCH_RULE);
+        was
     }
 
     /// Remove `tool_name` from the session whitelist — the overlay's
@@ -405,6 +470,18 @@ fn is_destructive(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn label_is_chinese_and_follows_aliases() {
+        // The switch notice reads the label of the parsed mode, so aliases
+        // (`bypass`, `dont-ask`) must land on the same Chinese name.
+        assert_eq!(PermissionMode::from_str("dontAsk").label(), "不询问");
+        assert_eq!(PermissionMode::from_str("dont-ask").label(), "不询问");
+        assert_eq!(PermissionMode::from_str("acceptEdits").label(), "接受编辑");
+        assert_eq!(PermissionMode::from_str("bypass").label(), "跳过权限");
+        assert_eq!(PermissionMode::from_str("auto").label(), "自动");
+        assert_eq!(PermissionMode::from_str("default").label(), "默认");
+    }
 
     fn gate(mode: &str) -> PermissionGate {
         PermissionGate::from_mode_str(mode)
@@ -732,5 +809,84 @@ mod tests {
             g.decide("computer", Some(ToolClass::Process), false, None, ""),
             Decision::Deny { .. }
         ));
+    }
+    /// A session grant covers pointer/keyboard actions, never `launch`.
+    #[test]
+    fn launch_asks_even_under_a_session_grant() {
+        for mode in ["default", "acceptEdits", "auto", "bypass"] {
+            let mut g = PermissionGate::from_mode_str(mode);
+            g.allow_tool_for_session("computer");
+            let base = g.decide("computer", Some(ToolClass::Process), false, None, "");
+            assert_eq!(base, Decision::Allow, "{mode}");
+            assert_eq!(g.escalate_computer("left_click", base.clone(), "x"), Decision::Allow);
+            assert_eq!(g.escalate_computer("type", base.clone(), "x"), Decision::Allow);
+            assert!(
+                matches!(g.escalate_computer("launch", base, "x"), Decision::Ask { .. }),
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn launch_is_denied_where_nobody_can_answer() {
+        let mut g = PermissionGate::from_mode_str("dontAsk");
+        g.allow_tool_for_session("computer");
+        let base = g.decide("computer", Some(ToolClass::Process), false, None, "");
+        assert!(matches!(
+            g.escalate_computer("launch", base, "x"),
+            Decision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn explicit_launch_rule_pre_approves_it() {
+        let mut g = PermissionGate::from_mode_str("default");
+        g.allow_tool_for_session("computer");
+        g.allow_tool_for_session(COMPUTER_LAUNCH_RULE);
+        let base = g.decide("computer", Some(ToolClass::Process), false, None, "");
+        assert_eq!(g.escalate_computer("launch", base, "x"), Decision::Allow);
+    }
+
+    /// Escalation never softens: an Ask/Deny stays what it was.
+    #[test]
+    fn escalation_never_relaxes_a_decision() {
+        let g = PermissionGate::from_mode_str("default");
+        let ask = g.decide("computer", Some(ToolClass::Process), false, None, "s");
+        assert_eq!(g.escalate_computer("launch", ask.clone(), "x"), ask);
+        let deny = Decision::Deny { reason: "r".into() };
+        assert_eq!(g.escalate_computer("launch", deny.clone(), "x"), deny);
+    }
+
+    /// Changing mode keeps the session grant.
+    #[test]
+    fn set_mode_keeps_the_session_grant() {
+        let mut g = PermissionGate::from_mode_str("default");
+        g.allow_tool_for_session("computer");
+        g.set_mode(PermissionMode::from_str("auto"));
+        assert_eq!(g.mode(), PermissionMode::Auto);
+        assert_eq!(
+            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            Decision::Allow
+        );
+    }
+    #[test]
+    fn turn_end_revokes_computer_and_launch_grants() {
+        let mut g = PermissionGate::from_mode_str("auto");
+        g.allow_tool_for_session("computer");
+        g.allow_tool_for_session(COMPUTER_LAUNCH_RULE);
+        g.allow_tool_for_session("bash");
+        assert!(g.revoke_computer_grants());
+        // Back to asking, and unrelated grants are left alone.
+        assert!(matches!(
+            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            Decision::Ask { .. }
+        ));
+        assert_eq!(
+            g.escalate_computer("launch", Decision::Allow, "x"),
+            Decision::Ask { diff_summary: "x".into() }
+        );
+        assert!(g.decide("bash", None, false, None, "") == Decision::Allow);
+        // Nothing to revoke the second time → no spurious notice.
+        assert!(!g.revoke_computer_grants());
     }
 }

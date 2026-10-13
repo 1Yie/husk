@@ -83,10 +83,8 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         serde_json::from_value(args).map_err(|e| ToolError::Args(format!("computer args: {e}")))?;
     let action = parsed.action.trim().to_ascii_lowercase();
 
-    // `wait` first: it needs no coordinate and must work on any backend? No —
-    // a wait on a host without a desktop is still a lie ("I waited for the
-    // screen"), so it goes through the backend gate like everything else.
-    // Cheap actions: run, then describe.
+    // Every action goes through the desktop backend, `wait` included: on a
+    // host with no desktop a wait is still a lie ("I waited for the screen").
     let done = match action.as_str() {
         "left_click" | "right_click" | "middle_click" => {
             let at = need_coordinate(&parsed, &action)?;
@@ -185,7 +183,20 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             // screen to wait for, and pretending otherwise would let the model
             // report progress that never had a subject.
             ctx.desktop.cursor_position().await.map_err(fail)?;
-            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            // Sliced so a user "stop" (the shared cancel flag) ends the wait
+            // within ~100 ms instead of after up to MAX_WAIT_MS.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < deadline {
+                if ctx
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+                {
+                    return Err(ToolError::Failed("wait cancelled by user".into()));
+                }
+                let left = deadline - std::time::Instant::now();
+                tokio::time::sleep(left.min(std::time::Duration::from_millis(100))).await;
+            }
             format!("waited {ms}ms")
         }
         "cursor_position" => {
@@ -211,6 +222,62 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     };
 
     Ok(ToolResult::text(done))
+}
+
+/// The normalized `action` of a raw `computer` call — the same trim +
+/// lowercase `exec` applies, so the gate and the summary agree with it.
+pub fn action_of(args: &serde_json::Value) -> String {
+    args.get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// One line saying exactly what a `computer` call will do — the text the
+/// approval card shows. Without it the card carries only the bare action name
+/// (`type`, `launch`), so "allow for this session" would approve whatever the
+/// model types or starts next without the user ever seeing it. Strings use
+/// `{:?}` so control characters (a trailing `\n` = Enter) stay visible.
+/// Starts with the action name; the overlay HUD keys its label off that.
+pub fn describe(args: &serde_json::Value) -> String {
+    let action = action_of(args);
+    let point = |k: &str| {
+        let a = args.get(k)?.as_array()?;
+        Some(format!("({}, {})", a.first()?.as_i64()?, a.get(1)?.as_i64()?))
+    };
+    let text = args.get("text").and_then(|v| v.as_str());
+    let ms = args.get("duration_ms").and_then(|v| v.as_u64());
+    let detail = match action.as_str() {
+        "left_click" | "right_click" | "middle_click" | "double_click" | "mouse_move" => {
+            point("coordinate")
+        }
+        "left_click_drag" => match (point("start_coordinate"), point("coordinate")) {
+            (Some(a), Some(b)) => Some(format!("{a} → {b}")),
+            _ => None,
+        },
+        "type" | "key" | "launch" => text.map(|t| format!("{t:?}")),
+        "hold_key" => text.map(|t| format!("{t:?} {}ms", ms.unwrap_or(0))),
+        "scroll" => {
+            let dir = args
+                .get("scroll_direction")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let n = args
+                .get("scroll_amount")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(DEFAULT_SCROLL_STEPS as i64);
+            let at = point("coordinate").map(|p| format!(" at {p}")).unwrap_or_default();
+            Some(format!("{dir} ×{n}{at}"))
+        }
+        "wait" => ms.map(|m| format!("{m}ms")),
+        _ => None,
+    };
+    match detail {
+        Some(d) => format!("{action} {d}"),
+        None if action.is_empty() => "computer".to_string(),
+        None => action,
+    }
 }
 
 /// Backend errors are model-facing — keep the probe's teaching text intact.
@@ -339,5 +406,77 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.contains("no desktop in tests"), "{e}");
+    }
+    #[test]
+    fn describe_shows_what_the_call_will_do() {
+        let d = |v: serde_json::Value| describe(&v);
+        assert_eq!(
+            d(serde_json::json!({"action": "left_click", "coordinate": [12, 34]})),
+            "left_click (12, 34)"
+        );
+        // A trailing newline is Enter — it must be visible on the card.
+        assert_eq!(
+            d(serde_json::json!({"action": "type", "text": "rm -rf ~\n"})),
+            "type \"rm -rf ~\\n\""
+        );
+        assert_eq!(
+            d(serde_json::json!({"action": " KEY ", "text": "ctrl+alt+t"})),
+            "key \"ctrl+alt+t\""
+        );
+        assert_eq!(
+            d(serde_json::json!({"action": "launch", "text": "code ~/p"})),
+            "launch \"code ~/p\""
+        );
+        assert_eq!(
+            d(serde_json::json!({"action": "left_click_drag", "start_coordinate": [1, 2], "coordinate": [3, 4]})),
+            "left_click_drag (1, 2) → (3, 4)"
+        );
+        assert_eq!(
+            d(serde_json::json!({"action": "scroll", "scroll_direction": "down"})),
+            "scroll down ×3"
+        );
+        // Missing/odd arguments still yield a usable line, never a panic.
+        assert_eq!(d(serde_json::json!({"action": "type"})), "type");
+        assert_eq!(d(serde_json::json!({})), "computer");
+    }
+    /// `wait` honors the shared cancel flag instead of sleeping it out.
+    #[tokio::test]
+    async fn wait_ends_early_when_cancelled() {
+        struct Live;
+        #[async_trait::async_trait]
+        impl agent_computer::DesktopBackend for Live {
+            fn id(&self) -> &'static str { "live" }
+            async fn screenshot(&self, _d: &std::path::Path) -> anyhow::Result<agent_computer::ScreenshotMeta> { anyhow::bail!("n/a") }
+            async fn click(&self, _b: agent_computer::MouseButton, _a: [i32; 2]) -> anyhow::Result<()> { Ok(()) }
+            async fn double_click(&self, _a: [i32; 2]) -> anyhow::Result<()> { Ok(()) }
+            async fn move_to(&self, _a: [i32; 2]) -> anyhow::Result<()> { Ok(()) }
+            async fn drag(&self, _f: [i32; 2], _t: [i32; 2]) -> anyhow::Result<()> { Ok(()) }
+            async fn type_text(&self, _t: &str) -> anyhow::Result<()> { Ok(()) }
+            async fn key(&self, _c: &str, _h: Option<u64>) -> anyhow::Result<()> { Ok(()) }
+            async fn scroll(&self, _d: agent_computer::ScrollDir, _a: i32, _at: Option<[i32; 2]>) -> anyhow::Result<()> { Ok(()) }
+            async fn cursor_position(&self) -> anyhow::Result<[i32; 2]> { Ok([0, 0]) }
+            async fn launch_app(&self, _c: &str) -> anyhow::Result<()> { Ok(()) }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut ctx = ToolCtx::new(dir.path()).with_desktop(Arc::new(Live));
+        ctx.cancel = Some(cancel.clone());
+        let flag = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let t = std::time::Instant::now();
+        let e = ToolRegistry::with_builtins()
+            .dispatch(
+                "computer",
+                serde_json::json!({"action": "wait", "duration_ms": 9000}),
+                Arc::new(ctx),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("cancelled"), "{e}");
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }
 }

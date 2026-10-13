@@ -20,14 +20,31 @@ pub(crate) fn sandbox_config(
     workspace_root: &Path,
     timeout: Duration,
 ) -> agent_sandbox::SandboxConfig {
+    // Canonicalize before the plan: the deny_write set must match the path
+    // spelling the backend binds (it canonicalizes too).
+    let workspace_root = &workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
     let plan = agent_sandbox::plan::SandboxPlan::from_audit(
         verdict,
-        workspace_root.to_path_buf(),
+        workspace_root.clone(),
         std::env::temp_dir().join(format!("husk-{:x}", std::process::id())),
     );
+    // AllowHosts maps to proxied egress (not "allow all"): the host-side
+    // proxy enforces the domain list; `allow_network` stays false so the
+    // backend still unshares the net and the proxy socket is the only way
+    // out. `Allow` keeps full shared network.
+    let (allow_network, allowed_domains) = match &plan.network {
+        agent_sandbox::plan::NetworkPolicy::Allow => (true, Vec::new()),
+        agent_sandbox::plan::NetworkPolicy::AllowHosts(h) => (false, h.clone()),
+        agent_sandbox::plan::NetworkPolicy::Deny => (false, Vec::new()),
+    };
     let mut cfg = agent_sandbox::SandboxConfig {
         workspace_dir: workspace_root.to_path_buf(),
-        allow_network: !matches!(plan.network, agent_sandbox::plan::NetworkPolicy::Deny),
+        allow_network,
+        allowed_domains,
+        deny_read: plan.filesystem.deny.clone(),
+        deny_write: plan.filesystem.deny_write.clone(),
         max_memory_mb: plan.processes.max_memory_mb,
         max_processes: plan.processes.max_processes,
         timeout_secs: timeout.as_secs(),
