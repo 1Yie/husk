@@ -91,6 +91,10 @@ pub enum UiCommand {
     /// Mid-turn steering text (delivered as a user turn marked "The user
     /// interrupted:").
     Steer { text: String },
+    /// Mid-run steering for one delegated subagent, addressed by the
+    /// `child_id` its card carries. Only that child's owning session accepts it;
+    /// anything else gets the same refusal as an unknown id.
+    SteerChild { child_id: u64, text: String },
     /// Approval-card response for a pending tool call. `request_id`
     /// correlates the verdict to a specific `ApprovalRequested` — without it
     /// a stale click can be consumed by a *later* pending approval and
@@ -101,8 +105,9 @@ pub enum UiCommand {
     /// tool auto-approve instead of pausing again. Used by the
     /// computer-use approval dialog ("本会话允许"): granting once and then
     /// re-prompting on every `computer` action would defeat the flow.
-    /// Session-scoped by design — the whitelist dies with the actor and
-    /// never touches `~/.config/husk`.
+    /// Never persisted and never touches `~/.config/husk`: the whitelist dies
+    /// with the actor, and the kernel ends a `computer` grant at the end of
+    /// each turn (`launch` is never covered by it).
     ApproveSessionTool { tool_name: String },
     /// Drop `tool_name` from the session whitelist — the inverse of
     /// `ApproveSessionTool`. The computer-use overlay's "停止" button
@@ -137,6 +142,8 @@ pub enum UiCommand {
     SetAgentMode { mode: String },
     /// Set the thinking/reasoning effort level (e.g. "off", "low", "medium", "high", "max").
     SetThinkingLevel { level: String },
+    /// Turn the `.blueprint/` architecture layer on or off for this session.
+    SetBlueprintEnabled { enabled: bool },
     /// Undo/rewind the last turn's hunk set.
     UndoLastTurn,
     /// Hot-apply the memory preferences (`set_default_prefs` broadcasts
@@ -216,6 +223,9 @@ pub enum UiEvent {
         /// of counting them as top-level calls.
         #[serde(default)]
         parent: Option<String>,
+        /// Set on a delegated subagent's card: the id a `SteerChild` names.
+        #[serde(default)]
+        child_id: Option<u64>,
     },
     /// A tool finished (or failed); `content` is the truncated model-facing
     /// text, `ui_type` is the optional typed card hint (`diff`/`table`/…).
@@ -227,6 +237,9 @@ pub enum UiEvent {
         /// Same nesting marker as `ToolCallStarted::parent`.
         #[serde(default)]
         parent: Option<String>,
+        /// Same child marker as `ToolCallStarted::child_id`.
+        #[serde(default)]
+        child_id: Option<u64>,
     },
     /// `ask_question` paused the turn for structured input — the card
     /// offers the model's options plus a free-text field. Resolved by
