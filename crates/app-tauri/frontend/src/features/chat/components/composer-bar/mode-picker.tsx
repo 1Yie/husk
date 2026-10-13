@@ -12,27 +12,38 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   ChevronsUpDown,
-  ShieldCheck,
   Check,
   Brain,
   Bot,
   FileText,
+  Shield,
+  PenLine,
+  Zap,
+  Ban,
+  ShieldX,
+  Hammer,
+  Route,
+  Flag,
 } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 
+// Each mode carries its own icon so the trigger and the menu tell the modes
+// apart at a glance, instead of one shield for every choice.
 export const PERMISSION_MODES = [
-  { value: "default", label: "默认", desc: "编辑与命令均需手动确认" },
-  { value: "acceptEdits", label: "接受编辑", desc: "自动允许文件修改，终端命令仍需确认" },
-  { value: "auto", label: "自动", desc: "自动执行修改与常规命令，仅高危指令确认" },
-  { value: "dontAsk", label: "不询问", desc: "仅允许只读操作，拒绝所有修改与命令" },
-  { value: "bypassPermissions", label: "跳过权限", desc: "完全信任，自动跳过所有确认" },
+  { value: "default", label: "默认", desc: "编辑与命令均需手动确认", icon: Shield },
+  { value: "acceptEdits", label: "接受编辑", desc: "自动允许文件修改，终端命令仍需确认", icon: PenLine },
+  { value: "auto", label: "自动", desc: "自动执行修改与常规命令，仅高危指令确认", icon: Zap },
+  { value: "dontAsk", label: "不询问", desc: "仅允许只读操作，拒绝所有修改与命令", icon: Ban },
+  { value: "bypassPermissions", label: "跳过权限", desc: "完全信任，自动跳过所有确认", icon: ShieldX },
 ] as const;
 
+// Icons follow the mode's job: build makes things, plan charts a route,
+// goal holds a flag to reach. `office` keeps the document glyph.
 export const AGENT_MODES = [
-  { value: "build", label: "构建", desc: "完整工具集 — 读写、执行、验证" },
-  { value: "plan", label: "计划", desc: "只读分析，产出实施方案，批准后执行" },
-  { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
-  { value: "office", label: "工作", desc: "Word / Excel / PPT — 创建与编辑 Office 文档" },
+  { value: "build", label: "构建", desc: "完整工具集 — 读写、执行、验证", icon: Hammer },
+  { value: "plan", label: "计划", desc: "只读分析，产出实施方案，批准后执行", icon: Route },
+  { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻", icon: Flag },
+  { value: "office", label: "工作", desc: "Word / Excel / PPT — 创建与编辑 Office 文档", icon: FileText },
 ] as const;
 
 export const THINKING_LEVELS = [
@@ -91,6 +102,8 @@ export function ModePicker({
   effectiveThinkingLevels: readonly { value: string; label: string; desc: string }[];
   onSelectThinkingLevel: (level: string) => Promise<void>;
 }) {
+  const ModeIcon = PERMISSION_MODES.find((m) => m.value === mode)?.icon ?? Shield;
+  const AgentModeIcon = AGENT_MODES.find((m) => m.value === agentMode)?.icon ?? Hammer;
   return (
     <>
         {/* Office mode is workspace-scoped — every session there is
@@ -103,11 +116,7 @@ export function ModePicker({
               aria-label="代理模式"
               className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
             >
-              {agentMode === "office" ? (
-                <FileText className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-              ) : (
-                <Bot className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-              )}
+              <AgentModeIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
               <span className="truncate max-w-[7em]">{agentModeLabel}</span>
               <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
@@ -129,7 +138,8 @@ export function ModePicker({
                     className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
                   >
                     <div className="flex items-center justify-between w-full">
-                      <span className="font-medium text-xs text-neutral-800">
+                      <span className="flex items-center gap-1.5 font-medium text-xs text-neutral-800">
+                        <m.icon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
                         {m.label}
                       </span>
                       {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
@@ -152,7 +162,7 @@ export function ModePicker({
               aria-label="权限模式"
               className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
             >
-              <ShieldCheck className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              <ModeIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
               <span className="truncate max-w-[7em]">{modeLabel}</span>
               <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
@@ -172,7 +182,8 @@ export function ModePicker({
                     className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
                   >
                     <div className="flex items-center justify-between w-full">
-                      <span className="font-medium text-xs text-neutral-800">
+                      <span className="flex items-center gap-1.5 font-medium text-xs text-neutral-800">
+                        <m.icon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
                         {m.label}
                       </span>
                       {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}

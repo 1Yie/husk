@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "@keyline-icons/react";
 import { Bot } from "lucide-react";
 import { DiffView } from "@/features/chat/components/diff-view/index";
+import type { ChildSegment } from "@/features/chat/hooks/stream-view";
 import { TodoView } from "@/features/chat/components/todo-view/index";
 import { highlightCodeToHtml } from "@/lib/syntax-highlight";
 import { cn } from "@/lib/utils";
@@ -252,6 +253,11 @@ export type ToolChipRow = {
   /** A delegated subagent: rendered as an agent card — name, task, prose
    * body — instead of a tool line, because it is a second agent, not a call. */
   kind?: "agent";
+  /** On an agent card: the id a `SteerChild` names to reach this child. */
+  childId?: number;
+  /** On an agent card: its body in arrival order — text runs and tool runs
+   * (by index into `children`) interleaved, like a session's own steps. */
+  segments?: ChildSegment[];
   chip: string;
   detail?: string[];
   id: string;
@@ -432,22 +438,48 @@ export function ToolChips({
           </button>
           <RowDetail open={rowOpen}>
             <div className="px-2.5 pb-2.5">
-              {body ? (
-                <div className="text-neutral-700 text-[12.5px] leading-relaxed select-text">
-                  {renderProse ? (
-                    renderProse(body)
-                  ) : (
-                    <div className="whitespace-pre-wrap">{body}</div>
+              {row.segments && row.segments.length > 0 ? (
+                // The child's text and its own tool calls read in the order they arrived,
+                // the same as a session's steps, whether it is still running or finished.
+                <div className="flex flex-col gap-2">
+                  {(row.segments.some((s) => s.kind === "text") || !row.detail?.length
+                    ? row.segments
+                    : // A finished child whose report was never streamed as text: the
+                      // report is its last text run, so it is not dropped.
+                      [...row.segments, { kind: "text" as const, text: body }]
+                  ).map((seg, i) =>
+                    seg.kind === "text" ? (
+                      <div
+                        key={`text-${i}`}
+                        className="text-neutral-700 text-[12.5px] leading-relaxed select-text"
+                      >
+                        {renderProse ? renderProse(seg.text) : <div className="whitespace-pre-wrap">{seg.text}</div>}
+                      </div>
+                    ) : row.children?.[seg.index] ? (
+                      renderRow(row.children[seg.index], 1)
+                    ) : null
                   )}
                 </div>
-              ) : row.status === "running" ? (
-                <div className="text-neutral-500 text-[11.5px]">等待子代理输出…</div>
-              ) : null}
-              {row.children && row.children.length > 0 ? (
-                <div className="border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] mt-2 flex flex-col gap-1 border-l pl-2.5">
-                  {row.children.map((c) => renderRow(c, 1))}
-                </div>
-              ) : null}
+              ) : (
+                <>
+                  {body ? (
+                    <div className="text-neutral-700 text-[12.5px] leading-relaxed select-text">
+                      {renderProse ? (
+                        renderProse(body)
+                      ) : (
+                        <div className="whitespace-pre-wrap">{body}</div>
+                      )}
+                    </div>
+                  ) : row.status === "running" ? (
+                    <div className="text-neutral-500 text-[11.5px]">等待子代理输出…</div>
+                  ) : null}
+                  {row.children && row.children.length > 0 ? (
+                    <div className="border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] mt-2 flex flex-col gap-1 border-l pl-2.5">
+                      {row.children.map((c) => renderRow(c, 1))}
+                    </div>
+                  ) : null}
+                </>
+              )}
             </div>
           </RowDetail>
         </div>

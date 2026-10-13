@@ -56,7 +56,14 @@ export type UiEvent =
   | { UserPrompt: string }
   | { TextDelta: { text: string; parent?: string | null } }
   | { ReasoningDelta: { text: string; parent?: string | null } }
-  | { ToolCallStarted: { name: string; args_preview: string; parent?: string | null } }
+  | {
+      ToolCallStarted: {
+        name: string;
+        args_preview: string;
+        parent?: string | null;
+        child_id?: number | null;
+      };
+    }
   | {
       ToolCallFinished: {
         name: string;
@@ -64,6 +71,7 @@ export type UiEvent =
         content: string;
         ui_type?: string;
         parent?: string | null;
+        child_id?: number | null;
       };
     }
   | {
@@ -99,6 +107,7 @@ export type UiEvent =
 export type UiCommand =
   | { Prompt: { text: string } }
   | { Steer: { text: string } }
+  | { SteerChild: { child_id: number; text: string } }
   | { ToolDecision: { request_id: number; approved: boolean } }
   | { ApproveSessionTool: { tool_name: string } }
   | { RevokeSessionTool: { tool_name: string } }

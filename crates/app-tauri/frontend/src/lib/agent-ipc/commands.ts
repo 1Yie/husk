@@ -16,6 +16,11 @@ export const sendPrompt = (text: string) => send({ Prompt: { text } });
 /** Mid-turn steering text — injected into the running turn. */
 export const steer = (text: string) => send({ Steer: { text } });
 
+/** Mid-run steering for one delegated subagent. The kernel routes it to the
+ * active session's child; the client names the child only. */
+export const steerChild = (childId: number, text: string) =>
+  send({ SteerChild: { child_id: childId, text } });
+
 /** Replace the session's parked queue — every list op (enqueue, edit,
  * remove, reorder) resolves to this one write; the kernel echoes the new
  * list back via `QueuedPrompts`. */
@@ -32,8 +37,8 @@ export const decideTool = (requestId: number, approved: boolean) =>
 
 /** Whitelist a tool for the rest of this session — pairs with
  *  `decideTool` on the computer-use approval modal: "本会话允许"
- *  writes the gate AND resolves the pending card. Session-scoped, so
- *  quitting the app revokes it; nothing is persisted. */
+ *  writes the gate AND resolves the pending card. Never persisted; the
+ *  kernel revokes a `computer` grant when the turn ends. */
 export const approveSessionTool = (toolName: string) =>
   send({ ApproveSessionTool: { tool_name: toolName } });
 

@@ -30,6 +30,8 @@ export function AgentSettings({ tab }: { tab: AgentTab }) {
   };
   useEffect(reload, []);
 
+  // Each pane decides for itself which part waits on `ov` — the frame, the
+  // headers and the controls stay usable while the overview is in flight.
   return (
     <div className="flex flex-col gap-8 w-full">
       {tab === "instructions" && <InstructionsPane />}

@@ -1,3 +1,4 @@
+import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,9 @@ import { applyAppearance, broadcastAppearance } from "@/lib/appearance";
 export function AppearanceSettings() {
   const [themeMode, setThemeModeState] = useState<"system" | "light" | "dark">("system");
   const [currency, setCurrency] = useState<"usd" | "cny">("usd");
+  // Until the stored config is read, the controls would show the defaults
+  // ("system", "usd") and then jump to the saved choice — hold the shape instead.
+  const [loaded, setLoaded] = useState(false);
   // First-load flag: applying the fetched config must not echo back a
   // `set_appearance` write.
   const hydrated = useRef(false);
@@ -27,6 +31,7 @@ export function AppearanceSettings() {
         setCurrency(cfg.currency === "cny" ? "cny" : "usd");
         applyAppearance(cfg);
         hydrated.current = true;
+        setLoaded(true);
       })
       .catch(() => {});
   }, []);
@@ -58,6 +63,13 @@ export function AppearanceSettings() {
   return (
     <div className="flex flex-col gap-8 w-full">
       <SettingsSection title="外观模式">
+        {!loaded ? (
+          <div className="grid grid-cols-3 gap-3">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-[92px] rounded-xl" />
+            ))}
+          </div>
+        ) : (
         <div className="grid grid-cols-3 gap-3">
           <Button
             type="button"
@@ -172,12 +184,19 @@ export function AppearanceSettings() {
             </span>
           </Button>
         </div>
+        )}
       </SettingsSection>
 
       <SettingsSection
         title="货币单位"
         description="标题栏会话花费的显示符号，仅切换标识不做汇率换算"
       >
+        {!loaded ? (
+          <div className="flex gap-2">
+            <Skeleton className="h-8 w-24 rounded-lg" />
+            <Skeleton className="h-8 w-24 rounded-lg" />
+          </div>
+        ) : (
         <div className="flex gap-2">
           {(
             [
@@ -200,6 +219,7 @@ export function AppearanceSettings() {
             </button>
           ))}
         </div>
+        )}
       </SettingsSection>
     </div>
   );

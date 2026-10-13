@@ -3,6 +3,7 @@
 // and an explicit reconnect. Host-side capabilities (hooks) are plugins —
 // they live on the 插件 page.
 
+import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useState } from "react";
 import {
@@ -214,7 +215,9 @@ export function McpPane({
       </div>
       <KvList>
         <KvListContent>
-          {ov?.plugins.filter((p) => entryObj(p)?.command || entryObj(p)?.url).length ? (
+          {!ov ? (
+            <SkeletonKvRows rows={2} />
+          ) : ov.plugins.filter((p) => entryObj(p)?.command || entryObj(p)?.url).length ? (
             ov.plugins.filter((p) => entryObj(p)?.command || entryObj(p)?.url).map((p) => {
               // Boot state from the overview; a manual reconnect overrides it.
               const re = reconnected[p.id];

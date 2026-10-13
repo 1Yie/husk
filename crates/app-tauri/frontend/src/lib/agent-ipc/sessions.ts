@@ -94,6 +94,8 @@ export interface WorkspaceInfo {
   /** `~/.local/share/husk/office` — the office pseudo-workspace root; the
    *  composer/sidebar compare `root` against it to detect office mode. */
   office_root?: string;
+  /** Present when sessions/settings use process-local, non-durable storage. */
+  storage_warning?: string | null;
   recents: { path: string; name: string; last_opened: number }[];
 }
 
@@ -389,6 +391,9 @@ export interface DefaultPrefs {
   active_model?: string | null;
   /** Fraction of the context window that triggers compaction — 0.7/0.8/0.9. */
   compact_at?: number;
+  /** Sandbox master switch — absent/true = sandboxed; false = every process
+   *  tool runs through the loud unsandboxed `none` backend. */
+  sandbox_enabled?: boolean;
   /** Sandbox network override — "auto" (per-command audit) | "allow" | "deny". */
   sandbox_network?: "auto" | "allow" | "deny";
   /** Per-command memory cap (MB) — null/absent → the audit plan's 2048. */
@@ -399,6 +404,8 @@ export interface DefaultPrefs {
   memory_enabled?: boolean;
   /** Model distillation — off = deterministic writes only, no extra call. */
   memory_distill?: boolean;
+  /** `.blueprint/` architecture layer — off = the directory is ignored. */
+  blueprint_enabled?: boolean;
 }
 
 /** The stored default preferences — what NEWLY created sessions spawn with.

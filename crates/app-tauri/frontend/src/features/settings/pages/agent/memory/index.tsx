@@ -2,6 +2,7 @@
 // (remember tool, /remember command, turn-end distillation). Persona is
 // global key/value; facts + episodes are scoped to this workspace.
 
+import { Skeleton, SkeletonKvRows } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { Brain, CircleUser, Clock, Database, Plus, Sparkles } from "@keyline-icons/react";
@@ -125,7 +126,9 @@ export function MemoryPane() {
       >
         <KvList>
           <KvListContent>
-            {(ov?.persona ?? []).length === 0 ? (
+            {!ov ? (
+              <SkeletonKvRows rows={2} />
+            ) : (ov.persona ?? []).length === 0 ? (
               <KvRow
                 label="暂无偏好"
               />
@@ -154,13 +157,15 @@ export function MemoryPane() {
         title="记忆事实"
         actions={
           <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-            {ov?.facts.length ?? 0} 条
+            {ov ? `${ov.facts.length} 条` : <Skeleton className="h-2.5 w-8" />}
           </Badge>
         }
       >
         <KvList>
           <KvListContent>
-            {(ov?.facts ?? []).length === 0 ? (
+            {!ov ? (
+              <SkeletonKvRows rows={3} />
+            ) : (ov.facts ?? []).length === 0 ? (
               <KvRow
                 label="暂无事实"
               />
@@ -217,7 +222,6 @@ export function MemoryPane() {
             </KvRow>
             <KvRow
               label="全部记忆"
-              description="偏好 + 事实 + 轮次经历，一次清空"
               icon={<Database className="h-4 w-4" />}
             >
               <ArmedDeleteButton

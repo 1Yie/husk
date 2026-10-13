@@ -1,5 +1,6 @@
 // 子代理 pane — builtin specs plus `*.md` manifests.
 
+import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useState } from "react";
 import {
@@ -95,7 +96,9 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
       </div>
       <KvList>
         <KvListContent>
-          {ov?.subagents.map((a) => (
+          {!ov ? (
+            <SkeletonKvRows rows={2} />
+          ) : ov.subagents.map((a) => (
             <KvRow
               key={a.name}
               label={a.name}

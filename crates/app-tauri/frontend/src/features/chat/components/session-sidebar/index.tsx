@@ -1,7 +1,8 @@
+import { Skeleton } from "@/components/ui/skeleton";
 import iconUrl from "@/assets/husk-icon.png";
 import {
   Plus,
-  Bot,
+  Code,
   ChevronRight,
   ChevronDown,
   FileText,
@@ -124,6 +125,10 @@ interface Props {
   /** Project tree — active workspace first, then recent ones, each with its
    * full conversation list (`SessionManager::projects_overview`). */
   projects: ProjectOverview[];
+  /** The first project list has landed. Until it has, an empty `projects`
+   * means "still loading", not "no sessions" — the lists draw placeholder
+   * rows instead of the empty-state text. */
+  projectsLoaded?: boolean;
   activeId?: number;
   version?: string;
   hasWorkspace?: boolean;
@@ -133,6 +138,10 @@ interface Props {
   onOpenSession: (root: string, id: number) => void;
   onPickWorkspace?: () => void;
   onSwitchWorkspace?: (path: string) => void;
+  /** The 编程 ↔ 工作 mode switch. Separate from `onSwitchWorkspace` because
+   * only a mode switch gets the full-window veil; a plain project switch
+   * stays in the sidebar and the chat pane. */
+  onSwitchMode?: (path: string) => void;
   onRemoveWorkspace?: (project: ProjectOverview) => void;
   onOpenSettings?: () => void;
   onFork?: (id: number) => void;
@@ -140,8 +149,27 @@ interface Props {
   onDelete?: (id: number) => void;
 }
 
+
+/** Placeholder rows shaped like a session row — drawn while the project list
+ * is still loading, so the sidebar doesn't say "no sessions" before it knows. */
+function SidebarRowSkeleton({ rows, small = false }: { rows: number; small?: boolean }) {
+  return (
+    <div className="flex flex-col gap-0.5 animate-pulse" aria-hidden="true">
+      {Array.from({ length: rows }, (_, i) => (
+        <div
+          key={i}
+          className={cn("pl-7 flex items-center", small ? "h-7" : "h-8")}
+        >
+          <Skeleton className={cn("h-3 rounded", small ? "w-24" : "w-32")} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function SessionSidebar({
   projects,
+  projectsLoaded = true,
   activeId,
   version: propVersion,
   hasWorkspace = true,
@@ -149,6 +177,7 @@ export function SessionSidebar({
   onOpenSession,
   onPickWorkspace,
   onSwitchWorkspace,
+  onSwitchMode,
   onRemoveWorkspace,
   onOpenSettings,
   onFork,
@@ -348,15 +377,15 @@ export function SessionSidebar({
               not the composer. 工作 targets the built-in office workspace
               (~/.local/share/husk/office); 编程 returns to the most recent
               real project (the folder picker covers the no-project case). */}
-          {onSwitchWorkspace && (
+          {onSwitchMode && (
             <Tabs
               value={officeMode ? "office" : "build"}
               onValueChange={(v) => {
                 if (v === "office") {
-                  if (officeProject) onSwitchWorkspace(officeProject.root);
+                  if (officeProject) onSwitchMode(officeProject.root);
                 } else {
                   const target = projectList[0]?.root;
-                  if (target) onSwitchWorkspace(target);
+                  if (target) onSwitchMode(target);
                   else onPickWorkspace?.();
                 }
               }}
@@ -365,7 +394,7 @@ export function SessionSidebar({
               <TabsList
                 data-nodrag
                 data-tauri-drag-region="false"
-                className="relative h-auto gap-0 rounded-md bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] p-0.5"
+                className="relative h-auto gap-0 rounded-md bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] dark:bg-[var(--husk-border)] p-0.5"
               >
                 {/* Sliding active pill — triggers are fixed-width so the
                     translate is a constant. This theme overrides
@@ -374,29 +403,46 @@ export function SessionSidebar({
                 <span
                   aria-hidden
                   className={cn(
-                    "absolute inset-y-0.5 left-0.5 w-12 rounded-[8px] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] transition-transform duration-200 ease-out will-change-transform transform-gpu",
+                    "absolute inset-y-0.5 left-0.5 w-12 rounded-[8px] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-[var(--husk-hover)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.6)] transition-transform duration-200 ease-out will-change-transform transform-gpu",
                     officeMode && "translate-x-12",
                   )}
                 />
-                <TabsTrigger
-                  value="build"
-                  data-nodrag
-                  aria-label="切换到编程模式"
-                  className="relative h-[22px] w-12 gap-1 rounded px-0 py-0 text-[11px] font-normal text-neutral-500 transition-none hover:text-neutral-700 data-[state=active]:bg-transparent data-[state=active]:text-neutral-800 data-[state=active]:shadow-none"
+                {/* Tooltip's Slot writes its own `data-state` (closed/open) onto
+                    whatever it wraps. Wrapping the trigger directly overwrote the
+                    tab's `active` state, so the selected label fell back to grey.
+                    The hover wrapper keeps that attribute off the trigger. */}
+                <TooltipSimple content="编程 — 在项目中读写代码、运行命令" side="bottom">
+                  <span className="inline-flex" data-nodrag>
+                  <TabsTrigger
+                    value="build"
+                    data-nodrag
+                    aria-label="切换到编程模式"
+                    className="relative h-[22px] w-12 gap-1 rounded px-0 py-0 text-[11px] font-normal text-neutral-500 transition-none hover:text-neutral-700 data-[state=active]:bg-transparent data-[state=active]:text-neutral-800 data-[state=active]:shadow-none"
+                  >
+                    <Code className="h-3 w-3" />
+                    编程
+                  </TabsTrigger>
+                  </span>
+                </TooltipSimple>
+                {/* A disabled button swallows pointer events, so the hint hangs on a
+                    wrapper that stays hoverable while the tab itself is disabled. */}
+                <TooltipSimple
+                  content={officeProject ? "工作 — 创建与编辑 Word / Excel / PPT" : "尚无工作目录"}
+                  side="bottom"
                 >
-                  <Bot className="h-3 w-3" />
-                  编程
-                </TabsTrigger>
-                <TabsTrigger
-                  value="office"
-                  data-nodrag
-                  aria-label="切换到工作模式"
-                  disabled={!officeProject}
-                  className="relative h-[22px] w-12 gap-1 rounded px-0 py-0 text-[11px] font-normal text-neutral-500 transition-none hover:text-neutral-700 disabled:opacity-100 data-[state=active]:bg-transparent data-[state=active]:text-neutral-800 data-[state=active]:shadow-none"
-                >
-                  <FileText className="h-3 w-3" />
-                  工作
-                </TabsTrigger>
+                  <span className="inline-flex" data-nodrag>
+                  <TabsTrigger
+                    value="office"
+                    data-nodrag
+                    aria-label="切换到工作模式"
+                    disabled={!officeProject}
+                    className="relative h-[22px] w-12 gap-1 rounded px-0 py-0 text-[11px] font-normal text-neutral-500 transition-none hover:text-neutral-700 disabled:opacity-100 data-[state=active]:bg-transparent data-[state=active]:text-neutral-800 data-[state=active]:shadow-none"
+                  >
+                    <FileText className="h-3 w-3" />
+                    工作
+                  </TabsTrigger>
+                  </span>
+                </TooltipSimple>
               </TabsList>
             </Tabs>
           )}
@@ -415,7 +461,9 @@ export function SessionSidebar({
                 </span>
               </div>
               <div className="flex-none flex flex-col gap-0.5 px-2 pb-1">
-                {recents.length === 0 ? (
+                {recents.length === 0 && !projectsLoaded ? (
+                  <SidebarRowSkeleton rows={3} />
+                ) : recents.length === 0 ? (
                   <div className="pl-7 h-8 flex items-center shrink-0 flex-none text-[13px] text-neutral-500">
                     暂无会话
                   </div>
@@ -499,7 +547,9 @@ export function SessionSidebar({
             <>
               <div data-tauri-drag-region="false" className="flex-none max-h-[45%] overflow-y-auto">
                 <div className="flex flex-col gap-0.5 px-2 pb-1">
-                  {officeProject && officeProject.sessions.length === 0 ? (
+                  {!projectsLoaded && !officeProject ? (
+                    <SidebarRowSkeleton rows={2} />
+                  ) : officeProject && officeProject.sessions.length === 0 ? (
                     <div className="pl-7 h-8 flex items-center text-[13px] text-neutral-500">
                       暂无会话
                     </div>
@@ -552,7 +602,9 @@ export function SessionSidebar({
                 still drag the window (rows opt out themselves). */
             <div data-tauri-drag-region="false" className="flex-1 min-h-0 overflow-y-auto transform-gpu">
               <div data-tauri-drag-region="deep" className="min-h-full flex flex-col gap-0.5 px-2 pb-2">
-                {projectList.length === 0 ? (
+                {projectList.length === 0 && !projectsLoaded ? (
+                  <SidebarRowSkeleton rows={3} />
+                ) : projectList.length === 0 ? (
                   // Same inset as 暂无会话 — the two empty states are the same kind
                   // of thing, so they read at the same level.
                   <div className="pl-7 h-8 flex items-center text-[13px] text-neutral-500">
@@ -565,6 +617,7 @@ export function SessionSidebar({
                       project={p}
                       open={expanded.has(p.root)}
                       activeId={activeId}
+                      projectsLoaded={projectsLoaded}
                       onToggle={() => toggleProject(p.root)}
                       onOpenSession={onOpenSession}
                       onSwitchWorkspace={onSwitchWorkspace}
@@ -1021,6 +1074,7 @@ function ProjectItem({
   project,
   open,
   activeId,
+  projectsLoaded,
   onToggle,
   onOpenSession,
   onSwitchWorkspace,
@@ -1032,6 +1086,7 @@ function ProjectItem({
   project: ProjectOverview;
   open: boolean;
   activeId?: number;
+  projectsLoaded: boolean;
   onToggle: () => void;
   onOpenSession: (root: string, id: number) => void;
   onSwitchWorkspace?: (path: string) => void;
@@ -1126,7 +1181,9 @@ function ProjectItem({
 
       {open && (
         <div className="flex flex-col gap-0.5">
-          {project.sessions.length === 0 ? (
+          {project.sessions.length === 0 && !projectsLoaded ? (
+            <SidebarRowSkeleton rows={2} small />
+          ) : project.sessions.length === 0 ? (
             <div className="pl-7 h-7 flex items-center text-[12px] text-neutral-500">
               暂无对话记录
             </div>

@@ -204,6 +204,12 @@ fn agent_cmd_inner(
         steer_tx.try_send(text.clone()).map_err(|e| e.to_string())?;
         return Ok(());
     }
+    if let UiCommand::SteerChild { child_id, text } = &cmd {
+        // The active session owns the child; the client names only the child.
+        mgr.steer_active_child(*child_id, text.clone())?;
+        return Ok(());
+    }
+
     if let UiCommand::ToolDecision {
         request_id,
         approved,
@@ -266,7 +272,8 @@ fn agent_cmd_inner(
     // so a mid-turn swap applies at the next dispatch rather than after the turn.
     if let UiCommand::SetPermissionMode { mode } = &cmd {
         if let Ok(mut gate) = permissions.write() {
-            *gate = agent_kernel::permissions::PermissionGate::from_mode_str(mode);
+            // In place: rebuilding the gate would drop the session's allow rules.
+            gate.set_mode(agent_kernel::permissions::PermissionMode::from_str(mode));
         }
     }
     if let UiCommand::SetAgentMode { mode } = &cmd {

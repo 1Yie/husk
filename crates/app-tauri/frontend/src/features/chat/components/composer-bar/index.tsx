@@ -102,6 +102,7 @@ import {
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, TooltipSimple } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -818,10 +819,11 @@ export function ComposerBar({
   };
 
   // Computer-use approvals live in a modal — not the input strip — because
-  // the grant is scoped differently: "本会话允许" whitelists the tool for
-  // the rest of the session (computer calls are inherently multi-action,
-  // so re-prompting on every click/type would defeat the flow), then
-  // resolves THIS pending call in one motion.
+  // the grant is scoped differently: "本会话允许" whitelists the tool for the
+  // rest of the current task (computer calls are inherently multi-action, so
+  // re-prompting on every click/type would defeat the flow), then resolves
+  // THIS pending call in one motion. The kernel ends the grant when the turn
+  // does, and `launch` is never covered by it.
   const isComputerApproval = pending?.toolName === "computer";
   const decideComputerSession = async () => {
     if (!pending || decidedId === pending.requestId) return;
@@ -955,13 +957,15 @@ export function ComposerBar({
                     审核方案，批准后切到构建模式执行
                   </span>
                   <TooltipSimple content="复制计划">
-                    <button
+                    <Button
                       type="button"
-                      className="shrink-0 rounded p-1 text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-700 cursor-pointer transition-colors"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-neutral-500 hover:text-neutral-700"
                       onClick={() => void copyPlan()}
                     >
                       <Copy className="h-3 w-3" />
-                    </button>
+                    </Button>
                   </TooltipSimple>
                   <Button
                     size="sm"
@@ -1006,19 +1010,21 @@ export function ComposerBar({
                           side="top"
                           sideOffset={6}
                         >
-                          <button
+                          <Button
                             type="button"
-                            className="h-7 px-2.5 rounded-lg border border-hairline bg-[color-mix(in_srgb,var(--husk-black)_3%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] text-[12px] text-neutral-800 transition-colors cursor-pointer"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2.5 text-[12px] text-neutral-800 cursor-pointer"
                             onClick={() => void answerQuestion(o.label)}
                           >
                             {o.label}
-                          </button>
+                          </Button>
                         </TooltipSimple>
                       ))}
                     </div>
                   )}
                   <div className="flex items-center gap-2 pl-5">
-                    <input
+                    <Input
                       value={questionInput}
                       onChange={(e) => setQuestionInput(e.target.value)}
                       onKeyDown={(e) => {
@@ -1027,7 +1033,7 @@ export function ComposerBar({
                         }
                       }}
                       placeholder="自定义回答…"
-                      className="flex-1 min-w-0 h-7 px-2.5 rounded-lg border border-hairline bg-transparent text-[12px] text-neutral-800 placeholder:text-neutral-500 outline-none focus:border-[color-mix(in_srgb,var(--husk-black)_25%,transparent)]"
+                      className="flex-1 min-w-0 h-7 px-2.5 py-0 rounded-lg text-[12px]"
                     />
                     <Button
                       size="sm"
@@ -1203,7 +1209,7 @@ export function ComposerBar({
                       {editIdx === i ? (
                         /* Inline edit — same chip shell, textarea inside;
                            Enter commits, Esc cancels, blur commits too. */
-                        <textarea
+                        <Textarea
                           autoFocus
                           value={editDraft}
                           rows={1}
@@ -1219,7 +1225,7 @@ export function ComposerBar({
                             }
                           }}
                           onBlur={() => commitEditQueued(i)}
-                          className="font-mono text-[11px] text-neutral-700 min-w-0 flex-1 bg-white border border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)] px-2 py-0.5 rounded outline-none focus:border-neutral-400 resize-none overflow-x-hidden"
+                          className="font-mono text-[11px] text-neutral-700 min-h-0 min-w-0 flex-1 px-2 py-0.5 rounded-md resize-none leading-snug"
                         />
                       ) : (
                         <span
@@ -1238,23 +1244,27 @@ export function ComposerBar({
                       >
                         立即发送
                       </Button>
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon-sm"
                         aria-label="编辑"
                         title="编辑排队消息"
-                        className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200 transition-colors cursor-pointer"
+                        className="text-neutral-500 hover:text-neutral-700"
                         onClick={() => beginEditQueued(i)}
                       >
                         <CirclePen className="h-3 w-3" />
-                      </button>
-                      <button
+                      </Button>
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon-sm"
                         aria-label="移除"
-                        className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200 transition-colors cursor-pointer"
+                        className="text-neutral-500 hover:text-neutral-700"
                         onClick={() => removeQueued(i)}
                       >
                         <X className="h-3 w-3" />
-                      </button>
+                      </Button>
                     </div>
                   ))}
                 </div>
@@ -1391,7 +1401,8 @@ export function ComposerBar({
             </DialogTitle>
             <DialogDescription>
               Agent 将在你的真实桌面上移动鼠标、点击、打字和截图。
-              授权后整个会话期间不再重复询问;会话结束自动失效。
+              选择“本会话允许”后,本轮任务内的点击与输入不再逐次询问,任务结束或点击“停止”即失效;
+              启动应用(launch)始终需要单独确认。
             </DialogDescription>
           </DialogHeader>
           {pending?.args && (

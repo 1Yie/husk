@@ -4,6 +4,7 @@
 // protocol bridge — a manifest's connection side lives on the MCP page
 // (transport, reconnect, tools), its hooks live here.
 
+import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useState } from "react";
 import { Plug, RefreshCw, Slash, Wrench, Zap } from "@keyline-icons/react";
@@ -122,7 +123,9 @@ export function PluginsPane({
       </div>
       <KvList>
         <KvListContent>
-          {plugins.length ? (
+          {!ov ? (
+            <SkeletonKvRows rows={3} />
+          ) : plugins.length ? (
             plugins.map((p) => (
               <Collapsible
                 key={p.id}

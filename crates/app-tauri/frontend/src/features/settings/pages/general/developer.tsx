@@ -2,6 +2,7 @@
 // knobs can break the GUI (`renderer`, `gpu_acceleration`) — the recovery
 // path is a single obvious file the user edits by hand, then relaunch.
 
+import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { useEffect, useState } from "react";
 import { Activity, Bug, Monitor, TriangleAlert, Zap } from "@keyline-icons/react";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
@@ -45,10 +46,7 @@ export function DeveloperPane() {
 
   return (
     <div className="flex flex-col gap-8 w-full">
-      {!loaded ? (
-        <div className="text-xs text-neutral-500">加载中…</div>
-      ) : (
-        <>
+      <>
           {/* The render section is Linux-only — X11 vs Wayland is a GTK /
            *  WebKitGTK concept; macOS (WKWebView) and Windows (WebView2) have
            *  no equivalent. GPU acceleration keys off the same env vars, so
@@ -57,6 +55,10 @@ export function DeveloperPane() {
             <SettingsSection title="渲染" description={<b>修改后需要重启应用</b>}>
               <KvList>
                 <KvListContent>
+                  {!loaded ? (
+                    <SkeletonKvRows rows={2} />
+                  ) : (
+                  <>
                   <KvRow label="渲染后端" icon={<Monitor className="h-4 w-4" />}>
                     <SettingSelect
                       value={cfg.renderer ?? "x11"}
@@ -90,6 +92,8 @@ export function DeveloperPane() {
                       ]}
                     />
                   </KvRow>
+                  </>
+                  )}
                 </KvListContent>
               </KvList>
             </SettingsSection>
@@ -97,6 +101,10 @@ export function DeveloperPane() {
           <SettingsSection title="调试">
             <KvList>
               <KvListContent>
+                {!loaded ? (
+                  <SkeletonKvRows rows={2} />
+                ) : (
+                <>
                 <KvRow
                   label="监控面板"
                   description="按 Shift+Ctrl+P 切换 FPS/事件速率 HUD"
@@ -117,11 +125,12 @@ export function DeveloperPane() {
                     onCheckedChange={(v) => update({ devtools: v ? true : null })}
                   />
                 </KvRow>
+                </>
+                )}
               </KvListContent>
             </KvList>
           </SettingsSection>
-        </>
-      )}
+      </>
     </div>
   );
 }

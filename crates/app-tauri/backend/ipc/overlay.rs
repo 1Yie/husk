@@ -57,6 +57,15 @@ fn spawn_glow(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    // Wayland layer-shell covers the monitor by anchoring all four edges. A
+    // `fullscreen()` request on the same window makes GTK treat it as a
+    // toplevel and the layer surface stops covering the screen, so it is only
+    // set on the toplevel path.
+    #[cfg(target_os = "linux")]
+    let layer = crate::ipc::layer_shell::available();
+    #[cfg(not(target_os = "linux"))]
+    let layer = false;
+
     let builder = WebviewWindowBuilder::new(
         app,
         "computer-glow",
@@ -67,8 +76,8 @@ fn spawn_glow(app: &AppHandle) -> Result<(), String> {
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
-    .visible(false)
-    .fullscreen(true);
+    .visible(false);
+    let builder = if layer { builder } else { builder.fullscreen(true) };
 
     // `.transparent` is compiled out on macOS (`#[cfg(any(not(macos),
     // macos-private-api))]`) — calling it unconditionally breaks the macOS
@@ -81,6 +90,15 @@ fn spawn_glow(app: &AppHandle) -> Result<(), String> {
     let win = builder
         .build()
         .map_err(|e| format!("spawn glow window: {e}"))?;
+
+    // Wayland: place it as a full-monitor layer surface. The window is built
+    // `visible(false)`, so it is still unrealized — the one moment
+    // `init_for_window` accepts (see layer_shell.rs).
+    #[cfg(target_os = "linux")]
+    if layer {
+        let gtk_win = win.gtk_window().map_err(|e| format!("glow gtk window: {e}"))?;
+        crate::ipc::layer_shell::full_screen(&gtk_win);
+    }
 
     // The entire surface must pass clicks through — this window exists
     // only to paint, not to interact.
@@ -121,6 +139,21 @@ fn spawn_hud(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| format!("spawn hud window: {e}"))?,
     };
 
+    // Wayland: a layer surface anchored bottom-right. The window is still
+    // unrealized here (built `visible(false)`), which layer-shell requires.
+    // The toplevel placement below is ignored on Wayland, so it is skipped.
+    #[cfg(target_os = "linux")]
+    if crate::ipc::layer_shell::available() {
+        let gtk_win = win.gtk_window().map_err(|e| format!("hud gtk window: {e}"))?;
+        // The layer surface takes its size from the request, not from
+        // `inner_size` alone — pin it to the logical HUD size.
+        use gtk::prelude::WidgetExt as _;
+        gtk_win.set_size_request(HUD_W as i32, HUD_H as i32);
+        crate::ipc::layer_shell::corner_hud(&gtk_win, HUD_MARGIN as i32);
+        win.show().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
     // Position bottom-right on whichever monitor the main window is on
     // (falls back to primary). `outer_position` is physical px; the HUD
     // `inner_size` is logical — convert through the scale factor so the
@@ -158,7 +191,14 @@ fn spawn_hud(app: &AppHandle) -> Result<(), String> {
 /// HUD shows under "控制中" — kept Rust-side so the label can be pushed
 /// into the HUD webview with `eval` (no `__TAURI__` bridge required).
 pub fn hud_action_label(tool: &str, action: &str) -> String {
-    let verb = match (tool, action.trim()) {
+    // `computer` previews read `<action> <detail>` (see `describe`): the verb
+    // keys off the action alone, the detail is shown after it.
+    let action = action.trim();
+    let (action, detail) = match (tool, action.split_once(' ')) {
+        ("computer", Some((a, d))) => (a, Some(d)),
+        _ => (action, None),
+    };
+    let verb = match (tool, action) {
         ("screenshot", _) => "截图",
         ("computer", "left_click") => "点击",
         ("computer", "right_click") => "右键点击",
@@ -176,7 +216,13 @@ pub fn hud_action_label(tool: &str, action: &str) -> String {
         (_, other) if !other.is_empty() => other,
         _ => "操作",
     };
-    format!("正在{verb}")
+    match detail {
+        Some(d) if d.chars().count() > 40 => {
+            format!("正在{verb} {}…", d.chars().take(40).collect::<String>())
+        }
+        Some(d) => format!("正在{verb} {d}"),
+        None => format!("正在{verb}"),
+    }
 }
 
 /// Idle label the HUD falls back to between actions.
@@ -190,53 +236,114 @@ pub fn hud_set_status_js(text: &str) -> String {
     format!("(function(){{var e=document.getElementById('action');if(e)e.textContent={lit};}})();")
 }
 
-/// End the computer-control session: revoke the `computer` whitelist,
-/// tear both overlay windows down, and resurface the main window.
-/// Called from two places that must share one path —
-///   • the HUD's "停止" button (`stop_computer_control` command), and
-///   • the event forwarder when a turn reaches a terminal state while the
-///     overlay is live (the model is done driving — auto-release).
-/// MUST run on the main thread (touches windows).
-pub fn end_computer_control(app: &AppHandle) {
-    // Tell the kernel to drop the whitelist — the next `computer` call
-    // falls back to Ask. Routed through `agent_cmd`'s normal path so the
-    // gate write lands on the active session (the overlay has no idea
-    // which session is controlling; kernel resolves `active()`).
-    // The manager lock may sit with a spawn_blocking worker for seconds (MCP
-    // handshakes); this runs on the main thread, so the gate write hops to a
-    // detached thread — windows close NOW, the revoke lands when the lock frees.
-    let app2 = app.clone();
-    std::thread::spawn(move || {
-        if let Ok(mgr) = app2.state::<crate::kernel::KernelState>().0.lock() {
-            if let Some(handle) = mgr.active() {
-                if let Ok(mut gate) = handle.permissions.write() {
-                    gate.revoke_tool_for_session("computer");
-                }
-                let _ = handle.ui.send(UiEvent::SessionToolWhitelisted {
-                    tool_name: "computer".to_string(),
-                    stopped: true,
-                });
-            }
+/// The session that currently holds the desktop. Captured when the grant
+/// lands, with the handles needed to stop it — so "停止" never has to take the
+/// manager lock (which an MCP handshake can hold for seconds) and never acts
+/// on whichever session happens to be active *now*.
+pub struct Controlled {
+    pub root: String,
+    pub session: i64,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    permissions: std::sync::Arc<std::sync::RwLock<agent_kernel::permissions::PermissionGate>>,
+    ui: agent_kernel::channels::UiSink,
+}
+
+impl Controlled {
+    pub fn of(root: &str, session: i64, h: &agent_kernel::session_manager::SessionHandle) -> Self {
+        Self {
+            root: root.to_string(),
+            session,
+            cancel: h.cancel.clone(),
+            permissions: h.permissions.clone(),
+            ui: h.ui.clone(),
         }
-    });
-    close_computer_overlay(app);
-    // Bring the main window back — it was hidden behind the fullscreen
-    // glow while the agent drove; on release the user should land back on
-    // Husk, not a bare desktop with a dead overlay.
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.unminimize();
-        let _ = main.show();
-        let _ = main.set_focus();
+    }
+
+    pub fn is(&self, root: &str, session: i64) -> bool {
+        self.session == session && self.root == root
     }
 }
 
-/// Tauri command for the frontend's "停止" button — emits a
-/// `RevokeSessionTool{computer}` against the active session and closes
-/// the overlay. Kept as a dedicated IPC (rather than the frontend going
-/// through `agent_cmd`) so the overlay's close path is guaranteed to
-/// fire even if the command pump is congested.
+/// Tauri state: who is driving the desktop right now (`None` = nobody). One
+/// at a time — a newer grant takes over the overlay.
+#[derive(Default)]
+pub struct OverlayState(pub std::sync::Mutex<Option<Controlled>>);
+
+/// Tear both windows down and bring the main window back — it was hidden
+/// behind the fullscreen glow while the agent drove, so on release the user
+/// should land back on Husk, not a bare desktop with a dead overlay.
+/// MUST run on the main thread (touches windows).
+pub fn close_and_restore(app: &AppHandle) {
+    close_computer_overlay(app);
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        // tao drops `set_focus` while the window still reads as minimized, and
+        // `unminimize` only takes effect on the next loop turn. Focus once the
+        // restore has landed, or a finished turn leaves Husk minimized.
+        #[cfg(target_os = "linux")]
+        {
+            let main = main.clone();
+            gtk::glib::idle_add_local_once(move || {
+                let _ = main.set_focus();
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = main.set_focus();
+        }
+    }
+}
+
+/// The user pressed 停止: end the grant on the session that holds it, abort
+/// its in-flight turn (a revoke alone only affects the *next* call — the one
+/// already running, and every queued one, would still go through), and close
+/// the overlay. No-op for the kernel half when nobody is controlling.
+pub fn stop_controlled(app: &AppHandle) {
+    let taken = app
+        .state::<OverlayState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take());
+    if let Some(c) = taken {
+        if let Ok(mut gate) = c.permissions.write() {
+            gate.revoke_computer_grants();
+        }
+        c.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = c.ui.send(UiEvent::SessionToolWhitelisted {
+            tool_name: "computer".to_string(),
+            stopped: true,
+        });
+    }
+    close_and_restore(app);
+}
+
+/// Tauri command for the HUD's "停止" button. A dedicated IPC (not `agent_cmd`)
+/// so the stop path never queues behind a congested command pump.
 #[tauri::command]
 pub fn stop_computer_control(app: AppHandle) -> Result<(), String> {
-    end_computer_control(&app);
+    stop_controlled(&app);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hud_label_uses_the_action_and_shows_the_detail() {
+        assert_eq!(hud_action_label("screenshot", ""), "正在截图");
+        assert_eq!(hud_action_label("computer", "left_click"), "正在点击");
+        assert_eq!(
+            hud_action_label("computer", "left_click (12, 34)"),
+            "正在点击 (12, 34)"
+        );
+        assert_eq!(
+            hud_action_label("computer", "launch \"kwrite a.txt\""),
+            "正在启动应用 \"kwrite a.txt\""
+        );
+        let long = format!("type \"{}\"", "x".repeat(100));
+        assert!(hud_action_label("computer", &long).ends_with('…'));
+    }
 }

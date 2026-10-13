@@ -101,7 +101,7 @@ fn agent_session_inner(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         let (history, total, turns, turn_from) =
-            mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
+            mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
         return Ok(serde_json::json!({
             "root": mgr.workspace_root.to_string_lossy(),
             "name": name,
@@ -295,7 +295,7 @@ fn agent_session_inner(
             // Paged: only the newest slice mounts — older pages stream in
             // on scroll-up via `history_page`. `history_total` lets the
             // webview compute `loadedStart = total - history.len()`.
-            let (history, total, turns, turn_from) = mgr.store_history_page(id, None, HISTORY_PAGE);
+            let (history, total, turns, turn_from) = mgr.store_history_page(id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
             // `usage` is the persisted last-turn meter — seeds the header
             // stats so a reopened session doesn't read 0/… until the next
             // turn's `Usage` event.
@@ -328,7 +328,7 @@ fn agent_session_inner(
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
             let (history, total, turns, turn_from) =
-                mgr.store_history_page(id, before, HISTORY_PAGE);
+                mgr.store_history_page(id, before, HISTORY_PAGE).map_err(|e| e.to_string())?;
             Ok(
                 serde_json::json!({ "history": history, "history_total": total, "turn_total": turns, "turn_offset": turn_from }),
             )
@@ -340,7 +340,7 @@ fn agent_session_inner(
             let id = id.ok_or("delete needs id")?;
             mgr.delete_session(id);
             let (history, total, turns, turn_from) =
-                mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
+                mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
             let usage = mgr.store_usage(mgr.active_id);
             Ok(
                 serde_json::json!({"active": mgr.active_id, "history": history, "history_total": total, "turn_total": turns,
@@ -354,7 +354,7 @@ fn agent_session_inner(
             match mgr.fork_session(id) {
                 Some(new_id) => {
                     let (history, total, turns, turn_from) =
-                        mgr.store_history_page(new_id, None, HISTORY_PAGE);
+                        mgr.store_history_page(new_id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
                     Ok(serde_json::json!({
                             "active": mgr.active_id,
                             "id": new_id,
@@ -411,7 +411,8 @@ fn agent_session_inner(
                     .unwrap_or_default(),
                 "recents": recents.iter().map(|w| {
                     serde_json::json!({ "path": w.path.to_string_lossy(), "name": w.name, "last_opened": w.last_opened })
-                }).collect::<Vec<_>>()
+                }).collect::<Vec<_>>(),
+                "storage_warning": agent_kernel::session_store::session_storage_warning(),
             }))
         }
         // `removed_active` = the open workspace is gone; show the empty state.
@@ -444,7 +445,7 @@ fn agent_session_inner(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             let (history, total, turns, turn_from) =
-                mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE);
+                mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
             Ok(serde_json::json!({
                 "root": mgr.workspace_root.to_string_lossy(),
                 "name": name,
@@ -787,12 +788,7 @@ fn agent_session_inner(
             // No `version`: the manifest's is a placeholder that means nothing
             // for a remote server, and the card shows the server's own version
             // (`mcp_probe`). The struct default keeps old files parsing.
-            let manifest = serde_json::json!({
-                "id": id,
-                "name": name,
-                "kind": "mcp",
-                "entry": entry,
-            });
+            let manifest = new_mcp_manifest(&id, &name, entry);
             let path = dir.join("manifest.json");
             std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap())
                 .map_err(|e| e.to_string())?;
@@ -866,9 +862,13 @@ fn agent_session_inner(
                 "active_model": active_model,
                 "memory_enabled": memory_enabled,
                 "memory_distill": memory_distill,
+                "blueprint_enabled": mgr.blueprint_pref(),
+                "sandbox_enabled": lim.enabled(),
                 "sandbox_network": lim.network_label(),
                 "sandbox_max_memory_mb": lim.max_memory_mb,
                 "sandbox_max_processes": lim.max_processes,
+                "sandbox_allowed_domains": lim.allowed_domains,
+                "sandbox_denied_domains": lim.denied_domains,
             }))
         }
         "set_default_prefs" => {
@@ -898,16 +898,34 @@ fn agent_session_inner(
             // BEFORE mgr.set_default_prefs so its persist captures the
             // effective values. Any sandbox key in the payload rewrites all
             // three fields from the merged view (UI sends the whole row).
-            let touched_sandbox = p.get("sandbox_network").is_some()
+            let touched_sandbox = p.get("sandbox_enabled").is_some()
+                || p.get("sandbox_network").is_some()
                 || p.get("sandbox_max_memory_mb").is_some()
-                || p.get("sandbox_max_processes").is_some();
+                || p.get("sandbox_max_processes").is_some()
+                || p.get("sandbox_allowed_domains").is_some()
+                || p.get("sandbox_denied_domains").is_some();
             if touched_sandbox {
                 let mut lim = agent_kernel::sandbox_prefs::current();
+                if let Some(v) = p.get("sandbox_enabled").and_then(|v| v.as_bool()) {
+                    lim.enabled = Some(v);
+                }
                 if let Some(v) = p.get("sandbox_network").and_then(|v| v.as_str()) {
                     lim.network = agent_kernel::sandbox_prefs::network_from_label(v);
                 }
                 if p.get("sandbox_max_memory_mb").is_some() {
                     lim.max_memory_mb = p.get("sandbox_max_memory_mb").and_then(|v| v.as_u64());
+                }
+                if let Some(v) = p.get("sandbox_allowed_domains").and_then(|v| v.as_array()) {
+                    lim.allowed_domains = v
+                        .iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect();
+                }
+                if let Some(v) = p.get("sandbox_denied_domains").and_then(|v| v.as_array()) {
+                    lim.denied_domains = v
+                        .iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect();
                 }
                 if p.get("sandbox_max_processes").is_some() {
                     lim.max_processes = p
@@ -944,6 +962,9 @@ fn agent_session_inner(
                 // reach the NEXT spawn; actors swap their store/distiller
                 // on the command.
                 mgr.broadcast_memory_prefs();
+            }
+            if let Some(v) = p.get("blueprint_enabled").and_then(|v| v.as_bool()) {
+                mgr.set_blueprint_enabled(v);
             }
             Ok(serde_json::json!({ "success": true }))
         }
@@ -1672,8 +1693,50 @@ fn collect_recent_files(
     }
 }
 
+/// Manifest for a user-added MCP server. A local stdio child gets a declared
+/// `permissions` block (`{}` = no filesystem grant, no network), so it spawns
+/// through the process sandbox: without it the child could read `~/.ssh`,
+/// the GitHub CLI token and write the home directory. HTTP servers run remotely,
+/// so the sandbox does not apply to them and they carry no block.
+fn new_mcp_manifest(id: &str, name: &str, entry: serde_json::Value) -> serde_json::Value {
+    let mut m = serde_json::json!({
+        "id": id,
+        "name": name,
+        "kind": "mcp",
+        "entry": entry,
+    });
+    if entry.get("url").is_none() {
+        m["permissions"] = serde_json::json!({});
+    }
+    m
+}
+
 #[cfg(test)]
 mod tests {
+    /// A local stdio server is sandboxed by default — the declared block is what
+    /// turns the process sandbox on, so its absence re-opens the home directory.
+    #[test]
+    fn stdio_mcp_added_from_ui_is_sandboxed() {
+        let m = new_mcp_manifest(
+            "fs",
+            "fs",
+            serde_json::json!({ "command": "npx", "args": ["-y", "server"] }),
+        );
+        assert_eq!(m["permissions"], serde_json::json!({}));
+    }
+
+    /// A remote HTTP server is not spawned locally, so the sandbox has nothing to
+    /// wrap and the manifest must not claim one.
+    #[test]
+    fn http_mcp_carries_no_sandbox_block() {
+        let m = new_mcp_manifest(
+            "remote",
+            "remote",
+            serde_json::json!({ "url": "https://mcp.example.com/mcp" }),
+        );
+        assert!(m.get("permissions").is_none(), "{m}");
+    }
+
     use super::*;
 
     /// Minimal 1x1 PNG — enough for `ImageRef` (which is extension-based).

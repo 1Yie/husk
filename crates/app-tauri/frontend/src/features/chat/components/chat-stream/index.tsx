@@ -783,6 +783,10 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
                 // A subagent is a second agent, not a tool call: give it its
                 // own card so it does not read as one more line in the list.
                 kind: item.parent === "delegate" ? "agent" : undefined,
+                // A delegated child's own card: carry its id and its ordered body so
+                // a running card can show text and tool runs interleaved.
+                childId: item.parent === "delegate" ? item.childId : undefined,
+                segments: item.parent === "delegate" ? item.segments : undefined,
                 label: item.name,
                 chip:
                   item.parent === "delegate"
@@ -817,6 +821,11 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
         item.kind === "tool"
           ? {
               id: `tool-${idx}`,
+              // A delegated subagent's own card: a second agent, so it gets the
+              // agent card and carries the id a `SteerChild` names.
+              kind: item.parent === "delegate" ? "agent" : undefined,
+              childId: item.childId,
+              segments: item.segments,
               label: item.name,
               chip: item.args && item.args !== item.name ? item.args : "",
               status:

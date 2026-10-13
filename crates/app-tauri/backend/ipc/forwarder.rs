@@ -19,12 +19,9 @@ pub fn spawn(
     std::thread::Builder::new()
         .name("tauri-event-fwd".into())
         .spawn(move || {
-            // Tracks whether the computer-use overlay is currently up —
-            // the SessionToolWhitelisted grant/revoke events flip it, and
-            // a terminal AgentState tears it down. Without this, a turn
-            // ending (or erroring/cancelling) left the glow + HUD parked
-            // over the screen while the main window stayed hidden.
-            let mut overlay_live = false;
+            // The overlay is bound to the session that was granted `computer`
+            // (`OverlayState`), not to "whatever is active": another session's
+            // events, grants and turn ends never touch it.
             while let Ok((root, session_id, ev)) = rx.recv() {
                 // Mirror the iced shell's `apply_session_event`: fold the
                 // live sidebar flags back into the handle BEFORE emitting.
@@ -48,30 +45,53 @@ pub fn spawn(
                 }
                 // The computer-use overlay lives outside the React tree —
                 // spawn/despawn the two windows in lockstep with the
-                // session's `computer` whitelist so the user always sees
+                // session's `computer` grant so the user always sees
                 // whether synthetic input is allowed.
                 //
                 // `run_on_main_thread` is NOT optional: this forwarder is a
                 // plain `std::thread`, and Tao/GTK asserts that every window
                 // create/show/close happens on the main event loop — calling
                 // `WebviewWindowBuilder::build()` here SIGABRTs the process.
+                let controlling = |app: &AppHandle| {
+                    app.state::<crate::ipc::overlay::OverlayState>()
+                        .0
+                        .lock()
+                        .map(|g| g.as_ref().is_some_and(|c| c.is(&root, session_id)))
+                        .unwrap_or(false)
+                };
                 if let UiEvent::SessionToolWhitelisted { tool_name, stopped } = &ev {
-                    if tool_name == "computer" {
-                        let stopped = *stopped;
-                        overlay_live = !stopped;
+                    if tool_name == "computer" && !*stopped {
+                        // Grant: this session now holds the desktop. Capture its
+                        // stop handles while the manager is at hand.
+                        let held = mgr.lock().ok().and_then(|m| {
+                            m.handle_at(&root, session_id)
+                                .map(|h| crate::ipc::overlay::Controlled::of(&root, session_id, h))
+                        });
+                        if let Some(c) = held {
+                            if let Ok(mut g) = app.state::<crate::ipc::overlay::OverlayState>().0.lock() {
+                                *g = Some(c);
+                            }
+                            let app2 = app.clone();
+                            let _ = app.run_on_main_thread(move || {
+                                let _ = crate::ipc::overlay::open_computer_overlay(&app2);
+                            });
+                        }
+                    } else if tool_name == "computer" && controlling(&app) {
+                        // Revoke on the controlling session (the kernel ends the
+                        // grant at every turn end): release the overlay. A revoke
+                        // on any OTHER session is not ours to act on.
+                        if let Ok(mut g) = app.state::<crate::ipc::overlay::OverlayState>().0.lock() {
+                            *g = None;
+                        }
                         let app2 = app.clone();
                         let _ = app.run_on_main_thread(move || {
-                            if stopped {
-                                crate::ipc::overlay::close_computer_overlay(&app2);
-                            } else {
-                                let _ = crate::ipc::overlay::open_computer_overlay(&app2);
-                            }
+                            crate::ipc::overlay::close_and_restore(&app2);
                         });
                     }
                 }
-                // Turn end while the overlay is up — the model is done
-                // driving, so revoke the whitelist, tear the glow + HUD
-                // down, and bring the main window back to the front.
+                // Backstop: the controlling session reached a terminal state but
+                // its revoke event never arrived (a dropped event must not leave
+                // the glow + HUD parked over the screen).
                 if let UiEvent::StateChanged(s) = &ev {
                     let terminal = matches!(
                         s,
@@ -79,24 +99,23 @@ pub fn spawn(
                             | agent_ipc::AgentState::Finished
                             | agent_ipc::AgentState::Failed(_)
                     );
-                    if terminal && overlay_live {
-                        overlay_live = false;
+                    if terminal && controlling(&app) {
                         let app2 = app.clone();
                         let _ = app.run_on_main_thread(move || {
-                            crate::ipc::overlay::end_computer_control(&app2);
+                            crate::ipc::overlay::stop_controlled(&app2);
                         });
                     }
                 }
-                // Feed the HUD a human-readable live action while a
-                // `computer`/`screenshot` call is in flight. `eval` pushes
-                // the text straight into the webview's DOM — no `__TAURI__`
-                // listener to lose, and it lands on the main thread where
-                // webview calls belong.
+                // Feed the HUD a human-readable live action while the
+                // controlling session's `computer`/`screenshot` call is in
+                // flight. `eval` pushes the text straight into the webview's
+                // DOM — no `__TAURI__` listener to lose, and it lands on the
+                // main thread where webview calls belong.
                 if let UiEvent::ToolCallStarted {
                     name, args_preview, ..
                 } = &ev
                 {
-                    if name == "computer" || name == "screenshot" {
+                    if (name == "computer" || name == "screenshot") && controlling(&app) {
                         let js = crate::ipc::overlay::hud_set_status_js(
                             &crate::ipc::overlay::hud_action_label(name, args_preview),
                         );
@@ -108,7 +127,7 @@ pub fn spawn(
                         });
                     }
                 } else if let UiEvent::ToolCallFinished { name, .. } = &ev {
-                    if name == "computer" || name == "screenshot" {
+                    if (name == "computer" || name == "screenshot") && controlling(&app) {
                         let js =
                             crate::ipc::overlay::hud_set_status_js(crate::ipc::overlay::HUD_IDLE);
                         let app2 = app.clone();

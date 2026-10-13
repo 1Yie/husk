@@ -5,6 +5,7 @@
 // the timezone is the reader's. Charts are plain divs/SVG — a charting
 // dependency would outweigh the three shapes actually needed.
 
+import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Coins, Layers, Sparkles } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
@@ -32,8 +33,7 @@ export function StatsPane() {
   );
 
   if (error) return <p className="text-xs text-red-500">读取统计失败：{error}</p>;
-  if (!stats)
-    return <p className="text-xs text-neutral-500">读取中…</p>;
+  if (!stats) return <StatsSkeleton />;
   if (records && records.length === 0)
     return (
       <p className="text-xs text-neutral-500">
@@ -205,6 +205,62 @@ export function StatsPane() {
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+/** Loading placeholder with the real page's shape — the same four KPI cells,
+ * heatmap card, 30-day strip and two bar lists — so the content lands in place
+ * instead of the page jumping when the numbers arrive. Same `animate-pulse`
+ * + `--husk-n200` idiom as the chat skeleton. */
+function StatsSkeleton() {
+  const card = "rounded-[14px] border border-hairline bg-card px-4 py-3.5";
+  return (
+    <div className="flex flex-col gap-6 animate-pulse" aria-hidden="true">
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="rounded-[14px] border border-hairline bg-card px-3.5 py-3">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="mt-2 h-5 w-20" />
+            <Skeleton className="mt-1.5 h-2.5 w-28" />
+          </div>
+        ))}
+      </div>
+
+      <section className={card}>
+        <Skeleton className="mb-3 h-3.5 w-20" />
+        <Skeleton className="h-[92px] w-full" />
+      </section>
+
+      <section className={card}>
+        <Skeleton className="mb-3 h-3.5 w-24" />
+        <div className="flex h-[72px] items-end gap-[3px]">
+          {Array.from({ length: 30 }, (_, i) => (
+            <Skeleton
+              key={i}
+              className="flex-1 rounded-[2px]"
+              style={{ height: `${30 + ((i * 37) % 60)}%` }}
+            />
+          ))}
+        </div>
+      </section>
+
+      {[0, 1].map((k) => (
+        <section key={k} className={card}>
+          <Skeleton className="mb-3 h-3.5 w-20" />
+          <div className="flex flex-col gap-2.5">
+            {[0, 1].map((i) => (
+              <div key={i} className="flex flex-col gap-1">
+                <div className="flex items-baseline justify-between">
+                  <Skeleton className="h-3 w-40" />
+                  <Skeleton className="h-3 w-24" />
+                </div>
+                <Skeleton className="h-[6px] w-full rounded-full" />
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }

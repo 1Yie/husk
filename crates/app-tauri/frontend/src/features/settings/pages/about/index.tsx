@@ -1,6 +1,7 @@
 // About pane — app icon + name + version, then a kv-list of meta rows
 // (author / repo / contribute / update check). Version reads at runtime
 // from the Tauri package version so it can never drift from the build.
+import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -68,9 +69,15 @@ export function AboutSettings() {
           <span className="text-xl font-semibold text-neutral-900 tracking-tight">
             Husk
           </span>
-          <span className="text-[13px] text-neutral-500 font-mono tabular-nums">
-            {version ? `v${version}` : "…"}
-          </span>
+          {version ? (
+            <span className="text-[13px] text-neutral-500 font-mono tabular-nums">
+              v{version}
+            </span>
+          ) : (
+            // Same line height and a version-sized block, so the number lands
+            // in place instead of the row widening when it arrives.
+            <Skeleton className="h-[18px] w-16" />
+          )}
         </div>
       </div>
 
@@ -126,7 +133,7 @@ export function AboutSettings() {
 
           <KvRow
             label="检查更新"
-            description={version ? `当前版本 v${version}` : "当前版本 …"}
+            description={version ? `当前版本 v${version}` : <Skeleton className="h-2.5 w-24" />}
             icon={<RefreshCw className="h-4 w-4" />}
           >
             <Button

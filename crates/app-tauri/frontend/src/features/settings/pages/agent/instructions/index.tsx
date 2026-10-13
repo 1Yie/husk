@@ -1,4 +1,5 @@
 // 指令 pane — AGENTS.md editors (global + workspace).
+import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,6 +19,7 @@ function InstructionsBlock({
   file,
   value,
   saving,
+  loading,
   onChange,
   onSave,
 }: {
@@ -26,6 +28,9 @@ function InstructionsBlock({
   file?: { path: string | null };
   value: string;
   saving: boolean;
+  /** The file hasn't been read yet — the editor is a placeholder of the same
+   * height, the title and the path are still shown. */
+  loading: boolean;
   onChange: (v: string) => void;
   onSave: () => void;
 }) {
@@ -41,19 +46,23 @@ function InstructionsBlock({
       }
     >
       <div className="flex flex-col gap-2">
-        <Textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          rows={10}
-          className="font-mono text-[12px] leading-relaxed resize-y min-h-40 dark:bg-active"
-          placeholder="在此编写自定义指令，会追加到每个新会话的系统提示词末尾"
-        />
+        {loading ? (
+          <Skeleton className="h-40 w-full rounded-lg" />
+        ) : (
+          <Textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            rows={10}
+            className="font-mono text-[12px] leading-relaxed resize-y min-h-40 dark:bg-active"
+            placeholder="在此编写自定义指令，会追加到每个新会话的系统提示词末尾"
+          />
+        )}
         <div className="flex justify-end">
           <Button
             size="sm"
             variant="outline"
             className="h-7 text-xs"
-            disabled={saving}
+            disabled={saving || loading}
             onClick={onSave}
           >
             {saving ? "保存中…" : "保存"}
@@ -98,6 +107,7 @@ export function InstructionsPane() {
         file={data?.global}
         value={drafts.global}
         saving={saving === "global"}
+        loading={!data}
         onChange={(v) => setDrafts((d) => ({ ...d, global: v }))}
         onSave={() => void save("global")}
       />
@@ -107,6 +117,7 @@ export function InstructionsPane() {
         file={data?.workspace}
         value={drafts.workspace}
         saving={saving === "workspace"}
+        loading={!data}
         onChange={(v) => setDrafts((d) => ({ ...d, workspace: v }))}
         onSave={() => void save("workspace")}
       />

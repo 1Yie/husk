@@ -1,5 +1,6 @@
 // 技能 pane — pi skill dirs; only the two writable roots are editable.
 
+import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useState } from "react";
 import {
@@ -117,7 +118,9 @@ export function SkillsPane({ ov, reload }: { ov: AgentOverview | null; reload: (
       </div>
       <KvList>
         <KvListContent>
-          {filtered.length ? (
+          {!ov ? (
+            <SkeletonKvRows rows={3} />
+          ) : filtered.length ? (
             filtered.map((s) => (
               <KvRow
                 key={s.path}

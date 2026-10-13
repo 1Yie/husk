@@ -18,16 +18,20 @@
        no blobs, no inward wash. Just one clean 2px accent line that
        breathes, so "the AI owns the screen" reads as a border, not a
        lighting rig. */
+    /* A band of solid colour along every edge, fading inward. Opaque enough
+       to read at a glance on a busy desktop, but with a soft inner edge so it
+       never looks like a hard frame. The breathe loop only dims it a little. */
     .ring {
       position: fixed;
       inset: 0;
-      border-radius: 2px;
-      box-shadow: inset 0 0 0 2px rgba(139, 124, 247, 0.65);
+      box-shadow:
+        inset 0 0 0 6px rgba(139, 124, 247, 0.95),
+        inset 0 0 36px 10px rgba(139, 124, 247, 0.55);
       animation: breathe 3s ease-in-out infinite;
     }
     @keyframes breathe {
-      0%, 100% { opacity: 0.45; }
-      50%      { opacity: 0.9; }
+      0%, 100% { opacity: 0.7; }
+      50%      { opacity: 1; }
     }
   </style>
 </head>

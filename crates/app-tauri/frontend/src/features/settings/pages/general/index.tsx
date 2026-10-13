@@ -9,6 +9,7 @@ import {
   Cpu,
   FileText,
   Globe,
+  Layers,
   ShieldCheck,
   Sparkles,
   SquarePen,
@@ -16,6 +17,7 @@ import {
   Zap,
 } from "@keyline-icons/react";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import {
   SettingSelect,
@@ -27,8 +29,6 @@ import {
   getDefaultPrefs,
   setDefaultPrefs,
   getAppConfig,
-  getSandboxInfo,
-  type SandboxInfo,
 } from "@/lib/agent-ipc/sessions";
 
 const PERMISSION_OPTIONS: SettingsCardOption[] = [
@@ -129,10 +129,11 @@ export function GeneralPane() {
   const [workspaceMode, setWorkspaceMode] = useState("last");
   const [compactAt, setCompactAt] = useState("80");
   const [providers, setProviders] = useState<Record<string, any>>({});
+  const [sandboxEnabled, setSandboxEnabled] = useState(true);
+  const [blueprintEnabled, setBlueprintEnabled] = useState(true);
   const [sandboxNetwork, setSandboxNetwork] = useState("auto");
   const [sandboxMem, setSandboxMem] = useState("default");
   const [sandboxProcs, setSandboxProcs] = useState("default");
-  const [sandboxInfo, setSandboxInfo] = useState<SandboxInfo | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -146,6 +147,9 @@ export function GeneralPane() {
         if (prefs.agent_mode) setAgentMode(prefs.agent_mode);
         if (prefs.default_workspace_mode) setWorkspaceMode(prefs.default_workspace_mode);
         if (prefs.compact_at) setCompactAt(String(Math.round(prefs.compact_at * 100)));
+        // absent = default-on — only an explicit false flips it off.
+        setSandboxEnabled(prefs.sandbox_enabled !== false);
+        setBlueprintEnabled(prefs.blueprint_enabled !== false);
         if (prefs.sandbox_network) setSandboxNetwork(prefs.sandbox_network);
         setSandboxMem(
           prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default",
@@ -155,9 +159,6 @@ export function GeneralPane() {
         );
         void getAppConfig()
           .then((r) => setProviders((r.config as any)?.providers ?? {}))
-          .catch(() => {});
-        void getSandboxInfo()
-          .then(setSandboxInfo)
           .catch(() => {});
       } catch (e) {
         console.error("load settings error:", e);
@@ -310,25 +311,41 @@ export function GeneralPane() {
                 }))}
               />
             </KvRow>
+            <KvRow
+              label="架构蓝图"
+              description="项目里有架构说明文件时，让 AI 按说明修改代码，并检查是否违反约定"
+              icon={<Layers className="h-4 w-4" />}
+            >
+              <Switch
+                checked={blueprintEnabled}
+                onCheckedChange={(v) => {
+                  setBlueprintEnabled(v);
+                  void save({ blueprint_enabled: v });
+                }}
+              />
+            </KvRow>
           </KvListContent>
         </KvList>
       </SettingsSection>
 
-      <SettingsSection
-        title="沙盒设置"
-        description={`命令执行的隔离与资源限制${
-          sandboxInfo
-            ? `（当前后端：${sandboxInfo.backend} · ${sandboxInfo.tier}${
-                sandboxInfo.is_fallback ? " · 部分隔离" : ""
-              }）`
-            : ""
-        }`}
-      >
+      <SettingsSection title="沙盒设置">
         <KvList>
           <KvListContent>
             <KvRow
+              label="启用沙盒"
+              icon={<ShieldCheck className="h-4 w-4" />}
+            >
+              <Switch
+                checked={sandboxEnabled}
+                onCheckedChange={(v) => {
+                  setSandboxEnabled(v);
+                  void save({ sandbox_enabled: v });
+                }}
+              />
+            </KvRow>
+            <KvRow
               label="网络访问"
-              description="沙盒内命令的网络放行策略"
+              description={sandboxEnabled ? "沙盒内命令的网络放行策略" : undefined}
               icon={<Globe className="h-4 w-4" />}
             >
               <SettingSelect

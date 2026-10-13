@@ -6,5 +6,7 @@
 
 pub mod commands;
 pub mod forwarder;
+#[cfg(target_os = "linux")]
+pub mod layer_shell;
 pub mod overlay;
 pub mod sessions;

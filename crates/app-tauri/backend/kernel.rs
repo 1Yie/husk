@@ -24,7 +24,10 @@ impl KernelState {
         Self,
         std::sync::mpsc::Receiver<(String, i64, agent_ipc::UiEvent)>,
     ) {
-        let (mgr, rx) = SessionManager::spawn();
+        let (mut mgr, rx) = SessionManager::spawn();
+        if std::env::args().any(|arg| arg == "--new-window") && mgr.workspace_active {
+            mgr.new_session();
+        }
         (Self(Arc::new(Mutex::new(mgr))), rx)
     }
 }

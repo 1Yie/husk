@@ -1,5 +1,6 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
 import { activeViewNow, useAgentStore, useRunningKeys } from "@/stores/agent-store";
 import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
 import { viewFromHistory, viewFromHistoryChunked } from "@/features/chat/hooks/view-from-history";
@@ -12,6 +13,7 @@ import { MainLayout } from "@/app/layout/main-layout/index";
 import { ChatPage } from "@/features/chat/pages/chat/index";
 import { SettingsPage } from "@/features/settings/pages/index";
 import { RawHistoryDialog } from "@/features/chat/components/raw-history-dialog/index";
+import { WorkspaceLoadingVeil } from "@/features/chat/components/workspace-loading-veil/index";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -90,6 +92,16 @@ function useAppChromeGuards() {
 export function App() {
   useAppChromeGuards();
   const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: "", name: "", recents: [] });
+  useEffect(() => {
+    if (workspace.storage_warning) {
+      toast.warning("当前会话不会保存到磁盘", {
+        id: "session-storage-warning",
+        description: workspace.storage_warning,
+        duration: Infinity,
+        closeButton: true,
+      });
+    }
+  }, [workspace.storage_warning]);
   // One selector per field: the actions are stable references, so only a real
   // change in `activeId` re-renders this shell — and `useRunningKeys` keeps its
   // identity while the same sessions run, so a streaming turn never does.
@@ -113,10 +125,14 @@ export function App() {
   // stale view re-fetches the SAME page and duplicates it (→ duplicate `hi`
   // → several black marks in the rail). The store is read AT CALL TIME — the
   // ref this used to need is exactly what `activeViewNow()` returns.
-  const { projects, sessions, loaded: sessionsLoaded, refresh, newSession, openSession } = useAgentSession();
+  const { projects, sessions, loaded: sessionsLoaded, refresh, fetchProjects, commit, newSession, openSession } = useAgentSession();
   // True while a session/workspace switch is fetching history + rebuilding
   // the view — the stream renders a skeleton instead of a stale/empty pane.
   const [viewLoading, setViewLoading] = useState(false);
+  // The full-layout switch veil — only workspace/session switches raise it.
+  // Delete, fork and boot keep their in-pane skeleton (boot already has the
+  // home splash), so a small action never blanks the whole window.
+  const [switchVeil, setSwitchVeil] = useState(false);
   // Drop the loading veil only AFTER the mounted tree has committed and
   // painted — session loads full-mount every turn in one synchronous
   // commit, and if the veil lifts inside that same commit the app shows
@@ -128,7 +144,12 @@ export function App() {
       // blocks) —
       // a transition keeps its render interruptible so the page never
       // goes dead to clicks while a long session opens.
-      requestAnimationFrame(() => startTransition(() => setViewLoading(false))),
+      requestAnimationFrame(() =>
+        startTransition(() => {
+          setViewLoading(false);
+          setSwitchVeil(false);
+        }),
+      ),
     );
   }, []);
 
@@ -146,6 +167,9 @@ export function App() {
         usage?: Parameters<typeof viewFromHistory>[1];
         queued_prompts?: string[];
       },
+      // Runs in the same synchronous block as `loadView`, so state it sets
+      // lands in the same commit as the chat view (see handleSwitchWorkspace).
+      alsoCommit?: () => void,
     ) => {
       const folded = await viewFromHistoryChunked(
         r.history,
@@ -161,6 +185,7 @@ export function App() {
       // still holds (live updates continue via QueuedPrompts events).
       folded.queuedPrompts = r.queued_prompts ?? [];
       loadStamp("fold");
+      alsoCommit?.();
       loadView(root, id, folded, {
         historyStart: (r.history_total ?? r.history.length) - r.history.length,
         historyTotal: r.history_total,
@@ -227,7 +252,9 @@ export function App() {
 
   const handlePickWorkspace = async () => {
     setViewLoading(true);
-    const res = await pickWorkspace();
+    // A rejected IPC must still lower the veil — otherwise it blocks the
+    // whole window with no way out.
+    const res = await pickWorkspace().catch(() => null);
     if (res) {
       setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
       // Views are keyed `root:id` — the outgoing workspace's buffers stay
@@ -237,7 +264,7 @@ export function App() {
       if (res.history.length > 0) {
         mountLoadedView(res.root, res.active, res);
       }
-      void refresh();
+      void refresh({ force: true });
       void getWorkspaceInfo().then((ws) => {
         if (ws) setWorkspace(ws);
       });
@@ -245,23 +272,48 @@ export function App() {
     if (!res || res.history.length === 0) releaseLoading();
   };
 
-  const handleSwitchWorkspace = async (path: string) => {
+  // `veil` is set only by the 编程 ↔ 工作 mode tab. A plain workspace switch
+  // (project row, recents, folder picker) keeps to the sidebar and chat pane.
+  const handleSwitchWorkspace = async (path: string, { veil = false } = {}) => {
     if (!path || path === workspace.root) return;
+    // Flip the mode NOW — the tab (and `officeMode`, which derives from the
+    // root) follows the click at once; only the content waits on the kernel
+    // load. Same pattern as `handleOpenSession`. Rolled back on failure so
+    // the tab never sits on a workspace that didn't open.
+    const previousRoot = workspace.root;
+    setWorkspace((prev) => ({ ...prev, root: path }));
     setViewLoading(true);
-    const res = await switchWorkspace(path);
+    if (veil) setSwitchVeil(true);
+    // Same guard: a rejected switch falls through to the failure branch,
+    // which restores the previous root and lowers the veil.
+    const res = await switchWorkspace(path).catch(() => null);
     if (res) {
+      // The project tree is fetched now (it needs the switched `current`
+      // flag) but committed with the chat view below, so the sidebar and the
+      // conversation appear in one frame instead of the content leading.
+      const tree = await fetchProjects();
+      const commitTree = () => {
+        if (tree) commit(tree);
+      };
       setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
       setActiveId(res.active);
       if (res.history.length > 0) {
-        mountLoadedView(res.root, res.active, res);
+        await mountLoadedView(res.root, res.active, res, commitTree);
+      } else {
+        commitTree();
       }
-      void refresh();
       void getWorkspaceInfo().then((ws) => {
         if (ws) setWorkspace(ws);
       });
+    } else {
+      setWorkspace((prev) => ({ ...prev, root: previousRoot }));
+      if (veil) setSwitchVeil(false);
     }
     if (!res || res.history.length === 0) releaseLoading();
   };
+
+  // The 编程 ↔ 工作 tab — the only entry that shows the full-window veil.
+  const handleSwitchMode = (path: string) => handleSwitchWorkspace(path, { veil: true });
 
   // Open a conversation from anywhere in the sidebar tree. Ids are
   // per-workspace, so a row belonging to another project switches the
@@ -275,7 +327,7 @@ export function App() {
     // the old conversation lingering through the whole kernel load.
     setActiveId(id);
     if (root && root !== workspace.root) {
-      const res = await switchWorkspace(root);
+      const res = await switchWorkspace(root).catch(() => null);
       if (!res) {
         setViewLoading(false);
         return;
@@ -285,9 +337,13 @@ export function App() {
         if (ws) setWorkspace(ws);
       });
     }
-    const r = await openSession(id);
+    const r = await openSession(id).catch(() => null);
     loadStamp("ipc:openSession");
-    if (r && r.history.length > 0) {
+    if (!r) {
+      // Failed open — nothing to mount; drop the veil and the skeleton.
+      setViewLoading(false);
+      setSwitchVeil(false);
+    } else if (r.history.length > 0) {
       // `root` (the clicked row's project) is the canonical workspace
       // after any switch above — key the rebuilt view under it.
       mountLoadedView(root || workspace.root, id, r);
@@ -310,7 +366,7 @@ export function App() {
     // next time its key is mounted.
     dropView(workspace.root, id);
     void deleteSession(id).then((r) => {
-      void refresh();
+      void refresh({ force: true });
       // If the deleted session was on screen, the backend already
       // switched to another — follow it and rebuild its view.
       setActiveId(r.active);
@@ -394,7 +450,7 @@ export function App() {
 
   const doRemoveWorkspace = async (root: string) => {
     const res = await removeWorkspace(root).catch(() => null);
-    void refresh();
+    void refresh({ force: true });
     if (res?.removed_active) {
       setActiveId(0);
     }
@@ -403,7 +459,7 @@ export function App() {
   };
 
   const handlePinSession = (id: number, pinned: boolean) => {
-    void pinSession(id, pinned).then(() => void refresh()).catch(() => {});
+    void pinSession(id, pinned).then(() => void refresh({ force: true })).catch(() => {});
   };
 
   const doFork = (id: number) => {
@@ -415,7 +471,7 @@ export function App() {
         setViewLoading(false);
         return;
       }
-      void refresh();
+      void refresh({ force: true });
       setActiveId(r.id);
       if (r.history.length > 0) mountLoadedView(workspace.root, r.id, r);
       else releaseLoading();
@@ -448,6 +504,7 @@ export function App() {
         sidebar={
         <SessionSidebar
           projects={sidebarProjects}
+          projectsLoaded={sessionsLoaded}
           activeId={activeId}
           hasWorkspace={wsReady && !!workspace.root}
           onNew={handleNewSession}
@@ -466,7 +523,8 @@ export function App() {
             if (row) setPendingDelete(row);
           }}
           onPickWorkspace={handlePickWorkspace}
-          onSwitchWorkspace={handleSwitchWorkspace}
+          onSwitchWorkspace={(path) => void handleSwitchWorkspace(path)}
+          onSwitchMode={(path) => void handleSwitchMode(path)}
           onRemoveWorkspace={requestRemoveWorkspace}
           onOpenSettings={() => setSettingsOpen(true)}
         />
@@ -491,6 +549,10 @@ export function App() {
         />
       </MainLayout>
 
+      {/* Switch veil — same look as the boot splash, over sidebar and chat
+          together so the two appear as one. Driven by the view-loading flag. */}
+      <WorkspaceLoadingVeil visible={switchVeil} />
+
       {/* Settings overlay — floats above the workspace, which keeps its
           DOM (and the expensive stream tree) mounted the whole time.
           z-40 on purpose: Radix dropdowns/popovers portal at z-50 and
@@ -508,7 +570,6 @@ export function App() {
         onOpenChange={setRawOpen}
         messages={rawData}
         loading={rawLoading}
-        title={sessionTitle}
       />
 
       {/* Fork confirmation — creates a copy of the session's history. */}

@@ -845,3 +845,21 @@ img.emoji {
   grid-template-rows: 0fr;
   opacity: 0;
 }
+
+/* Switch veil — reuses the boot splash rules (index.html `#husk-splash`) for
+   workspace/session switches. Only the stacking differs: boot sits at 9999
+   for the launch, a switch sits under Radix popups (z-50) instead. */
+#husk-splash.husk-veil-visible,
+#husk-splash.leaving {
+  z-index: 45;
+}
+/* Shown over a live layout, so the boot's transparent background (it sits on
+   <html>) is not enough — the veil needs its own theme-coloured ground. */
+#husk-splash.husk-veil-visible {
+  background: #fafafa;
+  color: #1a1c1f;
+}
+.dark #husk-splash.husk-veil-visible {
+  background: #16161a;
+  color: #e4e4e7;
+}

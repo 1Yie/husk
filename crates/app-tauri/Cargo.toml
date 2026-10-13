@@ -38,10 +38,12 @@ tempfile = "3"
 # menu). `ksni` exposes `Activate` — left click — separately from the DBusMenu
 # the shell opens on right click.
 [target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+# Wayland overlay placement (computer-use HUD/glow): GTK3 layer-shell, system lib.
+# FFI only: the safe 0.8 wrapper keeps its functions crate-private (see
+# backend/ipc/layer_shell.rs). System lib is 0.10.0.
+gtk-layer-shell-sys = { version = "0.7", features = ["v0_6"] }
 ksni = { version = "0.3", features = ["blocking"] }
-# Dev builds SIGTERM leftover instances of their own binary (see
-# `retire_previous_dev_instances` in main.rs).
-libc = "0.2"
 
 [features]
 default = []

@@ -28,55 +28,6 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// Dev-only: retire instances of this same binary left behind by earlier runs
-/// (close-to-tray keeps them alive) so `cargo tauri dev` always comes up fresh.
-///
-/// Without this the single-instance handoff would win instead: the new dev
-/// process exits, the leftover's window is raised, and that window's page was
-/// served by a dev server this CLI has since killed — a stale or white window
-/// under a `cargo tauri dev` that appears to have done nothing. Release keeps
-/// the handoff, because there a relaunch *is* how a tray-hidden window returns.
-#[cfg(all(debug_assertions, target_os = "linux"))]
-fn retire_previous_dev_instances() {
-    /// `/proc/<pid>/exe`, minus the `" (deleted)"` the kernel appends once the
-    /// file has been relinked. Cargo rebuilds this binary on dev runs, so a
-    /// leftover almost always points at a replaced file and a raw path compare
-    /// would never match it.
-    fn exe_path(pid: u32) -> Option<std::path::PathBuf> {
-        let raw = std::fs::read_link(format!("/proc/{pid}/exe"))
-            .ok()?
-            .to_string_lossy()
-            .into_owned();
-        Some(std::path::PathBuf::from(
-            raw.strip_suffix(" (deleted)").unwrap_or(raw.as_str()),
-        ))
-    }
-
-    let self_pid = std::process::id();
-    let Some(self_exe) = exe_path(self_pid) else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        // Same binary path — a debug process from an earlier dev run, not the
-        // release build (target/release/husk) or any other app.
-        if pid == self_pid || exe_path(pid).as_deref() != Some(self_exe.as_path()) {
-            continue;
-        }
-        // SAFETY: plain SIGTERM to a process just identified as this binary.
-        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-    }
-}
-
 /// The bundled 32x32 app icon as raw RGBA — tray backends want pixels, not a
 /// file, and `png` is already a dependency.
 fn app_icon_rgba() -> (Vec<u8>, u32, u32) {
@@ -345,6 +296,49 @@ fn pin_linux_rendering_env() {
 /// runs: under X11/XWayland an early-shown window flashes a black frame
 /// (no compositing yet) and then visibly jumps when the resize lands, so
 /// the reveal is deferred to one `show()` after the geometry is set.
+/// Native ground colour for the main window, from the saved appearance.
+/// Set before the window is shown, so the first frame the user sees is the
+/// theme they chose — not the platform default (Linux pins `#fafafa`) that
+/// the webview's own boot script can only correct a moment later.
+///
+/// Mirrors the frontend's rule: `dark` / `light` pin the mode, `system`
+/// follows the OS. Dark uses the dark override when one is set.
+fn main_window_ground(win: &tauri::WebviewWindow) -> tauri::webview::Color {
+    let cfg = agent_kernel::load_appearance_settings();
+    let dark = match cfg.theme_mode.as_str() {
+        "dark" => true,
+        "light" => false,
+        _ => matches!(win.theme(), Ok(tauri::Theme::Dark)),
+    };
+    let hex = if dark {
+        cfg.dark_background.as_deref().unwrap_or(&cfg.background)
+    } else {
+        &cfg.background
+    };
+    parse_hex_color(hex).unwrap_or(if dark {
+        tauri::webview::Color(0x16, 0x16, 0x1a, 0xff)
+    } else {
+        tauri::webview::Color(0xfa, 0xfa, 0xfa, 0xff)
+    })
+}
+
+/// `#rrggbb` (or `#rgb`) → an opaque colour. `None` for anything else, so a
+/// malformed saved value falls back to the default instead of failing boot.
+fn parse_hex_color(hex: &str) -> Option<tauri::webview::Color> {
+    let h = hex.strip_prefix('#')?;
+    let expand = |c: &str| u8::from_str_radix(&format!("{c}{c}"), 16).ok();
+    let (r, g, b) = match h.len() {
+        6 => (
+            u8::from_str_radix(&h[0..2], 16).ok()?,
+            u8::from_str_radix(&h[2..4], 16).ok()?,
+            u8::from_str_radix(&h[4..6], 16).ok()?,
+        ),
+        3 => (expand(&h[0..1])?, expand(&h[1..2])?, expand(&h[2..3])?),
+        _ => return None,
+    };
+    Some(tauri::webview::Color(r, g, b, 0xff))
+}
+
 fn fit_main_window(app: &tauri::App) {
     const BASE_W: f64 = 1280.0;
     const BASE_H: f64 = 840.0;
@@ -355,6 +349,8 @@ fn fit_main_window(app: &tauri::App) {
         return;
     };
     let reveal = |win: &tauri::WebviewWindow| {
+        // Paint the saved theme before the first frame — see `main_window_ground`.
+        let _ = win.set_background_color(Some(main_window_ground(win)));
         let _ = win.show();
         let _ = win.set_focus();
     };
@@ -401,31 +397,33 @@ fn main() {
     {
         pin_linux_rendering_env();
         exempt_self_from_proxy();
+        initialize_linux_gtk();
     }
 
-    // Dev builds never inherit a previous run's process — see the function.
-    #[cfg(all(debug_assertions, target_os = "linux"))]
-    retire_previous_dev_instances();
+    // Independent dev windows share file-based sessions; startup must not
+    // terminate another window just because it uses the same executable.
 
     let builder = tauri::Builder::default();
     // Single instance: a second `husk` process exits immediately and the
     // running instance raises its main window instead — which is how a
     // tray-hidden window comes back when the app is launched again.
     //
-    // Release only: under `cargo tauri dev` the handoff would raise a leftover
-    // whose page died with the previous dev server (see
-    // `retire_previous_dev_instances`).
+    // Release only: dev processes intentionally remain independent.
     //
     // `dbus_id` is pinned rather than defaulted, so the name never depends on
     // `app.identifier` — the dev overlay swaps that, and a pinned id keeps the
     // release build's identity stable whichever config built it.
     #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(
-        tauri_plugin_single_instance::Builder::new()
-            .dbus_id("husk.ingstar.im")
-            .callback(|app, _args, _cwd| focus_main_window(app))
-            .build(),
-    );
+    let builder = if std::env::args().any(|arg| arg == "--new-window") {
+        builder
+    } else {
+        builder.plugin(
+            tauri_plugin_single_instance::Builder::new()
+                .dbus_id("husk.ingstar.im")
+                .callback(|app, _args, _cwd| focus_main_window(app))
+                .build(),
+        )
+    };
 
     builder
         // System clipboard access for image paste (see `paste_clipboard`).
@@ -493,6 +491,7 @@ fn main() {
             let (state, rx) = KernelState::spawn();
             let mgr = state.0.clone();
             app.manage(state);
+            app.manage(ipc::overlay::OverlayState::default());
             ipc::forwarder::spawn(app.handle().clone(), rx, mgr);
 
             // Adapt the configured 1280×840 to the monitor that actually
@@ -527,4 +526,32 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Husk");
+}
+
+/// Husk draws its own chrome. Use GTK's built-in theme by default instead
+/// of loading a potentially incompatible desktop theme resource. Keep any
+/// explicit GTK_THEME override and leave global desktop settings untouched.
+#[cfg(target_os = "linux")]
+fn initialize_linux_gtk() {
+    use gtk::prelude::*;
+    if std::env::var_os("GTK_THEME").is_none() {
+        std::env::set_var("GTK_THEME", "Adwaita");
+    }
+    if gtk::init().is_err() {
+        return;
+    }
+    if let Some(settings) = gtk::Settings::default() {
+        let modules = settings
+            .property::<Option<String>>("gtk-modules")
+            .unwrap_or_default();
+        // The borderless webview has no GTK menu bar for the optional KDE
+        // appmenu integration. Exclude it only in this process, before the
+        // first widget loads modules; retain other desktop integrations.
+        let modules = modules
+            .split(':')
+            .filter(|m| *m != "appmenu-gtk-module")
+            .collect::<Vec<_>>()
+            .join(":");
+        settings.set_property("gtk-modules", modules);
+    }
 }

@@ -5,6 +5,13 @@
 import type { AgentState } from "@/types";
 import type { PlanPayload } from "@/types";
 
+/** One run inside a delegated child's body. A text run is the child's streamed
+ *  answer; a tool run points at the child's `children` entry by index, so a
+ *  tool's data is stored once. */
+export type ChildSegment =
+  | { kind: "text"; text: string }
+  | { kind: "tool"; index: number };
+
 export type StreamItem =
   /** `hi` = global history index — stamped by `viewFromHistory` for
    * persisted messages; live items leave it undefined. It makes turn
@@ -52,9 +59,14 @@ export type StreamItem =
       live?: string;
       /** The same child's streamed reasoning trace. */
       liveReasoning?: string;
+      /** A delegated child's body in arrival order: text runs interleaved with
+       *  its own tool calls, so the card reads top-to-bottom like a session. */
+      segments?: ChildSegment[];
       /** Set on calls emitted inside another tool (`batch_execute`
        * items) — the stream nests them under the parent capsule. */
       parent?: string;
+      /** Set on a delegated subagent's card: the id a `SteerChild` names. */
+      childId?: number;
       hi?: number;
       approval?: {
         requestId: number;

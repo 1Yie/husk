@@ -1,5 +1,6 @@
 // 模型 pane — providers and their models (add / edit / delete).
 
+import { SkeletonKvList } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import {
@@ -327,7 +328,11 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         </Button>
       </div>
 
-      {provEntries.length ? (
+      {!cfg ? (
+        // Only the provider list waits on the config; the header above is
+        // usable straight away.
+        <SkeletonKvList rows={2} />
+      ) : provEntries.length ? (
         provEntries.map(([pk, p]: [string, any]) => (
           <div key={pk} className="flex flex-col gap-2">
             {/* provider header */}

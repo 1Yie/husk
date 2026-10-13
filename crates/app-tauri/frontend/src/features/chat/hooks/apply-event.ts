@@ -222,13 +222,41 @@ function appendChildText(
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it.kind === "tool" && it.content === undefined && it.name === parent) {
+      const segments = [...(it.segments ?? [])];
+      const last = segments[segments.length - 1];
+      // Reasoning keeps its own single field — it is not part of the answer's
+      // time order. Answer text extends the open text run, or opens a new one
+      // after a tool run, so the body keeps its arrival order.
+      if (!reasoning) {
+        if (last?.kind === "text") {
+          segments[segments.length - 1] = { kind: "text", text: last.text + text };
+        } else {
+          segments.push({ kind: "text", text });
+        }
+      }
       items[i] = reasoning
         ? { ...it, liveReasoning: (it.liveReasoning ?? "") + text }
-        : { ...it, live: (it.live ?? "") + text };
+        : { ...it, live: (it.live ?? "") + text, segments };
       return true;
     }
   }
   return false;
+}
+
+/** Record a child tool run on the open card: a tool segment pointing at the
+ *  child's ordinal, so the card reads as the child's own sequence of text and
+ *  tool calls. */
+function appendChildTool(items: SessionView["items"], parent: string, index: number) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "tool" && it.content === undefined && it.name === parent) {
+      items[i] = {
+        ...it,
+        segments: [...(it.segments ?? []), { kind: "tool", index }],
+      };
+      return;
+    }
+  }
 }
 
 export function applyEvent(
@@ -384,6 +412,7 @@ export function applyEvent(
   if ("ToolCallStarted" in ev) {
     closeOpenThinking(items);
     const name = ev.ToolCallStarted.name;
+    const parent = ev.ToolCallStarted.parent ?? undefined;
     items.push({
       kind: "tool",
       name,
@@ -392,8 +421,15 @@ export function applyEvent(
       // Rust Option<String> serializes `null`, not `undefined` —
       // normalize at the boundary so the Finished matcher's
       // `=== undefined` comparison actually works.
-      parent: ev.ToolCallStarted.parent ?? undefined,
+      parent,
+      childId: ev.ToolCallStarted.child_id ?? undefined,
     });
+    // A child's own tool call also lands on its card's body, in arrival order.
+    // Its ordinal is how many of this card's children came before it.
+    if (parent && parent !== "delegate") {
+      const ordinal = items.filter((x) => x.kind === "tool" && x.parent === parent).length - 1;
+      appendChildTool(items, parent, ordinal);
+    }
     return { ...v, items };
   }
   if ("ToolCallFinished" in ev) {

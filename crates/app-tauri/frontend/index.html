@@ -75,7 +75,9 @@
         // makes even the pre-markup frame match the resolved theme.
         var root = document.documentElement;
         root.classList.toggle("dark", dark);
-        root.style.background = dark ? "#16161a" : "#fafafa";
+        // No background here: a painted <html> hides the native window ground,
+        // which already carries the saved theme. `paint` sets it once the
+        // stored appearance is known.
         function paint(dark2, bg, fg, accent) {
           var el = document.getElementById("husk-splash");
           if (!el) return;
@@ -84,8 +86,8 @@
           if (fg) el.style.color = fg;
           if (accent) el.style.setProperty("--husk-splash-accent", accent);
           root.classList.toggle("dark", dark2);
-          root.style.background = bg || (dark2 ? "#16161a" : "#fafafa");
-          if (document.body) document.body.style.backgroundColor = bg || (dark2 ? "#16161a" : "#fafafa");
+          if (bg) root.style.background = bg;
+          if (document.body && bg) document.body.style.backgroundColor = bg;
         }
         // Exposed for the bootstrap correction below — main.tsx's own
         // appearance applier takes over after React mounts.
