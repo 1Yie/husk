@@ -442,8 +442,6 @@ impl ToolCtx {
         self.ext.get::<PluginSlot>().map(|s| s.0.clone())
     }
 
-    /// Resolve a model-supplied path against the workspace root and prove it
-    /// stays inside. Returns the canonical path or a sandbox-escape error.
     /// Same context with a different cancel flag — `batch_execute` scopes
     /// items to a batch deadline flag so a timeout can abort in-flight
     /// blocking work without touching the turn's cancel.
@@ -469,6 +467,8 @@ impl ToolCtx {
         next
     }
 
+    /// Resolve a model-supplied path against the workspace root and prove it
+    /// stays inside. Returns the canonical path or a sandbox-escape error.
     pub fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
         let p = Path::new(path);
         let joined = if p.is_absolute() {
