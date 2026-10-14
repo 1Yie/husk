@@ -6,6 +6,7 @@ description = "Pure async orchestration engine: tool registry, ReAct loop, permi
 license = "MIT"
 
 [dependencies]
+agent-tool = { path = "../agent-tool" }
 agent-context = { path = "../agent-context" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }

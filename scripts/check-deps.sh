@@ -18,8 +18,10 @@ declare -A ALLOW=(
   [agent-computer]=""
   # extension ecosystem
   [agent-plugin]="agent-llm agent-sandbox"
+  # the tool contract — a leaf that knows no product, only the wire types
+  [agent-tool]="agent-llm"
   # runtime
-  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-sandbox"
+  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-sandbox agent-tool"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-sandbox"

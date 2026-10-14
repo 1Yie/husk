@@ -85,6 +85,7 @@ dependencies = [
  "agent-llm",
  "agent-plugin",
  "agent-sandbox",
+ "agent-tool",
  "anyhow",
  "async-trait",
  "dirs",
@@ -174,6 +175,17 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "agent-tool"
+version = "0.1.0"
+dependencies = [
+ "agent-llm",
+ "futures",
+ "schemars 1.2.2",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
