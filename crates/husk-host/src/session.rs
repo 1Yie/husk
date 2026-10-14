@@ -237,12 +237,13 @@ pub struct SessionConfig {
 }
 
 /// The host-added tools every full registry carries on top of the kernel's
-/// builtins: `blueprint` (coding product) and `serena` (MCP bridge). One list,
+/// builtins: `blueprint` and `skill` (coding product) and `serena` (MCP bridge). One list,
 /// applied to both the parent and the child base, so a new host tool cannot be
 /// added to one and forgotten in the other.
 fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
     vec![
         agent_coding::blueprint_tool::spec(),
+        agent_coding::skill::spec(),
         agent_tools_serena::spec(),
     ]
 }
@@ -351,7 +352,7 @@ pub struct SessionActor {
     queued: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
     /// Skill backend — owns the cached prompt catalog and its change stamp, so
     /// a large tree is not re-read on every prompt.
-    skills: agent_kernel::skills::SkillManager,
+    skills: agent_skills::SkillManager,
 }
 
 impl SessionActor {
@@ -481,7 +482,7 @@ impl SessionActor {
         // handle → no block refresh and no distill writes. `memory_distill`
         // gates only the per-turn summarizer call — deterministic
         // episode/fact writes keep running.
-        let mut skills = agent_kernel::skills::SkillManager::new(&cfg.workspace_root);
+        let mut skills = agent_skills::SkillManager::new(&cfg.workspace_root);
         let (memory, distiller, initial_memory_block) = {
             let store = if cfg.memory_enabled {
                 open_memory_store(&cfg.workspace_root)

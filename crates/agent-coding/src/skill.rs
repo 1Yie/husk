@@ -1,6 +1,6 @@
 //! `skill` — the agent-facing adapter over the skill backend.
 //!
-//! Discovery, loading, rendering and caching live in [`crate::skills`]; this file
+//! Discovery, loading, rendering and caching live in the `agent-skills` crate; this file
 //! is only the tool contract: args in, framed instructions out. The prompt carries
 //! a catalog (name + clipped description) and a body is fetched on demand —
 //! inlining every body would cost tens of thousands of tokens per turn.
@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
-use super::registry::{schema_for, ExecFn, ToolError, ToolResult, ToolSpec};
-use crate::skills::SkillManager;
+use agent_kernel::tools::registry::{schema_for, ExecFn, ToolError, ToolResult, ToolSpec};
+use agent_skills::SkillManager;
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SkillArgs {
@@ -63,7 +63,7 @@ pub fn spec() -> ToolSpec {
                 None => manager.load(name, None),
             };
             match loaded {
-                Ok(skill) => Ok(ToolResult::text(crate::skills::prompt::for_model(&skill))),
+                Ok(skill) => Ok(ToolResult::text(agent_skills::prompt::for_model(&skill))),
                 // Errors carry "did you mean …" / "unknown argument `x` — this
                 // skill declares: …" so the model corrects itself in one step.
                 Err(message) => Err(ToolError::Failed(message)),
@@ -89,7 +89,7 @@ pub fn spec() -> ToolSpec {
         // Not Observation: what a load returns governs the turn, and one buried
         // in a `batch_execute` result is how instructions get skimmed.
         // SessionMutation gives it the serial, never-batched slot.
-        class: super::registry::ToolClass::SessionMutation,
+        class: agent_kernel::tools::registry::ToolClass::SessionMutation,
         network: false,
         staged: false,
         exec,
@@ -100,6 +100,21 @@ pub fn spec() -> ToolSpec {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Loading a skill reads instruction files only — never the workspace — so
+    /// it is auto-approved and stays available in plan mode. And its text must
+    /// not arrive inside a batch blob: the kernel batches only `Observation`
+    /// tools (class is the whole rule, no name list), and a skill is session
+    /// state, not an observation.
+    #[test]
+    fn skill_is_readonly_session_state_and_never_batchable() {
+        let spec = spec();
+        assert!(spec.readonly);
+        assert_eq!(
+            spec.class,
+            agent_kernel::tools::registry::ToolClass::SessionMutation
+        );
+    }
 
     /// Unique per run — the backend also reads `$HOME`, so a generic name could
     /// collide with a real global skill.
@@ -116,8 +131,8 @@ mod tests {
         (dir, name)
     }
 
-    fn ctx(root: &std::path::Path) -> Arc<super::super::registry::ToolCtx> {
-        Arc::new(super::super::registry::ToolCtx::new(root))
+    fn ctx(root: &std::path::Path) -> Arc<agent_kernel::tools::registry::ToolCtx> {
+        Arc::new(agent_kernel::tools::registry::ToolCtx::new(root))
     }
 
     #[tokio::test]
@@ -146,7 +161,7 @@ mod tests {
 
         let manager = SkillManager::new(dir.path());
         let loaded = manager.load(&name, None).unwrap();
-        let via_dollar = crate::skills::prompt::for_user(&loaded, &format!("${name}"));
+        let via_dollar = agent_skills::prompt::for_user(&loaded, &format!("${name}"));
 
         let body_of = |s: &str| {
             let start = s.find("---\n").expect("frame opens") + 4;
@@ -156,7 +171,7 @@ mod tests {
         assert_eq!(body_of(&via_tool), body_of(&via_dollar));
 
         // Arguments ride along on both paths.
-        let with_args = crate::skills::prompt::for_user(
+        let with_args = agent_skills::prompt::for_user(
             &manager.load(&name, Some("src/engine.rs")).unwrap(),
             &format!("${name}"),
         );
@@ -269,7 +284,7 @@ mod tests {
         assert!(spec.readonly);
         assert_eq!(
             spec.class,
-            super::super::registry::ToolClass::SessionMutation
+            agent_kernel::tools::registry::ToolClass::SessionMutation
         );
         assert!(!spec.network);
     }

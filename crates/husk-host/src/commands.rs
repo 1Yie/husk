@@ -90,9 +90,9 @@ impl CommandRegistry {
         }
         // `$skill` — dollar trigger resolves ONLY against the skill dirs.
         if let Some(skill_name) = name.strip_prefix('$') {
-            let skills = agent_kernel::skills::SkillManager::new(ctx.workspace_root);
+            let skills = agent_skills::SkillManager::new(ctx.workspace_root);
             if let Ok(skill) = skills.load(skill_name, Some(args)) {
-                return Some(CommandResult::FeedToAgent(agent_kernel::skills::prompt::for_user(
+                return Some(CommandResult::FeedToAgent(agent_skills::prompt::for_user(
                     &skill,
                     &format!("${skill_name}"),
                 )));
@@ -195,7 +195,7 @@ impl CommandRegistry {
                 CommandResult::Reply(out)
             }
             "skills" => {
-                let skills = agent_kernel::skills::SkillManager::new(ctx.workspace_root);
+                let skills = agent_skills::SkillManager::new(ctx.workspace_root);
                 // One catalog, one rendering — the same listing the `skill`
                 // tool's `list` action returns, and the same one the prompt
                 // catalog is built from.
@@ -269,9 +269,9 @@ impl CommandRegistry {
                 // Skill fallback — `/{name}` resolves against the workspace +
                 // user skill dirs; the skill body is inlined into the turn
                 // so the model follows it as instructions.
-                let skills = agent_kernel::skills::SkillManager::new(ctx.workspace_root);
+                let skills = agent_skills::SkillManager::new(ctx.workspace_root);
                 if let Ok(skill) = skills.load(name, Some(args)) {
-                    CommandResult::FeedToAgent(agent_kernel::skills::prompt::for_user(
+                    CommandResult::FeedToAgent(agent_skills::prompt::for_user(
                         &skill,
                         &format!("/{name}"),
                     ))
@@ -423,7 +423,7 @@ fn expand_skill_refs(text: &str, root: &Path) -> String {
             .is_some_and(|c| c.is_alphabetic() || c == '_');
         let resolved = looks_like_name
             .then(|| {
-                agent_kernel::skills::SkillManager::new(root)
+                agent_skills::SkillManager::new(root)
                     .load(token, None)
                     .ok()
             })
@@ -431,7 +431,7 @@ fn expand_skill_refs(text: &str, root: &Path) -> String {
         if let Some(skill) = resolved {
             out.push_str(&format!(
                 "\n\n`<skill name=\"{token}\">`\n{}\n",
-                agent_kernel::skills::prompt::for_user(&skill, &format!("${token}"))
+                agent_skills::prompt::for_user(&skill, &format!("${token}"))
             ));
             rest = &after[end..];
         } else {
@@ -477,10 +477,10 @@ mod tests {
     #[test]
     fn metadata_carries_the_summary_and_the_loader_carries_the_body() {
         let (_d, root) = skill_ws();
-        let skills = agent_kernel::skills::scanner::scan_skills(&root);
+        let skills = agent_skills::scanner::scan_skills(&root);
         assert_eq!(skills.len(), 2);
 
-        let manager = agent_kernel::skills::SkillManager::new(&root);
+        let manager = agent_skills::SkillManager::new(&root);
         let review = manager.load("review", None).unwrap();
         assert_eq!(review.description, "review code carefully");
         assert!(review.body.contains("Look for bugs."));
@@ -680,7 +680,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".pi/skills/harness")).unwrap();
         std::fs::write(root.join(".pi/skills/harness/SKILL.md"), "pi body\n").unwrap();
 
-        let skills = agent_kernel::skills::scanner::scan_skills(&root);
+        let skills = agent_skills::scanner::scan_skills(&root);
         assert!(skills.iter().any(|s| s.name == "claude-review"));
         // No front-matter → falls back to the directory name.
         assert!(skills.iter().any(|s| s.name == "harness"));

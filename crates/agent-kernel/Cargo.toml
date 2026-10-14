@@ -7,7 +7,6 @@ license = "MIT"
 
 [dependencies]
 agent-tool = { path = "../agent-tool" }
-agent-skills = { path = "../agent-skills" }
 agent-store = { path = "../agent-store" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }

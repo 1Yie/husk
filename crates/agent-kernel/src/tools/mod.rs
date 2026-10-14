@@ -18,7 +18,6 @@ pub use agent_tools_fs::outline_ts;
 pub mod builtins;
 pub mod host_slots;
 pub mod registry;
-pub mod skill;
 pub mod todo;
 
 pub use registry::{

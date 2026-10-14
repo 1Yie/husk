@@ -14,6 +14,7 @@ path = "backend/main.rs"
 agent-context = { path = "../agent-context" }
 agent-kernel = { path = "../agent-kernel" }
 husk-host = { path = "../husk-host" }
+agent-skills = { path = "../agent-skills" }
 agent-ipc = { path = "../agent-ipc" }
 agent-llm = { path = "../agent-llm" }
 agent-paths = { path = "../agent-paths" }

@@ -650,7 +650,7 @@ fn agent_session_inner(
                 .unwrap_or("")
                 .trim()
                 .to_lowercase();
-            let skill = agent_kernel::skills::scanner::find_skill(&mgr.workspace_root, &name)
+            let skill = agent_skills::scanner::find_skill(&mgr.workspace_root, &name)
                 .ok_or_else(|| format!("找不到技能 {name}"))?;
             let text = std::fs::read_to_string(&skill.path).map_err(|e| e.to_string())?;
             Ok(serde_json::json!({
@@ -669,7 +669,7 @@ fn agent_session_inner(
                 .unwrap_or("")
                 .trim()
                 .to_lowercase();
-            let skill = agent_kernel::skills::scanner::find_skill(&mgr.workspace_root, &name)
+            let skill = agent_skills::scanner::find_skill(&mgr.workspace_root, &name)
                 .ok_or_else(|| format!("找不到技能 {name}"))?;
             if !skill_is_writable(&mgr.workspace_root, &skill.path) {
                 return Err("该技能不属于可写目录，不能删除".into());
@@ -1267,12 +1267,12 @@ fn workspace_file_index(root: &std::path::Path, query: &str, cap: usize) -> Vec<
         .collect()
 }
 
-/// A discovered skill — `agent_kernel::skills::scanner::scan_all_skills` does the
+/// A discovered skill — `agent_skills::scanner::scan_all_skills` does the
 /// real scan (`.agents/skills`, `.agent/skills`, `.skills`, `.claude/skills`,
 /// `.pi/skills` in the workspace, plus the user-level dirs under `$HOME`).
 /// `path` is workspace-relative, or `~/…` for user-level skills.
 fn scan_skills(root: &std::path::Path) -> Vec<serde_json::Value> {
-    agent_kernel::skills::scanner::scan_all_skills(root)
+    agent_skills::scanner::scan_all_skills(root)
         .into_iter()
         .map(|s| {
             let path = if let Ok(rel) = s.path.strip_prefix(root) {

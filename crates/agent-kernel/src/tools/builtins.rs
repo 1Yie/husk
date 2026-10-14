@@ -20,7 +20,6 @@ impl ToolRegistry {
         r.register(crate::tools::bash::spec());
         r.register(crate::tools::services::spec());
         r.register(crate::tools::todo::spec());
-        r.register(crate::tools::skill::spec());
         r.register(crate::tools::web_fetch::spec());
         r.register(crate::tools::web_fetch::spec_alias());
         r.register(crate::tools::screenshot::spec());

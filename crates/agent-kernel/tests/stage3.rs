@@ -20,9 +20,9 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 #[tokio::test]
 async fn registry_lists_builtins() {
     let r = registry();
-    // 17: `blueprint`, `remember` (agent-coding) and `serena`
+    // 16: `blueprint`, `remember`, `skill` (agent-coding) and `serena`
     // (agent-tools-serena) are registered by the host assembly on top of this set.
-    assert_eq!(r.len(), 17);
+    assert_eq!(r.len(), 16);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -40,7 +40,6 @@ async fn registry_lists_builtins() {
         "bash",
         "service",
         "todo",
-        "skill",
         "web_fetch",
         "webfetch",
         "screenshot",
@@ -58,9 +57,6 @@ async fn registry_lists_builtins() {
     assert!(r.is_readonly("web_fetch"));
     assert!(r.is_readonly("webfetch"));
     assert!(r.is_readonly("todo"));
-    // Loading a skill reads instruction files only — never the workspace — so
-    // it is auto-approved and stays available in plan mode.
-    assert!(r.is_readonly("skill"));
     // Looking at the screen is an observation; driving it is not.
     assert!(r.is_readonly("screenshot"));
     assert!(!r.is_readonly("computer"));

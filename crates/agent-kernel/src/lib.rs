@@ -14,6 +14,5 @@ pub mod engine;
 pub mod hooks;
 pub mod permissions;
 pub mod session_store;
-pub mod skills;
 pub mod tools;
 pub mod turn_policy;
