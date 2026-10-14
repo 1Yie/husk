@@ -461,9 +461,6 @@ impl SubagentSpawner {
             // child registry, and a refusing backend is the second guard
             // behind it for any path that constructs a child ctx itself.
             session: None,
-            // Memory is shared: a subagent's `remember` lands in the same
-            // workspace store, like its todo state would if it had a session.
-            memory: parent_ctx.memory.clone(),
             cancel: Some(cancel.clone()),
             depth: parent_ctx.depth + 1,
             // The child's own engine refreshes this on its first dispatch.
@@ -481,7 +478,10 @@ impl SubagentSpawner {
         // controller each turn, and must never share the parent's.
         .with_controllers()
         .inherit_desktop(&parent_ctx)
-        .inherit_sandbox(&parent_ctx);
+        .inherit_sandbox(&parent_ctx)
+        // Memory is shared: a subagent's `remember` lands in the same
+        // workspace store, like its todo state would if it had a session.
+        .inherit_memory(&parent_ctx);
         // Either side can ask for read-only; the manifest cannot grant write back.
         let base = if readonly || spec.readonly {
             self.registry_readonly.clone()

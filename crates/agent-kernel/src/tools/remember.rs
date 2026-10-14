@@ -32,7 +32,7 @@ pub fn spec() -> ToolSpec {
             }
         };
         async move {
-            let Some(memory) = ctx.memory.get() else {
+            let Some(memory) = ctx.memory().and_then(|m| m.get()) else {
                 return Err(ToolError::Failed(
                     // `None` = the session spawned without a store: the
                     // memory toggle is off, or the db failed to open.

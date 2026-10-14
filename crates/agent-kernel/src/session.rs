@@ -574,7 +574,7 @@ impl SessionActor {
         )));
         let memory_handle = crate::tools::registry::MemoryHandle::default();
         memory_handle.set(memory.clone());
-        tool_ctx.memory = memory_handle.clone();
+        tool_ctx.install_memory(memory_handle.clone());
         // The child route starts from the session's own settings and is
         // rewritten by `apply_model_switch`, so children follow a hot-swap.
         let child_route = Arc::new(std::sync::RwLock::new(crate::tools::delegate::ChildRoute {

@@ -182,6 +182,11 @@ pub struct AskSlot(pub Arc<AskChannel>);
 /// where delegation is unavailable (tests, child contexts).
 pub struct SubagentSlot(pub crate::tools::delegate::SubagentSpawner);
 
+/// The workspace memory handle. Installed by the owning session and shared
+/// with its actor, which swaps the store when the memory switch flips. Absent
+/// where no session owns a store; `remember` then refuses.
+pub struct MemorySlot(pub MemoryHandle);
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
@@ -191,11 +196,6 @@ pub struct ToolCtx {
     /// history file in the app state dir — never into the user's repo.
     /// `None` for unattached contexts (tests, headless spawns).
     pub session: Option<(i64, Arc<crate::session_store::SessionStore>)>,
-    /// The workspace's persistent memory — `remember` writes persona entries
-    /// here. Shared with the owning actor: the 启用记忆 switch swaps the
-    /// inner store, so a `remember` after "off" sees `None` and is refused.
-    /// `None` inside the handle in unattached contexts (tests, headless spawns).
-    pub memory: MemoryHandle,
     /// Parent turn's cooperative cancel flag — a delegated subagent polls
     /// it so a user cancel propagates into the delegation instead of
     /// orphaning a running child. `None` in unattached contexts.
@@ -244,6 +244,27 @@ impl ToolCtx {
         self.ext.insert(Arc::new(AskSlot(ask)));
     }
 
+    /// The workspace memory handle, if a session owns one. The handle itself
+    /// may hold `None` while memory is switched off; that is a refusal at the
+    /// tool, not a missing slot.
+    pub fn memory(&self) -> Option<MemoryHandle> {
+        self.ext.get::<MemorySlot>().map(|s| s.0.clone())
+    }
+
+    /// Install the workspace memory handle.
+    pub fn install_memory(&mut self, memory: MemoryHandle) {
+        self.ext.insert(Arc::new(MemorySlot(memory)));
+    }
+
+    /// Share the parent's memory handle with a child, so a subagent's
+    /// `remember` lands in the same workspace store.
+    pub fn inherit_memory(mut self, parent: &ToolCtx) -> Self {
+        if let Some(slot) = parent.ext.get::<MemorySlot>() {
+            self.ext.insert(slot);
+        }
+        self
+    }
+
     /// The subagent spawner, if this context can delegate.
     pub fn subagent(&self) -> Option<Arc<SubagentSlot>> {
         self.ext.get::<SubagentSlot>()
@@ -281,7 +302,6 @@ impl ToolCtx {
         Self {
             workspace_root: Arc::from(root.as_path()),
             session: None,
-            memory: MemoryHandle::default(),
             cancel: None,
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
@@ -320,7 +340,6 @@ impl ToolCtx {
         let mut ctx = Self {
             workspace_root: Arc::from(root.as_path()),
             session: None,
-            memory: MemoryHandle::default(),
             cancel: None,
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
@@ -415,7 +434,6 @@ impl ToolCtx {
         ToolCtx {
             workspace_root: self.workspace_root.clone(),
             session: self.session.clone(),
-            memory: self.memory.clone(),
             cancel: Some(cancel),
             ui_tx: self.ui_tx.clone(),
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
@@ -925,6 +943,27 @@ mod tests {
         ));
         let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
         assert!(scoped.subagent().is_some());
+    }
+
+    #[test]
+    fn memory_is_absent_until_installed_and_a_child_sees_the_live_switch() {
+        let parent = ToolCtx::new(std::env::temp_dir());
+        assert!(parent.memory().is_none());
+
+        let mut parent = parent;
+        let handle = MemoryHandle::default();
+        parent.install_memory(handle.clone());
+        // Installed but switched off: the slot exists, the store is None.
+        assert!(parent.memory().unwrap().get().is_none());
+
+        // A child shares the very same handle, so a later switch on the
+        // parent's side is visible to the child without re-inheriting.
+        let child = ToolCtx::new(std::env::temp_dir()).inherit_memory(&parent);
+        assert!(child.memory().is_some());
+        assert!(Arc::ptr_eq(
+            &child.memory().unwrap().0,
+            &parent.memory().unwrap().0,
+        ));
     }
 
     #[test]
