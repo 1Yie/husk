@@ -444,7 +444,11 @@ impl Engine {
     /// `decision_slot`: the command writes directly while the turn's tool
     /// is parked awaiting the answer.
     pub fn ask_channel(&self) -> Arc<crate::tools::registry::AskChannel> {
-        self.ctx.ask.clone()
+        // The owning session installs the channel before building the engine;
+        // a bare engine without one is a wiring bug, not a runtime condition.
+        self.ctx
+            .ask()
+            .expect("session installs the ask channel before the engine is built")
     }
 
     /// Hot-swap provider for the next turn.

@@ -173,6 +173,11 @@ pub struct SandboxSlot(pub Arc<dyn agent_sandbox::SandboxBackend>);
 /// that never configured limits should get.
 pub struct SandboxLimitsSlot(pub crate::sandbox_prefs::SandboxLimits);
 
+/// The interactive question channel. Installed by the host that owns a user
+/// to answer; absent means headless (a subagent, a test), and `ask_question`
+/// refuses instead of parking on an answer nobody can give.
+pub struct AskSlot(pub Arc<AskChannel>);
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
@@ -194,8 +199,6 @@ pub struct ToolCtx {
     /// Subagent spawner — `delegate` runs a fresh-context child engine.
     /// `None` where delegation is unavailable (tests, child contexts).
     pub subagent: Option<crate::tools::delegate::SubagentSpawner>,
-    /// `ask_question`'s pending-answer slot + UI channel.
-    pub ask: Arc<crate::tools::registry::AskChannel>,
     /// Session UI event channel — tools that fan out (batch items,
     /// subagent progress) emit ToolCallStarted/Finished here so internal
     /// calls stay visible + auditable instead of running silently.
@@ -224,6 +227,22 @@ pub struct ToolCtx {
 
 impl ToolCtx {
     /// The host's sandbox overrides, or the defaults when none were installed.
+    /// The question channel, or a refusal when the context has no one to ask.
+    pub fn ask(&self) -> Result<Arc<AskChannel>, ToolError> {
+        self.ext
+            .get::<AskSlot>()
+            .map(|s| s.0.clone())
+            .ok_or_else(|| {
+                ToolError::Failed("ask_question requires an interactive user session".into())
+            })
+    }
+
+    /// Install the question channel. Hosts keep their own handle to the same
+    /// `Arc`, so answers routed through the host reach the parked tool call.
+    pub fn install_ask(&mut self, ask: Arc<AskChannel>) {
+        self.ext.insert(Arc::new(AskSlot(ask)));
+    }
+
     pub fn sandbox_limits(&self) -> crate::sandbox_prefs::SandboxLimits {
         self.ext
             .get::<SandboxLimitsSlot>()
@@ -255,7 +274,6 @@ impl ToolCtx {
             cancel: None,
             subagent: None,
             depth: 0,
-            ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
             ext: Extensions::default(),
@@ -296,7 +314,6 @@ impl ToolCtx {
             cancel: None,
             subagent: None,
             depth: 0,
-            ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
             ext: Extensions::default(),
@@ -392,7 +409,6 @@ impl ToolCtx {
             memory: self.memory.clone(),
             cancel: Some(cancel),
             subagent: self.subagent.clone(),
-            ask: self.ask.clone(),
             ui_tx: self.ui_tx.clone(),
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
@@ -842,6 +858,20 @@ mod tests {
             Arc::new(agent_sandbox::NoneBackend),
         );
         assert_eq!(ctx.sandbox().unwrap().id(), "none");
+    }
+
+    #[test]
+    fn ask_is_refused_without_a_host_channel_and_shared_after_cancel_scope() {
+        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        // Headless by default: the tool gets a refusal, not a parked oneshot.
+        assert!(matches!(ctx.ask(), Err(ToolError::Failed(_))));
+
+        let channel = Arc::new(AskChannel::new(None));
+        ctx.install_ask(channel.clone());
+        assert!(Arc::ptr_eq(&ctx.ask().unwrap(), &channel));
+        // A batch item's cancel-scoped copy answers on the same channel.
+        let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        assert!(Arc::ptr_eq(&scoped.ask().unwrap(), &channel));
     }
 
     #[test]

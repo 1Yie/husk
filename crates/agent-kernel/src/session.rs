@@ -595,9 +595,9 @@ impl SessionActor {
         ));
         // `ask_question` emits its card through the session's event channel;
         // fan-out tools (batch items) emit ToolCallStarted/Finished on ui_tx.
-        tool_ctx.ask = Arc::new(crate::tools::registry::AskChannel::new(Some(
+        tool_ctx.install_ask(Arc::new(crate::tools::registry::AskChannel::new(Some(
             channels.event_tx.clone(),
-        )));
+        ))));
         tool_ctx.ui_tx = Some(channels.event_tx.clone());
         let ctx = Arc::new(tool_ctx);
         let registry = Arc::new(registry);

@@ -467,9 +467,6 @@ impl SubagentSpawner {
             cancel: Some(cancel.clone()),
             subagent: None,
             depth: parent_ctx.depth + 1,
-            // Subagents are headless — ask_question refuses fast rather
-            // than parking on a oneshot nobody can answer.
-            ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             // The child's own engine refreshes this on its first dispatch.
             active_registry: std::sync::RwLock::new(None),
             ui_tx: Some(child_sink.clone()),

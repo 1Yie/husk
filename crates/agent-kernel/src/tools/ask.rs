@@ -58,7 +58,8 @@ async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, To
 
     // Headless fast-fail before building the request — a child agent
     // must never park on a oneshot nobody can answer.
-    if !ctx.ask.is_available() {
+    let ask = ctx.ask()?;
+    if !ask.is_available() {
         return Err(ToolError::Failed(
             "ask_question requires an interactive user session".into(),
         ));
@@ -101,8 +102,7 @@ async fn exec(args: Args, ctx: std::sync::Arc<ToolCtx>) -> Result<ToolResult, To
         });
     }
 
-    let answer = ctx
-        .ask
+    let answer = ask
         .ask(question.to_string(), options.clone(), ctx.cancel.clone())
         .await?;
     // Echo which structured option the answer maps to — the UI knows
