@@ -51,7 +51,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use agent_kernel::permissions::{PermissionGate, PermissionMode, PermissionRules};
+    use agent_kernel::permissions::{CallRisk, PermissionGate, PermissionMode, PermissionRules};
     use agent_kernel::tools::registry::ToolClass;
 
     fn gate(mode: &str) -> PermissionGate {
@@ -59,7 +59,7 @@ mod tests {
     }
 
     fn decide(g: &PermissionGate) -> Decision {
-        g.decide("computer", Some(ToolClass::Process), false, None, "x")
+        g.decide("computer", Some(ToolClass::Process), false, CallRisk::Normal, "x")
     }
 
     #[test]
@@ -155,7 +155,7 @@ mod tests {
             g.escalate("computer", "launch", decide(&g), "x"),
             Decision::Ask { .. }
         ));
-        assert_eq!(g.decide("bash", None, false, None, ""), Decision::Allow);
+        assert_eq!(g.decide("bash", None, false, CallRisk::Normal, ""), Decision::Allow);
         assert!(g.revoke_grants("computer"));
         assert!(!g.revoke_grants("computer"));
     }

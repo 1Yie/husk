@@ -89,6 +89,7 @@ pub fn spec<C: WorkspaceCtx + DesktopCtx>() -> ToolSpec<C> {
 fn review<C: DesktopCtx>(args: &Args, ctx: &Arc<C>) -> agent_tool::Review {
     let ctx = ctx.clone();
     agent_tool::Review {
+        risk: agent_tool::CallRisk::Normal,
         summary: Some(describe(args)),
         action: Some(action_of(args)),
         prepare: Some(

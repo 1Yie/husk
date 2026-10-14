@@ -1181,16 +1181,13 @@ impl Engine {
                 // Permission gate before dispatch
                 let registry = self.active_registry();
                 let is_readonly = registry.is_readonly(&call.name);
-                // Metadata-driven file-edit detection: a write tool declares
-                // `WorkspaceMutation`, so the gate does not depend on
-                // `is_file_edit`'s name table learning about it.
+                // A tool's declared execution class drives the permission mode.
                 let class = registry.spec(&call.name).map(|s| s.class);
                 // Anything not declared read-only may write, and a plugin/MCP
                 // tool has no built-in spec at all — so the baseline keys off
                 // `readonly`, not `class`, and an unknown name counts as a write.
                 // The baseline itself is the installed policy's business: it is
                 // taken inside `before_dispatch`, lazily before the first write.
-                let shell_cmd = args.get("command").and_then(|v| v.as_str());
                 let diff_summary = review_summary.clone().unwrap_or_else(|| {
                     args.get("path")
                         .and_then(|v| v.as_str())
@@ -1257,7 +1254,7 @@ impl Engine {
                         &call.name,
                         class,
                         is_readonly,
-                        shell_cmd,
+                        review.risk,
                         diff_summary.clone(),
                     );
                     match &action {
@@ -1353,7 +1350,7 @@ impl Engine {
                                     &call.name,
                                     class,
                                     is_readonly,
-                                    shell_cmd,
+                                    review.risk,
                                     diff_summary.clone(),
                                 );
                                 match &action {

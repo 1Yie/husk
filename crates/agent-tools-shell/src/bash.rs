@@ -55,7 +55,7 @@ pub fn spec<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
         class: agent_tool::ToolClass::Process,
         network: false,
         staged: false,
-        review: None,
+        review: Some(Arc::new(crate::risk::review::<C>)),
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

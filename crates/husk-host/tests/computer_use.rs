@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use agent_computer::{DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir};
 use husk_host::mode::AgentMode;
-use agent_kernel::permissions::{Decision, PermissionGate, PermissionMode};
+use agent_kernel::permissions::{CallRisk, Decision, PermissionGate, PermissionMode};
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
@@ -162,7 +162,7 @@ fn permission_matrix_for_desktop_tools() {
             "screenshot",
             Some(ToolClass::Observation),
             shot_readonly,
-            None,
+            CallRisk::Normal,
             "",
         );
         assert_eq!(shot, Decision::Allow, "screenshot must auto-run in {mode}");
@@ -175,7 +175,7 @@ fn permission_matrix_for_desktop_tools() {
         let g = desktop_gate(PermissionMode::from_str(mode), Default::default());
         assert!(
             matches!(
-                g.decide("computer", comp_class, false, None, "click"),
+                g.decide("computer", comp_class, false, CallRisk::Normal, "click"),
                 Decision::Ask { .. }
             ),
             "computer must confirm in {mode}"
@@ -187,14 +187,14 @@ fn permission_matrix_for_desktop_tools() {
     rules.allow.insert("computer".to_string());
     let g = desktop_gate(PermissionMode::from_str("auto"), rules);
     assert_eq!(
-        g.decide("computer", comp_class, false, None, "click"),
+        g.decide("computer", comp_class, false, CallRisk::Normal, "click"),
         Decision::Allow,
         "session-allowed computer must run in auto"
     );
     // dontAsk → deny outright (not a pre-approved tool)
     let g = desktop_gate(PermissionMode::DontAsk, Default::default());
     assert!(matches!(
-        g.decide("computer", comp_class, false, None, "click"),
+        g.decide("computer", comp_class, false, CallRisk::Normal, "click"),
         Decision::Deny { .. }
     ));
 }
@@ -229,7 +229,7 @@ fn child_registries_never_carry_desktop_input() {
     let comp_class = registry.spec("computer").map(|s| s.class);
     assert!(
         matches!(
-            g.decide("computer", comp_class, false, None, "click"),
+            g.decide("computer", comp_class, false, CallRisk::Normal, "click"),
             Decision::Deny { .. }
         ),
         "the headless gate must turn computer's Ask into a Deny"

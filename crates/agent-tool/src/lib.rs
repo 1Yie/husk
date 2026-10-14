@@ -256,11 +256,24 @@ pub enum ToolClass {
     Orchestration,
 }
 
+/// A tool's assessment of one call, beyond its static `readonly` flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CallRisk {
+    /// Use the tool's static metadata and the permission mode.
+    #[default]
+    Normal,
+    /// This call only observes, even if other calls of the same tool mutate.
+    Readonly,
+    /// Ask above the mode default unless the tool is explicitly allowed.
+    RequiresApproval,
+}
+
 /// What a tool says about one call *before* it is approved — everything the
 /// engine and the permission gate need to treat that call properly without
 /// knowing the tool by name.
 #[derive(Default)]
 pub struct Review {
+    pub risk: CallRisk,
     /// One line saying exactly what this call will do — the text the approval
     /// card shows, and the call's primary locator in the UI. `None` = the
     /// engine derives a generic one from the arguments.
