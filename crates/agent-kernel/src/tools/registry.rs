@@ -633,6 +633,24 @@ pub enum ToolClass {
     Orchestration,
 }
 
+/// Does this tool stage its writes instead of performing them?
+///
+/// A staged writer's `exec` returns [`ToolResult::pending_write`] and touches
+/// no file, so the engine may dispatch it *before* the permission decision to
+/// harvest the real diff, fuzzy flag and pre-images for the approval card, then
+/// commit the write only after approval (see `run_turn`'s `is_write` path).
+/// Dispatching any other tool early would run it for real.
+///
+/// This is deliberately NOT `class == WorkspaceMutation`. `serena` declares
+/// that class but writes directly (its suite edits files in-process), so
+/// treating the class as "safe to dry-run" would perform a workspace write
+/// before the user approved it. The set is exact: only `fuzzy_patch` and
+/// `apply_patch` return `PendingWrite` today.
+///
+pub fn is_staged_write(name: &str) -> bool {
+    matches!(name, "fuzzy_patch" | "apply_patch")
+}
+
 /// One tool: name, schema for the LLM, readonly flag, exec fn.
 #[derive(Clone)]
 pub struct ToolSpec {
@@ -889,6 +907,54 @@ mod tests {
             Arc::new(agent_sandbox::NoneBackend),
         );
         assert_eq!(ctx.sandbox().unwrap().id(), "none");
+    }
+
+    /// The staging set is what the engine dry-runs before the approval card, so
+    /// a name that is not a real writer, or a real writer left out of the set,
+    /// is a safety or UX bug. Pin it against the registry instead of trusting
+    /// the list to stay in sync by hand.
+    #[test]
+    fn staged_write_set_matches_the_registry() {
+        let reg = ToolRegistry::with_builtins();
+        // Every staged name is a real, registered, non-readonly workspace
+        // mutation: the engine will dispatch it before the permission gate.
+        for name in ["fuzzy_patch", "apply_patch"] {
+            assert!(
+                reg.spec(name).is_some(),
+                "staged writer {name} is not a registered tool"
+            );
+            assert!(
+                !reg.is_readonly(name),
+                "staged writer {name} must not be readonly"
+            );
+            assert_eq!(
+                reg.spec(name).unwrap().class,
+                ToolClass::WorkspaceMutation,
+                "staged writer {name} must be a workspace mutation"
+            );
+        }
+        // The registry offers no staged writer outside the set. This is the
+        // drift guard: a new staging tool must be added to `is_staged_write`.
+        let staged: Vec<&str> = ["fuzzy_patch", "apply_patch"].into_iter().collect();
+        for spec in reg.specs.values() {
+            let in_registry = staged.contains(&spec.name);
+            assert_eq!(
+                in_registry,
+                is_staged_write(spec.name),
+                "{} disagrees between the set and the registry",
+                spec.name
+            );
+        }
+        // `serena` is the trap: WorkspaceMutation, but it writes directly, so
+        // staging it would run the write before approval.
+        assert_eq!(
+            reg.spec("serena").unwrap().class,
+            ToolClass::WorkspaceMutation
+        );
+        assert!(
+            !is_staged_write("serena"),
+            "serena writes in-process; it must not be dry-run early"
+        );
     }
 
     #[test]

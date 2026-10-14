@@ -1215,17 +1215,15 @@ impl Engine {
                         .unwrap_or_else(|| call.name.clone())
                 });
 
-                // P1-c: write tools (fuzzy_patch/apply_patch/write_file) are
-                // dispatched EARLY — they return a `PendingWrite` instead of
-                // writing inside the tool, so we can show the REAL diff +
-                // fuzzy flag on the approval card and only commit the write
-                // after the user approves. Read-only/bash tools keep the
-                // classic gate→dispatch flow (they have side effects we
-                // can't dry-run).
-                let is_write = matches!(
-                    call.name.as_str(),
-                    "fuzzy_patch" | "apply_patch" | "write_file"
-                );
+                // P1-c: staged writers are dispatched EARLY — they return a
+                // `PendingWrite` instead of writing inside the tool, so we can
+                // show the REAL diff + fuzzy flag on the approval card and only
+                // commit the write after the user approves. Read-only and bash
+                // tools keep the classic gate→dispatch flow (they have side
+                // effects we can't dry-run). `is_staged_write` is the single
+                // source of truth for the set, and documents why it is not
+                // `ToolClass::WorkspaceMutation` (serena).
+                let is_write = crate::tools::registry::is_staged_write(&call.name);
 
                 // Dry-run a write tool to harvest diff/fuzzy/pending_write.
                 // `dispatch` on these tools is side-effect-free (returns
