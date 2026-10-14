@@ -437,6 +437,22 @@ impl Engine {
         self.sampler.set_provider(provider);
     }
 
+    /// Install the resolved provider keys the egress masker scrubs from every
+    /// outbound request. Called whenever the config is (re)loaded.
+    pub fn set_secrets(&mut self, secrets: Vec<String>) {
+        self.sampler.set_masker(secrets);
+    }
+
+    /// Install the degrade chain for the primary named `primary`.
+    pub fn set_fallbacks(
+        &mut self,
+        primary: &str,
+        chain: Vec<(String, Arc<dyn agent_llm::LlmProvider>)>,
+    ) {
+        self.sampler.set_primary_name(primary);
+        self.sampler.set_fallbacks(chain);
+    }
+
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
     }
@@ -806,7 +822,12 @@ impl Engine {
                         }
                     },
                     |ev| {
-                        if matches!(ev, SamplerEvent::Retrying { .. }) {
+                        // A retry or a provider switch restarts the attempt: the
+                        // partial output so far belongs to the failed attempt.
+                        if matches!(
+                            ev,
+                            SamplerEvent::Retrying { .. } | SamplerEvent::FellBack { .. }
+                        ) {
                             retry_reset.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                         let t = ev.to_string();
@@ -1762,7 +1783,10 @@ impl Engine {
                     }
                 },
                 |ev| {
-                    if matches!(ev, SamplerEvent::Retrying { .. }) {
+                    if matches!(
+                        ev,
+                        SamplerEvent::Retrying { .. } | SamplerEvent::FellBack { .. }
+                    ) {
                         retry_reset.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 },

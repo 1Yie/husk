@@ -903,15 +903,9 @@ impl SessionManager {
             .and_then(|m| m.thinking_level.clone())
             .or_else(|| self.active_thinking_level.clone());
 
-        let provider = self
-            .provider_cfg
-            .providers
-            .get(&sess_provider)
-            .and_then(|pcfg| ProviderFactory::build(pcfg).ok())
-            .unwrap_or_else(|| {
-                let (p, _, _) = resolve_provider(&self.provider_cfg);
-                p
-            });
+        // Never substitute another vendor here: an unbuildable session provider
+        // fails its turns with the reason instead (see `choose_session_provider`).
+        let (provider, unavailable) = choose_session_provider(&self.provider_cfg, &sess_provider);
         let model = sess_model.clone();
         let mentry = self
             .provider_cfg
@@ -970,6 +964,13 @@ impl SessionManager {
             None => SessionActor::spawn_with_id(cfg, id),
         };
 
+        // Say WHY the session cannot answer, once, before the first turn. The
+        // turn itself fails with the same reason, so this is the early notice.
+        if let Some(reason) = &unavailable {
+            let _ = channels.event_tx.send(agent_ipc::UiEvent::SystemMessage(format!(
+                "无法使用该会话的模型提供商: {reason}"
+            )));
+        }
         let cmd_tx = actor.command_sender();
         let decision = actor.decision_writer();
         let ask = actor.ask_channel();
@@ -984,6 +985,11 @@ impl SessionManager {
         // Lifecycle hooks, installed before the actor starts: the shared chain
         // may gain hooks later (`reload_plugins`) without a restart.
         actor.set_hooks(self.hooks.clone());
+        actor.set_secrets(self.provider_cfg.resolved_secrets());
+        actor.set_fallbacks(
+            &sess_provider,
+            build_fallback_chain(&self.provider_cfg, &sess_provider),
+        );
         actor.set_blueprint_enabled(self.blueprint_enabled);
 
         // Actor run() on its own tokio thread — a background session keeps
@@ -2488,6 +2494,55 @@ fn boot_workspace(
     }
 }
 
+/// The degrade chain for a session pinned to `primary`: `fallback_chain` in
+/// config order, minus the primary itself (a loop), minus entries that are
+/// missing or cannot be built. A broken backup is skipped rather than kept as
+/// a placeholder, because the point of the chain is to find one that answers.
+pub(crate) fn build_fallback_chain(
+    cfg: &AppConfig,
+    primary: &str,
+) -> Vec<(String, Arc<dyn agent_llm::LlmProvider>)> {
+    cfg.fallback_chain
+        .iter()
+        .filter(|name| name.as_str() != primary)
+        .filter_map(|name| {
+            let pcfg = cfg.providers.get(name)?;
+            let p = ProviderFactory::build(pcfg).ok()?;
+            Some((name.clone(), p))
+        })
+        .collect()
+}
+
+/// The provider instance a session runs on, for the provider it was pinned to.
+///
+/// A session never borrows another vendor's provider: when its own provider is
+/// missing from the config or cannot be built, the returned provider fails
+/// every turn with the reason. Silently routing that turn to whichever provider
+/// `resolve_provider` finds sends the conversation to a backend the user did
+/// not choose, under a model id that backend does not serve.
+pub(crate) fn choose_session_provider(
+    cfg: &AppConfig,
+    session_provider: &str,
+) -> (Arc<dyn agent_llm::LlmProvider>, Option<String>) {
+    let Some(pcfg) = cfg.providers.get(session_provider) else {
+        let reason = format!("provider `{session_provider}` is not in the config");
+        return (
+            Arc::new(agent_llm::UnavailableProvider::new(reason.clone())),
+            Some(reason),
+        );
+    };
+    match ProviderFactory::build(pcfg) {
+        Ok(p) => (p, None),
+        Err(e) => {
+            let reason = format!("provider `{session_provider}`: {e}");
+            (
+                Arc::new(agent_llm::UnavailableProvider::new(reason.clone())),
+                Some(reason),
+            )
+        }
+    }
+}
+
 fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String, String) {
     if let Some(name) = &cfg.active_provider {
         if let Some(pcfg) = cfg.providers.get(name) {
@@ -2638,6 +2693,97 @@ mod tests {
             (mgr.provider_name.as_str(), mgr.model_name.as_str()),
             ("other", "other/big")
         );
+    }
+
+    /// A session pinned to a provider that cannot be built must NOT be answered
+    /// by a different vendor: the turn fails with the real reason instead.
+    #[test]
+    fn unbuildable_session_provider_never_falls_back_to_another_vendor() {
+        std::env::remove_var("CHOOSE_PROVIDER_MISSING_KEY");
+        let mut providers = HashMap::new();
+        providers.insert(
+            "openai".to_string(),
+            agent_llm::ProviderConfig {
+                kind: agent_llm::ProviderKind::OpenaiCompat,
+                base_url: "https://api.openai.com/v1".into(),
+                api_key: "env:CHOOSE_PROVIDER_MISSING_KEY".into(),
+                ..Default::default()
+            },
+        );
+        providers.insert(
+            "deepseek".to_string(),
+            agent_llm::ProviderConfig {
+                kind: agent_llm::ProviderKind::OpenaiCompat,
+                base_url: "https://api.deepseek.com".into(),
+                api_key: "plaintext-deepseek-key".into(),
+                ..Default::default()
+            },
+        );
+        let cfg = AppConfig {
+            providers,
+            ..Default::default()
+        };
+
+        let (provider, reason) = choose_session_provider(&cfg, "openai");
+        assert_eq!(provider.id(), "unavailable", "must not borrow another vendor");
+        let reason = reason.expect("the failure reason must be carried");
+        assert!(reason.contains("CHOOSE_PROVIDER_MISSING_KEY"), "{reason}");
+    }
+
+    /// A session naming a provider that the config no longer has is reported
+    /// as unavailable too, rather than silently adopting a different one.
+    #[test]
+    fn deleted_session_provider_is_unavailable_not_reassigned() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "deepseek".to_string(),
+            agent_llm::ProviderConfig {
+                kind: agent_llm::ProviderKind::OpenaiCompat,
+                base_url: "https://api.deepseek.com".into(),
+                api_key: "plaintext-deepseek-key".into(),
+                ..Default::default()
+            },
+        );
+        let cfg = AppConfig {
+            providers,
+            ..Default::default()
+        };
+        let (provider, reason) = choose_session_provider(&cfg, "gone");
+        assert_eq!(provider.id(), "unavailable");
+        assert!(reason.expect("reason").contains("gone"));
+    }
+
+    /// The chain keeps config order, never includes the primary itself (that
+    /// would loop), and skips entries that are missing or cannot be built.
+    #[test]
+    fn fallback_chain_keeps_order_and_skips_primary_and_broken_entries() {
+        std::env::remove_var("CHAIN_MISSING_KEY");
+        let ok = |key: &str| agent_llm::ProviderConfig {
+            kind: agent_llm::ProviderKind::OpenaiCompat,
+            base_url: "https://x".into(),
+            api_key: key.into(),
+            ..Default::default()
+        };
+        let mut providers = HashMap::new();
+        providers.insert("primary".to_string(), ok("plain-primary-key"));
+        providers.insert("second".to_string(), ok("plain-second-key"));
+        providers.insert("third".to_string(), ok("plain-third-key"));
+        providers.insert("broken".to_string(), ok("env:CHAIN_MISSING_KEY"));
+        let cfg = AppConfig {
+            providers,
+            fallback_chain: vec![
+                "primary".into(),
+                "broken".into(),
+                "ghost".into(),
+                "third".into(),
+                "second".into(),
+            ],
+            ..Default::default()
+        };
+
+        let chain = build_fallback_chain(&cfg, "primary");
+        let names: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["third", "second"]);
     }
 
     #[test]

@@ -740,6 +740,21 @@ impl SessionActor {
         self.engine.set_hooks(chain);
     }
 
+    /// Resolved provider keys for the egress masker. Installed before the
+    /// actor runs so the first request is already scrubbed.
+    pub fn set_secrets(&mut self, secrets: Vec<String>) {
+        self.engine.set_secrets(secrets);
+    }
+
+    /// Degrade chain for this session's primary provider.
+    pub fn set_fallbacks(
+        &mut self,
+        primary: &str,
+        chain: Vec<(String, Arc<dyn agent_llm::LlmProvider>)>,
+    ) {
+        self.engine.set_fallbacks(primary, chain);
+    }
+
     /// The session's `.blueprint/` switch. Forwarded to the engine (which
     /// gates the turn-end check and baseline), and the system prompt's
     /// blueprint region is re-rendered at once so the index never shows for
@@ -1242,11 +1257,21 @@ impl SessionActor {
     /// built-in defaults instead of leaking the previous model's caps.
     fn apply_model_switch(&mut self, provider: &str, model: &str) {
         if let Ok(cfg) = agent_llm::AppConfig::load(None) {
+            // Every provider's key is scrubbed, not just the active one: a
+            // prompt can carry any configured key, and a switch must not leave
+            // the previous provider's mask in place.
+            self.engine.set_secrets(cfg.resolved_secrets());
             if let Some(pcfg) = cfg.providers.get(provider) {
-                let built = agent_llm::ProviderFactory::build(pcfg).ok();
-                if let Some(p) = &built {
-                    self.engine.set_provider(p.clone());
-                }
+                // Same rule as spawn: an unbuildable provider is replaced by one
+                // that fails with the reason. Keeping the previous provider here
+                // would answer under the new model's limits and thinking map.
+                let (built, _unavailable) =
+                    crate::session_manager::choose_session_provider(&cfg, provider);
+                self.engine.set_provider(built.clone());
+                self.engine.set_fallbacks(
+                    provider,
+                    crate::session_manager::build_fallback_chain(&cfg, provider),
+                );
                 let resolved = pcfg
                     .find_model(model)
                     .is_some()
@@ -1256,9 +1281,7 @@ impl SessionActor {
                     .child_route
                     .write()
                     .expect("child route lock poisoned");
-                if let Some(p) = built {
-                    route.provider = p;
-                }
+                route.provider = built;
                 // The model table belongs to the provider, so it moves with it.
                 route.models = child_models(provider);
                 match resolved {
