@@ -282,6 +282,9 @@ impl SessionManager {
         root: Option<std::path::PathBuf>,
         paths: AppPaths,
     ) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
+        // The session database is a process-wide singleton, so its directory is
+        // set once here rather than passed to every read.
+        crate::session_store::init_data_dir(paths.data_dir.clone());
         // Global user defaults — the settings window's stored preference.
         // Loaded up here because the「默认进入」row decides the boot root
         // below; every later layer reads this same snapshot.
@@ -3204,6 +3207,9 @@ max = "max"
             last_opened: 0,
         };
         let office = crate::session_store::office_root().unwrap();
+        // The real app creates this lazily on the first office switch; the
+        // canonicalising boot path needs it to exist to keep the entry.
+        std::fs::create_dir_all(&office).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("proj");
         std::fs::create_dir(&project).unwrap();

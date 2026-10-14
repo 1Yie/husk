@@ -25,7 +25,7 @@ fn probe_command(dir: &std::path::Path, mode: &str) -> Command {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args(["--exact", "storage_boot_probe", "--nocapture"])
         .env(PROBE_MODE, mode)
-        .env("HUSK_SESSION_DB", dir.join("sessions.db"))
+        .env("AGENT_SESSION_DB", dir.join("sessions.db"))
         .env("XDG_DATA_HOME", dir.join("data"))
         .env("XDG_CONFIG_HOME", dir.join("config"));
     cmd
@@ -116,7 +116,7 @@ fn storage_boot_probe() {
     let Ok(mode) = std::env::var(PROBE_MODE) else {
         return;
     };
-    let path = PathBuf::from(std::env::var_os("HUSK_SESSION_DB").unwrap());
+    let path = PathBuf::from(std::env::var_os("AGENT_SESSION_DB").unwrap());
     let root = path.parent().unwrap().join("workspace");
     std::fs::create_dir_all(&root).unwrap();
 

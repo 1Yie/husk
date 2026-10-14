@@ -130,24 +130,37 @@ pub fn workspace_key(root: &Path) -> String {
     format!("{h:016x}")
 }
 
-pub fn dirs_data() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+/// The host's data directory.
+///
+/// The session database — and the global preferences that live beside it — are
+/// process-wide singletons, so this cannot be a per-call argument: the host
+/// sets it once at startup ([`init_data_dir`], called from
+/// `SessionManager::spawn_at`). Directory resolution and any rename migration
+/// belong to the product, which knows its own name.
+static DATA_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Point the store at the host's data directory. Idempotent per directory; a
+/// later call replaces the value so a manager booted at another root sees its
+/// own. The database itself is opened lazily on first use.
+pub fn init_data_dir(dir: PathBuf) {
+    if let Ok(mut w) = DATA_DIR.write() {
+        *w = Some(dir);
+    }
 }
 
-/// The app's data root: `~/.local/share/husk` — renamed from `agent-rs`
-/// when the product got its name. A one-time `fs::rename` moves the whole
-/// legacy tree (sessions/memory.db/prefs) over when the new dir is absent,
-/// so existing installs keep their data.
+/// The data directory the host supplied, if any.
+///
+/// A test binary gets one throwaway directory for the whole process instead:
+/// the store is a process-wide singleton, so parallel tests must agree on the
+/// directory or they would clobber each other's value.
 pub fn app_data_dir() -> Option<PathBuf> {
-    let base = dirs_data()?;
-    let dir = base.join("husk");
-    let legacy = base.join("agent-rs");
-    if !dir.exists() && legacy.is_dir() {
-        let _ = std::fs::rename(&legacy, &dir);
+    if is_test_binary() {
+        return Some(std::env::temp_dir().join(format!(
+            "agent-test-{}-data",
+            std::process::id()
+        )));
     }
-    Some(dir)
+    DATA_DIR.read().ok().and_then(|d| d.clone())
 }
 
 /// The office-mode pseudo-workspace root: `~/.local/share/husk/office`.
@@ -216,10 +229,13 @@ pub(crate) fn is_test_binary() -> bool {
 /// temp copy mirror `global_db`'s own rules so diagnostics name the right
 /// file.
 pub(crate) fn sessions_db_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("HUSK_SESSION_DB") {
+    if let Ok(p) = std::env::var("AGENT_SESSION_DB") {
         Some(std::path::PathBuf::from(p))
     } else if is_test_binary() {
-        Some(std::env::temp_dir().join(format!("husk-test-{}-jsonl-sessions", std::process::id())))
+        Some(std::env::temp_dir().join(format!(
+            "agent-test-{}-jsonl-sessions",
+            std::process::id()
+        )))
     } else {
         app_data_dir().map(|d| d.join(DB_FILE))
     }
