@@ -19,7 +19,9 @@ declare -A ALLOW=(
   # extension ecosystem
   [agent-plugin]="agent-llm agent-paths agent-sandbox"
   # the tool contract — a leaf that knows no product, only the wire types
-  [agent-tool]="agent-computer agent-llm agent-paths agent-sandbox"
+  [agent-tool]="agent-computer agent-llm agent-sandbox"
+  # optional host adapters — never a kernel dependency
+  [agent-capabilities]="agent-paths agent-tool"
   # skills are knowledge, not capability — no kernel, no products
   [agent-skills]=""
   # where the app keeps its files — pure path resolution, names no product
@@ -29,11 +31,11 @@ declare -A ALLOW=(
   # workspace file tools — generic over the context, so nothing of the kernel
   [agent-tools-fs]="agent-tool"
   # networking tools — same pattern
-  [agent-tools-web]="agent-llm agent-tool"
+  [agent-tools-web]="agent-capabilities agent-llm agent-tool"
   # process tools — these also need the sandbox seam
   [agent-tools-shell]="agent-sandbox agent-tool"
   # screen tools — the desktop seam is optional by design
-  [agent-tools-computer]="agent-computer agent-llm agent-paths agent-tool"
+  [agent-tools-computer]="agent-capabilities agent-computer agent-llm agent-paths agent-tool"
   # document tools — share the shell package's sandbox derivation
   [agent-tools-office]="agent-sandbox agent-tool agent-tools-shell"
   # serena MCP bridge — spawns a stdio child, generic over the context
@@ -41,9 +43,9 @@ declare -A ALLOW=(
   # the coding product's semantics — depends on the kernel, never the reverse
   [agent-coding]="agent-context agent-ipc agent-kernel agent-llm agent-skills agent-tools-fs"
   # host layer over the kernel — session assembly, commands, modes, sandbox prefs
-  [husk-host]="agent-coding agent-skills agent-store agent-context agent-ipc agent-kernel agent-llm agent-paths agent-plugin agent-sandbox agent-tools-computer agent-tools-fs agent-tools-office agent-tools-serena agent-tools-shell agent-tools-web"
+  [husk-host]="agent-capabilities agent-coding agent-skills agent-store agent-context agent-ipc agent-kernel agent-llm agent-paths agent-plugin agent-sandbox agent-tools-computer agent-tools-fs agent-tools-office agent-tools-serena agent-tools-shell agent-tools-web"
   # runtime
-  [agent-kernel]="agent-computer agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-tool"
+  [agent-kernel]="agent-computer agent-ipc agent-llm agent-plugin agent-sandbox agent-tool"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths agent-store husk-host"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host"

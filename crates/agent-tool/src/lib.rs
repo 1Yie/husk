@@ -63,53 +63,37 @@ impl Extensions {
     }
 }
 
-/// What a workspace-scoped tool needs from the context it runs in.
+/// Generic host services and cancellation available to a tool.
 ///
-/// The kernel's `ToolCtx` implements this; the tools themselves only name the
-/// trait, so a tool crate can be written, tested and shipped without depending
-/// on the kernel that drives it. `root`/`cancel_flag` are accessors rather than
-/// fields because a generic `C` has no fields to reach for.
-pub trait WorkspaceCtx: Send + Sync + 'static {
-    /// Canonical workspace root — path args resolve against this.
-    fn root(&self) -> &std::path::Path;
+/// The kernel's `ToolCtx` implements this; capability adapters name the trait
+/// so they can be written, tested and shipped without depending on the kernel.
+pub trait ToolContext: Send + Sync + 'static {
+    fn extensions(&self) -> &Extensions;
+    fn extensions_mut(&mut self) -> &mut Extensions;
 
-    /// The parent turn's cooperative cancel flag, if this context has one.
-    fn cancel_flag(&self) -> Option<Arc<std::sync::atomic::AtomicBool>>;
-
-    /// Resolve a model-supplied path against the workspace root and prove it
-    /// stays inside. Returns the canonical path or a sandbox-escape error.
-    fn resolve(&self, path: &str) -> Result<std::path::PathBuf, ToolError>;
-
-    /// The host's app directories — a tool that keeps workspace-local state
-    /// (attachments, caches) or names itself in a `User-Agent` reads them from
-    /// here. The default is a product-free directory under the workspace root,
-    /// so a bare test context still gets a defined, private-looking place.
-    fn app_paths(&self) -> agent_paths::AppPaths {
-        agent_paths::AppPaths::new(
-            self.root().join(".agent/config"),
-            self.root().join(".agent/data"),
-            ".agent",
-        )
+    /// The parent turn's cooperative cancel flag, if one is installed.
+    fn cancel_flag(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        None
     }
 
-    /// The workspace-local state dir a tool keeps scratch files in — the host's
-    /// installed workspace dir, or the product-free default from
-    /// [`app_paths`](Self::app_paths).
-    fn workspace_state_dir(&self) -> std::path::PathBuf {
-        self.app_paths().workspace_dir(self.root())
-    }
-
-    /// A typed host service installed on this context, by type. The default
-    /// has none; a context backed by [`Extensions`] answers from it. This is
-    /// how a tool crate reaches a capability the host defines for it (the file
-    /// tools' write observer) without this crate naming it.
+    /// A typed host service. Capability adapters use this table without the
+    /// contract naming any backend or product type.
     fn service<T: Any + Send + Sync>(&self) -> Option<Arc<T>>
     where
         Self: Sized,
     {
-        let _ = self;
-        None
+        self.extensions().get::<T>()
     }
+}
+
+/// The workspace view used by local tools.
+pub trait WorkspaceCtx: ToolContext {
+    /// Canonical workspace root — path args resolve against this.
+    fn root(&self) -> &std::path::Path;
+
+    /// Resolve a model-supplied path against the workspace root and prove it
+    /// stays inside. Returns the canonical path or a sandbox-escape error.
+    fn resolve(&self, path: &str) -> Result<std::path::PathBuf, ToolError>;
 }
 
 /// What a screen-driving tool needs from the context it runs in.

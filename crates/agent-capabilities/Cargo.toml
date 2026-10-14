@@ -1,0 +1,10 @@
+[package]
+name = "agent-capabilities"
+version = "0.1.0"
+edition = "2021"
+description = "Optional host capability adapters for the generic tool context"
+license = "MIT"
+
+[dependencies]
+agent-tool = { path = "../agent-tool" }
+agent-paths = { path = "../agent-paths" }

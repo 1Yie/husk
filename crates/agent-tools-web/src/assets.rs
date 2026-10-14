@@ -17,6 +17,7 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use crate::net;
+use agent_capabilities::WorkspacePaths;
 use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// Refuse to attach images larger than this — bigger payloads mostly break

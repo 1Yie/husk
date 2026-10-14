@@ -29,6 +29,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-capabilities"
+version = "0.1.0"
+dependencies = [
+ "agent-paths",
+ "agent-tool",
+]
+
+[[package]]
 name = "agent-coding"
 version = "0.1.0"
 dependencies = [
@@ -104,7 +112,6 @@ dependencies = [
  "agent-computer",
  "agent-ipc",
  "agent-llm",
- "agent-paths",
  "agent-plugin",
  "agent-sandbox",
  "agent-testkit",
@@ -230,7 +237,6 @@ version = "0.1.0"
 dependencies = [
  "agent-computer",
  "agent-llm",
- "agent-paths",
  "agent-sandbox",
  "futures",
  "schemars 1.2.2",
@@ -242,6 +248,7 @@ dependencies = [
 name = "agent-tools-computer"
 version = "0.1.0"
 dependencies = [
+ "agent-capabilities",
  "agent-computer",
  "agent-llm",
  "agent-paths",
@@ -333,6 +340,7 @@ dependencies = [
 name = "agent-tools-web"
 version = "0.1.0"
 dependencies = [
+ "agent-capabilities",
  "agent-llm",
  "agent-tool",
  "futures",
@@ -4082,6 +4090,7 @@ dependencies = [
 name = "husk-host"
 version = "0.1.0"
 dependencies = [
+ "agent-capabilities",
  "agent-coding",
  "agent-computer",
  "agent-context",

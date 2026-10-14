@@ -2,6 +2,7 @@
 //! scripted provider, no network.
 
 use agent_testkit::ScriptedProvider;
+use agent_capabilities::WorkspacePaths;
 
 use std::sync::Arc;
 

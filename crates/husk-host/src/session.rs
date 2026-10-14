@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_coding::tracker::WriteTracker;
+use agent_capabilities::WorkspacePaths;
 use agent_context::{
     git_snapshot, memory::TurnRecord, MemoryStore, TrackingMode, TurnDistiller,
     WorkspaceScanner,

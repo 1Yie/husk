@@ -19,6 +19,7 @@ pub mod util;
 /// production implementation; this exists so the tests live where the tools do.
 #[cfg(test)]
 pub(crate) struct TestCtx {
+    ext: agent_tool::Extensions,
     root: std::path::PathBuf,
     sandbox: std::sync::Arc<dyn agent_sandbox::SandboxBackend>,
 }
@@ -31,6 +32,7 @@ impl TestCtx {
     ) -> Self {
         let root = root.as_ref();
         Self {
+            ext: Default::default(),
             root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
             sandbox,
         }
@@ -38,13 +40,20 @@ impl TestCtx {
 }
 
 #[cfg(test)]
+impl agent_tool::ToolContext for TestCtx {
+    fn extensions(&self) -> &agent_tool::Extensions {
+        &self.ext
+    }
+
+    fn extensions_mut(&mut self) -> &mut agent_tool::Extensions {
+        &mut self.ext
+    }
+}
+
+#[cfg(test)]
 impl agent_tool::WorkspaceCtx for TestCtx {
     fn root(&self) -> &std::path::Path {
         &self.root
-    }
-
-    fn cancel_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
-        None
     }
 
     fn resolve(&self, path: &str) -> Result<std::path::PathBuf, agent_tool::ToolError> {

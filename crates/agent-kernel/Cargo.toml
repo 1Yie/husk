@@ -9,7 +9,6 @@ license = "MIT"
 agent-tool = { path = "../agent-tool" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }
-agent-paths = { path = "../agent-paths" }
 agent-sandbox = { path = "../agent-sandbox" }
 agent-computer = { path = "../agent-computer" }
 agent-plugin = { path = "../agent-plugin" }

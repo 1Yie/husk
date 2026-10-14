@@ -12,8 +12,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_paths::AppPaths;
-
 use super::registry::{Extensions, ToolCtx, ToolError};
 
 /// The structured-question channel — `ask_question` parks a oneshot here,
@@ -152,23 +150,7 @@ pub struct SessionSlot(pub i64);
 /// an unknown name. Absent where no plugin router is installed.
 pub struct PluginSlot(pub crate::engine::PluginHandle);
 
-/// The host's app directories. Tools that keep workspace-local state
-/// (attachments, subagent transcripts, repo-local agent manifests) derive
-/// their directory from the installed workspace state dir name instead of
-/// hardcoding the product's.
-pub struct AppPathsSlot(pub AppPaths);
-
 impl ToolCtx {
-    /// The host's app directories, if installed.
-    pub fn paths(&self) -> Option<AppPaths> {
-        self.ext.get::<AppPathsSlot>().map(|s| s.0.clone())
-    }
-
-    /// Install the host's app directories.
-    pub fn install_paths(&mut self, paths: AppPaths) {
-        self.ext.insert_shared(Arc::new(AppPathsSlot(paths)));
-    }
-
     /// The question channel, or a refusal when the context has no one to ask.
     pub fn ask(&self) -> Result<Arc<AskChannel>, ToolError> {
         self.ext

@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use agent_kernel::engine::{Engine, EngineIo};
+use agent_capabilities::WorkspacePaths;
 use agent_kernel::tools::ToolCtx;
 
 use agent_testkit::ScriptedProvider;

@@ -15,7 +15,7 @@ use std::sync::Arc;
 // items instantiated for this kernel's `ToolCtx`.
 pub use agent_tool::{
     arg_str, arg_usize, schema_for, Args, Commit, Extensions, Review, ToolClass,
-    ToolError, ToolResult,
+    ToolContext, ToolError, ToolResult,
 };
 /// A tool's exec, instantiated for [`ToolCtx`].
 pub type ExecFn = agent_tool::ExecFn<ToolCtx>;
@@ -128,35 +128,23 @@ impl ToolCtx {
 /// What the file tools need from this context. The tools live in
 /// `agent-tools-fs` and are generic over the trait, so they never name
 /// `ToolCtx`; this is the one place the two are tied together.
-impl agent_tool::WorkspaceCtx for ToolCtx {
-    fn root(&self) -> &Path {
-        &self.workspace_root
+impl agent_tool::ToolContext for ToolCtx {
+    fn extensions(&self) -> &Extensions {
+        &self.ext
+    }
+
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.ext
     }
 
     fn cancel_flag(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
         self.cancel.clone()
     }
+}
 
-    /// The host's installed directories. This override is load-bearing: the
-    /// trait's default ignores the slot, and `workspace_state_dir` (a trait
-    /// method) resolves `self.app_paths()` through the trait, not to an
-    /// inherent method — a tool would silently write to `<ws>/.agent` while the
-    /// host thought it had set something else.
-    fn app_paths(&self) -> agent_paths::AppPaths {
-        self.ext
-            .get::<crate::tools::host_slots::AppPathsSlot>()
-            .map(|s| s.0.clone())
-            .unwrap_or_else(|| {
-                agent_paths::AppPaths::new(
-                    self.workspace_root.join(".agent/config"),
-                    self.workspace_root.join(".agent/data"),
-                    ".agent",
-                )
-            })
-    }
-
-    fn service<T: std::any::Any + Send + Sync>(&self) -> Option<Arc<T>> {
-        self.ext.get::<T>()
+impl agent_tool::WorkspaceCtx for ToolCtx {
+    fn root(&self) -> &Path {
+        &self.workspace_root
     }
 
     /// Resolve a model-supplied path against the workspace root and prove it

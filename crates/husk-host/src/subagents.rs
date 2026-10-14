@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+use agent_capabilities::WorkspacePaths;
 use agent_kernel::tools::delegate::{ChildSpec, SubagentHost};
-use agent_kernel::tools::registry::{ToolCtx, WorkspaceCtx};
+use agent_kernel::tools::registry::ToolCtx;
 use agent_llm::types::ChatMessage;
 
 pub struct HuskSubagents;

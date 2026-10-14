@@ -7,9 +7,6 @@ edition = "2021"
 # The contract names no product. `agent-llm` is a leaf (the wire types a tool
 # result can carry); everything else is a third-party crate.
 agent-llm = { path = "../agent-llm" }
-# Pure path resolution, a leaf: tools that name themselves in a User-Agent
-# or keep workspace-local state need somewhere to look.
-agent-paths = { path = "../agent-paths" }
 agent-sandbox = { path = "../agent-sandbox" }
 agent-computer = { path = "../agent-computer" }
 futures.workspace = true

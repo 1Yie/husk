@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use agent_capabilities::WorkspacePaths;
 use agent_computer::{DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir};
 use husk_host::mode::AgentMode;
 use agent_kernel::permissions::{CallRisk, Decision, PermissionGate, PermissionMode};
