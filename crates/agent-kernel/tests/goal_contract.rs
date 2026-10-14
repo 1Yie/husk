@@ -10,6 +10,23 @@ use agent_llm::types::NoticeKind;
 
 mod common;
 use common::ScriptedProvider;
+use agent_llm::types::StreamChunk;
+
+fn tool_call(name: &str, args: serde_json::Value) -> Vec<StreamChunk> {
+    vec![
+        StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: Some("call_1".into()),
+            name: Some(name.into()),
+            args_delta: args.to_string(),
+        },
+        StreamChunk::Done {
+            prompt_tokens: Some(5),
+            completion_tokens: Some(5),
+            cached_tokens: None,
+        },
+    ]
+}
 
 fn spawn(
     dir: &std::path::Path,
@@ -80,4 +97,55 @@ async fn undeclared_goal_is_nudged_up_to_the_cap_then_released() {
         }
     }
     assert!(finished, "the released turn must end with an answer");
+}
+
+/// Order contract: the goal pushback runs before the blueprint check. A round
+/// that is pushed back for an undeclared goal must not also be checked against
+/// `.blueprint/`, so a blueprint violation is not reported during a goal nudge.
+///
+/// The violating file is written by a tool this turn, so the blueprint check
+/// has a touched file to report on. Without a write it would be a no-op and the
+/// assertion would hold for the wrong reason.
+#[tokio::test]
+async fn goal_pushback_runs_before_the_blueprint_check() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".blueprint")).unwrap();
+    std::fs::write(
+        dir.path().join(".blueprint/core.md"),
+        "+++\nowns = [\"src/**\"]\n+++\nCore engine.\n",
+    )
+    .unwrap();
+
+    let stub = Arc::new(ScriptedProvider::new());
+    // Round 1: write a file no node owns (a blueprint error for this turn).
+    stub.push_script(tool_call(
+        "apply_patch",
+        serde_json::json!({"patch": "*** Begin Patch\n*** Add File: loose/a.rs\n+fn a() {}\n*** End Patch\n"}),
+    ));
+    // Round 2 onward: go quiet without declaring the goal.
+    for _ in 0..3 {
+        stub.script_text("still thinking");
+    }
+    let (mut actor, _ch) = spawn(dir.path(), stub.clone(), "goal");
+
+    actor
+        .handle(UiCommand::Prompt {
+            text: "make progress".into(),
+        })
+        .await;
+
+    let hidden: Vec<String> = actor
+        .history()
+        .iter()
+        .filter(|m| m.notice == Some(NoticeKind::Hidden))
+        .filter_map(|m| m.content.clone())
+        .collect();
+    assert!(
+        hidden.iter().any(|h| h.contains("目标尚未宣告完成")),
+        "goal pushback fired: {hidden:?}"
+    );
+    assert!(
+        !hidden.iter().any(|h| h.contains("架构蓝图检查未通过")),
+        "blueprint check must not run during a goal pushback: {hidden:?}"
+    );
 }
