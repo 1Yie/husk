@@ -7,8 +7,6 @@ edition = "2021"
 # The contract names no product. `agent-llm` is a leaf (the wire types a tool
 # result can carry); everything else is a third-party crate.
 agent-llm = { path = "../agent-llm" }
-agent-sandbox = { path = "../agent-sandbox" }
-agent-computer = { path = "../agent-computer" }
 futures.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

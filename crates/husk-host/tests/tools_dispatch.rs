@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use agent_capabilities::SandboxCtx;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
 fn registry() -> ToolRegistry {

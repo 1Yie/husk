@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 agent-tool = { path = "../agent-tool" }
-agent-capabilities = { path = "../agent-capabilities" }
+agent-capabilities = { path = "../agent-capabilities", features = ["desktop"] }
 agent-computer = { path = "../agent-computer" }
 agent-paths = { path = "../agent-paths" }
 agent-llm = { path = "../agent-llm" }

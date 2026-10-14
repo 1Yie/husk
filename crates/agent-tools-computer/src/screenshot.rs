@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
-use agent_capabilities::WorkspacePaths;
-use agent_tool::{schema_for, DesktopCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::{DesktopCtx, WorkspacePaths};
+use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// No model-facing arguments: a full-screen capture is the only useful shape
 /// (a region would need a screenshot first to choose it).

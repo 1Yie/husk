@@ -10,7 +10,8 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use agent_tool::{schema_for, Args, SandboxCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::SandboxCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 use crate::sandbox_cfg::sandbox_config;
 
 /// Shell output cap per truncation table (~5k tok).

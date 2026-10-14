@@ -1,6 +1,6 @@
 //! Computer-use tools: drive the screen, and capture it.
 //!
-//! Generic over [`agent_tool::WorkspaceCtx`] and [`agent_tool::DesktopCtx`], so
+//! Generic over [`agent_tool::WorkspaceCtx`] and [`agent_capabilities::DesktopCtx`], so
 //! this crate names no kernel type. The backend is a host-installed capability:
 //! a headless host installs none and both tools refuse with a reason.
 
@@ -13,7 +13,6 @@ pub mod screenshot;
 pub(crate) struct TestCtx {
     ext: agent_tool::Extensions,
     root: std::path::PathBuf,
-    desktop: std::sync::Arc<dyn agent_computer::DesktopBackend>,
     /// Set by the cancellation test, which needs a flag it can flip mid-call.
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
@@ -25,10 +24,11 @@ impl TestCtx {
         desktop: std::sync::Arc<dyn agent_computer::DesktopBackend>,
     ) -> Self {
         let root = root.as_ref();
+        let mut ext = agent_tool::Extensions::default();
+        ext.insert_shared(std::sync::Arc::new(agent_capabilities::DesktopSlot(desktop)));
         Self {
-            ext: Default::default(),
+            ext,
             root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
-            desktop,
             cancel: None,
         }
     }
@@ -62,14 +62,5 @@ impl agent_tool::WorkspaceCtx for TestCtx {
             return Err(agent_tool::ToolError::PathEscape(path.to_string()));
         }
         Ok(canon)
-    }
-}
-
-#[cfg(test)]
-impl agent_tool::DesktopCtx for TestCtx {
-    fn desktop(
-        &self,
-    ) -> Result<std::sync::Arc<dyn agent_computer::DesktopBackend>, agent_tool::ToolError> {
-        Ok(self.desktop.clone())
     }
 }

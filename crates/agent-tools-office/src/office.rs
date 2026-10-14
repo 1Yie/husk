@@ -23,7 +23,8 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use agent_tool::{schema_for, SandboxCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::SandboxCtx;
+use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 use agent_tools_shell::sandbox_cfg::sandbox_config;
 
 const MAX_OUTPUT_CHARS: usize = 20 * 1024;

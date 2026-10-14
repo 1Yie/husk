@@ -9,8 +9,6 @@ license = "MIT"
 agent-tool = { path = "../agent-tool" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }
-agent-sandbox = { path = "../agent-sandbox" }
-agent-computer = { path = "../agent-computer" }
 agent-plugin = { path = "../agent-plugin" }
 async-trait.workspace = true
 futures.workspace = true
@@ -25,7 +23,6 @@ schemars.workspace = true
 [dev-dependencies]
 agent-testkit = { path = "../agent-testkit" }
 tempfile = "3"
-agent-computer = { path = "../agent-computer" }
 async-trait.workspace = true
 
 [features]

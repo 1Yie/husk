@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 agent-tool = { path = "../agent-tool" }
+agent-capabilities = { path = "../agent-capabilities", features = ["sandbox"] }
 agent-sandbox = { path = "../agent-sandbox" }
 futures.workspace = true
 serde.workspace = true

@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use agent_capabilities::DesktopCtx;
 use agent_ipc::UiEvent;
 use agent_kernel::engine::{Engine, EngineIo};
 use agent_kernel::permissions::{PermissionGate, PermissionMode};

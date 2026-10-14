@@ -1,6 +1,6 @@
 //! Process tools: run a shell command, run a test suite, keep a service up.
 //!
-//! Generic over [`agent_tool::WorkspaceCtx`] and [`agent_tool::SandboxCtx`], so
+//! Generic over [`agent_tool::WorkspaceCtx`] and [`agent_capabilities::SandboxCtx`], so
 //! this crate names no kernel type. `sandbox_cfg` is the shared
 //! audit-verdict-to-`SandboxConfig` derivation both `bash` and `test_runner`
 //! go through, so a test run is not a lesser command than a shell run.
@@ -21,7 +21,6 @@ pub mod util;
 pub(crate) struct TestCtx {
     ext: agent_tool::Extensions,
     root: std::path::PathBuf,
-    sandbox: std::sync::Arc<dyn agent_sandbox::SandboxBackend>,
 }
 
 #[cfg(test)]
@@ -31,10 +30,11 @@ impl TestCtx {
         sandbox: std::sync::Arc<dyn agent_sandbox::SandboxBackend>,
     ) -> Self {
         let root = root.as_ref();
+        let mut ext = agent_tool::Extensions::default();
+        ext.insert_shared(std::sync::Arc::new(agent_capabilities::SandboxSlot(sandbox)));
         Self {
-            ext: Default::default(),
+            ext,
             root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
-            sandbox,
         }
     }
 }
@@ -65,18 +65,5 @@ impl agent_tool::WorkspaceCtx for TestCtx {
             return Err(agent_tool::ToolError::PathEscape(path.to_string()));
         }
         Ok(canon)
-    }
-}
-
-#[cfg(test)]
-impl agent_tool::SandboxCtx for TestCtx {
-    fn sandbox(
-        &self,
-    ) -> Result<std::sync::Arc<dyn agent_sandbox::SandboxBackend>, agent_tool::ToolError> {
-        Ok(self.sandbox.clone())
-    }
-
-    fn sandbox_limits(&self) -> agent_sandbox::SandboxLimits {
-        agent_sandbox::SandboxLimits::default()
     }
 }

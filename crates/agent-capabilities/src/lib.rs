@@ -1,5 +1,14 @@
 //! Host capability adapters. The kernel does not depend on this crate.
 
+#[cfg(feature = "sandbox")]
+pub mod sandbox;
+#[cfg(feature = "sandbox")]
+pub use sandbox::{SandboxCtx, SandboxLimitsSlot, SandboxSlot};
+#[cfg(feature = "desktop")]
+pub mod desktop;
+#[cfg(feature = "desktop")]
+pub use desktop::{DesktopCtx, DesktopSlot};
+
 use std::sync::Arc;
 
 use agent_paths::AppPaths;

@@ -8,3 +8,10 @@ license = "MIT"
 [dependencies]
 agent-tool = { path = "../agent-tool" }
 agent-paths = { path = "../agent-paths" }
+agent-sandbox = { path = "../agent-sandbox", optional = true }
+agent-computer = { path = "../agent-computer", optional = true }
+
+[features]
+default = []
+sandbox = ["dep:agent-sandbox"]
+desktop = ["dep:agent-computer"]

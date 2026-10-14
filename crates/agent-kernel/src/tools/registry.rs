@@ -27,7 +27,7 @@ pub type ToolSpec = agent_tool::ToolSpec<ToolCtx>;
 pub use crate::tools::host_slots::*;
 
 // The context contracts the tool packages are generic over.
-pub use agent_tool::{DesktopCtx, SandboxCtx, WorkspaceCtx};
+pub use agent_tool::WorkspaceCtx;
 
 
 /// Shared context handed to every tool invocation.
@@ -204,47 +204,7 @@ impl agent_tool::WorkspaceCtx for ToolCtx {
     }
 }
 
-/// The process-execution half of the context contract. The shell tools live in
-/// `agent-tools-shell` and are generic over it, so the trait impl is the only
-/// implementation — there is no inherent twin for it to drift from.
-impl agent_tool::SandboxCtx for ToolCtx {
-    /// The host decides which backend is installed (the detected one, a `none`
-    /// backend when the user turned isolation off, or nothing at all); this
-    /// only reads what it installed. Refuses when nothing is installed, so a
-    /// shell command can never run unisolated by omission.
-    fn sandbox(&self) -> Result<Arc<dyn agent_sandbox::SandboxBackend>, ToolError> {
-        self.ext
-            .get::<crate::tools::host_slots::SandboxSlot>()
-            .map(|s| s.0.clone())
-            .ok_or_else(|| {
-                ToolError::Failed("shell execution is not available in this context".into())
-            })
-    }
 
-    /// The host's standing overrides, or the defaults when none were installed.
-    fn sandbox_limits(&self) -> agent_sandbox::SandboxLimits {
-        self.ext
-            .get::<crate::tools::host_slots::SandboxLimitsSlot>()
-            .map(|s| s.0.clone())
-            .unwrap_or_default()
-    }
-}
-
-/// The screen-driving half of the context contract. The computer-use tools are
-/// generic over it; like `SandboxCtx` this impl is the only implementation.
-impl agent_tool::DesktopCtx for ToolCtx {
-    /// Refuses with the same wording as the other missing services when the
-    /// host did not install a backend — a headless host gets a reason, not a
-    /// panic, and the kernel never probes hardware itself.
-    fn desktop(&self) -> Result<Arc<dyn agent_computer::DesktopBackend>, ToolError> {
-        self.ext
-            .get::<crate::tools::host_slots::DesktopSlot>()
-            .map(|s| s.0.clone())
-            .ok_or_else(|| {
-                ToolError::Failed("desktop control is not available in this context".into())
-            })
-    }
-}
 
 /// Name → spec map. `BTreeMap` keeps the `tools` array deterministic
 /// (provider prompt-cache friendly).
@@ -368,10 +328,7 @@ mod tests {
         assert!(Arc::ptr_eq(&parent_goal, &scoped_goal));
         // A subagent ctx is built fresh: its slots start empty, and whatever
         // the host installs into it is a different pair than the parent's.
-        let mut child = ToolCtx::with_sandbox(
-            std::env::temp_dir(),
-            Arc::new(agent_sandbox::NoneBackend),
-        );
+        let mut child = ToolCtx::new(std::env::temp_dir());
         assert!(child.require::<Marker>("contract").is_err());
         child.ext.insert(Arc::new(Marker(9)));
         let child_goal = child.require::<Marker>("contract").unwrap();
@@ -391,53 +348,9 @@ mod tests {
         assert!(err.to_string().contains("contract control is not available"));
     }
 
-    #[test]
-    fn a_context_without_a_desktop_refuses_and_never_probes() {
-        // The kernel no longer probes hardware in `new`: a host with no display
-        // (an SSH worker, CI) gets a refusal with a reason, not a panic.
-        let ctx = ToolCtx::new(std::env::temp_dir());
-        let err = ctx.desktop().err().expect("no desktop was installed");
-        assert!(err.to_string().contains("desktop control is not available"));
-    }
 
-    #[test]
-    fn child_inherits_only_the_desktop_not_the_controllers() {
-        let mut parent = ToolCtx::new(std::env::temp_dir()).with_desktop(Arc::new(
-            agent_computer::NoneBackend::new("probe"),
-        ));
-        parent.ext.insert(Arc::new(Marker(1)));
-        let mut child = ToolCtx::new(std::env::temp_dir());
-        child.ext = parent.ext.inheritable();
-        // The same backend instance, so a child screenshot steers the parent's
-        // coordinate mapping exactly as the parent's own would.
-        assert!(Arc::ptr_eq(
-            &parent.desktop().unwrap(),
-            &child.desktop().unwrap()
-        ));
-        // And nothing else was copied wholesale: the parent's slots (including
-        // the contract controllers a host installs) do not leak into the child.
-        assert!(child.require::<Marker>("contract").is_err());
-    }
 
-    #[test]
-    fn a_context_without_a_sandbox_refuses_shell_execution() {
-        // An SSH worker installs no local sandbox. `bash` must refuse, not run
-        // unisolated because nobody said otherwise.
-        let ctx = ToolCtx::new(std::env::temp_dir());
-        let err = ctx.sandbox().err().expect("no sandbox was installed");
-        assert!(err.to_string().contains("shell execution is not available"));
-    }
 
-    #[test]
-    fn an_installed_none_backend_still_runs_and_says_so() {
-        // A deliberately disabled sandbox is a different state from an absent
-        // one: the backend is present, reports `none`, and commands still run.
-        let ctx = ToolCtx::with_sandbox(
-            std::env::temp_dir(),
-            Arc::new(agent_sandbox::NoneBackend),
-        );
-        assert_eq!(ctx.sandbox().unwrap().id(), "none");
-    }
 
     #[test]
     fn ask_is_refused_without_a_host_channel_and_shared_after_cancel_scope() {
@@ -536,28 +449,6 @@ mod tests {
         assert!(Arc::ptr_eq(&routed.plugins().unwrap(), &handle));
     }
 
-    #[test]
-    fn child_inherits_the_sandbox_and_its_limits() {
-        let mut parent = ToolCtx::with_sandbox(
-            std::env::temp_dir(),
-            Arc::new(agent_sandbox::NoneBackend),
-        )
-        .with_sandbox_limits(agent_sandbox::SandboxLimits {
-            network: Some(false),
-            ..Default::default()
-        });
-        // A slot the host installed (the contract controllers live in
-        // agent-coding now — a marker stands in for the scoping check).
-        parent.ext.insert(Arc::new(Marker(1)));
-        let mut child = ToolCtx::new(std::env::temp_dir());
-        child.ext = parent.ext.inheritable();
-        // The child's bash must obey the host's forced network policy.
-        assert_eq!(child.sandbox_limits().network, Some(false));
-        assert!(child.sandbox().is_ok());
-        // And nothing else was copied wholesale: the parent's slots (including
-        // the contract controllers a host installs) do not leak into the child.
-        assert!(child.require::<Marker>("contract").is_err());
-    }
 
     #[test]
     fn extension_keys_by_type_not_by_value() {

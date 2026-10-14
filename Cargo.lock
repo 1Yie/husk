@@ -32,7 +32,9 @@ dependencies = [
 name = "agent-capabilities"
 version = "0.1.0"
 dependencies = [
+ "agent-computer",
  "agent-paths",
+ "agent-sandbox",
  "agent-tool",
 ]
 
@@ -109,11 +111,9 @@ dependencies = [
 name = "agent-kernel"
 version = "0.1.0"
 dependencies = [
- "agent-computer",
  "agent-ipc",
  "agent-llm",
  "agent-plugin",
- "agent-sandbox",
  "agent-testkit",
  "agent-tool",
  "anyhow",
@@ -235,9 +235,7 @@ dependencies = [
 name = "agent-tool"
 version = "0.1.0"
 dependencies = [
- "agent-computer",
  "agent-llm",
- "agent-sandbox",
  "futures",
  "schemars 1.2.2",
  "serde_json",
@@ -294,6 +292,7 @@ dependencies = [
 name = "agent-tools-office"
 version = "0.1.0"
 dependencies = [
+ "agent-capabilities",
  "agent-sandbox",
  "agent-tool",
  "agent-tools-shell",
@@ -324,6 +323,7 @@ dependencies = [
 name = "agent-tools-shell"
 version = "0.1.0"
 dependencies = [
+ "agent-capabilities",
  "agent-sandbox",
  "agent-tool",
  "anyhow",

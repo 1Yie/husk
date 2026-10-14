@@ -1,10 +1,9 @@
 //! Host-owned capability slots on [`ToolCtx`].
 //!
 //! Every slot here is a capability the *host* decides whether to provide:
-//! desktop control, a process sandbox, the question channel, the UI sink, the
-//! workspace memory handle, the owning session, the plugin router. The generic
-//! contract in `registry` knows none of them — it stores whatever the host
-//! installs in `Extensions` and refuses a tool whose capability is missing.
+//! the question channel, the UI sink, the subagent spawner, the owning session
+//! and the plugin router. Product backends live in `agent-capabilities`;
+//! the context stores whichever services its host installs in `Extensions`.
 //!
 //! Keeping these out of `registry` is what lets the tool contract be extracted
 //! without naming product types.
@@ -109,24 +108,6 @@ impl AskChannel {
     }
 }
 
-/// Newtype key for the desktop backend. The extension table is keyed by the
-/// concrete type, and `dyn DesktopBackend` is not one type per implementation,
-/// so the trait object is wrapped to give the slot a single identity.
-pub struct DesktopSlot(pub Arc<dyn agent_computer::DesktopBackend>);
-
-/// Newtype key for the process sandbox, same reason as [`DesktopSlot`].
-///
-/// Installed by the host. Absent means the host runs no local sandbox at all
-/// (an SSH worker); process tools then refuse rather than run unisolated by
-/// accident. An installed `none` backend is a different, deliberate state:
-/// the user turned the sandbox off, and `bash` still runs, loudly.
-pub struct SandboxSlot(pub Arc<dyn agent_sandbox::SandboxBackend>);
-
-/// The host's sandbox overrides (memory, processes, network policy). Optional:
-/// a context without one runs the audit's own defaults, which is what a host
-/// that never configured limits should get.
-pub struct SandboxLimitsSlot(pub agent_sandbox::SandboxLimits);
-
 /// The interactive question channel. Installed by the host that owns a user
 /// to answer; absent means headless (a subagent, a test), and `ask_question`
 /// refuses instead of parking on an answer nobody can give.
@@ -199,55 +180,6 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(None),
             ext: Extensions::default(),
         }
-    }
-
-    /// Explicit backend (tests / custom wiring): a context with `sandbox`
-    /// installed as its process sandbox.
-    pub fn with_sandbox(
-        root: impl Into<PathBuf>,
-        sandbox: Arc<dyn agent_sandbox::SandboxBackend>,
-    ) -> Self {
-        let root = root.into();
-        let root = root.canonicalize().unwrap_or(root);
-        let mut ctx = Self {
-            workspace_root: Arc::from(root.as_path()),
-            cancel: None,
-            depth: 0,
-            active_registry: std::sync::RwLock::new(None),
-            ext: Extensions::default(),
-        };
-        ctx.ext.insert_shared(Arc::new(SandboxSlot(sandbox)));
-        ctx
-    }
-
-    /// Install the desktop-control backend the computer-use tools drive.
-    ///
-    /// Optional by design: a host with no display (a remote SSH worker, a
-    /// headless CI run) simply doesn't install one, and `computer` /
-    /// `screenshot` refuse with a reason instead of the kernel probing hardware.
-    ///
-    /// Shared across clones: `with_cancel` hands out the same `Arc`, whose
-    /// `last` capture drives coordinate mapping for every `computer` call. A
-    /// screenshot taken in one tool call steers the click in the next, so a
-    /// `batch_execute` that fans out `screenshot`+`computer` items must keep
-    /// them sequenced, or the click can map onto the previous frame.
-    pub fn with_desktop(mut self, desktop: Arc<dyn agent_computer::DesktopBackend>) -> Self {
-        self.ext.insert_shared(Arc::new(DesktopSlot(desktop)));
-        self
-    }
-
-
-    /// Install the process sandbox on an existing context. `with_sandbox` is
-    /// the builder form; hosts that assemble a context in steps use this.
-    pub fn install_sandbox(&mut self, sandbox: Arc<dyn agent_sandbox::SandboxBackend>) {
-        self.ext.insert_shared(Arc::new(SandboxSlot(sandbox)));
-    }
-
-    /// Install the host's sandbox overrides. Optional: without this the audit's
-    /// own defaults apply.
-    pub fn with_sandbox_limits(mut self, limits: agent_sandbox::SandboxLimits) -> Self {
-        self.ext.insert_shared(Arc::new(SandboxLimitsSlot(limits)));
-        self
     }
 
     /// Attach the owning session's id. The kernel only needs the number — it

@@ -16,7 +16,8 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use agent_tool::{schema_for, Args, SandboxCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::SandboxCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 use crate::sandbox_cfg::sandbox_config;
 
 /// Failure-diagnostic budget (≤~300 tokens ≈ 1.2 KB of dense signal).

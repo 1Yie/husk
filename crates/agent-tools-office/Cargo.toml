@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 agent-tool = { path = "../agent-tool" }
+agent-capabilities = { path = "../agent-capabilities", features = ["sandbox"] }
 agent-sandbox = { path = "../agent-sandbox" }
 # `sandbox_cfg` and `util` are shared with the process tools rather than
 # duplicated: an officecli run obeys the same mount/network policy as bash.

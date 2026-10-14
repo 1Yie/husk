@@ -23,7 +23,8 @@ use std::sync::{Arc, LazyLock};
 use futures::FutureExt;
 use tokio::sync::Mutex;
 
-use agent_tool::{schema_for, Args, SandboxCtx, ToolError, ToolResult, ToolSpec};
+use agent_capabilities::SandboxCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 /// Cap on a `logs` read — services can write unbounded output.
 const MAX_LOG_BYTES: u64 = 256 * 1024;

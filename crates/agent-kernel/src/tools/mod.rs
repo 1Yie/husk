@@ -9,5 +9,5 @@ pub mod registry;
 pub mod todo;
 
 pub use registry::{
-    Args, DesktopCtx, SandboxCtx, ToolContext, ToolCtx, ToolRegistry, ToolResult, ToolSpec, WorkspaceCtx,
+    Args, ToolContext, ToolCtx, ToolRegistry, ToolResult, ToolSpec, WorkspaceCtx,
 };

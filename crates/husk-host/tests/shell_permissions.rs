@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use agent_capabilities::SandboxCtx;
 use agent_ipc::UiEvent;
 use agent_kernel::engine::{Engine, EngineIo};
 use agent_kernel::permissions::{CallRisk, Decision, PermissionGate, PermissionRules};
@@ -119,10 +120,9 @@ async fn engine_uses_the_tools_review_instead_of_parsing_command_arguments() {
                 },
             ]);
             provider.script_text("done");
-            let ctx = Arc::new(ToolCtx::with_sandbox(
-                dir.path(),
-                Arc::new(agent_sandbox::NoneBackend),
-            ));
+            let ctx = Arc::new(
+                ToolCtx::new(dir.path()).with_sandbox(Arc::new(agent_sandbox::NoneBackend)),
+            );
             let mut engine = Engine::new(
                 provider,
                 Arc::new(husk_host::session::base_registries().0),
