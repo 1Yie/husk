@@ -23,7 +23,7 @@ use std::sync::{Arc, LazyLock};
 use futures::FutureExt;
 use tokio::sync::Mutex;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_tool::{schema_for, Args, SandboxCtx, ToolError, ToolResult, ToolSpec};
 
 /// Cap on a `logs` read — services can write unbounded output.
 const MAX_LOG_BYTES: u64 = 256 * 1024;
@@ -58,8 +58,8 @@ fn log_dir() -> PathBuf {
 
 /// Spawn `command` as a registered background service via `wrap_spawn`.
 /// Called by `bash` when `persistent: true`. Returns the model-facing text.
-pub async fn spawn_persistent(
-    ctx: &ToolCtx,
+pub async fn spawn_persistent<C: SandboxCtx>(
+    ctx: &Arc<C>,
     cfg: &agent_sandbox::SandboxConfig,
     command: &str,
 ) -> Result<ToolResult, ToolError> {
@@ -159,7 +159,7 @@ struct ServiceArgs {
     tail_lines: Option<usize>,
 }
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "service",
         schema: schema_for::<ServiceArgs>(
@@ -170,13 +170,13 @@ pub fn spec() -> ToolSpec {
              agent process exits.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
-async fn exec(args: Args, _ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: SandboxCtx>(args: Args, _ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: ServiceArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("service args: {e}")))?;
     match parsed.action.as_str() {

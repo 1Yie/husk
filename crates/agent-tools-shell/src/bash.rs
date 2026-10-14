@@ -10,8 +10,8 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
-use super::sandbox_cfg::sandbox_config;
+use agent_tool::{schema_for, Args, SandboxCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use crate::sandbox_cfg::sandbox_config;
 
 /// Shell output cap per truncation table (~5k tok).
 const MAX_OUTPUT_CHARS: usize = 20 * 1024;
@@ -32,7 +32,7 @@ struct BashArgs {
     persistent: Option<bool>,
 }
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "bash",
         schema: schema_for::<BashArgs>(
@@ -52,13 +52,13 @@ pub fn spec() -> ToolSpec {
              reach out through the domain-allowlist proxy.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx + SandboxCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: BashArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(format!("bash args: {e}")))?;
     let timeout = parsed
@@ -70,18 +70,18 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     // Audit before spawn; its verdict becomes the result's risk tier.
     // Scoped to the workspace so out-of-scope writes flag ScopeViolation.
     let verdict =
-        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.workspace_root.as_ref()));
+        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()));
 
     let sandbox = ctx.sandbox()?;
     let cfg = sandbox_config(
         &verdict,
-        ctx.workspace_root.as_ref(),
+        ctx.root(),
         timeout,
         &ctx.sandbox_limits(),
     );
 
     if parsed.persistent.unwrap_or(false) {
-        return super::services::spawn_persistent(&ctx, &cfg, &parsed.command).await;
+        return crate::services::spawn_persistent(&ctx, &cfg, &parsed.command).await;
     }
 
     let output = sandbox
@@ -135,8 +135,8 @@ fn fold_output(raw: &str) -> String {
     let mut out = String::with_capacity(MAX_OUTPUT_CHARS + 80);
     // UTF-8-safe: byte-level head/tail clamps to char boundaries so CJK or
     // emoji in command output can't panic on a non-boundary index (P2).
-    out.push_str(crate::tools::util::head(raw, head));
+    out.push_str(crate::util::head(raw, head));
     out.push_str(&format!("\n… [truncated {omitted} bytes] …\n"));
-    out.push_str(crate::tools::util::tail(raw, tail));
+    out.push_str(crate::util::tail(raw, tail));
     out
 }

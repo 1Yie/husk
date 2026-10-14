@@ -279,28 +279,6 @@ impl ToolCtx {
         self.ext.insert(Arc::new(SubagentSlot(spawner)));
     }
 
-    /// The host's sandbox overrides, or the defaults when none were installed.
-    pub fn sandbox_limits(&self) -> crate::sandbox_prefs::SandboxLimits {
-        self.ext
-            .get::<SandboxLimitsSlot>()
-            .map(|s| s.0.clone())
-            .unwrap_or_default()
-    }
-
-    /// The sandbox a process tool dispatches through. The host decides which
-    /// backend is installed (the detected one, a `none` backend when the user
-    /// turned isolation off, or nothing at all); this only reads what it
-    /// installed. Refuses when nothing is installed, so `bash` can never run
-    /// unisolated by omission.
-    pub fn sandbox(&self) -> Result<Arc<dyn agent_sandbox::SandboxBackend>, ToolError> {
-        self.ext
-            .get::<SandboxSlot>()
-            .map(|s| s.0.clone())
-            .ok_or_else(|| {
-                ToolError::Failed("shell execution is not available in this context".into())
-            })
-    }
-
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let root = root.canonicalize().unwrap_or(root);

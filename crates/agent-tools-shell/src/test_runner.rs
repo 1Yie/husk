@@ -16,8 +16,8 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
-use super::sandbox_cfg::sandbox_config;
+use agent_tool::{schema_for, Args, SandboxCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use crate::sandbox_cfg::sandbox_config;
 
 /// Failure-diagnostic budget (≤~300 tokens ≈ 1.2 KB of dense signal).
 const MAX_DIAGNOSTIC_CHARS: usize = 4 * 1024;
@@ -32,7 +32,7 @@ struct TestRunnerArgs {
     focus: Option<String>,
 }
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "smart_test_runner",
         schema: schema_for::<TestRunnerArgs>(
@@ -42,24 +42,24 @@ pub fn spec() -> ToolSpec {
              `cargo test`, `pytest`, `vitest`/`jest`, `go test`.",
         ),
         readonly: false, // test runs can write caches/artifacts; gate via permissions
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx + SandboxCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: TestRunnerArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("smart_test_runner args: {e}")))?;
 
     // Same dispatch as `bash`: audit first, derive the config, run through the
     // backend (which owns env sanitization, limits and timeout tree-kill).
     let verdict =
-        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.workspace_root.as_ref()));
+        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()));
     let sandbox = ctx.sandbox()?;
     let cfg = sandbox_config(
         &verdict,
-        ctx.workspace_root.as_ref(),
+        ctx.root(),
         TIMEOUT,
         &ctx.sandbox_limits(),
     );
@@ -197,7 +197,7 @@ fn distill(raw: &str, focus: Option<&str>) -> String {
     out.push('\n');
     if out.len() > MAX_DIAGNOSTIC_CHARS {
         // UTF-8-safe truncate — a byte cut mid-char would panic (P2).
-        crate::tools::util::truncate(&mut out, MAX_DIAGNOSTIC_CHARS);
+        crate::util::truncate(&mut out, MAX_DIAGNOSTIC_CHARS);
     }
     out
 }
@@ -274,7 +274,7 @@ mod tests {
             "error: could not compile `demo`\n",
             false,
         );
-        let ctx = Arc::new(ToolCtx::with_sandbox(dir.path(), backend.clone()));
+        let ctx = Arc::new(crate::TestCtx::with_sandbox(dir.path(), backend.clone()));
         let out = exec(serde_json::json!({"command": "cargo test -p demo"}), ctx)
             .await
             .unwrap();
@@ -311,7 +311,7 @@ mod tests {
     async fn timeout_is_reported_as_tree_killed() {
         let dir = tempfile::tempdir().unwrap();
         let backend = FakeBackend::new(-1, "", "[timeout — process tree killed]", true);
-        let ctx = Arc::new(ToolCtx::with_sandbox(dir.path(), backend));
+        let ctx = Arc::new(crate::TestCtx::with_sandbox(dir.path(), backend));
         let out = exec(serde_json::json!({"command": "sleep 600"}), ctx)
             .await
             .unwrap();

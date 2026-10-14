@@ -7,6 +7,7 @@
 pub mod audit;
 pub mod env_sanitize;
 #[cfg(target_os = "linux")]
+pub mod limits;
 pub mod linux_bwrap;
 pub mod netpolicy;
 #[cfg(unix)]
@@ -32,6 +33,7 @@ pub use linux_landlock::{landlock_supported, LinuxLandlock};
 pub use mac_sandbox_exec::{sandbox_exec_on_path, MacSandboxExec};
 pub use none::NoneBackend;
 pub use traits::{CommandOutput, SandboxBackend, SandboxConfig, SandboxTier, SnapshotMode};
+pub use limits::{apply_limits, network_from_label, SandboxLimits};
 #[cfg(target_os = "windows")]
 pub use windows_job::WindowsJob;
 

@@ -17,6 +17,7 @@ agent-sandbox = { path = "../agent-sandbox" }
 agent-computer = { path = "../agent-computer" }
 agent-plugin = { path = "../agent-plugin" }
 agent-tools-fs = { path = "../agent-tools-fs" }
+agent-tools-shell = { path = "../agent-tools-shell" }
 agent-tools-web = { path = "../agent-tools-web" }
 async-trait.workspace = true
 futures.workspace = true

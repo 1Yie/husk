@@ -23,7 +23,7 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{schema_for, ToolCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use super::registry::{schema_for, SandboxCtx, ToolCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 use super::sandbox_cfg::sandbox_config;
 
 const MAX_OUTPUT_CHARS: usize = 20 * 1024;

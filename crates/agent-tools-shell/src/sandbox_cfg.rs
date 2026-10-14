@@ -15,11 +15,11 @@ use std::time::Duration;
 /// High+ risk forces a CoW snapshot), and the L2 backend consumes the config.
 /// Split out from the tools' `exec` so the mount policy is assertable without
 /// spawning anything.
-pub(crate) fn sandbox_config(
+pub fn sandbox_config(
     verdict: &agent_sandbox::AuditResult,
     workspace_root: &Path,
     timeout: Duration,
-    limits: &crate::sandbox_prefs::SandboxLimits,
+    limits: &agent_sandbox::SandboxLimits,
 ) -> agent_sandbox::SandboxConfig {
     // Canonicalize before the plan: the deny_write set must match the path
     // spelling the backend binds (it canonicalizes too).
@@ -56,7 +56,7 @@ pub(crate) fn sandbox_config(
     // Host-supplied read-only mounts (e.g. the user's skill roots, which live
     // outside the workspace) and user overrides from the settings UI fold in last. — a forced network
     // policy / memory / process cap beats the audit plan's defaults.
-    crate::sandbox_prefs::apply_limits(&mut cfg, limits);
+    agent_sandbox::apply_limits(&mut cfg, limits);
     cfg
 }
 
@@ -72,7 +72,7 @@ mod tests {
         let root = Path::new("/tmp/ws");
         let verdict = agent_sandbox::audit_command_scoped("ls", Some(root));
         let skills = vec![std::path::PathBuf::from("/home/u/.skills")];
-        let limits = crate::sandbox_prefs::SandboxLimits {
+        let limits = agent_sandbox::SandboxLimits {
             extra_ro_mounts: skills.clone(),
             ..Default::default()
         };
@@ -96,7 +96,7 @@ mod tests {
             &verdict,
             root,
             Duration::from_secs(30),
-            &crate::sandbox_prefs::SandboxLimits::default(),
+            &agent_sandbox::SandboxLimits::default(),
         );
         assert!(cfg.extra_ro_mounts.is_empty());
     }

@@ -10,6 +10,7 @@ agent-llm = { path = "../agent-llm" }
 # Pure path resolution, a leaf: tools that name themselves in a User-Agent
 # or keep workspace-local state need somewhere to look.
 agent-paths = { path = "../agent-paths" }
+agent-sandbox = { path = "../agent-sandbox" }
 futures.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

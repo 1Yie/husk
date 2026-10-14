@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use agent_kernel::sandbox_prefs::{SandboxLimits, SwitchableSandbox};
-use agent_kernel::tools::registry::ToolCtx;
+use agent_kernel::tools::registry::{SandboxCtx, ToolCtx};
 
 /// A context with the detected backend installed, as a shell-capable host has.
 fn ctx_with_sandbox(root: &std::path::Path) -> ToolCtx {

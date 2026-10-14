@@ -68,6 +68,23 @@ pub trait WorkspaceCtx: Send + Sync + 'static {
     }
 }
 
+/// What a process-running tool needs from the context it runs in.
+///
+/// Split from [`WorkspaceCtx`] because a workspace-scoped tool (a file reader)
+/// needs no sandbox at all: an SSH worker runs remote commands and has none.
+pub trait SandboxCtx: Send + Sync + 'static {
+    /// The sandbox a process tool dispatches through. The host decides which
+    /// backend is installed — the detected one, a `none` backend when the user
+    /// turned isolation off, or nothing at all; the tool only reads it. Refuses
+    /// when nothing is installed, so a command can never run unisolated by
+    /// omission.
+    fn sandbox(&self) -> Result<Arc<dyn agent_sandbox::SandboxBackend>, ToolError>;
+
+    /// The host's standing overrides. A host that never configured any gets
+    /// the defaults, which is the honest answer rather than an error.
+    fn sandbox_limits(&self) -> agent_sandbox::SandboxLimits;
+}
+
 /// A deferred write a tool wants the engine to commit — returned instead
 /// of writing inside the tool so the engine can apply the change *after*
 /// the permission decision and record it in the HunkTracker in one step

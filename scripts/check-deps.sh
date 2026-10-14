@@ -19,7 +19,7 @@ declare -A ALLOW=(
   # extension ecosystem
   [agent-plugin]="agent-llm agent-paths agent-sandbox"
   # the tool contract — a leaf that knows no product, only the wire types
-  [agent-tool]="agent-llm agent-paths"
+  [agent-tool]="agent-llm agent-paths agent-sandbox"
   # skills are knowledge, not capability — no kernel, no products
   [agent-skills]=""
   # where the app keeps its files — pure path resolution, names no product
@@ -30,8 +30,10 @@ declare -A ALLOW=(
   [agent-tools-fs]="agent-tool"
   # networking tools — same pattern
   [agent-tools-web]="agent-llm agent-tool"
+  # process tools — these also need the sandbox seam
+  [agent-tools-shell]="agent-sandbox agent-tool"
   # runtime
-  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-store agent-tool agent-tools-fs agent-tools-web"
+  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-store agent-tool agent-tools-fs agent-tools-shell agent-tools-web"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox"

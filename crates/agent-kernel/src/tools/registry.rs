@@ -26,8 +26,8 @@ pub type ToolSpec = agent_tool::ToolSpec<ToolCtx>;
 // `crate::tools::registry::X` paths keep working.
 pub use crate::tools::host_slots::*;
 
-// The context contract the file tools are generic over.
-pub use agent_tool::WorkspaceCtx;
+// The context contracts the tool packages are generic over.
+pub use agent_tool::{SandboxCtx, WorkspaceCtx};
 
 
 /// Shared context handed to every tool invocation.
@@ -190,6 +190,32 @@ impl agent_tool::WorkspaceCtx for ToolCtx {
             return Err(ToolError::PathEscape(path.to_string()));
         }
         Ok(canon)
+    }
+}
+
+/// The process-execution half of the context contract. The shell tools live in
+/// `agent-tools-shell` and are generic over it, so the trait impl is the only
+/// implementation — there is no inherent twin for it to drift from.
+impl agent_tool::SandboxCtx for ToolCtx {
+    /// The host decides which backend is installed (the detected one, a `none`
+    /// backend when the user turned isolation off, or nothing at all); this
+    /// only reads what it installed. Refuses when nothing is installed, so a
+    /// shell command can never run unisolated by omission.
+    fn sandbox(&self) -> Result<Arc<dyn agent_sandbox::SandboxBackend>, ToolError> {
+        self.ext
+            .get::<crate::tools::host_slots::SandboxSlot>()
+            .map(|s| s.0.clone())
+            .ok_or_else(|| {
+                ToolError::Failed("shell execution is not available in this context".into())
+            })
+    }
+
+    /// The host's standing overrides, or the defaults when none were installed.
+    fn sandbox_limits(&self) -> agent_sandbox::SandboxLimits {
+        self.ext
+            .get::<crate::tools::host_slots::SandboxLimitsSlot>()
+            .map(|s| s.0.clone())
+            .unwrap_or_default()
     }
 }
 
