@@ -432,7 +432,6 @@ impl RigProvider {
         &self,
         model: &str,
         compat: &ProviderCompat,
-        thinking_on: bool,
     ) -> anyhow::Result<RigModel> {
         let mut headers = HeaderMap::new();
         for (k, v) in &self.headers {
@@ -500,15 +499,6 @@ impl RigProvider {
                     b.api_key(anthropic::client::AnthropicKey::from(self.api_key.clone()))
                 } else {
                     b.api_key(anthropic::client::AnthropicKey::from(String::new()))
-                };
-                // Interleaved thinking is still behind the beta header —
-                // send it only when a thinking block will actually ride the
-                // request (resolved budget exists), matching the retired
-                // adapter.
-                let b = if thinking_on {
-                    b.anthropic_beta("interleaved-thinking-2025-05-14")
-                } else {
-                    b
                 };
                 let client = b
                     .build()
@@ -580,17 +570,6 @@ impl LlmProvider for RigProvider {
         let mut additional = Map::new();
         let max_tokens_field = compat.max_tokens_field_name();
         let mut max_tokens = params.max_tokens.map(|v| v as u64);
-        // Claude requires `1024 ≤ thinking.budget_tokens < max_tokens` —
-        // resolve the budget against the real cap once so both the request
-        // body and the `anthropic-beta` header see the same outcome.
-        let anthropic_budget = if self.kind == WireKind::Anthropic {
-            anthropic_effective_budget(
-                effort,
-                params.max_tokens.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS),
-            )
-        } else {
-            None
-        };
         match self.kind {
             WireKind::Compat => {
                 if let Some(cap) = max_tokens.take() {
@@ -624,11 +603,9 @@ impl LlmProvider for RigProvider {
                     .map(|v| v as u32)
                     .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
                 max_tokens = Some(cap as u64);
-                if let Some(budget) = anthropic_budget {
-                    additional.insert(
-                        "thinking".into(),
-                        json!({ "type": "enabled", "budget_tokens": budget }),
-                    );
+                if let Some(eff) = effort {
+                    additional.insert("thinking".into(), json!({ "type": "adaptive" }));
+                    additional.insert("output_config".into(), json!({ "effort": eff }));
                 }
             }
             WireKind::Gemini => {
@@ -661,7 +638,7 @@ impl LlmProvider for RigProvider {
             record_telemetry_content: false,
         };
 
-        let rig_model = self.build_model(model, &compat, anthropic_budget.is_some())?;
+        let rig_model = self.build_model(model, &compat)?;
         let rig_stream: StreamingCompletionResponse = match &rig_model {
             RigModel::Compat(m) => m.stream(request).await,
             RigModel::Responses(m) => m.stream(request).await,
@@ -788,29 +765,6 @@ fn resolve_thinking_var(v: &mut Value, effort: &str) {
         "thinking.effort" => json!(effort),
         _ => return,
     };
-}
-
-/// `reasoning_effort` → Anthropic `thinking.budget_tokens`.
-fn anthropic_thinking_budget(effort: &str) -> Option<u32> {
-    match effort {
-        "low" => Some(2_048),
-        "medium" => Some(8_192),
-        "high" => Some(16_384),
-        "max" => Some(28_672),
-        _ => None,
-    }
-}
-
-/// Anthropic `thinking.budget_tokens` vs the real output cap — Claude
-/// hard-rejects `budget_tokens ≥ max_tokens` and requires `≥ 1024`. The
-/// effort-table budgets assume the 32k default cap; a smaller declared cap
-/// clamps into the valid window, and a cap that can't fit a legal budget
-/// drops the thinking block entirely (no block, no beta header).
-fn anthropic_effective_budget(effort: Option<&str>, cap: u32) -> Option<u32> {
-    effort
-        .and_then(anthropic_thinking_budget)
-        .map(|b| b.min(cap.saturating_sub(1)))
-        .filter(|b| *b >= 1024)
 }
 
 /// `reasoning_effort` → Gemini `thinkingConfig.thinkingBudget` — `-1` lets the
@@ -2025,23 +1979,6 @@ mod tests {
                 .any(|c| matches!(c, StreamChunk::ContentDelta(t) if t.contains("[call:"))),
             "call echo must not leak as text: {seen:?}"
         );
-    }
-
-    /// `thinking.budget_tokens` clamps under a small max_tokens cap and
-    /// disappears entirely when no legal budget fits.
-    #[test]
-    fn anthropic_budget_clamps_under_cap() {
-        // max effort + 4k cap → clamped to cap-1.
-        assert_eq!(anthropic_effective_budget(Some("max"), 4_096), Some(4_095));
-        // cap too small for the 1024 minimum → thinking dropped.
-        assert_eq!(anthropic_effective_budget(Some("low"), 1_024), None);
-        // big cap → table value unchanged.
-        assert_eq!(
-            anthropic_effective_budget(Some("high"), 32_768),
-            Some(16_384)
-        );
-        // no effort → nothing.
-        assert_eq!(anthropic_effective_budget(None, 32_768), None);
     }
 
     #[test]

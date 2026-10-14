@@ -19,6 +19,6 @@ pub use config::{
 };
 pub use factory::ProviderFactory;
 pub use masking::EgressMasker;
-pub use provider::{BoxStream, Capabilities, LlmProvider, ModelParams};
+pub use provider::{BoxStream, Capabilities, LlmProvider, ModelParams, UnavailableProvider};
 pub use rig_bridge::RigProvider;
 pub use types::{ChatMessage, Role, StreamChunk, ToolCall};

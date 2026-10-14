@@ -174,3 +174,54 @@ impl LlmProvider for UnconfiguredProvider {
         anyhow::bail!("no provider configured — add one in Settings")
     }
 }
+
+/// Stand-in for a configured provider that could not be built (missing key,
+/// unset env var, keyring miss). Like `UnconfiguredProvider` it never answers,
+/// but it carries the reason so the failed turn tells the user what to fix.
+pub struct UnavailableProvider {
+    reason: String,
+}
+
+impl UnavailableProvider {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for UnavailableProvider {
+    fn id(&self) -> &'static str {
+        "unavailable"
+    }
+
+    async fn chat_stream(
+        &self,
+        _model: &str,
+        _messages: &[ChatMessage],
+        _tools: Option<serde_json::Value>,
+        _temperature: f32,
+        _reasoning_effort: Option<&str>,
+        _params: &ModelParams,
+    ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        anyhow::bail!("provider unavailable: {}", self.reason)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider that failed to build must say WHY, and must fail the turn.
+    /// It must never answer, and the reason must reach the user verbatim.
+    #[tokio::test]
+    async fn unavailable_provider_fails_with_the_real_reason() {
+        let p = UnavailableProvider::new("env var OPENAI_API_KEY unset or empty");
+        let err = match p.chat_stream("m", &[], None, 0.0, None, &ModelParams::EMPTY).await {
+            Ok(_) => panic!("unavailable provider must not stream"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("OPENAI_API_KEY"), "{err}");
+    }
+}

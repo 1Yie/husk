@@ -1215,7 +1215,8 @@ impl InputLimits {
 pub enum ProviderKind {
     #[serde(
         rename = "openai_completions",
-        alias = "openai-completions"
+        alias = "openai-completions",
+        alias = "openai_compat"
     )]
     #[default]
     OpenaiCompat,
@@ -1355,6 +1356,69 @@ impl AppConfig {
         toml::from_str(&text).map_err(|e| ConfigError::Parse(path.clone(), e.to_string()))
     }
 
+    /// Write `cfg` to `path` in the file's own format (TOML stays TOML).
+    ///
+    /// Guards against silent data loss:
+    /// - an existing file that no longer parses is never overwritten — the
+    ///   user may have a hand edit in flight;
+    /// - TOML is merged into the file in place, so comments and keys the schema
+    ///   does not model survive the save;
+    /// - the previous file is copied to `<name>.<unix-ms>.bak` first, and only
+    ///   the newest [`BACKUP_KEEP`] backups are kept;
+    /// - the new content lands via temp-file + rename, so a crash mid-write
+    ///   leaves either the old or the new file, never a truncated one.
+    pub fn save_to(path: &Path, cfg: &AppConfig) -> Result<(), ConfigError> {
+        let is_toml = path.extension().and_then(|e| e.to_str()) == Some("toml");
+        let text = if path.exists() {
+            // A file we cannot read is a file we must not replace.
+            Self::load(Some(path))?;
+            if is_toml {
+                let existing = std::fs::read_to_string(path)
+                    .map_err(|e| ConfigError::Read(path.to_path_buf(), e))?;
+                merge_into_toml(&existing, cfg)
+                    .map_err(|e| ConfigError::Parse(path.to_path_buf(), e))?
+            } else {
+                serde_json::to_string_pretty(cfg)
+                    .map_err(|e| ConfigError::Parse(path.to_path_buf(), e.to_string()))?
+            }
+        } else if is_toml {
+            toml::to_string_pretty(cfg)
+                .map_err(|e| ConfigError::Parse(path.to_path_buf(), e.to_string()))?
+        } else {
+            serde_json::to_string_pretty(cfg)
+                .map_err(|e| ConfigError::Parse(path.to_path_buf(), e.to_string()))?
+        };
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(dir).map_err(|e| ConfigError::Read(path.to_path_buf(), e))?;
+        if path.exists() {
+            backup_previous(path).map_err(|e| ConfigError::Read(path.to_path_buf(), e))?;
+        }
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .map_err(|e| ConfigError::Read(path.to_path_buf(), e))?;
+        std::io::Write::write_all(&mut tmp, text.as_bytes())
+            .map_err(|e| ConfigError::Read(path.to_path_buf(), e))?;
+        tmp.as_file()
+            .sync_all()
+            .map_err(|e| ConfigError::Read(path.to_path_buf(), e))?;
+        tmp.persist(path)
+            .map_err(|e| ConfigError::Read(path.to_path_buf(), e.error))?;
+        Ok(())
+    }
+
+    /// Real key material for every provider that resolves — the values the
+    /// egress masker must scrub from outbound requests. Uses the same
+    /// resolution as `ProviderFactory::build`, so the masker and the wire
+    /// never disagree about which strings are secrets.
+    pub fn resolved_secrets(&self) -> Vec<String> {
+        self.providers
+            .values()
+            .filter_map(|p| match Self::resolve_secret(p) {
+                SecretResolution::Resolved(s) | SecretResolution::Plaintext(s) => Some(s),
+                SecretResolution::Unavailable(_) | SecretResolution::Empty => None,
+            })
+            .collect()
+    }
+
     /// Resolve one provider's `api_key` indirection.
     pub fn resolve_secret(cfg: &ProviderConfig) -> SecretResolution {
         let raw = cfg.api_key.trim();
@@ -1387,6 +1451,88 @@ impl AppConfig {
         }
         SecretResolution::Plaintext(raw.to_string())
     }
+}
+
+/// How many timestamped `.bak` copies of a config file to keep.
+pub const BACKUP_KEEP: usize = 5;
+
+/// Merge `cfg` into an existing TOML document, keeping its comments, layout,
+/// and any key the schema does not model. Tables merge recursively, so a
+/// comment attached to `api_key` survives when only `base_url` changes.
+fn merge_into_toml(existing: &str, cfg: &AppConfig) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = existing.parse().map_err(|e| format!("{e}"))?;
+    let fresh = toml::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    let fresh: toml_edit::DocumentMut = fresh.parse().map_err(|e| format!("{e}"))?;
+    merge_table(doc.as_table_mut(), fresh.as_table());
+    Ok(doc.to_string())
+}
+
+fn merge_table(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
+    // Keys the schema no longer emits (e.g. an emptied optional) are removed,
+    // but only those the schema itself owns; unknown keys are not in `src`
+    // and are left alone by never being visited here.
+    for (key, item) in src.iter() {
+        match (dst.get_mut(key), item) {
+            (Some(toml_edit::Item::Table(d)), toml_edit::Item::Table(s)) => merge_table(d, s),
+            (Some(toml_edit::Item::Value(d)), toml_edit::Item::Value(s)) => {
+                // Replace the value, keep the decor (the comment around it).
+                let decor = d.decor().clone();
+                *d = s.clone();
+                *d.decor_mut() = decor;
+            }
+            _ => {
+                dst.insert(key, item.clone());
+            }
+        }
+    }
+}
+
+/// Copy the current file to `<name>.<unix-ms>.bak`, then prune the oldest
+/// backups beyond [`BACKUP_KEEP`].
+fn backup_previous(path: &Path) -> std::io::Result<()> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config");
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    // Two saves in the same millisecond must not share a backup name, or the
+    // earlier copy is silently overwritten. Bump the stamp until it is free.
+    let mut stamp = stamp;
+    let mut target = dir.join(format!("{name}.{stamp}.bak"));
+    while target.exists() {
+        stamp += 1;
+        target = dir.join(format!("{name}.{stamp}.bak"));
+    }
+    std::fs::copy(path, &target)?;
+
+    let prefix = format!("{name}.");
+    let mut baks: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(&prefix) && n.ends_with(".bak"))
+                .unwrap_or(false)
+        })
+        .collect();
+    // Stamps are fixed-width-enough millisecond counts; sort numerically.
+    baks.sort_by_key(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix(&prefix))
+            .and_then(|n| n.strip_suffix(".bak"))
+            .and_then(|n| n.parse::<u128>().ok())
+            .unwrap_or(0)
+    });
+    let excess = baks.len().saturating_sub(BACKUP_KEEP);
+    for old in baks.iter().take(excess) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1514,5 +1660,179 @@ high = "high"
                 .as_deref(),
             Some("high")
         );
+    }
+
+    /// README 的写法 `kind = "openai_compat"` 必须可读，否则整份配置报废。
+    #[test]
+    fn readme_kind_alias_loads() {
+        let doc = "active_provider = \"deepseek\"\n\
+            [providers.deepseek]\n\
+            kind = \"openai_compat\"\n\
+            base_url = \"https://api.deepseek.com\"\n\
+            api_key = \"env:X\"\n";
+        let tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+        std::fs::write(tmp.path(), doc).unwrap();
+        let cfg = AppConfig::load(Some(tmp.path())).expect("README alias must load");
+        assert_eq!(cfg.providers["deepseek"].kind, ProviderKind::OpenaiCompat);
+    }
+
+    /// 一个坏字段不能让 `load` 悄悄返回空配置：必须是 `Err`，并且带文件路径。
+    #[test]
+    fn bad_field_is_a_located_error_not_an_empty_config() {
+        let doc = "[providers.a]\n\
+            kind = \"openai_completions\"\n\
+            base_url = \"https://x\"\n\
+            [[providers.a.models]]\n\
+            id = \"m\"\n\
+            context_window = 1.5\n";
+        let tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+        std::fs::write(tmp.path(), doc).unwrap();
+        let err = AppConfig::load(Some(tmp.path())).expect_err("bad config must not load");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to parse config file"), "{msg}");
+        assert!(msg.contains(&tmp.path().display().to_string()), "{msg}");
+    }
+
+    /// 保存时先留 `.bak`，再原子替换：旧内容必须可以找回。
+    #[test]
+    fn save_keeps_previous_file_as_bak() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "active_provider = \"old\"\n").unwrap();
+        let cfg = AppConfig {
+            active_provider: Some("new".into()),
+            ..Default::default()
+        };
+        AppConfig::save_to(&path, &cfg).expect("save");
+        let bak = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.to_string_lossy().ends_with(".bak"))
+            .expect("a timestamped backup exists");
+        assert_eq!(std::fs::read_to_string(bak).unwrap(), "active_provider = \"old\"\n");
+        let now: AppConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(now.active_provider.as_deref(), Some("new"));
+    }
+
+    /// 已有文件无法解析时拒绝覆盖，避免用户手改的配置被空文档替换。
+    #[test]
+    fn save_refuses_to_overwrite_unparseable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let broken = "[providers.a\nthis is not toml";
+        std::fs::write(&path, broken).unwrap();
+        let cfg = AppConfig::default();
+        assert!(AppConfig::save_to(&path, &cfg).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
+
+    /// Egress masking must see the real key material of every configured
+    /// provider. A `keyring:`/`env:` handle is not a secret and must not be
+    /// returned; a missing source contributes nothing.
+    #[test]
+    fn resolved_secrets_collects_real_key_material_only() {
+        std::env::set_var("RESOLVED_SECRET_TEST_KEY", "sk-live-abcdef12");
+        let mut providers = HashMap::new();
+        providers.insert(
+            "envd".to_string(),
+            ProviderConfig {
+                api_key: "env:RESOLVED_SECRET_TEST_KEY".into(),
+                ..Default::default()
+            },
+        );
+        providers.insert(
+            "plain".to_string(),
+            ProviderConfig {
+                api_key: "plaintext-key-9999".into(),
+                ..Default::default()
+            },
+        );
+        providers.insert(
+            "missing".to_string(),
+            ProviderConfig {
+                api_key: "env:DEFINITELY_UNSET_MASK_VAR".into(),
+                ..Default::default()
+            },
+        );
+        let cfg = AppConfig {
+            providers,
+            ..Default::default()
+        };
+        let secrets = cfg.resolved_secrets();
+        assert!(secrets.contains(&"sk-live-abcdef12".to_string()), "{secrets:?}");
+        assert!(secrets.contains(&"plaintext-key-9999".to_string()), "{secrets:?}");
+        assert!(!secrets.iter().any(|s| s.starts_with("env:")), "{secrets:?}");
+        assert_eq!(secrets.len(), 2, "{secrets:?}");
+    }
+
+    /// A hand-written comment and a key the schema does not model must survive
+    /// a save. Re-serializing the whole struct drops both.
+    #[test]
+    fn save_preserves_comments_and_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "# my deepseek setup, do not delete\n\
+            active_provider = \"deepseek\"\n\
+            my_note = \"keep me\"\n\
+            \n\
+            [providers.deepseek]\n\
+            kind = \"openai_completions\"\n\
+            base_url = \"https://api.deepseek.com\"\n\
+            api_key = \"env:DEEPSEEK_API_KEY\"  # rotate yearly\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut cfg = AppConfig::load(Some(&path)).unwrap();
+        cfg.active_model = Some("deepseek-chat".into());
+        AppConfig::save_to(&path, &cfg).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("# my deepseek setup, do not delete"), "{out}");
+        assert!(out.contains("# rotate yearly"), "{out}");
+        assert!(out.contains("my_note = \"keep me\""), "{out}");
+        assert!(out.contains("active_model = \"deepseek-chat\""), "{out}");
+    }
+
+    /// Every save keeps a timestamped backup, and only the newest few are kept.
+    #[test]
+    fn backups_are_timestamped_and_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "active_provider = \"a\"\n").unwrap();
+        let cfg = AppConfig {
+            active_provider: Some("b".into()),
+            ..Default::default()
+        };
+        for _ in 0..(BACKUP_KEEP + 3) {
+            AppConfig::save_to(&path, &cfg).unwrap();
+        }
+        let mut baks: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("config.toml.") && n.ends_with(".bak"))
+            .collect();
+        baks.sort();
+        assert_eq!(baks.len(), BACKUP_KEEP, "{baks:?}");
+        assert!(!std::fs::read_to_string(dir.path().join(&baks[0])).unwrap().is_empty());
+    }
+
+    /// The degrade chain must survive a save: the settings UI writes it through
+    /// `save_to`, and a dropped chain would silently disable fallback.
+    #[test]
+    fn fallback_chain_round_trips_through_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "active_provider = \"a\"\n").unwrap();
+        let mut cfg = AppConfig {
+            active_provider: Some("a".into()),
+            fallback_chain: vec!["b".into(), "c".into()],
+            ..Default::default()
+        };
+        cfg.providers.insert("a".into(), ProviderConfig {
+            base_url: "https://a".into(),
+            ..Default::default()
+        });
+        AppConfig::save_to(&path, &cfg).unwrap();
+        let back = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(back.fallback_chain, vec!["b", "c"]);
     }
 }

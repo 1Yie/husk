@@ -67,12 +67,21 @@ pub enum SamplerEvent {
     },
     /// Provider failed permanently; the session should degrade or abort.
     Failed(String),
+    /// The primary exhausted its retries and the chain moved to the next
+    /// provider. The partial attempt is discarded: the new provider answers
+    /// the request from the start.
+    FellBack { from: String, to: String },
 }
 
 /// Stateless resilience wrapper around one provider at a time.
 /// `set_provider` hot-swaps for the *next* call — in-flight streams finish.
 pub struct Sampler {
     provider: Arc<dyn LlmProvider>,
+    /// Ordered degrade chain tried after `provider` exhausts its retries.
+    /// Each entry is `(config name, provider)`; empty means no fallback.
+    fallbacks: Vec<(String, Arc<dyn LlmProvider>)>,
+    /// Config name of the primary, for `FellBack` events.
+    primary_name: String,
     /// Egress masker — scrubs resolved secrets from outbound request bodies.
     masker: crate::masking::EgressMasker,
 }
@@ -93,8 +102,23 @@ impl Sampler {
     pub fn new(provider: Arc<dyn LlmProvider>) -> Self {
         Self {
             provider,
+            fallbacks: Vec::new(),
+            primary_name: String::new(),
             masker: crate::masking::EgressMasker::new(vec![]),
         }
+    }
+
+    /// Install the degrade chain. Tried in order after the primary exhausts
+    /// its retries on a provider-side failure; a request rejected with a 4xx
+    /// is never sent down the chain, because another vendor would reject it
+    /// too.
+    pub fn set_fallbacks(&mut self, chain: Vec<(String, Arc<dyn LlmProvider>)>) {
+        self.fallbacks = chain;
+    }
+
+    /// Name the primary provider, so a `FellBack` event can say where it came from.
+    pub fn set_primary_name(&mut self, name: impl Into<String>) {
+        self.primary_name = name.into();
     }
 
     /// Install the resolved secrets for egress masking — called once config
@@ -129,9 +153,48 @@ impl Sampler {
         F: FnMut(&StreamChunk),
         G: FnMut(&SamplerEvent),
     {
+        // Primary first, then the degrade chain in config order. A provider
+        // that exhausts its retries hands the request to the next one; a
+        // permanent error (4xx, parse failure) stops the walk, because another
+        // vendor would reject the same request.
+        let mut current = (self.primary_name.clone(), self.provider.clone());
+        let mut hop = 0usize;
+        loop {
+            match self
+                .sample_with(&current.1, &req, messages, &mut on_chunk, &mut on_event)
+                .await
+            {
+                Err(SampleError::Exhausted { .. }) if hop < self.fallbacks.len() => {
+                    let next = self.fallbacks[hop].clone();
+                    hop += 1;
+                    on_event(&SamplerEvent::FellBack {
+                        from: current.0.clone(),
+                        to: next.0.clone(),
+                    });
+                    current = next;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// The retry policy against one provider: transient failures back off and
+    /// retry the same request, up to [`MAX_RETRIES`] attempts.
+    async fn sample_with<F, G>(
+        &self,
+        provider: &Arc<dyn LlmProvider>,
+        req: &SampleRequest<'_>,
+        messages: &[ChatMessage],
+        on_chunk: &mut F,
+        on_event: &mut G,
+    ) -> Result<(), SampleError>
+    where
+        F: FnMut(&StreamChunk),
+        G: FnMut(&SamplerEvent),
+    {
         let mut attempt = 0u32;
         loop {
-            match self.sample_once(&req, messages, &mut on_chunk).await {
+            match self.sample_once(provider, req, messages, on_chunk).await {
                 Ok(()) => return Ok(()),
                 Err(e) if !e.retryable() => return Err(e),
                 Err(e) => {
@@ -162,6 +225,7 @@ impl Sampler {
     /// it visible + retry with a continuation prompt.
     async fn sample_once<F>(
         &self,
+        provider: &Arc<dyn LlmProvider>,
         req: &SampleRequest<'_>,
         messages: &[ChatMessage],
         on_chunk: &mut F,
@@ -195,7 +259,7 @@ impl Sampler {
 
         let mut stream = tokio::time::timeout(
             ESTABLISH_TIMEOUT,
-            self.provider.chat_stream(
+            provider.chat_stream(
                 req.model,
                 &masked,
                 req.tools.cloned(),
@@ -385,6 +449,9 @@ impl std::fmt::Display for SamplerEvent {
                 delay.as_secs_f32()
             ),
             SamplerEvent::Failed(reason) => write!(f, "上游持续不可用：{reason}"),
+            SamplerEvent::FellBack { from, to } => {
+                write!(f, "提供商 {from} 不可用，已切换到备用提供商 {to}")
+            }
         }
     }
 }
@@ -476,6 +543,8 @@ mod tests {
     struct ScriptedProvider {
         calls: AtomicUsize,
         scripts: Mutex<VecDeque<Script>>,
+        /// Message contents as they reached the wire, per call.
+        seen: Mutex<Vec<Vec<String>>>,
     }
 
     impl ScriptedProvider {
@@ -483,6 +552,7 @@ mod tests {
             Arc::new(Self {
                 calls: AtomicUsize::new(0),
                 scripts: Mutex::new(scripts.into()),
+                seen: Mutex::new(Vec::new()),
             })
         }
     }
@@ -503,6 +573,12 @@ mod tests {
             _params: &ModelParams,
         ) -> anyhow::Result<BoxStream<StreamChunk>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(
+                _messages
+                    .iter()
+                    .filter_map(|m| m.content.clone())
+                    .collect(),
+            );
             let script = self
                 .scripts
                 .lock()
@@ -540,6 +616,104 @@ mod tests {
 
     fn stream_err(msg: &str) -> anyhow::Result<StreamChunk> {
         Err(anyhow::anyhow!(msg.to_string()))
+    }
+
+    /// The resolved key must never reach the provider in clear text, even when
+    /// the user pastes it into a prompt. Without `set_masker` the wire carries
+    /// the raw key, which is the exfiltration path this masker exists to close.
+    #[tokio::test]
+    async fn resolved_secret_is_scrubbed_before_it_reaches_the_wire() {
+        let secret = "sk-live-abcdef1234567890";
+        let p = ScriptedProvider::of(vec![Script::Chunks(vec![done()])]);
+        let mut sampler = Sampler::new(p.clone());
+        sampler.set_masker(vec![secret.to_string()]);
+
+        let messages = vec![ChatMessage::user(format!("my key is {secret}, use it"))];
+        sampler
+            .sample(req(), &messages, |_| {}, |_| {})
+            .await
+            .expect("sample");
+
+        let seen = p.seen.lock().unwrap();
+        let first = seen.first().expect("one call");
+        assert!(
+            first.iter().all(|c| !c.contains(secret)),
+            "plaintext key reached the provider: {first:?}"
+        );
+    }
+
+    /// A primary that exhausts its retries falls back to the next provider in
+    /// the chain, and the switch is announced so it is never silent.
+    #[tokio::test]
+    async fn exhausted_primary_falls_back_to_next_provider() {
+        let primary = ScriptedProvider::of(vec![
+            Script::EstablishFail("provider HTTP 503: a"),
+            Script::EstablishFail("provider HTTP 503: b"),
+            Script::EstablishFail("provider HTTP 503: c"),
+        ]);
+        let backup = ScriptedProvider::of(vec![Script::Chunks(vec![delta("ok"), done()])]);
+        let mut sampler = Sampler::new(primary.clone());
+        sampler.set_fallbacks(vec![("backup".into(), backup.clone())]);
+
+        let mut chunks: Vec<String> = Vec::new();
+        let mut events: Vec<String> = Vec::new();
+        sampler
+            .sample(
+                req(),
+                &[],
+                |c| {
+                    if let StreamChunk::ContentDelta(t) = c {
+                        chunks.push(t.clone());
+                    }
+                },
+                |e| events.push(format!("{e:?}")),
+            )
+            .await
+            .expect("the backup must answer");
+
+        assert_eq!(chunks, vec!["ok"]);
+        assert_eq!(backup.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            events.iter().any(|e| e.contains("FellBack") && e.contains("backup")),
+            "{events:?}"
+        );
+    }
+
+    /// A 4xx is the request's fault, not the provider's: another vendor would
+    /// reject the same request, so the chain must NOT be walked.
+    #[tokio::test]
+    async fn client_error_does_not_fall_back() {
+        let primary = ScriptedProvider::of(vec![Script::EstablishFail(
+            "provider HTTP 400: max_tokens exceeds context",
+        )]);
+        let backup = ScriptedProvider::of(vec![Script::Chunks(vec![done()])]);
+        let mut sampler = Sampler::new(primary.clone());
+        sampler.set_fallbacks(vec![("backup".into(), backup.clone())]);
+
+        let err = sampler.sample(req(), &[], |_| {}, |_| {}).await.unwrap_err();
+        assert!(err.to_string().contains("400"), "{err}");
+        assert_eq!(backup.calls.load(Ordering::SeqCst), 0, "4xx must not fall back");
+    }
+
+    /// When every provider in the chain fails, the error names the last one
+    /// tried, so the user knows the chain itself is exhausted.
+    #[tokio::test]
+    async fn exhausted_chain_reports_the_last_failure() {
+        let primary = ScriptedProvider::of(vec![
+            Script::EstablishFail("provider HTTP 503: a"),
+            Script::EstablishFail("provider HTTP 503: b"),
+            Script::EstablishFail("provider HTTP 503: c"),
+        ]);
+        let backup = ScriptedProvider::of(vec![
+            Script::EstablishFail("provider HTTP 502: x"),
+            Script::EstablishFail("provider HTTP 502: y"),
+            Script::EstablishFail("provider HTTP 502: z"),
+        ]);
+        let mut sampler = Sampler::new(primary);
+        sampler.set_fallbacks(vec![("backup".into(), backup)]);
+
+        let err = sampler.sample(req(), &[], |_| {}, |_| {}).await.unwrap_err();
+        assert!(err.to_string().contains("502"), "{err}");
     }
 
     /// A retryable mid-stream cut (HTTP 5xx class) retries the SAME request:
