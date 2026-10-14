@@ -66,6 +66,22 @@ pub trait WorkspaceCtx: Send + Sync + 'static {
             ".agent",
         )
     }
+
+    /// The workspace-local state dir a tool keeps scratch files in — the host's
+    /// installed workspace dir, or the product-free default from
+    /// [`app_paths`](Self::app_paths).
+    fn workspace_state_dir(&self) -> std::path::PathBuf {
+        self.app_paths().workspace_dir(self.root())
+    }
+}
+
+/// What a screen-driving tool needs from the context it runs in.
+///
+/// Optional by nature: a host with no display (a remote SSH worker, headless
+/// CI) installs no backend, and the tool refuses with a reason instead of the
+/// kernel probing hardware.
+pub trait DesktopCtx: Send + Sync + 'static {
+    fn desktop(&self) -> Result<Arc<dyn agent_computer::DesktopBackend>, ToolError>;
 }
 
 /// What a process-running tool needs from the context it runs in.

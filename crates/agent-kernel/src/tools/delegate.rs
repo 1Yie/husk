@@ -11,7 +11,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolSpec};
+use super::registry::{
+    schema_for, Args, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolSpec, WorkspaceCtx,
+};
 use crate::engine::{Engine, EngineIo};
 use crate::permissions::PermissionGate;
 use agent_context::HunkTracker;

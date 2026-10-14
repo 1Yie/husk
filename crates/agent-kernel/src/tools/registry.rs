@@ -27,7 +27,7 @@ pub type ToolSpec = agent_tool::ToolSpec<ToolCtx>;
 pub use crate::tools::host_slots::*;
 
 // The context contracts the tool packages are generic over.
-pub use agent_tool::{SandboxCtx, WorkspaceCtx};
+pub use agent_tool::{DesktopCtx, SandboxCtx, WorkspaceCtx};
 
 
 /// Shared context handed to every tool invocation.
@@ -136,6 +136,24 @@ impl agent_tool::WorkspaceCtx for ToolCtx {
         self.cancel.clone()
     }
 
+    /// The host's installed directories. This override is load-bearing: the
+    /// trait's default ignores the slot, and `workspace_state_dir` (a trait
+    /// method) resolves `self.app_paths()` through the trait, not to an
+    /// inherent method — a tool would silently write to `<ws>/.agent` while the
+    /// host thought it had set something else.
+    fn app_paths(&self) -> agent_paths::AppPaths {
+        self.ext
+            .get::<crate::tools::host_slots::AppPathsSlot>()
+            .map(|s| s.0.clone())
+            .unwrap_or_else(|| {
+                agent_paths::AppPaths::new(
+                    self.workspace_root.join(".agent/config"),
+                    self.workspace_root.join(".agent/data"),
+                    ".agent",
+                )
+            })
+    }
+
     /// Resolve a model-supplied path against the workspace root and prove it
     /// stays inside. Returns the canonical path or a sandbox-escape error.
     fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
@@ -216,6 +234,22 @@ impl agent_tool::SandboxCtx for ToolCtx {
             .get::<crate::tools::host_slots::SandboxLimitsSlot>()
             .map(|s| s.0.clone())
             .unwrap_or_default()
+    }
+}
+
+/// The screen-driving half of the context contract. The computer-use tools are
+/// generic over it; like `SandboxCtx` this impl is the only implementation.
+impl agent_tool::DesktopCtx for ToolCtx {
+    /// Refuses with the same wording as the other missing services when the
+    /// host did not install a backend — a headless host gets a reason, not a
+    /// panic, and the kernel never probes hardware itself.
+    fn desktop(&self) -> Result<Arc<dyn agent_computer::DesktopBackend>, ToolError> {
+        self.ext
+            .get::<crate::tools::host_slots::DesktopSlot>()
+            .map(|s| s.0.clone())
+            .ok_or_else(|| {
+                ToolError::Failed("desktop control is not available in this context".into())
+            })
     }
 }
 
@@ -608,6 +642,16 @@ mod tests {
 
     /// `resolve` must accept a file whose parent directories do not exist yet —
     /// the canonicalize walk climbs to the deepest existing ancestor.
+    /// The built-in registry carries both computer-use tools.
+    #[test]
+    fn registry_carries_screenshot_and_computer() {
+        let r = ToolRegistry::with_builtins();
+        assert!(r.spec("screenshot").is_some());
+        assert!(r.spec("computer").is_some());
+        assert!(r.is_readonly("screenshot"));
+        assert!(!r.is_readonly("computer"));
+    }
+
     #[test]
     fn unknown_tool_is_not_readonly() {
         // The turn-start baseline keys off `is_readonly`: a plugin/MCP tool

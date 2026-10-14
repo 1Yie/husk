@@ -89,6 +89,7 @@ dependencies = [
  "agent-skills",
  "agent-store",
  "agent-tool",
+ "agent-tools-computer",
  "agent-tools-fs",
  "agent-tools-shell",
  "agent-tools-web",
@@ -205,6 +206,7 @@ dependencies = [
 name = "agent-tool"
 version = "0.1.0"
 dependencies = [
+ "agent-computer",
  "agent-llm",
  "agent-paths",
  "agent-sandbox",
@@ -212,6 +214,24 @@ dependencies = [
  "schemars 1.2.2",
  "serde_json",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "agent-tools-computer"
+version = "0.1.0"
+dependencies = [
+ "agent-computer",
+ "agent-llm",
+ "agent-paths",
+ "agent-tool",
+ "anyhow",
+ "async-trait",
+ "futures",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

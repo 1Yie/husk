@@ -196,30 +196,6 @@ impl ToolCtx {
         self.ext.insert(Arc::new(AppPathsSlot(paths)));
     }
 
-    /// The host's app paths, or a product-free default for a bare context
-    /// (tests, headless spawns): config and data under `<ws>/.agent`, and no
-    /// user-level dirs are reachable through it. Tools that must have *some*
-    /// paths use this instead of unwrapping the slot.
-    pub fn app_paths(&self) -> AppPaths {
-        self.paths().unwrap_or_else(|| {
-            AppPaths::new(
-                self.workspace_root.join(".agent/config"),
-                self.workspace_root.join(".agent/data"),
-                ".agent",
-            )
-        })
-    }
-
-    /// The workspace-local state dir (e.g. `<workspace>/.husk`).
-    ///
-    /// Falls back to a product-free `.agent` when no paths are installed, so a
-    /// bare test context still gets a defined, private-looking directory.
-    pub fn workspace_state_dir(&self) -> PathBuf {
-        self.paths()
-            .map(|p| p.workspace_dir(&self.workspace_root))
-            .unwrap_or_else(|| self.workspace_root.join(".agent"))
-    }
-
     /// The question channel, or a refusal when the context has no one to ask.
     pub fn ask(&self) -> Result<Arc<AskChannel>, ToolError> {
         self.ext
@@ -372,15 +348,6 @@ impl ToolCtx {
             self.ext.insert(slot);
         }
         self
-    }
-
-    /// The installed desktop backend. Refuses with the same wording as the
-    /// other missing services when the host did not install one.
-    pub fn desktop(&self) -> Result<Arc<dyn agent_computer::DesktopBackend>, ToolError> {
-        self.ext
-            .get::<DesktopSlot>()
-            .map(|s| s.0.clone())
-            .ok_or_else(|| ToolError::Failed("desktop control is not available in this context".into()))
     }
 
     /// Attach the owning session — gives tools access to per-session

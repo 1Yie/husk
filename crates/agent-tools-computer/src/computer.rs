@@ -15,7 +15,7 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_tool::{schema_for, Args, DesktopCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// Upper bound on `wait` — a model parking the turn for minutes is a bug, not
 /// a strategy.
@@ -49,7 +49,7 @@ struct ComputerArgs {
     duration_ms: Option<u64>,
 }
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx + DesktopCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "computer",
         schema: schema_for::<ComputerArgs>(
@@ -72,13 +72,13 @@ pub fn spec() -> ToolSpec {
               run the screenshot first, then click.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx + DesktopCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: ComputerArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(format!("computer args: {e}")))?;
     let action = parsed.action.trim().to_ascii_lowercase();
@@ -197,7 +197,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
             while std::time::Instant::now() < deadline {
                 if ctx
-                    .cancel
+                    .cancel_flag()
                     .as_ref()
                     .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
                 {
@@ -318,20 +318,20 @@ fn need_text<'a>(args: &'a ComputerArgs, action: &str) -> Result<&'a str, ToolEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::registry::ToolRegistry;
+    use crate::TestCtx;
 
-    fn ctx(dir: &std::path::Path) -> Arc<ToolCtx> {
-        Arc::new(
-            ToolCtx::new(dir).with_desktop(Arc::new(agent_computer::NoneBackend::new(
-                "no desktop in tests",
-            ))),
-        )
+    fn ctx(dir: &std::path::Path) -> Arc<TestCtx> {
+        Arc::new(TestCtx::with_desktop(
+            dir,
+            Arc::new(agent_computer::NoneBackend::new("no desktop in tests")),
+        ))
     }
 
+    /// The registry that looks tools up by name is the kernel's; here the spec's
+    /// own exec is what it would have called, which is what these tests exercise.
     async fn call(args: serde_json::Value) -> Result<ToolResult, String> {
         let dir = tempfile::tempdir().unwrap();
-        ToolRegistry::with_builtins()
-            .dispatch("computer", args, ctx(dir.path()))
+        (spec::<TestCtx>().exec)(args, ctx(dir.path()))
             .await
             .map_err(|e| e.to_string())
     }
@@ -470,7 +470,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut ctx = ToolCtx::new(dir.path()).with_desktop(Arc::new(Live));
+        let mut ctx = TestCtx::with_desktop(dir.path(), Arc::new(Live));
         ctx.cancel = Some(cancel.clone());
         let flag = cancel.clone();
         tokio::spawn(async move {
@@ -478,15 +478,13 @@ mod tests {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
         });
         let t = std::time::Instant::now();
-        let e = ToolRegistry::with_builtins()
-            .dispatch(
-                "computer",
-                serde_json::json!({"action": "wait", "duration_ms": 9000}),
-                Arc::new(ctx),
-            )
-            .await
-            .unwrap_err()
-            .to_string();
+        let e = (spec::<TestCtx>().exec)(
+            serde_json::json!({"action": "wait", "duration_ms": 9000}),
+            Arc::new(ctx),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("cancelled"), "{e}");
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }

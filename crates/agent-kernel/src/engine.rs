@@ -20,7 +20,7 @@ use tracing::instrument;
 
 use crate::compaction::{self, CompactionSuppressor};
 use crate::permissions::{Decision, PermissionGate};
-use crate::tools::{ToolCtx, ToolRegistry};
+use crate::tools::{DesktopCtx, ToolCtx, ToolRegistry};
 
 /// The engine's observable side — channels + sink for UI events.
 pub struct EngineIo {

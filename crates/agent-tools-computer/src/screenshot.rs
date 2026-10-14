@@ -14,14 +14,14 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
-use super::registry::{schema_for, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_tool::{schema_for, DesktopCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// No model-facing arguments: a full-screen capture is the only useful shape
 /// (a region would need a screenshot first to choose it).
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ScreenshotArgs {}
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx + DesktopCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "screenshot",
         schema: schema_for::<ScreenshotArgs>(
@@ -35,13 +35,13 @@ pub fn spec() -> ToolSpec {
              Fails only when no desktop backend is available.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: Arc::new(|_args, ctx| exec(ctx).boxed()),
     }
 }
 
-async fn exec(ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx + DesktopCtx>(ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let desktop = ctx.desktop()?;
     // The workspace-local staging dir the composer already uses for pasted
     // images, so captures sit with their siblings. Its name comes from the
@@ -57,7 +57,7 @@ async fn exec(ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     // Workspace-relative for the text: the absolute path is long and the
     // model only needs enough to name the file.
     let shown = dest
-        .strip_prefix(&*ctx.workspace_root)
+        .strip_prefix(ctx.root())
         .unwrap_or(&dest)
         .display();
     let mut content = format!(
@@ -112,16 +112,16 @@ pub fn cleanup_screenshots(workspace_root: &std::path::Path, paths: &agent_paths
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::registry::ToolRegistry;
+    use crate::TestCtx;
 
     /// The spec's flags are the security contract: auto-run in `default`,
     /// survive plan mode, batchable.
     #[test]
     fn spec_is_a_readonly_observation() {
-        let s = spec();
+        let s = spec::<TestCtx>();
         assert_eq!(s.name, "screenshot");
         assert!(s.readonly);
-        assert_eq!(s.class, super::super::registry::ToolClass::Observation);
+        assert_eq!(s.class, agent_tool::ToolClass::Observation);
         assert!(!s.network);
     }
 
@@ -130,11 +130,11 @@ mod tests {
     #[tokio::test]
     async fn refuses_without_a_desktop_backend() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = Arc::new(ToolCtx::new(dir.path()).with_desktop(Arc::new(
-            agent_computer::NoneBackend::new("$DISPLAY is not set"),
-        )));
-        let err = ToolRegistry::with_builtins()
-            .dispatch("screenshot", serde_json::json!({}), ctx)
+        let ctx = Arc::new(TestCtx::with_desktop(
+            dir.path(),
+            Arc::new(agent_computer::NoneBackend::new("$DISPLAY is not set")),
+        ));
+        let err = (spec::<TestCtx>().exec)(serde_json::json!({}), ctx)
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -166,15 +166,5 @@ mod tests {
 
         // A missing dir is a no-op, not an error.
         cleanup_screenshots(dir.path().join("gone").as_path(), &paths);
-    }
-
-    /// The built-in registry carries both computer-use tools.
-    #[test]
-    fn registry_carries_screenshot_and_computer() {
-        let r = ToolRegistry::with_builtins();
-        assert!(r.spec("screenshot").is_some());
-        assert!(r.spec("computer").is_some());
-        assert!(r.is_readonly("screenshot"));
-        assert!(!r.is_readonly("computer"));
     }
 }
