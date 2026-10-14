@@ -1941,7 +1941,7 @@ function ComposerToolbar({
               size="icon-sm"
               aria-label="添加附件"
               className={cn(
-              "w-7 h-7 rounded-full hover:text-neutral-800 hover:bg-neutral-100 dark:hover:bg-[var(--husk-hover)]",
+              "w-7 h-7 rounded-full bg-neutral-100 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] hover:text-neutral-800 hover:bg-neutral-200 dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)]",
               INK_MUTED,
             )}
             >
@@ -2011,15 +2011,21 @@ function ComposerToolbar({
             </button>
           </DropdownMenuTrigger>
 
-          <DropdownMenuContent align="end" side="top" className="w-64">
+          <DropdownMenuContent
+            align="end"
+            side="top"
+            className="w-64 max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-hidden flex flex-col"
+          >
             <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
               模型
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
 
             {models.length > 0 ? (
-              <DropdownMenuGroup>
-                {models.map((item) => {
+              <DropdownMenuGroup className="min-h-0 flex-1 overflow-y-auto">
+                {[...models]
+                  .sort((a, b) => modelLabel(a).localeCompare(modelLabel(b)))
+                  .map((item) => {
                   const active = item.model === activeModel && item.provider === activeProvider;
                   return (
                     <DropdownMenuItem

@@ -541,7 +541,7 @@ function TurnFooter({
               <DialogHeader>
                 <DialogTitle className="text-base">撤销本轮修改</DialogTitle>
                 <DialogDescription>
-                  回滚上一轮 agent 写入的全部文件；之后被外部改过的文件会被跳过。
+                  回滚上一轮 agent 写入的全部文件。已被外部修改过的文件会跳过。
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter className="gap-2">
@@ -1010,6 +1010,14 @@ const ChatTurn = memo(function ChatTurn({
   retryable: boolean;
   streaming: boolean;
 }) {
+  // Undo only reverts the turn's file writes (`undo_last_turn`), so offer it
+  // only when a tool row carried a diff — a turn that touched no files has
+  // nothing to roll back.
+  const hasFileChanges = turn.steps.some(
+    (step) =>
+      step.type === "tools" &&
+      step.rows.some((row) => row.uiType === "diff" || !!row.approval?.diff),
+  );
   // Regex-heavy collapse (workspace-file expansions, skill preambles) —
   // once per turn, not once per flush.
   const collapsedUser = useMemo(
@@ -1204,7 +1212,7 @@ const ChatTurn = memo(function ChatTurn({
                   : undefined
               }
               onRetry={retryable ? () => void retryTurn() : undefined}
-              onUndo={retryable ? () => void undoLastTurn() : undefined}
+              onUndo={retryable && hasFileChanges ? () => void undoLastTurn() : undefined}
             />
           </div>
         )}

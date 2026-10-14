@@ -4,16 +4,21 @@ import { SkeletonKvList } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   Brain,
   Coins,
   Cpu,
   Layers,
   Plus,
   SquarePen,
+  X,
 } from "@keyline-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TooltipSimple } from "@/components/ui/tooltip";
+import { Textarea } from "@/components/ui/textarea";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
@@ -36,7 +41,8 @@ const DEFAULT_BASES: Record<string, string> = {
   openai_completions: "https://api.openai.com/v1",
   openai_responses: "https://api.openai.com/v1",
   anthropic: "https://api.anthropic.com",
-  gemini: "https://generativelanguage.googleapis.com/v1beta",
+  // rig appends `/v1beta/models/...` itself; a `/v1beta` suffix here doubles it.
+  gemini: "https://generativelanguage.googleapis.com",
 };
 
 /** Write `value` into `obj` under whichever of `keys` already exists
@@ -71,6 +77,9 @@ const triOr = (v: string) =>
 export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
   const [cfg, setCfg] = useState<Record<string, any> | null>(null);
   const [cfgPath, setCfgPath] = useState("");
+  // Set when the file exists but does not parse. Editing is disabled then:
+  // the in-memory copy is empty, and saving it would replace the file.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // ---- add-provider dialog ----
@@ -91,6 +100,8 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   const [eHeaders, setEHeaders] = useState("");
   const [editProv, setEditProv] = useState<string | null>(null);
   const [eBase, setEBase] = useState("");
+  const [eKind, setEKind] = useState("openai_completions");
+  const [eName, setEName] = useState("");
   const [eKey, setEKey] = useState("");
   const [eDefault, setEDefault] = useState("");
   const [eStore, setEStore] = useState("default");
@@ -116,12 +127,17 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
       .then((ac) => {
         setCfg(ac.config as any);
         setCfgPath(ac.path ?? "");
+        setLoadError(ac.load_error ?? null);
       })
       .catch(() => {});
   };
   useEffect(loadCfg, []);
 
   const persist = async (next: Record<string, any>) => {
+    if (loadError) {
+      toast.error("配置文件无法解析，已禁止保存", { description: loadError });
+      return false;
+    }
     setBusy(true);
     try {
       await saveAppConfig(next);
@@ -176,7 +192,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     const p = cfg?.providers?.[key];
     if (!p) return;
     setEditProv(key);
+    setEName(key);
     setEBase(p.base_url ?? p.baseUrl ?? "");
+    setEKind(p.kind ?? p.type ?? p.api ?? "openai_completions");
     setEKey(p.api_key ?? p.apiKey ?? "");
     setEDefault(p.default_model ?? p.defaultModel ?? "");
     const c = p.compat ?? {};
@@ -190,8 +208,18 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
 
   const submitEditProv = async () => {
     if (!editProv || !cfg) return;
-    const p = { ...cfg.providers[editProv] };
+    const oldKey = editProv;
+    const newKey = eName.trim().toLowerCase();
+    if (!newKey) { toast.error("名称不能为空"); return; }
+    // Keys are case-sensitive in config.toml but the add flow lowercases them,
+    // so compare normalized against every other key — not just an exact hit.
+    const clash = Object.keys(cfg.providers ?? {}).some(
+      (k) => k !== oldKey && k.toLowerCase() === newKey,
+    );
+    if (clash) { toast.error("该名称已存在"); return; }
+    const p = { ...cfg.providers[oldKey] };
     setAliased(p, ["base_url", "baseUrl"], eBase.trim());
+    p.kind = eKind;
     setAliased(p, ["api_key", "apiKey"], eKey.trim());
     setAliased(p, ["default_model", "defaultModel"], eDefault.trim() || null);
     const compat = { ...(p.compat ?? {}) };
@@ -212,7 +240,22 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     } else {
       delete p.headers;
     }
-    const next = { ...cfg, providers: { ...cfg.providers, [editProv]: p } };
+    // Rename: rebuild the map in place so the provider keeps its position,
+    // then rewrite every key reference (active provider, fallback chain).
+    const providers: Record<string, any> = {};
+    for (const [k, v] of Object.entries(cfg.providers ?? {})) {
+      providers[k === oldKey ? newKey : k] = k === oldKey ? p : v;
+    }
+    const renameRef = (k: string) => (k === oldKey ? newKey : k);
+    const next: Record<string, any> = { ...cfg, providers };
+    if (typeof cfg.active_provider === "string") next.active_provider = renameRef(cfg.active_provider);
+    if (typeof cfg.activeProvider === "string") next.activeProvider = renameRef(cfg.activeProvider);
+    const chain = cfg.fallback_chain ?? cfg.fallbackChain;
+    if (Array.isArray(chain)) {
+      const renamed = chain.map(renameRef);
+      if (cfg.fallback_chain !== undefined) next.fallback_chain = renamed;
+      if (cfg.fallbackChain !== undefined) next.fallbackChain = renamed;
+    }
     if (await persist(next)) {
       toast.success("已保存");
       setEditProv(null);
@@ -300,6 +343,25 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     }
   };
 
+  /* ---------- fallback chain ---------- */
+  // Global, ordered degrade chain (config `fallback_chain`). Stored as plain
+  // names. The picker offers configured providers not yet in the chain. The
+  // backend additionally drops whichever entry equals the session's own
+  // primary, so a listed primary is harmless: it is skipped at runtime.
+  const chain: string[] = Array.isArray(cfg?.fallback_chain)
+    ? cfg!.fallback_chain
+    : Array.isArray(cfg?.fallbackChain)
+      ? cfg!.fallbackChain
+      : [];
+  const chainKey = cfg?.fallback_chain !== undefined || cfg?.fallbackChain === undefined
+    ? "fallback_chain"
+    : "fallbackChain";
+  const saveChain = (next: string[]) => {
+    if (!cfg) return;
+    void persist({ ...cfg, [chainKey]: next });
+  };
+  const chainCandidates = Object.keys(cfg?.providers ?? {}).filter((k) => !chain.includes(k));
+
   /* ---------- render ---------- */
   const active = ov?.model;
   const provEntries = Object.entries(cfg?.providers ?? {});
@@ -312,6 +374,12 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
 
   return (
     <div className="flex flex-col gap-3">
+      {loadError && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+          <div className="font-medium">配置文件无法解析，已禁止编辑以免覆盖原文件</div>
+          <div className="font-mono break-all">{loadError}</div>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2">
         {cfgPath && (
           <span className="text-[11px] text-neutral-500 font-mono truncate">
@@ -322,12 +390,69 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
           size="sm"
           variant="outline"
           className="h-7 text-xs gap-1 shrink-0"
+          disabled={!!loadError}
           onClick={() => setProvOpen(true)}
         >
           <Plus className="h-3.5 w-3.5" /> 添加 API
         </Button>
       </div>
 
+      {cfg && (
+        <div className="flex flex-col gap-2 rounded-md border border-neutral-200 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-neutral-800">降级链</span>
+            <span className="text-[11px] text-neutral-500">
+              主提供商耗尽重试后，按顺序切换到下列备用
+            </span>
+          </div>
+          {chain.length ? (
+            <ol className="flex flex-col gap-1">
+              {chain.map((name, i) => (
+                <li key={name} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-mono text-neutral-800">
+                    {i + 1}. {name}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
+                      disabled={i === 0 || busy}
+                      onClick={() => {
+                        const next = [...chain];
+                        [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                        saveChain(next);
+                      }}>
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
+                      disabled={i === chain.length - 1 || busy}
+                      onClick={() => {
+                        const next = [...chain];
+                        [next[i], next[i + 1]] = [next[i + 1], next[i]];
+                        saveChain(next);
+                      }}>
+                      <ArrowDown className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
+                      disabled={busy}
+                      onClick={() => saveChain(chain.filter((n) => n !== name))}>
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <span className="text-[11px] text-neutral-500">未设置，主提供商失败时不会切换</span>
+          )}
+          {chainCandidates.length > 0 && (
+            <SettingSelect
+              value=""
+              placeholder="添加备用提供商…"
+              onChange={(v) => v && saveChain([...chain, v])}
+              options={chainCandidates.map((k) => ({ value: k, label: k }))}
+            />
+          )}
+        </div>
+      )}
       {!cfg ? (
         // Only the provider list waits on the config; the header above is
         // usable straight away.
@@ -347,18 +472,22 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 </span>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <Button
-                  size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
-                  onClick={() => openEditProv(pk)}
-                >
-                  <SquarePen className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
-                  onClick={() => openEditModel(pk, (p.models ?? []).length)}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </Button>
+                <TooltipSimple content="编辑提供商" side="top">
+                  <Button
+                    size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
+                    onClick={() => openEditProv(pk)}
+                  >
+                    <SquarePen className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipSimple>
+                <TooltipSimple content="新建模型" side="top">
+                  <Button
+                    size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
+                    onClick={() => openEditModel(pk, (p.models ?? []).length)}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipSimple>
               </div>
             </div>
             <KvList>
@@ -418,13 +547,15 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                                 {(m.context_window / 1000).toFixed(0)}k
                               </span>
                             ) : null}
-                            <Button
-                              size="sm" variant="ghost"
-                              className="h-6 w-6 p-0 text-neutral-500"
-                              onClick={() => openEditModel(pk, i)}
-                            >
-                              <SquarePen className="h-3.5 w-3.5" />
-                            </Button>
+                            <TooltipSimple content="编辑模型" side="top">
+                              <Button
+                                size="sm" variant="ghost"
+                                className="h-6 w-6 p-0 text-neutral-500"
+                                onClick={() => openEditModel(pk, i)}
+                              >
+                                <SquarePen className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipSimple>
                           </div>
                         </div>
                         {/* Meta line spanning the full card width. */}
@@ -490,7 +621,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 placeholder="https://api.openai.com/v1" className="h-8 text-xs font-mono" />
             </Field>
             <Field label="API Key（支持 env:VAR 引用）">
-              <Input value={provKey_} onChange={(e) => setProvKey_(e.target.value)}
+              <Input type="password" value={provKey_} onChange={(e) => setProvKey_(e.target.value)}
                 placeholder="sk-… 或 env:OPENAI_API_KEY" className="h-8 text-xs font-mono" />
             </Field>
             <Field label="模型列表（逗号分隔的模型 ID）">
@@ -517,8 +648,8 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
               </Field>
             </div>
             <Field label="请求头 JSON（可选）">
-              <Input value={nHeaders} onChange={(e) => setNHeaders(e.target.value)}
-                placeholder='{"X-Title": "my-app"}' className="h-8 text-xs font-mono" />
+              <Textarea value={nHeaders} onChange={(e) => setNHeaders(e.target.value)}
+                rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono resize-y max-h-40" />
             </Field>
           </div>
       </FormDialog>
@@ -527,7 +658,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
       <FormDialog
         open={editProv !== null}
         onOpenChange={(o: boolean) => !o && setEditProv(null)}
-        title={`编辑提供商 · ${editProv ?? ""}`}
+        title="编辑提供商"
         submitLabel="保存"
         busy={busy}
         onSubmit={() => void submitEditProv()}
@@ -541,11 +672,21 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         }
       >
           <div className="flex flex-col gap-3 py-1">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="名称（唯一标识）">
+                <Input value={eName} onChange={(e) => setEName(e.target.value)}
+                  placeholder="openai / anthropic / …" className="h-8 text-xs font-mono" />
+              </Field>
+              <Field label="类型">
+                <SettingSelect value={eKind} onChange={setEKind} options={KIND_OPTIONS} />
+              </Field>
+            </div>
             <Field label="Base URL">
               <Input value={eBase} onChange={(e) => setEBase(e.target.value)} className="h-8 text-xs font-mono" />
             </Field>
             <Field label="API Key">
-              <Input value={eKey} onChange={(e) => setEKey(e.target.value)} className="h-8 text-xs font-mono" />
+              {/* Stored plaintext keys arrive masked; submitting the mask keeps the stored key. */}
+              <Input type="password" value={eKey} onChange={(e) => setEKey(e.target.value)} className="h-8 text-xs font-mono" />
             </Field>
             <Field label="默认模型">
               <Input value={eDefault} onChange={(e) => setEDefault(e.target.value)} className="h-8 text-xs font-mono" />
@@ -566,8 +707,8 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
               </Field>
             </div>
             <Field label="请求头 JSON（可选，留空清除）">
-              <Input value={eHeaders} onChange={(e) => setEHeaders(e.target.value)}
-                placeholder='{"X-Title": "my-app"}' className="h-8 text-xs font-mono" />
+              <Textarea value={eHeaders} onChange={(e) => setEHeaders(e.target.value)}
+                rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono resize-y max-h-40" />
             </Field>
           </div>
       </FormDialog>
@@ -576,7 +717,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
       <FormDialog
         open={editModel !== null}
         onOpenChange={(o: boolean) => !o && setEditModel(null)}
-        title={`${isNewModel ? "新建模型" : "编辑模型"} · ${editModel?.provider ?? ""}`}
+        title={isNewModel ? "新建模型" : "编辑模型"}
         submitLabel={isNewModel ? "添加" : "保存"}
         busy={busy}
         disabled={!mId.trim()}

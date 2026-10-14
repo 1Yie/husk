@@ -56,14 +56,15 @@ export function ArmedDeleteButton({
   };
 
   // One armed pill for every variant — the confirm affordance is the same
-  // element at the same size no matter which button spawned it.
+  // element at the same size no matter which button spawned it. The text
+  // variant keeps its own height so the footer doesn't jump when armed.
   if (armed) {
     return (
       <Button
         variant="destructive"
         size="sm"
         disabled={busy}
-        className={cn("h-6 px-2 text-[11px]", className)}
+        className={cn(variant === "text" ? "h-8 text-xs" : "h-6 px-2 text-[11px]", className)}
         onClick={click}
       >
         确认删除？再点一次

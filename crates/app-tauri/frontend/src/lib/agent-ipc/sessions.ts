@@ -507,8 +507,10 @@ export function checkUpdate() {
 
 export interface AppConfigData {
   path?: string;
-  raw: string;
   config: Record<string, any>;
+  /** Set when the file on disk exists but does not parse. The editor must
+   * stay read-only in that case — saving would replace the user's file. */
+  load_error?: string | null;
   permission_mode?: string;
   thinking_level?: string;
 }

@@ -1122,20 +1122,21 @@ fn agent_session_inner(
         }
         "get_app_config" => {
             let path = agent_llm::AppConfig::default_path();
-            let raw = path
-                .as_ref()
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .unwrap_or_default();
             // NORMALIZED view — `AppConfig::load` folds naked provider
-            // maps + camelCase aliases into the canonical shape, so the
-            // settings UI and `model_info` always see the same `providers`
-            // map regardless of how the file was hand-written.
-            let cfg = agent_llm::AppConfig::load(None).unwrap_or_default();
-            let config_val = serde_json::to_value(&cfg).unwrap_or_else(|_| serde_json::json!({}));
+            // maps + camelCase aliases into the canonical shape. A file that
+            // fails to parse is reported as `load_error` and the editor stays
+            // read-only — it must not look empty, or the next save would
+            // replace the user's file with a blank document.
+            let (cfg, load_error) = match agent_llm::AppConfig::load(None) {
+                Ok(c) => (c, None),
+                Err(e) => (agent_llm::AppConfig::default(), Some(e.to_string())),
+            };
+            let mut config_val = serde_json::to_value(&cfg).unwrap_or_else(|_| serde_json::json!({}));
+            mask_config_keys(&mut config_val);
             Ok(serde_json::json!({
                 "path": path.map(|p| p.to_string_lossy().to_string()),
-                "raw": raw,
                 "config": config_val,
+                "load_error": load_error,
                 "permission_mode": mgr.permission_mode,
                 "thinking_level": mgr.active_thinking_level,
             }))
@@ -1171,50 +1172,19 @@ fn agent_session_inner(
             let Some(path) = agent_llm::AppConfig::default_path() else {
                 return Err("config path not found".into());
             };
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
             let Some(val) = payload else {
                 return Err("save_app_config requires payload".into());
             };
-            // Normalize BEFORE writing — accept the canonical
-            // `{providers:{…}}` shape or a naked provider map, then write
-            // the file back in ITS OWN format (TOML stays TOML — never
-            // JSON-bytes-in-a-.toml-file).
-            let mut cfg =
-                serde_json::from_value::<agent_llm::AppConfig>(val.clone()).unwrap_or_default();
-            if cfg.providers.is_empty() {
-                if let Some(obj) = val.as_object() {
-                    for (k, v) in obj {
-                        if matches!(
-                            k.as_str(),
-                            "active_provider"
-                                | "activeProvider"
-                                | "active_model"
-                                | "activeModel"
-                                | "fallback_chain"
-                                | "fallbackChain"
-                                | "providers"
-                        ) {
-                            continue;
-                        }
-                        if let Ok(p) =
-                            serde_json::from_value::<agent_llm::ProviderConfig>(v.clone())
-                        {
-                            cfg.providers.insert(k.clone(), p);
-                        }
-                    }
-                }
-            }
-            if cfg.providers.is_empty() {
-                return Err("config has no providers — refusing to write".into());
-            }
-            let text = if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-                toml::to_string_pretty(&cfg).map_err(|e| e.to_string())?
-            } else {
-                serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?
-            };
-            std::fs::write(&path, text).map_err(|e| e.to_string())?;
+            // Masked keys come back as the mask; restore the stored key first
+            // so an untouched provider keeps its secret. Read the file as it is
+            // on disk now, not a cached copy.
+            let mut val = val;
+            let stored = agent_llm::AppConfig::load(Some(&path)).unwrap_or_default();
+            unmask_config_keys(&mut val, &stored);
+            // Normalize BEFORE writing; `save_to` refuses to replace a file
+            // that no longer parses and keeps a `.bak` of the previous one.
+            let cfg = normalize_config_payload(&val)?;
+            agent_llm::AppConfig::save_to(&path, &cfg).map_err(|e| e.to_string())?;
             // Hand the edit to the running session — an actor keeps the provider
             // instance and model parameters it was spawned with, so without this
             // the change only surfaced after a restart.
@@ -1641,6 +1611,90 @@ fn strip_front_matter(text: &str) -> String {
     }
 }
 
+/// Turn a `save_app_config` payload into a config document.
+///
+/// Accepts the canonical `{providers:{…}}` shape or a naked provider map.
+/// A payload that does not deserialize is an error — it must never fall
+/// through to an empty document, because the caller writes whatever comes
+/// back to disk.
+fn normalize_config_payload(val: &serde_json::Value) -> Result<agent_llm::AppConfig, String> {
+    let mut cfg = match serde_json::from_value::<agent_llm::AppConfig>(val.clone()) {
+        Ok(c) if !c.providers.is_empty() => return Ok(c),
+        Ok(c) => c,
+        Err(e) => return Err(format!("config payload: {e}")),
+    };
+    if let Some(obj) = val.as_object() {
+        for (k, v) in obj {
+            if matches!(
+                k.as_str(),
+                "active_provider"
+                    | "activeProvider"
+                    | "active_model"
+                    | "activeModel"
+                    | "fallback_chain"
+                    | "fallbackChain"
+                    | "providers"
+            ) {
+                continue;
+            }
+            let p = serde_json::from_value::<agent_llm::ProviderConfig>(v.clone())
+                .map_err(|e| format!("provider `{k}`: {e}"))?;
+            cfg.providers.insert(k.clone(), p);
+        }
+    }
+    if cfg.providers.is_empty() {
+        return Err("config has no providers — refusing to write".into());
+    }
+    Ok(cfg)
+}
+
+/// Placeholder the settings UI shows for a plaintext key it must not echo.
+/// Submitting it back means "keep the stored key".
+const KEY_MASK: &str = "\u{2022}\u{2022}\u{2022}\u{2022}";
+
+/// Mask every plaintext `api_key` in an outgoing config view. `env:` and
+/// `keyring:` handles are not secrets and pass through so the user can see
+/// where the key comes from; anything else is replaced by [`KEY_MASK`].
+fn mask_config_keys(config: &mut serde_json::Value) {
+    let Some(providers) = config.get_mut("providers").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    for provider in providers.values_mut() {
+        if let Some(key) = provider.get_mut("api_key") {
+            let is_handle = key
+                .as_str()
+                .map(|k| k.is_empty() || k.starts_with("env:") || k.starts_with("keyring:"))
+                .unwrap_or(true);
+            if !is_handle {
+                *key = serde_json::Value::String(KEY_MASK.into());
+            }
+        }
+    }
+}
+
+/// Undo [`mask_config_keys`] on an incoming payload: a provider whose key is
+/// the mask keeps the key already stored for that provider id.
+fn unmask_config_keys(payload: &mut serde_json::Value, stored: &agent_llm::AppConfig) {
+    let Some(providers) = payload.get_mut("providers").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    for (id, provider) in providers.iter_mut() {
+        let is_mask = provider
+            .get("api_key")
+            .and_then(|k| k.as_str())
+            .map(|k| k == KEY_MASK)
+            .unwrap_or(false);
+        if is_mask {
+            let kept = stored
+                .providers
+                .get(id)
+                .map(|p| p.api_key.clone())
+                .unwrap_or_default();
+            provider["api_key"] = serde_json::Value::String(kept);
+        }
+    }
+}
+
 /// Slug check for user-created ids (skill names, plugin ids, subagent
 /// names) — lowercase alnum + `-`/`_` only, so names stay path-safe.
 fn valid_slug(s: &str) -> bool {
@@ -1715,6 +1769,76 @@ fn new_mcp_manifest(id: &str, name: &str, entry: serde_json::Value) -> serde_jso
 mod tests {
     /// A local stdio server is sandboxed by default — the declared block is what
     /// turns the process sandbox on, so its absence re-opens the home directory.
+    /// A field of the wrong type must surface as an error, not as an empty
+    /// document that then overwrites the user's file.
+    #[test]
+    fn config_payload_type_error_is_reported_not_swallowed() {
+        let bad = serde_json::json!({
+            "providers": { "a": { "kind": "openai_completions", "base_url": "https://x",
+                                  "models": [{ "id": "m", "context_window": 1.5 }] } }
+        });
+        let err = normalize_config_payload(&bad).expect_err("must not silently default");
+        assert!(err.contains("config payload"), "{err}");
+    }
+
+    /// The settings view must never carry a plaintext key to the webview.
+    /// Handles (`env:` / `keyring:`) are not secrets and stay visible.
+    #[test]
+    fn config_view_masks_plaintext_keys_only() {
+        let mut view = serde_json::json!({
+            "providers": {
+                "plain": { "api_key": "sk-plaintext-LEAK-ME" },
+                "envd": { "api_key": "env:OPENAI_API_KEY" },
+                "kr": { "api_key": "keyring:husk/kr" },
+                "none": { "api_key": "" }
+            }
+        });
+        mask_config_keys(&mut view);
+        let p = &view["providers"];
+        assert_eq!(p["plain"]["api_key"], KEY_MASK);
+        assert_eq!(p["envd"]["api_key"], "env:OPENAI_API_KEY");
+        assert_eq!(p["kr"]["api_key"], "keyring:husk/kr");
+        assert_eq!(p["none"]["api_key"], "");
+        assert!(!view.to_string().contains("LEAK-ME"));
+    }
+
+    /// Saving the view back must not destroy the stored key: the mask means
+    /// "unchanged", while a freshly typed key replaces it.
+    #[test]
+    fn mask_round_trip_keeps_stored_key() {
+        let stored: agent_llm::AppConfig = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "plain": { "kind": "openai_completions", "base_url": "https://x", "api_key": "sk-stored-123" },
+                "other": { "kind": "openai_completions", "base_url": "https://y", "api_key": "sk-other-999" }
+            }
+        }))
+        .unwrap();
+        let mut payload = serde_json::json!({
+            "providers": {
+                "plain": { "api_key": KEY_MASK },
+                "other": { "api_key": "sk-typed-new" }
+            }
+        });
+        unmask_config_keys(&mut payload, &stored);
+        assert_eq!(payload["providers"]["plain"]["api_key"], "sk-stored-123");
+        assert_eq!(payload["providers"]["other"]["api_key"], "sk-typed-new");
+    }
+
+    #[test]
+    fn config_payload_naked_provider_map_is_accepted() {
+        let naked = serde_json::json!({
+            "deepseek": { "kind": "openai_completions", "base_url": "https://x" }
+        });
+        let cfg = normalize_config_payload(&naked).expect("naked map");
+        assert!(cfg.providers.contains_key("deepseek"));
+    }
+
+    #[test]
+    fn config_payload_without_providers_is_refused() {
+        let empty = serde_json::json!({ "active_provider": "x" });
+        assert!(normalize_config_payload(&empty).is_err());
+    }
+
     #[test]
     fn stdio_mcp_added_from_ui_is_sandboxed() {
         let m = new_mcp_manifest(
