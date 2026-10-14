@@ -62,3 +62,6 @@ Desktop.ini
 # app-desktop — local iced experiment, untracked
 crates/app-desktop/
 __pycache__/
+
+# Agent runtime scratch (task logs, review output, session artifacts)
+.pi/
