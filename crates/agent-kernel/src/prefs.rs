@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session_store::{files, global_db, is_office_root, try_global_db, SessionStore};
+use crate::session_store::{global_get, global_put, global_update, is_office_root, SessionStore};
 
 // ---------------------------------------------------------------------------
 // Workspace preferences — per-workspace UI prefs (model / thinking / permission)
@@ -234,14 +234,6 @@ impl Default for AppearanceSettings {
 // Global rows — app-level singletons in the `globals` table.
 // ---------------------------------------------------------------------------
 
-fn get_global<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
-    files::get(global_db()?.as_ref(), key)
-}
-
-fn put_global(key: &str, value: &impl Serialize) -> std::io::Result<()> {
-    files::put(try_global_db()?.as_ref(), key, value)
-}
-
 /// Recently opened workspace entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentWorkspace {
@@ -251,7 +243,7 @@ pub struct RecentWorkspace {
 }
 
 pub fn load_recent_workspaces() -> Vec<RecentWorkspace> {
-    let mut list: Vec<RecentWorkspace> = get_global("recent_workspaces").unwrap_or_default();
+    let mut list: Vec<RecentWorkspace> = global_get("recent_workspaces").unwrap_or_default();
     list.retain(|w| w.path.is_dir());
     list.sort_by(|a, b| b.last_opened.cmp(&a.last_opened));
     list
@@ -278,9 +270,8 @@ pub fn record_recent_workspace(workspace_root: &Path) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    if let Ok(db) = try_global_db() {
-        let _ = files::update_global(
-            &db,
+    {
+        let _ = global_update(
             "recent_workspaces",
             |list: &mut Vec<RecentWorkspace>| {
                 list.retain(|w| w.path != canon && w.path.is_dir());
@@ -303,9 +294,8 @@ pub fn remove_recent_workspace(workspace_root: &Path) {
     let canon = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
-    if let Ok(db) = try_global_db() {
-        let _ = files::update_global(
-            &db,
+    {
+        let _ = global_update(
             "recent_workspaces",
             |list: &mut Vec<RecentWorkspace>| list.retain(|w| w.path != canon),
         );
@@ -319,13 +309,10 @@ pub fn remove_recent_workspace(workspace_root: &Path) {
 pub fn known_workspaces() -> Vec<RecentWorkspace> {
     let mut out: Vec<RecentWorkspace> = Vec::new();
     for store in SessionStore::all_workspaces() {
-        let Some(row) = store.workspace_row().ok().flatten() else {
+        let Some(path) = store.recorded_root() else {
             continue;
         };
-        let Some(root) = row.root.clone() else {
-            continue;
-        };
-        let path = std::path::PathBuf::from(&root);
+        let root = path.to_string_lossy().to_string();
         if !path.is_dir() {
             continue;
         }
@@ -351,24 +338,24 @@ pub fn known_workspaces() -> Vec<RecentWorkspace> {
 }
 
 pub fn load_default_preferences() -> DefaultPreferences {
-    get_global("default_preferences").unwrap_or_default()
+    global_get("default_preferences").unwrap_or_default()
 }
 
 /// Load the global default preferences only when a row actually exists —
 /// `None` when absent or corrupt. Used as a *fallback* layer below
 /// per-workspace prefs so an untouched install keeps the built-in defaults.
 pub fn try_load_default_preferences() -> Option<DefaultPreferences> {
-    get_global("default_preferences")
+    global_get("default_preferences")
 }
 
 pub fn save_default_preferences(prefs: &DefaultPreferences) -> std::io::Result<()> {
-    put_global("default_preferences", prefs)
+    global_put("default_preferences", prefs)
 }
 
 pub fn load_appearance_settings() -> AppearanceSettings {
-    get_global("appearance").unwrap_or_default()
+    global_get("appearance").unwrap_or_default()
 }
 
 pub fn save_appearance_settings(s: &AppearanceSettings) -> std::io::Result<()> {
-    put_global("appearance", s)
+    global_put("appearance", s)
 }

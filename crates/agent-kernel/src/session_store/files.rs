@@ -328,7 +328,7 @@ impl SessionStore {
     pub fn dir_name(&self) -> Option<String> {
         Some(self.ws.clone())
     }
-    pub(crate) fn workspace_row(&self) -> std::io::Result<Option<WorkspaceRow>> {
+    pub(super) fn workspace_row(&self) -> std::io::Result<Option<WorkspaceRow>> {
         read_json(&self.directory().join("workspace.json"))
     }
     pub fn recorded_root(&self) -> Option<PathBuf> {
@@ -658,17 +658,17 @@ fn empty_meta(id: i64) -> SessionMeta {
     }
 }
 
-pub(crate) fn get<T: serde::de::DeserializeOwned>(db: &SessionDatabase, key: &str) -> Option<T> {
+pub(super) fn get<T: serde::de::DeserializeOwned>(db: &SessionDatabase, key: &str) -> Option<T> {
     read_json(&db.root.join("globals").join(format!("{key}.json")))
         .ok()
         .flatten()
 }
-pub(crate) fn put(db: &SessionDatabase, key: &str, value: &impl Serialize) -> std::io::Result<()> {
+pub(super) fn put(db: &SessionDatabase, key: &str, value: &impl Serialize) -> std::io::Result<()> {
     locked(&db.root.join("globals").join(format!("{key}.lock")), || {
         atomic_json(&db.root.join("globals").join(format!("{key}.json")), value)
     })
 }
-pub(crate) fn update_global<T: serde::de::DeserializeOwned + Serialize + Default>(
+pub(super) fn update_global<T: serde::de::DeserializeOwned + Serialize + Default>(
     db: &SessionDatabase,
     key: &str,
     f: impl FnOnce(&mut T),

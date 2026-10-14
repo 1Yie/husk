@@ -3,7 +3,7 @@
 //! Old redb data is imported from a verified snapshot without locking the live
 //! database or stopping another frontend. Original sources remain unchanged.
 
-pub(crate) mod files;
+mod files;
 mod migration;
 pub use files::SessionDatabase;
 
@@ -101,9 +101,9 @@ pub struct SessionIndex {
 
 /// Per-workspace row in the `workspaces` table.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(crate) struct WorkspaceRow {
+struct WorkspaceRow {
     #[serde(default)]
-    pub(crate) root: Option<String>,
+    root: Option<String>,
     #[serde(default)]
     last_active: Option<i64>,
     /// Monotonic session-id counter — survives deletes. Without it
@@ -256,7 +256,7 @@ fn shared_db() -> &'static Mutex<SharedDb> {
     DB.get_or_init(|| Mutex::new(SharedDb::default()))
 }
 
-pub(crate) fn open_persistent_db() -> std::io::Result<Arc<SessionDatabase>> {
+fn open_persistent_db() -> std::io::Result<Arc<SessionDatabase>> {
     let path = sessions_db_path().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "无法确定会话数据库的数据目录")
     })?;
@@ -268,7 +268,7 @@ pub(crate) fn open_persistent_db() -> std::io::Result<Arc<SessionDatabase>> {
     })
 }
 
-pub(crate) fn try_global_db() -> std::io::Result<Arc<SessionDatabase>> {
+fn try_global_db() -> std::io::Result<Arc<SessionDatabase>> {
     let mut shared = shared_db().lock().map_err(io_err)?;
     if let Some(db) = &shared.db {
         return Ok(db.clone());
@@ -279,8 +279,36 @@ pub(crate) fn try_global_db() -> std::io::Result<Arc<SessionDatabase>> {
     Ok(db)
 }
 
-pub(crate) fn global_db() -> Option<Arc<SessionDatabase>> {
+fn global_db() -> Option<Arc<SessionDatabase>> {
     try_global_db().ok()
+}
+
+// ---------------------------------------------------------------------------
+// Global rows — app-level singletons in the `globals` table.
+//
+// The preferences live in another module (and, one day, another crate), so
+// they reach the shared database through this small public surface instead of
+// the private helpers above.
+// ---------------------------------------------------------------------------
+
+/// Read a global row; `None` when there is no row, or no database yet.
+pub fn global_get<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
+    files::get(global_db()?.as_ref(), key)
+}
+
+/// Write a global row, replacing whatever was there.
+pub fn global_put(key: &str, value: &impl serde::Serialize) -> std::io::Result<()> {
+    files::put(try_global_db()?.as_ref(), key, value)
+}
+
+/// Read-modify-write a global row under its lock; a missing row starts from
+/// `T::default()`.
+pub fn global_update<T>(key: &str, f: impl FnOnce(&mut T)) -> std::io::Result<()>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize + Default,
+{
+    let db = try_global_db()?;
+    files::update_global(db.as_ref(), key, f)
 }
 
 /// Present on every workspace while the app uses a transient database.
