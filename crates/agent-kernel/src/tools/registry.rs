@@ -451,51 +451,6 @@ mod tests {
         assert_eq!(ctx.sandbox().unwrap().id(), "none");
     }
 
-    /// `staged` is what the engine dry-runs before the approval card, so a tool
-    /// that sets it without being a real, non-readonly workspace mutation — or
-    /// a direct writer (`serena`) that wrongly sets it — is a safety bug. Pin
-    /// the flag against the registry instead of trusting it by hand.
-    #[test]
-    fn staged_flag_matches_the_registry() {
-        let mut reg = ToolRegistry::with_builtins();
-        // `serena` is a host-registered tool; it is the trap: a
-        // WorkspaceMutation that writes directly, so staging it would run the
-        // write before approval.
-        reg.register(agent_tools_serena::spec());
-        let staged: Vec<&str> = reg
-            .specs
-            .values()
-            .filter(|s| s.staged)
-            .map(|s| s.name)
-            .collect();
-        assert_eq!(
-            {
-                let mut v = staged.clone();
-                v.sort();
-                v
-            },
-            vec!["apply_patch", "fuzzy_patch"],
-            "the staged set drifted"
-        );
-        for name in &staged {
-            assert!(
-                !reg.is_readonly(name),
-                "staged writer {name} must not be readonly"
-            );
-            assert_eq!(
-                reg.spec(name).unwrap().class,
-                ToolClass::WorkspaceMutation,
-                "staged writer {name} must be a workspace mutation"
-            );
-        }
-        let serena = reg.spec("serena").unwrap();
-        assert_eq!(serena.class, ToolClass::WorkspaceMutation);
-        assert!(
-            !serena.staged,
-            "serena writes in-process; it must not be dry-run early"
-        );
-    }
-
     #[test]
     fn ask_is_refused_without_a_host_channel_and_shared_after_cancel_scope() {
         let mut ctx = ToolCtx::new(std::env::temp_dir());
@@ -626,16 +581,14 @@ mod tests {
 
     use super::*;
 
-    /// `resolve` must accept a file whose parent directories do not exist yet —
-    /// the canonicalize walk climbs to the deepest existing ancestor.
-    /// The built-in registry carries both computer-use tools.
     #[test]
-    fn registry_carries_screenshot_and_computer() {
+    fn builtins_are_only_the_generic_conversation_tools() {
         let r = ToolRegistry::with_builtins();
-        assert!(r.spec("screenshot").is_some());
-        assert!(r.spec("computer").is_some());
-        assert!(r.is_readonly("screenshot"));
-        assert!(!r.is_readonly("computer"));
+        let schema = r.request_schema();
+        let mut names: Vec<_> = schema.as_array().unwrap().iter()
+            .map(|s| s["function"]["name"].as_str().unwrap()).collect();
+        names.sort();
+        assert_eq!(names, ["ask_question", "batch_execute", "delegate", "todo"]);
     }
 
     #[test]
@@ -644,7 +597,7 @@ mod tests {
         // has no built-in spec, so it must count as a potential write.
         let reg = ToolRegistry::with_builtins();
         assert!(!reg.is_readonly("plugin__tool_that_does_not_exist"));
-        assert!(reg.is_readonly("smart_read"));
+        assert!(reg.is_readonly("todo"));
     }
 
     #[test]
@@ -684,29 +637,21 @@ mod tests {
         assert!(!target.exists());
     }
 
-    /// A child can read and search, but never persist memory, recurse, or reach
-    /// the human. Those are exactly the tools excluded from `child_builtins`.
+    /// A child may track tasks and batch calls, but cannot recurse or reach a human.
     #[test]
     fn child_builtins_exclude_recursion_and_human_tools() {
         let child = ToolRegistry::child_builtins();
-        // The goal and plan declarations live only in the parent's goal/plan
-        // registries. A child that held them would reach the controller that
-        // `delegate` installs for it, so this list also guards that wiring.
         for banned in [
             "delegate",
-            "computer",
             "ask_question",
-            "goal_complete",
-            "goal_blocked",
-            "submit_plan",
         ] {
             assert!(
                 child.spec(banned).is_none(),
                 "child registry must not hold `{banned}`"
             );
         }
-        assert!(child.spec("smart_read").is_some());
-        assert!(child.spec("bash").is_some());
+        assert!(child.spec("todo").is_some());
+        assert!(child.spec("batch_execute").is_some());
         // The parent still has the full set, so the exclusion is the child's alone.
         assert!(ToolRegistry::with_builtins().spec("delegate").is_some());
     }

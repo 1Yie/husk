@@ -24,8 +24,5 @@ agent-testkit = { path = "../agent-testkit" }
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
-agent-paths = { path = "../agent-paths" }
 agent-sandbox = { path = "../agent-sandbox" }
-agent-computer = { path = "../agent-computer" }
-image.workspace = true
 tempfile = "3"

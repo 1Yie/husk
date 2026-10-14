@@ -8,7 +8,7 @@ use std::sync::Arc;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
 fn registry() -> ToolRegistry {
-    ToolRegistry::with_builtins()
+    husk_host::session::base_registries().0
 }
 
 fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {

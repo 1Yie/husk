@@ -1,4 +1,4 @@
-//! Stage-3 acceptance tests: registry dispatch, builtin tools, path-escape
+//! Host tool acceptance tests: registry dispatch, coding tools, path-escape
 //! guard, patch pipeline — all in-process, no network.
 
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
 fn registry() -> ToolRegistry {
-    ToolRegistry::with_builtins()
+    husk_host::session::base_registries().0
 }
 
 fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
@@ -18,11 +18,9 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 }
 
 #[tokio::test]
-async fn registry_lists_builtins() {
+async fn registry_lists_the_host_tools() {
     let r = registry();
-    // 16: `blueprint`, `remember`, `skill` (agent-coding) and `serena`
-    // (agent-tools-serena) are registered by the host assembly on top of this set.
-    assert_eq!(r.len(), 16);
+    assert_eq!(r.len(), 20);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -47,6 +45,10 @@ async fn registry_lists_builtins() {
         "delegate",
         "ask_question",
         "batch_execute",
+        "blueprint",
+        "remember",
+        "skill",
+        "serena",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
@@ -165,7 +167,8 @@ async fn fuzzy_patch_full_roundtrip() {
         !std::fs::read_to_string(&file).unwrap().contains("step_two"),
         "staged: the file must be untouched before the commit"
     );
-    let agent_tool::Commit { verify, apply } = res.commit.expect("fuzzy_patch stages a Commit");
+    let agent_kernel::tools::registry::Commit { verify, apply } =
+        res.commit.expect("fuzzy_patch stages a Commit");
     verify().expect("the preview still holds");
     apply.await.expect("the commit applies");
 

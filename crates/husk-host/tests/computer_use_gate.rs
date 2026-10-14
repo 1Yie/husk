@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use agent_ipc::UiEvent;
 use agent_kernel::engine::{Engine, EngineIo};
 use agent_kernel::permissions::{PermissionGate, PermissionMode};
-use agent_kernel::tools::{ToolCtx, ToolRegistry};
+use agent_kernel::tools::ToolCtx;
 use agent_llm::types::{ChatMessage, StreamChunk};
 
 use agent_testkit::ScriptedProvider;
@@ -146,7 +146,7 @@ fn rig_with(
     let ctx = Arc::new(ToolCtx::new(dir.path()).with_desktop(desk.clone()));
     let mut engine = Engine::new(
         stub,
-        Arc::new(ToolRegistry::with_builtins()),
+        Arc::new(husk_host::session::base_registries().0),
         ctx.clone(),
         "test-model",
         0.0,

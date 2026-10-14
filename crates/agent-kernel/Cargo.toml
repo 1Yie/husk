@@ -13,10 +13,6 @@ agent-paths = { path = "../agent-paths" }
 agent-sandbox = { path = "../agent-sandbox" }
 agent-computer = { path = "../agent-computer" }
 agent-plugin = { path = "../agent-plugin" }
-agent-tools-computer = { path = "../agent-tools-computer" }
-agent-tools-fs = { path = "../agent-tools-fs" }
-agent-tools-shell = { path = "../agent-tools-shell" }
-agent-tools-web = { path = "../agent-tools-web" }
 async-trait.workspace = true
 futures.workspace = true
 serde.workspace = true
@@ -29,14 +25,9 @@ schemars.workspace = true
 dirs.workspace = true
 
 [dev-dependencies]
-agent-tools-serena = { path = "../agent-tools-serena" }
 agent-testkit = { path = "../agent-testkit" }
 tempfile = "3"
-# The computer-use acceptance test installs a scripted desktop backend and
-# writes a real PNG through it — both crates are normal deps, listed here for
-# the test target's own imports.
 agent-computer = { path = "../agent-computer" }
-image.workspace = true
 async-trait.workspace = true
 
 [features]
@@ -44,5 +35,3 @@ async-trait.workspace = true
 # `--no-default-features` builds without the wasmtime JIT for lean builds.
 default = ["wasm"]
 wasm = ["agent-plugin/wasm"]
-# The outline extractor lives with the file tools; the feature just forwards.
-tree-sitter = ["agent-tools-fs/tree-sitter"]

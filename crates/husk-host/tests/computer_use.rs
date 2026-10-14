@@ -15,6 +15,10 @@ use agent_kernel::permissions::{Decision, PermissionGate, PermissionMode};
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
+fn registry() -> ToolRegistry {
+    husk_host::session::base_registries().0
+}
+
 fn desktop_gate(mode: PermissionMode, rules: agent_kernel::permissions::PermissionRules) -> PermissionGate {
     PermissionGate::new(mode, rules)
         .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy))
@@ -110,7 +114,7 @@ fn ctx_at(dir: &Path, desktop: Arc<FakeDesktop>) -> Arc<ToolCtx> {
 /// and only the observation one in plan mode — "look, do not touch".
 #[test]
 fn plan_mode_keeps_the_eyes_and_drops_the_hands() {
-    let build = ToolRegistry::with_builtins();
+    let build = registry();
     assert!(build.spec("screenshot").is_some());
     assert!(build.spec("computer").is_some());
 
@@ -138,11 +142,11 @@ fn plan_mode_keeps_the_eyes_and_drops_the_hands() {
 /// / `acceptEdits`, denies in `dontAsk`, and auto-runs only in `auto`/`bypass`.
 #[test]
 fn permission_matrix_for_desktop_tools() {
-    let shot_readonly = ToolRegistry::with_builtins()
+    let shot_readonly = registry()
         .spec("screenshot")
         .map(|s| s.readonly)
         .unwrap();
-    let comp_class = ToolRegistry::with_builtins()
+    let comp_class = registry()
         .spec("computer")
         .map(|s| s.class);
 
@@ -202,10 +206,8 @@ fn permission_matrix_for_desktop_tools() {
 /// from, asserted here against the same filter `session.rs` uses.
 #[test]
 fn child_registries_never_carry_desktop_input() {
-    let registry = ToolRegistry::with_builtins();
-    let child_full = registry.filtered(|s| {
-        s.name != "delegate" && s.name != "computer" && s.class != ToolClass::HumanInteraction
-    });
+    let registry = registry();
+    let child_full = husk_host::session::base_registries().1;
     let child_ro = child_full.readonly_only();
 
     for child in [&child_full, &child_ro] {
@@ -241,7 +243,7 @@ fn child_registries_never_carry_desktop_input() {
 async fn screenshot_stages_a_png_and_returns_the_frame() {
     let dir = tempfile::tempdir().unwrap();
     let fake = Arc::new(FakeDesktop::default());
-    let res = ToolRegistry::with_builtins()
+    let res = registry()
         .dispatch(
             "screenshot",
             serde_json::json!({}),
@@ -283,7 +285,7 @@ async fn screenshot_stages_a_png_and_returns_the_frame() {
 async fn computer_delivers_actions_to_the_backend() {
     let dir = tempfile::tempdir().unwrap();
     let fake = Arc::new(FakeDesktop::default());
-    let r = ToolRegistry::with_builtins();
+    let r = registry();
 
     r.dispatch(
         "computer",
@@ -328,7 +330,7 @@ async fn computer_delivers_actions_to_the_backend() {
 #[test]
 fn agent_modes_shape_the_tool_set() {
     assert_eq!(AgentMode::from_str("plan"), AgentMode::Plan);
-    let full = ToolRegistry::with_builtins();
+    let full = registry();
     let plan = full.filtered(|s| s.readonly);
     assert!(plan.spec("computer").is_none(), "plan drops the driver");
     assert!(plan.spec("screenshot").is_some(), "plan keeps the camera");

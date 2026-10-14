@@ -17,8 +17,8 @@ fn ctx_with_sandbox(root: &std::path::Path) -> ToolCtx {
 
 fn call(spec_name: &str, args: serde_json::Value, ctx: Arc<ToolCtx>) -> String {
     let spec = match spec_name {
-        "bash" => agent_kernel::tools::bash::spec(),
-        "service" => agent_kernel::tools::services::spec(),
+        "bash" => agent_tools_shell::bash::spec(),
+        "service" => agent_tools_shell::services::spec(),
         _ => unreachable!(),
     };
     tokio::runtime::Runtime::new()

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use agent_kernel::engine::{Engine, EngineIo};
-use agent_kernel::tools::{ToolCtx, ToolRegistry};
+use agent_kernel::tools::ToolCtx;
 
 use agent_testkit::ScriptedProvider;
 use agent_llm::types::{ChatMessage, StreamChunk};
@@ -106,7 +106,7 @@ async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<Ch
     let ctx = Arc::new(ctx);
     let mut engine = Engine::new(
         stub,
-        Arc::new(ToolRegistry::with_builtins()),
+        Arc::new(husk_host::session::base_registries().0),
         ctx.clone(),
         "test-model",
         0.0,

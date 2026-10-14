@@ -12,12 +12,14 @@ static DELEGATE_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new((
 
 use agent_kernel::channels::UiSink;
 use agent_kernel::tools::delegate::{ChildRoute, SubagentSpawner};
-use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
+fn registry() -> ToolRegistry {
+    husk_host::session::base_registries().0
+}
+
 fn spawner(provider: Arc<dyn agent_llm::LlmProvider>) -> SubagentSpawner {
-    let full = ToolRegistry::with_builtins()
-        .filtered(|s| s.name != "delegate" && s.class != ToolClass::HumanInteraction);
+    let full = husk_host::session::base_registries().1;
     let readonly = full.readonly_only();
     let route = Arc::new(std::sync::RwLock::new(ChildRoute {
         provider,
@@ -49,7 +51,7 @@ async fn parallel_tasks_run_together_and_merge_in_input_order() {
     provider.script_text("beta report");
     let ctx = ctx_with(dir.path(), spawner(provider.clone()));
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     let out = (spec.exec)(
         serde_json::json!({"tasks": ["inspect alpha", "inspect beta"], "readonly": true}),
         ctx,
@@ -81,7 +83,7 @@ async fn write_capable_parallel_tasks_are_refused_before_anything_spawns() {
     let provider = Arc::new(ScriptedProvider::new());
     let ctx = ctx_with(dir.path(), spawner(provider.clone()));
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     let err = (spec.exec)(
         serde_json::json!({"tasks": ["write one", "write two"]}),
         ctx,
@@ -108,7 +110,7 @@ async fn every_child_emits_a_nested_card() {
     ctx.install_subagent(spawner(provider));
     ctx.install_ui(sink);
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     let _ = (spec.exec)(
         serde_json::json!({"tasks": ["alpha", "beta"], "readonly": true}),
         Arc::new(ctx),
@@ -171,8 +173,7 @@ async fn every_child_emits_a_nested_card() {
 fn spawner_with_route(
     provider: Arc<dyn agent_llm::LlmProvider>,
 ) -> (SubagentSpawner, Arc<std::sync::RwLock<ChildRoute>>) {
-    let full = ToolRegistry::with_builtins()
-        .filtered(|s| s.name != "delegate" && s.class != ToolClass::HumanInteraction);
+    let full = husk_host::session::base_registries().1;
     let readonly = full.readonly_only();
     let route = Arc::new(std::sync::RwLock::new(ChildRoute {
         provider,
@@ -213,7 +214,7 @@ async fn manifest_tools_allowlist_narrows_the_child_request() {
     let (spawner, _route) = spawner_with_route(provider.clone());
     let ctx = ctx_with(dir.path(), spawner);
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     (spec.exec)(
         serde_json::json!({"task": "look around", "agent": "scout"}),
         ctx,
@@ -242,7 +243,7 @@ async fn unknown_tool_in_manifest_is_refused_before_spawning() {
     let (spawner, _route) = spawner_with_route(provider.clone());
     let ctx = ctx_with(dir.path(), spawner);
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     let err = (spec.exec)(
         serde_json::json!({"task": "go", "agent": "typo"}),
         ctx,
@@ -265,7 +266,7 @@ async fn builtin_review_child_is_offered_no_write_tools() {
     let (spawner, _route) = spawner_with_route(provider.clone());
     let ctx = ctx_with(dir.path(), spawner);
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     (spec.exec)(
         serde_json::json!({"task": "review it", "agent": "review"}),
         ctx,
@@ -296,7 +297,7 @@ async fn child_follows_hot_swapped_model_and_thinking_level() {
     provider.script_text("second");
     let (spawner, route) = spawner_with_route(provider.clone());
     let ctx = ctx_with(dir.path(), spawner);
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
 
     (spec.exec)(serde_json::json!({"task": "one"}), ctx.clone())
         .await
@@ -349,7 +350,7 @@ async fn manifest_model_override_reaches_the_child_request() {
     let (spawner, _route) = spawner_with_models(provider.clone());
     let ctx = ctx_with(dir.path(), spawner);
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     (spec.exec)(serde_json::json!({"task": "scan", "agent": "cheap"}), ctx)
         .await
         .expect("declared model must run");
@@ -369,7 +370,7 @@ async fn undeclared_manifest_model_is_refused_before_spawning() {
     let (spawner, _route) = spawner_with_models(provider.clone());
     let ctx = ctx_with(dir.path(), spawner);
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     let err = (spec.exec)(serde_json::json!({"task": "go", "agent": "ghost"}), ctx)
         .await
         .expect_err("undeclared model must be refused");
@@ -390,7 +391,7 @@ async fn manifest_thinking_is_validated_and_applied() {
     provider.script_text("ok");
     let (spawner, _route) = spawner_with_models(provider.clone());
     let ctx = ctx_with(dir.path(), spawner);
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
 
     let err = (spec.exec)(serde_json::json!({"task": "x", "agent": "garbled"}), ctx.clone())
         .await
@@ -436,7 +437,7 @@ async fn steer_reaches_a_running_child_on_its_next_request() {
     let ctx = ctx_with(dir.path(), spawner(provider.clone()));
 
     let run = tokio::spawn(async move {
-        let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+        let spec = registry().spec("delegate").unwrap();
         (spec.exec)(serde_json::json!({"task": "read notes"}), ctx).await
     });
 
@@ -477,7 +478,7 @@ async fn steer_to_a_finished_child_is_refused() {
     let provider = Arc::new(ScriptedProvider::new());
     provider.script_text("all done");
     let ctx = ctx_with(dir.path(), spawner(provider));
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     (spec.exec)(serde_json::json!({"task": "quick"}), ctx)
         .await
         .expect("child must finish");
@@ -509,7 +510,7 @@ async fn writing_child_inherits_repo_rules_by_default() {
     provider.script_text("ok");
     let ctx = ctx_with(dir.path(), spawner(provider.clone()));
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     (spec.exec)(serde_json::json!({"task": "fix it", "agent": "builder"}), ctx)
         .await
         .expect("writer must run");
@@ -529,7 +530,7 @@ async fn readonly_child_does_not_inherit_repo_rules_by_default() {
     provider.script_text("ok");
     let ctx = ctx_with(dir.path(), spawner(provider.clone()));
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     (spec.exec)(serde_json::json!({"task": "look", "agent": "scout"}), ctx)
         .await
         .expect("scout must run");
@@ -549,7 +550,7 @@ async fn manifest_context_files_overrides_the_readonly_default() {
     provider.script_text("ok");
     let ctx = ctx_with(dir.path(), spawner(provider.clone()));
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     (spec.exec)(serde_json::json!({"task": "audit", "agent": "auditor"}), ctx)
         .await
         .expect("auditor must run");
@@ -572,7 +573,7 @@ async fn child_transcript_is_saved_as_jsonl() {
     provider.script_text("the transcript answer");
     let ctx = ctx_with(dir.path(), spawner(provider));
 
-    let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
+    let spec = registry().spec("delegate").unwrap();
     (spec.exec)(serde_json::json!({"task": "record me"}), ctx)
         .await
         .expect("child must finish");

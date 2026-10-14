@@ -642,26 +642,18 @@ mod tests {
 
     #[test]
     fn eligibility_matrix() {
-        let mut reg = crate::tools::registry::ToolRegistry::with_builtins();
-        // `serena` is host-registered; it still must never run inside a batch.
-        reg.register(agent_tools_serena::spec());
-        for (name, want) in [
-            ("smart_read", true),
-            ("list_dir", true),
-            ("smart_grep", true),
-            ("web_fetch", true),
-            ("bash", false),
-            ("apply_patch", false),
-            ("fuzzy_patch", false),
-            ("smart_test_runner", false),
-            ("serena", false),
-            ("delegate", false),
-            ("ask_question", false),
-            ("todo", false),
-            ("batch_execute", false),
+        let mut spec = spec();
+        for (class, want) in [
+            (ToolClass::Observation, true),
+            (ToolClass::WorkspaceMutation, false),
+            (ToolClass::SessionMutation, false),
+            (ToolClass::Process, false),
+            (ToolClass::Control, false),
+            (ToolClass::Orchestration, false),
+            (ToolClass::HumanInteraction, false),
         ] {
-            let spec = reg.spec(name).unwrap_or_else(|| panic!("{name} missing"));
-            assert_eq!(is_batchable(&spec), want, "{name}");
+            spec.class = class;
+            assert_eq!(is_batchable(&spec), want, "{class:?}");
         }
     }
 
@@ -784,45 +776,4 @@ mod tests {
         assert!(e.contains("must be an array"), "{e}");
     }
 
-    /// End-to-end through the real dispatch: good items run, the shapeless one
-    /// is rejected alone, and the batch still reports every section.
-    #[tokio::test]
-    async fn a_real_batch_runs_and_isolates_a_shapeless_item() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
-        let mut ctx = ToolCtx::new(dir.path());
-        ctx.active_registry = std::sync::RwLock::new(Some(Arc::new(
-            crate::tools::registry::ToolRegistry::with_builtins(),
-        )));
-        let out = exec(
-            serde_json::json!({"calls": [
-                {"tool": "list_dir", "args": {"path": "."}},
-                {"name": "smart_read", "arguments": {"path": "a.rs"}},
-                {"path": "orphan.rs"}
-            ]}),
-            Arc::new(ctx),
-        )
-        .await
-        .expect("a bad item must not fail the batch");
-        let text = out.content;
-        assert!(text.contains("list_dir (ok"), "{text}");
-        assert!(text.contains("smart_read (ok"), "{text}");
-        assert!(text.contains("rejected"), "{text}");
-        assert!(text.contains("could not be parsed"), "{text}");
-    }
-
-    #[test]
-    fn network_flag_only_on_fetch() {
-        let reg = crate::tools::registry::ToolRegistry::with_builtins();
-        for (name, want) in [
-            ("web_fetch", true),
-            ("smart_read", false),
-            ("list_dir", false),
-            ("smart_grep", false),
-            ("batch_execute", false),
-        ] {
-            let spec = reg.spec(name).unwrap();
-            assert_eq!(spec.network, want, "{name}");
-        }
-    }
 }

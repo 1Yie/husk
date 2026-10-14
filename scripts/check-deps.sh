@@ -41,9 +41,9 @@ declare -A ALLOW=(
   # the coding product's semantics — depends on the kernel, never the reverse
   [agent-coding]="agent-context agent-ipc agent-kernel agent-llm agent-skills agent-tools-fs"
   # host layer over the kernel — session assembly, commands, modes, sandbox prefs
-  [husk-host]="agent-coding agent-skills agent-store agent-context agent-ipc agent-kernel agent-llm agent-paths agent-plugin agent-sandbox agent-tools-office agent-tools-serena"
+  [husk-host]="agent-coding agent-skills agent-store agent-context agent-ipc agent-kernel agent-llm agent-paths agent-plugin agent-sandbox agent-tools-computer agent-tools-fs agent-tools-office agent-tools-serena agent-tools-shell agent-tools-web"
   # runtime
-  [agent-kernel]="agent-computer agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-tool agent-tools-computer agent-tools-fs agent-tools-shell agent-tools-web"
+  [agent-kernel]="agent-computer agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-tool"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths agent-store husk-host"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host"

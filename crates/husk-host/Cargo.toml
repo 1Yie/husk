@@ -15,6 +15,10 @@ agent-context = { path = "../agent-context" }
 agent-plugin = { path = "../agent-plugin" }
 agent-skills = { path = "../agent-skills" }
 agent-store = { path = "../agent-store" }
+agent-tools-fs = { path = "../agent-tools-fs" }
+agent-tools-shell = { path = "../agent-tools-shell" }
+agent-tools-web = { path = "../agent-tools-web" }
+agent-tools-computer = { path = "../agent-tools-computer" }
 agent-tools-office = { path = "../agent-tools-office" }
 agent-tools-serena = { path = "../agent-tools-serena" }
 agent-paths = { path = "../agent-paths" }
@@ -34,3 +38,6 @@ tempfile = "3"
 agent-testkit = { path = "../agent-testkit" }
 agent-computer = { path = "../agent-computer" }
 image.workspace = true
+
+[features]
+tree-sitter = ["agent-tools-fs/tree-sitter"]

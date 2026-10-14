@@ -23,6 +23,7 @@ use crate::commands::{CommandCtx, CommandRegistry, CommandResult, ControlOp};
 use agent_kernel::engine::{Engine, EngineIo};
 use agent_kernel::hooks::HookChain;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
+use agent_kernel::tools::registry::ToolClass;
 
 /// The rendered system prompt template — embedded at build time from the
 /// skill's canonical source (single source of truth, never hand-edited here).
@@ -237,11 +238,22 @@ pub struct SessionConfig {
 }
 
 /// The host-added tools every full registry carries on top of the kernel's
-/// builtins: `blueprint` and `skill` (coding product) and `serena` (MCP bridge). One list,
-/// applied to both the parent and the child base, so a new host tool cannot be
-/// added to one and forgotten in the other.
+/// builtins. The child registry draws from the same list and then excludes
+/// capabilities that only the parent may hold.
 fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
     vec![
+        agent_tools_fs::fs_read::spec(),
+        agent_tools_fs::fs_patch::spec(),
+        agent_tools_fs::apply_patch::spec(),
+        agent_tools_fs::list_dir::spec(),
+        agent_tools_fs::grep::spec(),
+        agent_tools_shell::test_runner::spec(),
+        agent_tools_shell::bash::spec(),
+        agent_tools_shell::services::spec(),
+        agent_tools_web::web_fetch::spec(),
+        agent_tools_web::web_fetch::spec_alias(),
+        agent_tools_computer::screenshot::spec(),
+        agent_tools_computer::computer::spec(),
         agent_coding::blueprint_tool::spec(),
         agent_coding::skill::spec(),
         agent_tools_serena::spec(),
@@ -256,16 +268,17 @@ fn parent_only_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
 }
 
 /// The parent's base registry and the base a delegated child draws from
-/// (`child_builtins` — no `delegate`, `remember`, `computer` or
-/// human-interaction tools — plus the same [`host_tools`]).
-fn base_registries() -> (ToolRegistry, ToolRegistry) {
+/// (no `delegate`, `remember`, `computer` or human-interaction tools).
+pub fn base_registries() -> (ToolRegistry, ToolRegistry) {
     let mut full = ToolRegistry::with_builtins();
-    let mut child = ToolRegistry::child_builtins();
-    for spec in host_tools().into_iter().chain(parent_only_tools()) {
+    for spec in host_tools() {
         full.register(spec);
     }
-    for spec in host_tools() {
-        child.register(spec);
+    let child = full.filtered(|s| {
+        s.name != "delegate" && s.name != "computer" && s.class != ToolClass::HumanInteraction
+    });
+    for spec in parent_only_tools() {
+        full.register(spec);
     }
     (full, child)
 }
@@ -720,7 +733,7 @@ impl SessionActor {
         for spec in agent_tools_office::office::specs() {
             office_reg.register(spec);
         }
-        for spec in agent_kernel::tools::assets::specs() {
+        for spec in agent_tools_web::assets::specs() {
             office_reg.register(spec);
         }
         engine.add_mode(agent_kernel::engine::ModeEntry {
@@ -1058,7 +1071,7 @@ impl SessionActor {
         // The turn is done — drop the screenshots it staged. They fed the
         // model this turn; on disk they're just leaked PNGs now (a resumed
         // session would re-shoot rather than trust a stale frame anyway).
-        agent_kernel::tools::screenshot::cleanup_screenshots(&self.workspace_root, &self.paths);
+        agent_tools_computer::screenshot::cleanup_screenshots(&self.workspace_root, &self.paths);
 
         // A `computer` grant covers the task it was given for. Ending it here —
         // in the shared host session — means
@@ -1932,14 +1945,16 @@ mod tests {
     use super::*;
 
     /// Parent and child bases share the host tools; the child only differs by
-    /// what `child_builtins` strips. Guards against a host tool landing in one
-    /// registry and not the other.
+    /// the parent's restricted capabilities. Guards against a host tool landing
+    /// in one registry and not the other.
     #[test]
     fn base_registries_carry_the_same_host_tools() {
         let (full, child) = base_registries();
         for spec in host_tools() {
             assert!(full.spec(spec.name).is_some(), "{} missing in parent", spec.name);
-            assert!(child.spec(spec.name).is_some(), "{} missing in child", spec.name);
+            if spec.name != "computer" && spec.class != ToolClass::HumanInteraction {
+                assert!(child.spec(spec.name).is_some(), "{} missing in child", spec.name);
+            }
         }
         for stripped in ["delegate", "remember", "computer"] {
             assert!(full.spec(stripped).is_some());
