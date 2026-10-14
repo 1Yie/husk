@@ -130,6 +130,7 @@ pub fn spec_complete() -> ToolSpec {
         class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
         staged: false,
+        review: None,
         exec: Arc::new(|args, ctx| exec_complete(args, ctx).boxed()),
     }
 }
@@ -145,6 +146,7 @@ pub fn spec_blocked() -> ToolSpec {
         class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
         staged: false,
+        review: None,
         exec: Arc::new(|args, ctx| exec_blocked(args, ctx).boxed()),
     }
 }

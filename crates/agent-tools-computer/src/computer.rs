@@ -75,7 +75,32 @@ pub fn spec<C: WorkspaceCtx + DesktopCtx>() -> ToolSpec<C> {
         class: agent_tool::ToolClass::Process,
         network: false,
         staged: false,
+        review: Some(Arc::new(review::<C>)),
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
+    }
+}
+
+/// What the approval card and the gate need to know about one call, before the
+/// user is asked: the one-line summary, the normalized action (the gate treats
+/// `launch` differently), and the platform grant to acquire first — so the
+/// system prompt comes ahead of the app card, not after the user already said
+/// yes. A refusal ends the call: there is no point asking about an action that
+/// cannot run.
+fn review<C: DesktopCtx>(args: &Args, ctx: &Arc<C>) -> agent_tool::Review {
+    let ctx = ctx.clone();
+    agent_tool::Review {
+        summary: Some(describe(args)),
+        action: Some(action_of(args)),
+        prepare: Some(
+            async move {
+                let desktop = ctx.desktop().map_err(|e| e.to_string())?;
+                desktop
+                    .prepare()
+                    .await
+                    .map_err(|e| format!("computer control unavailable: {e:#}"))
+            }
+            .boxed(),
+        ),
     }
 }
 

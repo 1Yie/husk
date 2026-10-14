@@ -112,6 +112,7 @@ pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
         // only consumer today, which never sees this tool (WorkspaceMutation).
         network: false,
         staged: false,
+        review: None,
         exec,
     }
 }

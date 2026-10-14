@@ -256,6 +256,30 @@ pub enum ToolClass {
     Orchestration,
 }
 
+/// What a tool says about one call *before* it is approved — everything the
+/// engine and the permission gate need to treat that call properly without
+/// knowing the tool by name.
+#[derive(Default)]
+pub struct Review {
+    /// One line saying exactly what this call will do — the text the approval
+    /// card shows, and the call's primary locator in the UI. `None` = the
+    /// engine derives a generic one from the arguments.
+    pub summary: Option<String>,
+    /// The call's sub-action, when the tool has actions the gate treats
+    /// differently (a desktop tool's `launch` vs a `click`). Opaque to the
+    /// engine; handed to the gate's per-tool policy.
+    pub action: Option<String>,
+    /// An async step to run before the user is asked — a grant the platform
+    /// must give first, so its prompt comes ahead of the app's card. `Err`
+    /// ends the call (there is no point asking about an action that cannot
+    /// run); the text becomes the failed result.
+    pub prepare: Option<BoxFuture<'static, Result<(), String>>>,
+}
+
+/// How a tool reviews a call: arguments and the context in, a [`Review`] out.
+/// Synchronous and side-effect free — it only describes.
+pub type ReviewFn<C> = Arc<dyn Fn(&Args, &Arc<C>) -> Review + Send + Sync>;
+
 /// One tool: name, schema for the LLM, readonly flag, exec fn.
 #[derive(Clone)]
 pub struct ToolSpec<C> {
@@ -276,6 +300,9 @@ pub struct ToolSpec<C> {
     /// it for real, so this is opt-in and deliberately not derived from
     /// [`ToolClass`] (a `WorkspaceMutation` tool may write directly).
     pub staged: bool,
+    /// How this tool describes a call before approval. `None` for the common
+    /// tool: the engine's generic summary applies.
+    pub review: Option<ReviewFn<C>>,
     pub exec: ExecFn<C>,
 }
 
@@ -345,6 +372,7 @@ mod tests {
             class: ToolClass::Observation,
             network: false,
             staged: false,
+            review: None,
             exec: Arc::new(|_args: Args, _ctx: Arc<Host>| {
                 Box::pin(async move { Ok(ToolResult::text("ok")) })
             }),

@@ -77,6 +77,7 @@ pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
         class: agent_tool::ToolClass::Observation,
         network: false,
         staged: false,
+        review: None,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

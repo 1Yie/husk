@@ -1094,8 +1094,16 @@ impl Engine {
                 // Primary locator (path/command/pattern) for the tool call —
                 // preserved in full so audit/confirmation tooltips can display
                 // the complete command or path without losing critical arguments.
-                let computer_summary =
-                    (call.name == "computer").then(|| crate::tools::computer::describe(&args));
+                // A tool that reviews its own calls (a desktop tool says exactly
+                // what it will do) supplies the summary; the rest get the
+                // generic locator below.
+                let mut review = self
+                    .active_registry()
+                    .spec(&call.name)
+                    .and_then(|s| s.review.clone())
+                    .map(|f| f(&args, &self.ctx))
+                    .unwrap_or_default();
+                let computer_summary = review.summary.take();
                 let args_preview = computer_summary.clone().unwrap_or_else(|| args
                     .get("path")
                     .or_else(|| args.get("command"))
@@ -1242,8 +1250,7 @@ impl Engine {
                     });
                 let real_fuzzy = staged.as_ref().map(|r| r.fuzzy).unwrap_or(false);
 
-                let computer_action =
-                    (call.name == "computer").then(|| crate::tools::computer::action_of(&args));
+                let computer_action = review.action.take();
                 let decision = {
                     let gate = self.permissions.read().unwrap_or_else(|e| e.into_inner());
                     let d = gate.decide(
@@ -1279,13 +1286,8 @@ impl Engine {
                         // already said yes. A refusal ends the call here — there
                         // is no point asking the user about an action that cannot
                         // run.
-                        if call.name == "computer" {
-                            let prepared = match self.ctx.desktop() {
-                                Ok(desktop) => desktop.prepare().await,
-                                Err(e) => Err(anyhow::anyhow!(e.to_string())),
-                            };
-                            if let Err(e) = prepared {
-                                let msg = format!("computer control unavailable: {e:#}");
+                        if let Some(prepare) = review.prepare.take() {
+                            if let Err(msg) = prepare.await {
                                 let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                                     name: call.name.clone(),
                                     ok: false,

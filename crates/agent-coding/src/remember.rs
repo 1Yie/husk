@@ -111,6 +111,7 @@ pub fn spec() -> ToolSpec {
         class: ToolClass::SessionMutation,
         network: false,
         staged: false,
+        review: None,
         exec,
     }
 }

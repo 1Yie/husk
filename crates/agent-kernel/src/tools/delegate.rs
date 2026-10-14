@@ -1019,6 +1019,7 @@ pub fn spec() -> ToolSpec {
         class: super::registry::ToolClass::Orchestration,
         network: false,
         staged: false,
+        review: None,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

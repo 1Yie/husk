@@ -146,6 +146,7 @@ pub fn spec_submit() -> ToolSpec {
         class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
         staged: false,
+        review: None,
         exec: Arc::new(|args, ctx| exec_submit(args, ctx).boxed()),
     }
 }

@@ -14,7 +14,7 @@ use std::sync::Arc;
 // `crate::tools::registry::X` paths keep working, with the two context-generic
 // items instantiated for this kernel's `ToolCtx`.
 pub use agent_tool::{
-    arg_str, arg_usize, schema_for, Args, Commit, Extensions, ToolClass,
+    arg_str, arg_usize, schema_for, Args, Commit, Extensions, Review, ToolClass,
     ToolError, ToolResult,
 };
 /// A tool's exec, instantiated for [`ToolCtx`].

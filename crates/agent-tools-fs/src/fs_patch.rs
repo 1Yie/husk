@@ -58,6 +58,7 @@ pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
         class: agent_tool::ToolClass::WorkspaceMutation,
         network: false,
         staged: true,
+        review: None,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

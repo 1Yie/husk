@@ -61,6 +61,7 @@ pub fn spec() -> ToolSpec {
         class: ToolClass::Observation,
         network: false,
         staged: false,
+        review: None,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

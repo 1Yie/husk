@@ -92,6 +92,7 @@ pub fn spec() -> ToolSpec {
         class: agent_kernel::tools::registry::ToolClass::SessionMutation,
         network: false,
         staged: false,
+        review: None,
         exec,
     }
 }

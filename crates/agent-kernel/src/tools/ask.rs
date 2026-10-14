@@ -49,6 +49,7 @@ pub fn spec() -> ToolSpec {
         class: super::registry::ToolClass::HumanInteraction,
         network: false,
         staged: false,
+        review: None,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
