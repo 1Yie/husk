@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use agent_kernel::sandbox_prefs::{SandboxLimits, SwitchableSandbox};
 use agent_kernel::tools::registry::ToolCtx;
 
 /// A context with the detected backend installed, as a shell-capable host has.
@@ -134,19 +135,21 @@ fn persistent_server_reachable_from_host() {
 #[test]
 fn sandbox_disabled_routes_to_none() {
     let dir = tempfile::tempdir().unwrap();
+    // Local, injected switch source: the test never touches the process-global
+    // overrides, so it can run in parallel with other sandbox tests.
+    let switch = Arc::new(std::sync::RwLock::new(SandboxLimits::default()));
     let (detected, _loud) = agent_sandbox::detect_backend();
     let mut ctx = ToolCtx::new(dir.path());
-    ctx.install_sandbox(Arc::new(
-        agent_kernel::sandbox_prefs::SwitchableSandbox::new(Arc::from(detected)),
-    ));
+    let src = switch.clone();
+    ctx.install_sandbox(Arc::new(SwitchableSandbox::with_limits(
+        Arc::from(detected),
+        move || src.read().unwrap().clone(),
+    )));
     let ctx = Arc::new(ctx);
     let on = ctx.sandbox().unwrap().id();
     assert_ne!(on, "none-simulated");
 
-    agent_kernel::sandbox_prefs::set(agent_kernel::sandbox_prefs::SandboxLimits {
-        enabled: Some(false),
-        ..Default::default()
-    });
+    switch.write().unwrap().enabled = Some(false);
     assert_eq!(ctx.sandbox().unwrap().id(), "none");
 
     // off → command runs unsandboxed (HOME is visible again on `none`)
@@ -157,6 +160,6 @@ fn sandbox_disabled_routes_to_none() {
     );
     assert!(out.contains("/home") || out.contains("/root"), "{out}");
 
-    agent_kernel::sandbox_prefs::set(agent_kernel::sandbox_prefs::SandboxLimits::default());
+    *switch.write().unwrap() = SandboxLimits::default();
     assert_eq!(ctx.sandbox().unwrap().id(), on);
 }

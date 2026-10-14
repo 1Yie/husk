@@ -340,6 +340,7 @@ impl SessionManager {
                     max_processes: d.sandbox_max_processes,
                     allowed_domains: d.sandbox_allowed_domains.clone().unwrap_or_default(),
                     denied_domains: d.sandbox_denied_domains.clone().unwrap_or_default(),
+                    extra_ro_mounts: crate::skills::scanner::global_skill_roots(),
                 });
             }
             // No workspace yet — the settings-pane default pair is the only
@@ -452,6 +453,7 @@ impl SessionManager {
                 max_processes: d.sandbox_max_processes,
                 allowed_domains: d.sandbox_allowed_domains.clone().unwrap_or_default(),
                 denied_domains: d.sandbox_denied_domains.clone().unwrap_or_default(),
+                extra_ro_mounts: crate::skills::scanner::global_skill_roots(),
             });
         }
 

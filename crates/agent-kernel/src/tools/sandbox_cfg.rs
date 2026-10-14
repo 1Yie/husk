@@ -51,14 +51,10 @@ pub(crate) fn sandbox_config(
         timeout_secs: timeout.as_secs(),
         snapshot: plan.snapshot,
         environment: plan.environment.clone(),
-        // The agent's own user-level skills, read-only. They live outside the
-        // workspace, so the mount whitelist would otherwise hide them and
-        // `bash`/`read` could not open a skill's sibling files. Read-only on
-        // purpose: a skill must never be able to rewrite its own instructions.
-        extra_ro_mounts: crate::skills::scanner::global_skill_roots(),
         ..Default::default()
     };
-    // User overrides from the settings UI fold in last — a forced network
+    // Host-supplied read-only mounts (e.g. the user's skill roots, which live
+    // outside the workspace) and user overrides from the settings UI fold in last. — a forced network
     // policy / memory / process cap beats the audit plan's defaults.
     crate::sandbox_prefs::apply_limits(&mut cfg, limits);
     cfg
@@ -68,28 +64,40 @@ pub(crate) fn sandbox_config(
 mod tests {
     use super::*;
 
-    /// User-level skills sit outside the workspace, so the mount whitelist has
-    /// to be widened for them, or a sandboxed command cannot read the files a
-    /// skill points at. Read-only: skills are not ours to rewrite.
+    /// Read-only mounts are host policy: whatever the host injects must reach
+    /// the sandbox verbatim, and the kernel adds none of its own. Skill roots
+    /// are read-only on purpose — a skill must not rewrite its instructions.
     #[test]
-    fn sandbox_config_mounts_global_skills_read_only() {
+    fn sandbox_config_mounts_host_injected_roots_read_only() {
         let root = Path::new("/tmp/ws");
         let verdict = agent_sandbox::audit_command_scoped("ls", Some(root));
-        let limits = crate::sandbox_prefs::SandboxLimits::default();
+        let skills = vec![std::path::PathBuf::from("/home/u/.skills")];
+        let limits = crate::sandbox_prefs::SandboxLimits {
+            extra_ro_mounts: skills.clone(),
+            ..Default::default()
+        };
         let cfg = sandbox_config(&verdict, root, Duration::from_secs(30), &limits);
 
-        assert_eq!(
-            cfg.extra_ro_mounts,
-            crate::skills::scanner::global_skill_roots()
-        );
-        assert!(
-            !cfg.extra_ro_mounts.is_empty(),
-            "no $HOME would hide every skill"
-        );
+        assert_eq!(cfg.extra_ro_mounts, skills);
         assert!(
             cfg.extra_rw_mounts.is_empty(),
             "skills must not be writable"
         );
         assert_eq!(cfg.workspace_dir, root);
+    }
+
+    /// No host injection means no extra mounts: the kernel does not reach for
+    /// `$HOME` on its own.
+    #[test]
+    fn sandbox_config_without_host_mounts_adds_none() {
+        let root = Path::new("/tmp/ws");
+        let verdict = agent_sandbox::audit_command_scoped("ls", Some(root));
+        let cfg = sandbox_config(
+            &verdict,
+            root,
+            Duration::from_secs(30),
+            &crate::sandbox_prefs::SandboxLimits::default(),
+        );
+        assert!(cfg.extra_ro_mounts.is_empty());
     }
 }

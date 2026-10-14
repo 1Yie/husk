@@ -28,6 +28,9 @@ pub struct SandboxLimits {
     pub allowed_domains: Vec<String>,
     /// Standing egress denylist — wins over every allowlist entry.
     pub denied_domains: Vec<String>,
+    /// Host-chosen directories mounted read-only into every sandboxed run
+    /// (e.g. the user's skill roots). Kernel never picks these itself.
+    pub extra_ro_mounts: Vec<std::path::PathBuf>,
 }
 
 impl SandboxLimits {
@@ -62,6 +65,7 @@ static LIMITS: RwLock<SandboxLimits> = RwLock::new(SandboxLimits {
     max_processes: None,
     allowed_domains: Vec::new(),
     denied_domains: Vec::new(),
+    extra_ro_mounts: Vec::new(),
 });
 
 /// Current overrides — a poisoned read yields defaults rather than
@@ -111,6 +115,11 @@ pub fn apply_limits(cfg: &mut SandboxConfig, l: &SandboxLimits) {
     for d in &l.denied_domains {
         if !cfg.denied_domains.contains(d) {
             cfg.denied_domains.push(d.clone());
+        }
+    }
+    for m in &l.extra_ro_mounts {
+        if !cfg.extra_ro_mounts.contains(m) {
+            cfg.extra_ro_mounts.push(m.clone());
         }
     }
 }
@@ -172,16 +181,30 @@ mod tests {
 /// the one actually running the command.
 pub struct SwitchableSandbox {
     real: std::sync::Arc<dyn agent_sandbox::SandboxBackend>,
+    limits: std::sync::Arc<dyn Fn() -> SandboxLimits + Send + Sync>,
 }
 
 impl SwitchableSandbox {
+    /// Reads the process-wide overrides on every call (product path).
     pub fn new(real: std::sync::Arc<dyn agent_sandbox::SandboxBackend>) -> Self {
-        Self { real }
+        Self::with_limits(real, current)
+    }
+
+    /// Reads the switch from `limits` on every call — lets a host or test
+    /// supply its own source instead of the process-global overrides.
+    pub fn with_limits(
+        real: std::sync::Arc<dyn agent_sandbox::SandboxBackend>,
+        limits: impl Fn() -> SandboxLimits + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            real,
+            limits: std::sync::Arc::new(limits),
+        }
     }
 
     fn active(&self) -> &dyn agent_sandbox::SandboxBackend {
         static NONE: agent_sandbox::NoneBackend = agent_sandbox::NoneBackend;
-        if current().enabled() {
+        if (self.limits)().enabled() {
             &*self.real
         } else {
             &NONE
