@@ -1497,11 +1497,6 @@ mod changed_content_message_tests {
 
 #[cfg(test)]
 mod trust_key_spelling_tests {
-    fn test_paths() -> agent_paths::AppPaths {
-        let base = std::env::temp_dir().join("agent-plugin-test");
-        agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".husk")
-    }
-
     use super::*;
 
     /// One directory spelled several ways is one grant. A trailing slash, a
