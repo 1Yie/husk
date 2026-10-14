@@ -169,11 +169,24 @@ async fn rule_violation_buys_one_rework_round_then_reports() {
 
     ch.event_rx.close();
     let mut report = None;
+    let (mut report_at, mut final_at) = (None, None);
+    let mut idx = 0;
     while let Some(ev) = ch.event_rx.recv().await {
-        if let UiEvent::BlueprintReport { errors, text, .. } = ev {
-            report = Some((errors, text));
+        match ev {
+            UiEvent::BlueprintReport { errors, text, .. } => {
+                report = Some((errors, text));
+                report_at = Some(idx);
+            }
+            UiEvent::AssistantMessage(_) => final_at = Some(idx),
+            _ => {}
         }
+        idx += 1;
     }
+    // The report lands behind the final message (the reverse of the plan card).
+    assert!(
+        report_at.unwrap() > final_at.unwrap(),
+        "report must follow the final message"
+    );
     let (errors, text) = report.expect("BlueprintReport emitted");
     assert_eq!(errors, 1);
     assert!(text.contains("belongs to no node"), "{text}");

@@ -15,27 +15,38 @@
 
 use std::path::PathBuf;
 
+/// One thing a policy asks the engine to land: a row for the conversation
+/// history and/or an event for the UI. The engine appends and sends them in
+/// order without looking inside — what they mean (a plan card, a check
+/// report) is the policy's product, and the UI event's wire shape is the
+/// host's contract.
+#[derive(Default)]
+pub struct Effect {
+    pub history: Option<agent_llm::ChatMessage>,
+    pub ui: Option<agent_ipc::UiEvent>,
+}
+
 /// The policy's answer when the model finished a round without tool calls.
 pub enum Verdict {
-    /// The turn may end. `report` is a turn-end check to render after the
-    /// final answer, if one ran; `deliverable` is a serialized payload the
-    /// engine lands as the turn's deliverable (the plan card), if the policy
-    /// holds one.
+    /// The turn may end. `before_final` effects land just ahead of the
+    /// assistant's final message, `after_final` ones right behind it.
     Finish {
-        report: Option<TurnReport>,
-        deliverable: Option<String>,
+        before_final: Vec<Effect>,
+        after_final: Vec<Effect>,
     },
     /// The turn must continue. The engine records the quiet round's text, then
     /// pushes `hidden` as the nudge the model sees next.
     Nudge { hidden: String },
 }
 
-/// A turn-end check result in the shape the engine renders — the policy
-/// produces it, the engine never looks inside beyond counts and text.
-pub struct TurnReport {
-    pub errors: usize,
-    pub warnings: usize,
-    pub text: String,
+impl Verdict {
+    /// A plain finish — nothing extra to land.
+    pub fn finish() -> Self {
+        Verdict::Finish {
+            before_final: Vec::new(),
+            after_final: Vec::new(),
+        }
+    }
 }
 
 /// What a policy may read about the turn at its quiet point, without holding
@@ -91,9 +102,6 @@ impl TurnPolicy for NoopPolicy {
         None
     }
     async fn on_quiet_round(&self, _view: &dyn TurnView, _touched: Vec<PathBuf>) -> Verdict {
-        Verdict::Finish {
-            report: None,
-            deliverable: None,
-        }
+        Verdict::finish()
     }
 }

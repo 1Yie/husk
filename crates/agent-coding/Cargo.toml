@@ -8,6 +8,8 @@ license = "MIT"
 [dependencies]
 agent-kernel = { path = "../agent-kernel" }
 agent-context = { path = "../agent-context" }
+agent-ipc = { path = "../agent-ipc" }
+agent-llm = { path = "../agent-llm" }
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
@@ -21,8 +23,6 @@ anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 agent-paths = { path = "../agent-paths" }
-agent-llm = { path = "../agent-llm" }
-agent-ipc = { path = "../agent-ipc" }
 agent-sandbox = { path = "../agent-sandbox" }
 agent-computer = { path = "../agent-computer" }
 image.workspace = true

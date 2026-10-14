@@ -143,6 +143,27 @@ async fn submit_plan_emits_the_event_and_persists_the_row() {
             .any(|m| m.notice == Some(NoticeKind::Plan)),
         "the plan row was not persisted for replay"
     );
+    // Pin the landing order the policy asks for: the plan card (event and
+    // row) goes in ahead of the final assistant message.
+    let ev_plan = events
+        .iter()
+        .position(|e| matches!(e, UiEvent::PlanSubmitted { .. }))
+        .unwrap();
+    let ev_final = events
+        .iter()
+        .rposition(|e| matches!(e, UiEvent::AssistantMessage(_)))
+        .expect("final AssistantMessage");
+    assert!(ev_plan < ev_final, "plan card must precede the final message");
+    let hist = actor.history();
+    let row_plan = hist
+        .iter()
+        .position(|m| m.notice == Some(NoticeKind::Plan))
+        .unwrap();
+    let row_final = hist
+        .iter()
+        .rposition(|m| m.role == agent_llm::Role::Assistant && m.content.is_some())
+        .unwrap();
+    assert!(row_plan < row_final, "plan row must precede the final message");
     // Submitted → the deliverable landed, no follow-up nudge.
     assert_eq!(stub.calls.lock().unwrap().len(), 2);
 }

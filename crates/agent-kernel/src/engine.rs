@@ -84,6 +84,21 @@ impl crate::turn_policy::TurnView for EngineTurnView {
     }
 }
 
+/// Land one policy [`Effect`](crate::turn_policy::Effect): history row first,
+/// then the UI event, exactly as the policy handed them over.
+fn land_effect(
+    effect: crate::turn_policy::Effect,
+    history: &mut Vec<ChatMessage>,
+    io: &EngineIo,
+) {
+    if let Some(row) = effect.history {
+        history.push(row);
+    }
+    if let Some(event) = effect.ui {
+        let _ = io.ui_tx.send(event);
+    }
+}
+
 /// Handle to the live plugin router. `None` = no plugin dir discovered; `Some`
 /// with an inner `None` = a plugin manager existed but failed to load, which a
 /// later reload can still fill in.
@@ -967,7 +982,7 @@ impl Engine {
                     tool_calls_run,
                 };
                 let verdict = self.policy.on_quiet_round(&view, touched).await;
-                let blueprint_report = match verdict {
+                let (before_final, after_final) = match verdict {
                     crate::turn_policy::Verdict::Nudge { hidden } => {
                         if !final_text.is_empty() {
                             history.push(
@@ -979,14 +994,14 @@ impl Engine {
                         history.push(ChatMessage::user_hidden(hidden));
                         continue;
                     }
-                    crate::turn_policy::Verdict::Finish { report, deliverable } => {
-                        if let Some(plan) = deliverable {
-                            history.push(ChatMessage::plan(plan.clone()));
-                            let _ = io.ui_tx.send(UiEvent::PlanSubmitted { plan });
-                        }
-                        report
-                    }
+                    crate::turn_policy::Verdict::Finish {
+                        before_final,
+                        after_final,
+                    } => (before_final, after_final),
                 };
+                for effect in before_final {
+                    land_effect(effect, history, io);
+                }
                 let mut final_text = final_text;
                 self.hooks.run_on_response(&mut final_text).await;
 
@@ -1008,18 +1023,8 @@ impl Engine {
                 });
                 self.set_state(io, AgentState::Finished);
                 let _ = io.ui_tx.send(UiEvent::AssistantMessage(final_text));
-                if let Some(report) = blueprint_report {
-                    let text = report.text.clone();
-                    history.push(if report.errors > 0 {
-                        ChatMessage::notice_error(text.clone())
-                    } else {
-                        ChatMessage::notice(text.clone())
-                    });
-                    let _ = io.ui_tx.send(UiEvent::BlueprintReport {
-                        errors: report.errors,
-                        warnings: report.warnings,
-                        text,
-                    });
+                for effect in after_final {
+                    land_effect(effect, history, io);
                 }
                 return Ok(TurnOutcome {
                     text,

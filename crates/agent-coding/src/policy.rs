@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_kernel::tools::registry::ToolCtx;
-use agent_kernel::turn_policy::{TurnPolicy, TurnReport, Verdict};
+use agent_ipc::UiEvent;
+use agent_kernel::turn_policy::{Effect, TurnPolicy, Verdict};
+use agent_llm::ChatMessage;
 
 /// The coding product's contract: plan nudge, goal pushback, blueprint rework,
 /// and the `computer` action cap.
@@ -233,22 +235,45 @@ impl TurnPolicy for CodingPolicy {
             }
             return Verdict::Nudge { hidden: nudge };
         }
-        let deliverable = if mode == crate::MODE_PLAN && self.plan_submitted() {
-            self.plan.as_ref().and_then(|p| {
-                p.take_signal()
-                    .as_ref()
-                    .map(|card| serde_json::to_string(card).unwrap_or_default())
-            })
+        // The plan card lands ahead of the final message so it is the last
+        // thing the composer sees; the blueprint report lands behind it.
+        let before_final: Vec<Effect> = if mode == crate::MODE_PLAN && self.plan_submitted() {
+            self.plan
+                .as_ref()
+                .and_then(|p| p.take_signal())
+                .map(|card| {
+                    let plan = serde_json::to_string(&card).unwrap_or_default();
+                    Effect {
+                        history: Some(ChatMessage::plan(plan.clone())),
+                        ui: Some(UiEvent::PlanSubmitted { plan }),
+                    }
+                })
+                .into_iter()
+                .collect()
         } else {
-            None
+            Vec::new()
         };
+        let after_final: Vec<Effect> = report
+            .map(|r| {
+                let (errors, text) = (r.errors(), r.render());
+                Effect {
+                    history: Some(if errors > 0 {
+                        ChatMessage::notice_error(text.clone())
+                    } else {
+                        ChatMessage::notice(text.clone())
+                    }),
+                    ui: Some(UiEvent::BlueprintReport {
+                        errors,
+                        warnings: r.issues.len() - errors,
+                        text,
+                    }),
+                }
+            })
+            .into_iter()
+            .collect();
         Verdict::Finish {
-            report: report.map(|r| TurnReport {
-                errors: r.errors(),
-                warnings: r.issues.len() - r.errors(),
-                text: r.render(),
-            }),
-            deliverable,
+            before_final,
+            after_final,
         }
     }
 }
