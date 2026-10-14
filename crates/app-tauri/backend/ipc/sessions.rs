@@ -134,7 +134,7 @@ fn agent_session_inner(
             let m = state.lock().map_err(|e| e.to_string())?;
             m.workspace_root.clone()
         };
-        agent_kernel::session_manager::SessionManager::remove_plugin(&root, &id)?;
+        agent_kernel::session_manager::SessionManager::remove_plugin(&root, &id, &crate::kernel::app_paths())?;
         return Ok(serde_json::json!({ "success": true }));
     }
     // Artifact actions for the office dock — open / reveal / save-as on a
@@ -1991,5 +1991,5 @@ pub async fn mcp_probe(
         let m = state.0.lock().map_err(|e| e.to_string())?;
         m.workspace_root.clone()
     };
-    Ok(agent_kernel::session_manager::SessionManager::mcp_probe(&root, &id).await)
+    Ok(agent_kernel::session_manager::SessionManager::mcp_probe(&root, &id, &crate::kernel::app_paths()).await)
 }

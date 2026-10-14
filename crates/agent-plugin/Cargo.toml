@@ -6,6 +6,7 @@ description = "Plugin system: manifest, Plugin trait, PluginManager, MCP stdio b
 license = "MIT"
 
 [dependencies]
+agent-paths = { path = "../agent-paths" }
 agent-llm = { path = "../agent-llm" }   # ToolCall shape only
 agent-sandbox = { path = "../agent-sandbox" } # sandboxed spawn (permissions enforcement)
 async-trait.workspace = true

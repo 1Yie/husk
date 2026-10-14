@@ -2,7 +2,13 @@ use std::time::Duration;
 
 fn main() {
     let root = std::path::PathBuf::from("/home/ichiyo/Workspace/agent-rs");
-    let (mut mgr, rx) = agent_kernel::session_manager::SessionManager::spawn_at(Some(root));
+    let paths = agent_paths::AppPaths::new(
+        std::env::temp_dir().join("probe/config"),
+        std::env::temp_dir().join("probe/data"),
+        ".husk",
+    );
+    let (mut mgr, rx) =
+        agent_kernel::session_manager::SessionManager::spawn_at(Some(root), paths);
     eprintln!(
         "booted, active={} provider={} model={}",
         mgr.active_id, mgr.provider_name, mgr.model_name

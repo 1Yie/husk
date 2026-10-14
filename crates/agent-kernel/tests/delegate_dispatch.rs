@@ -9,6 +9,11 @@ use agent_llm::types::StreamChunk;
 mod common;
 use common::ScriptedProvider;
 
+fn test_paths() -> agent_paths::AppPaths {
+    let base = std::env::temp_dir().join("husk-plugin-test");
+    agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".husk")
+}
+
 #[tokio::test]
 async fn delegate_call_in_build_mode_is_a_builtin_not_a_plugin() {
     let dir = tempfile::tempdir().unwrap();
@@ -93,7 +98,7 @@ async fn builtin_failure_is_not_masked_by_plugin_no_owner_message() {
     provider.script_text("done");
 
     let handle: agent_kernel::engine::PluginHandle = Arc::new(std::sync::RwLock::new(Some(
-        Arc::new(agent_plugin::PluginManager::new()),
+        Arc::new(agent_plugin::PluginManager::new(test_paths())),
     )));
     let (mut actor, _ch) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),

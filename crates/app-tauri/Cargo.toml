@@ -15,6 +15,7 @@ agent-context = { path = "../agent-context" }
 agent-kernel = { path = "../agent-kernel" }
 agent-ipc = { path = "../agent-ipc" }
 agent-llm = { path = "../agent-llm" }
+agent-paths = { path = "../agent-paths" }
 agent-sandbox = { path = "../agent-sandbox" }
 dirs.workspace = true
 base64.workspace = true

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use agent_paths::AppPaths;
 use anyhow::Result;
 use serde_json::Value;
 use tracing::{info, warn};
@@ -174,18 +175,18 @@ pub fn content_hash(manifest: &PluginManifest) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// Where trust grants live — `<config>/husk/plugin-trust.json`.
-pub fn trust_store_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("husk/plugin-trust.json"))
+/// Where trust grants live — `<config>/<app>/plugin-trust.json`.
+pub fn trust_store_path(paths: &AppPaths) -> PathBuf {
+    paths.config_file("plugin-trust.json")
 }
 
 /// Where the user's enable/disable toggles live —
-/// `<config>/husk/plugin-state.json`, a JSON array of disabled plugin ids.
+/// `<config>/<app>/plugin-state.json`, a JSON array of disabled plugin ids.
 /// Separate from consent (a trusted plugin can still be off) and keyed by
 /// plain id, not `id@repo` — disabling a global plugin disables it
 /// everywhere, which is what the toggle reads as.
-pub fn disabled_store_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("husk/plugin-state.json"))
+pub fn disabled_store_path(paths: &AppPaths) -> PathBuf {
+    paths.config_file("plugin-state.json")
 }
 
 /// Ids the user turned off — persisted as a JSON array, same shape and
@@ -232,8 +233,10 @@ impl DisabledStore {
     }
 }
 
-#[derive(Default)]
 pub struct PluginManager {
+    /// Where the host keeps config and workspace-local state. The crate names
+    /// no product, so the host supplies this.
+    paths: AppPaths,
     plugins: HashMap<String, Arc<dyn Plugin>>,
     /// Every accepted manifest, keyed by id — INCLUDING pure plugins with no
     /// `entry` and bridges whose connection failed. Kernel-side capabilities
@@ -266,8 +269,9 @@ pub struct PluginManager {
 
 impl PluginManager {
     /// Empty manager. `load_all` is the usual entry point.
-    pub fn new() -> Self {
+    pub fn new(paths: AppPaths) -> Self {
         Self {
+            paths,
             plugins: HashMap::new(),
             manifests: HashMap::new(),
             order: Vec::new(),
@@ -441,7 +445,7 @@ impl PluginManager {
 
         // Repo-local plugins need explicit trust before they're live.
         if !manifest.dir.as_os_str().is_empty()
-            && manifest.dir.starts_with(repo.join(".husk"))
+            && manifest.dir.starts_with(self.paths.workspace_dir(repo))
             && !self.trust.is_trusted_content(&id, repo, &manifest)
         {
             return Err(if self.trust.has_grant(&id, repo) {
@@ -634,9 +638,7 @@ impl PluginManager {
     pub fn disable(&mut self, id: &str) {
         self.enabled.insert(id.to_string(), false);
         self.disabled.set(id, true);
-        if let Some(p) = disabled_store_path() {
-            self.disabled.save(&p);
-        }
+        self.disabled.save(&disabled_store_path(&self.paths));
         self.tool_router.retain(|_, p| p.id() != id);
         // The advertised → real name map is keyed by the advertised name only,
         // so it must be purged alongside the router — a stale entry would let
@@ -660,9 +662,7 @@ impl PluginManager {
     pub fn enable(&mut self, id: &str) {
         self.enabled.insert(id.to_string(), true);
         self.disabled.set(id, false);
-        if let Some(p) = disabled_store_path() {
-            self.disabled.save(&p);
-        }
+        self.disabled.save(&disabled_store_path(&self.paths));
         // Re-registering rebuilds the router — tools reappear next request.
     }
 
@@ -768,15 +768,13 @@ fn sanitize_name(s: &str) -> String {
 /// separate trees (`plugins/` for host-side hooks, `mcp/` for protocol
 /// bridges), each with a global and a repo-local variant. The manifest
 /// shape, not the tree, decides what a manifest IS.
-pub fn discover(repo: &Path) -> Vec<PathBuf> {
+pub fn discover(repo: &Path, paths: &AppPaths) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        let cfg = PathBuf::from(home).join(".config/husk");
-        dirs.push(cfg.join("plugins"));
-        dirs.push(cfg.join("mcp"));
-    }
-    dirs.push(repo.join(".husk/plugins"));
-    dirs.push(repo.join(".husk/mcp"));
+    dirs.push(paths.config_dir.join("plugins"));
+    dirs.push(paths.config_dir.join("mcp"));
+    let ws = paths.workspace_dir(repo);
+    dirs.push(ws.join("plugins"));
+    dirs.push(ws.join("mcp"));
     let mut manifests = Vec::new();
     for d in dirs {
         if let Ok(rd) = std::fs::read_dir(&d) {
@@ -808,17 +806,13 @@ fn truncate(s: &str, n: usize) -> String {
 /// Bounded on purpose: a dead endpoint is logged and skipped, so one broken
 /// server can neither stall the app's boot nor keep the other plugins from
 /// loading. Called once at startup (see `SessionManager::spawn_at`).
-pub async fn load_all(repo: &Path) -> PluginManager {
-    let mut mgr = PluginManager::new();
+pub async fn load_all(repo: &Path, paths: &AppPaths) -> PluginManager {
+    let mut mgr = PluginManager::new(paths.clone());
     // Consent recorded by earlier runs. Without it a repo-local plugin would
     // be refused on every boot, so the grant has to come from disk.
-    if let Some(p) = trust_store_path() {
-        mgr.trust = TrustStore::load(&p);
-    }
-    if let Some(p) = disabled_store_path() {
-        mgr.disabled = DisabledStore::load(&p);
-    }
-    for mpath in discover(repo) {
+    mgr.trust = TrustStore::load(&trust_store_path(paths));
+    mgr.disabled = DisabledStore::load(&disabled_store_path(paths));
+    for mpath in discover(repo, paths) {
         let Ok(text) = std::fs::read_to_string(&mpath) else {
             continue;
         };
@@ -1432,8 +1426,8 @@ mod trust_content_tests {
 /// The manifest a repo-local plugin with `id` would load right now — read
 /// from disk the way discovery reads it. Granting trust and checking it both
 /// go through here, so they hash the same bytes the loader will run.
-pub fn current_manifest(id: &str, repo: &Path) -> Option<PluginManifest> {
-    discover(repo).into_iter().find_map(|mpath| {
+pub fn current_manifest(id: &str, repo: &Path, paths: &AppPaths) -> Option<PluginManifest> {
+    discover(repo, paths).into_iter().find_map(|mpath| {
         let text = std::fs::read_to_string(&mpath).ok()?;
         let mut m: PluginManifest = serde_json::from_str(&text).ok()?;
         if m.id != id {

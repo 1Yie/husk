@@ -12,6 +12,11 @@ use agent_llm::types::{Role, StreamChunk};
 mod common;
 use common::ScriptedProvider;
 
+fn test_paths() -> agent_paths::AppPaths {
+    let base = std::env::temp_dir().join("husk-plugin-test");
+    agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".husk")
+}
+
 fn tool_call(name: &str) -> Vec<StreamChunk> {
     vec![
         StreamChunk::ToolCallDelta {
@@ -59,7 +64,7 @@ async fn model_sees_the_plugins_own_error_not_unknown_tool() {
     }))
     .unwrap();
     m.dir = plugin_dir.path().to_path_buf();
-    let mut mgr = agent_plugin::PluginManager::new();
+    let mut mgr = agent_plugin::PluginManager::new(test_paths());
     mgr.register_plugin(m, plugin_dir.path()).await.unwrap();
     let handle: agent_kernel::engine::PluginHandle = Arc::new(RwLock::new(Some(Arc::new(mgr))));
 

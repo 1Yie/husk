@@ -11,6 +11,7 @@ agent-skills = { path = "../agent-skills" }
 agent-context = { path = "../agent-context" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }
+agent-paths = { path = "../agent-paths" }
 agent-sandbox = { path = "../agent-sandbox" }
 agent-computer = { path = "../agent-computer" }
 agent-plugin = { path = "../agent-plugin" }

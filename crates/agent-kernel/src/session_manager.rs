@@ -13,6 +13,7 @@ use crate::channels::{UiSink, UiStatsSnapshot};
 use crate::session::{SessionActor, SessionConfig};
 use crate::session_store::{SessionMeta, SessionStore};
 use agent_ipc::UiEvent;
+use agent_paths::AppPaths;
 use agent_llm::{AppConfig, ProviderFactory};
 use serde::{Deserialize, Serialize};
 
@@ -151,6 +152,9 @@ pub struct SessionHandle {
 /// actors' handles + the tagged event queue; the frontend keeps
 /// `active_id` and renders that session's stream.
 pub struct SessionManager {
+    /// Where the host keeps config and workspace-local state. Supplied by the
+    /// product, which knows its own name.
+    paths: AppPaths,
     store: Arc<SessionStore>,
     provider_cfg: AppConfig,
     /// mtime of the config file at the last load. `None` means "reload on the
@@ -269,13 +273,14 @@ impl SessionManager {
     /// on `Tick`, the Tauri shell forwards it into `app.emit`. It's split
     /// out (rather than held on `self`) so the frontend can move it into a
     /// forwarder thread without partially moving the manager.
-    pub fn spawn() -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
-        Self::spawn_at(None)
+    pub fn spawn(paths: AppPaths) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
+        Self::spawn_at(None, paths)
     }
 
     /// Boot the manager at a specific workspace root (or current directory / most recent).
     pub fn spawn_at(
         root: Option<std::path::PathBuf>,
+        paths: AppPaths,
     ) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
         // Global user defaults — the settings window's stored preference.
         // Loaded up here because the「默认进入」row decides the boot root
@@ -308,10 +313,11 @@ impl SessionManager {
             let h = handle.clone();
             let hooks_bg = hooks.clone();
             let root = root.clone();
+            let paths_bg = paths.clone();
             std::thread::Builder::new()
                 .name("mcp-boot-load".into())
                 .spawn(move || {
-                    *h.write().unwrap() = Self::load_plugins(&root, &hooks_bg);
+                    *h.write().unwrap() = Self::load_plugins(&root, &hooks_bg, &paths_bg);
                 })
                 .expect("mcp boot loader");
             handle
@@ -353,6 +359,7 @@ impl SessionManager {
                 (default_pname.clone(), default_model.clone()),
             );
             let mgr = Self {
+                paths: paths.clone(),
                 plugins: plugins_for_manager.clone(),
                 hooks: hooks_for_manager,
                 metas: Vec::new(),
@@ -458,6 +465,7 @@ impl SessionManager {
         }
 
         let mut mgr = Self {
+            paths,
             plugins: plugins_for_manager,
             hooks: hooks_for_manager,
             metas: store.list(),
@@ -1318,8 +1326,9 @@ impl SessionManager {
     fn load_plugins(
         root: &std::path::Path,
         hooks: &crate::hooks::HookChain,
+        paths: &AppPaths,
     ) -> Option<Arc<agent_plugin::PluginManager>> {
-        if agent_plugin::discover(root).is_empty() {
+        if agent_plugin::discover(root, paths).is_empty() {
             hooks.replace(Vec::new());
             return None;
         }
@@ -1327,7 +1336,7 @@ impl SessionManager {
         // runtime runs `load_all`. A runtime dropped after the handshake
         // kills them, leaving clients that list tools but never see a
         // response. Run on a process-lifetime runtime instead.
-        let mgr = plugin_runtime().block_on(agent_plugin::load_all(root));
+        let mgr = plugin_runtime().block_on(agent_plugin::load_all(root, paths));
         hooks.replace(crate::hooks::manifest_hooks(mgr.hook_specs()));
         tracing::info!(
             tools = mgr.exported_tools().len(),
@@ -1349,6 +1358,7 @@ impl SessionManager {
                 handle.clone(),
                 self.hooks.clone(),
                 self.workspace_root.clone(),
+                self.paths.clone(),
             )),
             None => Vec::new(),
         }
@@ -1365,10 +1375,16 @@ impl SessionManager {
         crate::engine::PluginHandle,
         crate::hooks::HookChain,
         std::path::PathBuf,
+        AppPaths,
     )> {
-        self.plugins
-            .clone()
-            .map(|h| (h, self.hooks.clone(), self.workspace_root.clone()))
+        self.plugins.clone().map(|h| {
+            (
+                h,
+                self.hooks.clone(),
+                self.workspace_root.clone(),
+                self.paths.clone(),
+            )
+        })
     }
 
     /// `reload_plugins` over a snapshot — same swap, no manager borrow.
@@ -1377,10 +1393,11 @@ impl SessionManager {
             crate::engine::PluginHandle,
             crate::hooks::HookChain,
             std::path::PathBuf,
+            AppPaths,
         ),
     ) -> Vec<serde_json::Value> {
-        let (handle, hooks, root) = parts;
-        let loaded = Self::load_plugins(root, hooks);
+        let (handle, hooks, root, paths) = parts;
+        let loaded = Self::load_plugins(root, hooks, paths);
         let summary = loaded.as_ref().map(|m| m.status()).unwrap_or_default();
         *handle.write().unwrap() = loaded;
         summary
@@ -1393,14 +1410,15 @@ impl SessionManager {
             crate::engine::PluginHandle,
             crate::hooks::HookChain,
             std::path::PathBuf,
+            AppPaths,
         ),
         id: &str,
     ) -> Result<Vec<serde_json::Value>, String> {
         // Hash the manifest as it is on disk right now: the grant must cover
         // exactly what the loader will run next.
-        let manifest = agent_plugin::current_manifest(id, &parts.2)
+        let manifest = agent_plugin::current_manifest(id, &parts.2, &parts.3)
             .ok_or_else(|| format!("no manifest for plugin `{id}` in this workspace"))?;
-        let path = agent_plugin::trust_store_path().ok_or("no config dir for the trust store")?;
+        let path = agent_plugin::trust_store_path(&parts.3);
         let mut store = agent_plugin::TrustStore::load(&path);
         store.trust_content(id, &parts.2, &manifest);
         store.save(&path);
@@ -1414,12 +1432,12 @@ impl SessionManager {
             crate::engine::PluginHandle,
             crate::hooks::HookChain,
             std::path::PathBuf,
+            AppPaths,
         ),
         id: &str,
         enabled: bool,
     ) -> Result<Vec<serde_json::Value>, String> {
-        let path =
-            agent_plugin::disabled_store_path().ok_or("no config dir for the state store")?;
+        let path = agent_plugin::disabled_store_path(&parts.3);
         let mut store = agent_plugin::DisabledStore::load(&path);
         store.set(id, !enabled);
         store.save(&path);
@@ -1459,8 +1477,12 @@ impl SessionManager {
     /// over HTTP, so a working two-tool server read as "0 工具". Nothing ever
     /// connected a plugin, so there was no live number to show. Failures come
     /// back as data (`ok: false`) so the card can print the reason.
-    pub async fn mcp_probe(workspace_root: &std::path::Path, id: &str) -> serde_json::Value {
-        let Some(mpath) = agent_plugin::discover(workspace_root)
+    pub async fn mcp_probe(
+        workspace_root: &std::path::Path,
+        id: &str,
+        paths: &AppPaths,
+    ) -> serde_json::Value {
+        let Some(mpath) = agent_plugin::discover(workspace_root, paths)
             .into_iter()
             .find(|p| {
                 p.parent()
@@ -1503,9 +1525,9 @@ impl SessionManager {
         }
         // Record the grant first, then reload: the load path reads grants from
         // disk, so persisting before it runs is what makes the plugin load.
-        let manifest = agent_plugin::current_manifest(id, &self.workspace_root)
+        let manifest = agent_plugin::current_manifest(id, &self.workspace_root, &self.paths)
             .ok_or_else(|| format!("no manifest for plugin `{id}` in this workspace"))?;
-        let path = agent_plugin::trust_store_path().ok_or("no config dir for the trust store")?;
+        let path = agent_plugin::trust_store_path(&self.paths);
         let mut store = agent_plugin::TrustStore::load(&path);
         store.trust_content(id, &self.workspace_root, &manifest);
         store.save(&path);
@@ -1524,8 +1546,7 @@ impl SessionManager {
         if self.plugins.is_none() {
             return Err("plugin router not installed for this workspace".into());
         }
-        let path =
-            agent_plugin::disabled_store_path().ok_or("no config dir for the state store")?;
+        let path = agent_plugin::disabled_store_path(&self.paths);
         let mut store = agent_plugin::DisabledStore::load(&path);
         store.set(id, !enabled);
         store.save(&path);
@@ -1534,8 +1555,12 @@ impl SessionManager {
 
     /// Delete a discovered plugin's directory (settings UI). The path comes
     /// from discovery, so an id can never point outside the plugins dirs.
-    pub fn remove_plugin(workspace_root: &std::path::Path, id: &str) -> Result<(), String> {
-        let mpath = agent_plugin::discover(workspace_root)
+    pub fn remove_plugin(
+        workspace_root: &std::path::Path,
+        id: &str,
+        paths: &AppPaths,
+    ) -> Result<(), String> {
+        let mpath = agent_plugin::discover(workspace_root, paths)
             .into_iter()
             .find(|p| {
                 p.parent()
@@ -1570,7 +1595,7 @@ impl SessionManager {
             })
             .unwrap_or_default();
         let mut out = Vec::new();
-        for mpath in agent_plugin::discover(&self.workspace_root) {
+        for mpath in agent_plugin::discover(&self.workspace_root, &self.paths) {
             let Ok(text) = std::fs::read_to_string(&mpath) else {
                 continue;
             };
@@ -1589,7 +1614,7 @@ impl SessionManager {
                 .plugins
                 .as_ref()
                 .and_then(|h| h.read().ok().and_then(|g| g.clone()));
-            let trusted = agent_plugin::current_manifest(&id, &self.workspace_root)
+            let trusted = agent_plugin::current_manifest(&id, &self.workspace_root, &self.paths)
                 .zip(mgr.as_ref())
                 .is_some_and(|(manifest, m)| {
                     m.trust.is_trusted_content(&id, &self.workspace_root, &manifest)
@@ -2579,13 +2604,19 @@ fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String
 mod tests {
     use super::*;
 
+    /// Throwaway app paths — a test must never write to the real user dirs.
+    fn test_paths() -> AppPaths {
+        let base = std::env::temp_dir().join(format!("husk-test-{}", std::process::id()));
+        AppPaths::new(base.join("config"), base.join("data"), ".husk")
+    }
+
     /// A config edit must reach the actors that are already running — an actor
     /// keeps the provider instance and model parameters it was spawned with, and
     /// a model that the edit removed must not stay the session's target.
     #[test]
     fn config_reload_reaches_live_actors_and_re_resolves_a_removed_model() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
 
         // Stand-in for a live session actor — only its command queue matters.
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel(4);
@@ -2665,7 +2696,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         write_config(&path, "devin", "devin/swe-2");
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
 
         assert!(
             mgr.reload_model_config_from(Some(&path)),
@@ -2810,7 +2841,7 @@ mod tests {
             })
             .unwrap();
 
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(canon.clone()));
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(canon.clone()), test_paths());
 
         let info = mgr.model_info();
         assert_eq!(info.active_provider, "devin");
@@ -2835,12 +2866,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
         {
-            let (mut mgr, _rx) = SessionManager::spawn_at(Some(path.clone()));
+            let (mut mgr, _rx) = SessionManager::spawn_at(Some(path.clone()), test_paths());
             mgr.set_model("devin".into(), "devin/swe-2".into());
             mgr.set_thinking_level("high".into());
             mgr.set_permission_mode("acceptEdits".into());
         }
-        let (mut mgr2, _rx) = SessionManager::spawn_at(Some(path));
+        let (mut mgr2, _rx) = SessionManager::spawn_at(Some(path), test_paths());
         assert_eq!(mgr2.provider_name, "devin");
         assert_eq!(mgr2.model_name, "devin/swe-2");
         assert_eq!(mgr2.active_thinking_level.as_deref(), Some("high"));
@@ -2892,7 +2923,7 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
         mgr.workspace_active = true;
 
         // Receivers stay alive: a dropped one closes the queue the config
@@ -2921,7 +2952,7 @@ mod tests {
     fn switching_sessions_mirrors_each_sessions_own_model() {
         use crate::session_store::SessionMeta;
         let dir = tempfile::tempdir().unwrap();
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
         mgr.workspace_active = true;
 
         // Two sessions, each persisted a different model/provider. Handles are
@@ -2989,7 +3020,7 @@ mod tests {
     fn a_session_without_settings_falls_back_to_the_workspace_default() {
         use crate::session_store::SessionMeta;
         let dir = tempfile::tempdir().unwrap();
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()));
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
         mgr.workspace_active = true;
         // Workspace default the fresh session should inherit.
         mgr.provider_name = "fallback-p".into();

@@ -156,7 +156,14 @@ fn storage_boot_probe() {
     }
 
     let explicit = mode == "parallel-workspace";
-    let (mut manager, _) = SessionManager::spawn_at(explicit.then(|| root.clone()));
+    let (mut manager, _) = SessionManager::spawn_at(
+        explicit.then(|| root.clone()),
+        agent_paths::AppPaths::new(
+            std::env::temp_dir().join("husk-boot-test/config"),
+            std::env::temp_dir().join("husk-boot-test/data"),
+            ".husk",
+        ),
+    );
     let warning = agent_kernel::session_store::session_storage_warning();
     if mode != "invalid" {
         assert!(warning.is_none());

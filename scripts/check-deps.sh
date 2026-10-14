@@ -17,17 +17,19 @@ declare -A ALLOW=(
   [agent-context]=""
   [agent-computer]=""
   # extension ecosystem
-  [agent-plugin]="agent-llm agent-sandbox"
+  [agent-plugin]="agent-llm agent-paths agent-sandbox"
   # the tool contract — a leaf that knows no product, only the wire types
   [agent-tool]="agent-llm"
   # skills are knowledge, not capability — no kernel, no products
   [agent-skills]=""
+  # where the app keeps its files — pure path resolution, names no product
+  [agent-paths]=""
   # runtime
-  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-sandbox agent-skills agent-tool"
+  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-tool"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-sandbox"
-  [husk]="agent-context agent-ipc agent-kernel agent-llm agent-sandbox"
+  [husk]="agent-context agent-ipc agent-kernel agent-llm agent-paths agent-sandbox"
 )
 
 # Crates nobody may depend on (frontends).
