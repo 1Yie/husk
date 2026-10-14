@@ -94,7 +94,11 @@ impl DesktopBackend for FakeDesktop {
 }
 
 fn ctx_at(dir: &Path, desktop: Arc<FakeDesktop>) -> Arc<ToolCtx> {
-    Arc::new(ToolCtx::new(dir).with_desktop(desktop))
+    // The host's own directory names — the tool derives `.husk/attachments`
+    // from these rather than hardcoding them.
+    let mut ctx = ToolCtx::new(dir).with_desktop(desktop);
+    ctx.install_paths(agent_paths::AppPaths::new(dir, dir, ".husk"));
+    Arc::new(ctx)
 }
 
 /// The registry the model is offered must carry both tools in build/goal mode

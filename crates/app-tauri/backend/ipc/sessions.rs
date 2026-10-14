@@ -557,7 +557,10 @@ fn agent_session_inner(
                     .collect::<Vec<_>>()
                     .into_iter()
                     .chain(
-                    agent_kernel::tools::delegate::discover_subagents(&mgr.workspace_root)
+                    agent_kernel::tools::delegate::discover_subagents(
+                        &mgr.workspace_root,
+                        &crate::kernel::app_paths(),
+                    )
                         .into_iter()
                         .map(|a| serde_json::json!({
                             "name": a.name,
@@ -826,14 +829,12 @@ fn agent_session_inner(
             if prompt.trim().is_empty() {
                 return Err("提示词不能为空".into());
             }
+            let paths = crate::kernel::app_paths();
             let base = if global {
-                agent_kernel::tools::delegate::global_agent_dir()
+                agent_kernel::tools::delegate::global_agent_dir(&paths)
             } else {
-                Some(agent_kernel::tools::delegate::workspace_agent_dir(
-                    &mgr.workspace_root,
-                ))
-            }
-            .ok_or("no agents dir")?;
+                agent_kernel::tools::delegate::workspace_agent_dir(&mgr.workspace_root, &paths)
+            };
             std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
             let path = base.join(format!("{name}.md"));
             std::fs::write(
@@ -1593,12 +1594,13 @@ fn subagent_file(workspace_root: &std::path::Path, name: &str) -> Option<std::pa
     if !valid_slug(name) {
         return None;
     }
-    let ws = agent_kernel::tools::delegate::workspace_agent_dir(workspace_root)
+    let paths = crate::kernel::app_paths();
+    let ws = agent_kernel::tools::delegate::workspace_agent_dir(workspace_root, &paths)
         .join(format!("{name}.md"));
     if ws.is_file() {
         return Some(ws);
     }
-    let gl = agent_kernel::tools::delegate::global_agent_dir()?.join(format!("{name}.md"));
+    let gl = agent_kernel::tools::delegate::global_agent_dir(&paths).join(format!("{name}.md"));
     gl.is_file().then_some(gl)
 }
 

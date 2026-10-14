@@ -323,7 +323,9 @@ async fn subagent_catalog_is_in_the_prompt_and_refreshes() {
     stub.script_text("ok");
     let (mut actor, _c) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
-        paths: agent_paths::AppPaths::for_tests("kernel"),
+        // This test writes its manifest under `.husk/agents`, so the session
+        // must resolve its workspace state dir to the same name.
+        paths: agent_paths::AppPaths::new(dir.path().join("husk"), dir.path(), ".husk"),
         provider: Arc::new(stub),
         model: "m".into(),
         temperature: 0.0,

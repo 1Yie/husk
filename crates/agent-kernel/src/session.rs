@@ -268,6 +268,9 @@ pub struct SessionActor {
     shutdown: Arc<tokio::sync::Notify>,
     /// Workspace root (undo writes resolve against it).
     workspace_root: PathBuf,
+    /// The host's app directories — config-relative and workspace-local state
+    /// paths derive from these instead of a hardcoded product name.
+    paths: agent_paths::AppPaths,
     /// Ordered hook chain (lifecycle interception).
     hooks: HookChain,
     /// Live plugin router — the SAME `Arc` the engine reads per request,
@@ -472,7 +475,7 @@ impl SessionActor {
             )
             .replace(
                 "{{SUBAGENTS_BLOCK}}",
-                &crate::tools::delegate::catalog(&cfg.workspace_root),
+                &crate::tools::delegate::catalog(&cfg.workspace_root, &cfg.paths),
             );
 
         // `~/.config/husk/AGENTS.md` (user-wide) then `<workspace>/AGENTS.md`
@@ -568,6 +571,7 @@ impl SessionActor {
         // Installed here, not in `ToolCtx::new`, so a context built elsewhere
         // (an SSH worker, a test) has no local sandbox unless it asks for one.
         let (detected, _loud) = agent_sandbox::detect_backend();
+        tool_ctx.install_paths(cfg.paths.clone());
         tool_ctx.install_sandbox(Arc::new(crate::sandbox_prefs::SwitchableSandbox::new(
             Arc::from(detected),
         )));
@@ -683,7 +687,8 @@ impl SessionActor {
                 cancel,
                 cmd_rx,
                 shutdown: Arc::new(tokio::sync::Notify::new()),
-                workspace_root: cfg.workspace_root,
+                workspace_root: cfg.workspace_root.clone(),
+                paths: cfg.paths,
                 // Empty until `set_hooks` installs the plugin chain — the
                 // manager does it before the actor starts running.
                 hooks: HookChain::new(),
@@ -869,7 +874,7 @@ impl SessionActor {
         // the settings UI can add one while the session is open.
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
-                let block = crate::tools::delegate::catalog(&self.workspace_root);
+                let block = crate::tools::delegate::catalog(&self.workspace_root, &self.paths);
                 sys.content = Some(replace_block(&content, "subagents", &block));
             }
         }
@@ -961,7 +966,7 @@ impl SessionActor {
         // The turn is done — drop the screenshots it staged. They fed the
         // model this turn; on disk they're just leaked PNGs now (a resumed
         // session would re-shoot rather than trust a stale frame anyway).
-        crate::tools::screenshot::cleanup_screenshots(&self.workspace_root);
+        crate::tools::screenshot::cleanup_screenshots(&self.workspace_root, &self.paths);
 
         // A `computer` grant covers the task it was given for. Ending it here —
         // in the kernel, not in whichever shell happens to be attached — means

@@ -547,8 +547,8 @@ impl SubagentSpawner {
         if spec.inherits_context_files() {
             // Same two files the parent session reads, in the same order and under
             // the same section label, so the child sees the rules the way the parent does.
-            if let Some(cfg_dir) = dirs::config_dir() {
-                append_repo_instructions(&mut system, &cfg_dir.join("husk/AGENTS.md"), "user");
+            if let Some(paths) = parent_ctx.paths() {
+                append_repo_instructions(&mut system, &paths.config_file("AGENTS.md"), "user");
             }
             append_repo_instructions(&mut system, &parent_ctx.workspace_root.join("AGENTS.md"), "project");
         }
@@ -584,7 +584,8 @@ impl SubagentSpawner {
         };
         // Kept whatever the outcome: a timed-out or failed child is exactly the
         // one an operator wants to read back.
-        persist_transcript(&parent_ctx.workspace_root, child_id, label, &history);
+        let subs = parent_ctx.workspace_state_dir().join("subagents");
+        persist_transcript(&subs, child_id, label, &history);
         // Close the child's stream first: dropping the engine and io releases
         // every sink clone, so the forwarder drains and exits, and only then
         // does the card finish.
@@ -694,21 +695,27 @@ pub const BUILTIN_SUBAGENTS: &[(&str, &str, &str)] = &[
 /// state dir (next to `.husk/attachments/`); the others are read-only aliases
 /// for trees other tools already write (`.agents/` = agentskills convention,
 /// `.claude/` = Claude Code).
-const WORKSPACE_AGENT_DIRS: [&str; 3] = [".husk/agents", ".agents/agents", ".claude/agents"];
-
-/// Where a project-scoped agent manifest belongs.
-pub fn workspace_agent_dir(root: &Path) -> PathBuf {
-    root.join(WORKSPACE_AGENT_DIRS[0])
+fn workspace_agent_dirs(root: &Path, paths: &agent_paths::AppPaths) -> Vec<PathBuf> {
+    vec![
+        paths.workspace_dir(root).join("agents"),
+        root.join(".agents/agents"),
+        root.join(".claude/agents"),
+    ]
 }
 
-/// Where a user-scoped agent manifest belongs — `None` without a config dir.
-pub fn global_agent_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|cfg| cfg.join("husk").join("agents"))
+/// Where a project-scoped agent manifest belongs.
+pub fn workspace_agent_dir(root: &Path, paths: &agent_paths::AppPaths) -> PathBuf {
+    paths.workspace_dir(root).join("agents")
+}
+
+/// Where a user-scoped agent manifest belongs.
+pub fn global_agent_dir(paths: &agent_paths::AppPaths) -> PathBuf {
+    paths.config_file("agents")
 }
 
 /// User-level agent dirs, highest priority first.
-fn global_agent_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = global_agent_dir().into_iter().collect();
+fn global_agent_dirs(paths: &agent_paths::AppPaths) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = vec![global_agent_dir(paths)];
     if let Some(home) = dirs::home_dir() {
         dirs.push(home.join(".agents/agents"));
         dirs.push(home.join(".claude/agents"));
@@ -719,11 +726,11 @@ fn global_agent_dirs() -> Vec<PathBuf> {
 /// Scan workspace + user-level agent manifests. Frontmatter is optional —
 /// a bare `name.md` file with no `---` block still registers (name from
 /// filename, no description).
-pub fn discover_subagents(root: &Path) -> Vec<SubagentInfo> {
+pub fn discover_subagents(root: &Path, paths: &agent_paths::AppPaths) -> Vec<SubagentInfo> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    let ws: Vec<PathBuf> = WORKSPACE_AGENT_DIRS.iter().map(|d| root.join(d)).collect();
-    let gl: Vec<PathBuf> = global_agent_dirs();
+    let ws: Vec<PathBuf> = workspace_agent_dirs(root, paths);
+    let gl: Vec<PathBuf> = global_agent_dirs(paths);
     for (dirs, global) in [(ws, false), (gl, true)] {
         for base in dirs {
             let Ok(rd) = std::fs::read_dir(&base) else {
@@ -766,10 +773,10 @@ pub fn discover_subagents(root: &Path) -> Vec<SubagentInfo> {
 /// builtins), then the builtins nothing shadows. Without it the model can only
 /// pick names it happens to remember from the tool description, which makes a
 /// user-authored manifest effectively unreachable.
-pub fn catalog(root: &Path) -> String {
+pub fn catalog(root: &Path, paths: &agent_paths::AppPaths) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for sub in discover_subagents(root) {
+    for sub in discover_subagents(root, paths) {
         seen.insert(sub.name.to_lowercase());
         let description = sub.description.trim();
         lines.push(format!(
@@ -799,9 +806,9 @@ pub fn catalog(root: &Path) -> String {
 /// Resolve one agent name → manifest. File manifests win (a same-named
 /// `*.md` overrides the builtin); builtins are the fallback so
 /// `delegate { agent: "review" }` works out of the box.
-fn find_subagent(root: &Path, name: &str) -> Option<SubagentInfo> {
+fn find_subagent(root: &Path, name: &str, paths: &agent_paths::AppPaths) -> Option<SubagentInfo> {
     let want = name.to_lowercase();
-    discover_subagents(root)
+    discover_subagents(root, paths)
         .into_iter()
         .find(|s| s.name.to_lowercase() == want)
         .or_else(|| {
@@ -830,8 +837,7 @@ const BUILTIN_READONLY: &[&str] = &["review"];
 /// Write one child's full history to `.husk/subagents/` as JSONL, one message
 /// per line. Best effort: a write failure is logged and never fails the delegate
 /// call, because the report the parent needs does not depend on this file.
-fn persist_transcript(root: &Path, child_id: u64, label: &str, history: &[ChatMessage]) {
-    let dir = root.join(".husk/subagents");
+fn persist_transcript(dir: &Path, child_id: u64, label: &str, history: &[ChatMessage]) {
     // Zero-padded epoch milliseconds: file names sort in the order children ran,
     // without pulling a date crate into the kernel for one timestamp.
     let millis = std::time::SystemTime::now()
@@ -978,9 +984,10 @@ pub fn spec() -> ToolSpec {
              workspace, and no `delegate` tool of its own. Use for isolated reviews or\n\
              focused subproblems. `tasks` (2–3 of them) runs them in parallel and requires\n\
              `readonly: true` — write-capable children run one per call. `readonly` restricts\n\
-             a child to inspection tools. `agent` names a custom `*.md` manifest (workspace\n\
-             `.husk/agents/`, user `~/.config/husk/agents/`; `.agents/agents/` and\n\
-             `.claude/agents/` are read too) whose body becomes the child's system prompt.\n\
+             a child to inspection tools. `agent` names a custom `*.md` manifest —\n\
+             looked up in the workspace's state dir (`agents/`), your user config\n\
+             dir (`agents/`), then `.agents/agents/` and `.claude/agents/` — whose\n\
+             body becomes the child's system prompt.\n\
              Built-in agents: `review` (代码审查), `test` (测试工程), `ui-design` (UI 设计) —\n\
              a same-named manifest overrides the builtin. Not available in plan mode.",
         ),
@@ -1057,7 +1064,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         .agent
         .as_deref()
         .map(|n| {
-            find_subagent(&ctx.workspace_root, n)
+            find_subagent(&ctx.workspace_root, n, &ctx.app_paths())
                 .ok_or_else(|| format!("subagent `{n}` not found in agent dirs"))
         })
         .transpose()
@@ -1195,7 +1202,8 @@ mod tests {
     /// The builtin review agent is read-only by registry, not only by its prompt.
     #[test]
     fn builtin_review_is_read_only() {
-        let review = find_subagent(std::path::Path::new("/nonexistent-root"), "review")
+        let paths = agent_paths::AppPaths::for_tests("builtin-review");
+        let review = find_subagent(std::path::Path::new("/nonexistent-root"), "review", &paths)
             .expect("review builtin");
         assert!(review.readonly);
         assert!(review.tools.is_none());
@@ -1250,18 +1258,19 @@ mod tests {
     #[test]
     fn catalog_lists_builtins_and_shadowing_manifests() {
         let dir = tempfile::tempdir().unwrap();
-        let bare = catalog(dir.path());
+        let paths = agent_paths::AppPaths::new(dir.path().join("husk"), dir.path(), ".husk");
+        let bare = catalog(dir.path(), &paths);
         assert!(bare.contains("`review`"), "{bare}");
         assert!(bare.contains("(built-in)"), "{bare}");
 
-        let ws = workspace_agent_dir(dir.path());
+        let ws = workspace_agent_dir(dir.path(), &paths);
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::write(
             ws.join("review.md"),
             "---\nname: review\ndescription: our own reviewer\n---\n\nHUNT\n",
         )
         .unwrap();
-        let with_manifest = catalog(dir.path());
+        let with_manifest = catalog(dir.path(), &paths);
         assert!(
             with_manifest.contains("our own reviewer"),
             "{with_manifest}"
@@ -1279,19 +1288,20 @@ mod tests {
     #[test]
     fn project_agents_shadow_and_dirs_are_husk_owned() {
         let dir = tempfile::tempdir().unwrap();
-        let ws = workspace_agent_dir(dir.path());
+        let paths = agent_paths::AppPaths::new(dir.path().join("husk"), dir.path(), ".husk");
+        let ws = workspace_agent_dir(dir.path(), &paths);
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::write(
             ws.join("shadow.md"),
             "---\nname: shadow\ndescription: project\n---\n\nPROJECT\n",
         )
         .unwrap();
-        let found = discover_subagents(dir.path());
+        let found = discover_subagents(dir.path(), &paths);
         let hits: Vec<&SubagentInfo> = found.iter().filter(|s| s.name == "shadow").collect();
         assert_eq!(hits.len(), 1, "{found:?}");
         assert!(!hits[0].global);
         assert!(ws.ends_with(".husk/agents"), "{ws:?}");
-        let global = global_agent_dir().expect("config dir");
+        let global = global_agent_dir(&paths);
         assert!(global.ends_with("husk/agents"), "{global:?}");
     }
 }

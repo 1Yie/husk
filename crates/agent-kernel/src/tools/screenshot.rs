@@ -43,9 +43,10 @@ pub fn spec() -> ToolSpec {
 
 async fn exec(ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let desktop = ctx.desktop()?;
-    // `.husk/attachments/` — the workspace-local staging dir the composer
-    // already uses for pasted images, so captures sit with their siblings.
-    let dir = ctx.workspace_root.join(".husk").join("attachments");
+    // The workspace-local staging dir the composer already uses for pasted
+    // images, so captures sit with their siblings. Its name comes from the
+    // host, not from here.
+    let dir = ctx.workspace_state_dir().join("attachments");
     let dest = dir.join(format!("shot-{}.png", agent_llm::types::now_ms()));
 
     let meta = desktop
@@ -90,8 +91,8 @@ async fn exec(ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 /// Only `shot-` prefixed files are touched; user attachments that share the
 /// directory are left alone. Best-effort — a missing dir or a locked file is
 /// not worth failing a finished turn over.
-pub fn cleanup_screenshots(workspace_root: &std::path::Path) {
-    let dir = workspace_root.join(".husk").join("attachments");
+pub fn cleanup_screenshots(workspace_root: &std::path::Path, paths: &agent_paths::AppPaths) {
+    let dir = paths.workspace_dir(workspace_root).join("attachments");
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
@@ -146,6 +147,7 @@ mod tests {
     #[test]
     fn cleanup_removes_shot_files_only() {
         let dir = tempfile::tempdir().unwrap();
+        let paths = agent_paths::AppPaths::new(dir.path(), dir.path(), ".husk");
         let att = dir.path().join(".husk").join("attachments");
         std::fs::create_dir_all(&att).unwrap();
         let shot = att.join("shot-1.png");
@@ -156,14 +158,14 @@ mod tests {
             std::fs::write(p, b"x").unwrap();
         }
 
-        cleanup_screenshots(dir.path());
+        cleanup_screenshots(dir.path(), &paths);
         assert!(!shot.exists());
         assert!(!tmp.exists());
         assert!(user.exists());
         assert!(other.exists());
 
         // A missing dir is a no-op, not an error.
-        cleanup_screenshots(dir.path().join("gone").as_path());
+        cleanup_screenshots(dir.path().join("gone").as_path(), &paths);
     }
 
     /// The built-in registry carries both computer-use tools.

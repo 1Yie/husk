@@ -102,7 +102,9 @@ async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<Ch
     let stub = Arc::new(ScriptedProvider::new().with_script(script_screenshot_then_answer()));
     stub.script_text("The desktop shows a terminal.");
 
-    let ctx = Arc::new(ToolCtx::new(dir).with_desktop(Arc::new(FakeDesktop)));
+    let mut ctx = ToolCtx::new(dir).with_desktop(Arc::new(FakeDesktop));
+    ctx.install_paths(agent_paths::AppPaths::new(dir, dir, ".husk"));
+    let ctx = Arc::new(ctx);
     let mut engine = Engine::new(
         stub,
         Arc::new(ToolRegistry::with_builtins()),
