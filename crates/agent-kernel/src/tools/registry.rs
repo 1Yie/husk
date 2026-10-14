@@ -226,7 +226,6 @@ pub struct ToolCtx {
 }
 
 impl ToolCtx {
-    /// The host's sandbox overrides, or the defaults when none were installed.
     /// The question channel, or a refusal when the context has no one to ask.
     pub fn ask(&self) -> Result<Arc<AskChannel>, ToolError> {
         self.ext
@@ -286,6 +285,7 @@ impl ToolCtx {
         self.ext.insert(Arc::new(SubagentSlot(spawner)));
     }
 
+    /// The host's sandbox overrides, or the defaults when none were installed.
     pub fn sandbox_limits(&self) -> crate::sandbox_prefs::SandboxLimits {
         self.ext
             .get::<SandboxLimitsSlot>()
