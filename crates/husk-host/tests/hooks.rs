@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use agent_ipc::{UiCommand, UiEvent};
 use agent_kernel::hooks::{chain_from_specs, HookChain};
-use agent_kernel::session::{SessionActor, SessionConfig};
+use husk_host::session::{SessionActor, SessionConfig};
 mod common;
 use agent_llm::types::StreamChunk;
 use common::ScriptedProvider;

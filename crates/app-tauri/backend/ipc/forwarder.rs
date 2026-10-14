@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
 use agent_ipc::UiEvent;
-use agent_kernel::session_manager::SessionManager;
+use husk_host::session_manager::SessionManager;
 
 pub fn spawn(
     app: AppHandle,

@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use agent_ipc::UiCommand;
-use agent_kernel::mode::AgentMode;
-use agent_kernel::session::{SessionActor, SessionConfig};
+use husk_host::mode::AgentMode;
+use husk_host::session::{SessionActor, SessionConfig};
 mod common;
 use common::ScriptedProvider;
 

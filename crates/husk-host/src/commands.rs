@@ -63,7 +63,7 @@ pub struct CommandCtx<'a> {
     pub plugin_commands: &'a [agent_plugin::PluginCommand],
     /// Emit a UI event (status/system message) — the shared sink keeps the
     /// ctx `Send` so `handle` futures can `tokio::spawn`.
-    pub ui_tx: &'a crate::channels::UiSink,
+    pub ui_tx: &'a agent_kernel::channels::UiSink,
     /// The session's `.blueprint/` switch — `/blueprint` answers "off" when
     /// it is false.
     pub blueprint_enabled: bool,
@@ -90,9 +90,9 @@ impl CommandRegistry {
         }
         // `$skill` — dollar trigger resolves ONLY against the skill dirs.
         if let Some(skill_name) = name.strip_prefix('$') {
-            let skills = crate::skills::SkillManager::new(ctx.workspace_root);
+            let skills = agent_kernel::skills::SkillManager::new(ctx.workspace_root);
             if let Ok(skill) = skills.load(skill_name, Some(args)) {
-                return Some(CommandResult::FeedToAgent(crate::skills::prompt::for_user(
+                return Some(CommandResult::FeedToAgent(agent_kernel::skills::prompt::for_user(
                     &skill,
                     &format!("${skill_name}"),
                 )));
@@ -195,7 +195,7 @@ impl CommandRegistry {
                 CommandResult::Reply(out)
             }
             "skills" => {
-                let skills = crate::skills::SkillManager::new(ctx.workspace_root);
+                let skills = agent_kernel::skills::SkillManager::new(ctx.workspace_root);
                 // One catalog, one rendering — the same listing the `skill`
                 // tool's `list` action returns, and the same one the prompt
                 // catalog is built from.
@@ -210,7 +210,7 @@ impl CommandRegistry {
             }
             // Architecture blueprint — index/check/graph answer locally;
             // `init` hands the model a bootstrap prompt.
-            "blueprint" => match crate::blueprint::command(
+            "blueprint" => match agent_kernel::blueprint::command(
                 ctx.workspace_root,
                 ctx.blueprint_enabled,
                 args,
@@ -269,9 +269,9 @@ impl CommandRegistry {
                 // Skill fallback — `/{name}` resolves against the workspace +
                 // user skill dirs; the skill body is inlined into the turn
                 // so the model follows it as instructions.
-                let skills = crate::skills::SkillManager::new(ctx.workspace_root);
+                let skills = agent_kernel::skills::SkillManager::new(ctx.workspace_root);
                 if let Ok(skill) = skills.load(name, Some(args)) {
-                    CommandResult::FeedToAgent(crate::skills::prompt::for_user(
+                    CommandResult::FeedToAgent(agent_kernel::skills::prompt::for_user(
                         &skill,
                         &format!("/{name}"),
                     ))
@@ -423,7 +423,7 @@ fn expand_skill_refs(text: &str, root: &Path) -> String {
             .is_some_and(|c| c.is_alphabetic() || c == '_');
         let resolved = looks_like_name
             .then(|| {
-                crate::skills::SkillManager::new(root)
+                agent_kernel::skills::SkillManager::new(root)
                     .load(token, None)
                     .ok()
             })
@@ -431,7 +431,7 @@ fn expand_skill_refs(text: &str, root: &Path) -> String {
         if let Some(skill) = resolved {
             out.push_str(&format!(
                 "\n\n`<skill name=\"{token}\">`\n{}\n",
-                crate::skills::prompt::for_user(&skill, &format!("${token}"))
+                agent_kernel::skills::prompt::for_user(&skill, &format!("${token}"))
             ));
             rest = &after[end..];
         } else {
@@ -477,10 +477,10 @@ mod tests {
     #[test]
     fn metadata_carries_the_summary_and_the_loader_carries_the_body() {
         let (_d, root) = skill_ws();
-        let skills = crate::skills::scanner::scan_skills(&root);
+        let skills = agent_kernel::skills::scanner::scan_skills(&root);
         assert_eq!(skills.len(), 2);
 
-        let manager = crate::skills::SkillManager::new(&root);
+        let manager = agent_kernel::skills::SkillManager::new(&root);
         let review = manager.load("review", None).unwrap();
         assert_eq!(review.description, "review code carefully");
         assert!(review.body.contains("Look for bugs."));
@@ -502,7 +502,7 @@ mod tests {
     #[tokio::test]
     async fn slash_skill_feeds_agent_with_body() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -526,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn slash_skill_passes_args() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -549,7 +549,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_slash_falls_back_to_prompt() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -572,7 +572,7 @@ mod tests {
     #[tokio::test]
     async fn at_mention_inlines_file_content() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -624,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn at_mention_escapes_are_blocked() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -649,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn email_like_at_is_left_alone() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -680,7 +680,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".pi/skills/harness")).unwrap();
         std::fs::write(root.join(".pi/skills/harness/SKILL.md"), "pi body\n").unwrap();
 
-        let skills = crate::skills::scanner::scan_skills(&root);
+        let skills = agent_kernel::skills::scanner::scan_skills(&root);
         assert!(skills.iter().any(|s| s.name == "claude-review"));
         // No front-matter → falls back to the directory name.
         assert!(skills.iter().any(|s| s.name == "harness"));
@@ -690,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn dollar_trigger_dispatches_skill_only() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -730,7 +730,7 @@ mod tests {
         let store =
             agent_context::memory::MemoryStore::open(&dir.path().join("m.db"), dir.path()).unwrap();
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -760,7 +760,7 @@ mod tests {
         let store =
             agent_context::memory::MemoryStore::open(&dir.path().join("m.db"), dir.path()).unwrap();
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -824,7 +824,7 @@ mod tests {
         let store =
             agent_context::memory::MemoryStore::open(&dir.path().join("m.db"), dir.path()).unwrap();
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let mut ctx = CommandCtx {
             history: &mut hist,
@@ -871,7 +871,7 @@ mod tests {
     #[tokio::test]
     async fn slash_plugin_tool_command_returns_plugin_tool() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let cmds = plugin_cmds();
         let mut ctx = CommandCtx {
@@ -900,7 +900,7 @@ mod tests {
     #[tokio::test]
     async fn slash_plugin_qualified_and_prompt_forms() {
         let (_d, root) = skill_ws();
-        let (tx, _rx) = crate::channels::UiSink::channel();
+        let (tx, _rx) = agent_kernel::channels::UiSink::channel();
         let mut hist = Vec::new();
         let cmds = plugin_cmds();
         let mut ctx = CommandCtx {

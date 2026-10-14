@@ -17,11 +17,11 @@ use agent_llm::types::ChatMessage;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::channels::ui_channels;
+use agent_kernel::channels::ui_channels;
 use crate::commands::{CommandCtx, CommandRegistry, CommandResult, ControlOp};
-use crate::engine::{Engine, EngineIo};
-use crate::hooks::HookChain;
-use crate::tools::{ToolCtx, ToolRegistry};
+use agent_kernel::engine::{Engine, EngineIo};
+use agent_kernel::hooks::HookChain;
+use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
 /// The rendered system prompt template — embedded at build time from the
 /// skill's canonical source (single source of truth, never hand-edited here).
@@ -151,7 +151,7 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
 fn child_models(
     provider_name: &str,
     config_dir: &std::path::Path,
-) -> std::collections::HashMap<String, crate::tools::delegate::ChildModel> {
+) -> std::collections::HashMap<String, agent_kernel::tools::delegate::ChildModel> {
     let mut out = std::collections::HashMap::new();
     let Ok(cfg) = agent_llm::AppConfig::load(config_dir, None) else {
         return out;
@@ -163,7 +163,7 @@ fn child_models(
         let d = pcfg.model_opts(&id);
         out.insert(
             id,
-            crate::tools::delegate::ChildModel {
+            agent_kernel::tools::delegate::ChildModel {
                 context_window: d.context_window.unwrap_or(256_000) as usize,
                 thinking_level_map: d.thinking_level_map.clone(),
                 model_params: agent_llm::ProviderFactory::model_params_from(&d),
@@ -175,10 +175,10 @@ fn child_models(
 }
 
 fn open_memory_store(workspace_root: &Path) -> Option<MemoryStore> {
-    let db_dir = if crate::session_store::is_test_binary() {
+    let db_dir = if agent_kernel::session_store::is_test_binary() {
         Some(std::env::temp_dir().join(format!("husk-test-{}", std::process::id())))
     } else {
-        crate::session_store::app_data_dir()
+        agent_kernel::session_store::app_data_dir()
     };
     db_dir.and_then(|d| {
         let _ = std::fs::create_dir_all(&d);
@@ -194,7 +194,7 @@ pub struct SessionConfig {
     pub workspace_root: PathBuf,
     /// Live plugin router — shared with the manager so a reload swaps what the
     /// engine advertises without rebuilding the session.
-    pub plugins: Option<crate::engine::PluginHandle>,
+    pub plugins: Option<agent_kernel::engine::PluginHandle>,
     pub provider: Arc<dyn agent_llm::LlmProvider>,
     /// Config-level provider key (`deepseek`, `anthropic`, …). The adapter's own
     /// `id()` names the wire protocol, not the deployment, so stats group by
@@ -251,12 +251,12 @@ pub struct SessionActor {
     /// Engine's decision slot — `ToolDecision` writes here mid-turn.
     decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
     /// `AnswerQuestion` resolves here mid-turn (same bypass pattern).
-    ask_channel: Arc<crate::tools::registry::AskChannel>,
+    ask_channel: Arc<agent_kernel::tools::registry::AskChannel>,
     /// Engine's permissions slot — permission mode updates apply immediately mid-turn.
-    permissions_slot: Arc<std::sync::RwLock<crate::permissions::PermissionGate>>,
+    permissions_slot: Arc<std::sync::RwLock<agent_kernel::permissions::PermissionGate>>,
     /// Child-engine configuration shared with `delegate` — rewritten on
     /// hot-swap so a live session's children track its current model.
-    child_route: Arc<std::sync::RwLock<crate::tools::delegate::ChildRoute>>,
+    child_route: Arc<std::sync::RwLock<agent_kernel::tools::delegate::ChildRoute>>,
     /// Engine's thinking-level slot — read by the manager to report the
     /// session's live level (defaults may differ once prefs change).
     thinking_slot: Arc<std::sync::RwLock<Option<String>>>,
@@ -279,12 +279,12 @@ pub struct SessionActor {
     /// Live plugin router — the SAME `Arc` the engine reads per request,
     /// so a `reload_plugins` swap reaches `/x` dispatch too. `None` = no
     /// plugin manager installed for this workspace.
-    plugins: Option<crate::engine::PluginHandle>,
+    plugins: Option<agent_kernel::engine::PluginHandle>,
     /// Memory store + post-turn distiller (background task). `memory` is the
     /// actor's own view; `memory_handle` is the same slot the engine's tools
     /// read, so one switch covers recall, distillation and the `remember` tool.
     memory: Option<Arc<MemoryStore>>,
-    memory_handle: crate::tools::registry::MemoryHandle,
+    memory_handle: agent_kernel::tools::registry::MemoryHandle,
     distiller: Option<Arc<TurnDistiller>>,
     /// Provider/model/params captured at spawn — the distiller's summarizer
     /// is rebuilt from these when `SetMemory` toggles memory on mid-session
@@ -297,7 +297,7 @@ pub struct SessionActor {
     /// Stable session identity — sidebar ordering + persistence file name.
     session_id: i64,
     /// Per-workspace session store — snapshots history at turn boundaries.
-    store: Option<Arc<crate::session_store::SessionStore>>,
+    store: Option<Arc<agent_kernel::session_store::SessionStore>>,
     history_revision: u64,
     /// Last completed turn's `(prompt, completion)` tokens — persisted
     /// into `SessionMeta` so a reopened session's header meter shows real
@@ -314,13 +314,13 @@ pub struct SessionActor {
     queued: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
     /// Skill backend — owns the cached prompt catalog and its change stamp, so
     /// a large tree is not re-read on every prompt.
-    skills: crate::skills::SkillManager,
+    skills: agent_kernel::skills::SkillManager,
 }
 
 impl SessionActor {
     /// Boot a session: scan workspace + git snapshot → render system prompt →
     /// return the actor plus the UI channel endpoints.
-    pub fn spawn(cfg: SessionConfig) -> (Self, super::channels::UiChannels) {
+    pub fn spawn(cfg: SessionConfig) -> (Self, agent_kernel::channels::UiChannels) {
         Self::spawn_inner(cfg, None, 0)
     }
 
@@ -329,7 +329,7 @@ impl SessionActor {
     pub fn spawn_with_id(
         cfg: SessionConfig,
         session_id: i64,
-    ) -> (Self, super::channels::UiChannels) {
+    ) -> (Self, agent_kernel::channels::UiChannels) {
         Self::spawn_inner(cfg, None, session_id)
     }
 
@@ -340,7 +340,7 @@ impl SessionActor {
         cfg: SessionConfig,
         session_id: i64,
         history: Vec<ChatMessage>,
-    ) -> (Self, super::channels::UiChannels) {
+    ) -> (Self, agent_kernel::channels::UiChannels) {
         // Sanitize persisted history (a snapshot poisoned by an old bug
         // replays into every later request and crashes devin's upstream as
         // `invalid_argument`):
@@ -411,7 +411,7 @@ impl SessionActor {
         cfg: SessionConfig,
         prior_history: Option<Vec<ChatMessage>>,
         session_id: i64,
-    ) -> (Self, super::channels::UiChannels) {
+    ) -> (Self, agent_kernel::channels::UiChannels) {
         let mut channels = ui_channels();
 
         // Workspace skeleton + git snapshot.
@@ -444,7 +444,7 @@ impl SessionActor {
         // handle → no block refresh and no distill writes. `memory_distill`
         // gates only the per-turn summarizer call — deterministic
         // episode/fact writes keep running.
-        let mut skills = crate::skills::SkillManager::new(&cfg.workspace_root);
+        let mut skills = agent_kernel::skills::SkillManager::new(&cfg.workspace_root);
         let (memory, distiller, initial_memory_block) = {
             let store = if cfg.memory_enabled {
                 open_memory_store(&cfg.workspace_root)
@@ -474,11 +474,11 @@ impl SessionActor {
             .replace("{{SKILLS_BLOCK}}", skills.catalog())
             .replace(
                 "{{BLUEPRINT_BLOCK}}",
-                &crate::blueprint::prompt_block(&cfg.workspace_root, true),
+                &agent_kernel::blueprint::prompt_block(&cfg.workspace_root, true),
             )
             .replace(
                 "{{SUBAGENTS_BLOCK}}",
-                &crate::tools::delegate::catalog(&cfg.workspace_root, &cfg.paths),
+                &agent_kernel::tools::delegate::catalog(&cfg.workspace_root, &cfg.paths),
             );
 
         // the host's user-level AGENTS.md then `<workspace>/AGENTS.md`
@@ -496,7 +496,7 @@ impl SessionActor {
         // persisted history (its system prompt was rendered at that session's
         // spawn — memory/workspace baked in for that turn).
         let is_resume = prior_history.is_some();
-        let mut history_revision=prior_history.as_deref().map(crate::session_store::SessionStore::history_revision_of).unwrap_or(0);
+        let mut history_revision=prior_history.as_deref().map(agent_kernel::session_store::SessionStore::history_revision_of).unwrap_or(0);
         let mut history = prior_history.unwrap_or_else(|| vec![ChatMessage::system(system_prompt)]);
 
         // A resumed session's system prompt was frozen at ITS spawn —
@@ -528,7 +528,7 @@ impl SessionActor {
         // Session persistence — per-workspace store; the actor snapshots
         // `history` at turn boundaries so a crashed/killed app resumes mid-
         // conversation from the last completed turn.
-        let store = match crate::session_store::SessionStore::open(&cfg.workspace_root) {
+        let store = match agent_kernel::session_store::SessionStore::open(&cfg.workspace_root) {
             Ok(store) => Some(Arc::new(store)),
             Err(error) => {
                 let _ = channels.event_tx.send(UiEvent::SystemMessage(format!(
@@ -537,7 +537,7 @@ impl SessionActor {
                 None
             }
         };
-        if let Some(warning) = crate::session_store::session_storage_warning() {
+        if let Some(warning) = agent_kernel::session_store::session_storage_warning() {
             let _ = channels.event_tx.send(UiEvent::SystemMessage(warning));
         }
         // Forks/importers may supply prior history before any journal exists.
@@ -565,7 +565,7 @@ impl SessionActor {
         // child's `ToolCtx` carries a refusing desktop backend as the second
         // one. `screenshot` stays: looking at the screen is an observation a
         // delegated visual check legitimately needs.
-        let child_full = crate::tools::registry::ToolRegistry::child_builtins();
+        let child_full = agent_kernel::tools::registry::ToolRegistry::child_builtins();
         let child_ro = child_full.readonly_only();
         let mut tool_ctx =
             ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
@@ -578,12 +578,12 @@ impl SessionActor {
         tool_ctx.install_sandbox(Arc::new(crate::sandbox_prefs::SwitchableSandbox::new(
             Arc::from(detected),
         )));
-        let memory_handle = crate::tools::registry::MemoryHandle::default();
+        let memory_handle = agent_kernel::tools::registry::MemoryHandle::default();
         memory_handle.set(memory.clone());
         tool_ctx.install_memory(memory_handle.clone());
         // The child route starts from the session's own settings and is
         // rewritten by `apply_model_switch`, so children follow a hot-swap.
-        let child_route = Arc::new(std::sync::RwLock::new(crate::tools::delegate::ChildRoute {
+        let child_route = Arc::new(std::sync::RwLock::new(agent_kernel::tools::delegate::ChildRoute {
             provider: cfg.provider.clone(),
             model: cfg.model.clone(),
             temperature: cfg.temperature,
@@ -594,14 +594,14 @@ impl SessionActor {
             model_input: cfg.model_input.clone(),
             models: child_models(&cfg.provider_name, &cfg.paths.config_dir),
         }));
-        tool_ctx.install_subagent(crate::tools::delegate::SubagentSpawner::new(
+        tool_ctx.install_subagent(agent_kernel::tools::delegate::SubagentSpawner::new(
             child_route.clone(),
             Arc::new(child_full),
             Arc::new(child_ro),
         ));
         // `ask_question` emits its card through the session's event channel;
         // fan-out tools (batch items) emit ToolCallStarted/Finished on ui_tx.
-        tool_ctx.install_ask(Arc::new(crate::tools::registry::AskChannel::new(Some(
+        tool_ctx.install_ask(Arc::new(agent_kernel::tools::registry::AskChannel::new(Some(
             channels.event_tx.clone(),
         ))));
         tool_ctx.install_ui(channels.event_tx.clone());
@@ -614,7 +614,7 @@ impl SessionActor {
             cfg.model.clone(),
             cfg.temperature,
         );
-        engine.set_policy(Box::new(crate::turn_policy::CodingPolicy::from_ctx(&ctx)));
+        engine.set_policy(Box::new(agent_kernel::turn_policy::CodingPolicy::from_ctx(&ctx)));
         // Mode table — the host's mapping from a mode id to the registry that
         // id dispatches against. The engine carries no mode names; these are
         // the coding product's (mirroring `mode::AgentMode`).
@@ -622,8 +622,8 @@ impl SessionActor {
         // Plan mode = readonly set + the `submit_plan` contract — the model
         // declares its deliverable as structured data, not prose.
         let mut plan_reg = registry.readonly_only();
-        plan_reg.register(crate::tools::plan::spec_submit());
-        engine.add_mode(crate::engine::ModeEntry {
+        plan_reg.register(agent_kernel::tools::plan::spec_submit());
+        engine.add_mode(agent_kernel::engine::ModeEntry {
             id: "plan".into(),
             registry: Arc::new(plan_reg),
             allow_plugins: false,
@@ -631,9 +631,9 @@ impl SessionActor {
         // Goal mode = full set + the completion contract — the model
         // declares `goal_complete`/`goal_blocked` to end its run.
         let mut goal_reg = (*registry).clone();
-        goal_reg.register(crate::tools::goal::spec_complete());
-        goal_reg.register(crate::tools::goal::spec_blocked());
-        engine.add_mode(crate::engine::ModeEntry {
+        goal_reg.register(agent_kernel::tools::goal::spec_complete());
+        goal_reg.register(agent_kernel::tools::goal::spec_blocked());
+        engine.add_mode(agent_kernel::engine::ModeEntry {
             id: "goal".into(),
             registry: Arc::new(goal_reg),
             allow_plugins: true,
@@ -642,25 +642,25 @@ impl SessionActor {
         // wrappers). Same write surface as build — the difference is the
         // document-producing contract in the prompt, not a narrower toolbox.
         let mut office_reg = (*registry).clone();
-        for spec in crate::tools::office::specs() {
+        for spec in agent_kernel::tools::office::specs() {
             office_reg.register(spec);
         }
-        for spec in crate::tools::assets::specs() {
+        for spec in agent_kernel::tools::assets::specs() {
             office_reg.register(spec);
         }
-        engine.add_mode(crate::engine::ModeEntry {
+        engine.add_mode(agent_kernel::engine::ModeEntry {
             id: "office".into(),
             registry: Arc::new(office_reg),
             allow_plugins: true,
         });
-        engine.set_permissions(crate::permissions::PermissionGate::from_mode_str(
+        engine.set_permissions(agent_kernel::permissions::PermissionGate::from_mode_str(
             &cfg.permission_mode,
         ));
         engine.set_agent_mode(cfg.agent_mode.clone());
         engine.set_thinking_level(cfg.thinking_level.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
         engine.set_context_window(cfg.context_window.unwrap_or(256_000) as usize);
-        engine.set_compact_at(cfg.compact_at.unwrap_or(crate::compaction::COMPACT_AT));
+        engine.set_compact_at(cfg.compact_at.unwrap_or(agent_kernel::compaction::COMPACT_AT));
         engine.set_model_input(cfg.model_input.clone());
         engine.set_model_params(cfg.model_params.clone().unwrap_or_default());
         if let Some(handle) = cfg.plugins.clone() {
@@ -816,7 +816,7 @@ impl SessionActor {
         self.engine.set_architecture_enabled(enabled);
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
-                let block = crate::blueprint::prompt_block(&self.workspace_root, enabled);
+                let block = agent_kernel::blueprint::prompt_block(&self.workspace_root, enabled);
                 sys.content = Some(replace_block(&content, "blueprint", &block));
             }
         }
@@ -831,12 +831,12 @@ impl SessionActor {
 
     /// `AnswerQuestion` resolves the parked `ask_question` oneshot —
     /// bypasses the pump for the same reason `ToolDecision` does.
-    pub fn ask_channel(&self) -> Arc<crate::tools::registry::AskChannel> {
+    pub fn ask_channel(&self) -> Arc<agent_kernel::tools::registry::AskChannel> {
         self.ask_channel.clone()
     }
 
     /// The shared permission gate slot — updates apply immediately mid-turn.
-    pub fn permissions_writer(&self) -> Arc<std::sync::RwLock<crate::permissions::PermissionGate>> {
+    pub fn permissions_writer(&self) -> Arc<std::sync::RwLock<agent_kernel::permissions::PermissionGate>> {
         self.permissions_slot.clone()
     }
 
@@ -916,7 +916,7 @@ impl SessionActor {
         // the settings UI can add one while the session is open.
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
-                let block = crate::tools::delegate::catalog(&self.workspace_root, &self.paths);
+                let block = agent_kernel::tools::delegate::catalog(&self.workspace_root, &self.paths);
                 sys.content = Some(replace_block(&content, "subagents", &block));
             }
         }
@@ -929,7 +929,7 @@ impl SessionActor {
         // stay as they are.
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
-                let block = crate::blueprint::prompt_block(
+                let block = agent_kernel::blueprint::prompt_block(
                     &self.workspace_root,
                     self.engine.architecture_enabled(),
                 );
@@ -1008,7 +1008,7 @@ impl SessionActor {
         // The turn is done — drop the screenshots it staged. They fed the
         // model this turn; on disk they're just leaked PNGs now (a resumed
         // session would re-shoot rather than trust a stale frame anyway).
-        crate::tools::screenshot::cleanup_screenshots(&self.workspace_root, &self.paths);
+        agent_kernel::tools::screenshot::cleanup_screenshots(&self.workspace_root, &self.paths);
 
         // A `computer` grant covers the task it was given for. Ending it here —
         // in the kernel, not in whichever shell happens to be attached — means
@@ -1089,7 +1089,7 @@ impl SessionActor {
         let usage = self
             .last_usage
             .map(
-                |(prompt, completion, cached)| crate::session_store::SessionUsage {
+                |(prompt, completion, cached)| agent_kernel::session_store::SessionUsage {
                     prompt,
                     completion,
                     context_window: self.engine.context_window() as u32,
@@ -1117,7 +1117,7 @@ impl SessionActor {
         // live slots (updated by `apply_model_switch` mid-session), not the
         // spawn-time snapshot.
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
-        let result = store.commit_turn_checked(&sanitized, crate::session_store::SessionMeta {
+        let result = store.commit_turn_checked(&sanitized, agent_kernel::session_store::SessionMeta {
             id,
             title,
             preview,
@@ -1201,7 +1201,7 @@ impl SessionActor {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
-        let result = store.update_settings(crate::session_store::SessionMeta {
+        let result = store.update_settings(agent_kernel::session_store::SessionMeta {
             id,
             title: old
                 .as_ref()
@@ -1411,7 +1411,7 @@ impl SessionActor {
                     .await;
                 let _ = self.io.ui_tx.send(UiEvent::StateChanged(prev_state));
                 match result {
-                    Ok(crate::engine::CompactOutcome::Compacted(outcome)) => {
+                    Ok(agent_kernel::engine::CompactOutcome::Compacted(outcome)) => {
                         // The engine already emitted the card event and
                         // pushed the persisted display row. Re-base the
                         // persisted meter on the post-splice figure, then
@@ -1431,7 +1431,7 @@ impl SessionActor {
                         });
                         self.persist_turn("已压缩上下文");
                     }
-                    Ok(crate::engine::CompactOutcome::NothingToDo) => {
+                    Ok(agent_kernel::engine::CompactOutcome::NothingToDo) => {
                         // Not a failure: the history already fits the
                         // verbatim suffix budget. Report it neutrally so a
                         // second `/compact` doesn't read as an error.
@@ -1540,19 +1540,19 @@ impl SessionActor {
             None => {
                 // Hook chain: on_user_input may block/rewrite.
                 match self.hooks.run_on_user_input(&text).await {
-                    crate::hooks::HookAction::BlockTurn(reason) => {
+                    agent_kernel::hooks::HookAction::BlockTurn(reason) => {
                         let _ = self.io.ui_tx.send(UiEvent::SystemMessage(reason.clone()));
                         self.history.push(ChatMessage::notice(reason));
                     }
-                    crate::hooks::HookAction::InjectSystemNote(note) => {
+                    agent_kernel::hooks::HookAction::InjectSystemNote(note) => {
                         self.history.push(ChatMessage::system(note));
                         self.run_prompt(text).await;
                     }
-                    crate::hooks::HookAction::MutateMessages(msgs) => {
+                    agent_kernel::hooks::HookAction::MutateMessages(msgs) => {
                         self.history = msgs;
                         self.run_prompt(text).await;
                     }
-                    crate::hooks::HookAction::Continue => {
+                    agent_kernel::hooks::HookAction::Continue => {
                         self.run_prompt(text).await;
                     }
                 }
@@ -1682,7 +1682,7 @@ impl SessionActor {
                 // Switch the mode IN the live gate so a "本会话允许" grant
                 // survives it (rebuilding the gate wiped the rules).
                 let slot = self.engine.permissions_writer();
-                let parsed = crate::permissions::PermissionMode::from_str(&mode);
+                let parsed = agent_kernel::permissions::PermissionMode::from_str(&mode);
                 if let Ok(mut gate) = slot.write() {
                     gate.set_mode(parsed);
                 }

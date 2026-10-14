@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use agent_ipc::UiCommand;
 use agent_kernel::channels::UiReceiver;
-use agent_kernel::sandbox_prefs;
-use agent_kernel::session::{SessionActor, SessionConfig};
+use husk_host::sandbox_prefs;
+use husk_host::session::{SessionActor, SessionConfig};
 use agent_kernel::session_store::{SessionMeta, SessionStore};
 use agent_llm::{AppConfig, ProviderFactory};
 

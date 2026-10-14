@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_computer::{DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir};
-use agent_kernel::mode::AgentMode;
+use husk_host::mode::AgentMode;
 use agent_kernel::permissions::{Decision, PermissionGate, PermissionMode};
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};

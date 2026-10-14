@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use agent_ipc::{AgentState, UiCommand, UiEvent};
-use agent_kernel::session::{SessionActor, SessionConfig};
+use husk_host::session::{SessionActor, SessionConfig};
 mod common;
 use agent_llm::types::StreamChunk;
 use common::ScriptedProvider;

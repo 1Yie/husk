@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
-use crate::channels::{UiSink, UiStatsSnapshot};
+use agent_kernel::channels::{UiSink, UiStatsSnapshot};
 use crate::session::{SessionActor, SessionConfig};
-use crate::session_store::{SessionMeta, SessionStore};
+use agent_kernel::session_store::{SessionMeta, SessionStore};
 use agent_ipc::UiEvent;
 use agent_paths::AppPaths;
 use agent_llm::{AppConfig, ProviderFactory};
@@ -101,7 +101,7 @@ pub struct ProjectOverview {
 /// path when there is none (filesystem root). The office pseudo-workspace
 /// gets a fixed「办公」label instead of the directory name.
 fn project_name(root: &std::path::Path) -> String {
-    if crate::session_store::is_office_root(root) {
+    if agent_kernel::session_store::is_office_root(root) {
         return "办公".into();
     }
     root.file_name()
@@ -119,8 +119,8 @@ pub struct SessionHandle {
     pub decision: Arc<Mutex<Option<(u64, bool)>>>,
     /// `AnswerQuestion` resolves the parked ask_question oneshot — same
     /// bypass-the-pump channel as `decision`.
-    pub ask: Arc<crate::tools::registry::AskChannel>,
-    pub permissions: Arc<std::sync::RwLock<crate::permissions::PermissionGate>>,
+    pub ask: Arc<agent_kernel::tools::registry::AskChannel>,
+    pub permissions: Arc<std::sync::RwLock<agent_kernel::permissions::PermissionGate>>,
     /// The session's live agent mode — `SetAgentMode` writes here mid-turn
     /// so the next sampling round dispatches against the swapped registry.
     pub agent_mode: Arc<std::sync::RwLock<String>>,
@@ -176,10 +176,10 @@ pub struct SessionManager {
     /// MCP servers registered once at boot (`agent_plugin::load_all`) — every
     /// session's engine gets this router, so plugin tools are advertised and
     /// dispatchable in the ReAct loop. `None` = no manifest discovered.
-    plugins: Option<crate::engine::PluginHandle>,
+    plugins: Option<agent_kernel::engine::PluginHandle>,
     /// Plugin-declared lifecycle hooks, shared with every session's engine
     /// and rebuilt in place by `reload_plugins`.
-    hooks: crate::hooks::HookChain,
+    hooks: agent_kernel::hooks::HookChain,
     /// Sidebar metadata (persisted index + live preview overrides).
     pub metas: Vec<SessionMeta>,
     /// The session the stream is showing.
@@ -284,18 +284,18 @@ impl SessionManager {
     ) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
         // The session database is a process-wide singleton, so its directory is
         // set once here rather than passed to every read.
-        crate::session_store::init_data_dir(paths.data_dir.clone());
+        agent_kernel::session_store::init_data_dir(paths.data_dir.clone());
         // Global user defaults — the settings window's stored preference.
         // Loaded up here because the「默认进入」row decides the boot root
         // below; every later layer reads this same snapshot.
-        let defaults = crate::session_store::try_load_default_preferences();
+        let defaults = agent_kernel::session_store::try_load_default_preferences();
         // No explicit root → the boot workspace `default_workspace_mode`
         // asks for. Nothing to open → empty state (no cwd fallback — don't
         // silently attach the launch directory).
         let cwd: Option<std::path::PathBuf> = root.or_else(|| {
             boot_workspace(
                 defaults.as_ref(),
-                &crate::session_store::load_recent_workspaces(),
+                &agent_kernel::session_store::load_recent_workspaces(),
             )
         });
         let cfg = AppConfig::load(&paths.config_dir, None).unwrap_or_default();
@@ -306,9 +306,9 @@ impl SessionManager {
         // session resumed below is built with the router. `load_all` bounds
         // each registration (8 s) and skips failures, and an empty plugin dir
         // is skipped without even creating a runtime.
-        let hooks = crate::hooks::HookChain::new();
+        let hooks = agent_kernel::hooks::HookChain::new();
         let plugins = cwd.as_ref().map(|root| {
-            let handle: crate::engine::PluginHandle = Arc::new(std::sync::RwLock::new(None));
+            let handle: agent_kernel::engine::PluginHandle = Arc::new(std::sync::RwLock::new(None));
             // Background the load: a wedged MCP handshake must not hold up
             // boot — the router starts empty and the swap lands whenever the
             // registrations finish. A turn taken before then just sees no
@@ -332,12 +332,12 @@ impl SessionManager {
         let Some(cwd) = cwd else {
             let store = Arc::new(
                 SessionStore::open_or_transient(
-                    &crate::session_store::app_data_dir()
+                    &agent_kernel::session_store::app_data_dir()
                         .unwrap_or_else(|| std::path::PathBuf::from("/tmp")),
                 )
                 .expect("initialize shared session store"),
             );
-            let defaults = crate::session_store::try_load_default_preferences();
+            let defaults = agent_kernel::session_store::try_load_default_preferences();
             if let Some(d) = &defaults {
                 crate::sandbox_prefs::set(crate::sandbox_prefs::SandboxLimits {
                     enabled: d.sandbox_enabled,
@@ -349,7 +349,7 @@ impl SessionManager {
                     max_processes: d.sandbox_max_processes,
                     allowed_domains: d.sandbox_allowed_domains.clone().unwrap_or_default(),
                     denied_domains: d.sandbox_denied_domains.clone().unwrap_or_default(),
-                    extra_ro_mounts: crate::skills::scanner::global_skill_roots(),
+                    extra_ro_mounts: agent_kernel::skills::scanner::global_skill_roots(),
                 });
             }
             // No workspace yet — the settings-pane default pair is the only
@@ -393,7 +393,7 @@ impl SessionManager {
                 compact_at: defaults
                     .as_ref()
                     .map(|d| d.compact_at)
-                    .unwrap_or(crate::compaction::COMPACT_AT),
+                    .unwrap_or(agent_kernel::compaction::COMPACT_AT),
                 memory_enabled: defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true),
                 memory_distill: defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true),
                 blueprint_enabled: defaults
@@ -407,7 +407,7 @@ impl SessionManager {
         };
 
         let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
-        if crate::session_store::is_office_root(&canon) {
+        if agent_kernel::session_store::is_office_root(&canon) {
             // The office dir lives under the app data dir and is created
             // lazily — a boot landing here needs it to exist.
             let _ = std::fs::create_dir_all(&canon);
@@ -416,7 +416,7 @@ impl SessionManager {
             SessionStore::open_or_transient(&canon).expect("initialize shared session store"),
         );
 
-        crate::session_store::record_recent_workspace(&canon);
+        agent_kernel::session_store::record_recent_workspace(&canon);
 
         let prefs = store.load_prefs();
         // `defaults` (loaded at the top of `spawn_at`) fills any gap the
@@ -447,7 +447,7 @@ impl SessionManager {
         let compact_at = defaults
             .as_ref()
             .map(|d| d.compact_at)
-            .unwrap_or(crate::compaction::COMPACT_AT);
+            .unwrap_or(agent_kernel::compaction::COMPACT_AT);
         let memory_enabled = defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true);
         let memory_distill = defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true);
         // Sandbox overrides are process-global — seed the slot once so
@@ -463,7 +463,7 @@ impl SessionManager {
                 max_processes: d.sandbox_max_processes,
                 allowed_domains: d.sandbox_allowed_domains.clone().unwrap_or_default(),
                 denied_domains: d.sandbox_denied_domains.clone().unwrap_or_default(),
-                extra_ro_mounts: crate::skills::scanner::global_skill_roots(),
+                extra_ro_mounts: agent_kernel::skills::scanner::global_skill_roots(),
             });
         }
 
@@ -529,13 +529,13 @@ impl SessionManager {
         // The office pseudo-workspace lives under the app data dir and is
         // created lazily on first entry — canonicalize + the workspace
         // scan need a real directory.
-        if crate::session_store::is_office_root(&new_root) {
+        if agent_kernel::session_store::is_office_root(&new_root) {
             let _ = std::fs::create_dir_all(&new_root);
         }
         let canon = new_root.canonicalize().unwrap_or_else(|_| new_root.clone());
         let store = Arc::new(SessionStore::open(&canon)?);
         let prefs = store.load_prefs();
-        let defaults = crate::session_store::try_load_default_preferences();
+        let defaults = agent_kernel::session_store::try_load_default_preferences();
         let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
         // Same chain as spawn: workspace pair → Agent 偏好 default →
         // config active_* → first provider.
@@ -583,7 +583,7 @@ impl SessionManager {
             .unwrap_or_default();
         self.store = store;
         self.metas = self.store.list();
-        crate::session_store::record_recent_workspace(&self.workspace_root);
+        agent_kernel::session_store::record_recent_workspace(&self.workspace_root);
 
         let first = self
             .store
@@ -606,8 +606,8 @@ impl SessionManager {
     }
 
     /// List recent workspaces from the persistent recent_workspaces store.
-    pub fn recent_workspaces(&self) -> Vec<crate::session_store::RecentWorkspace> {
-        crate::session_store::load_recent_workspaces()
+    pub fn recent_workspaces(&self) -> Vec<agent_kernel::session_store::RecentWorkspace> {
+        agent_kernel::session_store::load_recent_workspaces()
     }
 
     /// Drop a project from recents and tear down its actors (parked or
@@ -621,7 +621,7 @@ impl SessionManager {
         // The office pseudo-workspace is built-in — it can't be removed
         // from recents or torn down; its sessions live under its own
         // `office` namespace.
-        if crate::session_store::is_office_root(&canon) {
+        if agent_kernel::session_store::is_office_root(&canon) {
             return false;
         }
         let key = canon.to_string_lossy().into_owned();
@@ -630,10 +630,10 @@ impl SessionManager {
                 h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        crate::session_store::remove_recent_workspace(&canon);
+        agent_kernel::session_store::remove_recent_workspace(&canon);
         // The workspace's Serena server (if any) goes with it — a closed
         // project should not keep an indexed child process around.
-        crate::tools::serena::shutdown(&canon);
+        agent_kernel::tools::serena::shutdown(&canon);
 
         let active_canon = self
             .workspace_root
@@ -672,7 +672,7 @@ impl SessionManager {
             .canonicalize()
             .unwrap_or_else(|_| self.workspace_root.clone());
         let office_root =
-            crate::session_store::office_root().map(|p| p.canonicalize().unwrap_or(p));
+            agent_kernel::session_store::office_root().map(|p| p.canonicalize().unwrap_or(p));
         let office_is_current =
             self.workspace_active && office_root.as_ref().is_some_and(|o| *o == canon);
 
@@ -799,7 +799,7 @@ impl SessionManager {
         // the history head (see `SessionStore`).
         let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         for w in self.recent_workspaces() {
-            names.insert(crate::session_store::workspace_key(&w.path), w.name.clone());
+            names.insert(agent_kernel::session_store::workspace_key(&w.path), w.name.clone());
         }
 
         let mut out = Vec::new();
@@ -829,7 +829,7 @@ impl SessionManager {
             let key = store.dir_name().unwrap_or_else(|| "unknown".to_string());
             let name = root
                 .as_ref()
-                .and_then(|r| names.get(&crate::session_store::workspace_key(r)).cloned())
+                .and_then(|r| names.get(&agent_kernel::session_store::workspace_key(r)).cloned())
                 .or_else(|| root.as_ref().map(|r| project_name(r)))
                 .unwrap_or_else(|| format!("项目 {}", &key[..key.len().min(6)]));
             for m in sessions {
@@ -901,7 +901,7 @@ impl SessionManager {
         // Office sessions are always office mode — the picker isn't offered
         // in the office workspace at all, so a stale per-session value from
         // before office became workspace-scoped can't survive a respawn.
-        let sess_agent_mode = if crate::session_store::is_office_root(&self.workspace_root) {
+        let sess_agent_mode = if agent_kernel::session_store::is_office_root(&self.workspace_root) {
             "office".to_string()
         } else {
             meta.as_ref()
@@ -1217,7 +1217,7 @@ impl SessionManager {
     /// choice. Same precedence as `spawn_at`/`switch_workspace`.
     fn restore_workspace_default_settings(&mut self) {
         let prefs = self.store.load_prefs();
-        let defaults = crate::session_store::try_load_default_preferences();
+        let defaults = agent_kernel::session_store::try_load_default_preferences();
         let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
         // Same three-layer chain as spawn_at/switch_workspace — the previous
         // hand-rolled match skipped the Agent 偏好 layer entirely, so a
@@ -1330,7 +1330,7 @@ impl SessionManager {
     /// chain every session's engine holds a clone of.
     fn load_plugins(
         root: &std::path::Path,
-        hooks: &crate::hooks::HookChain,
+        hooks: &agent_kernel::hooks::HookChain,
         paths: &AppPaths,
     ) -> Option<Arc<agent_plugin::PluginManager>> {
         if agent_plugin::discover(root, paths).is_empty() {
@@ -1342,7 +1342,7 @@ impl SessionManager {
         // kills them, leaving clients that list tools but never see a
         // response. Run on a process-lifetime runtime instead.
         let mgr = plugin_runtime().block_on(agent_plugin::load_all(root, paths));
-        hooks.replace(crate::hooks::manifest_hooks(mgr.hook_specs()));
+        hooks.replace(agent_kernel::hooks::manifest_hooks(mgr.hook_specs()));
         tracing::info!(
             tools = mgr.exported_tools().len(),
             hooks = hooks.len(),
@@ -1377,8 +1377,8 @@ impl SessionManager {
     pub fn plugin_reload_parts(
         &self,
     ) -> Option<(
-        crate::engine::PluginHandle,
-        crate::hooks::HookChain,
+        agent_kernel::engine::PluginHandle,
+        agent_kernel::hooks::HookChain,
         std::path::PathBuf,
         AppPaths,
     )> {
@@ -1395,8 +1395,8 @@ impl SessionManager {
     /// `reload_plugins` over a snapshot — same swap, no manager borrow.
     pub fn reload_plugins_detached(
         parts: &(
-            crate::engine::PluginHandle,
-            crate::hooks::HookChain,
+            agent_kernel::engine::PluginHandle,
+            agent_kernel::hooks::HookChain,
             std::path::PathBuf,
             AppPaths,
         ),
@@ -1412,8 +1412,8 @@ impl SessionManager {
     /// reload so the load path (which reads grants from disk) sees it.
     pub fn trust_plugin_detached(
         parts: &(
-            crate::engine::PluginHandle,
-            crate::hooks::HookChain,
+            agent_kernel::engine::PluginHandle,
+            agent_kernel::hooks::HookChain,
             std::path::PathBuf,
             AppPaths,
         ),
@@ -1434,8 +1434,8 @@ impl SessionManager {
     /// the manager lock.
     pub fn set_plugin_enabled_detached(
         parts: &(
-            crate::engine::PluginHandle,
-            crate::hooks::HookChain,
+            agent_kernel::engine::PluginHandle,
+            agent_kernel::hooks::HookChain,
             std::path::PathBuf,
             AppPaths,
         ),
@@ -1780,7 +1780,7 @@ impl SessionManager {
     /// Steer one subagent of the active session. The owner is `active_id`, read
     /// here on the server; the caller names only the child.
     pub fn steer_active_child(&self, child_id: u64, text: String) -> Result<(), String> {
-        crate::tools::delegate::steer_child(self.active_id, child_id, text)
+        agent_kernel::tools::delegate::steer_child(self.active_id, child_id, text)
     }
 
     /// Load a session's persisted history (for rebuilding a closed view).
@@ -1814,7 +1814,7 @@ impl SessionManager {
     /// the webview rebuilds a closed view (before any new `Usage` event).
     /// Reads the store fresh: `self.metas` only refreshes on structural ops
     /// and goes stale the moment an actor persists a turn.
-    pub fn store_usage(&self, id: i64) -> Option<crate::session_store::SessionUsage> {
+    pub fn store_usage(&self, id: i64) -> Option<agent_kernel::session_store::SessionUsage> {
         if !self.workspace_active {
             return None;
         }
@@ -2179,8 +2179,8 @@ impl SessionManager {
     pub fn set_default_workspace_mode(&mut self, mode: String) {
         self.default_workspace_mode = mode;
         let lim = crate::sandbox_prefs::current();
-        let _ = crate::session_store::save_default_preferences(
-            &crate::session_store::DefaultPreferences {
+        let _ = agent_kernel::session_store::save_default_preferences(
+            &agent_kernel::session_store::DefaultPreferences {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
@@ -2236,8 +2236,8 @@ impl SessionManager {
         // Sandbox overrides live in the process-wide slot — read it back so
         // the file always mirrors the effective values.
         let lim = crate::sandbox_prefs::current();
-        let _ = crate::session_store::save_default_preferences(
-            &crate::session_store::DefaultPreferences {
+        let _ = agent_kernel::session_store::save_default_preferences(
+            &agent_kernel::session_store::DefaultPreferences {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
@@ -2288,8 +2288,8 @@ impl SessionManager {
         self.default_provider = provider;
         self.default_model = model;
         let lim = crate::sandbox_prefs::current();
-        let _ = crate::session_store::save_default_preferences(
-            &crate::session_store::DefaultPreferences {
+        let _ = agent_kernel::session_store::save_default_preferences(
+            &agent_kernel::session_store::DefaultPreferences {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
@@ -2355,8 +2355,8 @@ impl SessionManager {
             self.memory_distill = v;
         }
         let lim = crate::sandbox_prefs::current();
-        let _ = crate::session_store::save_default_preferences(
-            &crate::session_store::DefaultPreferences {
+        let _ = agent_kernel::session_store::save_default_preferences(
+            &agent_kernel::session_store::DefaultPreferences {
                 permission_mode: self.permission_mode.clone(),
                 thinking_level: self.active_thinking_level.clone(),
                 agent_mode: self.agent_mode.clone(),
@@ -2416,7 +2416,7 @@ impl SessionManager {
 
     /// Persist current workspace composer preferences (model, thinking level, permission mode).
     pub fn persist_prefs(&self) {
-        let prefs = crate::session_store::WorkspacePrefs {
+        let prefs = agent_kernel::session_store::WorkspacePrefs {
             provider: Some(self.provider_name.clone()),
             model: Some(self.model_name.clone()),
             thinking_level: self.active_thinking_level.clone(),
@@ -2465,7 +2465,7 @@ impl SessionManager {
 fn resolve_model_pair(
     ws_provider: &Option<String>,
     ws_model: &Option<String>,
-    defaults: Option<&crate::session_store::DefaultPreferences>,
+    defaults: Option<&agent_kernel::session_store::DefaultPreferences>,
     providers: &std::collections::HashMap<String, agent_llm::ProviderConfig>,
     fallback: (String, String),
 ) -> (String, String) {
@@ -2494,7 +2494,7 @@ fn resolve_agent_mode(
     prefs_mode: &Option<String>,
     defaults_mode: Option<&String>,
 ) -> String {
-    if crate::session_store::is_office_root(root) {
+    if agent_kernel::session_store::is_office_root(root) {
         return "office".into();
     }
     match prefs_mode.as_ref().or(defaults_mode) {
@@ -2510,18 +2510,18 @@ fn resolve_agent_mode(
 /// would ignore the setting); `last` (上次使用) the MRU head as-is, which is
 /// what an untouched install has always done. `None` → empty state.
 fn boot_workspace(
-    defaults: Option<&crate::session_store::DefaultPreferences>,
-    recents: &[crate::session_store::RecentWorkspace],
+    defaults: Option<&agent_kernel::session_store::DefaultPreferences>,
+    recents: &[agent_kernel::session_store::RecentWorkspace],
 ) -> Option<std::path::PathBuf> {
     match defaults.map(|d| d.default_workspace_mode.as_str()) {
         // The office dir is created lazily by `spawn_at` — a boot landing
         // there needs nothing pre-existing.
-        Some("office") => crate::session_store::office_root()
+        Some("office") => agent_kernel::session_store::office_root()
             .or_else(|| recents.first().map(|w| w.path.clone())),
         Some("build") => recents
             .iter()
             .map(|w| w.path.clone())
-            .find(|p| p.is_dir() && !crate::session_store::is_office_root(p)),
+            .find(|p| p.is_dir() && !agent_kernel::session_store::is_office_root(p)),
         _ => recents
             .iter()
             .map(|w| w.path.clone())
@@ -2666,16 +2666,16 @@ max = "max"
 
         // Stand-in for a live session actor — only its command queue matters.
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel(4);
-        let (ui, _ui_rx) = crate::channels::UiSink::channel();
+        let (ui, _ui_rx) = agent_kernel::channels::UiSink::channel();
         mgr.handles.insert(
             i64::MAX,
             SessionHandle {
                 id: i64::MAX,
                 cmd_tx,
                 decision: Arc::new(Mutex::new(None)),
-                ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+                ask: Arc::new(agent_kernel::tools::registry::AskChannel::new(None)),
                 permissions: Arc::new(std::sync::RwLock::new(
-                    crate::permissions::PermissionGate::from_mode_str("default"),
+                    agent_kernel::permissions::PermissionGate::from_mode_str("default"),
                 )),
                 agent_mode: Arc::new(std::sync::RwLock::new("build".to_string())),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
@@ -2876,9 +2876,9 @@ max = "max"
         // those slots, so writing prefs post-spawn would be too late).
         let dir = tempfile::tempdir().unwrap();
         let canon = dir.path().canonicalize().unwrap();
-        let store = crate::session_store::SessionStore::open(&canon).unwrap();
+        let store = agent_kernel::session_store::SessionStore::open(&canon).unwrap();
         store
-            .save_prefs(&crate::session_store::WorkspacePrefs {
+            .save_prefs(&agent_kernel::session_store::WorkspacePrefs {
                 provider: Some("devin".into()),
                 model: Some("devin/swe-2".into()),
                 thinking_level: Some("medium".into()),
@@ -2946,15 +2946,15 @@ max = "max"
             tokio::sync::mpsc::Receiver<agent_ipc::UiCommand>,
         ) {
             let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(4);
-            let (ui, _ui_rx) = crate::channels::UiSink::channel();
+            let (ui, _ui_rx) = agent_kernel::channels::UiSink::channel();
             (
                 SessionHandle {
                     id,
                     cmd_tx,
                     decision: Arc::new(Mutex::new(None)),
-                    ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+                    ask: Arc::new(agent_kernel::tools::registry::AskChannel::new(None)),
                     permissions: Arc::new(std::sync::RwLock::new(
-                        crate::permissions::PermissionGate::from_mode_str("default"),
+                        agent_kernel::permissions::PermissionGate::from_mode_str("default"),
                     )),
                     agent_mode: Arc::new(std::sync::RwLock::new(mode)),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
@@ -2998,7 +2998,7 @@ max = "max"
     /// stored models; activating each mirrors its own meta.
     #[test]
     fn switching_sessions_mirrors_each_sessions_own_model() {
-        use crate::session_store::SessionMeta;
+        use agent_kernel::session_store::SessionMeta;
         let dir = tempfile::tempdir().unwrap();
         let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
         mgr.workspace_active = true;
@@ -3022,16 +3022,16 @@ max = "max"
             };
             mgr.store.upsert_meta(meta).unwrap();
             let (cmd_tx, _rx) = tokio::sync::mpsc::channel(4);
-            let (ui, _ui_rx) = crate::channels::UiSink::channel();
+            let (ui, _ui_rx) = agent_kernel::channels::UiSink::channel();
             mgr.handles.insert(
                 id,
                 SessionHandle {
                     id,
                     cmd_tx,
                     decision: Arc::new(Mutex::new(None)),
-                    ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+                    ask: Arc::new(agent_kernel::tools::registry::AskChannel::new(None)),
                     permissions: Arc::new(std::sync::RwLock::new(
-                        crate::permissions::PermissionGate::from_mode_str("default"),
+                        agent_kernel::permissions::PermissionGate::from_mode_str("default"),
                     )),
                     agent_mode: Arc::new(std::sync::RwLock::new("build".to_string())),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
@@ -3066,7 +3066,7 @@ max = "max"
     /// the session itself chooses.
     #[test]
     fn a_session_without_settings_falls_back_to_the_workspace_default() {
-        use crate::session_store::SessionMeta;
+        use agent_kernel::session_store::SessionMeta;
         let dir = tempfile::tempdir().unwrap();
         let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
         mgr.workspace_active = true;
@@ -3092,16 +3092,16 @@ max = "max"
         mgr.store.upsert_meta(meta).unwrap();
         mgr.metas = mgr.store.list();
         let (cmd_tx, _rx) = tokio::sync::mpsc::channel(4);
-        let (ui, _ui_rx) = crate::channels::UiSink::channel();
+        let (ui, _ui_rx) = agent_kernel::channels::UiSink::channel();
         mgr.handles.insert(
             7,
             SessionHandle {
                 id: 7,
                 cmd_tx,
                 decision: Arc::new(Mutex::new(None)),
-                ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
+                ask: Arc::new(agent_kernel::tools::registry::AskChannel::new(None)),
                 permissions: Arc::new(std::sync::RwLock::new(
-                    crate::permissions::PermissionGate::from_mode_str("auto"),
+                    agent_kernel::permissions::PermissionGate::from_mode_str("auto"),
                 )),
                 agent_mode: Arc::new(std::sync::RwLock::new("plan".to_string())),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
@@ -3134,7 +3134,7 @@ max = "max"
                 "b": {"kind": "openai_completions", "base_url": "https://y"},
             }))
             .unwrap();
-        let defaults: crate::session_store::DefaultPreferences =
+        let defaults: agent_kernel::session_store::DefaultPreferences =
             serde_json::from_value(serde_json::json!({
                 "active_provider": "b",
                 "active_model": "b-model",
@@ -3157,7 +3157,7 @@ max = "max"
         assert_eq!(got, ("b".to_string(), "b-model".to_string()));
 
         // A default pair pointing at a deleted provider falls to config.
-        let stale: crate::session_store::DefaultPreferences =
+        let stale: agent_kernel::session_store::DefaultPreferences =
             serde_json::from_value(serde_json::json!({
                 "active_provider": "gone",
                 "active_model": "m",
@@ -3177,7 +3177,7 @@ max = "max"
     /// lives in the sidebar, not the per-session picker.
     #[test]
     fn office_workspace_pins_agent_mode_to_office() {
-        let office = crate::session_store::office_root().unwrap();
+        let office = agent_kernel::session_store::office_root().unwrap();
         assert_eq!(resolve_agent_mode(&office, &None, None), "office");
 
         let dir = tempfile::tempdir().unwrap();
@@ -3197,12 +3197,12 @@ max = "max"
     /// verbatim would ignore the setting), 上次使用 the MRU head as-is.
     #[test]
     fn default_workspace_mode_picks_the_boot_root() {
-        let recent = |path: &std::path::Path| crate::session_store::RecentWorkspace {
+        let recent = |path: &std::path::Path| agent_kernel::session_store::RecentWorkspace {
             path: path.to_path_buf(),
             name: "p".into(),
             last_opened: 0,
         };
-        let office = crate::session_store::office_root().unwrap();
+        let office = agent_kernel::session_store::office_root().unwrap();
         // The real app creates this lazily on the first office switch; the
         // canonicalising boot path needs it to exist to keep the entry.
         std::fs::create_dir_all(&office).unwrap();
@@ -3212,7 +3212,7 @@ max = "max"
         // MRU head is the office workspace — what a previous 工作 boot leaves.
         let recents = vec![recent(&office), recent(&project)];
 
-        let prefs = |mode: &str| -> crate::session_store::DefaultPreferences {
+        let prefs = |mode: &str| -> agent_kernel::session_store::DefaultPreferences {
             serde_json::from_value(serde_json::json!({ "default_workspace_mode": mode })).unwrap()
         };
 

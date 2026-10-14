@@ -1,0 +1,10 @@
+//! husk-host — the host layer that assembles `agent-kernel` into a running
+//! product: session actors, command surface, agent modes and sandbox
+//! preferences. Kernel stays a pure engine; everything with product semantics
+//! lives here.
+
+pub mod commands;
+pub mod mode;
+pub mod sandbox_prefs;
+pub mod session;
+pub mod session_manager;

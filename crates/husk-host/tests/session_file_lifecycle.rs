@@ -2,7 +2,7 @@
 //! queued tasks. The real actor path also verifies durable /clear behavior.
 
 use agent_ipc::{UiCommand, UiEvent};
-use agent_kernel::session::{SessionActor, SessionConfig};
+use husk_host::session::{SessionActor, SessionConfig};
 use agent_kernel::session_store::SessionStore;
 use agent_llm::types::StreamChunk;
 use std::sync::Arc;

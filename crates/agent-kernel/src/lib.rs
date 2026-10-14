@@ -10,16 +10,11 @@
 
 pub mod blueprint;
 pub mod channels;
-pub mod commands;
 pub mod compaction;
 pub mod engine;
 pub mod prefs;
 pub mod hooks;
-pub mod mode;
 pub mod permissions;
-pub mod sandbox_prefs;
-pub mod session;
-pub mod session_manager;
 pub mod session_store;
 pub mod skills;
 pub mod tools;

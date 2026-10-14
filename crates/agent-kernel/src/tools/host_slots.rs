@@ -149,7 +149,7 @@ pub struct SandboxSlot(pub Arc<dyn agent_sandbox::SandboxBackend>);
 /// The host's sandbox overrides (memory, processes, network policy). Optional:
 /// a context without one runs the audit's own defaults, which is what a host
 /// that never configured limits should get.
-pub struct SandboxLimitsSlot(pub crate::sandbox_prefs::SandboxLimits);
+pub struct SandboxLimitsSlot(pub agent_sandbox::SandboxLimits);
 
 /// The interactive question channel. Installed by the host that owns a user
 /// to answer; absent means headless (a subagent, a test), and `ask_question`
@@ -331,7 +331,7 @@ impl ToolCtx {
 
     /// Install the host's sandbox overrides. Optional: without this the audit's
     /// own defaults apply.
-    pub fn with_sandbox_limits(mut self, limits: crate::sandbox_prefs::SandboxLimits) -> Self {
+    pub fn with_sandbox_limits(mut self, limits: agent_sandbox::SandboxLimits) -> Self {
         self.ext.insert(Arc::new(SandboxLimitsSlot(limits)));
         self
     }

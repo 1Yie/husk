@@ -454,6 +454,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "husk-host",
  "serde_json",
  "tempfile",
  "tokio",
@@ -473,6 +474,7 @@ dependencies = [
  "async-trait",
  "crossterm",
  "futures",
+ "husk-host",
  "libc",
  "pulldown-cmark",
  "ratatui",
@@ -4033,6 +4035,7 @@ dependencies = [
  "dirs",
  "gtk",
  "gtk-layer-shell-sys",
+ "husk-host",
  "ksni",
  "png 0.17.16",
  "reqwest 0.12.28",
@@ -4047,6 +4050,32 @@ dependencies = [
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "xxhash-rust",
+]
+
+[[package]]
+name = "husk-host"
+version = "0.1.0"
+dependencies = [
+ "agent-computer",
+ "agent-context",
+ "agent-ipc",
+ "agent-kernel",
+ "agent-llm",
+ "agent-paths",
+ "agent-plugin",
+ "agent-sandbox",
+ "anyhow",
+ "async-trait",
+ "dirs",
+ "futures",
+ "ignore",
+ "image",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

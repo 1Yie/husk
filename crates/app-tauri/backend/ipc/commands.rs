@@ -173,7 +173,7 @@ pub async fn agent_cmd(state: State<'_, KernelState>, cmd: UiCommand) -> Result<
 }
 
 fn agent_cmd_inner(
-    kernel: std::sync::Arc<std::sync::Mutex<agent_kernel::session_manager::SessionManager>>,
+    kernel: std::sync::Arc<std::sync::Mutex<husk_host::session_manager::SessionManager>>,
     cmd: UiCommand,
 ) -> Result<(), String> {
     let mut mgr = kernel.lock().map_err(|e| e.to_string())?;
@@ -278,7 +278,7 @@ fn agent_cmd_inner(
     }
     if let UiCommand::SetAgentMode { mode } = &cmd {
         if let Ok(mut slot) = agent_mode.write() {
-            *slot = agent_kernel::mode::AgentMode::from_str(mode).as_str().to_string();
+            *slot = husk_host::mode::AgentMode::from_str(mode).as_str().to_string();
         }
     }
     // Per-session tool whitelisting (computer-use's "本会话允许"): write

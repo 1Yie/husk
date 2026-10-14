@@ -249,7 +249,7 @@ pub struct Controlled {
 }
 
 impl Controlled {
-    pub fn of(root: &str, session: i64, h: &agent_kernel::session_manager::SessionHandle) -> Self {
+    pub fn of(root: &str, session: i64, h: &husk_host::session_manager::SessionHandle) -> Self {
         Self {
             root: root.to_string(),
             session,

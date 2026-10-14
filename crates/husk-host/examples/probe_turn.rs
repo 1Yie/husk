@@ -8,7 +8,7 @@ fn main() {
         ".husk",
     );
     let (mut mgr, rx) =
-        agent_kernel::session_manager::SessionManager::spawn_at(Some(root), paths);
+        husk_host::session_manager::SessionManager::spawn_at(Some(root), paths);
     eprintln!(
         "booted, active={} provider={} model={}",
         mgr.active_id, mgr.provider_name, mgr.model_name

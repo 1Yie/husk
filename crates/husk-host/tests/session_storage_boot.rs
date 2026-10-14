@@ -8,8 +8,8 @@ use std::process::Command;
 use std::sync::Arc;
 
 use agent_ipc::UiCommand;
-use agent_kernel::session::{SessionActor, SessionConfig};
-use agent_kernel::session_manager::SessionManager;
+use husk_host::session::{SessionActor, SessionConfig};
+use husk_host::session_manager::SessionManager;
 use agent_kernel::session_store::SessionStore;
 
 mod common;

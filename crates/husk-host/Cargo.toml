@@ -1,0 +1,30 @@
+[package]
+name = "husk-host"
+version = "0.1.0"
+edition = "2021"
+description = "Host layer over agent-kernel: session assembly, commands, mode table, sandbox preferences"
+license = "MIT"
+
+[dependencies]
+agent-kernel = { path = "../agent-kernel" }
+agent-llm = { path = "../agent-llm" }
+agent-ipc = { path = "../agent-ipc" }
+agent-sandbox = { path = "../agent-sandbox" }
+agent-context = { path = "../agent-context" }
+agent-plugin = { path = "../agent-plugin" }
+agent-paths = { path = "../agent-paths" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+toml.workspace = true
+dirs.workspace = true
+ignore.workspace = true
+tempfile = "3"
+
+[dev-dependencies]
+agent-computer = { path = "../agent-computer" }
+image.workspace = true

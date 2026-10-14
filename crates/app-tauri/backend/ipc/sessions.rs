@@ -36,7 +36,7 @@ pub async fn agent_session(
 
 fn agent_session_inner(
     app: tauri::AppHandle,
-    state: std::sync::Arc<std::sync::Mutex<agent_kernel::session_manager::SessionManager>>,
+    state: std::sync::Arc<std::sync::Mutex<husk_host::session_manager::SessionManager>>,
     op: String,
     id: Option<i64>,
     path: Option<String>,
@@ -134,7 +134,7 @@ fn agent_session_inner(
             let m = state.lock().map_err(|e| e.to_string())?;
             m.workspace_root.clone()
         };
-        agent_kernel::session_manager::SessionManager::remove_plugin(&root, &id, &crate::kernel::app_paths())?;
+        husk_host::session_manager::SessionManager::remove_plugin(&root, &id, &crate::kernel::app_paths())?;
         return Ok(serde_json::json!({ "success": true }));
     }
     // Artifact actions for the office dock — open / reveal / save-as on a
@@ -265,7 +265,7 @@ fn agent_session_inner(
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
     // keyed by the active workspace root, same path as the session actor's.
-    let open_memory = |mgr: &agent_kernel::session_manager::SessionManager| {
+    let open_memory = |mgr: &husk_host::session_manager::SessionManager| {
         agent_kernel::session_store::app_data_dir().and_then(|d| {
             agent_context::memory::MemoryStore::open(&d.join("memory.db"), &mgr.workspace_root).ok()
         })
@@ -477,7 +477,7 @@ fn agent_session_inner(
             drop(mgr);
             let plugins = parts
                 .as_ref()
-                .map(agent_kernel::session_manager::SessionManager::reload_plugins_detached)
+                .map(husk_host::session_manager::SessionManager::reload_plugins_detached)
                 .unwrap_or_default();
             Ok(serde_json::json!({ "plugins": plugins }))
         }
@@ -501,7 +501,7 @@ fn agent_session_inner(
                 return Err("plugin router not installed for this workspace".into());
             };
             Ok(serde_json::json!({
-                "plugins": agent_kernel::session_manager::SessionManager::trust_plugin_detached(
+                "plugins": husk_host::session_manager::SessionManager::trust_plugin_detached(
                     &parts, &id,
                 )?,
             }))
@@ -530,7 +530,7 @@ fn agent_session_inner(
                 return Err("plugin router not installed for this workspace".into());
             };
             Ok(serde_json::json!({
-                "plugins": agent_kernel::session_manager::SessionManager::set_plugin_enabled_detached(
+                "plugins": husk_host::session_manager::SessionManager::set_plugin_enabled_detached(
                     &parts, &id, enabled,
                 )?,
             }))
@@ -540,7 +540,7 @@ fn agent_session_inner(
         "agent_overview" => {
             let info = mgr.model_info();
             Ok(serde_json::json!({
-                "instructions": agent_kernel::session::SYSTEM_PROMPT_TEMPLATE,
+                "instructions": husk_host::session::SYSTEM_PROMPT_TEMPLATE,
                 "model": serde_json::to_value(&info).map_err(|e| e.to_string())?,
                 "skills": scan_skills(&mgr.workspace_root),
                 "plugins": mgr.plugin_overview(),
@@ -852,7 +852,7 @@ fn agent_session_inner(
             let (permission_mode, thinking_level, agent_mode, compact_at) = mgr.default_prefs();
             let (memory_enabled, memory_distill) = mgr.memory_prefs();
             let (active_provider, active_model) = mgr.default_model();
-            let lim = agent_kernel::sandbox_prefs::current();
+            let lim = husk_host::sandbox_prefs::current();
             Ok(serde_json::json!({
                 "permission_mode": permission_mode,
                 "thinking_level": thinking_level,
@@ -906,12 +906,12 @@ fn agent_session_inner(
                 || p.get("sandbox_allowed_domains").is_some()
                 || p.get("sandbox_denied_domains").is_some();
             if touched_sandbox {
-                let mut lim = agent_kernel::sandbox_prefs::current();
+                let mut lim = husk_host::sandbox_prefs::current();
                 if let Some(v) = p.get("sandbox_enabled").and_then(|v| v.as_bool()) {
                     lim.enabled = Some(v);
                 }
                 if let Some(v) = p.get("sandbox_network").and_then(|v| v.as_str()) {
-                    lim.network = agent_kernel::sandbox_prefs::network_from_label(v);
+                    lim.network = husk_host::sandbox_prefs::network_from_label(v);
                 }
                 if p.get("sandbox_max_memory_mb").is_some() {
                     lim.max_memory_mb = p.get("sandbox_max_memory_mb").and_then(|v| v.as_u64());
@@ -934,7 +934,7 @@ fn agent_session_inner(
                         .and_then(|v| v.as_u64())
                         .map(|v| v as u32);
                 }
-                agent_kernel::sandbox_prefs::set(lim);
+                husk_host::sandbox_prefs::set(lim);
             }
             mgr.set_default_prefs(permission_mode, thinking_level, agent_mode, compact_at);
             // Default model — `active_provider`+`active_model` arrive as a
@@ -1993,5 +1993,5 @@ pub async fn mcp_probe(
         let m = state.0.lock().map_err(|e| e.to_string())?;
         m.workspace_root.clone()
     };
-    Ok(agent_kernel::session_manager::SessionManager::mcp_probe(&root, &id, &crate::kernel::app_paths()).await)
+    Ok(husk_host::session_manager::SessionManager::mcp_probe(&root, &id, &crate::kernel::app_paths()).await)
 }

@@ -616,7 +616,7 @@ mod tests {
             std::env::temp_dir(),
             Arc::new(agent_sandbox::NoneBackend),
         )
-        .with_sandbox_limits(crate::sandbox_prefs::SandboxLimits {
+        .with_sandbox_limits(agent_sandbox::SandboxLimits {
             network: Some(false),
             ..Default::default()
         });
