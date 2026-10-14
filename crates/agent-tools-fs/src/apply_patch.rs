@@ -27,9 +27,9 @@ use futures::FutureExt;
 use serde::Deserialize;
 use similar::TextDiff;
 
-use agent_tool::{
-    schema_for, Args, PendingWrite, ToolError, ToolResult, ToolSpec, WorkspaceCtx, WriteOp,
-};
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+
+use crate::commit::{commit_writes, FileWrite, WriteObserverSlot, WriteOp};
 
 #[derive(Debug, serde::Serialize, Deserialize, schemars::JsonSchema)]
 struct ApplyPatchArgs {
@@ -57,6 +57,7 @@ pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
         readonly: false,
         class: agent_tool::ToolClass::WorkspaceMutation,
         network: false,
+        staged: true,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
@@ -135,7 +136,7 @@ async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, To
     // Virtual-fs pipeline: ops run against an in-memory view so repeated
     // ops on one path compose (Update → Update → Move) instead of each
     // reading stale disk content and last-write-wins losing earlier hunks.
-    // PendingWrites are emitted ONCE per touched path at the end.
+    // One staged write is emitted per touched path at the end.
     let mut state: std::collections::HashMap<std::path::PathBuf, FileState> =
         std::collections::HashMap::new();
     let mut order: Vec<std::path::PathBuf> = Vec::new();
@@ -212,24 +213,24 @@ async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, To
         }
     }
 
-    // Emit one PendingWrite per touched path, in first-touch order.
-    let mut writes: Vec<PendingWrite> = Vec::new();
+    // Emit one staged write per touched path, in first-touch order.
+    let mut writes: Vec<FileWrite> = Vec::new();
     for abs in order {
         let st = &state[&abs];
         match (&st.original, &st.current) {
-            (Some(o), Some(c)) if o != c => writes.push(PendingWrite {
+            (Some(o), Some(c)) if o != c => writes.push(FileWrite {
                 path: abs,
                 content: c.clone().into_bytes(),
                 op: WriteOp::Write,
                 auto_mkdir: true,
             }),
-            (None, Some(c)) => writes.push(PendingWrite {
+            (None, Some(c)) => writes.push(FileWrite {
                 path: abs,
                 content: c.clone().into_bytes(),
                 op: WriteOp::Write,
                 auto_mkdir: true,
             }),
-            (Some(_), None) => writes.push(PendingWrite {
+            (Some(_), None) => writes.push(FileWrite {
                 path: abs,
                 content: Vec::new(),
                 op: WriteOp::Delete,
@@ -243,7 +244,10 @@ async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, To
         content: summary.trim_end().to_string(),
         ui_type: Some("diff"),
         fuzzy: false,
-        pending_write: writes,
+        commit: commit_writes(
+            writes,
+            ctx.service::<WriteObserverSlot>().map(|s| s.0.clone()),
+        ),
         images: Vec::new(),
     })
 }

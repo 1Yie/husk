@@ -129,6 +129,7 @@ pub fn spec_complete() -> ToolSpec {
         readonly: true, // auto-allowed control signal, not a filesystem read
         class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
+        staged: false,
         exec: Arc::new(|args, ctx| exec_complete(args, ctx).boxed()),
     }
 }
@@ -143,6 +144,7 @@ pub fn spec_blocked() -> ToolSpec {
         readonly: true, // auto-allowed control signal
         class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
+        staged: false,
         exec: Arc::new(|args, ctx| exec_blocked(args, ctx).boxed()),
     }
 }

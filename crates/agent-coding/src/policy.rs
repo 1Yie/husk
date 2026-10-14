@@ -23,6 +23,9 @@ use agent_llm::ChatMessage;
 /// Checks run in this order and the first one that asks for more work wins, so
 /// a round pushed back for a plan or a goal is never also blueprint-checked.
 pub struct CodingPolicy {
+    /// What this turn's tools wrote — fed by the file tools' observer, shared
+    /// with the host's undo.
+    writes: Option<crate::tracker::WriteTracker>,
     /// The session's `.blueprint/` switch — shared with the host, which flips
     /// it live from the settings; the engine never sees it.
     architecture: ArchitectureSwitch,
@@ -86,6 +89,7 @@ impl CodingPolicy {
         plan: Option<std::sync::Arc<crate::plan::PlanController>>,
     ) -> Self {
         Self {
+            writes: None,
             architecture: ArchitectureSwitch::default(),
             workspace_root,
             goal,
@@ -97,11 +101,16 @@ impl CodingPolicy {
     /// Build from a context's extension slots — the same slots the goal/plan
     /// contract tools resolve their controllers through.
     pub fn from_ctx(ctx: &ToolCtx) -> Self {
-        Self::new(
+        let mut policy = Self::new(
             ctx.workspace_root.to_path_buf(),
             ctx.ext.get::<crate::goal::GoalController>(),
             ctx.ext.get::<crate::plan::PlanController>(),
-        )
+        );
+        policy.writes = ctx
+            .ext
+            .get::<crate::tracker::WriteTracker>()
+            .map(|t| (*t).clone());
+        policy
     }
 
     /// Whether both contract controllers were found in the context. A host that
@@ -110,6 +119,14 @@ impl CodingPolicy {
     /// contracts never fire.
     pub fn has_contract(&self) -> bool {
         self.goal.is_some() && self.plan.is_some()
+    }
+
+    /// Read "what did this turn touch" from `tracker` (the same one the host's
+    /// undo and the context's write observer share). Without it the
+    /// architecture check sees no touched files.
+    pub fn with_write_tracker(mut self, tracker: crate::tracker::WriteTracker) -> Self {
+        self.writes = Some(tracker);
+        self
     }
 
     /// The handle the host flips when the user toggles `.blueprint/`.
@@ -189,7 +206,7 @@ impl TurnPolicy for CodingPolicy {
         None
     }
 
-    async fn on_quiet_round(&self, view: &dyn agent_kernel::turn_policy::TurnView, touched: Vec<PathBuf>) -> Verdict {
+    async fn on_quiet_round(&self, view: &dyn agent_kernel::turn_policy::TurnView) -> Verdict {
         let mode = view.mode();
 
         // Plan contract — a working turn that did tool work but never submitted
@@ -219,7 +236,12 @@ impl TurnPolicy for CodingPolicy {
         // Blueprint contract — the files this turn wrote are checked against
         // `.blueprint/`. Errors buy one rework round; in goal mode a declared
         // completion is re-opened so the model has to declare again.
-        let report = self.check_blueprint(view, touched).await;
+        let touched = self
+            .writes
+            .as_ref()
+            .map(|w| w.touched_this_turn())
+            .unwrap_or_default();
+        let report = self.check_blueprint(touched).await;
         let mut state = self.state.lock().unwrap();
         if let Some(r) = report
             .as_ref()
@@ -285,7 +307,6 @@ impl CodingPolicy {
     /// and no baseline skips the check.
     async fn check_blueprint(
         &self,
-        view: &dyn agent_kernel::turn_policy::TurnView,
         touched: Vec<PathBuf>,
     ) -> Option<agent_context::blueprint::Report> {
         let root = self.workspace_root.clone();
@@ -319,6 +340,9 @@ pub fn coding_policy_factory(
 ) -> Arc<dyn Fn(&mut ToolCtx) -> Box<dyn TurnPolicy> + Send + Sync> {
     Arc::new(|ctx: &mut ToolCtx| {
         crate::install_contract(ctx);
+        // The child's own tracker, never the parent's: a child's writes must
+        // not land in the parent's undo history.
+        crate::tracker::WriteTracker::new(agent_context::TrackingMode::AgentOnly).install(ctx);
         Box::new(CodingPolicy::from_ctx(ctx))
     })
 }

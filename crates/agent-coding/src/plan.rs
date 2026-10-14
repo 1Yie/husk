@@ -145,6 +145,7 @@ pub fn spec_submit() -> ToolSpec {
         readonly: true, // control signal — declares, never mutates
         class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
+        staged: false,
         exec: Arc::new(|args, ctx| exec_submit(args, ctx).boxed()),
     }
 }

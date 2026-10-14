@@ -44,6 +44,7 @@ pub fn spec<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
         readonly: false, // test runs can write caches/artifacts; gate via permissions
         class: agent_tool::ToolClass::Process,
         network: false,
+        staged: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

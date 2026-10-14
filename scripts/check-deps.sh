@@ -39,7 +39,7 @@ declare -A ALLOW=(
   # serena MCP bridge — spawns a stdio child, generic over the context
   [agent-tools-serena]="agent-tool"
   # the coding product's semantics — depends on the kernel, never the reverse
-  [agent-coding]="agent-context agent-ipc agent-kernel agent-llm"
+  [agent-coding]="agent-context agent-ipc agent-kernel agent-llm agent-tools-fs"
   # host layer over the kernel — session assembly, commands, modes, sandbox prefs
   [husk-host]="agent-coding agent-context agent-ipc agent-kernel agent-llm agent-paths agent-plugin agent-sandbox agent-tools-office agent-tools-serena"
   # runtime

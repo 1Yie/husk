@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 agent-kernel = { path = "../agent-kernel" }
 agent-context = { path = "../agent-context" }
+agent-tools-fs = { path = "../agent-tools-fs" }
 agent-ipc = { path = "../agent-ipc" }
 agent-llm = { path = "../agent-llm" }
 serde.workspace = true

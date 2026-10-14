@@ -57,6 +57,7 @@ pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
         readonly: false,
         class: agent_tool::ToolClass::WorkspaceMutation,
         network: false,
+        staged: true,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
@@ -79,11 +80,11 @@ async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, To
 
     let res = apply(&source, &parsed.search, &parsed.replace)?;
 
-    // The tool does not write — it returns `patched_content` as a
-    // `PendingWrite` and the ENGINE commits it after the permission decision.
-    // This makes the side effect explicit, keeps the fuzzy flag honest on
-    // the approval card, and lets the engine record the hunk in one step
-    // (no read-after-write to reconstruct what changed).
+    // The tool does not write — it returns the change as a staged `Commit`
+    // and the ENGINE applies it after the permission decision. This makes the
+    // side effect explicit, keeps the fuzzy flag honest on the approval card,
+    // and lets the host record the hunk in one step (no read-after-write to
+    // reconstruct what changed).
     let mut content = String::new();
     content.push_str(&format!(
         "patched {} (line {})",
@@ -99,10 +100,14 @@ async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, To
         content,
         ui_type: Some("diff"),
         fuzzy: res.matched_fuzzily,
-        pending_write: vec![agent_tool::PendingWrite::write(
-            path,
-            res.patched_content.into_bytes(),
-        )],
+        commit: crate::commit::commit_writes(
+            vec![crate::commit::FileWrite::write(
+                path,
+                res.patched_content.into_bytes(),
+            )],
+            ctx.service::<crate::commit::WriteObserverSlot>()
+                .map(|s| s.0.clone()),
+        ),
         images: Vec::new(),
     })
 }

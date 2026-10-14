@@ -17,8 +17,3 @@ pub mod session_store;
 pub mod skills;
 pub mod tools;
 pub mod turn_policy;
-
-// Re-exported so a product can drive `engine::run_turn` without taking its own
-// dependency on the context crate — the turn loop takes a `HunkTracker`, and
-// that is the kernel's signature, not the product's concern.
-pub use agent_context::HunkTracker;

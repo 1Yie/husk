@@ -91,6 +91,7 @@ fn image_search<C: WorkspaceCtx>() -> ToolSpec<C> {
         readonly: true,
         class: agent_tool::ToolClass::Observation,
         network: true,
+        staged: false,
         exec: Arc::new(|args, ctx| {
             async move {
                 let a: ImageSearchArgs = serde_json::from_value(args)
@@ -374,6 +375,7 @@ fn web_download<C: WorkspaceCtx>() -> ToolSpec<C> {
         readonly: false,
         class: agent_tool::ToolClass::Process,
         network: true,
+        staged: false,
         exec: Arc::new(|args, ctx| {
             async move {
                 let a: WebDownloadArgs = serde_json::from_value(args)
@@ -441,6 +443,7 @@ fn view_image<C: WorkspaceCtx>() -> ToolSpec<C> {
         readonly: true,
         class: agent_tool::ToolClass::Observation,
         network: false,
+        staged: false,
         exec: Arc::new(|args, ctx| {
             async move {
                 let a: ViewImageArgs = serde_json::from_value(args)

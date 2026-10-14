@@ -200,10 +200,8 @@ async fn run(
         }
     });
     let mut history = vec![ChatMessage::system("kernel")];
-    let mut hunks = agent_context::HunkTracker::new(agent_context::TrackingMode::AgentOnly);
-    hunks.begin_turn();
     r.engine
-        .run_turn(&mut io, &mut history, "go".into(), &mut hunks)
+        .run_turn(&mut io, &mut history, "go".into())
         .await
         .expect("turn completes");
     // The engine/ctx may still hold sink clones, so the channel never closes

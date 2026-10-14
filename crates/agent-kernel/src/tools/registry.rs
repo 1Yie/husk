@@ -14,8 +14,8 @@ use std::sync::Arc;
 // `crate::tools::registry::X` paths keep working, with the two context-generic
 // items instantiated for this kernel's `ToolCtx`.
 pub use agent_tool::{
-    arg_str, arg_usize, is_staged_write, schema_for, Args, Extensions, PendingWrite, ToolClass,
-    ToolError, ToolResult, WriteOp,
+    arg_str, arg_usize, schema_for, Args, Commit, Extensions, ToolClass,
+    ToolError, ToolResult,
 };
 /// A tool's exec, instantiated for [`ToolCtx`].
 pub type ExecFn = agent_tool::ExecFn<ToolCtx>;
@@ -153,6 +153,10 @@ impl agent_tool::WorkspaceCtx for ToolCtx {
                     ".agent",
                 )
             })
+    }
+
+    fn service<T: std::any::Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.ext.get::<T>()
     }
 
     /// Resolve a model-supplied path against the workspace root and prove it
@@ -446,22 +450,33 @@ mod tests {
         assert_eq!(ctx.sandbox().unwrap().id(), "none");
     }
 
-    /// The staging set is what the engine dry-runs before the approval card, so
-    /// a name that is not a real writer, or a real writer left out of the set,
-    /// is a safety or UX bug. Pin it against the registry instead of trusting
-    /// the list to stay in sync by hand.
+    /// `staged` is what the engine dry-runs before the approval card, so a tool
+    /// that sets it without being a real, non-readonly workspace mutation — or
+    /// a direct writer (`serena`) that wrongly sets it — is a safety bug. Pin
+    /// the flag against the registry instead of trusting it by hand.
     #[test]
-    fn staged_write_set_matches_the_registry() {
+    fn staged_flag_matches_the_registry() {
         let mut reg = ToolRegistry::with_builtins();
-        // `serena` is a host-registered tool now; the trap below needs it.
+        // `serena` is a host-registered tool; it is the trap: a
+        // WorkspaceMutation that writes directly, so staging it would run the
+        // write before approval.
         reg.register(agent_tools_serena::spec());
-        // Every staged name is a real, registered, non-readonly workspace
-        // mutation: the engine will dispatch it before the permission gate.
-        for name in ["fuzzy_patch", "apply_patch"] {
-            assert!(
-                reg.spec(name).is_some(),
-                "staged writer {name} is not a registered tool"
-            );
+        let staged: Vec<&str> = reg
+            .specs
+            .values()
+            .filter(|s| s.staged)
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            {
+                let mut v = staged.clone();
+                v.sort();
+                v
+            },
+            vec!["apply_patch", "fuzzy_patch"],
+            "the staged set drifted"
+        );
+        for name in &staged {
             assert!(
                 !reg.is_readonly(name),
                 "staged writer {name} must not be readonly"
@@ -472,26 +487,10 @@ mod tests {
                 "staged writer {name} must be a workspace mutation"
             );
         }
-        // The registry offers no staged writer outside the set. This is the
-        // drift guard: a new staging tool must be added to `is_staged_write`.
-        let staged: Vec<&str> = ["fuzzy_patch", "apply_patch"].into_iter().collect();
-        for spec in reg.specs.values() {
-            let in_registry = staged.contains(&spec.name);
-            assert_eq!(
-                in_registry,
-                is_staged_write(spec.name),
-                "{} disagrees between the set and the registry",
-                spec.name
-            );
-        }
-        // `serena` is the trap: WorkspaceMutation, but it writes directly, so
-        // staging it would run the write before approval.
-        assert_eq!(
-            reg.spec("serena").unwrap().class,
-            ToolClass::WorkspaceMutation
-        );
+        let serena = reg.spec("serena").unwrap();
+        assert_eq!(serena.class, ToolClass::WorkspaceMutation);
         assert!(
-            !is_staged_write("serena"),
+            !serena.staged,
             "serena writes in-process; it must not be dry-run early"
         );
     }

@@ -79,6 +79,7 @@ pub fn spec() -> ToolSpec {
         readonly: false,
         class: ToolClass::SessionMutation,
         network: false,
+        staged: false,
         exec,
     }
 }

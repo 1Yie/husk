@@ -59,6 +59,7 @@ pub fn spec() -> ToolSpec {
         readonly: true,
         class: super::registry::ToolClass::SessionMutation,
         network: false,
+        staged: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
@@ -251,7 +252,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         content: out,
         ui_type: Some("todo"),
         fuzzy: false,
-        pending_write: Vec::new(),
+        commit: None,
         images: Vec::new(),
     })
 }

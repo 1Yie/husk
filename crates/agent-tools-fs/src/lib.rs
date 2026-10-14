@@ -6,6 +6,7 @@
 //! is on, which is why the two ship together.
 
 pub mod apply_patch;
+pub mod commit;
 pub mod fs_patch;
 pub mod fs_read;
 pub mod grep;

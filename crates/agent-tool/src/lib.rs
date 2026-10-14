@@ -73,6 +73,18 @@ pub trait WorkspaceCtx: Send + Sync + 'static {
     fn workspace_state_dir(&self) -> std::path::PathBuf {
         self.app_paths().workspace_dir(self.root())
     }
+
+    /// A typed host service installed on this context, by type. The default
+    /// has none; a context backed by [`Extensions`] answers from it. This is
+    /// how a tool crate reaches a capability the host defines for it (the file
+    /// tools' write observer) without this crate naming it.
+    fn service<T: Any + Send + Sync>(&self) -> Option<Arc<T>>
+    where
+        Self: Sized,
+    {
+        let _ = self;
+        None
+    }
 }
 
 /// What a screen-driving tool needs from the context it runs in.
@@ -101,40 +113,41 @@ pub trait SandboxCtx: Send + Sync + 'static {
     fn sandbox_limits(&self) -> agent_sandbox::SandboxLimits;
 }
 
-/// A deferred write a tool wants the engine to commit — returned instead
-/// of writing inside the tool so the engine can apply the change *after*
-/// the permission decision and record it in the HunkTracker in one step
-/// (P1-c). The tool produces `content`; the engine owns the side effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriteOp {
-    /// Create or overwrite `path` with `content`.
-    Write,
-    /// Remove `path` (`*** Delete File`).
-    Delete,
+/// A deferred side effect a tool wants committed *after* the permission
+/// decision. The tool does its analysis in `exec` (and may be dry-run before
+/// approval, see [`ToolSpec::staged`]); the engine runs `verify` then `apply`
+/// only once the call is approved. It never looks inside — what the effect is
+/// (a file write, a remote command, a ticket) is the tool's business.
+pub struct Commit {
+    /// Re-check, right before applying, that what the preview was computed
+    /// against still holds. `Err(reason)` abandons the whole commit and the
+    /// reason becomes the call's failed result — all-or-nothing.
+    pub verify: Box<dyn FnOnce() -> Result<(), String> + Send>,
+    /// Perform the effect. `Err(reason)` fails the call with that text.
+    pub apply: BoxFuture<'static, Result<(), String>>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PendingWrite {
-    /// Canonical workspace path to write.
-    pub path: std::path::PathBuf,
-    /// The full new file content to write (ignored for `Delete`).
-    pub content: Vec<u8>,
-    /// What the engine should do with `path`.
-    pub op: WriteOp,
-    /// Create parent directories before writing (`*** Add File` to a
-    /// nested path). Ignored for `Delete`.
-    pub auto_mkdir: bool,
+impl std::fmt::Debug for Commit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Commit")
+    }
 }
 
-impl PendingWrite {
-    /// Convenience constructor for the common overwrite case.
-    pub fn write(path: std::path::PathBuf, content: Vec<u8>) -> Self {
+impl Commit {
+    /// A commit with nothing to re-verify.
+    pub fn new(apply: impl std::future::Future<Output = Result<(), String>> + Send + 'static) -> Self {
         Self {
-            path,
-            content,
-            op: WriteOp::Write,
-            auto_mkdir: false,
+            verify: Box::new(|| Ok(())),
+            apply: Box::pin(apply),
         }
+    }
+
+    pub fn verified(
+        mut self,
+        verify: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) -> Self {
+        self.verify = Box::new(verify);
+        self
     }
 }
 
@@ -149,10 +162,9 @@ pub struct ToolResult {
     pub ui_type: Option<&'static str>,
     /// True when the patch matched approximately — approval card must say so.
     pub fuzzy: bool,
-    /// Deferred writes the engine commits post-approval — empty for
-    /// read-only tools and tools that manage their own side effects. A
-    /// multi-file tool (`apply_patch`) stages one entry per file op.
-    pub pending_write: Vec<PendingWrite>,
+    /// The deferred side effect the engine commits post-approval — `None` for
+    /// tools that act inside `exec` or have nothing to commit.
+    pub commit: Option<Commit>,
     /// Staged image refs this result carries as model input (a screenshot).
     /// The engine hangs them on the tool message; adapters encode or annotate
     /// them per their wire (only the vision-capable ones get real parts).
@@ -165,7 +177,7 @@ impl ToolResult {
             content: content.into(),
             ui_type: None,
             fuzzy: false,
-            pending_write: Vec::new(),
+            commit: None,
             images: Vec::new(),
         }
     }
@@ -219,24 +231,6 @@ pub enum ToolClass {
     Orchestration,
 }
 
-/// Does this tool stage its writes instead of performing them?
-///
-/// A staged writer's `exec` returns [`ToolResult::pending_write`] and touches
-/// no file, so the engine may dispatch it *before* the permission decision to
-/// harvest the real diff, fuzzy flag and pre-images for the approval card, then
-/// commit the write only after approval (see `run_turn`'s `is_write` path).
-/// Dispatching any other tool early would run it for real.
-///
-/// This is deliberately NOT `class == WorkspaceMutation`. `serena` declares
-/// that class but writes directly (its suite edits files in-process), so
-/// treating the class as "safe to dry-run" would perform a workspace write
-/// before the user approved it. The set is exact: only `fuzzy_patch` and
-/// `apply_patch` return `PendingWrite` today.
-///
-pub fn is_staged_write(name: &str) -> bool {
-    matches!(name, "fuzzy_patch" | "apply_patch")
-}
-
 /// One tool: name, schema for the LLM, readonly flag, exec fn.
 #[derive(Clone)]
 pub struct ToolSpec<C> {
@@ -250,6 +244,13 @@ pub struct ToolSpec<C> {
     /// Crosses the network boundary — batchable only under a tighter
     /// per-batch cap (SSRF/rate-limit amplification guard).
     pub network: bool,
+    /// The tool stages its effect instead of performing it: `exec` touches
+    /// nothing and returns a [`ToolResult::commit`], so the engine may dispatch
+    /// it *before* the permission decision to harvest the real preview, then
+    /// commit only after approval. Dispatching any other tool early would run
+    /// it for real, so this is opt-in and deliberately not derived from
+    /// [`ToolClass`] (a `WorkspaceMutation` tool may write directly).
+    pub staged: bool,
     pub exec: ExecFn<C>,
 }
 
@@ -300,6 +301,7 @@ mod tests {
             readonly: true,
             class: ToolClass::Observation,
             network: false,
+            staged: false,
             exec: Arc::new(|_args: Args, _ctx: Arc<Host>| {
                 Box::pin(async move { Ok(ToolResult::text("ok")) })
             }),
@@ -307,16 +309,5 @@ mod tests {
         assert_eq!(spec.name, "demo");
         assert_eq!(spec.class, ToolClass::Observation);
         assert!(spec.readonly);
-    }
-
-    /// The dry-run set is exact: it is what the engine dispatches before the
-    /// permission gate, so a non-writer must never appear here.
-    #[test]
-    fn the_staged_write_set_is_exact() {
-        assert!(is_staged_write("fuzzy_patch"));
-        assert!(is_staged_write("apply_patch"));
-        assert!(!is_staged_write("serena"), "serena writes in-process");
-        assert!(!is_staged_write("write_file"), "no such tool");
-        assert!(!is_staged_write("fs_patch"), "module name, not a tool");
     }
 }

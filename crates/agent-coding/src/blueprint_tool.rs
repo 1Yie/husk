@@ -60,6 +60,7 @@ pub fn spec() -> ToolSpec {
         readonly: true,
         class: ToolClass::Observation,
         network: false,
+        staged: false,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

@@ -164,14 +164,15 @@ async fn fuzzy_patch_full_roundtrip() {
     assert!(res.content.contains("patched lib.rs"));
     assert!(res.content.contains("step_two"));
 
-    // P1-c: the tool now returns a `PendingWrite` instead of writing — the
-    // ENGINE commits it post-approval. Emulate that commit here.
-    let pw = res
-        .pending_write
-        .into_iter()
-        .next()
-        .expect("fuzzy_patch returns a PendingWrite");
-    std::fs::write(&pw.path, &pw.content).unwrap();
+    // P1-c: the tool stages a `Commit` instead of writing — the ENGINE applies
+    // it post-approval. Nothing is on disk until then; drive it the same way.
+    assert!(
+        !std::fs::read_to_string(&file).unwrap().contains("step_two"),
+        "staged: the file must be untouched before the commit"
+    );
+    let agent_tool::Commit { verify, apply } = res.commit.expect("fuzzy_patch stages a Commit");
+    verify().expect("the preview still holds");
+    apply.await.expect("the commit applies");
 
     let after = std::fs::read_to_string(&file).unwrap();
     assert!(after.contains("step_two();\n    step_one();"));

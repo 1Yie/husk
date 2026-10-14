@@ -125,17 +125,8 @@ async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<Ch
         cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let mut history = vec![ChatMessage::system("kernel")];
-    // Same tracker lifecycle `SessionActor` runs: `begin_turn` first, so any
-    // write a turn produced would key to a real turn index.
-    let mut hunks = agent_context::HunkTracker::new(agent_context::TrackingMode::AgentOnly);
-    hunks.begin_turn();
     engine
-        .run_turn(
-            &mut io,
-            &mut history,
-            "take a screenshot".into(),
-            &mut hunks,
-        )
+        .run_turn(&mut io, &mut history, "take a screenshot".into())
         .await
         .expect("turn must complete");
     history

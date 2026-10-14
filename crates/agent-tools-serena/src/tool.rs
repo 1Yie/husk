@@ -111,6 +111,7 @@ pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
         // (see the module docs / `SerenaLaunch`), and batch accounting is the
         // only consumer today, which never sees this tool (WorkspaceMutation).
         network: false,
+        staged: false,
         exec,
     }
 }

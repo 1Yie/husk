@@ -74,6 +74,7 @@ pub fn spec<C: WorkspaceCtx + DesktopCtx>() -> ToolSpec<C> {
         readonly: false,
         class: agent_tool::ToolClass::Process,
         network: false,
+        staged: false,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

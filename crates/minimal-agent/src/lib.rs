@@ -26,6 +26,7 @@ pub fn ssh_exec() -> ToolSpec {
         readonly: false,
         class: ToolClass::Process,
         network: true,
+        staged: false,
         exec: Arc::new(|args, _ctx| {
             async move {
                 let host = args.get("host").and_then(|v| v.as_str()).unwrap_or("?");
@@ -50,6 +51,7 @@ pub fn list_remote() -> ToolSpec {
         readonly: true,
         class: ToolClass::Observation,
         network: true,
+        staged: false,
         exec: Arc::new(|_args, _ctx| async move { Ok(ToolResult::text("var/\netc/\nopt/")) }.boxed()),
     }
 }
@@ -66,6 +68,7 @@ pub fn read_remote() -> ToolSpec {
         readonly: true,
         class: ToolClass::Observation,
         network: true,
+        staged: false,
         exec: Arc::new(|args, _ctx| {
             async move {
                 let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
@@ -200,13 +203,12 @@ mod tests {
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let mut history: Vec<ChatMessage> = Vec::new();
-        let mut hunks = agent_kernel::HunkTracker::default();
 
         // Bounded: a regression that parks the turn (an approval nobody can
         // give, say) must fail the test, not hang the suite.
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            engine.run_turn(&mut io, &mut history, "check db-1".into(), &mut hunks),
+            engine.run_turn(&mut io, &mut history, "check db-1".into()),
         )
         .await
         .expect("the turn must not park")

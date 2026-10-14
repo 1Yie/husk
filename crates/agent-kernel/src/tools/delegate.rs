@@ -16,7 +16,6 @@ use super::registry::{
 };
 use crate::engine::{Engine, EngineIo};
 use crate::permissions::PermissionGate;
-use agent_context::HunkTracker;
 use agent_ipc::events::UiEvent;
 use agent_llm::types::ChatMessage;
 use std::path::{Path, PathBuf};
@@ -582,13 +581,12 @@ impl SubagentSpawner {
         }
         let task_preview = task.clone();
         let mut history = vec![ChatMessage::system(system)];
-        let mut hunks = HunkTracker::new(agent_context::TrackingMode::AgentOnly);
 
         let start = std::time::Instant::now();
         emit_child(parent_ctx.as_ref(), child_id, label, None, &task_preview);
         let ran = tokio::time::timeout(
             SUBAGENT_TIMEOUT,
-            engine.run_turn(&mut io, &mut history, task, &mut hunks),
+            engine.run_turn(&mut io, &mut history, task),
         )
         .await;
         // Attach the run's cost so the parent can budget follow-ups — opaque bare
@@ -1021,6 +1019,7 @@ pub fn spec() -> ToolSpec {
         readonly: false,
         class: super::registry::ToolClass::Orchestration,
         network: false,
+        staged: false,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

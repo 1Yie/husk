@@ -13,8 +13,6 @@
 //! and an opaque report/payload pair the engine renders without knowing what
 //! produced them.
 
-use std::path::PathBuf;
-
 /// One thing a policy asks the engine to land: a row for the conversation
 /// history and/or an event for the UI. The engine appends and sends them in
 /// order without looking inside — what they mean (a plan card, a check
@@ -79,9 +77,9 @@ pub trait TurnPolicy: Send + Sync {
         is_readonly: bool,
     ) -> Option<String>;
 
-    /// Decide whether a quiet round may end the turn. `touched` lists the
-    /// files this turn changed.
-    async fn on_quiet_round(&self, view: &dyn TurnView, touched: Vec<PathBuf>) -> Verdict;
+    /// Decide whether a quiet round may end the turn. What the turn changed is
+    /// the policy's own knowledge: it observes its tools' effects itself.
+    async fn on_quiet_round(&self, view: &dyn TurnView) -> Verdict;
 }
 
 /// The default policy: every quiet round finishes, nothing is refused.
@@ -101,7 +99,7 @@ impl TurnPolicy for NoopPolicy {
     ) -> Option<String> {
         None
     }
-    async fn on_quiet_round(&self, _view: &dyn TurnView, _touched: Vec<PathBuf>) -> Verdict {
+    async fn on_quiet_round(&self, _view: &dyn TurnView) -> Verdict {
         Verdict::finish()
     }
 }

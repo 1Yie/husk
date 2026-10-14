@@ -54,6 +54,7 @@ pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
         readonly: true,
         class: agent_tool::ToolClass::Observation,
         network: true,
+        staged: false,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

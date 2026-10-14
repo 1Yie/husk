@@ -91,6 +91,7 @@ pub fn spec() -> ToolSpec {
         // SessionMutation gives it the serial, never-batched slot.
         class: super::registry::ToolClass::SessionMutation,
         network: false,
+        staged: false,
         exec,
     }
 }

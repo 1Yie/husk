@@ -48,6 +48,7 @@ pub fn spec() -> ToolSpec {
         readonly: true, // asking mutates nothing; auto-allowed like the goal contract
         class: super::registry::ToolClass::HumanInteraction,
         network: false,
+        staged: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

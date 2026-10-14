@@ -344,6 +344,7 @@ pub fn spec() -> ToolSpec {
         readonly: true, // orchestrator — only ever runs auto-allowed Observation specs
         class: ToolClass::Orchestration,
         network: false,
+        staged: false,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

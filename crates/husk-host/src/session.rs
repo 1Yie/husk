@@ -8,8 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use agent_coding::tracker::WriteTracker;
 use agent_context::{
-    git_snapshot, memory::TurnRecord, HunkTracker, MemoryStore, TrackingMode, TurnDistiller,
+    git_snapshot, memory::TurnRecord, MemoryStore, TrackingMode, TurnDistiller,
     WorkspaceScanner,
 };
 use agent_ipc::{AgentState, UiCommand, UiEvent};
@@ -276,7 +277,7 @@ pub struct SessionActor {
     io: EngineIo,
     cmd_tx: mpsc::Sender<UiCommand>,
     /// Write tracking for undo/rewind + files-changed list.
-    hunks: HunkTracker,
+    hunks: WriteTracker,
     /// Engine's decision slot — `ToolDecision` writes here mid-turn.
     decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
     /// `AnswerQuestion` resolves here mid-turn (same bypass pattern).
@@ -600,6 +601,29 @@ impl SessionActor {
         // This context's own goal/plan contract pair — the coding crate owns
         // the controller types, so installation is an explicit host step now.
         agent_coding::install_contract(&mut tool_ctx);
+        // File-write tracking for undo and the files-changed list: the file tools
+        // report applied writes through the observer installed here; the kernel
+        // engine never sees a tracker.
+        // `AllDirty` seeds the tracker with git-dirty files so a dirty-tree
+        // warning can precede the first prompt.
+        let hunks = WriteTracker::new(if cfg.track_dirty {
+            TrackingMode::AllDirty
+        } else {
+            TrackingMode::AgentOnly
+        });
+        if cfg.track_dirty {
+            if let Ok(snap) = git_snapshot(&cfg.workspace_root) {
+                // status lines are porcelain XY-prefixed (` M a.rs`, `?? b.rs`)
+                for line in &snap.status {
+                    let p = line.get(3..).map(str::trim).unwrap_or("");
+                    if !p.is_empty() {
+                        hunks.lock().mark_dirty_at_start(PathBuf::from(p));
+                    }
+                }
+            }
+        }
+
+        hunks.install(&mut tool_ctx);
         tool_ctx.cancel = Some(cancel.clone());
         // The host's sandbox: the detected backend behind the live master switch.
         // Installed here, not in `ToolCtx::new`, so a context built elsewhere
@@ -728,25 +752,6 @@ impl SessionActor {
             steer_rx,
             cancel: cancel.clone(),
         };
-
-        // `AllDirty` seeds the tracker with git-dirty files so a dirty-tree
-        // warning can precede the first prompt.
-        let mut hunks = HunkTracker::new(if cfg.track_dirty {
-            TrackingMode::AllDirty
-        } else {
-            TrackingMode::AgentOnly
-        });
-        if cfg.track_dirty {
-            if let Ok(snap) = git_snapshot(&cfg.workspace_root) {
-                // status lines are porcelain XY-prefixed (` M a.rs`, `?? b.rs`)
-                for line in &snap.status {
-                    let p = line.get(3..).map(str::trim).unwrap_or("");
-                    if !p.is_empty() {
-                        hunks.mark_dirty_at_start(PathBuf::from(p));
-                    }
-                }
-            }
-        }
 
         (
             Self {
@@ -937,7 +942,7 @@ impl SessionActor {
         // emits into, so a state both sides announce is one hook event.
         self.hooks.observe(&self.state).await;
         let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
-        let turn = self.hunks.begin_turn();
+        let turn = self.hunks.lock().begin_turn();
 
         // Refresh the skills catalog when a skill was added, removed, or
         // edited. `SkillManager::refresh` renders only when the tree's mtime
@@ -993,7 +998,7 @@ impl SessionActor {
         let outcome_text = text.clone();
         match self
             .engine
-            .run_turn(&mut self.io, &mut self.history, text, &mut self.hunks)
+            .run_turn(&mut self.io, &mut self.history, text)
             .await
         {
             // `run_turn` already emitted the terminal `StateChanged` on every
@@ -1005,15 +1010,11 @@ impl SessionActor {
                 self.hooks.observe(&self.state).await;
                 self.last_usage = outcome.usage;
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
+                let turn_files = self.turn_files(turn);
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
                     outcome: "success".into(),
-                    files: self
-                        .hunks
-                        .files_in_turn(turn)
-                        .iter()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .collect(),
+                    files: turn_files,
                     correction: denied_tools(&outcome.denials),
                     steered_with: steered_with(&outcome.steers),
                 });
@@ -1027,15 +1028,11 @@ impl SessionActor {
                 // in-stream failures — plus the terminal `StateChanged(Failed)`.
                 // Re-emitting here prints the reminder twice (the cancelled-
                 // turn double-line bug).
+                let turn_files = self.turn_files(turn);
                 self.queue_distill(TurnRecord {
                     task: outcome_text.clone(),
                     outcome: "failed".into(),
-                    files: self
-                        .hunks
-                        .files_in_turn(turn)
-                        .iter()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .collect(),
+                    files: turn_files,
                     correction: denied_tools(self.engine.denials_this_turn()),
                     // The engine keeps the turn's steer record across the error
                     // return — a steer followed by a cancel is exactly the
@@ -1280,24 +1277,39 @@ impl SessionActor {
         }
     }
 
-    /// Reverse-apply the last turn's writes via the HunkTracker — restores
+    /// Paths the given turn's tools wrote, as the distiller wants them.
+    fn turn_files(&self, turn: u32) -> Vec<String> {
+        self.hunks
+            .lock()
+            .files_in_turn(turn)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Reverse-apply the last turn's writes via the write tracker — restores
     /// each touched file to its pre-turn state (or deletes it if created).
     async fn undo_last_turn(&mut self) {
-        let last = self.hunks.current_turn();
+        // The tracker lock is held only while planning — never across an await.
+        let (last, ops, skipped) = {
+            let mut hunks = self.hunks.lock();
+            let last = hunks.current_turn();
         // Verify-on-undo: nothing feeds the watcher path in production, so
         // compare the turn's files against the agent's last recorded write
         // before building the plan — otherwise a user edit made after the
         // agent's write is silently overwritten.
-        self.hunks
-            .mark_external_if_drifted(last, |path| std::fs::read(path).ok());
+        hunks.mark_external_if_drifted(last, |path| std::fs::read(path).ok());
         // P0-C2: undo_plan now refuses when a target file was modified
         // externally after the agent's last write — undoing would silently
         // clobber the user's own edits. Fall back to partial undo so the
         // rest still reverts, and surface which files were skipped.
-        let (ops, skipped) = match self.hunks.undo_plan(last) {
+        let (ops, skipped) = match hunks.undo_plan(last) {
             Ok(ops) => (ops, Vec::new()),
-            Err(_) => self.hunks.undo_plan_partial(last),
+            Err(_) => hunks.undo_plan_partial(last),
         };
+            (last, ops, skipped)
+        };
+        let _ = last;
         if ops.is_empty() && skipped.is_empty() {
             let line = "没有可回滚的修改".to_string();
             let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));

@@ -535,15 +535,13 @@ impl Engine {
     /// Run one full user turn: prompt → sample → tools → re-sample … → done.
     ///
     /// `history` is the session's conversation; the engine appends the user
-    /// turn, tool calls, and tool results to it in place. `hunks` records
-    /// every write tool's before/after for undo/rewind (Stage 6).
+    /// turn, tool calls, and tool results to it in place.
     #[instrument(skip_all, name = "turn")]
     pub async fn run_turn(
         &mut self,
         io: &mut EngineIo,
         history: &mut Vec<ChatMessage>,
         user_text: String,
-        hunks: &mut agent_context::HunkTracker,
     ) -> Result<TurnOutcome, String> {
         // `<attached-image>` markers carry the composer's staged uploads —
         // they ride the wire as real image parts when the model declares
@@ -972,16 +970,11 @@ impl Engine {
                 // Plan cards are taken by the policy, not the loop: the card
                 // lands after the final text, and the policy holds the
                 // controller the signal rides on.
-                let touched: Vec<std::path::PathBuf> = hunks
-                    .files_in_turn(hunks.current_turn())
-                    .into_iter()
-                    .map(|p| p.to_path_buf())
-                    .collect();
                 let view = EngineTurnView {
                     mode: self.agent_mode.clone(),
                     tool_calls_run,
                 };
-                let verdict = self.policy.on_quiet_round(&view, touched).await;
+                let verdict = self.policy.on_quiet_round(&view).await;
                 let (before_final, after_final) = match verdict {
                     crate::turn_policy::Verdict::Nudge { hidden } => {
                         if !final_text.is_empty() {
@@ -1198,18 +1191,21 @@ impl Engine {
                 });
 
                 // P1-c: staged writers are dispatched EARLY — they return a
-                // `PendingWrite` instead of writing inside the tool, so we can
+                // `Commit` instead of acting inside the tool, so we can
                 // show the REAL diff + fuzzy flag on the approval card and only
                 // commit the write after the user approves. Read-only and bash
                 // tools keep the classic gate→dispatch flow (they have side
-                // effects we can't dry-run). `is_staged_write` is the single
-                // source of truth for the set, and documents why it is not
+                // effects we can't dry-run). `ToolSpec::staged` is the single
+                // source of truth, and documents why it is not
                 // `ToolClass::WorkspaceMutation` (serena).
-                let is_write = crate::tools::registry::is_staged_write(&call.name);
+                let is_write = self
+                    .active_registry()
+                    .spec(&call.name)
+                    .is_some_and(|s| s.staged);
 
-                // Dry-run a write tool to harvest diff/fuzzy/pending_write.
-                // `dispatch` on these tools is side-effect-free (returns
-                // PendingWrite), so it's safe to run pre-approval.
+                // Dry-run a staged tool to harvest diff/fuzzy/commit.
+                // `dispatch` on these tools is side-effect-free (returns a
+                // Commit), so it's safe to run pre-approval.
                 let staged: Option<crate::tools::registry::ToolResult> = if is_write {
                     match self
                         .active_registry()
@@ -1245,16 +1241,6 @@ impl Engine {
                             .to_string()
                     });
                 let real_fuzzy = staged.as_ref().map(|r| r.fuzzy).unwrap_or(false);
-
-                // K1: the preview was computed against the file as it is NOW.
-                // Remember that pre-image so the commit can refuse to overwrite
-                // an edit made while the approval card was open.
-                let staged_preimages: Option<Vec<Option<Vec<u8>>>> = staged.as_ref().map(|r| {
-                    r.pending_write
-                        .iter()
-                        .map(|pw| std::fs::read(&pw.path).ok())
-                        .collect()
-                });
 
                 let computer_action =
                     (call.name == "computer").then(|| crate::tools::computer::action_of(&args));
@@ -1427,10 +1413,10 @@ impl Engine {
                 // covers dispatch + deferred-write commits + after_tool
                 // hooks, i.e. everything the row's `· 3s` label meant live.
                 let call_started = std::time::Instant::now();
-                let (mut content, ui_type, mut ok, pending_write, result_images) =
+                let (mut content, ui_type, mut ok, commit, result_images) =
                     if let Some(res) = staged {
                         let ui_type = res.ui_type.map(|s| s.to_string());
-                        (res.content, ui_type, true, res.pending_write, res.images)
+                        (res.content, ui_type, true, res.commit, res.images)
                     } else {
                         match self
                             .active_registry()
@@ -1441,101 +1427,54 @@ impl Engine {
                                 res.content,
                                 res.ui_type.map(|s| s.to_string()),
                                 true,
-                                res.pending_write,
+                                res.commit,
                                 res.images,
                             ),
                             Err(e) => {
                                 // Built-in miss → try the plugin router (built-in
                                 // names are reserved and can't be shadowed).
-                                // Plugins never stage deferred writes → empty vec.
+                                // Plugins never stage a commit → `None`.
                                 // Plan mode dispatches read-only built-ins only.
                                 if !self.plugins_allowed() {
-                                    (e.to_string(), None, false, Vec::new(), Vec::new())
+                                    (e.to_string(), None, false, None, Vec::new())
                                 } else if let Some(mgr) = self.plugins() {
                                     // Report the plugin's own failure. Its message names the
                                     // real cause (server error, dead bridge); the built-in
                                     // "unknown tool" text would send the model hunting for a
                                     // tool that exists.
                                     match mgr.dispatch_tool_call(&call.name, args).await {
-                                        Ok(out) => (out, None, true, Vec::new(), Vec::new()),
+                                        Ok(out) => (out, None, true, None, Vec::new()),
                                         // "No plugin owns it" says nothing about why a built-in
                                         // failed, so surface the built-in's real error instead.
                                         Err(msg) if msg.starts_with("no plugin owns tool") => {
-                                            (e.to_string(), None, false, Vec::new(), Vec::new())
+                                            (e.to_string(), None, false, None, Vec::new())
                                         }
-                                        Err(msg) => (msg, None, false, Vec::new(), Vec::new()),
+                                        Err(msg) => (msg, None, false, None, Vec::new()),
                                     }
                                 } else {
-                                    (e.to_string(), None, false, Vec::new(), Vec::new())
+                                    (e.to_string(), None, false, None, Vec::new())
                                 }
                             }
                         }
                     };
 
-                // P1-c: commit the deferred writes the tool staged — the
-                // engine owns the side effect so it lands only after the
-                // permission decision. A multi-file tool (`apply_patch`)
-                // stages one `PendingWrite` per file op; each op captures
-                // its own pre-image for the hunk record (binary-safe).
-                // All-or-nothing: validate every staged pre-image first, so a
-                // multi-file patch is never left half-applied.
-                let drifted = staged_preimages.as_ref().and_then(|pre| {
-                    pending_write
-                        .iter()
-                        .zip(pre.iter())
-                        .find(|(pw, expected)| **expected != std::fs::read(&pw.path).ok())
-                        .map(|(pw, _)| pw.path.display().to_string())
-                });
-                let pending_write = if let Some(path) = drifted {
-                    ok = false;
-                    content = format!(
-                        "{path} changed after the preview was generated; \
-                         nothing was written — re-read the file and retry"
-                    );
-                    Vec::new()
-                } else {
-                    pending_write
-                };
-                for pw in pending_write {
-                    let old_content = std::fs::read(&pw.path).ok();
-                    match pw.op {
-                        crate::tools::registry::WriteOp::Delete => {
-                            match tokio::fs::remove_file(&pw.path).await {
-                                Ok(()) => {
-                                    hunks.record_write(
-                                        pw.path.clone(),
-                                        old_content,
-                                        Vec::new(),
-                                        "agent",
-                                    );
-                                }
-                                Err(e) => {
-                                    ok = false;
-                                    content =
-                                        format!("delete failed for {}: {e}", pw.path.display());
-                                }
-                            }
+                // P1-c: apply the effect the tool staged — the engine owns it
+                // so it lands only after the permission decision. `verify`
+                // first (the preview must still hold), then `apply`; either
+                // failing abandons the commit and fails the call with the
+                // tool's own reason. What the effect IS stays the tool's
+                // business — the engine never looks inside.
+                if let Some(commit) = commit {
+                    let agent_tool::Commit { verify, apply } = commit;
+                    match verify() {
+                        Err(reason) => {
+                            ok = false;
+                            content = reason;
                         }
-                        crate::tools::registry::WriteOp::Write => {
-                            if pw.auto_mkdir {
-                                if let Some(parent) = pw.path.parent() {
-                                    let _ = tokio::fs::create_dir_all(parent).await;
-                                }
-                            }
-                            match tokio::fs::write(&pw.path, &pw.content).await {
-                                Ok(()) => {
-                                    hunks.record_write(
-                                        pw.path.clone(),
-                                        old_content,
-                                        pw.content,
-                                        "agent",
-                                    );
-                                }
-                                Err(e) => {
-                                    ok = false;
-                                    content =
-                                        format!("write failed for {}: {e}", pw.path.display());
-                                }
+                        Ok(()) => {
+                            if let Err(reason) = apply.await {
+                                ok = false;
+                                content = reason;
                             }
                         }
                     }
