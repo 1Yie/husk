@@ -1,17 +1,17 @@
 //! `todo` — session-scoped task list the agent maintains while it works.
 //!
-//! Stored beside the session's history in `sessions.db`
-//! (`state/<ws>/<id>/todos.json` row): a new session starts clean, a resumed
-//! one keeps its list, and the user's repo stays free of agent scratch files.
-//! That is also why `readonly: true` is honest — it never touches the
-//! workspace, so it needs no approval.
+//! Where the list lives is the host's choice: it installs a [`TodoStorage`] on
+//! the context. The coding host keeps it beside the session's history (a new
+//! session starts clean, a resumed one keeps its list, and the user's repo
+//! stays free of agent scratch files); a context with none gets an in-memory
+//! list that lives as long as the context. Either way `readonly: true` is
+//! honest — the tool never touches a workspace, so it needs no approval.
 //!
 //! Two invariants: one load→mutate→save per store row at a time
 //! (`state_lock`), and ids are never reused, not even across `clear` — a
 //! recycled `#1` makes the model mark the wrong item done.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::{Mutex as StdMutex, OnceLock};
 
@@ -19,7 +19,54 @@ use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 
 use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
-use crate::session_store::SessionStore;
+
+/// Where one session's todo list is persisted: a single opaque row. The tool
+/// owns the row's shape (JSON) and its locking; the host owns where the bytes
+/// go. `key` names the list — the host picks it per context so two sessions
+/// never share a row.
+pub trait TodoStorage: Send + Sync {
+    /// The stored row, `None` when the list was never written.
+    fn read(&self) -> std::io::Result<Option<Vec<u8>>>;
+    /// Replace the row atomically — a crash must show the previous row or the
+    /// new one, never a torn one.
+    fn write(&self, bytes: &[u8]) -> std::io::Result<()>;
+    /// Stable identity of this list, used to serialise load→mutate→save.
+    fn key(&self) -> String;
+    /// A one-time seed for a list that has never been written (a host's own
+    /// legacy file, say). `Ok(None)` = nothing to migrate. Called only while
+    /// the row is absent; returning bytes does NOT write them — the tool does,
+    /// and only then calls [`TodoStorage::seeded`] so the host can drop its
+    /// legacy copy once the new one is durable.
+    fn seed(&self) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    /// The seed is durable in the new row; the host may remove its source.
+    fn seeded(&self) {}
+}
+
+/// The host's installed storage for this context's todo list.
+pub struct TodoStorageSlot(pub Arc<dyn TodoStorage>);
+
+/// The default when a host installed nothing: the list lives in memory for as
+/// long as the context does. Nothing else about the tool changes.
+#[derive(Default)]
+struct MemoryTodos {
+    row: StdMutex<Option<Vec<u8>>>,
+}
+
+impl TodoStorage for MemoryTodos {
+    fn read(&self) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(self.row.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+    fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
+        *self.row.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes.to_vec());
+        Ok(())
+    }
+    fn key(&self) -> String {
+        // Per context, never shared: the address of this very row.
+        format!("mem:{:p}", self)
+    }
+}
 
 /// One todo entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,15 +111,19 @@ pub fn spec() -> ToolSpec {
     }
 }
 
-fn store_handle(ctx: &ToolCtx) -> Option<(Arc<SessionStore>, i64)> {
-    if let Some((id, store)) = ctx.session() {
-        return Some((store, id));
+/// The context's storage: the host's slot, else one in-memory list shared by
+/// every call on this context. The ctx is immutable behind an `Arc`, so the
+/// fallback is keyed by the context's own address in a process table rather
+/// than stored on it.
+fn storage(ctx: &ToolCtx) -> Arc<dyn TodoStorage> {
+    if let Some(slot) = ctx.ext.get::<TodoStorageSlot>() {
+        return slot.0.clone();
     }
-    // Unattached context (tests/headless): derive the workspace's session
-    // store anyway so state still lives in the app data dir.
-    crate::session_store::SessionStore::open(&ctx.workspace_root)
-        .ok()
-        .map(|s| (Arc::new(s), 0))
+    static FALLBACK: OnceLock<StdMutex<HashMap<usize, Arc<MemoryTodos>>>> = OnceLock::new();
+    let table = FALLBACK.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut table = table.lock().unwrap_or_else(|e| e.into_inner());
+    let id = ctx as *const ToolCtx as usize;
+    table.entry(id).or_default().clone()
 }
 
 /// One async lock per store row, shared process-wide.
@@ -92,61 +143,43 @@ fn state_lock(key: String) -> Arc<tokio::sync::Mutex<()>> {
     locks.entry(key).or_default().clone()
 }
 
-fn lock_key(store: &SessionStore, id: i64) -> String {
-    format!("{}:{}:todos", store.dir_name().unwrap_or_default(), id)
-}
-
-async fn load(
-    store: &SessionStore,
-    id: i64,
-    workspace_root: &Path,
-) -> Result<TodoStore, ToolError> {
-    match store.read_state(id, "todos.json") {
+async fn load(store: &dyn TodoStorage) -> Result<TodoStore, ToolError> {
+    match store.read() {
         Ok(Some(bytes)) => serde_json::from_slice(&bytes)
-            .map_err(|e| ToolError::Failed(format!("corrupt todos row for session {id}: {e}"))),
-        Ok(None) => {
-            // One-time migration: a legacy `{workspace}/.agent/todos.json`
-            // becomes this session's list, then the repo file is removed so
-            // the workspace stays clean.
-            let legacy = workspace_root.join(".agent").join("todos.json");
-            match tokio::fs::read_to_string(&legacy).await {
-                Ok(s) => {
-                    // Unreadable legacy state is NOT an empty list: treating
-                    // it as one would strand the user's tasks *and* the file
-                    // is deleted a line later. Surface it and leave it alone.
-                    let seeded: TodoStore = serde_json::from_str(&s).map_err(|e| {
-                        ToolError::Failed(format!(
-                            "legacy {} is not valid todo JSON: {e} — left in place; \
-                             fix or delete it and retry",
-                            legacy.display()
-                        ))
-                    })?;
-                    // Copy first, remove only after the new copy is durable —
-                    // a failed migration must not be a destructive one.
-                    save(store, id, &seeded)?;
-                    let _ = tokio::fs::remove_file(&legacy).await;
-                    Ok(seeded)
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TodoStore {
-                    next_id: 1,
-                    items: Vec::new(),
-                }),
-                Err(e) => Err(ToolError::Io(e)),
+            .map_err(|e| ToolError::Failed(format!("corrupt todo list row: {e}"))),
+        Ok(None) => match store.seed() {
+            // The host has a legacy copy to adopt. Unreadable seed state is NOT
+            // an empty list: treating it as one would strand the user's tasks
+            // and the host drops its copy a line later. Surface it, leave it.
+            Ok(Some(bytes)) => {
+                let seeded: TodoStore = serde_json::from_slice(&bytes).map_err(|e| {
+                    ToolError::Failed(format!(
+                        "legacy todo state is not valid todo JSON: {e} — left in place; \
+                         fix or delete it and retry"
+                    ))
+                })?;
+                // Copy first, let the host drop its source only after the new
+                // copy is durable — a failed migration must not be destructive.
+                save(store, &seeded)?;
+                store.seeded();
+                Ok(seeded)
             }
-        }
+            Ok(None) => Ok(TodoStore {
+                next_id: 1,
+                items: Vec::new(),
+            }),
+            Err(e) => Err(ToolError::Io(e)),
+        },
         Err(e) => Err(ToolError::Io(e)),
     }
 }
 
-/// Single-row put — the redb commit IS the atomic replace the old
-/// temp-file+rename dance simulated, so a crash shows either the previous
-/// row or the new one, never a truncated file.
-fn save(store: &SessionStore, id: i64, todos: &TodoStore) -> Result<(), ToolError> {
+/// Single-row put — the host's write IS the atomic replace, so a crash shows
+/// either the previous row or the new one, never a truncated file.
+fn save(store: &dyn TodoStorage, todos: &TodoStore) -> Result<(), ToolError> {
     let json = serde_json::to_vec_pretty(todos)
         .map_err(|e| ToolError::Failed(format!("serialize todos: {e}")))?;
-    store
-        .write_state(id, "todos.json", &json)
-        .map_err(ToolError::Io)
+    store.write(&json).map_err(ToolError::Io)
 }
 
 /// Render the list as a compact `[ ]/[x] #id text` block for the model.
@@ -170,11 +203,10 @@ fn render(items: &[TodoItem]) -> String {
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let a: TodoArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(format!("todo args: {e}")))?;
-    let (sess, sid) = store_handle(&ctx)
-        .ok_or_else(|| ToolError::Failed("no data dir for the todo store".into()))?;
-    let lock = state_lock(lock_key(&sess, sid));
+    let sess = storage(&ctx);
+    let lock = state_lock(sess.key());
     let _guard = lock.lock().await;
-    let mut store = load(&sess, sid, &ctx.workspace_root).await?;
+    let mut store = load(sess.as_ref()).await?;
     // `next_id` must clear the highest stored id — a file with `next_id: 2`
     // sitting next to `#10` (hand-edited, partially migrated, older format)
     // would otherwise hand out a duplicate id.
@@ -197,7 +229,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             };
             store.next_id += 1;
             store.items.push(item.clone());
-            save(&sess, sid, &store)?;
+            save(sess.as_ref(), &store)?;
             format!(
                 "Added #{} {}\n\n{}",
                 item.id,
@@ -213,7 +245,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             })?;
             item.done = a.action == "done";
             let done = item.done;
-            save(&sess, sid, &store)?;
+            save(sess.as_ref(), &store)?;
             format!(
                 "#{} {}\n\n{}",
                 id,
@@ -231,14 +263,14 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                     "todo #{id} not found — run `list` for live ids"
                 )));
             }
-            save(&sess, sid, &store)?;
+            save(sess.as_ref(), &store)?;
             format!("Removed #{id}\n\n{}", render(&store.items))
         }
         "clear" => {
             let n = store.items.len();
             store.items.clear();
             // `next_id` deliberately survives a clear — see the module docs.
-            save(&sess, sid, &store)?;
+            save(sess.as_ref(), &store)?;
             format!("Cleared {n} todos.")
         }
         other => {
@@ -261,21 +293,54 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
 mod tests {
     use super::*;
 
-    fn ctx() -> Arc<ToolCtx> {
-        // Unique dir per test — sharing one across parallel tests
-        // cross-pollutes the per-session store row and flakes the roundtrip.
+    /// A host's storage for the tests: one row, plus an optional legacy seed
+    /// the way the coding host adopts a workspace's old `todos.json`.
+    struct TestStorage {
+        key: String,
+        row: StdMutex<Option<Vec<u8>>>,
+        legacy: StdMutex<Option<Vec<u8>>>,
+        seeded: std::sync::atomic::AtomicBool,
+    }
+
+    impl TodoStorage for TestStorage {
+        fn read(&self) -> std::io::Result<Option<Vec<u8>>> {
+            Ok(self.row.lock().unwrap().clone())
+        }
+        fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
+            *self.row.lock().unwrap() = Some(bytes.to_vec());
+            Ok(())
+        }
+        fn key(&self) -> String {
+            self.key.clone()
+        }
+        fn seed(&self) -> std::io::Result<Option<Vec<u8>>> {
+            Ok(self.legacy.lock().unwrap().clone())
+        }
+        fn seeded(&self) {
+            self.seeded.store(true, std::sync::atomic::Ordering::SeqCst);
+            *self.legacy.lock().unwrap() = None;
+        }
+    }
+
+    fn storage_with(legacy: Option<&str>) -> Arc<TestStorage> {
+        // A unique key per test — the lock table is process-wide.
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "todo-test-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // Attach an isolated store (its own db inside the temp dir) so the
-        // tests never touch the real `sessions.db`.
-        let store = SessionStore::open_at(&dir, &dir.join("t.db")).unwrap();
-        Arc::new(ToolCtx::new(&dir).with_session(0, Some(Arc::new(store))))
+        Arc::new(TestStorage {
+            key: format!("test-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+            row: StdMutex::new(None),
+            legacy: StdMutex::new(legacy.map(|s| s.as_bytes().to_vec())),
+            seeded: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    fn ctx_over(storage: Arc<TestStorage>) -> Arc<ToolCtx> {
+        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        ctx.ext.insert(Arc::new(TodoStorageSlot(storage)));
+        Arc::new(ctx)
+    }
+
+    fn ctx() -> Arc<ToolCtx> {
+        ctx_over(storage_with(None))
     }
 
     #[tokio::test]
@@ -305,8 +370,7 @@ mod tests {
         assert!(r.content.contains("Removed #1"));
 
         // persisted across "sessions" (fresh load from the same store)
-        let (sess, sid) = store_handle(&ctx).unwrap();
-        let store = load(&sess, sid, &ctx.workspace_root).await.unwrap();
+        let store = load(storage(&ctx).as_ref()).await.unwrap();
         assert!(store.items.is_empty());
     }
 
@@ -340,17 +404,13 @@ mod tests {
     #[tokio::test]
     async fn next_id_clears_the_highest_stored_id() {
         let ctx = ctx();
-        let (sess, sid) = store_handle(&ctx).unwrap();
         let seeded = serde_json::json!({
             "next_id": 2,
             "items": [{"id": 10, "text": "old task", "done": false}],
         });
-        sess.write_state(
-            sid,
-            "todos.json",
-            serde_json::to_string(&seeded).unwrap().as_bytes(),
-        )
-        .unwrap();
+        storage(&ctx)
+            .write(serde_json::to_string(&seeded).unwrap().as_bytes())
+            .unwrap();
 
         let r = exec(
             serde_json::json!({"action":"add","text":"new"}),
@@ -385,8 +445,7 @@ mod tests {
         }
         while set.join_next().await.is_some() {}
 
-        let (sess, sid) = store_handle(&ctx).unwrap();
-        let store = load(&sess, sid, &ctx.workspace_root).await.unwrap();
+        let store = load(storage(&ctx).as_ref()).await.unwrap();
         assert_eq!(store.items.len(), 8, "lost update: {:?}", store.items);
         let mut ids: Vec<usize> = store.items.iter().map(|t| t.id).collect();
         ids.sort_unstable();
@@ -396,40 +455,43 @@ mod tests {
     /// Corrupt legacy state must not be mistaken for "no todos" — that both
     /// strands the user's tasks and (before this) deleted the only copy.
     #[tokio::test]
-    async fn corrupt_legacy_migration_fails_loudly_and_keeps_the_file() {
-        let ctx = ctx();
-        let legacy = ctx.workspace_root.join(".agent").join("todos.json");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        std::fs::write(&legacy, "{ this is not json").unwrap();
+    async fn corrupt_legacy_migration_fails_loudly_and_keeps_the_source() {
+        let storage = storage_with(Some("{ this is not json"));
+        let ctx = ctx_over(storage.clone());
 
         let err = exec(serde_json::json!({"action":"list"}), ctx.clone())
             .await
-            .expect_err("a corrupt legacy file must surface, not read as empty");
+            .expect_err("a corrupt legacy seed must surface, not read as empty");
         assert!(
             matches!(err, ToolError::Failed(ref m) if m.contains("legacy")),
             "{err}"
         );
-        assert!(legacy.exists(), "the only copy of the list was deleted");
+        assert!(
+            !storage.seeded.load(std::sync::atomic::Ordering::SeqCst),
+            "the host was told to drop its copy of an unreadable list"
+        );
+        assert!(storage.legacy.lock().unwrap().is_some());
+        assert!(storage.row.lock().unwrap().is_none(), "nothing was written");
     }
 
     #[tokio::test]
     async fn legacy_migration_copies_before_removing() {
-        let ctx = ctx();
-        let legacy = ctx.workspace_root.join(".agent").join("todos.json");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         let seeded = serde_json::json!({
             "next_id": 4,
             "items": [{"id": 3, "text": "old task", "done": true}],
         });
-        std::fs::write(&legacy, serde_json::to_string(&seeded).unwrap()).unwrap();
+        let storage = storage_with(Some(&serde_json::to_string(&seeded).unwrap()));
+        let ctx = ctx_over(storage.clone());
 
         let r = exec(serde_json::json!({"action":"list"}), ctx.clone())
             .await
             .unwrap();
         assert!(r.content.contains("#3 old task"), "{}", r.content);
+        // The new row is durable, THEN the host drops its source.
+        assert!(storage.row.lock().unwrap().is_some());
         assert!(
-            !legacy.exists(),
-            "migration should clean the workspace copy"
+            storage.seeded.load(std::sync::atomic::Ordering::SeqCst),
+            "migration should let the host clean its copy"
         );
         // …and the new home holds it (ids included).
         let r = exec(
@@ -441,6 +503,25 @@ mod tests {
         assert!(r.content.contains("#4 next"), "{}", r.content);
     }
 
+    /// A host that installs nothing still gets a working list: it lives in
+    /// memory for the life of the context and is private to it.
+    #[tokio::test]
+    async fn without_a_host_storage_the_list_lives_in_memory_per_context() {
+        let a = Arc::new(ToolCtx::new(std::env::temp_dir()));
+        let b = Arc::new(ToolCtx::new(std::env::temp_dir()));
+        exec(serde_json::json!({"action":"add","text":"only in a"}), a.clone())
+            .await
+            .unwrap();
+        let in_a = exec(serde_json::json!({"action":"list"}), a.clone())
+            .await
+            .unwrap();
+        assert!(in_a.content.contains("only in a"), "{}", in_a.content);
+        let in_b = exec(serde_json::json!({"action":"list"}), b.clone())
+            .await
+            .unwrap();
+        assert!(in_b.content.contains("No todos"), "leaked across contexts: {}", in_b.content);
+    }
+
     /// `save` is one atomic commit — the row parses back and re-saving works.
     #[tokio::test]
     async fn save_commits_one_row_and_roundtrips() {
@@ -450,8 +531,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (sess, sid) = store_handle(&ctx).unwrap();
-        let raw = sess.read_state(sid, "todos.json").unwrap().unwrap();
+        let raw = storage(&ctx).read().unwrap().unwrap();
         let store: TodoStore = serde_json::from_slice(&raw).unwrap();
         assert_eq!(store.items.len(), 1);
     }
