@@ -16,8 +16,8 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::net;
-use super::registry::{schema_for, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use crate::net;
+use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// Refuse to attach images larger than this — bigger payloads mostly break
 /// the wire, not inform it (providers cap ~5 MB/part anyway).
@@ -54,7 +54,7 @@ struct ViewImageArgs {
     file: String,
 }
 
-pub fn specs() -> Vec<ToolSpec> {
+pub fn specs<C: WorkspaceCtx>() -> Vec<ToolSpec<C>> {
     vec![image_search(), web_download(), view_image()]
 }
 
@@ -75,7 +75,7 @@ struct Hit {
     page: String,
 }
 
-fn image_search() -> ToolSpec {
+fn image_search<C: WorkspaceCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "image_search",
         schema: schema_for::<ImageSearchArgs>(
@@ -89,7 +89,7 @@ fn image_search() -> ToolSpec {
              `office_add` --type picture.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: true,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -197,8 +197,8 @@ fn image_search() -> ToolSpec {
 /// Wikimedia Commons: free-license media via the public action API. The
 /// `thumb.php` URL serves a bounded-width copy on the SAME domain as the
 /// API — useful when `upload.wikimedia.org` is unreachable.
-async fn search_wikimedia(
-    ctx: &super::registry::ToolCtx,
+async fn search_wikimedia<C: WorkspaceCtx>(
+    ctx: &Arc<C>,
     query: &str,
     count: u32,
 ) -> Result<Vec<Hit>, ToolError> {
@@ -211,7 +211,7 @@ async fn search_wikimedia(
         count,
     );
     let ua = net::user_agent(ctx.app_paths().app_name());
-    let resp = net::fetch(&url, "application/json", ctx.cancel.clone(), &ua).await?;
+    let resp = net::fetch(&url, "application/json", ctx.cancel_flag(), &ua).await?;
     if !resp.status.is_success() {
         return Err(ToolError::Failed(format!("HTTP {}", resp.status)));
     }
@@ -258,8 +258,8 @@ async fn search_wikimedia(
 /// Bing Images: scrape `cn.bing.com` — the `m="{...}"` attribute on each
 /// result anchor carries JSON with `turl` (Bing CDN thumb — reachable),
 /// `murl` (original image — may be on a foreign CDN) and `purl` (page).
-async fn search_bing(
-    ctx: &super::registry::ToolCtx,
+async fn search_bing<C: WorkspaceCtx>(
+    ctx: &Arc<C>,
     query: &str,
     count: u32,
 ) -> Result<Vec<Hit>, ToolError> {
@@ -268,7 +268,7 @@ async fn search_bing(
         urlform(query)
     );
     let ua = net::user_agent(ctx.app_paths().app_name());
-    let resp = net::fetch(&url, "text/html", ctx.cancel.clone(), &ua).await?;
+    let resp = net::fetch(&url, "text/html", ctx.cancel_flag(), &ua).await?;
     if !resp.status.is_success() {
         return Err(ToolError::Failed(format!("HTTP {}", resp.status)));
     }
@@ -362,7 +362,7 @@ mod tests {
     }
 }
 
-fn web_download() -> ToolSpec {
+fn web_download<C: WorkspaceCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "web_download",
         schema: schema_for::<WebDownloadArgs>(
@@ -372,14 +372,14 @@ fn web_download() -> ToolSpec {
              you can verify what was fetched.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: true,
         exec: Arc::new(|args, ctx| {
             async move {
                 let a: WebDownloadArgs = serde_json::from_value(args)
                     .map_err(|e| ToolError::Args(format!("web_download args: {e}")))?;
                 let ua = net::user_agent(ctx.app_paths().app_name());
-                let resp = net::fetch(&a.url, "*/*", ctx.cancel.clone(), &ua).await?;
+                let resp = net::fetch(&a.url, "*/*", ctx.cancel_flag(), &ua).await?;
                 if !resp.status.is_success() {
                     return Err(ToolError::Failed(format!(
                         "download failed: HTTP {}",
@@ -403,7 +403,7 @@ fn web_download() -> ToolSpec {
                 std::fs::write(&dest, &resp.body)
                     .map_err(|e| ToolError::Failed(format!("write {dest:?}: {e}")))?;
                 let shown = dest
-                    .strip_prefix(&*ctx.workspace_root)
+                    .strip_prefix(ctx.root())
                     .unwrap_or(&dest)
                     .display();
                 let mut res = ToolResult::text(format!(
@@ -429,7 +429,7 @@ fn web_download() -> ToolSpec {
     }
 }
 
-fn view_image() -> ToolSpec {
+fn view_image<C: WorkspaceCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "view_image",
         schema: schema_for::<ViewImageArgs>(
@@ -439,7 +439,7 @@ fn view_image() -> ToolSpec {
              webp/bmp, ≤8 MB).",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -462,7 +462,7 @@ fn view_image() -> ToolSpec {
                     ))
                 })?;
                 let shown = path
-                    .strip_prefix(&*ctx.workspace_root)
+                    .strip_prefix(ctx.root())
                     .unwrap_or(&path)
                     .display();
                 let mut res = ToolResult::text(format!(

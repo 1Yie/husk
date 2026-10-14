@@ -22,7 +22,7 @@ use futures::StreamExt;
 use reqwest::Url;
 use tokio::net::lookup_host;
 
-use super::registry::ToolError;
+use agent_tool::ToolError;
 
 /// Hard cap on downloaded bytes — applied while streaming, before decode.
 pub const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;

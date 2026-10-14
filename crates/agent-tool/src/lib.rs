@@ -54,6 +54,18 @@ pub trait WorkspaceCtx: Send + Sync + 'static {
     /// Resolve a model-supplied path against the workspace root and prove it
     /// stays inside. Returns the canonical path or a sandbox-escape error.
     fn resolve(&self, path: &str) -> Result<std::path::PathBuf, ToolError>;
+
+    /// The host's app directories — a tool that keeps workspace-local state
+    /// (attachments, caches) or names itself in a `User-Agent` reads them from
+    /// here. The default is a product-free directory under the workspace root,
+    /// so a bare test context still gets a defined, private-looking place.
+    fn app_paths(&self) -> agent_paths::AppPaths {
+        agent_paths::AppPaths::new(
+            self.root().join(".agent/config"),
+            self.root().join(".agent/data"),
+            ".agent",
+        )
+    }
 }
 
 /// A deferred write a tool wants the engine to commit — returned instead

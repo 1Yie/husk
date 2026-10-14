@@ -90,16 +90,15 @@ dependencies = [
  "agent-store",
  "agent-tool",
  "agent-tools-fs",
+ "agent-tools-web",
  "anyhow",
  "async-trait",
  "dirs",
  "fs2",
  "futures",
- "htmd",
  "ignore",
  "image",
  "redb",
- "reqwest 0.12.28",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -206,6 +205,7 @@ name = "agent-tool"
 version = "0.1.0"
 dependencies = [
  "agent-llm",
+ "agent-paths",
  "futures",
  "schemars 1.2.2",
  "serde_json",
@@ -237,6 +237,22 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "xxhash-rust",
+]
+
+[[package]]
+name = "agent-tools-web"
+version = "0.1.0"
+dependencies = [
+ "agent-llm",
+ "agent-tool",
+ "futures",
+ "htmd",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
