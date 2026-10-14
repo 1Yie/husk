@@ -83,6 +83,12 @@ struct Cli {
     deny_domains: Vec<String>,
 }
 
+/// The host's own directories — the product names itself here.
+fn app_paths() -> agent_paths::AppPaths {
+    agent_paths::AppPaths::from_app_name("husk", ".husk")
+        .unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk"))
+}
+
 fn parse_args() -> Result<Cli, String> {
     let mut cli = Cli {
         workspace: std::env::current_dir().map_err(|e| e.to_string())?,
@@ -294,7 +300,7 @@ fn make_cfg(seed: &SessionSeed, meta: Option<&SessionMeta>) -> Result<SessionCon
         .unwrap_or_default();
     Ok(SessionConfig {
         workspace_root: seed.workspace.clone(),
-        paths: agent_paths::AppPaths::from_app_name("husk", ".husk").unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk")),
+        paths: app_paths(),
         provider,
         provider_name,
         model,
@@ -339,7 +345,8 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     }
 
-    let app_cfg = AppConfig::load(None).unwrap_or_default();
+    let paths = app_paths();
+    let app_cfg = agent_llm::AppConfig::load(&paths.config_dir, None).unwrap_or_default();
     let (provider, provider_name, model) =
         match resolve_provider(&app_cfg, cli.provider.as_deref(), cli.model.as_deref()) {
             Ok(t) => t,

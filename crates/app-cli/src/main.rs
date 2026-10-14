@@ -280,7 +280,9 @@ async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
-    let app_cfg = AppConfig::load(None).unwrap_or_default();
+    let paths = agent_paths::AppPaths::from_app_name("husk", ".husk")
+        .unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk"));
+    let app_cfg = agent_llm::AppConfig::load(&paths.config_dir, None).unwrap_or_default();
     let pname = cli.provider.as_deref().or(app_cfg.active_provider.as_deref());
     let (provider, provider_name, model) =
         match resolve_provider(&app_cfg, cli.provider.as_deref(), cli.model.as_deref()) {
@@ -306,7 +308,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = SessionConfig {
         workspace_root: cli.workspace.clone(),
-        paths: agent_paths::AppPaths::from_app_name("husk", ".husk").unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk")),
+        paths,
         provider,
         provider_name,
         model,

@@ -295,7 +295,7 @@ impl SessionManager {
                 &crate::session_store::load_recent_workspaces(),
             )
         });
-        let cfg = AppConfig::load(None).unwrap_or_default();
+        let cfg = AppConfig::load(&paths.config_dir, None).unwrap_or_default();
         let (event_tx, event_rx) = std_mpsc::channel();
         let (_p, default_model, default_pname) = resolve_provider(&cfg);
 
@@ -365,7 +365,7 @@ impl SessionManager {
                 metas: Vec::new(),
                 store,
                 provider_cfg: cfg,
-                config_stamp: Self::config_stamp_now(),
+                config_stamp: Self::config_stamp_now(&paths.config_dir),
                 handles: HashMap::new(),
                 parked: HashMap::new(),
                 event_tx,
@@ -464,6 +464,7 @@ impl SessionManager {
             });
         }
 
+        let config_stamp = Self::config_stamp_now(&paths.config_dir);
         let mut mgr = Self {
             paths,
             plugins: plugins_for_manager,
@@ -471,7 +472,7 @@ impl SessionManager {
             metas: store.list(),
             store,
             provider_cfg: cfg,
-            config_stamp: Self::config_stamp_now(),
+            config_stamp,
             handles: HashMap::new(),
             parked: HashMap::new(),
             event_tx,
@@ -1500,7 +1501,7 @@ impl SessionManager {
         let Ok(manifest) = serde_json::from_str::<agent_plugin::PluginManifest>(&text) else {
             return serde_json::json!({ "ok": false, "error": "manifest 解析失败" });
         };
-        match agent_plugin::McpClient::start(&manifest).await {
+        match agent_plugin::McpClient::start(&manifest, paths.app_name()).await {
             Ok(client) => {
                 let (name, version) = client.server_info();
                 serde_json::json!({
@@ -1893,15 +1894,18 @@ impl SessionManager {
     }
 
     /// mtime of the config file — the gate for a disk reload.
-    fn config_stamp_of(path: Option<&std::path::Path>) -> Option<std::time::SystemTime> {
+    fn config_stamp_of(
+        path: Option<&std::path::Path>,
+        config_dir: &std::path::Path,
+    ) -> Option<std::time::SystemTime> {
         path.map(|p| p.to_path_buf())
-            .or_else(AppConfig::default_path)
+            .or_else(|| Some(AppConfig::default_path(config_dir)))
             .and_then(|p| std::fs::metadata(p).ok())
             .and_then(|m| m.modified().ok())
     }
 
-    fn config_stamp_now() -> Option<std::time::SystemTime> {
-        Self::config_stamp_of(None)
+    fn config_stamp_now(config_dir: &std::path::Path) -> Option<std::time::SystemTime> {
+        Self::config_stamp_of(None, config_dir)
     }
 
     /// Re-read `config.toml` when it changed on disk and hot-apply it to every
@@ -1916,11 +1920,11 @@ impl SessionManager {
     /// `path` overrides the config file — tests drive the whole load path
     /// against a temp file instead of the user's config.
     pub fn reload_model_config_from(&mut self, path: Option<&std::path::Path>) -> bool {
-        let stamp = Self::config_stamp_of(path);
+        let stamp = Self::config_stamp_of(path, &self.paths.config_dir);
         if stamp.is_none() || stamp == self.config_stamp {
             return false;
         }
-        let Ok(cfg) = AppConfig::load(path) else {
+        let Ok(cfg) = AppConfig::load(&self.paths.config_dir, path) else {
             return false;
         };
         self.config_stamp = stamp;
@@ -2131,7 +2135,11 @@ impl SessionManager {
             })
             .unwrap_or((None, None, None));
 
-        let path = AppConfig::default_path().map(|p| p.to_string_lossy().to_string());
+        let path = Some(
+            AppConfig::default_path(&self.paths.config_dir)
+                .to_string_lossy()
+                .to_string(),
+        );
         SessionModelInfo {
             active_provider,
             active_model,
@@ -2611,6 +2619,44 @@ mod tests {
         AppPaths::new(base.join("config"), base.join("data"), ".husk")
     }
 
+    /// The same throwaway paths, carrying a real `config.toml` that declares a
+    /// `devin` provider. Tests about model metadata must not depend on the
+    /// developer's own `~/.config/husk/config.toml`.
+    fn test_paths_with_config() -> AppPaths {
+        let paths = test_paths();
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(
+            paths.config_dir.join("config.toml"),
+            r#"active_provider = "devin"
+active_model = "devin/swe-2"
+
+[providers.devin]
+type = "openai_responses"
+base_url = "https://example.invalid/v1"
+api_key = "sk-test"
+default_model = "devin/swe-2"
+
+[providers.devin.compat]
+supports_reasoning_effort = true
+
+[[providers.devin.models]]
+id = "devin/swe-2"
+name = "SWE-2"
+reasoning = true
+input = ["text", "image"]
+context_window = 262144
+
+[providers.devin.models.thinking_level_map]
+off = "off"
+medium = "medium"
+high = "high"
+max = "max"
+"#,
+        )
+        .unwrap();
+        paths
+    }
+
     /// A config edit must reach the actors that are already running — an actor
     /// keeps the provider instance and model parameters it was spawned with, and
     /// a model that the edit removed must not stay the session's target.
@@ -2842,7 +2888,8 @@ mod tests {
             })
             .unwrap();
 
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(canon.clone()), test_paths());
+        let (mut mgr, _rx) =
+            SessionManager::spawn_at(Some(canon.clone()), test_paths_with_config());
 
         let info = mgr.model_info();
         assert_eq!(info.active_provider, "devin");
@@ -2867,7 +2914,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
         {
-            let (mut mgr, _rx) = SessionManager::spawn_at(Some(path.clone()), test_paths());
+            let (mut mgr, _rx) =
+                SessionManager::spawn_at(Some(path.clone()), test_paths_with_config());
             mgr.set_model("devin".into(), "devin/swe-2".into());
             mgr.set_thinking_level("high".into());
             mgr.set_permission_mode("acceptEdits".into());

@@ -64,6 +64,16 @@ impl AppPaths {
         Self::new(base.join("config"), base.join("data"), ".agent")
     }
 
+    /// The product's own name, read from the config directory's last segment
+    /// (`<config>/husk` → `husk`). Protocol identities (an MCP `clientInfo`,
+    /// say) need a name but must not hardcode one.
+    pub fn app_name(&self) -> &str {
+        self.config_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("agent")
+    }
+
     /// The workspace-local state directory under `root`.
     pub fn workspace_dir(&self, root: &Path) -> PathBuf {
         root.join(&self.workspace_dir_name)

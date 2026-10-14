@@ -484,7 +484,7 @@ impl PluginManager {
         // means MCP, which is what every entry-bearing manifest is today.
         let plugin: Arc<dyn Plugin> = match manifest.kind.unwrap_or(PluginKind::Mcp) {
             PluginKind::Mcp => {
-                let client = McpClient::start(&manifest)
+                let client = McpClient::start(&manifest, self.paths.app_name())
                     .await
                     .map_err(|e| format!("MCP `{id}` start: {e}"))?;
                 Arc::new(McpPlugin { manifest, client })
@@ -847,6 +847,11 @@ pub async fn load_all(repo: &Path, paths: &AppPaths) -> PluginManager {
 
 #[cfg(test)]
 mod tests {
+    fn test_paths() -> agent_paths::AppPaths {
+        let base = std::env::temp_dir().join("agent-plugin-test");
+        agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".husk")
+    }
+
     use super::{sanitize_name, wire_tool_name};
     use crate::Plugin;
     use std::path::{Path, PathBuf};
@@ -957,7 +962,7 @@ mod tests {
         );
 
         // Drive the real registration/dispatch path via a manager.
-        let mut mgr = super::PluginManager::new();
+        let mut mgr = super::PluginManager::new(test_paths());
         let plugin: Arc<dyn Plugin> = fake.clone();
         for (real, adv) in [
             ("list_skills", &advertised[0]),
@@ -1017,7 +1022,7 @@ mod tests {
                 panic!("a disabled plugin must never be called");
             }
         }
-        let mut mgr = super::PluginManager::new();
+        let mut mgr = super::PluginManager::new(test_paths());
         let plugin: Arc<dyn Plugin> = Arc::new(Fake);
         let adv = wire_tool_name("off", "echo");
         mgr.real_tool_names.insert(adv.clone(), "echo".into());
@@ -1050,7 +1055,7 @@ mod tests {
             m
         };
 
-        let mut mgr = super::PluginManager::new();
+        let mut mgr = super::PluginManager::new(test_paths());
         for id in ["a", "b", "c"] {
             mgr.manifests
                 .insert(id.into(), mk(id, "before_tool_execute"));
@@ -1099,7 +1104,7 @@ mod tests {
             m
         };
 
-        let mut mgr = super::PluginManager::new();
+        let mut mgr = super::PluginManager::new(test_paths());
         for (id, cmd) in [("a", "foo"), ("b", "bar")] {
             mgr.manifests.insert(id.into(), mk(id, cmd));
             mgr.order.push(id.into());
@@ -1124,7 +1129,7 @@ mod tests {
     /// "no plugin owns tool" that looks like a typo.
     #[tokio::test]
     async fn dispatch_error_names_the_dead_plugin() {
-        let mut mgr = super::PluginManager::new();
+        let mut mgr = super::PluginManager::new(test_paths());
         let mut m: crate::PluginManifest = serde_json::from_value(serde_json::json!({
             "id": "wasm-x", "name": "x",
             "capabilities": {"tools": [{"name": "slugify", "description": "d", "parameters": {}}]},
@@ -1181,7 +1186,7 @@ mod tests {
             m
         };
 
-        let mut mgr = super::PluginManager::new();
+        let mut mgr = super::PluginManager::new(test_paths());
         let err = mgr.register_plugin(mk(), &repo).await.unwrap_err();
         assert!(err.contains("trust consent"), "{err}");
         assert!(!mgr.plugins.contains_key("local"));
@@ -1283,7 +1288,7 @@ mod tests {
 
         // Two plugins, one with a colon in its id AND its tool names — every
         // character the wire forbids, in the place that used to break it.
-        let mut mgr = super::PluginManager::new();
+        let mut mgr = super::PluginManager::new(test_paths());
         for (id, tools) in [
             ("ui:skills", vec!["list_skills", "get_skill"]),
             ("fs.reader", vec!["read/file", "list.dir"]),
@@ -1336,6 +1341,11 @@ mod tests {
 
 #[cfg(test)]
 mod trust_content_tests {
+    fn test_paths() -> agent_paths::AppPaths {
+        let base = std::env::temp_dir().join("agent-plugin-test");
+        agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".husk")
+    }
+
     use super::*;
 
     /// A repo-local plugin with one hook whose script lives in its own dir.
@@ -1361,7 +1371,7 @@ mod trust_content_tests {
         let repo = t.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
 
-        let mut mgr = PluginManager::new();
+        let mut mgr = PluginManager::new(test_paths());
         mgr.trust.trust_content("guard", &repo, &repo_plugin(&repo, "echo reviewed"));
         assert!(mgr.trust.is_trusted_content("guard", &repo, &repo_plugin(&repo, "echo reviewed")));
 
@@ -1440,6 +1450,11 @@ pub fn current_manifest(id: &str, repo: &Path, paths: &AppPaths) -> Option<Plugi
 
 #[cfg(test)]
 mod changed_content_message_tests {
+    fn test_paths() -> agent_paths::AppPaths {
+        let base = std::env::temp_dir().join("agent-plugin-test");
+        agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".husk")
+    }
+
     use super::*;
 
     /// A grant that no longer matches must read as "changed", not as a first
@@ -1465,14 +1480,14 @@ mod changed_content_message_tests {
         let m = hook_manifest();
 
         // A grant exists, but for different content.
-        let mut mgr = PluginManager::new();
+        let mut mgr = PluginManager::new(test_paths());
         mgr.trust.trust_content("guard", &repo, &m);
         std::fs::write(dir.join("h.sh"), "echo swapped").unwrap();
         let err = mgr.register_plugin(m, &repo).await.unwrap_err();
         assert!(err.contains("changed since you trusted"), "{err}");
 
         // No grant at all keeps the first-time wording.
-        let err = PluginManager::new()
+        let err = PluginManager::new(test_paths())
             .register_plugin(hook_manifest(), &repo)
             .await
             .unwrap_err();
@@ -1482,6 +1497,11 @@ mod changed_content_message_tests {
 
 #[cfg(test)]
 mod trust_key_spelling_tests {
+    fn test_paths() -> agent_paths::AppPaths {
+        let base = std::env::temp_dir().join("agent-plugin-test");
+        agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".husk")
+    }
+
     use super::*;
 
     /// One directory spelled several ways is one grant. A trailing slash, a

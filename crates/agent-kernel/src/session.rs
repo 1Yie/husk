@@ -148,9 +148,12 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
 /// Every model the named provider declares, resolved the same way a hot-swap
 /// resolves one. A manifest `model:` may only name an id from this table, so
 /// the child can never run on a model the config does not describe.
-fn child_models(provider_name: &str) -> std::collections::HashMap<String, crate::tools::delegate::ChildModel> {
+fn child_models(
+    provider_name: &str,
+    config_dir: &std::path::Path,
+) -> std::collections::HashMap<String, crate::tools::delegate::ChildModel> {
     let mut out = std::collections::HashMap::new();
-    let Ok(cfg) = agent_llm::AppConfig::load(None) else {
+    let Ok(cfg) = agent_llm::AppConfig::load(config_dir, None) else {
         return out;
     };
     let Some(pcfg) = cfg.providers.get(provider_name) else {
@@ -589,7 +592,7 @@ impl SessionActor {
             thinking_level_map: cfg.thinking_level_map.clone(),
             model_params: cfg.model_params.clone().unwrap_or_default(),
             model_input: cfg.model_input.clone(),
-            models: child_models(&cfg.provider_name),
+            models: child_models(&cfg.provider_name, &cfg.paths.config_dir),
         }));
         tool_ctx.install_subagent(crate::tools::delegate::SubagentSpawner::new(
             child_route.clone(),
@@ -1267,7 +1270,7 @@ impl SessionActor {
     /// at session spawn. A model the config doesn't describe resets to the
     /// built-in defaults instead of leaking the previous model's caps.
     fn apply_model_switch(&mut self, provider: &str, model: &str) {
-        if let Ok(cfg) = agent_llm::AppConfig::load(None) {
+        if let Ok(cfg) = agent_llm::AppConfig::load(&self.paths.config_dir, None) {
             // Every provider's key is scrubbed, not just the active one: a
             // prompt can carry any configured key, and a switch must not leave
             // the previous provider's mask in place.
@@ -1294,7 +1297,7 @@ impl SessionActor {
                     .expect("child route lock poisoned");
                 route.provider = built;
                 // The model table belongs to the provider, so it moves with it.
-                route.models = child_models(provider);
+                route.models = child_models(provider, &self.paths.config_dir);
                 match resolved {
                     Some(d) => {
                         let map = d.thinking_level_map.clone();

@@ -219,7 +219,8 @@ fn linux_nvidia_gpu() -> bool {
 
 #[cfg(target_os = "linux")]
 fn pin_linux_rendering_env() {
-    let dev = agent_llm::config::DevConfig::load().unwrap_or_default();
+    let dev = agent_llm::config::DevConfig::load(&crate::kernel::app_paths().config_dir)
+        .unwrap_or_default();
     let nvidia = linux_nvidia_gpu();
 
     // GDK_BACKEND — auto-detect the session; settings.toml overrides.

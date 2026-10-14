@@ -83,19 +83,16 @@ pub struct DevConfig {
 }
 
 impl DevConfig {
-    /// The canonical user-level path: `~/.config/husk/settings.toml` —
-    /// same directory as `config.toml`, separate file so a bad renderer
-    /// flag never sits next to provider secrets.
-    pub fn default_path() -> Option<PathBuf> {
-        let base = dirs::config_dir()?;
-        Some(base.join("husk").join("settings.toml"))
+    /// The canonical user-level path: `<config dir>/settings.toml` — same
+    /// directory as `config.toml`, separate file so a bad renderer flag never
+    /// sits next to provider secrets. The directory is the host's to name.
+    pub fn default_path(config_dir: &Path) -> PathBuf {
+        config_dir.join("settings.toml")
     }
 
-    /// Load from `~/.config/husk/settings.toml`; missing file → default.
-    pub fn load() -> Result<Self, ConfigError> {
-        let Some(path) = Self::default_path() else {
-            return Ok(Self::default());
-        };
+    /// Load `<config dir>/settings.toml`; missing file → default.
+    pub fn load(config_dir: &Path) -> Result<Self, ConfigError> {
+        let path = Self::default_path(config_dir);
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -103,15 +100,10 @@ impl DevConfig {
         toml::from_str(&raw).map_err(|e| ConfigError::Parse(path.clone(), e.to_string()))
     }
 
-    /// Write `~/.config/husk/settings.toml` — the whole file is ours, so
-    /// this overwrites rather than merges.
-    pub fn save(dev: &DevConfig) -> Result<(), ConfigError> {
-        let Some(path) = Self::default_path() else {
-            return Err(ConfigError::Read(
-                PathBuf::from("~/.config/husk/settings.toml"),
-                std::io::Error::new(std::io::ErrorKind::NotFound, "config dir unavailable"),
-            ));
-        };
+    /// Write `<config dir>/settings.toml` — the whole file is ours, so this
+    /// overwrites rather than merges.
+    pub fn save(config_dir: &Path, dev: &DevConfig) -> Result<(), ConfigError> {
+        let path = Self::default_path(config_dir);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ConfigError::Read(parent.to_path_buf(), e))?;
@@ -1243,39 +1235,38 @@ pub enum SecretResolution {
 }
 
 impl AppConfig {
-    /// Default config path: `~/.config/husk/config.json` (if exists) or `config.toml`.
-    pub fn default_path() -> Option<PathBuf> {
-        let base = dirs::config_dir()?;
-        let dir = base.join("husk");
-        // Renamed from `agent-rs` — a one-time `fs::rename` carries config +
-        // plugins over when the new dir is absent.
-        let legacy = base.join("agent-rs");
-        if !dir.exists() && legacy.is_dir() {
-            let _ = std::fs::rename(&legacy, &dir);
-        }
-        // TOML is canonical — a hand-edited config.toml is ALWAYS the
-        // live file when it exists; config.json only fills in otherwise.
-        let toml_path = dir.join("config.toml");
+    /// The config file in `config_dir`: `config.toml` when it exists, else
+    /// `config.json` when that exists, else the `config.toml` path to create.
+    ///
+    /// TOML is canonical — a hand-edited `config.toml` is ALWAYS the live file
+    /// when it exists; `config.json` only fills in otherwise. Directory
+    /// migration (a product renaming itself) is the host's job, not this one's.
+    pub fn default_path(config_dir: &Path) -> PathBuf {
+        let toml_path = config_dir.join("config.toml");
         if toml_path.exists() {
-            return Some(toml_path);
+            return toml_path;
         }
-        let json_path = dir.join("config.json");
+        let json_path = config_dir.join("config.json");
         if json_path.exists() {
-            return Some(json_path);
+            return json_path;
         }
-        Some(toml_path)
+        toml_path
     }
 
     /// Load from disk; missing file yields `AppConfig::default()` (first-run).
-    /// Supports both JSON and TOML syntax, and naked provider mappings.
-    pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
-        let path = match path {
+    /// `file` overrides the `config_dir` lookup. Supports both JSON and TOML
+    /// syntax, and naked provider mappings.
+    pub fn load(config_dir: &Path, file: Option<&Path>) -> Result<Self, ConfigError> {
+        let path = match file {
             Some(p) => p.to_path_buf(),
-            None => match Self::default_path() {
-                Some(p) => p,
-                None => return Ok(Self::default()),
-            },
+            None => Self::default_path(config_dir),
         };
+        Self::load_file(&path)
+    }
+
+    /// Load one config file; a missing file yields `AppConfig::default()`.
+    fn load_file(path: &Path) -> Result<Self, ConfigError> {
+        let path = path.to_path_buf();
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -1371,7 +1362,7 @@ impl AppConfig {
         let is_toml = path.extension().and_then(|e| e.to_str()) == Some("toml");
         let text = if path.exists() {
             // A file we cannot read is a file we must not replace.
-            Self::load(Some(path))?;
+            Self::load_file(path)?;
             if is_toml {
                 let existing = std::fs::read_to_string(path)
                     .map_err(|e| ConfigError::Read(path.to_path_buf(), e))?;
@@ -1581,7 +1572,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), json_content).unwrap();
 
-        let cfg = AppConfig::load(Some(tmp.path())).expect("should load json config");
+        let cfg = AppConfig::load_file(tmp.path()).expect("should load json config");
         assert_eq!(cfg.active_provider.as_deref(), Some("devin"));
         assert_eq!(cfg.active_model.as_deref(), Some("devin/swe-2"));
 
@@ -1639,7 +1630,7 @@ high = "high"
 "#;
         let tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
         std::fs::write(tmp.path(), toml_doc).unwrap();
-        let cfg = AppConfig::load(Some(tmp.path())).expect("toml loads");
+        let cfg = AppConfig::load_file(tmp.path()).expect("toml loads");
 
         let out = toml::to_string_pretty(&cfg).expect("serializes back to toml");
         let cfg2: AppConfig = toml::from_str(&out).expect("reparse");
@@ -1672,7 +1663,7 @@ high = "high"
             api_key = \"env:X\"\n";
         let tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
         std::fs::write(tmp.path(), doc).unwrap();
-        let cfg = AppConfig::load(Some(tmp.path())).expect("README alias must load");
+        let cfg = AppConfig::load_file(tmp.path()).expect("README alias must load");
         assert_eq!(cfg.providers["deepseek"].kind, ProviderKind::OpenaiCompat);
     }
 
@@ -1687,7 +1678,7 @@ high = "high"
             context_window = 1.5\n";
         let tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
         std::fs::write(tmp.path(), doc).unwrap();
-        let err = AppConfig::load(Some(tmp.path())).expect_err("bad config must not load");
+        let err = AppConfig::load_file(tmp.path()).expect_err("bad config must not load");
         let msg = err.to_string();
         assert!(msg.contains("failed to parse config file"), "{msg}");
         assert!(msg.contains(&tmp.path().display().to_string()), "{msg}");
@@ -1781,7 +1772,7 @@ high = "high"
             api_key = \"env:DEEPSEEK_API_KEY\"  # rotate yearly\n";
         std::fs::write(&path, original).unwrap();
 
-        let mut cfg = AppConfig::load(Some(&path)).unwrap();
+        let mut cfg = AppConfig::load_file(&path).unwrap();
         cfg.active_model = Some("deepseek-chat".into());
         AppConfig::save_to(&path, &cfg).unwrap();
 
@@ -1832,7 +1823,7 @@ high = "high"
             ..Default::default()
         });
         AppConfig::save_to(&path, &cfg).unwrap();
-        let back = AppConfig::load(Some(&path)).unwrap();
+        let back = AppConfig::load_file(&path).unwrap();
         assert_eq!(back.fallback_chain, vec!["b", "c"]);
     }
 }

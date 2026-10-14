@@ -1107,7 +1107,9 @@ fn agent_session_inner(
             Ok(serde_json::json!({ "success": true }))
         }
         "open_config" => {
-            if let Some(path) = agent_llm::AppConfig::default_path() {
+            let paths = crate::kernel::app_paths();
+            let path = agent_llm::AppConfig::default_path(&paths.config_dir);
+            {
                 #[cfg(target_os = "macos")]
                 let _ = std::process::Command::new("open").arg(&path).spawn();
                 #[cfg(target_os = "linux")]
@@ -1117,25 +1119,24 @@ fn agent_session_inner(
                     .args(["/C", "start", "", &path.to_string_lossy()])
                     .spawn();
                 Ok(serde_json::json!({ "path": path.to_string_lossy() }))
-            } else {
-                Err("config path not found".into())
             }
         }
         "get_app_config" => {
-            let path = agent_llm::AppConfig::default_path();
+            let path = agent_llm::AppConfig::default_path(&crate::kernel::app_paths().config_dir);
             // NORMALIZED view — `AppConfig::load` folds naked provider
             // maps + camelCase aliases into the canonical shape. A file that
             // fails to parse is reported as `load_error` and the editor stays
             // read-only — it must not look empty, or the next save would
             // replace the user's file with a blank document.
-            let (cfg, load_error) = match agent_llm::AppConfig::load(None) {
+            let cfg_dir = crate::kernel::app_paths().config_dir;
+            let (cfg, load_error) = match agent_llm::AppConfig::load(&cfg_dir, None) {
                 Ok(c) => (c, None),
                 Err(e) => (agent_llm::AppConfig::default(), Some(e.to_string())),
             };
             let mut config_val = serde_json::to_value(&cfg).unwrap_or_else(|_| serde_json::json!({}));
             mask_config_keys(&mut config_val);
             Ok(serde_json::json!({
-                "path": path.map(|p| p.to_string_lossy().to_string()),
+                "path": path.to_string_lossy().to_string(),
                 "config": config_val,
                 "load_error": load_error,
                 "permission_mode": mgr.permission_mode,
@@ -1146,7 +1147,7 @@ fn agent_session_inner(
         // file sits beside `config.toml` so a broken renderer flag can
         // be reverted by hand even while the GUI is dead.
         "get_dev_config" => {
-            let dev = agent_llm::config::DevConfig::load()
+            let dev = agent_llm::config::DevConfig::load(&crate::kernel::app_paths().config_dir)
                 .map_err(|e| format!("load dev config: {e}"))?;
             Ok(serde_json::to_value(&dev).map_err(|e| e.to_string())?)
         }
@@ -1165,14 +1166,13 @@ fn agent_session_inner(
                     ));
                 }
             }
-            agent_llm::config::DevConfig::save(&dev)
+            agent_llm::config::DevConfig::save(&crate::kernel::app_paths().config_dir, &dev)
                 .map_err(|e| format!("save dev config: {e}"))?;
             Ok(serde_json::json!({ "success": true }))
         }
         "save_app_config" => {
-            let Some(path) = agent_llm::AppConfig::default_path() else {
-                return Err("config path not found".into());
-            };
+            let cfg_dir = crate::kernel::app_paths().config_dir;
+            let path = agent_llm::AppConfig::default_path(&cfg_dir);
             let Some(val) = payload else {
                 return Err("save_app_config requires payload".into());
             };
@@ -1180,7 +1180,7 @@ fn agent_session_inner(
             // so an untouched provider keeps its secret. Read the file as it is
             // on disk now, not a cached copy.
             let mut val = val;
-            let stored = agent_llm::AppConfig::load(Some(&path)).unwrap_or_default();
+            let stored = agent_llm::AppConfig::load(&cfg_dir, Some(&path)).unwrap_or_default();
             unmask_config_keys(&mut val, &stored);
             // Normalize BEFORE writing; `save_to` refuses to replace a file
             // that no longer parses and keeps a `.bak` of the previous one.

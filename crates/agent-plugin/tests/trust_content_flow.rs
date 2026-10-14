@@ -7,6 +7,11 @@ use std::path::Path;
 
 use agent_plugin::{PluginManager, PluginManifest};
 
+fn test_paths() -> agent_paths::AppPaths {
+    let base = std::env::temp_dir().join("agent-plugin-trust-test");
+    agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".husk")
+}
+
 fn write_script(path: &Path, body: &str) {
     std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -37,7 +42,7 @@ async fn swapped_script_is_refused_without_reconsent() {
     grant.trust_content("guard", &repo, &manifest(&pdir));
     let store_path = t.path().join("plugin-trust.json");
     grant.save(&store_path);
-    let mut mgr = PluginManager::new();
+    let mut mgr = PluginManager::new(test_paths());
     mgr.trust = agent_plugin::TrustStore::load(&store_path);
     mgr.register_plugin(manifest(&pdir), &repo).await.unwrap();
 
@@ -49,7 +54,7 @@ async fn swapped_script_is_refused_without_reconsent() {
 
     // Next boot: the grant is read back from disk, as it really is. It must
     // not follow the swapped bytes.
-    let mut mgr = PluginManager::new();
+    let mut mgr = PluginManager::new(test_paths());
     mgr.trust = agent_plugin::TrustStore::load(&store_path);
     let err = mgr
         .register_plugin(manifest(&pdir), &repo)
@@ -73,7 +78,7 @@ async fn reviewed_script_still_loads_after_reload() {
 
     let mut store = agent_plugin::TrustStore::default();
     store.trust_content("guard", &repo, &manifest(&pdir));
-    let mut mgr = PluginManager::new();
+    let mut mgr = PluginManager::new(test_paths());
     mgr.trust = store;
     mgr.register_plugin(manifest(&pdir), &repo)
         .await

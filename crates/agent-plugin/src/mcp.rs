@@ -65,6 +65,9 @@ enum Transport {
 /// One live MCP server: spawned child + demux reader + tool schema cache.
 pub struct McpClient {
     pub plugin_id: String,
+    /// Name this host reports in the MCP `initialize` handshake. Supplied by
+    /// the host, which owns its own name.
+    client_name: String,
     transport: Transport,
     req_id: AtomicU64,
     pending: Arc<std::sync::Mutex<PendingMap>>,
@@ -129,7 +132,7 @@ fn response_id(v: &Value) -> Option<u64> {
 impl McpClient {
     /// Spawn + handshake + initial `tools/list` (+ resources/prompts when
     /// the server declares them).
-    pub async fn start(manifest: &PluginManifest) -> Result<Arc<Self>> {
+    pub async fn start(manifest: &PluginManifest, client_name: &str) -> Result<Arc<Self>> {
         // No `entry` = a pure plugin (host-side capabilities only) — there is
         // nothing to connect and this constructor should never have run.
         let entry = manifest
@@ -176,6 +179,7 @@ impl McpClient {
                 .unwrap_or_default();
             let client = Arc::new(Self {
                 plugin_id: manifest.id.clone(),
+                client_name: client_name.to_string(),
                 transport: Transport::Http {
                     url: url.to_string(),
                     client: reqwest::Client::builder()
@@ -305,6 +309,7 @@ impl McpClient {
 
         let client = Arc::new(Self {
             plugin_id: manifest.id.clone(),
+            client_name: client_name.to_string(),
             transport: Transport::Stdio {
                 stdin: Arc::new(Mutex::new(stdin)),
                 _child: Mutex::new(child),
@@ -370,7 +375,7 @@ impl McpClient {
                 json!({
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "husk", "version": env!("CARGO_PKG_VERSION")},
+                    "clientInfo": {"name": self.client_name, "version": env!("CARGO_PKG_VERSION")},
                 }),
             )
             .await
