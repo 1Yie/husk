@@ -24,8 +24,10 @@ declare -A ALLOW=(
   [agent-skills]=""
   # where the app keeps its files — pure path resolution, names no product
   [agent-paths]=""
+  # the conversation repository — names no product and no kernel type
+  [agent-store]="agent-llm"
   # runtime
-  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-tool"
+  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-store agent-tool"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox"

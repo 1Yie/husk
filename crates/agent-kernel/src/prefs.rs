@@ -18,22 +18,6 @@ use crate::session_store::{global_get, global_put, global_update, is_office_root
 // `SessionConfig`; written whenever the UI changes one of the three selectors.
 // ---------------------------------------------------------------------------
 
-/// Per-workspace composer preferences.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct WorkspacePrefs {
-    #[serde(default)]
-    pub provider: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub thinking_level: Option<String>,
-    #[serde(default)]
-    pub permission_mode: Option<String>,
-    /// Per-workspace agent mode (`build` | `plan` | `goal`).
-    #[serde(default)]
-    pub agent_mode: Option<String>,
-}
-
 /// Global user default preferences for fresh/new sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultPreferences {

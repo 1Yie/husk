@@ -1,0 +1,14 @@
+[package]
+name = "agent-store"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# The repository persists wire types, and nothing else from the workspace.
+agent-llm = { path = "../agent-llm" }
+serde.workspace = true
+serde_json.workspace = true
+xxhash-rust.workspace = true
+redb = "4.3.0"
+fs2 = "0.4"
+tempfile = "3"

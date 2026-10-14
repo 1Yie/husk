@@ -87,6 +87,7 @@ dependencies = [
  "agent-plugin",
  "agent-sandbox",
  "agent-skills",
+ "agent-store",
  "agent-tool",
  "anyhow",
  "async-trait",
@@ -195,6 +196,19 @@ dependencies = [
  "serde_json",
  "strsim",
  "tempfile",
+]
+
+[[package]]
+name = "agent-store"
+version = "0.1.0"
+dependencies = [
+ "agent-llm",
+ "fs2",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "xxhash-rust",
 ]
 
 [[package]]
