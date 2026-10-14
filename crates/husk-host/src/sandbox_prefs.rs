@@ -1,5 +1,12 @@
 //! `sandbox_prefs` — process-wide sandbox overrides from the settings UI.
 //!
+//! Deliberately a process global: the settings page and the CLI flags change
+//! the limits for every live session at once, so one process has exactly one
+//! source. A host that needs per-session limits builds its sandbox with
+//! [`SwitchableSandbox::with_limits`] instead of [`SwitchableSandbox::new`] —
+//! that seam is the injection point, and the one place to widen if two
+//! products ever share a process.
+//!
 //! Process tools (`bash`, `test_runner`) fold these into the per-run
 //! `SandboxConfig` AFTER the audit plan fills its defaults — `None` fields
 //! leave the plan's values untouched.

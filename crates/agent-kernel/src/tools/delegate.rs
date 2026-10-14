@@ -715,8 +715,8 @@ pub const BUILTIN_SUBAGENTS: &[(&str, &str, &str)] = &[
 ];
 
 /// Agent manifest dirs — workspace first (a project agent shadows a global one
-/// of the same name), then user-level. `.husk/agents/` is Husk's own workspace
-/// state dir (next to `.husk/attachments/`); the others are read-only aliases
+/// of the same name), then user-level. `<workspace_dir>/agents/` is the host's
+/// own workspace state dir (next to its `attachments/`); the others are read-only aliases
 /// for trees other tools already write (`.agents/` = agentskills convention,
 /// `.claude/` = Claude Code).
 fn workspace_agent_dirs(root: &Path, paths: &agent_paths::AppPaths) -> Vec<PathBuf> {
@@ -858,7 +858,7 @@ fn find_subagent(root: &Path, name: &str, paths: &agent_paths::AppPaths) -> Opti
 /// prompt is not a guard, so the registry they run on is read-only.
 const BUILTIN_READONLY: &[&str] = &["review"];
 
-/// Write one child's full history to `.husk/subagents/` as JSONL, one message
+/// Write one child's full history to `<workspace_dir>/subagents/` as JSONL, one message
 /// per line. Best effort: a write failure is logged and never fails the delegate
 /// call, because the report the parent needs does not depend on this file.
 fn persist_transcript(dir: &Path, child_id: u64, label: &str, history: &[ChatMessage]) {
