@@ -529,7 +529,7 @@ impl SessionActor {
             )
             .replace(
                 "{{SUBAGENTS_BLOCK}}",
-                &agent_kernel::tools::delegate::catalog(&cfg.workspace_root, &cfg.paths),
+                &crate::subagents::catalog(&cfg.workspace_root, &cfg.paths),
             );
 
         // the host's user-level AGENTS.md then `<workspace>/AGENTS.md`
@@ -680,7 +680,8 @@ impl SessionActor {
             Arc::new(child_full),
             Arc::new(child_ro),
         )
-        .with_policy(agent_coding::policy::coding_policy_factory()));
+        .with_policy(agent_coding::policy::coding_policy_factory())
+        .with_host(Arc::new(crate::subagents::HuskSubagents)));
         // `ask_question` emits its card through the session's event channel;
         // fan-out tools (batch items) emit ToolCallStarted/Finished on ui_tx.
         tool_ctx.install_ask(Arc::new(agent_kernel::tools::registry::AskChannel::new(Some(
@@ -987,7 +988,7 @@ impl SessionActor {
         // the settings UI can add one while the session is open.
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
-                let block = agent_kernel::tools::delegate::catalog(&self.workspace_root, &self.paths);
+                let block = crate::subagents::catalog(&self.workspace_root, &self.paths);
                 sys.content = Some(replace_block(&content, "subagents", &block));
             }
         }

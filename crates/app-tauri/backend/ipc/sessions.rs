@@ -546,7 +546,7 @@ fn agent_session_inner(
                 "plugins": mgr.plugin_overview(),
                 // The `delegate` TOOL is the driver, not an agent — it's
                 // never listed. Rows = built-in agents + `*.md` manifests.
-                "subagents": agent_kernel::tools::delegate::BUILTIN_SUBAGENTS
+                "subagents": husk_host::subagents::BUILTIN_SUBAGENTS
                     .iter()
                     .map(|(n, d, p)| serde_json::json!({
                         "name": n,
@@ -557,7 +557,7 @@ fn agent_session_inner(
                     .collect::<Vec<_>>()
                     .into_iter()
                     .chain(
-                    agent_kernel::tools::delegate::discover_subagents(
+                    husk_host::subagents::discover_subagents(
                         &mgr.workspace_root,
                         &crate::kernel::app_paths(),
                     )
@@ -692,7 +692,7 @@ fn agent_session_inner(
             let path = subagent_file(&mgr.workspace_root, &name)
                 .ok_or_else(|| format!("找不到子代理 {name}"))?;
             let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let (_, desc, body) = agent_kernel::tools::delegate::split_agent(&text);
+            let (_, desc, body) = husk_host::subagents::split_agent(&text);
             Ok(serde_json::json!({
                 "name": name,
                 "description": desc.unwrap_or_default(),
@@ -831,9 +831,9 @@ fn agent_session_inner(
             }
             let paths = crate::kernel::app_paths();
             let base = if global {
-                agent_kernel::tools::delegate::global_agent_dir(&paths)
+                husk_host::subagents::global_agent_dir(&paths)
             } else {
-                agent_kernel::tools::delegate::workspace_agent_dir(&mgr.workspace_root, &paths)
+                husk_host::subagents::workspace_agent_dir(&mgr.workspace_root, &paths)
             };
             std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
             let path = base.join(format!("{name}.md"));
@@ -1595,12 +1595,12 @@ fn subagent_file(workspace_root: &std::path::Path, name: &str) -> Option<std::pa
         return None;
     }
     let paths = crate::kernel::app_paths();
-    let ws = agent_kernel::tools::delegate::workspace_agent_dir(workspace_root, &paths)
+    let ws = husk_host::subagents::workspace_agent_dir(workspace_root, &paths)
         .join(format!("{name}.md"));
     if ws.is_file() {
         return Some(ws);
     }
-    let gl = agent_kernel::tools::delegate::global_agent_dir(&paths).join(format!("{name}.md"));
+    let gl = husk_host::subagents::global_agent_dir(&paths).join(format!("{name}.md"));
     gl.is_file().then_some(gl)
 }
 

@@ -111,7 +111,6 @@ dependencies = [
  "agent-tool",
  "anyhow",
  "async-trait",
- "dirs",
  "futures",
  "schemars 1.2.2",
  "serde",

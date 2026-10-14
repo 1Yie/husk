@@ -22,7 +22,6 @@ anyhow.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 schemars.workspace = true
-dirs.workspace = true
 
 [dev-dependencies]
 agent-testkit = { path = "../agent-testkit" }

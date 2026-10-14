@@ -9,4 +9,5 @@ pub mod prefs;
 pub mod sandbox_prefs;
 pub mod session;
 pub mod session_manager;
+pub mod subagents;
 pub mod todo_store;

@@ -33,6 +33,7 @@ fn spawner(provider: Arc<dyn agent_llm::LlmProvider>) -> SubagentSpawner {
         models: std::collections::HashMap::new(),
     }));
     SubagentSpawner::new(route, Arc::new(full), Arc::new(readonly))
+        .with_host(Arc::new(husk_host::subagents::HuskSubagents))
 }
 
 fn ctx_with(dir: &std::path::Path, spawner: SubagentSpawner) -> Arc<ToolCtx> {
@@ -186,7 +187,8 @@ fn spawner_with_route(
         model_input: Vec::new(),
         models: std::collections::HashMap::new(),
     }));
-    let spawner = SubagentSpawner::new(route.clone(), Arc::new(full), Arc::new(readonly));
+    let spawner = SubagentSpawner::new(route.clone(), Arc::new(full), Arc::new(readonly))
+        .with_host(Arc::new(husk_host::subagents::HuskSubagents));
     (spawner, route)
 }
 
