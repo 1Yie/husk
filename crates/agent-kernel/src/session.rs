@@ -588,7 +588,7 @@ impl SessionActor {
             model_input: cfg.model_input.clone(),
             models: child_models(&cfg.provider_name),
         }));
-        tool_ctx.subagent = Some(crate::tools::delegate::SubagentSpawner::new(
+        tool_ctx.install_subagent(crate::tools::delegate::SubagentSpawner::new(
             child_route.clone(),
             Arc::new(child_full),
             Arc::new(child_ro),

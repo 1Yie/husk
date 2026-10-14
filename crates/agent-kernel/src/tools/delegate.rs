@@ -465,7 +465,6 @@ impl SubagentSpawner {
             // workspace store, like its todo state would if it had a session.
             memory: parent_ctx.memory.clone(),
             cancel: Some(cancel.clone()),
-            subagent: None,
             depth: parent_ctx.depth + 1,
             // The child's own engine refreshes this on its first dispatch.
             active_registry: std::sync::RwLock::new(None),
@@ -1049,7 +1048,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             "delegation depth limit reached — a subagent cannot delegate".into(),
         ));
     }
-    let Some(spawner) = ctx.subagent.clone() else {
+    let Some(spawner) = ctx.subagent().map(|s| s.0.clone()) else {
         return Err(ToolError::Failed(
             "delegation unavailable in this context".into(),
         ));

@@ -37,7 +37,7 @@ fn spawner(provider: Arc<dyn agent_llm::LlmProvider>) -> SubagentSpawner {
 
 fn ctx_with(dir: &std::path::Path, spawner: SubagentSpawner) -> Arc<ToolCtx> {
     let mut ctx = ToolCtx::new(dir);
-    ctx.subagent = Some(spawner);
+    ctx.install_subagent(spawner);
     Arc::new(ctx)
 }
 
@@ -105,7 +105,7 @@ async fn every_child_emits_a_nested_card() {
     provider.script_text("two");
     let (sink, mut rx) = UiSink::channel();
     let mut ctx = ToolCtx::new(dir.path());
-    ctx.subagent = Some(spawner(provider));
+    ctx.install_subagent(spawner(provider));
     ctx.ui_tx = Some(sink);
 
     let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();

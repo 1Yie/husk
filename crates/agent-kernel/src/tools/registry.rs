@@ -178,6 +178,10 @@ pub struct SandboxLimitsSlot(pub crate::sandbox_prefs::SandboxLimits);
 /// refuses instead of parking on an answer nobody can give.
 pub struct AskSlot(pub Arc<AskChannel>);
 
+/// Subagent spawner — `delegate` runs a fresh-context child engine. Absent
+/// where delegation is unavailable (tests, child contexts).
+pub struct SubagentSlot(pub crate::tools::delegate::SubagentSpawner);
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
@@ -196,9 +200,6 @@ pub struct ToolCtx {
     /// it so a user cancel propagates into the delegation instead of
     /// orphaning a running child. `None` in unattached contexts.
     pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// Subagent spawner — `delegate` runs a fresh-context child engine.
-    /// `None` where delegation is unavailable (tests, child contexts).
-    pub subagent: Option<crate::tools::delegate::SubagentSpawner>,
     /// Session UI event channel — tools that fan out (batch items,
     /// subagent progress) emit ToolCallStarted/Finished here so internal
     /// calls stay visible + auditable instead of running silently.
@@ -243,6 +244,16 @@ impl ToolCtx {
         self.ext.insert(Arc::new(AskSlot(ask)));
     }
 
+    /// The subagent spawner, if this context can delegate.
+    pub fn subagent(&self) -> Option<Arc<SubagentSlot>> {
+        self.ext.get::<SubagentSlot>()
+    }
+
+    /// Install the spawner that backs `delegate`.
+    pub fn install_subagent(&mut self, spawner: crate::tools::delegate::SubagentSpawner) {
+        self.ext.insert(Arc::new(SubagentSlot(spawner)));
+    }
+
     pub fn sandbox_limits(&self) -> crate::sandbox_prefs::SandboxLimits {
         self.ext
             .get::<SandboxLimitsSlot>()
@@ -272,7 +283,6 @@ impl ToolCtx {
             session: None,
             memory: MemoryHandle::default(),
             cancel: None,
-            subagent: None,
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
@@ -312,7 +322,6 @@ impl ToolCtx {
             session: None,
             memory: MemoryHandle::default(),
             cancel: None,
-            subagent: None,
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
@@ -408,7 +417,6 @@ impl ToolCtx {
             session: self.session.clone(),
             memory: self.memory.clone(),
             cancel: Some(cancel),
-            subagent: self.subagent.clone(),
             ui_tx: self.ui_tx.clone(),
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
@@ -872,6 +880,51 @@ mod tests {
         // A batch item's cancel-scoped copy answers on the same channel.
         let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
         assert!(Arc::ptr_eq(&scoped.ask().unwrap(), &channel));
+    }
+
+    #[test]
+    fn subagent_is_absent_until_installed_and_shared_after_cancel_scope() {
+        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        assert!(ctx.subagent().is_none());
+
+        // Never called: the test only checks presence, not delegation.
+        struct Idle;
+        #[async_trait::async_trait]
+        impl agent_llm::LlmProvider for Idle {
+            fn id(&self) -> &'static str {
+                "idle"
+            }
+            async fn chat_stream(
+                &self,
+                _model: &str,
+                _messages: &[agent_llm::ChatMessage],
+                _tools: Option<serde_json::Value>,
+                _temperature: f32,
+                _reasoning_effort: Option<&str>,
+                _params: &agent_llm::ModelParams,
+            ) -> anyhow::Result<agent_llm::BoxStream<agent_llm::StreamChunk>> {
+                anyhow::bail!("idle provider")
+            }
+        }
+        let registry = Arc::new(ToolRegistry::new());
+        let route = Arc::new(std::sync::RwLock::new(crate::tools::delegate::ChildRoute {
+            provider: Arc::new(Idle),
+            model: String::new(),
+            temperature: 0.0,
+            context_window: 0,
+            thinking_level: None,
+            thinking_level_map: None,
+            model_params: agent_llm::ModelParams::default(),
+            model_input: Vec::new(),
+            models: std::collections::HashMap::new(),
+        }));
+        ctx.install_subagent(crate::tools::delegate::SubagentSpawner::new(
+            route,
+            registry.clone(),
+            registry,
+        ));
+        let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        assert!(scoped.subagent().is_some());
     }
 
     #[test]
