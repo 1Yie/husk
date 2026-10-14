@@ -85,6 +85,7 @@ dependencies = [
  "agent-llm",
  "agent-plugin",
  "agent-sandbox",
+ "agent-skills",
  "agent-tool",
  "anyhow",
  "async-trait",
@@ -175,6 +176,16 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "agent-skills"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde_json",
+ "strsim",
+ "tempfile",
 ]
 
 [[package]]

@@ -116,7 +116,7 @@ pub fn for_model(skill: &LoadedSkill) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::scanner::SkillArgument;
+    use crate::scanner::SkillArgument;
     use std::path::PathBuf;
 
     fn meta(name: &str, desc: &str, global: bool) -> SkillMetadata {

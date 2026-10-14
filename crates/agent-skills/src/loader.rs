@@ -250,7 +250,7 @@ pub fn load_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::scanner::scan_skills;
+    use crate::scanner::scan_skills;
 
     fn write_skill(root: &Path, name: &str, body: &str) {
         let dir = root.join(".agents/skills").join(name);
