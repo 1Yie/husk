@@ -187,15 +187,15 @@ pub struct SubagentSlot(pub crate::tools::delegate::SubagentSpawner);
 /// where no session owns a store; `remember` then refuses.
 pub struct MemorySlot(pub MemoryHandle);
 
+/// The owning session's id and per-workspace store. Tools that keep
+/// per-session scratch state (`todo`) write next to the session's history
+/// file; `delegate` uses the id to route steering to the right owner.
+pub struct SessionSlot(pub (i64, Arc<crate::session_store::SessionStore>));
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
     pub workspace_root: Arc<Path>,
-    /// Owning session's id + its per-workspace store. Tools that keep
-    /// per-session scratch state (`todo`) write next to the session's
-    /// history file in the app state dir — never into the user's repo.
-    /// `None` for unattached contexts (tests, headless spawns).
-    pub session: Option<(i64, Arc<crate::session_store::SessionStore>)>,
     /// Parent turn's cooperative cancel flag — a delegated subagent polls
     /// it so a user cancel propagates into the delegation instead of
     /// orphaning a running child. `None` in unattached contexts.
@@ -301,7 +301,6 @@ impl ToolCtx {
         let root = root.canonicalize().unwrap_or(root);
         Self {
             workspace_root: Arc::from(root.as_path()),
-            session: None,
             cancel: None,
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
@@ -339,7 +338,6 @@ impl ToolCtx {
         let root = root.canonicalize().unwrap_or(root);
         let mut ctx = Self {
             workspace_root: Arc::from(root.as_path()),
-            session: None,
             cancel: None,
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
@@ -421,8 +419,15 @@ impl ToolCtx {
         id: i64,
         store: Option<Arc<crate::session_store::SessionStore>>,
     ) -> Self {
-        self.session = store.map(|s| (id, s));
+        if let Some(store) = store {
+            self.ext.insert(Arc::new(SessionSlot((id, store))));
+        }
         self
+    }
+
+    /// The owning session's id and its per-workspace store, if attached.
+    pub fn session(&self) -> Option<(i64, Arc<crate::session_store::SessionStore>)> {
+        self.ext.get::<SessionSlot>().map(|s| s.0.clone())
     }
 
     /// Resolve a model-supplied path against the workspace root and prove it
@@ -433,7 +438,6 @@ impl ToolCtx {
     pub fn with_cancel(&self, cancel: Arc<std::sync::atomic::AtomicBool>) -> ToolCtx {
         ToolCtx {
             workspace_root: self.workspace_root.clone(),
-            session: self.session.clone(),
             cancel: Some(cancel),
             ui_tx: self.ui_tx.clone(),
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
@@ -964,6 +968,21 @@ mod tests {
             &child.memory().unwrap().0,
             &parent.memory().unwrap().0,
         ));
+    }
+
+    #[test]
+    fn session_is_absent_until_attached_and_shared_after_cancel_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::session_store::SessionStore::open_at(dir.path(), &dir.path().join("t.db"))
+            .unwrap();
+        let ctx = ToolCtx::new(dir.path());
+        assert!(ctx.session().is_none());
+
+        let ctx = ctx.with_session(7, Some(Arc::new(store)));
+        let (id, _) = ctx.session().unwrap();
+        assert_eq!(id, 7);
+        let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        assert_eq!(scoped.session().map(|(id, _)| id), Some(7));
     }
 
     #[test]

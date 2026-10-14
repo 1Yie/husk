@@ -64,8 +64,8 @@ pub fn spec() -> ToolSpec {
 }
 
 fn store_handle(ctx: &ToolCtx) -> Option<(Arc<SessionStore>, i64)> {
-    if let Some((id, store)) = &ctx.session {
-        return Some((store.clone(), *id));
+    if let Some((id, store)) = ctx.session() {
+        return Some((store, id));
     }
     // Unattached context (tests/headless): derive the workspace's session
     // store anyway so state still lives in the app data dir.
@@ -274,9 +274,7 @@ mod tests {
         // Attach an isolated store (its own db inside the temp dir) so the
         // tests never touch the real `sessions.db`.
         let store = SessionStore::open_at(&dir, &dir.join("t.db")).unwrap();
-        let mut c = ToolCtx::new(&dir);
-        c.session = Some((0, Arc::new(store)));
-        Arc::new(c)
+        Arc::new(ToolCtx::new(&dir).with_session(0, Some(Arc::new(store))))
     }
 
     #[tokio::test]

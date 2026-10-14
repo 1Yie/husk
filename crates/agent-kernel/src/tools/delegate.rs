@@ -460,7 +460,6 @@ impl SubagentSpawner {
             // see the screen); input is not — `computer` is absent from every
             // child registry, and a refusing backend is the second guard
             // behind it for any path that constructs a child ctx itself.
-            session: None,
             cancel: Some(cancel.clone()),
             depth: parent_ctx.depth + 1,
             // The child's own engine refreshes this on its first dispatch.
@@ -532,7 +531,7 @@ impl SubagentSpawner {
         let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(8);
         // Owned by the parent's session. A context with no session registers as 0,
         // which only another session-less caller can match.
-        let owner = parent_ctx.session.as_ref().map(|(id, _)| *id).unwrap_or(0);
+        let owner = parent_ctx.session().map(|(id, _)| id).unwrap_or(0);
         let child_id = register_steer(owner, steer_tx);
         let _steer_guard = SteerGuard(child_id);
         let mut io = EngineIo {
