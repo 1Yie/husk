@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use tokio::sync::Mutex;
 
-use super::super::registry::ToolError;
+use agent_tool::ToolError;
 use super::bridge::{BridgeFactory, McpBridge, SerenaBridge, SerenaToolInfo};
 use super::catalog::SerenaToolCatalog;
 

@@ -18,7 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex};
 
-use super::super::registry::ToolError;
+use agent_tool::ToolError;
 
 /// `uvx` first-run can take a while (resolve + build + import); the
 /// `initialize` handshake waits this long before giving up.
@@ -475,8 +475,10 @@ mod tests {
         GUARD.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Full path libtest needs to run exactly this test in the child.
-    const STUB_TEST: &str = "tools::serena::bridge::tests::stub_mcp_server";
+    /// Full path libtest needs to run exactly this test in the child. Relative
+    /// to this crate's test binary — `--exact` matches the module path inside
+    /// it, which is `bridge::…` here, not the kernel's `tools::serena::bridge::…`.
+    const STUB_TEST: &str = "bridge::tests::stub_mcp_server";
     const STUB_MODE: &str = "AGENT_SERENA_STUB";
 
     /// Launch the current test binary as a stub MCP server. The stub is the

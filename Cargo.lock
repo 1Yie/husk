@@ -92,6 +92,7 @@ dependencies = [
  "agent-tools-computer",
  "agent-tools-fs",
  "agent-tools-office",
+ "agent-tools-serena",
  "agent-tools-shell",
  "agent-tools-web",
  "anyhow",
@@ -270,6 +271,20 @@ dependencies = [
  "agent-tool",
  "agent-tools-shell",
  "dirs",
+ "futures",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "agent-tools-serena"
+version = "0.1.0"
+dependencies = [
+ "agent-tool",
+ "async-trait",
  "futures",
  "schemars 1.2.2",
  "serde",

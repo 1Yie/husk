@@ -10,7 +10,7 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde_json::json;
 
-use super::super::registry::{schema_for, ExecFn, ToolError, ToolResult, ToolSpec};
+use agent_tool::{schema_for, ExecFn, ToolClass, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 use super::catalog::DETAIL_ACTION;
 use super::manager::manager_for;
 
@@ -26,8 +26,8 @@ struct SerenaCallArgs {
     arguments: Option<serde_json::Value>,
 }
 
-pub fn spec() -> ToolSpec {
-    let exec: ExecFn = Arc::new(|args, ctx| {
+pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
+    let exec: ExecFn<C> = Arc::new(|args, ctx| {
         let a: SerenaCallArgs = match serde_json::from_value(args) {
             Ok(a) => a,
             Err(e) => {
@@ -37,7 +37,7 @@ pub fn spec() -> ToolSpec {
         // Scope every call to *this* workspace's server. A process-wide shared
         // bridge would run project B's `replace_symbol_body` against project
         // A's tree; the manager keys by root (and restarts a dead child).
-        let root = ctx.workspace_root.clone();
+        let root = ctx.root().to_path_buf();
         async move {
             let manager = manager_for(&root);
 
@@ -105,7 +105,7 @@ pub fn spec() -> ToolSpec {
         ),
         // Serena's suite writes files — keep the permission gate on it.
         readonly: false,
-        class: super::super::registry::ToolClass::WorkspaceMutation,
+        class: ToolClass::WorkspaceMutation,
         // Execution is local stdio. The *bootstrap* (`uvx` fetching Serena
         // from git) does reach the network — this flag does not describe that
         // (see the module docs / `SerenaLaunch`), and batch accounting is the

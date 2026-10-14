@@ -20,6 +20,7 @@ agent-tools-computer = { path = "../agent-tools-computer" }
 agent-tools-fs = { path = "../agent-tools-fs" }
 agent-tools-office = { path = "../agent-tools-office" }
 agent-tools-shell = { path = "../agent-tools-shell" }
+agent-tools-serena = { path = "../agent-tools-serena" }
 agent-tools-web = { path = "../agent-tools-web" }
 async-trait.workspace = true
 futures.workspace = true

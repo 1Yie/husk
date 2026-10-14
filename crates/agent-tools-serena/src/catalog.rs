@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use super::super::registry::ToolError;
+use agent_tool::ToolError;
 use super::bridge::{McpBridge, SerenaToolInfo};
 
 #[derive(Debug, Default)]

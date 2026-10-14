@@ -1,7 +1,12 @@
 //! `serena` — Serena's semantic code tools behind one meta-tool.
 //!
 //! `serena start-mcp-server` runs as an MCP child over stdio (newline-delimited
-//! JSON-RPC), so the kernel needs no HTTP client for it.
+//! JSON-RPC), so this crate needs no HTTP client and no plugin bridge — it
+//! spawns the child directly.
+//!
+//! The meta-tool is generic over [`agent_tool::WorkspaceCtx`] (it reads only the
+//! workspace root), so this crate names no kernel type: the kernel depends on it,
+//! not the other way round.
 //!
 //! ```text
 //! workspace  →  SerenaManager (one slot per root)
@@ -22,6 +27,8 @@ pub use bridge::{BridgeFactory, McpBridge, SerenaBridge, SerenaLaunch, SerenaToo
 pub use catalog::SerenaToolCatalog;
 pub use manager::{manager_for, shutdown, SerenaManager};
 
-pub fn spec() -> super::registry::ToolSpec {
-    tool::spec()
+use agent_tool::{ToolSpec, WorkspaceCtx};
+
+pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
+    tool::spec::<C>()
 }

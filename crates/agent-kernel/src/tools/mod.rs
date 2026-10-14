@@ -23,7 +23,9 @@ pub mod host_slots;
 pub mod plan;
 pub mod registry;
 pub mod remember;
-pub mod serena;
+// The serena meta-tool lives in `agent-tools-serena` — same generic-over-ctx
+// pattern as the other extracted tool packages.
+pub use agent_tools_serena as serena;
 pub mod skill;
 pub mod todo;
 
