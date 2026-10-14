@@ -604,8 +604,13 @@ impl SessionActor {
         // one. `screenshot` stays: looking at the screen is an observation a
         // delegated visual check legitimately needs.
         let child_ro = child_full.readonly_only();
-        let mut tool_ctx =
-            ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
+        let mut tool_ctx = ToolCtx::new(&cfg.workspace_root).with_session(session_id);
+        // The todo list persists beside this session's history. A session with
+        // no store (the db failed to open) gets the kernel's in-memory list.
+        if let Some(store) = store.clone() {
+            crate::todo_store::SessionTodoStorage::new(store, session_id, &cfg.workspace_root)
+                .install(&mut tool_ctx);
+        }
         // This context's own goal/plan contract pair — the coding crate owns
         // the controller types, so installation is an explicit host step now.
         agent_coding::install_contract(&mut tool_ctx);

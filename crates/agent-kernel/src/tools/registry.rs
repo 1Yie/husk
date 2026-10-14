@@ -571,17 +571,13 @@ mod tests {
 
     #[test]
     fn session_is_absent_until_attached_and_shared_after_cancel_scope() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::session_store::SessionStore::open_at(dir.path(), &dir.path().join("t.db"))
-            .unwrap();
-        let ctx = ToolCtx::new(dir.path());
+        let ctx = ToolCtx::new(std::env::temp_dir());
         assert!(ctx.session().is_none());
 
-        let ctx = ctx.with_session(7, Some(Arc::new(store)));
-        let (id, _) = ctx.session().unwrap();
-        assert_eq!(id, 7);
+        let ctx = ctx.with_session(7);
+        assert_eq!(ctx.session(), Some(7));
         let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
-        assert_eq!(scoped.session().map(|(id, _)| id), Some(7));
+        assert_eq!(scoped.session(), Some(7));
     }
 
     #[test]

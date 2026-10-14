@@ -146,7 +146,7 @@ pub struct SubagentSlot(pub crate::tools::delegate::SubagentSpawner);
 /// The owning session's id and per-workspace store. Tools that keep
 /// per-session scratch state (`todo`) write next to the session's history
 /// file; `delegate` uses the id to route steering to the right owner.
-pub struct SessionSlot(pub (i64, Arc<crate::session_store::SessionStore>));
+pub struct SessionSlot(pub i64);
 
 /// Plugin router handle. `batch_execute` consults it to tell a plugin tool from
 /// an unknown name. Absent where no plugin router is installed.
@@ -268,22 +268,17 @@ impl ToolCtx {
         self
     }
 
-    /// Attach the owning session — gives tools access to per-session
-    /// scratch files in the app state dir.
-    pub fn with_session(
-        mut self,
-        id: i64,
-        store: Option<Arc<crate::session_store::SessionStore>>,
-    ) -> Self {
-        if let Some(store) = store {
-            self.ext.insert(Arc::new(SessionSlot((id, store))));
-        }
+    /// Attach the owning session's id. The kernel only needs the number — it
+    /// scopes a delegated child's steering to its owner; where a session's
+    /// state is persisted is the host's business (see `TodoStorage`).
+    pub fn with_session(mut self, id: i64) -> Self {
+        self.ext.insert(Arc::new(SessionSlot(id)));
         self
     }
 
-    /// The owning session's id and its per-workspace store, if attached.
-    pub fn session(&self) -> Option<(i64, Arc<crate::session_store::SessionStore>)> {
-        self.ext.get::<SessionSlot>().map(|s| s.0.clone())
+    /// The owning session's id, if attached.
+    pub fn session(&self) -> Option<i64> {
+        self.ext.get::<SessionSlot>().map(|s| s.0)
     }
 
     /// The plugin router handle, if one is installed.

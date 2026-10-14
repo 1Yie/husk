@@ -554,7 +554,7 @@ impl SubagentSpawner {
         let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(8);
         // Owned by the parent's session. A context with no session registers as 0,
         // which only another session-less caller can match.
-        let owner = parent_ctx.session().map(|(id, _)| id).unwrap_or(0);
+        let owner = parent_ctx.session().unwrap_or(0);
         let child_id = register_steer(owner, steer_tx);
         let _steer_guard = SteerGuard(child_id);
         let mut io = EngineIo {
