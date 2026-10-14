@@ -557,6 +557,8 @@ impl SessionActor {
         // reach an architecture layer (full, readonly and child bases alike,
         // matching what `with_builtins` carried before T9).
         registry.register(agent_coding::blueprint_tool::spec());
+        // Same for `serena` (the MCP bridge): host-registered, not a kernel builtin.
+        registry.register(agent_tools_serena::spec());
         // Subagent registries: a child never carries `delegate` (recursion
         // guard) or `HumanInteraction` tools (nobody can answer a child's
         // question — deny at the policy layer, not just via missing ui_tx);
@@ -572,6 +574,7 @@ impl SessionActor {
         // delegated visual check legitimately needs.
         let mut child_full = agent_kernel::tools::registry::ToolRegistry::child_builtins();
         child_full.register(agent_coding::blueprint_tool::spec());
+        child_full.register(agent_tools_serena::spec());
         let child_ro = child_full.readonly_only();
         let mut tool_ctx =
             ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
@@ -652,7 +655,7 @@ impl SessionActor {
         // wrappers). Same write surface as build — the difference is the
         // document-producing contract in the prompt, not a narrower toolbox.
         let mut office_reg = (*registry).clone();
-        for spec in agent_kernel::tools::office::specs() {
+        for spec in agent_tools_office::office::specs() {
             office_reg.register(spec);
         }
         for spec in agent_kernel::tools::assets::specs() {

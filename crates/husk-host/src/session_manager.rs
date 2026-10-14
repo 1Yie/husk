@@ -633,7 +633,7 @@ impl SessionManager {
         agent_kernel::session_store::remove_recent_workspace(&canon);
         // The workspace's Serena server (if any) goes with it — a closed
         // project should not keep an indexed child process around.
-        agent_kernel::tools::serena::shutdown(&canon);
+        agent_tools_serena::shutdown(&canon);
 
         let active_canon = self
             .workspace_root

@@ -22,7 +22,6 @@ impl ToolRegistry {
         r.register(crate::tools::todo::spec());
         r.register(crate::tools::skill::spec());
         r.register(crate::tools::remember::spec());
-        r.register(crate::tools::serena::spec());
         r.register(crate::tools::web_fetch::spec());
         r.register(crate::tools::web_fetch::spec_alias());
         r.register(crate::tools::screenshot::spec());

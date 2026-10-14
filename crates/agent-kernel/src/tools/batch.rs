@@ -640,7 +640,9 @@ mod tests {
 
     #[test]
     fn eligibility_matrix() {
-        let reg = crate::tools::registry::ToolRegistry::with_builtins();
+        let mut reg = crate::tools::registry::ToolRegistry::with_builtins();
+        // `serena` is host-registered; it still must never run inside a batch.
+        reg.register(agent_tools_serena::spec());
         for (name, want) in [
             ("smart_read", true),
             ("list_dir", true),

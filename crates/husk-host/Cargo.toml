@@ -13,6 +13,8 @@ agent-ipc = { path = "../agent-ipc" }
 agent-sandbox = { path = "../agent-sandbox" }
 agent-context = { path = "../agent-context" }
 agent-plugin = { path = "../agent-plugin" }
+agent-tools-office = { path = "../agent-tools-office" }
+agent-tools-serena = { path = "../agent-tools-serena" }
 agent-paths = { path = "../agent-paths" }
 serde.workspace = true
 serde_json.workspace = true

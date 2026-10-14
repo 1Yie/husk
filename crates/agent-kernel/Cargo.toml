@@ -18,9 +18,7 @@ agent-computer = { path = "../agent-computer" }
 agent-plugin = { path = "../agent-plugin" }
 agent-tools-computer = { path = "../agent-tools-computer" }
 agent-tools-fs = { path = "../agent-tools-fs" }
-agent-tools-office = { path = "../agent-tools-office" }
 agent-tools-shell = { path = "../agent-tools-shell" }
-agent-tools-serena = { path = "../agent-tools-serena" }
 agent-tools-web = { path = "../agent-tools-web" }
 async-trait.workspace = true
 futures.workspace = true
@@ -39,6 +37,7 @@ fs2 = "0.4"
 tempfile = "3"
 
 [dev-dependencies]
+agent-tools-serena = { path = "../agent-tools-serena" }
 agent-testkit = { path = "../agent-testkit" }
 tempfile = "3"
 # The computer-use acceptance test installs a scripted desktop backend and

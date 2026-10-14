@@ -10,7 +10,6 @@ pub mod delegate;
 // this crate depends on them rather than the other way round.
 pub use agent_tools_fs::{apply_patch, fs_patch, fs_read, grep, list_dir};
 pub use agent_tools_computer::{computer, screenshot};
-pub use agent_tools_office::office;
 pub use agent_tools_shell::{bash, sandbox_cfg, services, test_runner, util};
 pub use agent_tools_web::{assets, web_fetch};
 #[cfg(feature = "tree-sitter")]
@@ -20,9 +19,6 @@ pub mod builtins;
 pub mod host_slots;
 pub mod registry;
 pub mod remember;
-// The serena meta-tool lives in `agent-tools-serena` — same generic-over-ctx
-// pattern as the other extracted tool packages.
-pub use agent_tools_serena as serena;
 pub mod skill;
 pub mod todo;
 

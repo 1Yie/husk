@@ -452,7 +452,9 @@ mod tests {
     /// the list to stay in sync by hand.
     #[test]
     fn staged_write_set_matches_the_registry() {
-        let reg = ToolRegistry::with_builtins();
+        let mut reg = ToolRegistry::with_builtins();
+        // `serena` is a host-registered tool now; the trap below needs it.
+        reg.register(agent_tools_serena::spec());
         // Every staged name is a real, registered, non-readonly workspace
         // mutation: the engine will dispatch it before the permission gate.
         for name in ["fuzzy_patch", "apply_patch"] {
