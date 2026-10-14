@@ -475,12 +475,17 @@ impl SubagentSpawner {
             // The child's own engine refreshes this on its first dispatch.
             active_registry: std::sync::RwLock::new(None),
             ui_tx: Some(child_sink.clone()),
-            goal: Arc::new(crate::tools::goal::GoalController::new()),
-            plan: Arc::new(crate::tools::plan::PlanController::new()),
             // Subagent engines carry no plugin router, so plugin names
             // genuinely are unknown here — batch should keep saying so.
             plugins: None,
-        };
+            // Own pair, never the parent's: the child's goal/plan signal must
+            // not land on the parent's controller.
+            ext: Default::default(),
+        }
+        // Installed even though the child registry holds no goal/plan tool
+        // (see `child_builtins`): the child engine still reads its own
+        // controller each turn, and must never share the parent's.
+        .with_controllers();
         // Either side can ask for read-only; the manifest cannot grant write back.
         let base = if readonly || spec.readonly {
             self.registry_readonly.clone()

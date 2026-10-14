@@ -85,6 +85,11 @@ pub struct Engine {
     registry_goal: Arc<ToolRegistry>,
     registry_office: Arc<ToolRegistry>,
     ctx: Arc<ToolCtx>,
+    /// The turn's goal and plan signal, held directly rather than re-read from
+    /// `ctx` each turn: the state machine has no degraded path, so a context
+    /// without them is a construction bug, caught in `new`.
+    goal: Arc<crate::tools::goal::GoalController>,
+    plan: Arc<crate::tools::plan::PlanController>,
     model: String,
     temperature: f32,
     /// Agent mode — shared slot like `permissions` so a mid-turn composer
@@ -184,12 +189,22 @@ impl Engine {
             office_reg.register(spec);
         }
         let registry_office = Arc::new(office_reg);
+        let goal = ctx
+            .ext
+            .get::<crate::tools::goal::GoalController>()
+            .expect("engine context missing GoalController - build it with ToolCtx::new");
+        let plan = ctx
+            .ext
+            .get::<crate::tools::plan::PlanController>()
+            .expect("engine context missing PlanController - build it with ToolCtx::new");
         Self {
             sampler: Sampler::new(provider),
             registry_full: registry.clone(),
             registry_plan,
             registry_goal,
             registry_office,
+            goal,
+            plan,
             ctx,
             model: model.into(),
             temperature,
@@ -568,10 +583,10 @@ impl Engine {
         // A fresh turn starts with a clean goal signal — a leftover
         // `goal_complete` from an earlier turn must not short-circuit this
         // one (the contract is per-turn: each goal prompt ends declared).
-        self.ctx.goal.reset();
+        self.goal.reset();
         // Same per-turn contract for plan mode — a stale `submit_plan` must
         // not surface as this turn's deliverable.
-        self.ctx.plan.reset();
+        self.plan.reset();
         /// Cancel sentinel — the `Err` value and `Failed` reason (never
         /// rendered verbatim; the status bar localizes `Failed`). The
         /// user-facing line is `CANCEL_TEXT`.
@@ -959,7 +974,7 @@ impl Engine {
                 // turn that did tool work but never submitted gets ONE nudge —
                 // capped so a plain question can't be pushed twice.
                 let submitted_plan = if self.agent_mode() == crate::mode::AgentMode::Plan {
-                    self.ctx.plan.take_signal()
+                    self.plan.take_signal()
                 } else {
                     None
                 };
@@ -986,7 +1001,7 @@ impl Engine {
                 // `goal_blocked`. Push it back to work (capped — a model
                 // that can't converge shouldn't spin forever).
                 if self.agent_mode() == crate::mode::AgentMode::Goal
-                    && self.ctx.goal.state() == crate::tools::goal::GoalState::Running
+                    && self.goal.state() == crate::tools::goal::GoalState::Running
                     && goal_followups < MAX_GOAL_FOLLOWUPS
                 {
                     goal_followups += 1;
@@ -1049,9 +1064,9 @@ impl Engine {
                     }
                     let mut nudge = crate::blueprint::nudge(report);
                     if self.agent_mode() == crate::mode::AgentMode::Goal
-                        && self.ctx.goal.state() != crate::tools::goal::GoalState::Running
+                        && self.goal.state() != crate::tools::goal::GoalState::Running
                     {
-                        self.ctx.goal.reset();
+                        self.goal.reset();
                         nudge.push_str("\n目标的完成宣告已撤回 — 修正后重新调用 `goal_complete`。");
                     }
                     history.push(ChatMessage::user_hidden(nudge));

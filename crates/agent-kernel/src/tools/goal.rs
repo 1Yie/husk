@@ -160,7 +160,8 @@ async fn exec_complete(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, Tool
         .reported_evidence
         .map(|e| e.trim().to_string())
         .filter(|e| !e.is_empty());
-    ctx.goal.complete(summary.to_string(), evidence.clone());
+    let goal = ctx.require::<GoalController>("goal control")?;
+    goal.complete(summary.to_string(), evidence.clone());
     let mut out = format!("✅ 目标已宣告完成\n{summary}");
     if let Some(ev) = evidence {
         out.push_str(&format!("\n\n验收依据（模型声明，未经验证）：\n{ev}"));
@@ -175,6 +176,7 @@ async fn exec_blocked(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolE
     if reason.is_empty() {
         return Err(ToolError::Args("reason must not be empty".into()));
     }
-    ctx.goal.blocked(reason.to_string());
+    let goal = ctx.require::<GoalController>("goal control")?;
+    goal.blocked(reason.to_string());
     Ok(ToolResult::text(format!("⛔ 目标受阻\n{reason}")))
 }

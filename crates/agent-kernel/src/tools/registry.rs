@@ -5,7 +5,8 @@
 //! produces the request's `tools` array and dispatches by name; plugin tools
 //! merge in under `plugin_id:name` (Stage 9).
 
-use std::collections::BTreeMap;
+use std::any::{Any, TypeId};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -131,6 +132,29 @@ impl MemoryHandle {
     }
 }
 
+/// Typed extension slots on a [`ToolCtx`]. A tool that needs a host-owned
+/// service reads it by type, so `ToolCtx` itself carries no product fields and
+/// the tool-contract crate does not have to name the types that provide them.
+///
+/// Keyed by `TypeId`: one value per type. Cloning shares the same `Arc`s, so a
+/// `with_cancel` copy of the ctx sees the same controller as its parent.
+#[derive(Clone, Default)]
+pub struct Extensions {
+    map: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+}
+
+impl Extensions {
+    pub fn insert<T: Any + Send + Sync>(&mut self, value: Arc<T>) {
+        self.map.insert(TypeId::of::<T>(), value);
+    }
+
+    pub fn get<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.map
+            .get(&TypeId::of::<T>())
+            .and_then(|v| Arc::clone(v).downcast::<T>().ok())
+    }
+}
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
@@ -189,15 +213,11 @@ pub struct ToolCtx {
     /// tool refuses past MAX_SUBAGENT_DEPTH, a second guard behind the
     /// registry-level exclusion of `delegate`.
     pub depth: u8,
-    /// Goal-mode control channel: `goal_complete`/`goal_blocked` declare
-    /// through it, the engine polls `state()` when the model goes quiet and
-    /// takes the signal payload for the final report. Always present
-    /// (cheap); only consulted in `goal` mode.
-    pub goal: Arc<crate::tools::goal::GoalController>,
-    /// Plan-mode contract channel: `submit_plan` declares through it, the
-    /// engine takes the payload at the quiet point for the plan card.
-    /// Always present (cheap); only consulted in `plan` mode.
-    pub plan: Arc<crate::tools::plan::PlanController>,
+    /// Typed host services — the goal and plan controllers live here, not as
+    /// fields, so this crate does not name the modules that own them. See
+    /// [`Extensions`]; the `GoalController`/`PlanController` slots are
+    /// installed by [`ToolCtx::with_controllers`].
+    pub ext: Extensions,
     /// Plugin router handle — `batch_execute` consults it to tell "this name
     /// is a plugin tool" apart from "this name does not exist" so the
     /// rejection can tell the model to call it directly instead of claiming
@@ -236,10 +256,27 @@ impl ToolCtx {
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
-            goal: Arc::new(crate::tools::goal::GoalController::new()),
-            plan: Arc::new(crate::tools::plan::PlanController::new()),
+            ext: Extensions::default(),
             plugins: None,
         }
+        .with_controllers()
+    }
+
+    /// A required host service. A context built without it refuses the tool
+    /// with a reason instead of panicking mid-turn.
+    pub fn require<T: Any + Send + Sync>(&self, what: &str) -> Result<Arc<T>, ToolError> {
+        self.ext
+            .get::<T>()
+            .ok_or_else(|| ToolError::Failed(format!("{what} is not available in this context")))
+    }
+
+    /// Install a fresh goal and plan controller. Each root context owns its
+    /// own pair; a subagent calls this on its own ctx so it never shares the
+    /// parent's completion signal.
+    pub fn with_controllers(mut self) -> Self {
+        self.ext.insert(Arc::new(crate::tools::goal::GoalController::new()));
+        self.ext.insert(Arc::new(crate::tools::plan::PlanController::new()));
+        self
     }
 
     /// Explicit backend (tests / custom wiring).
@@ -263,10 +300,10 @@ impl ToolCtx {
             ask: Arc::new(crate::tools::registry::AskChannel::new(None)),
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
-            goal: Arc::new(crate::tools::goal::GoalController::new()),
-            plan: Arc::new(crate::tools::plan::PlanController::new()),
+            ext: Extensions::default(),
             plugins: None,
         }
+        .with_controllers()
     }
 
     /// Explicit desktop backend (tests / custom wiring) — the determinism
@@ -305,8 +342,7 @@ impl ToolCtx {
             ui_tx: self.ui_tx.clone(),
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
-            goal: self.goal.clone(),
-            plan: self.plan.clone(),
+            ext: self.ext.clone(),
             plugins: self.plugins.clone(),
         }
     }
@@ -660,6 +696,60 @@ pub fn schema_for<T: schemars::JsonSchema>(description: &str) -> serde_json::Val
 
 #[cfg(test)]
 mod tests {
+    #[derive(Debug, PartialEq)]
+    struct Marker(u32);
+
+    #[test]
+    fn extension_round_trips_by_type_and_clones_share_it() {
+        let mut ext = Extensions::default();
+        assert!(ext.get::<Marker>().is_none());
+        ext.insert(Arc::new(Marker(7)));
+        assert_eq!(ext.get::<Marker>().map(|m| m.0), Some(7));
+        // A clone is the same slot: the controller a ctx was built with is
+        // the controller its `with_cancel` copy reads.
+        let copy = ext.clone();
+        assert!(Arc::ptr_eq(&ext.get::<Marker>().unwrap(), &copy.get::<Marker>().unwrap()));
+    }
+
+    #[test]
+    fn derived_ctx_shares_the_controller_but_a_child_gets_its_own() {
+        let parent = ToolCtx::new(std::env::temp_dir());
+        let parent_goal = parent.require::<crate::tools::goal::GoalController>("goal").unwrap();
+        // `with_cancel` is how batch and the turn scope a ctx: same controller.
+        let scoped = parent.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let scoped_goal = scoped.require::<crate::tools::goal::GoalController>("goal").unwrap();
+        assert!(Arc::ptr_eq(&parent_goal, &scoped_goal));
+        // A subagent builds its own pair: its completion must not reach the parent.
+        let child = ToolCtx::with_sandbox(
+            std::env::temp_dir(),
+            Arc::new(agent_sandbox::NoneBackend),
+        )
+        .with_controllers();
+        let child_goal = child.require::<crate::tools::goal::GoalController>("goal").unwrap();
+        assert!(!Arc::ptr_eq(&parent_goal, &child_goal));
+    }
+
+    #[test]
+    fn ctx_without_controllers_refuses_instead_of_panicking() {
+        let bare = ToolCtx {
+            ext: Extensions::default(),
+            ..ToolCtx::new(std::env::temp_dir())
+        };
+        let err = bare
+            .require::<crate::tools::goal::GoalController>("goal control")
+            .err()
+            .expect("missing service must be an error");
+        assert!(err.to_string().contains("goal control is not available"));
+    }
+
+    #[test]
+    fn extension_keys_by_type_not_by_value() {
+        struct Other;
+        let mut ext = Extensions::default();
+        ext.insert(Arc::new(Marker(1)));
+        assert!(ext.get::<Other>().is_none());
+    }
+
     use super::*;
 
     /// `resolve` must accept a file whose parent directories do not exist yet —
@@ -715,7 +805,18 @@ mod tests {
     #[test]
     fn child_builtins_exclude_persistence_recursion_and_human_tools() {
         let child = ToolRegistry::child_builtins();
-        for banned in ["remember", "delegate", "computer", "ask_question"] {
+        // The goal and plan declarations live only in the parent's goal/plan
+        // registries. A child that held them would reach the controller that
+        // `delegate` installs for it, so this list also guards that wiring.
+        for banned in [
+            "remember",
+            "delegate",
+            "computer",
+            "ask_question",
+            "goal_complete",
+            "goal_blocked",
+            "submit_plan",
+        ] {
             assert!(
                 child.spec(banned).is_none(),
                 "child registry must not hold `{banned}`"

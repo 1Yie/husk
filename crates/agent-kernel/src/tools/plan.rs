@@ -174,7 +174,8 @@ async fn exec_submit(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolEr
             .filter(|a| !a.is_empty()),
     };
     let step_count = plan.steps.len();
-    ctx.plan.submit(plan);
+    let controller = ctx.require::<PlanController>("plan control")?;
+    controller.submit(plan);
     Ok(ToolResult::text(format!(
         "📋 计划已提交（{step_count} 步）— 等待用户审阅。"
     )))
