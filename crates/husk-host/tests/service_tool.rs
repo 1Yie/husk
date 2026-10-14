@@ -5,13 +5,13 @@
 use std::sync::Arc;
 
 use husk_host::sandbox_prefs::{SandboxLimits, SwitchableSandbox};
-use agent_capabilities::SandboxCtx;
+use agent_capabilities::{SandboxCtx, WorkspaceCtx};
 use agent_kernel::tools::registry::ToolCtx;
 
 /// A context with the detected backend installed, as a shell-capable host has.
 fn ctx_with_sandbox(root: &std::path::Path) -> ToolCtx {
     let (detected, _loud) = agent_sandbox::detect_backend();
-    let mut ctx = ToolCtx::new(root);
+    let mut ctx = ToolCtx::new().with_workspace(root);
     ctx.install_sandbox(Arc::from(detected));
     ctx
 }
@@ -140,7 +140,7 @@ fn sandbox_disabled_routes_to_none() {
     // overrides, so it can run in parallel with other sandbox tests.
     let switch = Arc::new(std::sync::RwLock::new(SandboxLimits::default()));
     let (detected, _loud) = agent_sandbox::detect_backend();
-    let mut ctx = ToolCtx::new(dir.path());
+    let mut ctx = ToolCtx::new().with_workspace(dir.path());
     let src = switch.clone();
     ctx.install_sandbox(Arc::new(SwitchableSandbox::with_limits(
         Arc::from(detected),

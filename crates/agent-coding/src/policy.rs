@@ -100,9 +100,10 @@ impl CodingPolicy {
 
     /// Build from a context's extension slots — the same slots the goal/plan
     /// contract tools resolve their controllers through.
-    pub fn from_ctx(ctx: &ToolCtx) -> Self {
+    pub fn from_ctx(ctx: &ToolCtx, workspace_root: PathBuf) -> Self {
+        let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
         let mut policy = Self::new(
-            ctx.workspace_root.to_path_buf(),
+            workspace_root,
             ctx.ext.get::<crate::goal::GoalController>(),
             ctx.ext.get::<crate::plan::PlanController>(),
         );
@@ -337,12 +338,13 @@ impl CodingPolicy {
 /// The kernel calls it per delegated child — it cannot name any of this
 /// itself, which is exactly the seam T9-3 opened.
 pub fn coding_policy_factory(
+    workspace_root: PathBuf,
 ) -> Arc<dyn Fn(&mut ToolCtx) -> Box<dyn TurnPolicy> + Send + Sync> {
-    Arc::new(|ctx: &mut ToolCtx| {
+    Arc::new(move |ctx: &mut ToolCtx| {
         crate::install_contract(ctx);
         // The child's own tracker, never the parent's: a child's writes must
         // not land in the parent's undo history.
         crate::tracker::WriteTracker::new(agent_context::TrackingMode::AgentOnly).install(ctx);
-        Box::new(CodingPolicy::from_ctx(ctx))
+        Box::new(CodingPolicy::from_ctx(ctx, workspace_root.clone()))
     })
 }

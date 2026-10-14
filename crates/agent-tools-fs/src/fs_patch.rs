@@ -16,7 +16,8 @@ use serde::Deserialize;
 use similar::TextDiff;
 use xxhash_rust::xxh3::xxh3_64;
 
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 const FUZZY_THRESHOLD: f64 = 0.9;
 

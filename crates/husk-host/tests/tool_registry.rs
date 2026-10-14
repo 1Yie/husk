@@ -1,6 +1,7 @@
 //! Metadata and batch guarantees for the tool set Husk actually assembles.
 
 use std::sync::Arc;
+use agent_capabilities::WorkspaceCtx;
 
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::ToolCtx;
@@ -100,7 +101,7 @@ async fn a_real_batch_runs_and_isolates_a_shapeless_item() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
     let reg = Arc::new(base_registries().0);
-    let mut ctx = ToolCtx::new(dir.path());
+    let mut ctx = ToolCtx::new().with_workspace(dir.path());
     ctx.active_registry = std::sync::RwLock::new(Some(reg.clone()));
     let out = reg
         .dispatch(

@@ -12,7 +12,8 @@ use serde::Deserialize;
 
 use crate::net;
 use agent_capabilities::WorkspacePaths;
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 const DEFAULT_MAX_CHARS: usize = 50_000;
 const HARD_MAX_CHARS: usize = 200_000;
@@ -133,7 +134,7 @@ async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, To
         .unwrap_or(DEFAULT_MAX_CHARS)
         .clamp(1, HARD_MAX_CHARS);
 
-    let ua = net::user_agent(ctx.app_paths().app_name());
+    let ua = net::user_agent(ctx.app_paths()?.app_name());
     let resp = net::fetch(
         &parsed.url,
         "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8",

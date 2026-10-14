@@ -11,7 +11,8 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use agent_capabilities::SandboxCtx;
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 use crate::sandbox_cfg::sandbox_config;
 
 /// Shell output cap per truncation table (~5k tok).
@@ -73,12 +74,12 @@ async fn exec<C: WorkspaceCtx + SandboxCtx>(args: Args, ctx: Arc<C>) -> Result<T
     // Audit before spawn; its verdict becomes the result's risk tier.
     // Scoped to the workspace so out-of-scope writes flag ScopeViolation.
     let verdict =
-        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()));
+        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()?));
 
     let sandbox = ctx.sandbox()?;
     let cfg = sandbox_config(
         &verdict,
-        ctx.root(),
+        ctx.root()?,
         timeout,
         &ctx.sandbox_limits(),
     );

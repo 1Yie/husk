@@ -15,7 +15,8 @@ use futures::FutureExt;
 use serde::Deserialize;
 use xxhash_rust::xxh3::xxh3_64;
 
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 /// `range` mode hard cap per the truncation table (1000 lines).
 const MAX_RANGE_LINES: usize = 1000;

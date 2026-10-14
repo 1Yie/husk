@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use agent_capabilities::WorkspaceCtx;
 use agent_context::blueprint::{render_node, Blueprint, BLUEPRINT_DIR};
 use futures::FutureExt;
 use serde::Deserialize;
@@ -69,7 +70,7 @@ pub fn spec() -> ToolSpec {
 async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let parsed: BlueprintArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("blueprint args: {e}")))?;
-    let root = ctx.workspace_root.clone();
+    let root = ctx.root()?.to_path_buf();
     // Manifest + file-index walks are blocking I/O.
     tokio::task::spawn_blocking(move || run(&root, parsed))
         .await
@@ -120,7 +121,7 @@ mod tests {
     use super::*;
 
     fn ctx(root: &std::path::Path) -> Arc<ToolCtx> {
-        Arc::new(ToolCtx::new(root))
+        Arc::new(ToolCtx::new().with_workspace(root))
     }
 
     #[tokio::test]

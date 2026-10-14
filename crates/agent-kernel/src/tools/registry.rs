@@ -7,7 +7,6 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 // The tool contract lives in `agent-tool`. Re-exported so existing
@@ -26,9 +25,6 @@ pub type ToolSpec = agent_tool::ToolSpec<ToolCtx>;
 // `crate::tools::registry::X` paths keep working.
 pub use crate::tools::host_slots::*;
 
-// The context contracts the tool packages are generic over.
-pub use agent_tool::WorkspaceCtx;
-
 
 /// Shared context handed to every tool invocation.
 
@@ -44,10 +40,8 @@ pub use agent_tool::WorkspaceCtx;
 
 
 
+#[derive(Default)]
 pub struct ToolCtx {
-    /// Canonical workspace root — all path args resolve and are checked
-    /// against this (symlink-escape guard: canonicalize before compare).
-    pub workspace_root: Arc<Path>,
     /// Parent turn's cooperative cancel flag — a delegated subagent polls
     /// it so a user cancel propagates into the delegation instead of
     /// orphaning a running child. `None` in unattached contexts.
@@ -70,6 +64,9 @@ pub struct ToolCtx {
 }
 
 impl ToolCtx {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
 
 
@@ -106,7 +103,6 @@ impl ToolCtx {
     /// blocking work without touching the turn's cancel.
     pub fn with_cancel(&self, cancel: Arc<std::sync::atomic::AtomicBool>) -> ToolCtx {
         ToolCtx {
-            workspace_root: self.workspace_root.clone(),
             cancel: Some(cancel),
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
@@ -125,9 +121,7 @@ impl ToolCtx {
 
 
 
-/// What the file tools need from this context. The tools live in
-/// `agent-tools-fs` and are generic over the trait, so they never name
-/// `ToolCtx`; this is the one place the two are tied together.
+/// Capability adapters access the context through this product-free contract.
 impl agent_tool::ToolContext for ToolCtx {
     fn extensions(&self) -> &Extensions {
         &self.ext
@@ -142,67 +136,6 @@ impl agent_tool::ToolContext for ToolCtx {
     }
 }
 
-impl agent_tool::WorkspaceCtx for ToolCtx {
-    fn root(&self) -> &Path {
-        &self.workspace_root
-    }
-
-    /// Resolve a model-supplied path against the workspace root and prove it
-    /// stays inside. Returns the canonical path or a sandbox-escape error.
-    fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
-        let p = Path::new(path);
-        let joined = if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            self.workspace_root.join(p)
-        };
-        // Canonicalize requires the path to exist; for writes to new files,
-        // canonicalize the deepest existing ancestor and re-attach the
-        // missing tail. Checking only the immediate parent made any
-        // `<new-dir>/file` path report PathEscape.
-        let canon = match joined.canonicalize() {
-            Ok(c) => c,
-            Err(_) => {
-                let mut tail: Vec<std::ffi::OsString> = Vec::new();
-                let mut cursor: &Path = joined.as_path();
-                let base = loop {
-                    if let Ok(c) = cursor.canonicalize() {
-                        break c;
-                    }
-                    // `canonicalize` also fails for a *dangling* symlink
-                    // (its target does not exist). Treating that as a
-                    // plain missing path would return the in-workspace
-                    // link path, and the later write follows the link to
-                    // wherever it points — possibly outside the workspace.
-                    if cursor
-                        .symlink_metadata()
-                        .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false)
-                    {
-                        return Err(ToolError::PathEscape(path.to_string()));
-                    }
-                    let Some(name) = cursor.file_name() else {
-                        return Err(ToolError::PathEscape(path.to_string()));
-                    };
-                    tail.push(name.to_os_string());
-                    let Some(parent) = cursor.parent() else {
-                        return Err(ToolError::PathEscape(path.to_string()));
-                    };
-                    cursor = parent;
-                };
-                let mut canon = base;
-                for seg in tail.iter().rev() {
-                    canon.push(seg);
-                }
-                canon
-            }
-        };
-        if !canon.starts_with(&*self.workspace_root) {
-            return Err(ToolError::PathEscape(path.to_string()));
-        }
-        Ok(canon)
-    }
-}
 
 
 
@@ -319,7 +252,7 @@ mod tests {
         // The contract controllers are no longer kernel types (the coding
         // crate owns them) — the scoping guarantee they exercise is generic:
         // a derived ctx shares the parent's slots, a fresh child does not.
-        let mut parent = ToolCtx::new(std::env::temp_dir());
+        let mut parent = ToolCtx::new();
         parent.ext.insert(Arc::new(Marker(7)));
         let parent_goal = parent.require::<Marker>("contract").unwrap();
         // `with_cancel` is how batch and the turn scope a ctx: same slot.
@@ -328,7 +261,7 @@ mod tests {
         assert!(Arc::ptr_eq(&parent_goal, &scoped_goal));
         // A subagent ctx is built fresh: its slots start empty, and whatever
         // the host installs into it is a different pair than the parent's.
-        let mut child = ToolCtx::new(std::env::temp_dir());
+        let mut child = ToolCtx::new();
         assert!(child.require::<Marker>("contract").is_err());
         child.ext.insert(Arc::new(Marker(9)));
         let child_goal = child.require::<Marker>("contract").unwrap();
@@ -339,7 +272,7 @@ mod tests {
     fn ctx_without_controllers_refuses_instead_of_panicking() {
         let bare = ToolCtx {
             ext: Extensions::default(),
-            ..ToolCtx::new(std::env::temp_dir())
+            ..ToolCtx::new()
         };
         let err = bare
             .require::<Marker>("contract control")
@@ -354,7 +287,7 @@ mod tests {
 
     #[test]
     fn ask_is_refused_without_a_host_channel_and_shared_after_cancel_scope() {
-        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        let mut ctx = ToolCtx::new();
         // Headless by default: the tool gets a refusal, not a parked oneshot.
         assert!(matches!(ctx.ask(), Err(ToolError::Failed(_))));
 
@@ -368,7 +301,7 @@ mod tests {
 
     #[test]
     fn ui_sink_is_absent_until_installed_and_shared_after_cancel_scope() {
-        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        let mut ctx = ToolCtx::new();
         // Headless by default: fan-out tools skip emitting instead of panicking.
         assert!(ctx.ui().is_none());
 
@@ -382,7 +315,7 @@ mod tests {
 
     #[test]
     fn subagent_is_absent_until_installed_and_shared_after_cancel_scope() {
-        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        let mut ctx = ToolCtx::new();
         assert!(ctx.subagent().is_none());
 
         // Never called: the test only checks presence, not delegation.
@@ -427,7 +360,7 @@ mod tests {
 
     #[test]
     fn session_is_absent_until_attached_and_shared_after_cancel_scope() {
-        let ctx = ToolCtx::new(std::env::temp_dir());
+        let ctx = ToolCtx::new();
         assert!(ctx.session().is_none());
 
         let ctx = ctx.with_session(7);
@@ -438,7 +371,7 @@ mod tests {
 
     #[test]
     fn plugins_are_scoped_to_the_derived_context_not_the_parent() {
-        let parent = ToolCtx::new(std::env::temp_dir());
+        let parent = ToolCtx::new();
         assert!(parent.plugins().is_none());
 
         let handle: crate::engine::PluginHandle =
@@ -479,42 +412,8 @@ mod tests {
         assert!(reg.is_readonly("todo"));
     }
 
-    #[test]
-    fn resolve_new_file_in_missing_dirs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ctx = ToolCtx::new(tmp.path());
-        let got = ctx.resolve("brand-new/nested/out.docx").unwrap();
-        assert_eq!(
-            got,
-            tmp.path()
-                .canonicalize()
-                .unwrap()
-                .join("brand-new/nested/out.docx")
-        );
-    }
 
-    /// Paths that escape the workspace still fail even through the walk.
-    #[test]
-    fn resolve_escape_still_rejected() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ctx = ToolCtx::new(tmp.path());
-        assert!(ctx.resolve("../../outside.txt").is_err());
-    }
 
-    /// A dangling symlink whose target lies outside the workspace must not
-    /// resolve: the later write would follow the link out of the sandbox.
-    #[cfg(unix)]
-    #[test]
-    fn resolve_rejects_dangling_symlink_to_outside() {
-        let ws = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let target = outside.path().join("not-yet.txt");
-        std::os::unix::fs::symlink(&target, ws.path().join("link.txt")).unwrap();
-        let ctx = ToolCtx::new(ws.path());
-        assert!(ctx.resolve("link.txt").is_err());
-        assert!(ctx.resolve("link.txt/child").is_err());
-        assert!(!target.exists());
-    }
 
     /// A child may track tasks and batch calls, but cannot recurse or reach a human.
     #[test]

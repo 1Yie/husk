@@ -17,7 +17,8 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use agent_capabilities::SandboxCtx;
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 use crate::sandbox_cfg::sandbox_config;
 
 /// Failure-diagnostic budget (≤~300 tokens ≈ 1.2 KB of dense signal).
@@ -58,11 +59,11 @@ async fn exec<C: WorkspaceCtx + SandboxCtx>(args: Args, ctx: Arc<C>) -> Result<T
     // Same dispatch as `bash`: audit first, derive the config, run through the
     // backend (which owns env sanitization, limits and timeout tree-kill).
     let verdict =
-        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()));
+        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()?));
     let sandbox = ctx.sandbox()?;
     let cfg = sandbox_config(
         &verdict,
-        ctx.root(),
+        ctx.root()?,
         TIMEOUT,
         &ctx.sandbox_limits(),
     );

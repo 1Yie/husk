@@ -497,7 +497,6 @@ impl SubagentSpawner {
         // it does NOT share session scratch (no session attach → todo-like
         // tools degrade) and cannot delegate further (no spawner).
         let mut child_ctx = ToolCtx {
-            workspace_root: parent_ctx.workspace_root.clone(),
             // Screenshots are inherited (a delegated visual check needs to
             // see the screen); input is not — `computer` is absent from every
             // child registry, and a refusing backend is the second guard

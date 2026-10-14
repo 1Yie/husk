@@ -5,8 +5,7 @@ use agent_kernel::tools::{ToolCtx, ToolRegistry};
 use agent_testkit::ScriptedProvider;
 
 #[tokio::test]
-async fn default_spawner_delegates_without_host_profiles_or_transcript_files() {
-    let dir = tempfile::tempdir().unwrap();
+async fn default_spawner_delegates_without_workspace_or_host_profiles() {
     let provider = Arc::new(ScriptedProvider::new());
     provider.script_text("CHILD-RESULT");
     let registry = Arc::new(ToolRegistry::child_builtins());
@@ -21,7 +20,7 @@ async fn default_spawner_delegates_without_host_profiles_or_transcript_files() {
         model_input: Vec::new(),
         models: Default::default(),
     }));
-    let mut ctx = ToolCtx::new(dir.path());
+    let mut ctx = ToolCtx::new();
     ctx.install_subagent(SubagentSpawner::new(route, registry.clone(), registry));
     let ctx = Arc::new(ctx);
     let spec = agent_kernel::tools::delegate::spec();
@@ -40,8 +39,4 @@ async fn default_spawner_delegates_without_host_profiles_or_transcript_files() {
     .expect("scripted child must finish")
     .expect("unnamed delegation needs no host adapter");
     assert!(out.content.contains("CHILD-RESULT"), "{}", out.content);
-    assert!(
-        !dir.path().join(".agent").exists(),
-        "kernel created host state"
-    );
 }

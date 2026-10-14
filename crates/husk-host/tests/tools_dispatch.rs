@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use agent_capabilities::SandboxCtx;
+use agent_capabilities::{SandboxCtx, WorkspaceCtx};
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
 fn registry() -> ToolRegistry {
@@ -13,7 +13,7 @@ fn registry() -> ToolRegistry {
 fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
     // A host that runs shell commands installs a sandbox; `ToolCtx::new` does not.
     let (detected, _loud) = agent_sandbox::detect_backend();
-    let mut ctx = ToolCtx::new(dir);
+    let mut ctx = ToolCtx::new().with_workspace(dir);
     ctx.install_sandbox(Arc::from(detected));
     Arc::new(ctx)
 }

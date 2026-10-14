@@ -2,7 +2,7 @@
 //! scripted provider, no network.
 
 use agent_testkit::ScriptedProvider;
-use agent_capabilities::WorkspacePaths;
+use agent_capabilities::{WorkspaceCtx, WorkspacePaths};
 
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ fn spawner(provider: Arc<dyn agent_llm::LlmProvider>) -> SubagentSpawner {
 }
 
 fn ctx_with(dir: &std::path::Path, spawner: SubagentSpawner) -> Arc<ToolCtx> {
-    let mut ctx = ToolCtx::new(dir);
+    let mut ctx = ToolCtx::new().with_workspace(dir);
     ctx.install_paths(agent_paths::AppPaths::new(dir, dir, ".husk"));
     ctx.install_subagent(spawner);
     Arc::new(ctx)
@@ -107,7 +107,7 @@ async fn every_child_emits_a_nested_card() {
     provider.script_text("one");
     provider.script_text("two");
     let (sink, mut rx) = UiSink::channel();
-    let mut ctx = ToolCtx::new(dir.path());
+    let mut ctx = ToolCtx::new().with_workspace(dir.path());
     ctx.install_paths(agent_paths::AppPaths::new(dir.path(), dir.path(), ".husk"));
     ctx.install_subagent(spawner(provider));
     ctx.install_ui(sink);

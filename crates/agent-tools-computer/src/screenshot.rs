@@ -15,7 +15,8 @@ use std::sync::Arc;
 use futures::FutureExt;
 
 use agent_capabilities::{DesktopCtx, WorkspacePaths};
-use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec};
 
 /// No model-facing arguments: a full-screen capture is the only useful shape
 /// (a region would need a screenshot first to choose it).
@@ -49,7 +50,7 @@ async fn exec<C: WorkspaceCtx + DesktopCtx>(ctx: Arc<C>) -> Result<ToolResult, T
     // The workspace-local staging dir the composer already uses for pasted
     // images, so captures sit with their siblings. Its name comes from the
     // host, not from here.
-    let dir = ctx.workspace_state_dir().join("attachments");
+    let dir = ctx.workspace_state_dir()?.join("attachments");
     let dest = dir.join(format!("shot-{}.png", agent_llm::types::now_ms()));
 
     let meta = desktop
@@ -60,7 +61,7 @@ async fn exec<C: WorkspaceCtx + DesktopCtx>(ctx: Arc<C>) -> Result<ToolResult, T
     // Workspace-relative for the text: the absolute path is long and the
     // model only needs enough to name the file.
     let shown = dest
-        .strip_prefix(ctx.root())
+        .strip_prefix(ctx.root()?)
         .unwrap_or(&dest)
         .display();
     let mut content = format!(

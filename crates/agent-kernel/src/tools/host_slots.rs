@@ -8,10 +8,9 @@
 //! Keeping these out of `registry` is what lets the tool contract be extracted
 //! without naming product types.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::registry::{Extensions, ToolCtx, ToolError};
+use super::registry::{ToolCtx, ToolError};
 
 /// The structured-question channel — `ask_question` parks a oneshot here,
 /// emits `QuestionAsked` through `ui_tx`, and awaits the answer with the
@@ -168,18 +167,6 @@ impl ToolCtx {
     /// Install the spawner that backs `delegate`.
     pub fn install_subagent(&mut self, spawner: crate::tools::delegate::SubagentSpawner) {
         self.ext.insert(Arc::new(SubagentSlot(spawner)));
-    }
-
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        let root = root.into();
-        let root = root.canonicalize().unwrap_or(root);
-        Self {
-            workspace_root: Arc::from(root.as_path()),
-            cancel: None,
-            depth: 0,
-            active_registry: std::sync::RwLock::new(None),
-            ext: Extensions::default(),
-        }
     }
 
     /// Attach the owning session's id. The kernel only needs the number — it

@@ -49,6 +49,13 @@ impl Extensions {
             .and_then(|v| Arc::clone(v).downcast::<T>().ok())
     }
 
+    /// Borrow a slot for an accessor whose result lives as long as the table.
+    pub fn get_ref<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.map
+            .get(&TypeId::of::<T>())
+            .and_then(|v| v.as_ref().downcast_ref::<T>())
+    }
+
     /// The slots meant for a child: only those inserted with
     /// [`insert_shared`](Self::insert_shared), sharing the parent's `Arc`s.
     pub fn inheritable(&self) -> Extensions {
@@ -84,16 +91,6 @@ pub trait ToolContext: Send + Sync + 'static {
     {
         self.extensions().get::<T>()
     }
-}
-
-/// The workspace view used by local tools.
-pub trait WorkspaceCtx: ToolContext {
-    /// Canonical workspace root — path args resolve against this.
-    fn root(&self) -> &std::path::Path;
-
-    /// Resolve a model-supplied path against the workspace root and prove it
-    /// stays inside. Returns the canonical path or a sandbox-escape error.
-    fn resolve(&self, path: &str) -> Result<std::path::PathBuf, ToolError>;
 }
 
 /// A deferred side effect a tool wants committed *after* the permission

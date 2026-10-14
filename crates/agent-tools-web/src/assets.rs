@@ -18,7 +18,8 @@ use serde::Deserialize;
 
 use crate::net;
 use agent_capabilities::WorkspacePaths;
-use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec};
 
 /// Refuse to attach images larger than this — bigger payloads mostly break
 /// the wire, not inform it (providers cap ~5 MB/part anyway).
@@ -213,7 +214,7 @@ async fn search_wikimedia<C: WorkspaceCtx>(
         urlform(query),
         count,
     );
-    let ua = net::user_agent(ctx.app_paths().app_name());
+    let ua = net::user_agent(ctx.app_paths()?.app_name());
     let resp = net::fetch(&url, "application/json", ctx.cancel_flag(), &ua).await?;
     if !resp.status.is_success() {
         return Err(ToolError::Failed(format!("HTTP {}", resp.status)));
@@ -270,7 +271,7 @@ async fn search_bing<C: WorkspaceCtx>(
         "https://cn.bing.com/images/search?q={}&form=HDRSC2&first=1",
         urlform(query)
     );
-    let ua = net::user_agent(ctx.app_paths().app_name());
+    let ua = net::user_agent(ctx.app_paths()?.app_name());
     let resp = net::fetch(&url, "text/html", ctx.cancel_flag(), &ua).await?;
     if !resp.status.is_success() {
         return Err(ToolError::Failed(format!("HTTP {}", resp.status)));
@@ -383,7 +384,7 @@ fn web_download<C: WorkspaceCtx>() -> ToolSpec<C> {
             async move {
                 let a: WebDownloadArgs = serde_json::from_value(args)
                     .map_err(|e| ToolError::Args(format!("web_download args: {e}")))?;
-                let ua = net::user_agent(ctx.app_paths().app_name());
+                let ua = net::user_agent(ctx.app_paths()?.app_name());
                 let resp = net::fetch(&a.url, "*/*", ctx.cancel_flag(), &ua).await?;
                 if !resp.status.is_success() {
                     return Err(ToolError::Failed(format!(
@@ -408,7 +409,7 @@ fn web_download<C: WorkspaceCtx>() -> ToolSpec<C> {
                 std::fs::write(&dest, &resp.body)
                     .map_err(|e| ToolError::Failed(format!("write {dest:?}: {e}")))?;
                 let shown = dest
-                    .strip_prefix(ctx.root())
+                    .strip_prefix(ctx.root()?)
                     .unwrap_or(&dest)
                     .display();
                 let mut res = ToolResult::text(format!(
@@ -469,7 +470,7 @@ fn view_image<C: WorkspaceCtx>() -> ToolSpec<C> {
                     ))
                 })?;
                 let shown = path
-                    .strip_prefix(ctx.root())
+                    .strip_prefix(ctx.root()?)
                     .unwrap_or(&path)
                     .display();
                 let mut res = ToolResult::text(format!(

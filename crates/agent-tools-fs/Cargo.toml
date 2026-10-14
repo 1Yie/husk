@@ -7,6 +7,7 @@ edition = "2021"
 # The contract only — these tools are generic over the context, so nothing here
 # depends on the kernel that instantiates them.
 agent-tool = { path = "../agent-tool" }
+agent-capabilities = { path = "../agent-capabilities" }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

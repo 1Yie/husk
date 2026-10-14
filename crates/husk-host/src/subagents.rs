@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use agent_capabilities::WorkspacePaths;
+use agent_capabilities::{WorkspaceCtx, WorkspacePaths};
 use agent_kernel::tools::delegate::{ChildSpec, SubagentHost};
 use agent_kernel::tools::registry::ToolCtx;
 use agent_llm::types::ChatMessage;
@@ -11,7 +11,7 @@ pub struct HuskSubagents;
 
 impl SubagentHost for HuskSubagents {
     fn resolve(&self, ctx: &ToolCtx, name: &str) -> Option<ChildSpec> {
-        let s = find_subagent(&ctx.workspace_root, name, &ctx.app_paths())?;
+        let s = find_subagent(ctx.root().ok()?, name, &ctx.app_paths().ok()?)?;
         Some(ChildSpec {
             name: s.name,
             prompt: Some(s.prompt).filter(|p| !p.trim().is_empty()),
@@ -25,17 +25,23 @@ impl SubagentHost for HuskSubagents {
 
     fn instructions(&self, ctx: &ToolCtx, spec: &ChildSpec) -> String {
         let mut out = String::new();
+        let Ok(root) = ctx.root() else {
+            return out;
+        };
         if spec.inherits_instructions() {
             if let Some(paths) = ctx.paths() {
                 append_repo_instructions(&mut out, &paths.config_file("AGENTS.md"), "user");
             }
-            append_repo_instructions(&mut out, &ctx.workspace_root.join("AGENTS.md"), "project");
+            append_repo_instructions(&mut out, &root.join("AGENTS.md"), "project");
         }
         out
     }
 
     fn persist(&self, ctx: &ToolCtx, child_id: u64, label: &str, history: &[ChatMessage]) {
-        let subs = ctx.workspace_state_dir().join("subagents");
+        let Ok(state_dir) = ctx.workspace_state_dir() else {
+            return;
+        };
+        let subs = state_dir.join("subagents");
         persist_transcript(&subs, child_id, label, history);
     }
 }

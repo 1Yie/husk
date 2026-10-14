@@ -22,7 +22,6 @@ schemars.workspace = true
 
 [dev-dependencies]
 agent-testkit = { path = "../agent-testkit" }
-tempfile = "3"
 async-trait.workspace = true
 
 [features]

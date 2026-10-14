@@ -1797,7 +1797,6 @@ fn should_flush_delta(pending_bytes: usize, since_last_flush: std::time::Duratio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn delta_flushes_on_size_or_age_but_never_when_empty() {
@@ -1815,7 +1814,7 @@ mod tests {
         let mut engine = Engine::new(
             Arc::new(agent_llm::provider::UnconfiguredProvider),
             Arc::new(ToolRegistry::with_builtins()),
-            Arc::new(ToolCtx::new(Path::new("."))),
+            Arc::new(ToolCtx::new()),
             "devin/swe-2",
             1.0,
         );

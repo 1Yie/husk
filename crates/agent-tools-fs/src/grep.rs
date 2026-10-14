@@ -17,7 +17,8 @@ use grep_searcher::SearcherBuilder;
 use grep_searcher::SinkError;
 use serde::Deserialize;
 
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 /// Stdout cap per truncation table.
 const MAX_OUTPUT: usize = 5 * 1024 * 1024;
@@ -131,7 +132,7 @@ async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, To
         .map_err(|e| ToolError::Args(format!("bad glob: {e}")))?;
 
     let include_hidden = parsed.include_hidden.unwrap_or(false);
-    let ws = ctx.root().to_path_buf();
+    let ws = ctx.root()?.to_path_buf();
     let ctx_cancel = ctx.cancel_flag();
 
     // Shared stop flag: the timeout arms it so the blocking search actually

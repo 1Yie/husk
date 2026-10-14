@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent_capabilities::{DesktopCtx, WorkspacePaths};
+use agent_capabilities::{DesktopCtx, WorkspaceCtx, WorkspacePaths};
 use agent_computer::{DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir};
 use husk_host::mode::AgentMode;
 use agent_kernel::permissions::{CallRisk, Decision, PermissionGate, PermissionMode};
@@ -106,7 +106,7 @@ impl DesktopBackend for FakeDesktop {
 fn ctx_at(dir: &Path, desktop: Arc<FakeDesktop>) -> Arc<ToolCtx> {
     // The host's own directory names — the tool derives `.husk/attachments`
     // from these rather than hardcoding them.
-    let mut ctx = ToolCtx::new(dir).with_desktop(desktop);
+    let mut ctx = ToolCtx::new().with_workspace(dir).with_desktop(desktop);
     ctx.install_paths(agent_paths::AppPaths::new(dir, dir, ".husk"));
     Arc::new(ctx)
 }

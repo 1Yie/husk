@@ -335,7 +335,7 @@ mod tests {
     }
 
     fn ctx_over(storage: Arc<TestStorage>) -> Arc<ToolCtx> {
-        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        let mut ctx = ToolCtx::new();
         ctx.ext.insert(Arc::new(TodoStorageSlot(storage)));
         Arc::new(ctx)
     }
@@ -508,8 +508,8 @@ mod tests {
     /// memory for the life of the context and is private to it.
     #[tokio::test]
     async fn without_a_host_storage_the_list_lives_in_memory_per_context() {
-        let a = Arc::new(ToolCtx::new(std::env::temp_dir()));
-        let b = Arc::new(ToolCtx::new(std::env::temp_dir()));
+        let a = Arc::new(ToolCtx::new());
+        let b = Arc::new(ToolCtx::new());
         exec(serde_json::json!({"action":"add","text":"only in a"}), a.clone())
             .await
             .unwrap();

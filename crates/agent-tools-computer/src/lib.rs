@@ -1,18 +1,20 @@
 //! Computer-use tools: drive the screen, and capture it.
 //!
-//! Generic over [`agent_tool::WorkspaceCtx`] and [`agent_capabilities::DesktopCtx`], so
+//! Generic over [`agent_capabilities::WorkspaceCtx`] and [`agent_capabilities::DesktopCtx`], so
 //! this crate names no kernel type. The backend is a host-installed capability:
 //! a headless host installs none and both tools refuse with a reason.
 
 pub mod computer;
 pub mod screenshot;
 
+#[cfg(test)]
+use agent_capabilities::WorkspaceCtx;
+
 /// A context for this crate's own tests — the tools need a desktop and a root,
 /// nothing else. The kernel's `ToolCtx` is the production implementation.
 #[cfg(test)]
 pub(crate) struct TestCtx {
     ext: agent_tool::Extensions,
-    root: std::path::PathBuf,
     /// Set by the cancellation test, which needs a flag it can flip mid-call.
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
@@ -28,9 +30,9 @@ impl TestCtx {
         ext.insert_shared(std::sync::Arc::new(agent_capabilities::DesktopSlot(desktop)));
         Self {
             ext,
-            root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
             cancel: None,
         }
+        .with_workspace(root)
     }
 }
 
@@ -46,21 +48,5 @@ impl agent_tool::ToolContext for TestCtx {
 
     fn cancel_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         self.cancel.clone()
-    }
-}
-
-#[cfg(test)]
-impl agent_tool::WorkspaceCtx for TestCtx {
-    fn root(&self) -> &std::path::Path {
-        &self.root
-    }
-
-    fn resolve(&self, path: &str) -> Result<std::path::PathBuf, agent_tool::ToolError> {
-        let joined = self.root.join(path);
-        let canon = joined.canonicalize().map_err(agent_tool::ToolError::Io)?;
-        if !canon.starts_with(&self.root) {
-            return Err(agent_tool::ToolError::PathEscape(path.to_string()));
-        }
-        Ok(canon)
     }
 }

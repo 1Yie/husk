@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use agent_kernel::engine::{Engine, EngineIo};
-use agent_capabilities::{DesktopCtx, WorkspacePaths};
+use agent_capabilities::{DesktopCtx, WorkspaceCtx, WorkspacePaths};
 use agent_kernel::tools::ToolCtx;
 
 use agent_testkit::ScriptedProvider;
@@ -102,7 +102,7 @@ async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<Ch
     let stub = Arc::new(ScriptedProvider::new().with_script(script_screenshot_then_answer()));
     stub.script_text("The desktop shows a terminal.");
 
-    let mut ctx = ToolCtx::new(dir).with_desktop(Arc::new(FakeDesktop));
+    let mut ctx = ToolCtx::new().with_workspace(dir).with_desktop(Arc::new(FakeDesktop));
     ctx.install_paths(agent_paths::AppPaths::new(dir, dir, ".husk"));
     let ctx = Arc::new(ctx);
     let mut engine = Engine::new(
@@ -112,7 +112,7 @@ async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<Ch
         "test-model",
         0.0,
     );
-    engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx)));
+    engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx, dir.to_path_buf())));
     engine.set_permissions(
         agent_kernel::permissions::PermissionGate::from_mode_str("auto")
             .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy)),

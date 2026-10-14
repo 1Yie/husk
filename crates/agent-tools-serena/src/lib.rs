@@ -4,7 +4,7 @@
 //! JSON-RPC), so this crate needs no HTTP client and no plugin bridge — it
 //! spawns the child directly.
 //!
-//! The meta-tool is generic over [`agent_tool::WorkspaceCtx`] (it reads only the
+//! The meta-tool is generic over [`agent_capabilities::WorkspaceCtx`] (it reads only the
 //! workspace root), so this crate names no kernel type: the kernel depends on it,
 //! not the other way round.
 //!
@@ -27,7 +27,8 @@ pub use bridge::{BridgeFactory, McpBridge, SerenaBridge, SerenaLaunch, SerenaToo
 pub use catalog::SerenaToolCatalog;
 pub use manager::{manager_for, shutdown, SerenaManager};
 
-use agent_tool::{ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{ToolSpec};
 
 pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
     tool::spec::<C>()

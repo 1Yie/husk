@@ -71,6 +71,7 @@ impl TodoStorage for SessionTodoStorage {
 
 #[cfg(test)]
 mod tests {
+    use agent_capabilities::WorkspaceCtx;
     use super::*;
     use agent_kernel::tools::registry::ToolCtx;
 
@@ -88,7 +89,7 @@ mod tests {
     }
 
     fn ctx_over(storage: SessionTodoStorage, dir: &std::path::Path) -> Arc<ToolCtx> {
-        let mut ctx = ToolCtx::new(dir);
+        let mut ctx = ToolCtx::new().with_workspace(dir);
         storage.install(&mut ctx);
         Arc::new(ctx)
     }

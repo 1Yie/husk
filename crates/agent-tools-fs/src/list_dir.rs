@@ -7,7 +7,8 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 /// Max entries returned before the fold marker — bounds the OUTPUT.
 const MAX_ENTRIES: usize = 500;

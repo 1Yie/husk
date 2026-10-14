@@ -1,6 +1,6 @@
 //! Workspace-scoped file tools: read, patch, apply, list, search, outline.
 //!
-//! Every tool here is generic over [`agent_tool::WorkspaceCtx`], so this crate
+//! Every tool here is generic over [`agent_capabilities::WorkspaceCtx`], so this crate
 //! names no kernel type: the kernel depends on it, not the other way round.
 //! `fs_read` reaches `outline_ts` for the tree-sitter outline when that feature
 //! is on, which is why the two ship together.

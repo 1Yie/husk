@@ -27,7 +27,8 @@ use futures::FutureExt;
 use serde::Deserialize;
 use similar::TextDiff;
 
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 use crate::commit::{commit_writes, FileWrite, WriteObserverSlot, WriteOp};
 

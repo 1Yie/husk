@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use agent_capabilities::SandboxCtx;
+use agent_capabilities::{SandboxCtx, WorkspaceCtx};
 use agent_ipc::UiEvent;
 use agent_kernel::engine::{Engine, EngineIo};
 use agent_kernel::permissions::{CallRisk, Decision, PermissionGate, PermissionRules};
@@ -10,7 +10,7 @@ use agent_testkit::ScriptedProvider;
 
 fn decision(gate: &PermissionGate, registry: &ToolRegistry, tool: &str, command: &str) -> Decision {
     let spec = registry.spec(tool).unwrap();
-    let ctx = Arc::new(ToolCtx::new(std::env::temp_dir()));
+    let ctx = Arc::new(ToolCtx::new().with_workspace(std::env::temp_dir()));
     let review = spec.review.as_ref().unwrap()(&serde_json::json!({"command": command}), &ctx);
     gate.decide(tool, Some(spec.class), spec.readonly, review.risk, command)
 }
@@ -121,7 +121,7 @@ async fn engine_uses_the_tools_review_instead_of_parsing_command_arguments() {
             ]);
             provider.script_text("done");
             let ctx = Arc::new(
-                ToolCtx::new(dir.path()).with_sandbox(Arc::new(agent_sandbox::NoneBackend)),
+                ToolCtx::new().with_workspace(dir.path()).with_sandbox(Arc::new(agent_sandbox::NoneBackend)),
             );
             let mut engine = Engine::new(
                 provider,

@@ -42,6 +42,7 @@ dependencies = [
 name = "agent-coding"
 version = "0.1.0"
 dependencies = [
+ "agent-capabilities",
  "agent-context",
  "agent-ipc",
  "agent-kernel",
@@ -122,7 +123,6 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -265,6 +265,7 @@ dependencies = [
 name = "agent-tools-fs"
 version = "0.1.0"
 dependencies = [
+ "agent-capabilities",
  "agent-tool",
  "dirs",
  "futures",
@@ -309,6 +310,7 @@ dependencies = [
 name = "agent-tools-serena"
 version = "0.1.0"
 dependencies = [
+ "agent-capabilities",
  "agent-tool",
  "async-trait",
  "futures",

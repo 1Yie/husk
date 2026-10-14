@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use agent_capabilities::DesktopCtx;
+use agent_capabilities::{DesktopCtx, WorkspaceCtx};
 use agent_ipc::UiEvent;
 use agent_kernel::engine::{Engine, EngineIo};
 use agent_kernel::permissions::{PermissionGate, PermissionMode};
@@ -144,7 +144,7 @@ fn rig_with(
         stub.push_script(s);
     }
     stub.script_text("done");
-    let ctx = Arc::new(ToolCtx::new(dir.path()).with_desktop(desk.clone()));
+    let ctx = Arc::new(ToolCtx::new().with_workspace(dir.path()).with_desktop(desk.clone()));
     let mut engine = Engine::new(
         stub,
         Arc::new(husk_host::session::base_registries().0),
@@ -154,7 +154,7 @@ fn rig_with(
     );
     // The turn contracts (the `computer` cap among them) are the coding
     // policy now — a bare `Engine::new` installs no product rules.
-    engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx)));
+    engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx, dir.path().to_path_buf())));
     let mut gate = PermissionGate::from_mode_str(mode)
         .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy));
     for g in grant {

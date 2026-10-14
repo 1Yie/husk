@@ -29,7 +29,7 @@ declare -A ALLOW=(
   # the conversation repository — names no product and no kernel type
   [agent-store]="agent-llm"
   # workspace file tools — generic over the context, so nothing of the kernel
-  [agent-tools-fs]="agent-tool"
+  [agent-tools-fs]="agent-capabilities agent-tool"
   # networking tools — same pattern
   [agent-tools-web]="agent-capabilities agent-llm agent-tool"
   # process tools — these also need the sandbox seam
@@ -39,9 +39,9 @@ declare -A ALLOW=(
   # document tools — share the shell package's sandbox derivation
   [agent-tools-office]="agent-capabilities agent-sandbox agent-tool agent-tools-shell"
   # serena MCP bridge — spawns a stdio child, generic over the context
-  [agent-tools-serena]="agent-tool"
+  [agent-tools-serena]="agent-capabilities agent-tool"
   # the coding product's semantics — depends on the kernel, never the reverse
-  [agent-coding]="agent-context agent-ipc agent-kernel agent-llm agent-skills agent-tools-fs"
+  [agent-coding]="agent-capabilities agent-context agent-ipc agent-kernel agent-llm agent-skills agent-tools-fs"
   # host layer over the kernel — session assembly, commands, modes, sandbox prefs
   [husk-host]="agent-capabilities agent-coding agent-skills agent-store agent-context agent-ipc agent-kernel agent-llm agent-paths agent-plugin agent-sandbox agent-tools-computer agent-tools-fs agent-tools-office agent-tools-serena agent-tools-shell agent-tools-web"
   # runtime

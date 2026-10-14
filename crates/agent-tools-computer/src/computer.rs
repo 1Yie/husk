@@ -16,7 +16,8 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use agent_capabilities::DesktopCtx;
-use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 /// Upper bound on `wait` — a model parking the turn for minutes is a bug, not
 /// a strategy.

@@ -10,7 +10,8 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde_json::json;
 
-use agent_tool::{schema_for, ExecFn, ToolClass, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, ExecFn, ToolClass, ToolError, ToolResult, ToolSpec};
 use super::catalog::DETAIL_ACTION;
 use super::manager::manager_for;
 
@@ -37,8 +38,8 @@ pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
         // Scope every call to *this* workspace's server. A process-wide shared
         // bridge would run project B's `replace_symbol_body` against project
         // A's tree; the manager keys by root (and restarts a dead child).
-        let root = ctx.root().to_path_buf();
         async move {
+            let root = ctx.root()?.to_path_buf();
             let manager = manager_for(&root);
 
             // Discovery is a bridge concern, not a Serena tool.

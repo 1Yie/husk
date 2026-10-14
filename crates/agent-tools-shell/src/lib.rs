@@ -1,6 +1,6 @@
 //! Process tools: run a shell command, run a test suite, keep a service up.
 //!
-//! Generic over [`agent_tool::WorkspaceCtx`] and [`agent_capabilities::SandboxCtx`], so
+//! Generic over [`agent_capabilities::WorkspaceCtx`] and [`agent_capabilities::SandboxCtx`], so
 //! this crate names no kernel type. `sandbox_cfg` is the shared
 //! audit-verdict-to-`SandboxConfig` derivation both `bash` and `test_runner`
 //! go through, so a test run is not a lesser command than a shell run.
@@ -12,6 +12,9 @@ pub mod services;
 pub mod test_runner;
 pub mod util;
 
+#[cfg(test)]
+use agent_capabilities::WorkspaceCtx;
+
 /// A context for this crate's own tests.
 ///
 /// The tools are generic over the two traits, so their tests need a context
@@ -20,7 +23,6 @@ pub mod util;
 #[cfg(test)]
 pub(crate) struct TestCtx {
     ext: agent_tool::Extensions,
-    root: std::path::PathBuf,
 }
 
 #[cfg(test)]
@@ -34,8 +36,8 @@ impl TestCtx {
         ext.insert_shared(std::sync::Arc::new(agent_capabilities::SandboxSlot(sandbox)));
         Self {
             ext,
-            root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
         }
+        .with_workspace(root)
     }
 }
 
@@ -47,23 +49,5 @@ impl agent_tool::ToolContext for TestCtx {
 
     fn extensions_mut(&mut self) -> &mut agent_tool::Extensions {
         &mut self.ext
-    }
-}
-
-#[cfg(test)]
-impl agent_tool::WorkspaceCtx for TestCtx {
-    fn root(&self) -> &std::path::Path {
-        &self.root
-    }
-
-    fn resolve(&self, path: &str) -> Result<std::path::PathBuf, agent_tool::ToolError> {
-        let joined = self.root.join(path);
-        let canon = joined
-            .canonicalize()
-            .map_err(agent_tool::ToolError::Io)?;
-        if !canon.starts_with(&self.root) {
-            return Err(agent_tool::ToolError::PathEscape(path.to_string()));
-        }
-        Ok(canon)
     }
 }

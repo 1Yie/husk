@@ -118,6 +118,7 @@ pub fn spec() -> ToolSpec {
 
 #[cfg(test)]
 mod tests {
+    use agent_capabilities::WorkspaceCtx;
     use super::*;
     use agent_kernel::tools::registry::ToolCtx;
 
@@ -126,7 +127,7 @@ mod tests {
     /// an uninstalled context simply has none.
     #[test]
     fn a_child_sees_the_parents_live_memory_switch() {
-        let mut parent = ToolCtx::new(std::env::temp_dir());
+        let mut parent = ToolCtx::new().with_workspace(std::env::temp_dir());
         assert!(parent.ext.get::<MemoryHandle>().is_none());
 
         let handle = MemoryHandle::default();
@@ -134,7 +135,7 @@ mod tests {
         // Installed but switched off: the slot exists, the store is None.
         assert!(parent.ext.get::<MemoryHandle>().unwrap().get().is_none());
 
-        let mut child = ToolCtx::new(std::env::temp_dir());
+        let mut child = ToolCtx::new().with_workspace(std::env::temp_dir());
         child.ext = parent.ext.inheritable();
         let theirs = child.ext.get::<MemoryHandle>().expect("child inherits memory");
         assert!(Arc::ptr_eq(&theirs.0, &handle.0), "same slot, not a snapshot");
@@ -143,7 +144,7 @@ mod tests {
     /// `remember` refuses cleanly when memory is off rather than panicking.
     #[tokio::test]
     async fn remember_refuses_when_memory_is_off() {
-        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        let mut ctx = ToolCtx::new().with_workspace(std::env::temp_dir());
         MemoryHandle::default().install(&mut ctx);
         let spec = spec();
         let err = (spec.exec)(

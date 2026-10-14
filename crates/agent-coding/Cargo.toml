@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 agent-kernel = { path = "../agent-kernel" }
+agent-capabilities = { path = "../agent-capabilities" }
 agent-context = { path = "../agent-context" }
 agent-tools-fs = { path = "../agent-tools-fs" }
 agent-ipc = { path = "../agent-ipc" }

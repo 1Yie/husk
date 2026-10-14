@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use agent_capabilities::WorkspaceCtx;
 use futures::FutureExt;
 
 use agent_kernel::tools::registry::{schema_for, ExecFn, ToolError, ToolResult, ToolSpec};
@@ -40,8 +41,8 @@ pub fn spec() -> ToolSpec {
                 return async move { Err(ToolError::Args(format!("skill args: {e}"))) }.boxed()
             }
         };
-        let manager = SkillManager::new(ctx.workspace_root.as_ref().to_path_buf());
         async move {
+            let manager = SkillManager::new(ctx.root()?.to_path_buf());
             // `list` is the escape hatch: the catalog is already in the system
             // prompt, so a model that calls this first just spends a round trip.
             if parsed.list.unwrap_or(false) {
@@ -133,7 +134,7 @@ mod tests {
     }
 
     fn ctx(root: &std::path::Path) -> Arc<agent_kernel::tools::registry::ToolCtx> {
-        Arc::new(agent_kernel::tools::registry::ToolCtx::new(root))
+        Arc::new(agent_kernel::tools::registry::ToolCtx::new().with_workspace(root))
     }
 
     #[tokio::test]

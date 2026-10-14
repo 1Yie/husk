@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_coding::tracker::WriteTracker;
-use agent_capabilities::{SandboxCtx, WorkspacePaths};
+use agent_capabilities::{SandboxCtx, WorkspaceCtx, WorkspacePaths};
 use agent_context::{
     git_snapshot, memory::TurnRecord, MemoryStore, TrackingMode, TurnDistiller,
     WorkspaceScanner,
@@ -618,7 +618,7 @@ impl SessionActor {
         // one. `screenshot` stays: looking at the screen is an observation a
         // delegated visual check legitimately needs.
         let child_ro = child_full.readonly_only();
-        let mut tool_ctx = ToolCtx::new(&cfg.workspace_root).with_session(session_id);
+        let mut tool_ctx = ToolCtx::new().with_workspace(&cfg.workspace_root).with_session(session_id);
         // The todo list persists beside this session's history. A session with
         // no store (the db failed to open) gets the kernel's in-memory list.
         if let Some(store) = store.clone() {
@@ -681,7 +681,7 @@ impl SessionActor {
             Arc::new(child_full),
             Arc::new(child_ro),
         )
-        .with_policy(agent_coding::policy::coding_policy_factory())
+        .with_policy(agent_coding::policy::coding_policy_factory(cfg.workspace_root.clone()))
         .with_host(Arc::new(crate::subagents::HuskSubagents)));
         // `ask_question` emits its card through the session's event channel;
         // fan-out tools (batch items) emit ToolCallStarted/Finished on ui_tx.
@@ -698,7 +698,7 @@ impl SessionActor {
             cfg.model.clone(),
             cfg.temperature,
         );
-        let coding_policy = agent_coding::policy::CodingPolicy::from_ctx(&ctx);
+        let coding_policy = agent_coding::policy::CodingPolicy::from_ctx(&ctx, cfg.workspace_root.clone());
         debug_assert!(
             coding_policy.has_contract(),
             "install_contract must run on the ToolCtx before the coding policy is built"

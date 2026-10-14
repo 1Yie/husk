@@ -98,9 +98,9 @@ pub fn registry() -> ToolRegistry {
 /// card, so this worker runs its own tools without asking. The kernel's
 /// default (`default` mode) would park every non-readonly call on an approval
 /// nobody can give.
-pub fn engine(provider: Arc<dyn agent_llm::LlmProvider>, root: std::path::PathBuf) -> Engine {
-    // A bare context: no sandbox, no desktop, no session, no plugins.
-    let ctx = Arc::new(ToolCtx::new(root));
+pub fn engine(provider: Arc<dyn agent_llm::LlmProvider>) -> Engine {
+    // A bare context: no workspace, sandbox, desktop, session or plugins.
+    let ctx = Arc::new(ToolCtx::new());
     let mut engine = Engine::new(provider, Arc::new(registry()), ctx, "scripted", 0.0);
     engine.set_permissions(PermissionGate::from_mode_str("bypassPermissions"));
     engine
@@ -196,7 +196,7 @@ mod tests {
             rounds: Mutex::new(0),
             offered: Mutex::new(Vec::new()),
         });
-        let mut engine = engine(provider.clone(), std::env::temp_dir().join("minimal-agent"));
+        let mut engine = engine(provider.clone());
 
         let (ui_tx, _ui_rx) = agent_kernel::channels::UiSink::channel();
         let (_steer_tx, steer_rx) = tokio::sync::mpsc::channel(4);

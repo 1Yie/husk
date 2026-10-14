@@ -1,5 +1,8 @@
 //! Host capability adapters. The kernel does not depend on this crate.
 
+pub mod workspace;
+pub use workspace::{WorkspaceCtx, WorkspaceSlot};
+
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 #[cfg(feature = "sandbox")]
@@ -12,7 +15,7 @@ pub use desktop::{DesktopCtx, DesktopSlot};
 use std::sync::Arc;
 
 use agent_paths::AppPaths;
-use agent_tool::WorkspaceCtx;
+use agent_tool::ToolError;
 
 /// Shared app directories installed by a host.
 pub struct AppPathsSlot(pub AppPaths);
@@ -28,18 +31,20 @@ pub trait WorkspacePaths: WorkspaceCtx + Sized {
     }
 
     /// Installed directories take precedence over the unbranded local default.
-    fn app_paths(&self) -> AppPaths {
-        self.paths().unwrap_or_else(|| {
-            AppPaths::new(
-                self.root().join(".agent/config"),
-                self.root().join(".agent/data"),
-                ".agent",
-            )
-        })
+    fn app_paths(&self) -> Result<AppPaths, ToolError> {
+        if let Some(paths) = self.paths() {
+            return Ok(paths);
+        }
+        let root = self.root()?;
+        Ok(AppPaths::new(
+            root.join(".agent/config"),
+            root.join(".agent/data"),
+            ".agent",
+        ))
     }
 
-    fn workspace_state_dir(&self) -> std::path::PathBuf {
-        self.app_paths().workspace_dir(self.root())
+    fn workspace_state_dir(&self) -> Result<std::path::PathBuf, ToolError> {
+        Ok(self.app_paths()?.workspace_dir(self.root()?))
     }
 }
 

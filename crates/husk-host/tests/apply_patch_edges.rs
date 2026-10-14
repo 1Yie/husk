@@ -4,6 +4,7 @@
 //! actually assert on.
 
 use std::sync::Arc;
+use agent_capabilities::WorkspaceCtx;
 
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
@@ -12,7 +13,7 @@ fn registry() -> ToolRegistry {
 }
 
 fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
-    Arc::new(ToolCtx::new(dir))
+    Arc::new(ToolCtx::new().with_workspace(dir))
 }
 
 async fn patch(dir: &std::path::Path, body: &str) -> Result<String, String> {
