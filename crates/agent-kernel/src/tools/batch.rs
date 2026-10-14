@@ -385,8 +385,8 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         };
         match registry.spec(&call.tool) {
             None => {
-                let is_plugin = ctx
-                    .plugins
+                let plugins = ctx.plugins();
+                let is_plugin = plugins
                     .as_ref()
                     .and_then(|h| h.read().ok().and_then(|g| g.clone()))
                     .is_some_and(|mgr| {

@@ -467,7 +467,6 @@ impl SubagentSpawner {
             ui_tx: Some(child_sink.clone()),
             // Subagent engines carry no plugin router, so plugin names
             // genuinely are unknown here — batch should keep saying so.
-            plugins: None,
             // Own pair, never the parent's: the child's goal/plan signal must
             // not land on the parent's controller.
             ext: Default::default(),

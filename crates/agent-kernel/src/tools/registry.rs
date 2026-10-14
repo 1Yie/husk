@@ -192,6 +192,10 @@ pub struct MemorySlot(pub MemoryHandle);
 /// file; `delegate` uses the id to route steering to the right owner.
 pub struct SessionSlot(pub (i64, Arc<crate::session_store::SessionStore>));
 
+/// Plugin router handle. `batch_execute` consults it to tell a plugin tool from
+/// an unknown name. Absent where no plugin router is installed.
+pub struct PluginSlot(pub crate::engine::PluginHandle);
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
@@ -219,11 +223,6 @@ pub struct ToolCtx {
     /// [`Extensions`]; the `GoalController`/`PlanController` slots are
     /// installed by [`ToolCtx::with_controllers`].
     pub ext: Extensions,
-    /// Plugin router handle — `batch_execute` consults it to tell "this name
-    /// is a plugin tool" apart from "this name does not exist" so the
-    /// rejection can tell the model to call it directly instead of claiming
-    /// the tool is missing. `None` where no router is installed.
-    pub plugins: Option<crate::engine::PluginHandle>,
 }
 
 impl ToolCtx {
@@ -306,7 +305,6 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
             ext: Extensions::default(),
-            plugins: None,
         }
         .with_controllers()
     }
@@ -343,7 +341,6 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(None),
             ui_tx: None,
             ext: Extensions::default(),
-            plugins: None,
         }
         .with_controllers();
         ctx.ext.insert(Arc::new(SandboxSlot(sandbox)));
@@ -430,6 +427,11 @@ impl ToolCtx {
         self.ext.get::<SessionSlot>().map(|s| s.0.clone())
     }
 
+    /// The plugin router handle, if one is installed.
+    pub fn plugins(&self) -> Option<crate::engine::PluginHandle> {
+        self.ext.get::<PluginSlot>().map(|s| s.0.clone())
+    }
+
     /// Resolve a model-supplied path against the workspace root and prove it
     /// stays inside. Returns the canonical path or a sandbox-escape error.
     /// Same context with a different cancel flag — `batch_execute` scopes
@@ -443,7 +445,6 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
             ext: self.ext.clone(),
-            plugins: self.plugins.clone(),
         }
     }
 
@@ -455,7 +456,7 @@ impl ToolCtx {
             .clone()
             .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
         let mut next = self.with_cancel(cancel);
-        next.plugins = Some(plugins);
+        next.ext.insert(Arc::new(PluginSlot(plugins)));
         next
     }
 
@@ -983,6 +984,19 @@ mod tests {
         assert_eq!(id, 7);
         let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
         assert_eq!(scoped.session().map(|(id, _)| id), Some(7));
+    }
+
+    #[test]
+    fn plugins_are_scoped_to_the_derived_context_not_the_parent() {
+        let parent = ToolCtx::new(std::env::temp_dir());
+        assert!(parent.plugins().is_none());
+
+        let handle: crate::engine::PluginHandle =
+            Arc::new(std::sync::RwLock::new(None));
+        let routed = parent.with_plugins(handle.clone());
+        // The engine swaps the whole ctx on set_plugins; the parent keeps none.
+        assert!(parent.plugins().is_none());
+        assert!(Arc::ptr_eq(&routed.plugins().unwrap(), &handle));
     }
 
     #[test]
