@@ -13,6 +13,7 @@ pub mod channels;
 pub mod commands;
 pub mod compaction;
 pub mod engine;
+pub mod prefs;
 pub mod hooks;
 pub mod mode;
 pub mod permissions;
