@@ -728,9 +728,10 @@ impl SessionActor {
             registry: Arc::new(office_reg),
             allow_plugins: true,
         });
-        engine.set_permissions(agent_kernel::permissions::PermissionGate::from_mode_str(
-            &cfg.permission_mode,
-        ));
+        engine.set_permissions(
+            agent_kernel::permissions::PermissionGate::from_mode_str(&cfg.permission_mode)
+                .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy)),
+        );
         engine.set_agent_mode(cfg.agent_mode.clone());
         engine.set_thinking_level(cfg.thinking_level.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
@@ -1060,13 +1061,13 @@ impl SessionActor {
         agent_kernel::tools::screenshot::cleanup_screenshots(&self.workspace_root, &self.paths);
 
         // A `computer` grant covers the task it was given for. Ending it here —
-        // in the kernel, not in whichever shell happens to be attached — means
+        // in the shared host session — means
         // the Tauri overlay, the TUI and the CLI all see the same lifecycle,
         // and a grant can never carry into an unrelated next prompt.
         let had_grant = self
             .permissions_slot
             .write()
-            .map(|mut g| g.revoke_computer_grants())
+            .map(|mut g| g.revoke_grants("computer"))
             .unwrap_or(false);
         if had_grant {
             let _ = self.io.ui_tx.send(UiEvent::SessionToolWhitelisted {

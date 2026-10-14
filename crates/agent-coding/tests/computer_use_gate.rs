@@ -154,7 +154,8 @@ fn rig_with(
     // The turn contracts (the `computer` cap among them) are the coding
     // policy now — a bare `Engine::new` installs no product rules.
     engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx)));
-    let mut gate = PermissionGate::from_mode_str(mode);
+    let mut gate = PermissionGate::from_mode_str(mode)
+        .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy));
     for g in grant {
         gate.allow_tool_for_session(g);
     }

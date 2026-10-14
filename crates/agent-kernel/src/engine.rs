@@ -1103,8 +1103,8 @@ impl Engine {
                     .and_then(|s| s.review.clone())
                     .map(|f| f(&args, &self.ctx))
                     .unwrap_or_default();
-                let computer_summary = review.summary.take();
-                let args_preview = computer_summary.clone().unwrap_or_else(|| args
+                let review_summary = review.summary.take();
+                let args_preview = review_summary.clone().unwrap_or_else(|| args
                     .get("path")
                     .or_else(|| args.get("command"))
                     .or_else(|| args.get("pattern"))
@@ -1191,7 +1191,7 @@ impl Engine {
                 // The baseline itself is the installed policy's business: it is
                 // taken inside `before_dispatch`, lazily before the first write.
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
-                let diff_summary = computer_summary.clone().unwrap_or_else(|| {
+                let diff_summary = review_summary.clone().unwrap_or_else(|| {
                     args.get("path")
                         .and_then(|v| v.as_str())
                         .map(|p| format!("{p}"))
@@ -1241,7 +1241,7 @@ impl Engine {
                 let real_diff = staged
                     .as_ref()
                     .map(|r| r.content.clone())
-                    .or_else(|| computer_summary.clone())
+                    .or_else(|| review_summary.clone())
                     .unwrap_or_else(|| {
                         args.get("replace")
                             .and_then(|v| v.as_str())
@@ -1250,7 +1250,7 @@ impl Engine {
                     });
                 let real_fuzzy = staged.as_ref().map(|r| r.fuzzy).unwrap_or(false);
 
-                let computer_action = review.action.take();
+                let action = review.action.take();
                 let decision = {
                     let gate = self.permissions.read().unwrap_or_else(|e| e.into_inner());
                     let d = gate.decide(
@@ -1260,8 +1260,8 @@ impl Engine {
                         shell_cmd,
                         diff_summary.clone(),
                     );
-                    match &computer_action {
-                        Some(a) => gate.escalate_computer(a, d, diff_summary.clone()),
+                    match &action {
+                        Some(a) => gate.escalate(&call.name, a, d, diff_summary.clone()),
                         None => d,
                     }
                 };
@@ -1280,12 +1280,8 @@ impl Engine {
                         continue;
                     }
                     Decision::Ask { diff_summary } => {
-                        // Desktop input needs the compositor's grant before the
-                        // in-app approval. Acquire it first so the system prompt
-                        // comes ahead of the app card, not after the user has
-                        // already said yes. A refusal ends the call here — there
-                        // is no point asking the user about an action that cannot
-                        // run.
+                        // Acquire any platform grant before asking for in-app
+                        // approval. A refusal ends the call before the card.
                         if let Some(prepare) = review.prepare.take() {
                             if let Err(msg) = prepare.await {
                                 let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
@@ -1360,12 +1356,12 @@ impl Engine {
                                     shell_cmd,
                                     diff_summary.clone(),
                                 );
-                                match &computer_action {
+                                match &action {
                                     Some(a) => {
                                         // A revoke that landed while the card was open
-                                        // still wins; a launch that was approved by
+                                        // still wins; an action that was approved by
                                         // this card is not re-asked here.
-                                        match gate.escalate_computer(a, d, diff_summary.clone()) {
+                                        match gate.escalate(&call.name, a, d, diff_summary.clone()) {
                                             Decision::Ask { .. } => Decision::Allow,
                                             d => d,
                                         }

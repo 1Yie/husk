@@ -308,7 +308,7 @@ pub fn stop_controlled(app: &AppHandle) {
         .and_then(|mut g| g.take());
     if let Some(c) = taken {
         if let Ok(mut gate) = c.permissions.write() {
-            gate.revoke_computer_grants();
+            gate.revoke_grants("computer");
         }
         c.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = c.ui.send(UiEvent::SessionToolWhitelisted {

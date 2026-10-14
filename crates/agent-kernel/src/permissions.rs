@@ -62,11 +62,6 @@ impl PermissionMode {
     }
 }
 
-/// Allow-rule name that pre-approves `computer`'s `launch` action. A session
-/// grant of `computer` deliberately does NOT cover it: starting a program is
-/// the one action that reaches outside the screen being driven.
-pub const COMPUTER_LAUNCH_RULE: &str = "computer:launch";
-
 /// What the gate returns for one tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
@@ -76,6 +71,41 @@ pub enum Decision {
     Deny { reason: String },
     /// Pause in `AwaitingToolConfirmation`; UI decides.
     Ask { diff_summary: String },
+}
+
+/// A tool-specific permission policy, registered on the gate by tool name. The
+/// gate knows no tool: a host that ships a high-risk tool (a desktop driver, a
+/// remote shell) registers the rules that tool needs, and the gate just asks.
+///
+/// All three hooks default to "no opinion", so a policy only states what makes
+/// its tool special.
+pub trait ToolPolicy: Send + Sync {
+    /// Ask by default, above the permission mode: even `auto` and `bypass` ask
+    /// until the session whitelist (or an explicit allow rule) grants it.
+    /// `dontAsk` keeps its "no questions" contract and denies instead.
+    fn ask_by_default(&self) -> bool {
+        false
+    }
+
+    /// Per-action escalation applied on top of the gate's decision. `action`
+    /// is the tool's own sub-action (see `agent_tool::Review::action`); `allow`
+    /// is the session's allow set. The gate preserves an existing Ask/Deny
+    /// before calling this hook and enforces `can_ask` on its result.
+    fn escalate(
+        &self,
+        _action: &str,
+        decision: Decision,
+        _allow: &HashSet<String>,
+        _can_ask: bool,
+        _diff_summary: &str,
+    ) -> Decision {
+        decision
+    }
+
+    /// Allow-rule names this policy owns, dropped by [`PermissionGate::revoke_grants`].
+    fn grants(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Rule sets — `deny` always wins, then `ask`, then `allow`.
@@ -134,6 +164,8 @@ const DESTRUCTIVE_BINARIES: &[&str] = &[
 pub struct PermissionGate {
     mode: PermissionMode,
     rules: PermissionRules,
+    /// Tool-specific policies, keyed by tool name.
+    policies: std::collections::HashMap<String, std::sync::Arc<dyn ToolPolicy>>,
     /// Subagent context: nothing answers `Ask`, so escalations deny
     /// outright and the refusal is reported back to the child model.
     headless: bool,
@@ -144,6 +176,7 @@ impl PermissionGate {
         Self {
             mode,
             rules,
+            policies: Default::default(),
             headless: false,
         }
     }
@@ -155,6 +188,7 @@ impl PermissionGate {
         Self {
             mode: PermissionMode::Auto,
             rules: PermissionRules::default(),
+            policies: Default::default(),
             headless: true,
         }
     }
@@ -181,52 +215,69 @@ impl PermissionGate {
         self.mode = mode;
     }
 
-    /// Per-action escalation for `computer`, applied on top of [`decide`]:
-    /// `launch` asks every time even under a session grant — unless the
-    /// explicit [`COMPUTER_LAUNCH_RULE`] allow rule is present. Under
-    /// `dontAsk` (and in a headless subagent) nobody can answer, so it is
-    /// denied instead. Every other action passes through unchanged.
-    pub fn escalate_computer(
+    /// Register a tool-specific policy. The gate applies it to every call of
+    /// `tool_name`; a host with no such tool simply registers nothing.
+    pub fn with_policy(
+        mut self,
+        tool_name: impl Into<String>,
+        policy: std::sync::Arc<dyn ToolPolicy>,
+    ) -> Self {
+        self.policies.insert(tool_name.into(), policy);
+        self
+    }
+
+    /// Register a policy on an existing gate (the engine's shared one).
+    pub fn set_policy(&mut self, tool_name: impl Into<String>, policy: std::sync::Arc<dyn ToolPolicy>) {
+        self.policies.insert(tool_name.into(), policy);
+    }
+
+    /// Per-action escalation from the tool's own policy, applied on top of
+    /// [`decide`]. A tool with no policy, or an action the policy has no
+    /// opinion on, passes through unchanged. Under `dontAsk` (and in a
+    /// headless subagent) nobody can answer, so a policy is told it cannot
+    /// ask and should deny instead.
+    pub fn escalate(
         &self,
+        tool_name: &str,
         action: &str,
         decision: Decision,
         diff_summary: impl Into<String>,
     ) -> Decision {
-        if action != "launch" {
+        if !matches!(decision, Decision::Allow) {
             return decision;
         }
+        let Some(policy) = self.policies.get(tool_name) else {
+            return decision;
+        };
+        let can_ask = self.mode != PermissionMode::DontAsk && !self.headless;
+        let decision =
+            policy.escalate(action, decision, &self.rules.allow, can_ask, &diff_summary.into());
         match decision {
-            Decision::Allow if !self.rules.allow.contains(COMPUTER_LAUNCH_RULE) => {
-                if self.mode == PermissionMode::DontAsk || self.headless {
-                    Decision::Deny {
-                        reason: "`launch` starts a program and needs its own approval".into(),
-                    }
-                } else {
-                    Decision::Ask {
-                        diff_summary: diff_summary.into(),
-                    }
-                }
-            }
-            d => d,
+            Decision::Ask { .. } if !can_ask => Decision::Deny {
+                reason: format!("`{tool_name}` requires human approval — unavailable in this context"),
+            },
+            decision => decision,
         }
     }
 
-    /// Whitelist `tool_name` for the rest of this session — the
-    /// "本会话允许" path for computer-use. The decision is session-scoped:
-    /// `rules.allow` lives on this gate, dies with the actor, and never
-    /// touches `~/.config/husk`. Idempotent.
+    /// Whitelist `tool_name` for the rest of this session. The grant lives on
+    /// this gate, dies with the actor, and never changes persistent config.
     pub fn allow_tool_for_session(&mut self, tool_name: &str) {
         self.rules.allow.insert(tool_name.to_string());
     }
 
-    /// Drop every `computer` grant — the tool itself and the `launch`
-    /// pre-approval. Returns whether the tool was granted, so the caller knows
+    /// Drop every grant a tool has: the tool itself and any allow rule its
+    /// policy owns. Returns whether the tool was granted, so the caller knows
     /// whether a "grant ended" notice is due. Run at the end of each turn: a
     /// grant covers the task it was given for, not whatever the session is
     /// asked next.
-    pub fn revoke_computer_grants(&mut self) -> bool {
-        let was = self.rules.allow.remove("computer");
-        self.rules.allow.remove(COMPUTER_LAUNCH_RULE);
+    pub fn revoke_grants(&mut self, tool_name: &str) -> bool {
+        let was = self.rules.allow.remove(tool_name);
+        if let Some(policy) = self.policies.get(tool_name) {
+            for rule in policy.grants() {
+                self.rules.allow.remove(&rule);
+            }
+        }
         was
     }
 
@@ -289,21 +340,19 @@ impl PermissionGate {
                 };
             }
         }
-        // Synthetic input (mouse/keyboard on the real desktop) is the
-        // highest-risk tool class — the model is moving the user's actual
-        // pointer, typing into their focused window, and reading the
-        // screen back. Every interactive mode asks by default, including
-        // `auto` and `bypass`: an autonomous mode that skips this gate lets
-        // the model hijack the desktop in a single turn. The escape hatch
-        // is the session-scoped whitelist written by `allow_tool_for_session`
-        // — the UI's "本会话允许" button — which lands in `rules.allow` and
-        // short-circuits this check. `deny` still wins outright, and
-        // `dontAsk` keeps its "no questions asked" contract by denying the
-        // call rather than asking.
-        if tool_name == "computer"
+        // A host policy can require approval above the mode default.
+        // Explicit deny still wins; an allow grant skips this requirement.
+        if self
+            .policies
+            .get(tool_name)
+            .is_some_and(|p| p.ask_by_default())
             && !self.rules.allow.contains(tool_name)
-            && self.mode != PermissionMode::DontAsk
         {
+            if self.mode == PermissionMode::DontAsk {
+                return Decision::Deny {
+                    reason: format!("`{tool_name}` requires human approval"),
+                };
+            }
             return Decision::Ask {
                 diff_summary: diff_summary.into(),
             };
@@ -487,6 +536,35 @@ mod tests {
         PermissionGate::from_mode_str(mode)
     }
 
+    struct AskPolicy;
+
+    impl ToolPolicy for AskPolicy {
+        fn ask_by_default(&self) -> bool {
+            true
+        }
+
+        fn escalate(
+            &self,
+            _: &str,
+            _: Decision,
+            _: &HashSet<String>,
+            _: bool,
+            summary: &str,
+        ) -> Decision {
+            Decision::Ask {
+                diff_summary: summary.into(),
+            }
+        }
+
+        fn grants(&self) -> Vec<String> {
+            vec!["guarded:extra".into()]
+        }
+    }
+
+    fn guarded_gate(mode: &str) -> PermissionGate {
+        gate(mode).with_policy("guarded", std::sync::Arc::new(AskPolicy))
+    }
+
     #[test]
     fn default_asks_for_writes_not_reads() {
         let g = gate("default");
@@ -605,42 +683,45 @@ mod tests {
         ));
     }
 
-    /// `computer` is elevated above mode: even `auto` and
-    /// `bypassPermissions` ask for it. The only way past the ask is the
-    /// session whitelist written by `allow_tool_for_session`.
     #[test]
-    fn computer_asks_in_every_mode_until_session_allowed() {
+    fn a_host_policy_asks_above_the_mode_default() {
         for mode in ["default", "acceptEdits", "auto", "bypassPermissions"] {
-            let g = gate(mode);
+            let g = guarded_gate(mode);
             assert!(
                 matches!(
-                    g.decide("computer", Some(ToolClass::Process), false, None, ""),
+                    g.decide("guarded", Some(ToolClass::Process), false, None, ""),
                     Decision::Ask { .. }
                 ),
-                "mode {mode} should ask for `computer`"
+                "mode {mode} should honour the policy"
             );
         }
 
-        // `dontAsk` denies outright (it doesn't trust Ask either — nothing
-        // pre-approved means nothing runs).
-        let g = gate("dontAsk");
+        // The host policy applies even if the tool is marked readonly.
+        let g = guarded_gate("dontAsk");
         assert!(matches!(
-            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            g.decide("guarded", Some(ToolClass::Observation), true, None, ""),
             Decision::Deny { .. }
         ));
 
-        // Session whitelist unblocks the ask — every mode.
-        for mode in ["default", "auto", "bypassPermissions", "acceptEdits"] {
-            let mut g = gate(mode);
-            g.allow_tool_for_session("computer");
+        for mode in ["default", "auto", "bypassPermissions", "acceptEdits", "dontAsk"] {
+            let mut g = guarded_gate(mode);
+            g.allow_tool_for_session("guarded");
             assert!(
                 matches!(
-                    g.decide("computer", Some(ToolClass::Process), false, None, ""),
+                    g.decide("guarded", Some(ToolClass::Process), false, None, ""),
                     Decision::Allow
                 ),
-                "session-allowed `computer` should run in {mode}"
+                "session-allowed tool should run in {mode}"
             );
         }
+    }
+
+    #[test]
+    fn an_unregistered_tool_has_only_the_generic_rules() {
+        assert_eq!(
+            gate("auto").decide("guarded", Some(ToolClass::Process), false, None, ""),
+            Decision::Allow
+        );
     }
 
     #[test]
@@ -786,11 +867,12 @@ mod tests {
     }
 
     /// Delegated subagents run `auto` + `headless`: everything `auto` would
-    /// still Ask for (destructive shell, `computer`) becomes Deny — nobody
+    /// still Ask for becomes Deny — nobody
     /// is there to answer. This is the subagent's whole safety story.
     #[test]
     fn headless_auto_denies_what_would_ask() {
-        let g = PermissionGate::for_subagent();
+        let mut g = PermissionGate::for_subagent();
+        g.set_policy("guarded", std::sync::Arc::new(AskPolicy));
         // Safe calls still run.
         assert!(matches!(
             g.decide("smart_read", None, true, None, ""),
@@ -806,87 +888,64 @@ mod tests {
             Decision::Deny { .. }
         ));
         assert!(matches!(
-            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            g.decide("guarded", Some(ToolClass::Process), false, None, ""),
             Decision::Deny { .. }
         ));
     }
-    /// A session grant covers pointer/keyboard actions, never `launch`.
+
     #[test]
-    fn launch_asks_even_under_a_session_grant() {
-        for mode in ["default", "acceptEdits", "auto", "bypass"] {
-            let mut g = PermissionGate::from_mode_str(mode);
-            g.allow_tool_for_session("computer");
-            let base = g.decide("computer", Some(ToolClass::Process), false, None, "");
-            assert_eq!(base, Decision::Allow, "{mode}");
-            assert_eq!(g.escalate_computer("left_click", base.clone(), "x"), Decision::Allow);
-            assert_eq!(g.escalate_computer("type", base.clone(), "x"), Decision::Allow);
-            assert!(
-                matches!(g.escalate_computer("launch", base, "x"), Decision::Ask { .. }),
-                "{mode}"
-            );
+    fn a_policy_cannot_ask_where_nobody_can_answer() {
+        for mut g in [
+            guarded_gate("dontAsk"),
+            PermissionGate::for_subagent()
+                .with_policy("guarded", std::sync::Arc::new(AskPolicy)),
+        ] {
+            g.allow_tool_for_session("guarded");
+            assert!(matches!(
+                g.escalate("guarded", "action", Decision::Allow, "x"),
+                Decision::Deny { .. }
+            ));
         }
-    }
-
-    #[test]
-    fn launch_is_denied_where_nobody_can_answer() {
-        let mut g = PermissionGate::from_mode_str("dontAsk");
-        g.allow_tool_for_session("computer");
-        let base = g.decide("computer", Some(ToolClass::Process), false, None, "");
-        assert!(matches!(
-            g.escalate_computer("launch", base, "x"),
-            Decision::Deny { .. }
-        ));
-    }
-
-    #[test]
-    fn explicit_launch_rule_pre_approves_it() {
-        let mut g = PermissionGate::from_mode_str("default");
-        g.allow_tool_for_session("computer");
-        g.allow_tool_for_session(COMPUTER_LAUNCH_RULE);
-        let base = g.decide("computer", Some(ToolClass::Process), false, None, "");
-        assert_eq!(g.escalate_computer("launch", base, "x"), Decision::Allow);
     }
 
     /// Escalation never softens: an Ask/Deny stays what it was.
     #[test]
     fn escalation_never_relaxes_a_decision() {
-        let g = PermissionGate::from_mode_str("default");
-        let ask = g.decide("computer", Some(ToolClass::Process), false, None, "s");
-        assert_eq!(g.escalate_computer("launch", ask.clone(), "x"), ask);
+        let g = guarded_gate("default");
+        let ask = g.decide("guarded", Some(ToolClass::Process), false, None, "s");
+        assert_eq!(g.escalate("guarded", "action", ask.clone(), "x"), ask);
         let deny = Decision::Deny { reason: "r".into() };
-        assert_eq!(g.escalate_computer("launch", deny.clone(), "x"), deny);
+        assert_eq!(g.escalate("guarded", "action", deny.clone(), "x"), deny);
+        assert_eq!(g.escalate("unregistered", "action", Decision::Allow, ""), Decision::Allow);
     }
 
     /// Changing mode keeps the session grant.
     #[test]
     fn set_mode_keeps_the_session_grant() {
-        let mut g = PermissionGate::from_mode_str("default");
-        g.allow_tool_for_session("computer");
+        let mut g = guarded_gate("default");
+        g.allow_tool_for_session("guarded");
         g.set_mode(PermissionMode::from_str("auto"));
         assert_eq!(g.mode(), PermissionMode::Auto);
         assert_eq!(
-            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            g.decide("guarded", Some(ToolClass::Process), false, None, ""),
             Decision::Allow
         );
     }
     #[test]
-    fn turn_end_revokes_computer_and_launch_grants() {
-        let mut g = PermissionGate::from_mode_str("auto");
-        g.allow_tool_for_session("computer");
-        g.allow_tool_for_session(COMPUTER_LAUNCH_RULE);
+    fn revoking_a_tool_also_revokes_the_policys_related_grants() {
+        let mut g = guarded_gate("auto");
+        g.allow_tool_for_session("guarded");
+        g.allow_tool_for_session("guarded:extra");
         g.allow_tool_for_session("bash");
-        assert!(g.revoke_computer_grants());
+        assert!(g.revoke_grants("guarded"));
         // Back to asking, and unrelated grants are left alone.
         assert!(matches!(
-            g.decide("computer", Some(ToolClass::Process), false, None, ""),
+            g.decide("guarded", Some(ToolClass::Process), false, None, ""),
             Decision::Ask { .. }
         ));
-        assert_eq!(
-            g.escalate_computer("launch", Decision::Allow, "x"),
-            Decision::Ask { diff_summary: "x".into() }
-        );
+        assert!(!g.rules.allow.contains("guarded:extra"));
         assert!(g.decide("bash", None, false, None, "") == Decision::Allow);
         // Nothing to revoke the second time → no spurious notice.
-        assert!(!g.revoke_computer_grants());
+        assert!(!g.revoke_grants("guarded"));
     }
 }

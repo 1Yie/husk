@@ -15,6 +15,11 @@ use agent_kernel::permissions::{Decision, PermissionGate, PermissionMode};
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
+fn desktop_gate(mode: PermissionMode, rules: agent_kernel::permissions::PermissionRules) -> PermissionGate {
+    PermissionGate::new(mode, rules)
+        .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy))
+}
+
 /// A desktop backend that behaves, without a display: it records the calls it
 /// received and writes a real 1×1 PNG for captures.
 #[derive(Default)]
@@ -148,7 +153,7 @@ fn permission_matrix_for_desktop_tools() {
         "dontAsk",
         "bypassPermissions",
     ] {
-        let g = PermissionGate::new(PermissionMode::from_str(mode), Default::default());
+        let g = desktop_gate(PermissionMode::from_str(mode), Default::default());
         let shot = g.decide(
             "screenshot",
             Some(ToolClass::Observation),
@@ -161,9 +166,9 @@ fn permission_matrix_for_desktop_tools() {
 
     // default / acceptEdits / auto / bypass → confirm: `computer` is
     // elevated above the mode default — synthetic input is the highest-risk
-    // class, so every interactive mode asks (the gate's hardcoded rule).
+    // class, so every interactive mode asks (the host installs this policy).
     for mode in ["default", "acceptEdits", "auto", "bypassPermissions"] {
-        let g = PermissionGate::new(PermissionMode::from_str(mode), Default::default());
+        let g = desktop_gate(PermissionMode::from_str(mode), Default::default());
         assert!(
             matches!(
                 g.decide("computer", comp_class, false, None, "click"),
@@ -176,14 +181,14 @@ fn permission_matrix_for_desktop_tools() {
     // it — `rules.allow` short-circuits the elevated gate.
     let mut rules = agent_kernel::permissions::PermissionRules::default();
     rules.allow.insert("computer".to_string());
-    let g = PermissionGate::new(PermissionMode::from_str("auto"), rules);
+    let g = desktop_gate(PermissionMode::from_str("auto"), rules);
     assert_eq!(
         g.decide("computer", comp_class, false, None, "click"),
         Decision::Allow,
         "session-allowed computer must run in auto"
     );
     // dontAsk → deny outright (not a pre-approved tool)
-    let g = PermissionGate::new(PermissionMode::DontAsk, Default::default());
+    let g = desktop_gate(PermissionMode::DontAsk, Default::default());
     assert!(matches!(
         g.decide("computer", comp_class, false, None, "click"),
         Decision::Deny { .. }
@@ -217,7 +222,8 @@ fn child_registries_never_carry_desktop_input() {
     // elevated `computer` gate produces `Ask` in auto, and `headless`
     // converts that `Ask` into a `Deny`. Between the registry exclusion
     // and this, a delegated subagent can't drive the desktop on any path.
-    let g = PermissionGate::for_subagent();
+    let g = PermissionGate::for_subagent()
+        .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy));
     let comp_class = registry.spec("computer").map(|s| s.class);
     assert!(
         matches!(

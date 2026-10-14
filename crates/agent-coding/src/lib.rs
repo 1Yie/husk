@@ -10,6 +10,7 @@
 
 pub mod blueprint;
 pub mod blueprint_tool;
+pub mod computer_policy;
 pub mod goal;
 pub mod plan;
 pub mod remember;
