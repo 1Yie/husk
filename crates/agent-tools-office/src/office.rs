@@ -23,8 +23,8 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{schema_for, SandboxCtx, ToolCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
-use super::sandbox_cfg::sandbox_config;
+use agent_tool::{schema_for, SandboxCtx, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
+use agent_tools_shell::sandbox_cfg::sandbox_config;
 
 const MAX_OUTPUT_CHARS: usize = 20 * 1024;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -36,8 +36,8 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Run `officecli <args…> --json` in the sandbox, returning stdout (folded).
 /// stderr / non-zero exit → `ToolError::Failed` carrying officecli's own
 /// message so the model can self-correct.
-async fn run(
-    ctx: Arc<ToolCtx>,
+async fn run<C: WorkspaceCtx + SandboxCtx>(
+    ctx: Arc<C>,
     argv: Vec<String>,
     timeout: Duration,
 ) -> Result<ToolResult, ToolError> {
@@ -49,11 +49,11 @@ async fn run(
     // Without a resident, each call does a synchronous read-modify-write on
     // the file itself, so a reported success always means on-disk truth.
     let cmd = format!("OFFICECLI_NO_AUTO_RESIDENT=1 {}", shell_join(&argv));
-    let verdict = agent_sandbox::audit_command_scoped(&cmd, Some(ctx.workspace_root.as_ref()));
+    let verdict = agent_sandbox::audit_command_scoped(&cmd, Some(ctx.root()));
     let sandbox = ctx.sandbox()?;
     let cfg = sandbox_config(
         &verdict,
-        ctx.workspace_root.as_ref(),
+        ctx.root(),
         timeout,
         &ctx.sandbox_limits(),
     );
@@ -127,18 +127,18 @@ fn fold(s: &str) -> String {
     let head = MAX_OUTPUT_CHARS * 3 / 10;
     let tail = MAX_OUTPUT_CHARS - head;
     let mut out = String::with_capacity(MAX_OUTPUT_CHARS + 80);
-    out.push_str(crate::tools::util::head(s, head));
+    out.push_str(agent_tools_shell::util::head(s, head));
     out.push_str(&format!(
         "\n… [truncated {} bytes] …\n",
         s.len() - head - tail
     ));
-    out.push_str(crate::tools::util::tail(s, tail));
+    out.push_str(agent_tools_shell::util::tail(s, tail));
     out
 }
 
 /// Resolve a model-supplied file path inside the workspace; `officecli` then
 /// gets the absolute workspace path.
-fn resolve_file(ctx: &ToolCtx, file: &str) -> Result<String, ToolError> {
+fn resolve_file<C: WorkspaceCtx>(ctx: &Arc<C>, file: &str) -> Result<String, ToolError> {
     Ok(ctx.resolve(file)?.display().to_string())
 }
 
@@ -356,7 +356,7 @@ struct ExecArgs {
 
 /// Every `office_*` spec. The engine registers the returned vec into the
 /// office registry — keeping them out of the shared builtin set.
-pub fn specs() -> Vec<ToolSpec> {
+pub fn specs<C: WorkspaceCtx + SandboxCtx>() -> Vec<ToolSpec<C>> {
     vec![
         office_create(),
         office_open(),
@@ -382,7 +382,7 @@ pub fn specs() -> Vec<ToolSpec> {
 
 // -- individual specs -------------------------------------------------------
 
-fn office_create() -> ToolSpec {
+fn office_create<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_create",
         schema: schema_for::<CreateArgs>(
@@ -390,7 +390,7 @@ fn office_create() -> ToolSpec {
              format: .docx, .xlsx or .pptx.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -420,7 +420,7 @@ fn office_create() -> ToolSpec {
     }
 }
 
-fn office_open() -> ToolSpec {
+fn office_open<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_open",
         schema: schema_for::<FileArgs>(
@@ -429,7 +429,7 @@ fn office_open() -> ToolSpec {
              so there is nothing to open.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         // Starting a real resident would leave a doomed process holding
         // unflushed state — every command's process group is killed when the
@@ -449,7 +449,7 @@ fn office_open() -> ToolSpec {
     }
 }
 
-fn office_close() -> ToolSpec {
+fn office_close<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_close",
         schema: schema_for::<FileArgs>(
@@ -457,7 +457,7 @@ fn office_close() -> ToolSpec {
              `office_save` to flush but keep it open.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -476,7 +476,7 @@ fn office_close() -> ToolSpec {
     }
 }
 
-fn office_save() -> ToolSpec {
+fn office_save<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_save",
         schema: schema_for::<FileArgs>(
@@ -484,7 +484,7 @@ fn office_save() -> ToolSpec {
              resident process warm.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -503,7 +503,7 @@ fn office_save() -> ToolSpec {
     }
 }
 
-fn office_get() -> ToolSpec {
+fn office_get<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_get",
         schema: schema_for::<GetArgs>(
@@ -511,7 +511,7 @@ fn office_get() -> ToolSpec {
              Read-only.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -538,14 +538,14 @@ fn office_get() -> ToolSpec {
     }
 }
 
-fn office_query() -> ToolSpec {
+fn office_query<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_query",
         schema: schema_for::<QueryArgs>(
             "Query document elements with a CSS-like selector. Read-only.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -570,14 +570,14 @@ fn office_query() -> ToolSpec {
     }
 }
 
-fn office_set() -> ToolSpec {
+fn office_set<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_set",
         schema: schema_for::<SetArgs>(
             "Modify a document node's properties (`props` becomes `--prop k=v`).",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -600,14 +600,14 @@ fn office_set() -> ToolSpec {
     }
 }
 
-fn office_add() -> ToolSpec {
+fn office_add<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_add",
         schema: schema_for::<AddArgs>(
             "Add a new element (shape/paragraph/row/slide…) under a parent path.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -641,12 +641,12 @@ fn office_add() -> ToolSpec {
     }
 }
 
-fn office_remove() -> ToolSpec {
+fn office_remove<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_remove",
         schema: schema_for::<RemoveArgs>("Remove an element from the document."),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -671,14 +671,14 @@ fn office_remove() -> ToolSpec {
     }
 }
 
-fn office_move() -> ToolSpec {
+fn office_move<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_move",
         schema: schema_for::<MoveArgs>(
             "Move an element to a new parent (`to`) or position (`after`/`before`).",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -703,7 +703,7 @@ fn office_move() -> ToolSpec {
     }
 }
 
-fn office_batch() -> ToolSpec {
+fn office_batch<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_batch",
         schema: schema_for::<BatchArgs>(
@@ -711,7 +711,7 @@ fn office_batch() -> ToolSpec {
              objects like `{\"command\":\"add\",\"parent\":\"/slide[1]\",\"type\":\"shape\",\"props\":{...}}`.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -741,7 +741,7 @@ fn office_batch() -> ToolSpec {
     }
 }
 
-fn office_merge() -> ToolSpec {
+fn office_merge<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_merge",
         schema: schema_for::<MergeArgs>(
@@ -749,7 +749,7 @@ fn office_merge() -> ToolSpec {
              `output`.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -779,14 +779,14 @@ fn office_merge() -> ToolSpec {
     }
 }
 
-fn office_import() -> ToolSpec {
+fn office_import<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_import",
         schema: schema_for::<ImportArgs>(
             "Import CSV/TSV `source` into an .xlsx sheet at `parent`.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -827,7 +827,7 @@ fn view_read_only(a: &ViewArgs) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn office_view() -> ToolSpec {
+fn office_view<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_view",
         schema: schema_for::<ViewArgs>(
@@ -835,7 +835,7 @@ fn office_view() -> ToolSpec {
              for reading. Read-only.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -867,7 +867,7 @@ fn office_view() -> ToolSpec {
     }
 }
 
-fn office_validate() -> ToolSpec {
+fn office_validate<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_validate",
         schema: schema_for::<FileArgs>(
@@ -875,7 +875,7 @@ fn office_validate() -> ToolSpec {
              delivery — any schema error must be fixed first. Read-only.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -894,7 +894,7 @@ fn office_validate() -> ToolSpec {
     }
 }
 
-fn office_help() -> ToolSpec {
+fn office_help<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_help",
         schema: schema_for::<HelpArgs>(
@@ -904,7 +904,7 @@ fn office_help() -> ToolSpec {
              every command and element.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -922,7 +922,7 @@ fn office_help() -> ToolSpec {
     }
 }
 
-fn office_skill() -> ToolSpec {
+fn office_skill<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_skill",
         schema: schema_for::<SkillArgs>(
@@ -932,7 +932,7 @@ fn office_skill() -> ToolSpec {
              rules that govern one artifact. Load ONE per document.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -950,7 +950,7 @@ fn office_skill() -> ToolSpec {
     }
 }
 
-fn office_raw() -> ToolSpec {
+fn office_raw<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_raw",
         schema: schema_for::<RawArgs>(
@@ -959,7 +959,7 @@ fn office_raw() -> ToolSpec {
              edits no L2 verb can express.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {
@@ -1011,7 +1011,7 @@ fn check_exec_arg(arg: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn office_exec() -> ToolSpec {
+fn office_exec<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "office_exec",
         schema: schema_for::<ExecArgs>(
@@ -1021,7 +1021,7 @@ fn office_exec() -> ToolSpec {
              keep the call shape uniform.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::Process,
+        class: agent_tool::ToolClass::Process,
         network: false,
         exec: Arc::new(|args, ctx| {
             async move {

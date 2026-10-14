@@ -34,8 +34,10 @@ declare -A ALLOW=(
   [agent-tools-shell]="agent-sandbox agent-tool"
   # screen tools — the desktop seam is optional by design
   [agent-tools-computer]="agent-computer agent-llm agent-paths agent-tool"
+  # document tools — share the shell package's sandbox derivation
+  [agent-tools-office]="agent-sandbox agent-tool agent-tools-shell"
   # runtime
-  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-store agent-tool agent-tools-computer agent-tools-fs agent-tools-shell agent-tools-web"
+  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-store agent-tool agent-tools-computer agent-tools-fs agent-tools-office agent-tools-shell agent-tools-web"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox"

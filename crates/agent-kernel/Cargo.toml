@@ -18,6 +18,7 @@ agent-computer = { path = "../agent-computer" }
 agent-plugin = { path = "../agent-plugin" }
 agent-tools-computer = { path = "../agent-tools-computer" }
 agent-tools-fs = { path = "../agent-tools-fs" }
+agent-tools-office = { path = "../agent-tools-office" }
 agent-tools-shell = { path = "../agent-tools-shell" }
 agent-tools-web = { path = "../agent-tools-web" }
 async-trait.workspace = true
