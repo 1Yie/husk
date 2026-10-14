@@ -464,7 +464,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                         // live stream should show the same `── [i] ──`
                         // children the result text replays, not silently
                         // drop the ones the batch refused.
-                        if let Some(ui) = &ctx.ui_tx {
+                        if let Some(ui) = ctx.ui() {
                             let _ = ui.send(agent_ipc::events::UiEvent::ToolCallStarted {
                                 name: tool.clone(),
                                 parent: Some("batch_execute".into()),
@@ -494,7 +494,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                         // Item ctx carries the batch flag — tools that poll
                         // cancel abort their own blocking work too.
                         let item_ctx = Arc::new(ctx.with_cancel(batch_cancel.clone()));
-                        if let Some(ui) = &ctx.ui_tx {
+                        if let Some(ui) = ctx.ui() {
                             let _ = ui.send(agent_ipc::events::UiEvent::ToolCallStarted {
                                 name: tool.clone(),
                                 // Nested — the UI renders this under the
@@ -549,7 +549,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                                 duration_ms: t0.elapsed().as_millis() as u64,
                             },
                         };
-                        if let Some(ui) = &ctx.ui_tx {
+                        if let Some(ui) = ctx.ui() {
                             let (ok, content) = match &out.status {
                                 ItemStatus::Ok => (true, out.body.clone()),
                                 _ => (false, out.body.clone()),

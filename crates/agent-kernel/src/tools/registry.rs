@@ -178,6 +178,11 @@ pub struct SandboxLimitsSlot(pub crate::sandbox_prefs::SandboxLimits);
 /// refuses instead of parking on an answer nobody can give.
 pub struct AskSlot(pub Arc<AskChannel>);
 
+/// The session UI event sink. Tools that fan out (batch items, subagent
+/// progress) emit their internal calls here so they stay visible and
+/// auditable instead of running silently; absent in headless contexts.
+pub struct UiSlot(pub crate::channels::UiSink);
+
 /// Subagent spawner — `delegate` runs a fresh-context child engine. Absent
 /// where delegation is unavailable (tests, child contexts).
 pub struct SubagentSlot(pub crate::tools::delegate::SubagentSpawner);
@@ -204,11 +209,6 @@ pub struct ToolCtx {
     /// it so a user cancel propagates into the delegation instead of
     /// orphaning a running child. `None` in unattached contexts.
     pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// Session UI event channel — tools that fan out (batch items,
-    /// subagent progress) emit ToolCallStarted/Finished here so internal
-    /// calls stay visible + auditable instead of running silently.
-    /// `None` in headless contexts → those tools skip emitting.
-    pub ui_tx: Option<crate::channels::UiSink>,
     /// Live view of the engine's active registry — refreshed on every
     /// `active_registry()` resolution so `batch_execute` dispatches through
     /// the same mode-scoped registry as single calls (plan mode can't be
@@ -241,6 +241,18 @@ impl ToolCtx {
     /// `Arc`, so answers routed through the host reach the parked tool call.
     pub fn install_ask(&mut self, ask: Arc<AskChannel>) {
         self.ext.insert(Arc::new(AskSlot(ask)));
+    }
+
+    /// The session UI event sink, if this context has one. Tools that fan out
+    /// emit their internal call events here; `None` means headless, where they
+    /// skip emitting rather than inventing a sink.
+    pub fn ui(&self) -> Option<crate::channels::UiSink> {
+        self.ext.get::<UiSlot>().map(|s| s.0.clone())
+    }
+
+    /// Install the session UI event sink.
+    pub fn install_ui(&mut self, ui: crate::channels::UiSink) {
+        self.ext.insert(Arc::new(UiSlot(ui)));
     }
 
     /// The workspace memory handle, if a session owns one. The handle itself
@@ -303,7 +315,6 @@ impl ToolCtx {
             cancel: None,
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
-            ui_tx: None,
             ext: Extensions::default(),
         }
         .with_controllers()
@@ -339,7 +350,6 @@ impl ToolCtx {
             cancel: None,
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
-            ui_tx: None,
             ext: Extensions::default(),
         }
         .with_controllers();
@@ -441,7 +451,6 @@ impl ToolCtx {
         ToolCtx {
             workspace_root: self.workspace_root.clone(),
             cancel: Some(cancel),
-            ui_tx: self.ui_tx.clone(),
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
             ext: self.ext.clone(),
@@ -969,6 +978,20 @@ mod tests {
         // A batch item's cancel-scoped copy answers on the same channel.
         let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
         assert!(Arc::ptr_eq(&scoped.ask().unwrap(), &channel));
+    }
+
+    #[test]
+    fn ui_sink_is_absent_until_installed_and_shared_after_cancel_scope() {
+        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        // Headless by default: fan-out tools skip emitting instead of panicking.
+        assert!(ctx.ui().is_none());
+
+        let (sink, _rx) = crate::channels::UiSink::channel();
+        ctx.install_ui(sink);
+        assert!(ctx.ui().is_some());
+        // A batch item's cancel-scoped copy emits on the same sink.
+        let scoped = ctx.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        assert!(scoped.ui().is_some());
     }
 
     #[test]

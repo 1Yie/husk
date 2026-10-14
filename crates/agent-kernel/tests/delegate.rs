@@ -106,7 +106,7 @@ async fn every_child_emits_a_nested_card() {
     let (sink, mut rx) = UiSink::channel();
     let mut ctx = ToolCtx::new(dir.path());
     ctx.install_subagent(spawner(provider));
-    ctx.ui_tx = Some(sink);
+    ctx.install_ui(sink);
 
     let spec = ToolRegistry::with_builtins().spec("delegate").unwrap();
     let _ = (spec.exec)(

@@ -64,7 +64,7 @@ fn child_label(agent: Option<&str>, index: usize, total: usize) -> String {
 /// One child card, nested under the `delegate` row — a fan-out reads as N
 /// capsules instead of one silent multi-minute wait. `ok: None` starts the card.
 fn emit_child(parent_ctx: &ToolCtx, child: u64, label: &str, ok: Option<bool>, body: &str) {
-    let Some(ui) = &parent_ctx.ui_tx else { return };
+    let Some(ui) = parent_ctx.ui() else { return };
     let event = match ok {
         None => UiEvent::ToolCallStarted {
             name: label.to_string(),
@@ -390,7 +390,7 @@ impl SubagentSpawner {
         // flag on every exit, including the drop.
         let _forward_guard = FlagOnDrop(forward_stop.clone());
         let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
-        if let Some(parent_sink) = parent_ctx.ui_tx.clone() {
+        if let Some(parent_sink) = parent_ctx.ui() {
             let tag = label.to_string();
             let stop = forward_stop.clone();
             forwarder = Some(tokio::spawn(async move {
@@ -454,7 +454,7 @@ impl SubagentSpawner {
         // The child shares workspace + sandbox + the parent's cancel flag;
         // it does NOT share session scratch (no session attach → todo-like
         // tools degrade) and cannot delegate further (no spawner).
-        let child_ctx = ToolCtx {
+        let mut child_ctx = ToolCtx {
             workspace_root: parent_ctx.workspace_root.clone(),
             // Screenshots are inherited (a delegated visual check needs to
             // see the screen); input is not — `computer` is absent from every
@@ -464,7 +464,6 @@ impl SubagentSpawner {
             depth: parent_ctx.depth + 1,
             // The child's own engine refreshes this on its first dispatch.
             active_registry: std::sync::RwLock::new(None),
-            ui_tx: Some(child_sink.clone()),
             // Subagent engines carry no plugin router, so plugin names
             // genuinely are unknown here — batch should keep saying so.
             // Own pair, never the parent's: the child's goal/plan signal must
@@ -480,6 +479,9 @@ impl SubagentSpawner {
         // Memory is shared: a subagent's `remember` lands in the same
         // workspace store, like its todo state would if it had a session.
         .inherit_memory(&parent_ctx);
+        // The child's fan-out events go to its own tagged sink, so a batched
+        // child call never masquerades as the parent's.
+        child_ctx.install_ui(child_sink.clone());
         // Either side can ask for read-only; the manifest cannot grant write back.
         let base = if readonly || spec.readonly {
             self.registry_readonly.clone()
