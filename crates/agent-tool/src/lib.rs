@@ -24,6 +24,10 @@ pub type Args = serde_json::Value;
 #[derive(Clone, Default)]
 pub struct Extensions {
     map: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    /// Slots a delegated child context may share with its parent. Everything
+    /// else (per-context controllers, observers) stays with the parent: a child
+    /// never inherits `ext` wholesale.
+    inheritable: std::collections::HashSet<TypeId>,
 }
 
 impl Extensions {
@@ -31,10 +35,31 @@ impl Extensions {
         self.map.insert(TypeId::of::<T>(), value);
     }
 
+    /// Insert a slot a child context should share with its parent (a sandbox,
+    /// a desktop backend, a memory handle — capabilities of the *host*, not of
+    /// one context). The child gets the same `Arc`.
+    pub fn insert_shared<T: Any + Send + Sync>(&mut self, value: Arc<T>) {
+        self.inheritable.insert(TypeId::of::<T>());
+        self.insert(value);
+    }
+
     pub fn get<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
         self.map
             .get(&TypeId::of::<T>())
             .and_then(|v| Arc::clone(v).downcast::<T>().ok())
+    }
+
+    /// The slots meant for a child: only those inserted with
+    /// [`insert_shared`](Self::insert_shared), sharing the parent's `Arc`s.
+    pub fn inheritable(&self) -> Extensions {
+        let mut child = Extensions::default();
+        for id in &self.inheritable {
+            if let Some(v) = self.map.get(id) {
+                child.map.insert(*id, v.clone());
+                child.inheritable.insert(*id);
+            }
+        }
+        child
     }
 }
 
@@ -282,6 +307,24 @@ mod tests {
 
     /// The extension table is the contract's own storage; it must work with no
     /// kernel, no context and no capability types in sight.
+    #[test]
+    fn a_child_inherits_only_the_shared_slots() {
+        struct Shared(u32);
+        let mut parent = Extensions::default();
+        parent.insert_shared(Arc::new(Shared(1)));
+        parent.insert(Arc::new(Marker(2)));
+        let child = parent.inheritable();
+        assert_eq!(child.get::<Shared>().map(|s| s.0), Some(1));
+        assert!(child.get::<Marker>().is_none(), "per-context slots stay put");
+        // Shared means the same Arc, so a handle swap on the parent is seen.
+        assert!(Arc::ptr_eq(
+            &parent.get::<Shared>().unwrap(),
+            &child.get::<Shared>().unwrap()
+        ));
+        // The child can pass them on to its own children.
+        assert!(child.inheritable().get::<Shared>().is_some());
+    }
+
     #[test]
     fn extensions_round_trip_without_a_context() {
         let mut ext = Extensions::default();
