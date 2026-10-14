@@ -436,7 +436,7 @@ impl SessionActor {
             .replace("{{WORKSPACE_TREE}}", &workspace_tree)
             .replace("{{GIT_STATUS}}", &git_status);
 
-        // `memory.db` lives at ~/.local/share/husk/, partitioned by
+        // `memory.db` lives in the host's data dir, partitioned by
         // `hash(canonical_root)`. `{{MEMORY_BLOCK}}` is refreshed per-turn
         // (recall happens in `run_prompt`, not once at spawn — the block
         // must track the evolving store).
@@ -481,7 +481,7 @@ impl SessionActor {
                 &crate::tools::delegate::catalog(&cfg.workspace_root, &cfg.paths),
             );
 
-        // `~/.config/husk/AGENTS.md` (user-wide) then `<workspace>/AGENTS.md`
+        // the host's user-level AGENTS.md then `<workspace>/AGENTS.md`
         // (project) append verbatim as dedicated sections — custom rules live
         // outside the template so they never fight its contract.
         let mut system_prompt = system_prompt;

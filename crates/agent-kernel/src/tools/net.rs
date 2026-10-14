@@ -29,7 +29,11 @@ pub const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 /// Max redirects followed per request; each hop is re-validated.
 pub const MAX_REDIRECTS: usize = 5;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
-const USER_AGENT: &str = concat!("Husk/", env!("CARGO_PKG_VERSION"));
+/// The `User-Agent` for outbound requests: the host's own name plus this
+/// crate's version. The kernel does not name the product.
+pub fn user_agent(app_name: &str) -> String {
+    format!("{app_name}/{}", env!("CARGO_PKG_VERSION"))
+}
 
 /// One validated response: final URL (post-redirect), status, headers-derived
 /// content type, and the byte-capped body.
@@ -156,11 +160,12 @@ pub async fn fetch(
     url_str: &str,
     accept: &str,
     cancel: Option<Arc<AtomicBool>>,
+    user_agent: &str,
 ) -> Result<FetchResponse, ToolError> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none()) // manual: re-validate every hop
-        .user_agent(USER_AGENT)
+        .user_agent(user_agent)
         .build()
         .map_err(|e| ToolError::Failed(format!("failed to build HTTP client: {e}")))?;
 

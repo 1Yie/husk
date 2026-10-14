@@ -210,7 +210,8 @@ async fn search_wikimedia(
         urlform(query),
         count,
     );
-    let resp = net::fetch(&url, "application/json", ctx.cancel.clone()).await?;
+    let ua = net::user_agent(ctx.app_paths().app_name());
+    let resp = net::fetch(&url, "application/json", ctx.cancel.clone(), &ua).await?;
     if !resp.status.is_success() {
         return Err(ToolError::Failed(format!("HTTP {}", resp.status)));
     }
@@ -266,7 +267,8 @@ async fn search_bing(
         "https://cn.bing.com/images/search?q={}&form=HDRSC2&first=1",
         urlform(query)
     );
-    let resp = net::fetch(&url, "text/html", ctx.cancel.clone()).await?;
+    let ua = net::user_agent(ctx.app_paths().app_name());
+    let resp = net::fetch(&url, "text/html", ctx.cancel.clone(), &ua).await?;
     if !resp.status.is_success() {
         return Err(ToolError::Failed(format!("HTTP {}", resp.status)));
     }
@@ -376,7 +378,8 @@ fn web_download() -> ToolSpec {
             async move {
                 let a: WebDownloadArgs = serde_json::from_value(args)
                     .map_err(|e| ToolError::Args(format!("web_download args: {e}")))?;
-                let resp = net::fetch(&a.url, "*/*", ctx.cancel.clone()).await?;
+                let ua = net::user_agent(ctx.app_paths().app_name());
+                let resp = net::fetch(&a.url, "*/*", ctx.cancel.clone(), &ua).await?;
                 if !resp.status.is_success() {
                     return Err(ToolError::Failed(format!(
                         "download failed: HTTP {}",

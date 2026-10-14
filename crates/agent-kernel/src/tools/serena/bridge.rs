@@ -74,7 +74,7 @@ pub trait BridgeFactory: Send + Sync {
 ///
 /// The installed CLI (`uv tool install -p 3.13 serena-agent` + `serena init`) is
 /// preferred: `uvx` re-resolves the repo branch on every cold start. `uvx` stays
-/// as the fallback; `HUSK_SERENA_CMD` / `HUSK_SERENA_SOURCE` let a deployment
+/// as the fallback; `AGENT_SERENA_CMD` / `AGENT_SERENA_SOURCE` let a deployment
 /// pin a build, and tests point `argv_override` at a stub MCP server.
 #[derive(Debug, Clone)]
 pub struct SerenaLaunch {
@@ -83,7 +83,7 @@ pub struct SerenaLaunch {
     pub source: String,
     /// Repeated `--mode` values. The default drops Serena's own memory and
     /// onboarding tools: nothing here uses them and they only lengthen the
-    /// catalog. `HUSK_SERENA_MODES=` (empty) keeps them.
+    /// catalog. `AGENT_SERENA_MODES=` (empty) keeps them.
     pub modes: Vec<String>,
     /// Full argv override — the stub-server tests launch this way.
     pub argv_override: Option<Vec<String>>,
@@ -92,10 +92,10 @@ pub struct SerenaLaunch {
 impl SerenaLaunch {
     pub fn from_env() -> Self {
         Self {
-            program: std::env::var("HUSK_SERENA_CMD").ok(),
-            source: std::env::var("HUSK_SERENA_SOURCE")
+            program: std::env::var("AGENT_SERENA_CMD").ok(),
+            source: std::env::var("AGENT_SERENA_SOURCE")
                 .unwrap_or_else(|_| "git+https://github.com/oraios/serena".into()),
-            modes: std::env::var("HUSK_SERENA_MODES")
+            modes: std::env::var("AGENT_SERENA_MODES")
                 .map(|raw| {
                     raw.split([',', ' '])
                         .map(str::trim)
@@ -335,7 +335,10 @@ impl SerenaBridge {
         let init = json!({
             "jsonrpc":"2.0","id":0,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05","capabilities":{},
-                      "clientInfo":{"name":"husk","version":"0.1"}}
+                      // The kernel is the client of this local MCP subprocess; the
+                      // host's own name is not reachable here (the factory is a
+                      // process-wide static), so it identifies itself neutrally.
+                      "clientInfo":{"name":"agent-kernel","version": env!("CARGO_PKG_VERSION")}}
         });
         self.request(init, STARTUP_TIMEOUT).await?;
         let note = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
@@ -474,7 +477,7 @@ mod tests {
 
     /// Full path libtest needs to run exactly this test in the child.
     const STUB_TEST: &str = "tools::serena::bridge::tests::stub_mcp_server";
-    const STUB_MODE: &str = "HUSK_SERENA_STUB";
+    const STUB_MODE: &str = "AGENT_SERENA_STUB";
 
     /// Launch the current test binary as a stub MCP server. The stub is the
     /// same executable re-entered with `--exact <stub test>` — no `uvx`, no

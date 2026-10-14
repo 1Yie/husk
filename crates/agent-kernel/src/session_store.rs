@@ -163,7 +163,7 @@ pub fn app_data_dir() -> Option<PathBuf> {
     DATA_DIR.read().ok().and_then(|d| d.clone())
 }
 
-/// The office-mode pseudo-workspace root: `~/.local/share/husk/office`.
+/// The office-mode pseudo-workspace root: `<data dir>/office`.
 /// Every office session shares this directory as its workspace root, so a
 /// document one session produced is readable/writable by all the others
 /// (the `resolve` sandbox only confines paths to the workspace root).
@@ -217,7 +217,7 @@ fn open_db(path: &Path) -> std::io::Result<Arc<SessionDatabase>> {
 /// level up. `#[cfg(test)]` only reaches unit tests inside this lib — `tests/`
 /// binaries link us as an external dep — so a runtime marker is the only way
 /// BOTH kinds share the same rule: test code must never touch (or lock-fight
-/// a running husk over) the real `sessions.db`/`memory.db`.
+/// a running app over) the real `sessions.db`/`memory.db`.
 pub(crate) fn is_test_binary() -> bool {
     std::env::current_exe()
         .ok()

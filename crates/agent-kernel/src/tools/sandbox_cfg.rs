@@ -29,7 +29,7 @@ pub(crate) fn sandbox_config(
     let plan = agent_sandbox::plan::SandboxPlan::from_audit(
         verdict,
         workspace_root.clone(),
-        std::env::temp_dir().join(format!("husk-{:x}", std::process::id())),
+        std::env::temp_dir().join(format!("agent-sandbox-{:x}", std::process::id())),
     );
     // AllowHosts maps to proxied egress (not "allow all"): the host-side
     // proxy enforces the domain list; `allow_network` stays false so the

@@ -130,10 +130,12 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         .unwrap_or(DEFAULT_MAX_CHARS)
         .clamp(1, HARD_MAX_CHARS);
 
+    let ua = net::user_agent(ctx.app_paths().app_name());
     let resp = net::fetch(
         &parsed.url,
         "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8",
         ctx.cancel.clone(),
+        &ua,
     )
     .await?;
 

@@ -1629,7 +1629,9 @@ impl SessionManager {
             // blocker clears), because live `enabled` being false there says
             // nothing about what the user asked for.
             let enabled = mgr.as_ref().map(|m| !m.is_disabled(&id)).unwrap_or(true);
-            let repo_local = m.dir.starts_with(self.workspace_root.join(".husk"));
+            let repo_local = m
+                .dir
+                .starts_with(self.paths.workspace_dir(&self.workspace_root));
             // Declared slash commands — name + action, so a tool/wasm plugin
             // card can show what it contributes instead of only its hooks.
             let commands: Vec<serde_json::Value> = m
@@ -1718,11 +1720,11 @@ impl SessionManager {
         out
     }
 
-    /// The two user-instruction files the settings "指令" pane edits —
-    /// `~/.config/husk/AGENTS.md` (user-wide) and `<workspace>/AGENTS.md`
-    /// (project). Both append to every new session's system prompt.
+    /// The two user-instruction files the settings "指令" pane edits — the
+    /// host's user-wide `AGENTS.md` and `<workspace>/AGENTS.md` (project).
+    /// Both append to every new session's system prompt.
     pub fn instructions(&self) -> serde_json::Value {
-        let global = dirs::config_dir().map(|d| d.join("husk/AGENTS.md"));
+        let global = Some(self.paths.config_file("AGENTS.md"));
         let ws = self.workspace_root.join("AGENTS.md");
         let read = |p: &Option<std::path::PathBuf>| {
             p.as_ref()
@@ -1745,9 +1747,7 @@ impl SessionManager {
     /// config dir on first save.
     pub fn set_instructions(&self, scope: &str, content: &str) -> Result<(), String> {
         let path = match scope {
-            "global" => dirs::config_dir()
-                .map(|d| d.join("husk/AGENTS.md"))
-                .ok_or("no config dir")?,
+            "global" => self.paths.config_file("AGENTS.md"),
             "workspace" => self.workspace_root.join("AGENTS.md"),
             _ => return Err(format!("unknown instructions scope `{scope}`")),
         };

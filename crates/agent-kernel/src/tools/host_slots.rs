@@ -210,7 +210,7 @@ impl ToolCtx {
         })
     }
 
-    /// The workspace-local state dir (`<workspace>/.husk` for the husk host).
+    /// The workspace-local state dir (e.g. `<workspace>/.husk`).
     ///
     /// Falls back to a product-free `.agent` when no paths are installed, so a
     /// bare test context still gets a defined, private-looking directory.

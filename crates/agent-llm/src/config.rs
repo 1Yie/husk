@@ -43,7 +43,7 @@ pub struct AppConfig {
     pub fallback_chain: Vec<String>,
 }
 
-/// User-level developer overrides — `~/.config/husk/settings.toml`.
+/// User-level developer overrides — `<config dir>/settings.toml`.
 ///
 /// **Why a dedicated file:** these settings can prevent the GUI from
 /// starting (`renderer = "wayland"` on a driver that can't do it,

@@ -1286,7 +1286,7 @@ mod tests {
     /// Manifests live in Husk's own dirs; the project one wins over the same
     /// name elsewhere (no writes to `$HOME` in this test).
     #[test]
-    fn project_agents_shadow_and_dirs_are_husk_owned() {
+    fn project_agents_shadow_and_dirs_are_host_owned() {
         let dir = tempfile::tempdir().unwrap();
         let paths = agent_paths::AppPaths::new(dir.path().join("husk"), dir.path(), ".husk");
         let ws = workspace_agent_dir(dir.path(), &paths);
