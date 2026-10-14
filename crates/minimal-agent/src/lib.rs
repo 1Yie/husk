@@ -54,11 +54,34 @@ pub fn list_remote() -> ToolSpec {
     }
 }
 
+/// Read a remote file.
+pub fn read_remote() -> ToolSpec {
+    ToolSpec {
+        name: "read_remote",
+        schema: serde_json::json!({
+            "type": "object",
+            "properties": { "host": { "type": "string" }, "path": { "type": "string" } },
+            "required": ["host", "path"],
+        }),
+        readonly: true,
+        class: ToolClass::Observation,
+        network: true,
+        exec: Arc::new(|args, _ctx| {
+            async move {
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+                Ok(ToolResult::text(format!("contents of {path}")))
+            }
+            .boxed()
+        }),
+    }
+}
+
 /// The worker's registry. What is absent matters as much: no kernel builtin
 /// appears unless this crate registers it.
 pub fn registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(ssh_exec());
+    reg.register(read_remote());
     reg.register(list_remote());
     reg
 }
@@ -90,6 +113,8 @@ mod tests {
     /// outside the llm crate, which is the other half of the contract.
     struct Scripted {
         rounds: Mutex<usize>,
+        /// Tool names offered to the model, per round.
+        offered: Mutex<Vec<Vec<String>>>,
     }
 
     #[async_trait::async_trait]
@@ -102,11 +127,22 @@ mod tests {
             &self,
             _model: &str,
             _messages: &[ChatMessage],
-            _tools: Option<serde_json::Value>,
+            tools: Option<serde_json::Value>,
             _temperature: f32,
             _reasoning_effort: Option<&str>,
             _params: &ModelParams,
         ) -> anyhow::Result<agent_llm::BoxStream<StreamChunk>> {
+            let names = tools
+                .as_ref()
+                .and_then(|t| t.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.pointer("/function/name").and_then(|n| n.as_str()))
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.offered.lock().unwrap().push(names);
             let round = {
                 let mut n = self.rounds.lock().unwrap();
                 let r = *n;
@@ -152,8 +188,9 @@ mod tests {
     async fn a_second_agent_runs_a_turn_with_its_own_tools() {
         let provider = Arc::new(Scripted {
             rounds: Mutex::new(0),
+            offered: Mutex::new(Vec::new()),
         });
-        let mut engine = engine(provider, std::env::temp_dir().join("minimal-agent"));
+        let mut engine = engine(provider.clone(), std::env::temp_dir().join("minimal-agent"));
 
         let (ui_tx, _ui_rx) = agent_kernel::channels::UiSink::channel();
         let (_steer_tx, steer_rx) = tokio::sync::mpsc::channel(4);
@@ -181,5 +218,15 @@ mod tests {
             outcome.text
         );
         assert_eq!(outcome.tool_calls_run, 1, "one tool call was dispatched");
+
+        // What the model was offered is the product's set, not the kernel's.
+        let offered = provider.offered.lock().unwrap();
+        let first = offered.first().expect("the model was called");
+        for own in ["ssh_exec", "read_remote", "list_remote"] {
+            assert!(first.iter().any(|n| n == own), "{own} missing from {first:?}");
+        }
+        for builtin in ["bash", "delegate", "fuzzy_patch", "test_runner"] {
+            assert!(!first.iter().any(|n| n == builtin), "{builtin} leaked into {first:?}");
+        }
     }
 }
