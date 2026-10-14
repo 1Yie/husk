@@ -10,7 +10,7 @@ use std::sync::Arc;
 use agent_ipc::UiCommand;
 use husk_host::session::{SessionActor, SessionConfig};
 use husk_host::session_manager::SessionManager;
-use agent_kernel::session_store::SessionStore;
+use agent_store::SessionStore;
 
 use agent_testkit::ScriptedProvider;
 
@@ -163,7 +163,7 @@ fn storage_boot_probe() {
             ".husk",
         ),
     );
-    let warning = agent_kernel::session_store::session_storage_warning();
+    let warning = agent_store::session_storage_warning();
     if mode != "invalid" {
         assert!(warning.is_none());
     } else {

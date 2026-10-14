@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 agent-paths = { path = "../agent-paths" }
 agent-kernel = { path = "../agent-kernel" }
+agent-store = { path = "../agent-store" }
 husk-host = { path = "../husk-host" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }

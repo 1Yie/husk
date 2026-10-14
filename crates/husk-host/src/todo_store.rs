@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_kernel::session_store::SessionStore;
+use agent_store::SessionStore;
 use agent_kernel::tools::todo::{TodoStorage, TodoStorageSlot};
 
 const ROW: &str = "todos.json";

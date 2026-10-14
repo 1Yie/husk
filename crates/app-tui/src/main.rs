@@ -25,7 +25,7 @@ use agent_ipc::UiCommand;
 use agent_kernel::channels::UiReceiver;
 use husk_host::sandbox_prefs;
 use husk_host::session::{SessionActor, SessionConfig};
-use agent_kernel::session_store::{SessionMeta, SessionStore};
+use agent_store::{SessionMeta, SessionStore};
 use agent_llm::{AppConfig, ProviderFactory};
 
 use app::App;
@@ -346,7 +346,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let paths = app_paths();
-    agent_kernel::session_store::init_data_dir(paths.data_dir.clone());
+    agent_store::init_data_dir(paths.data_dir.clone());
     let app_cfg = agent_llm::AppConfig::load(&paths.config_dir, None).unwrap_or_default();
     let (provider, provider_name, model) =
         match resolve_provider(&app_cfg, cli.provider.as_deref(), cli.model.as_deref()) {

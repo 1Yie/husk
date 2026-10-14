@@ -7,7 +7,7 @@
 //!             Esc sends an empty answer.
 
 use agent_ipc::events::AskOption;
-use agent_kernel::session_store::SessionMeta;
+use agent_store::SessionMeta;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

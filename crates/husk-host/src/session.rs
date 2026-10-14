@@ -176,10 +176,10 @@ fn child_models(
 }
 
 fn open_memory_store(workspace_root: &Path) -> Option<MemoryStore> {
-    let db_dir = if agent_kernel::session_store::is_test_binary() {
+    let db_dir = if agent_store::is_test_binary() {
         Some(std::env::temp_dir().join(format!("husk-test-{}", std::process::id())))
     } else {
-        agent_kernel::session_store::app_data_dir()
+        agent_store::app_data_dir()
     };
     db_dir.and_then(|d| {
         let _ = std::fs::create_dir_all(&d);
@@ -335,7 +335,7 @@ pub struct SessionActor {
     /// Stable session identity — sidebar ordering + persistence file name.
     session_id: i64,
     /// Per-workspace session store — snapshots history at turn boundaries.
-    store: Option<Arc<agent_kernel::session_store::SessionStore>>,
+    store: Option<Arc<agent_store::SessionStore>>,
     history_revision: u64,
     /// Last completed turn's `(prompt, completion)` tokens — persisted
     /// into `SessionMeta` so a reopened session's header meter shows real
@@ -534,7 +534,7 @@ impl SessionActor {
         // persisted history (its system prompt was rendered at that session's
         // spawn — memory/workspace baked in for that turn).
         let is_resume = prior_history.is_some();
-        let mut history_revision=prior_history.as_deref().map(agent_kernel::session_store::SessionStore::history_revision_of).unwrap_or(0);
+        let mut history_revision=prior_history.as_deref().map(agent_store::SessionStore::history_revision_of).unwrap_or(0);
         let mut history = prior_history.unwrap_or_else(|| vec![ChatMessage::system(system_prompt)]);
 
         // A resumed session's system prompt was frozen at ITS spawn —
@@ -566,7 +566,7 @@ impl SessionActor {
         // Session persistence — per-workspace store; the actor snapshots
         // `history` at turn boundaries so a crashed/killed app resumes mid-
         // conversation from the last completed turn.
-        let store = match agent_kernel::session_store::SessionStore::open(&cfg.workspace_root) {
+        let store = match agent_store::SessionStore::open(&cfg.workspace_root) {
             Ok(store) => Some(Arc::new(store)),
             Err(error) => {
                 let _ = channels.event_tx.send(UiEvent::SystemMessage(format!(
@@ -575,7 +575,7 @@ impl SessionActor {
                 None
             }
         };
-        if let Some(warning) = agent_kernel::session_store::session_storage_warning() {
+        if let Some(warning) = agent_store::session_storage_warning() {
             let _ = channels.event_tx.send(UiEvent::SystemMessage(warning));
         }
         // Forks/importers may supply prior history before any journal exists.
@@ -1138,7 +1138,7 @@ impl SessionActor {
         let usage = self
             .last_usage
             .map(
-                |(prompt, completion, cached)| agent_kernel::session_store::SessionUsage {
+                |(prompt, completion, cached)| agent_store::SessionUsage {
                     prompt,
                     completion,
                     context_window: self.engine.context_window() as u32,
@@ -1166,7 +1166,7 @@ impl SessionActor {
         // live slots (updated by `apply_model_switch` mid-session), not the
         // spawn-time snapshot.
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
-        let result = store.commit_turn_checked(&sanitized, agent_kernel::session_store::SessionMeta {
+        let result = store.commit_turn_checked(&sanitized, agent_store::SessionMeta {
             id,
             title,
             preview,
@@ -1250,7 +1250,7 @@ impl SessionActor {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
-        let result = store.update_settings(agent_kernel::session_store::SessionMeta {
+        let result = store.update_settings(agent_store::SessionMeta {
             id,
             title: old
                 .as_ref()

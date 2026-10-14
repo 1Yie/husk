@@ -12,7 +12,7 @@ use std::sync::Arc;
 use agent_ipc::{AgentState, UiCommand, UiEvent};
 use agent_kernel::compaction::estimate_tokens;
 use husk_host::session::{SessionActor, SessionConfig};
-use agent_kernel::session_store::SessionStore;
+use agent_store::SessionStore;
 use agent_llm::types::{ChatMessage, NoticeKind, StreamChunk};
 
 #[allow(dead_code)] // Shared harness — this binary uses only part of it.

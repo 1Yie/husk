@@ -13,6 +13,7 @@ path = "backend/main.rs"
 [dependencies]
 agent-context = { path = "../agent-context" }
 agent-kernel = { path = "../agent-kernel" }
+agent-store = { path = "../agent-store" }
 husk-host = { path = "../husk-host" }
 agent-skills = { path = "../agent-skills" }
 agent-ipc = { path = "../agent-ipc" }

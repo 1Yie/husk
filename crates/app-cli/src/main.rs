@@ -282,7 +282,7 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = agent_paths::AppPaths::from_app_name("husk", ".husk")
         .unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk"));
-    agent_kernel::session_store::init_data_dir(paths.data_dir.clone());
+    agent_store::init_data_dir(paths.data_dir.clone());
     let app_cfg = agent_llm::AppConfig::load(&paths.config_dir, None).unwrap_or_default();
     let pname = cli.provider.as_deref().or(app_cfg.active_provider.as_deref());
     let (provider, provider_name, model) =
@@ -328,7 +328,7 @@ async fn main() -> anyhow::Result<()> {
         memory_enabled: true,
         memory_distill: true,
     };
-    let session_id = agent_kernel::session_store::SessionStore::open(&cli.workspace)
+    let session_id = agent_store::SessionStore::open(&cli.workspace)
         .map_err(|error| anyhow::anyhow!("session storage: {error}"))?
         .next_id();
     let (mut actor, channels) = SessionActor::spawn_with_id(cfg, session_id);

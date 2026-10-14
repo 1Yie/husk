@@ -248,7 +248,7 @@ fn agent_session_inner(
     // (.dashi-ppt-project) and officecli crash logs are noise, not deliverables.
     if op == "recent_artifacts" {
         let mut found: Vec<(String, String, u64)> = Vec::new();
-        if let Some(root) = agent_kernel::session_store::office_root() {
+        if let Some(root) = agent_store::office_root() {
             collect_recent_files(&root, &root, 3, &mut found);
         }
         found.sort_by(|a, b| b.2.cmp(&a.2));
@@ -266,7 +266,7 @@ fn agent_session_inner(
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
     // keyed by the active workspace root, same path as the session actor's.
     let open_memory = |mgr: &husk_host::session_manager::SessionManager| {
-        agent_kernel::session_store::app_data_dir().and_then(|d| {
+        agent_store::app_data_dir().and_then(|d| {
             agent_context::memory::MemoryStore::open(&d.join("memory.db"), &mgr.workspace_root).ok()
         })
     };
@@ -406,13 +406,13 @@ fn agent_session_inner(
                 // The office pseudo-workspace root — the sidebar's「办公」
                 // block and the composer compare against it to know when
                 // they're rendering office mode.
-                "office_root": agent_kernel::session_store::office_root()
+                "office_root": agent_store::office_root()
                     .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().to_string())
                     .unwrap_or_default(),
                 "recents": recents.iter().map(|w| {
                     serde_json::json!({ "path": w.path.to_string_lossy(), "name": w.name, "last_opened": w.last_opened })
                 }).collect::<Vec<_>>(),
-                "storage_warning": agent_kernel::session_store::session_storage_warning(),
+                "storage_warning": agent_store::session_storage_warning(),
             }))
         }
         // `removed_active` = the open workspace is gone; show the empty state.

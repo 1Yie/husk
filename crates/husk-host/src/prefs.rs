@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use agent_kernel::session_store::{
+use agent_store::{
     global_get, global_put, global_update, is_office_root, SessionStore,
 };
 

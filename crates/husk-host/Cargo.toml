@@ -14,6 +14,7 @@ agent-sandbox = { path = "../agent-sandbox" }
 agent-context = { path = "../agent-context" }
 agent-plugin = { path = "../agent-plugin" }
 agent-skills = { path = "../agent-skills" }
+agent-store = { path = "../agent-store" }
 agent-tools-office = { path = "../agent-tools-office" }
 agent-tools-serena = { path = "../agent-tools-serena" }
 agent-paths = { path = "../agent-paths" }

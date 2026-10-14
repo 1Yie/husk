@@ -3,7 +3,7 @@
 
 use agent_ipc::{UiCommand, UiEvent};
 use husk_host::session::{SessionActor, SessionConfig};
-use agent_kernel::session_store::SessionStore;
+use agent_store::SessionStore;
 use agent_llm::types::StreamChunk;
 use std::sync::Arc;
 use std::time::Duration;

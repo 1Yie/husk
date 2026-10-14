@@ -11,7 +11,7 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
 use agent_kernel::channels::{UiSink, UiStatsSnapshot};
 use crate::session::{SessionActor, SessionConfig};
-use agent_kernel::session_store::{SessionMeta, SessionStore};
+use agent_store::{SessionMeta, SessionStore};
 use agent_ipc::UiEvent;
 use agent_paths::AppPaths;
 use agent_llm::{AppConfig, ProviderFactory};
@@ -101,7 +101,7 @@ pub struct ProjectOverview {
 /// path when there is none (filesystem root). The office pseudo-workspace
 /// gets a fixed「办公」label instead of the directory name.
 fn project_name(root: &std::path::Path) -> String {
-    if agent_kernel::session_store::is_office_root(root) {
+    if agent_store::is_office_root(root) {
         return "办公".into();
     }
     root.file_name()
@@ -284,7 +284,7 @@ impl SessionManager {
     ) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
         // The session database is a process-wide singleton, so its directory is
         // set once here rather than passed to every read.
-        agent_kernel::session_store::init_data_dir(paths.data_dir.clone());
+        agent_store::init_data_dir(paths.data_dir.clone());
         // Global user defaults — the settings window's stored preference.
         // Loaded up here because the「默认进入」row decides the boot root
         // below; every later layer reads this same snapshot.
@@ -332,7 +332,7 @@ impl SessionManager {
         let Some(cwd) = cwd else {
             let store = Arc::new(
                 SessionStore::open_or_transient(
-                    &agent_kernel::session_store::app_data_dir()
+                    &agent_store::app_data_dir()
                         .unwrap_or_else(|| std::path::PathBuf::from("/tmp")),
                 )
                 .expect("initialize shared session store"),
@@ -407,7 +407,7 @@ impl SessionManager {
         };
 
         let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
-        if agent_kernel::session_store::is_office_root(&canon) {
+        if agent_store::is_office_root(&canon) {
             // The office dir lives under the app data dir and is created
             // lazily — a boot landing here needs it to exist.
             let _ = std::fs::create_dir_all(&canon);
@@ -529,7 +529,7 @@ impl SessionManager {
         // The office pseudo-workspace lives under the app data dir and is
         // created lazily on first entry — canonicalize + the workspace
         // scan need a real directory.
-        if agent_kernel::session_store::is_office_root(&new_root) {
+        if agent_store::is_office_root(&new_root) {
             let _ = std::fs::create_dir_all(&new_root);
         }
         let canon = new_root.canonicalize().unwrap_or_else(|_| new_root.clone());
@@ -621,7 +621,7 @@ impl SessionManager {
         // The office pseudo-workspace is built-in — it can't be removed
         // from recents or torn down; its sessions live under its own
         // `office` namespace.
-        if agent_kernel::session_store::is_office_root(&canon) {
+        if agent_store::is_office_root(&canon) {
             return false;
         }
         let key = canon.to_string_lossy().into_owned();
@@ -672,7 +672,7 @@ impl SessionManager {
             .canonicalize()
             .unwrap_or_else(|_| self.workspace_root.clone());
         let office_root =
-            agent_kernel::session_store::office_root().map(|p| p.canonicalize().unwrap_or(p));
+            agent_store::office_root().map(|p| p.canonicalize().unwrap_or(p));
         let office_is_current =
             self.workspace_active && office_root.as_ref().is_some_and(|o| *o == canon);
 
@@ -799,7 +799,7 @@ impl SessionManager {
         // the history head (see `SessionStore`).
         let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         for w in self.recent_workspaces() {
-            names.insert(agent_kernel::session_store::workspace_key(&w.path), w.name.clone());
+            names.insert(agent_store::workspace_key(&w.path), w.name.clone());
         }
 
         let mut out = Vec::new();
@@ -829,7 +829,7 @@ impl SessionManager {
             let key = store.dir_name().unwrap_or_else(|| "unknown".to_string());
             let name = root
                 .as_ref()
-                .and_then(|r| names.get(&agent_kernel::session_store::workspace_key(r)).cloned())
+                .and_then(|r| names.get(&agent_store::workspace_key(r)).cloned())
                 .or_else(|| root.as_ref().map(|r| project_name(r)))
                 .unwrap_or_else(|| format!("项目 {}", &key[..key.len().min(6)]));
             for m in sessions {
@@ -901,7 +901,7 @@ impl SessionManager {
         // Office sessions are always office mode — the picker isn't offered
         // in the office workspace at all, so a stale per-session value from
         // before office became workspace-scoped can't survive a respawn.
-        let sess_agent_mode = if agent_kernel::session_store::is_office_root(&self.workspace_root) {
+        let sess_agent_mode = if agent_store::is_office_root(&self.workspace_root) {
             "office".to_string()
         } else {
             meta.as_ref()
@@ -1814,7 +1814,7 @@ impl SessionManager {
     /// the webview rebuilds a closed view (before any new `Usage` event).
     /// Reads the store fresh: `self.metas` only refreshes on structural ops
     /// and goes stale the moment an actor persists a turn.
-    pub fn store_usage(&self, id: i64) -> Option<agent_kernel::session_store::SessionUsage> {
+    pub fn store_usage(&self, id: i64) -> Option<agent_store::SessionUsage> {
         if !self.workspace_active {
             return None;
         }
@@ -2416,7 +2416,7 @@ impl SessionManager {
 
     /// Persist current workspace composer preferences (model, thinking level, permission mode).
     pub fn persist_prefs(&self) {
-        let prefs = agent_kernel::session_store::WorkspacePrefs {
+        let prefs = agent_store::WorkspacePrefs {
             provider: Some(self.provider_name.clone()),
             model: Some(self.model_name.clone()),
             thinking_level: self.active_thinking_level.clone(),
@@ -2494,7 +2494,7 @@ fn resolve_agent_mode(
     prefs_mode: &Option<String>,
     defaults_mode: Option<&String>,
 ) -> String {
-    if agent_kernel::session_store::is_office_root(root) {
+    if agent_store::is_office_root(root) {
         return "office".into();
     }
     match prefs_mode.as_ref().or(defaults_mode) {
@@ -2516,12 +2516,12 @@ fn boot_workspace(
     match defaults.map(|d| d.default_workspace_mode.as_str()) {
         // The office dir is created lazily by `spawn_at` — a boot landing
         // there needs nothing pre-existing.
-        Some("office") => agent_kernel::session_store::office_root()
+        Some("office") => agent_store::office_root()
             .or_else(|| recents.first().map(|w| w.path.clone())),
         Some("build") => recents
             .iter()
             .map(|w| w.path.clone())
-            .find(|p| p.is_dir() && !agent_kernel::session_store::is_office_root(p)),
+            .find(|p| p.is_dir() && !agent_store::is_office_root(p)),
         _ => recents
             .iter()
             .map(|w| w.path.clone())
@@ -2893,9 +2893,9 @@ max = "max"
         // those slots, so writing prefs post-spawn would be too late).
         let dir = tempfile::tempdir().unwrap();
         let canon = dir.path().canonicalize().unwrap();
-        let store = agent_kernel::session_store::SessionStore::open(&canon).unwrap();
+        let store = agent_store::SessionStore::open(&canon).unwrap();
         store
-            .save_prefs(&agent_kernel::session_store::WorkspacePrefs {
+            .save_prefs(&agent_store::WorkspacePrefs {
                 provider: Some("devin".into()),
                 model: Some("devin/swe-2".into()),
                 thinking_level: Some("medium".into()),
@@ -3015,7 +3015,7 @@ max = "max"
     /// stored models; activating each mirrors its own meta.
     #[test]
     fn switching_sessions_mirrors_each_sessions_own_model() {
-        use agent_kernel::session_store::SessionMeta;
+        use agent_store::SessionMeta;
         let dir = tempfile::tempdir().unwrap();
         let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
         mgr.workspace_active = true;
@@ -3083,7 +3083,7 @@ max = "max"
     /// the session itself chooses.
     #[test]
     fn a_session_without_settings_falls_back_to_the_workspace_default() {
-        use agent_kernel::session_store::SessionMeta;
+        use agent_store::SessionMeta;
         let dir = tempfile::tempdir().unwrap();
         let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
         mgr.workspace_active = true;
@@ -3194,7 +3194,7 @@ max = "max"
     /// lives in the sidebar, not the per-session picker.
     #[test]
     fn office_workspace_pins_agent_mode_to_office() {
-        let office = agent_kernel::session_store::office_root().unwrap();
+        let office = agent_store::office_root().unwrap();
         assert_eq!(resolve_agent_mode(&office, &None, None), "office");
 
         let dir = tempfile::tempdir().unwrap();
@@ -3219,7 +3219,7 @@ max = "max"
             name: "p".into(),
             last_opened: 0,
         };
-        let office = agent_kernel::session_store::office_root().unwrap();
+        let office = agent_store::office_root().unwrap();
         // The real app creates this lazily on the first office switch; the
         // canonicalising boot path needs it to exist to keep the entry.
         std::fs::create_dir_all(&office).unwrap();

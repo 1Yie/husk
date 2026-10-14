@@ -3,7 +3,7 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "/tmp/probe_sessions.db".into());
     let dbp = std::path::Path::new(&db);
-    let stores = agent_kernel::session_store::SessionStore::all_workspaces_at(dbp);
+    let stores = agent_store::SessionStore::all_workspaces_at(dbp);
     // Newest session across every workspace, then dump its tail.
     let mut metas: Vec<_> = stores
         .iter()
