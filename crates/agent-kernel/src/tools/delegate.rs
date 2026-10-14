@@ -461,7 +461,6 @@ impl SubagentSpawner {
             // see the screen); input is not — `computer` is absent from every
             // child registry, and a refusing backend is the second guard
             // behind it for any path that constructs a child ctx itself.
-            desktop: parent_ctx.desktop.clone(),
             session: None,
             // Memory is shared: a subagent's `remember` lands in the same
             // workspace store, like its todo state would if it had a session.
@@ -485,7 +484,8 @@ impl SubagentSpawner {
         // Installed even though the child registry holds no goal/plan tool
         // (see `child_builtins`): the child engine still reads its own
         // controller each turn, and must never share the parent's.
-        .with_controllers();
+        .with_controllers()
+        .inherit_desktop(&parent_ctx);
         // Either side can ask for read-only; the manifest cannot grant write back.
         let base = if readonly || spec.readonly {
             self.registry_readonly.clone()

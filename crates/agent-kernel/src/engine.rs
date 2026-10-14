@@ -1397,7 +1397,11 @@ impl Engine {
                         // is no point asking the user about an action that cannot
                         // run.
                         if call.name == "computer" {
-                            if let Err(e) = self.ctx.desktop.prepare().await {
+                            let prepared = match self.ctx.desktop() {
+                                Ok(desktop) => desktop.prepare().await,
+                                Err(e) => Err(anyhow::anyhow!(e.to_string())),
+                            };
+                            if let Err(e) = prepared {
                                 let msg = format!("computer control unavailable: {e:#}");
                                 let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                                     name: call.name.clone(),

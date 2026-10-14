@@ -155,6 +155,11 @@ impl Extensions {
     }
 }
 
+/// Newtype key for the desktop backend. The extension table is keyed by the
+/// concrete type, and `dyn DesktopBackend` is not one type per implementation,
+/// so the trait object is wrapped to give the slot a single identity.
+pub struct DesktopSlot(pub Arc<dyn agent_computer::DesktopBackend>);
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
@@ -162,24 +167,6 @@ pub struct ToolCtx {
     /// The sandbox backend for process tools (`bash`, `test_runner`, pty).
     /// `id() == "none"` means loud-unsandboxed: every `bash` must confirm.
     pub sandbox: Arc<dyn agent_sandbox::SandboxBackend>,
-    /// Desktop-control backend for the computer-use tools (`screenshot`,
-    /// `computer`). Always present — `id() == "none"` refuses per call with
-    /// the probe's reason, the same loud-fallback shape as `sandbox`.
-    ///
-    /// Deliberately NOT routed through `sandbox`: bwrap's `--clearenv` +
-    /// `--tmpfs /tmp` make the X socket unreachable by construction, so a
-    /// sandboxed desktop tool is a broken feature rather than a hardened one.
-    /// The defence for synthetic input is the permission gate.
-    ///
-    /// Shared across clones: `with_cancel` and `with_desktop` hand out `Arc`
-    /// handles to the same backend, whose `last` capture drives coordinate
-    /// mapping for every `computer` call. That is the intent — a screenshot
-    /// taken in one tool call steers the click in the next. It also means a
-    /// `batch_execute` that fans out `screenshot`+`computer` items runs
-    /// them against one shared scale: keep the two sequenced (screenshot in
-    /// one batch item, computer actions in the next) rather than issuing
-    /// them concurrently, or the click can map onto the previous frame.
-    pub desktop: Arc<dyn agent_computer::DesktopBackend>,
     /// Owning session's id + its per-workspace store. Tools that keep
     /// per-session scratch state (`todo`) write next to the session's
     /// history file in the app state dir — never into the user's repo.
@@ -247,7 +234,6 @@ impl ToolCtx {
         Self {
             workspace_root: Arc::from(root.as_path()),
             sandbox: Arc::from(sandbox),
-            desktop: agent_computer::detect_backend(),
             session: None,
             memory: MemoryHandle::default(),
             cancel: None,
@@ -289,9 +275,6 @@ impl ToolCtx {
         Self {
             workspace_root: Arc::from(root.as_path()),
             sandbox,
-            // Host probe, same as `new` — a test that wants a deterministic
-            // desktop pairs this with `with_desktop`.
-            desktop: agent_computer::detect_backend(),
             session: None,
             memory: MemoryHandle::default(),
             cancel: None,
@@ -306,11 +289,39 @@ impl ToolCtx {
         .with_controllers()
     }
 
-    /// Explicit desktop backend (tests / custom wiring) — the determinism
-    /// seam for the computer-use tools, mirroring `with_sandbox`.
+    /// Install the desktop-control backend the computer-use tools drive.
+    ///
+    /// Optional by design: a host with no display (a remote SSH worker, a
+    /// headless CI run) simply doesn't install one, and `computer` /
+    /// `screenshot` refuse with a reason instead of the kernel probing hardware.
+    ///
+    /// Shared across clones: `with_cancel` hands out the same `Arc`, whose
+    /// `last` capture drives coordinate mapping for every `computer` call. A
+    /// screenshot taken in one tool call steers the click in the next, so a
+    /// `batch_execute` that fans out `screenshot`+`computer` items must keep
+    /// them sequenced, or the click can map onto the previous frame.
     pub fn with_desktop(mut self, desktop: Arc<dyn agent_computer::DesktopBackend>) -> Self {
-        self.desktop = desktop;
+        self.ext.insert(Arc::new(DesktopSlot(desktop)));
         self
+    }
+
+    /// Hand the parent's desktop backend to a child context. Only this slot is
+    /// copied: the goal and plan controllers must stay per-context, so the
+    /// child never inherits the parent's `ext` wholesale.
+    pub fn inherit_desktop(mut self, parent: &ToolCtx) -> Self {
+        if let Some(slot) = parent.ext.get::<DesktopSlot>() {
+            self.ext.insert(slot);
+        }
+        self
+    }
+
+    /// The installed desktop backend. Refuses with the same wording as the
+    /// other missing services when the host did not install one.
+    pub fn desktop(&self) -> Result<Arc<dyn agent_computer::DesktopBackend>, ToolError> {
+        self.ext
+            .get::<DesktopSlot>()
+            .map(|s| s.0.clone())
+            .ok_or_else(|| ToolError::Failed("desktop control is not available in this context".into()))
     }
 
     /// Attach the owning session — gives tools access to per-session
@@ -333,7 +344,6 @@ impl ToolCtx {
         ToolCtx {
             workspace_root: self.workspace_root.clone(),
             sandbox: self.sandbox.clone(),
-            desktop: self.desktop.clone(),
             session: self.session.clone(),
             memory: self.memory.clone(),
             cancel: Some(cancel),
@@ -740,6 +750,34 @@ mod tests {
             .err()
             .expect("missing service must be an error");
         assert!(err.to_string().contains("goal control is not available"));
+    }
+
+    #[test]
+    fn a_context_without_a_desktop_refuses_and_never_probes() {
+        // The kernel no longer probes hardware in `new`: a host with no display
+        // (an SSH worker, CI) gets a refusal with a reason, not a panic.
+        let ctx = ToolCtx::new(std::env::temp_dir());
+        let err = ctx.desktop().err().expect("no desktop was installed");
+        assert!(err.to_string().contains("desktop control is not available"));
+    }
+
+    #[test]
+    fn child_inherits_only_the_desktop_not_the_controllers() {
+        let parent = ToolCtx::new(std::env::temp_dir()).with_desktop(Arc::new(
+            agent_computer::NoneBackend::new("probe"),
+        ));
+        let child = ToolCtx::new(std::env::temp_dir()).inherit_desktop(&parent);
+        // The same backend instance, so a child screenshot steers the parent's
+        // coordinate mapping exactly as the parent's own would.
+        assert!(Arc::ptr_eq(
+            &parent.desktop().unwrap(),
+            &child.desktop().unwrap()
+        ));
+        // And the child still has its own controllers: nothing was copied wholesale.
+        let child_goal = child.require::<crate::tools::goal::GoalController>("goal");
+        let parent_goal = parent.require::<crate::tools::goal::GoalController>("goal").unwrap();
+        assert!(child_goal.is_ok());
+        assert!(!Arc::ptr_eq(&parent_goal, &child_goal.unwrap()));
     }
 
     #[test]

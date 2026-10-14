@@ -87,26 +87,30 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     // host with no desktop a wait is still a lie ("I waited for the screen").
     let done = match action.as_str() {
         "left_click" | "right_click" | "middle_click" => {
+            let desktop = ctx.desktop()?;
             let at = need_coordinate(&parsed, &action)?;
             let button = match action.as_str() {
                 "left_click" => agent_computer::MouseButton::Left,
                 "right_click" => agent_computer::MouseButton::Right,
                 _ => agent_computer::MouseButton::Middle,
             };
-            ctx.desktop.click(button, at).await.map_err(fail)?;
+            desktop.click(button, at).await.map_err(fail)?;
             format!("clicked {action} at ({}, {})", at[0], at[1])
         }
         "double_click" => {
+            let desktop = ctx.desktop()?;
             let at = need_coordinate(&parsed, &action)?;
-            ctx.desktop.double_click(at).await.map_err(fail)?;
+            desktop.double_click(at).await.map_err(fail)?;
             format!("double-clicked at ({}, {})", at[0], at[1])
         }
         "mouse_move" => {
+            let desktop = ctx.desktop()?;
             let at = need_coordinate(&parsed, &action)?;
-            ctx.desktop.move_to(at).await.map_err(fail)?;
+            desktop.move_to(at).await.map_err(fail)?;
             format!("moved the pointer to ({}, {})", at[0], at[1])
         }
         "left_click_drag" => {
+            let desktop = ctx.desktop()?;
             let to = need_coordinate(&parsed, &action)?;
             let from = parsed.start_coordinate.ok_or_else(|| {
                 ToolError::Args(
@@ -114,23 +118,26 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                         .into(),
                 )
             })?;
-            ctx.desktop.drag(from, to).await.map_err(fail)?;
+            desktop.drag(from, to).await.map_err(fail)?;
             format!(
                 "dragged from ({}, {}) to ({}, {})",
                 from[0], from[1], to[0], to[1]
             )
         }
         "type" => {
+            let desktop = ctx.desktop()?;
             let text = need_text(&parsed, &action)?;
-            ctx.desktop.type_text(text).await.map_err(fail)?;
+            desktop.type_text(text).await.map_err(fail)?;
             format!("typed {} characters", text.chars().count())
         }
         "key" => {
+            let desktop = ctx.desktop()?;
             let combo = need_text(&parsed, &action)?;
-            ctx.desktop.key(combo, None).await.map_err(fail)?;
+            desktop.key(combo, None).await.map_err(fail)?;
             format!("pressed {combo}")
         }
         "hold_key" => {
+            let desktop = ctx.desktop()?;
             let combo = need_text(&parsed, &action)?;
             let hold = parsed.duration_ms.ok_or_else(|| {
                 ToolError::Args("action `hold_key` needs `duration_ms` — how long to hold".into())
@@ -140,10 +147,11 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                     "`hold_key` duration_ms must be 1..={MAX_WAIT_MS}"
                 )));
             }
-            ctx.desktop.key(combo, Some(hold)).await.map_err(fail)?;
+            desktop.key(combo, Some(hold)).await.map_err(fail)?;
             format!("held {combo} for {hold}ms")
         }
         "scroll" => {
+            let desktop = ctx.desktop()?;
             let dir = match parsed.scroll_direction.as_deref().map(str::trim) {
                 Some("up") => agent_computer::ScrollDir::Up,
                 Some("down") => agent_computer::ScrollDir::Down,
@@ -157,7 +165,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
                 }
             };
             let amount = parsed.scroll_amount.unwrap_or(DEFAULT_SCROLL_STEPS);
-            ctx.desktop
+            desktop
                 .scroll(dir, amount, parsed.coordinate)
                 .await
                 .map_err(fail)?;
@@ -171,6 +179,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             )
         }
         "wait" => {
+            let desktop = ctx.desktop()?;
             let ms = parsed.duration_ms.ok_or_else(|| {
                 ToolError::Args("action `wait` needs `duration_ms` — milliseconds to pause".into())
             })?;
@@ -182,7 +191,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             // The backend gate still applies: a host with no desktop has no
             // screen to wait for, and pretending otherwise would let the model
             // report progress that never had a subject.
-            ctx.desktop.cursor_position().await.map_err(fail)?;
+            desktop.cursor_position().await.map_err(fail)?;
             // Sliced so a user "stop" (the shared cancel flag) ends the wait
             // within ~100 ms instead of after up to MAX_WAIT_MS.
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
@@ -200,15 +209,17 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
             format!("waited {ms}ms")
         }
         "cursor_position" => {
-            let at = ctx.desktop.cursor_position().await.map_err(fail)?;
+            let desktop = ctx.desktop()?;
+            let at = desktop.cursor_position().await.map_err(fail)?;
             format!(
                 "pointer at ({}, {}) in screenshot coordinates",
                 at[0], at[1]
             )
         }
         "launch" => {
+            let desktop = ctx.desktop()?;
             let cmd = need_text(&parsed, &action)?;
-            ctx.desktop.launch_app(cmd).await.map_err(fail)?;
+            desktop.launch_app(cmd).await.map_err(fail)?;
             format!("launched `{cmd}`")
         }
         other => {
