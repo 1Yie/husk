@@ -247,13 +247,20 @@ fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
     ]
 }
 
+/// Tools only the parent holds. `remember` writes the persona every later
+/// parent turn reads; a delegated child works on untrusted content and must
+/// not write that, so it is registered here and never in the child base.
+fn parent_only_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
+    vec![agent_coding::remember::spec()]
+}
+
 /// The parent's base registry and the base a delegated child draws from
 /// (`child_builtins` — no `delegate`, `remember`, `computer` or
 /// human-interaction tools — plus the same [`host_tools`]).
 fn base_registries() -> (ToolRegistry, ToolRegistry) {
     let mut full = ToolRegistry::with_builtins();
     let mut child = ToolRegistry::child_builtins();
-    for spec in host_tools() {
+    for spec in host_tools().into_iter().chain(parent_only_tools()) {
         full.register(spec);
     }
     for spec in host_tools() {
@@ -314,7 +321,7 @@ pub struct SessionActor {
     /// actor's own view; `memory_handle` is the same slot the engine's tools
     /// read, so one switch covers recall, distillation and the `remember` tool.
     memory: Option<Arc<MemoryStore>>,
-    memory_handle: agent_kernel::tools::registry::MemoryHandle,
+    memory_handle: agent_coding::remember::MemoryHandle,
     distiller: Option<Arc<TurnDistiller>>,
     /// Provider/model/params captured at spawn — the distiller's summarizer
     /// is rebuilt from these when `SetMemory` toggles memory on mid-session
@@ -633,9 +640,9 @@ impl SessionActor {
         tool_ctx.install_sandbox(Arc::new(crate::sandbox_prefs::SwitchableSandbox::new(
             Arc::from(detected),
         )));
-        let memory_handle = agent_kernel::tools::registry::MemoryHandle::default();
+        let memory_handle = agent_coding::remember::MemoryHandle::default();
         memory_handle.set(memory.clone());
-        tool_ctx.install_memory(memory_handle.clone());
+        memory_handle.install(&mut tool_ctx);
         // The child route starts from the session's own settings and is
         // rewritten by `apply_model_switch`, so children follow a hot-swap.
         let child_route = Arc::new(std::sync::RwLock::new(agent_kernel::tools::delegate::ChildRoute {

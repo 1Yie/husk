@@ -20,9 +20,9 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 #[tokio::test]
 async fn registry_lists_builtins() {
     let r = registry();
-    // 18: `blueprint` (agent-coding) and `serena` (agent-tools-serena) are
-    // registered by the host assembly on top of this set.
-    assert_eq!(r.len(), 18);
+    // 17: `blueprint`, `remember` (agent-coding) and `serena`
+    // (agent-tools-serena) are registered by the host assembly on top of this set.
+    assert_eq!(r.len(), 17);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -41,7 +41,6 @@ async fn registry_lists_builtins() {
         "service",
         "todo",
         "skill",
-        "remember",
         "web_fetch",
         "webfetch",
         "screenshot",

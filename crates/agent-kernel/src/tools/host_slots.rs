@@ -111,28 +111,6 @@ impl AskChannel {
     }
 }
 
-/// Shared, swappable handle to the workspace memory store. Cloning shares the
-/// same slot, so a subagent or a tool sees the owning actor's current switch
-/// state rather than a snapshot from spawn time.
-#[derive(Clone, Default)]
-pub struct MemoryHandle(
-    pub(crate) Arc<std::sync::RwLock<Option<Arc<agent_context::memory::MemoryStore>>>>,
-);
-
-impl MemoryHandle {
-    /// The store as of now — `None` while memory is switched off.
-    pub fn get(&self) -> Option<Arc<agent_context::memory::MemoryStore>> {
-        self.0.read().ok().and_then(|g| g.clone())
-    }
-
-    /// Replace the store (`None` switches memory off).
-    pub fn set(&self, store: Option<Arc<agent_context::memory::MemoryStore>>) {
-        if let Ok(mut g) = self.0.write() {
-            *g = store;
-        }
-    }
-}
-
 /// Newtype key for the desktop backend. The extension table is keyed by the
 /// concrete type, and `dyn DesktopBackend` is not one type per implementation,
 /// so the trait object is wrapped to give the slot a single identity.
@@ -164,11 +142,6 @@ pub struct UiSlot(pub crate::channels::UiSink);
 /// Subagent spawner — `delegate` runs a fresh-context child engine. Absent
 /// where delegation is unavailable (tests, child contexts).
 pub struct SubagentSlot(pub crate::tools::delegate::SubagentSpawner);
-
-/// The workspace memory handle. Installed by the owning session and shared
-/// with its actor, which swaps the store when the memory switch flips. Absent
-/// where no session owns a store; `remember` then refuses.
-pub struct MemorySlot(pub MemoryHandle);
 
 /// The owning session's id and per-workspace store. Tools that keep
 /// per-session scratch state (`todo`) write next to the session's history
@@ -222,18 +195,6 @@ impl ToolCtx {
     /// Install the session UI event sink.
     pub fn install_ui(&mut self, ui: crate::channels::UiSink) {
         self.ext.insert(Arc::new(UiSlot(ui)));
-    }
-
-    /// The workspace memory handle, if a session owns one. The handle itself
-    /// may hold `None` while memory is switched off; that is a refusal at the
-    /// tool, not a missing slot.
-    pub fn memory(&self) -> Option<MemoryHandle> {
-        self.ext.get::<MemorySlot>().map(|s| s.0.clone())
-    }
-
-    /// Install the workspace memory handle.
-    pub fn install_memory(&mut self, memory: MemoryHandle) {
-        self.ext.insert_shared(Arc::new(MemorySlot(memory)));
     }
 
     /// The subagent spawner, if this context can delegate.

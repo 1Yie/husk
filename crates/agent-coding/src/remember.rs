@@ -12,7 +12,38 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
-use super::registry::{schema_for, ExecFn, ToolClass, ToolError, ToolResult, ToolSpec};
+use agent_kernel::tools::registry::{
+    schema_for, ExecFn, ToolClass, ToolError, ToolResult, ToolSpec,
+};
+
+use agent_context::memory::MemoryStore;
+
+/// Shared, swappable handle to the workspace memory store. Cloning shares the
+/// same slot, so a subagent or a tool sees the owning actor's current switch
+/// state rather than a snapshot from spawn time. Installed on the context as a
+/// shared slot ([`install`](Self::install)) so a delegated child's `remember`
+/// lands in the same workspace store.
+#[derive(Clone, Default)]
+pub struct MemoryHandle(Arc<std::sync::RwLock<Option<Arc<MemoryStore>>>>);
+
+impl MemoryHandle {
+    /// The store as of now — `None` while memory is switched off.
+    pub fn get(&self) -> Option<Arc<MemoryStore>> {
+        self.0.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Replace the store (`None` switches memory off).
+    pub fn set(&self, store: Option<Arc<MemoryStore>>) {
+        if let Ok(mut g) = self.0.write() {
+            *g = store;
+        }
+    }
+
+    /// Install this handle on a context, shared with delegated children.
+    pub fn install(&self, ctx: &mut agent_kernel::tools::registry::ToolCtx) {
+        ctx.ext.insert_shared(Arc::new(self.clone()));
+    }
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct RememberArgs {
@@ -32,7 +63,7 @@ pub fn spec() -> ToolSpec {
             }
         };
         async move {
-            let Some(memory) = ctx.memory().and_then(|m| m.get()) else {
+            let Some(memory) = ctx.ext.get::<MemoryHandle>().and_then(|m| m.get()) else {
                 return Err(ToolError::Failed(
                     // `None` = the session spawned without a store: the
                     // memory toggle is off, or the db failed to open.
@@ -81,5 +112,45 @@ pub fn spec() -> ToolSpec {
         network: false,
         staged: false,
         exec,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_kernel::tools::registry::ToolCtx;
+
+    /// A delegated child shares the very same handle, so a later memory switch
+    /// on the parent's side is visible to the child without re-inheriting — and
+    /// an uninstalled context simply has none.
+    #[test]
+    fn a_child_sees_the_parents_live_memory_switch() {
+        let mut parent = ToolCtx::new(std::env::temp_dir());
+        assert!(parent.ext.get::<MemoryHandle>().is_none());
+
+        let handle = MemoryHandle::default();
+        handle.install(&mut parent);
+        // Installed but switched off: the slot exists, the store is None.
+        assert!(parent.ext.get::<MemoryHandle>().unwrap().get().is_none());
+
+        let mut child = ToolCtx::new(std::env::temp_dir());
+        child.ext = parent.ext.inheritable();
+        let theirs = child.ext.get::<MemoryHandle>().expect("child inherits memory");
+        assert!(Arc::ptr_eq(&theirs.0, &handle.0), "same slot, not a snapshot");
+    }
+
+    /// `remember` refuses cleanly when memory is off rather than panicking.
+    #[tokio::test]
+    async fn remember_refuses_when_memory_is_off() {
+        let mut ctx = ToolCtx::new(std::env::temp_dir());
+        MemoryHandle::default().install(&mut ctx);
+        let spec = spec();
+        let err = (spec.exec)(
+            serde_json::json!({"key": "k", "value": "v"}),
+            Arc::new(ctx),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("remember is unavailable"), "{err}");
     }
 }

@@ -570,28 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn memory_is_absent_until_installed_and_a_child_sees_the_live_switch() {
-        let parent = ToolCtx::new(std::env::temp_dir());
-        assert!(parent.memory().is_none());
-
-        let mut parent = parent;
-        let handle = MemoryHandle::default();
-        parent.install_memory(handle.clone());
-        // Installed but switched off: the slot exists, the store is None.
-        assert!(parent.memory().unwrap().get().is_none());
-
-        // A child shares the very same handle, so a later switch on the
-        // parent's side is visible to the child without re-inheriting.
-        let mut child = ToolCtx::new(std::env::temp_dir());
-        child.ext = parent.ext.inheritable();
-        assert!(child.memory().is_some());
-        assert!(Arc::ptr_eq(
-            &child.memory().unwrap().0,
-            &parent.memory().unwrap().0,
-        ));
-    }
-
-    #[test]
     fn session_is_absent_until_attached_and_shared_after_cancel_scope() {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::session_store::SessionStore::open_at(dir.path(), &dir.path().join("t.db"))
@@ -713,13 +691,12 @@ mod tests {
     /// A child can read and search, but never persist memory, recurse, or reach
     /// the human. Those are exactly the tools excluded from `child_builtins`.
     #[test]
-    fn child_builtins_exclude_persistence_recursion_and_human_tools() {
+    fn child_builtins_exclude_recursion_and_human_tools() {
         let child = ToolRegistry::child_builtins();
         // The goal and plan declarations live only in the parent's goal/plan
         // registries. A child that held them would reach the controller that
         // `delegate` installs for it, so this list also guards that wiring.
         for banned in [
-            "remember",
             "delegate",
             "computer",
             "ask_question",
@@ -735,6 +712,6 @@ mod tests {
         assert!(child.spec("smart_read").is_some());
         assert!(child.spec("bash").is_some());
         // The parent still has the full set, so the exclusion is the child's alone.
-        assert!(ToolRegistry::with_builtins().spec("remember").is_some());
+        assert!(ToolRegistry::with_builtins().spec("delegate").is_some());
     }
 }

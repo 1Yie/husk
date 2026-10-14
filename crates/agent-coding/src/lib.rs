@@ -12,6 +12,7 @@ pub mod blueprint;
 pub mod blueprint_tool;
 pub mod goal;
 pub mod plan;
+pub mod remember;
 pub mod policy;
 pub mod tracker;
 
