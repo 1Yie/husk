@@ -609,15 +609,54 @@ impl SessionActor {
         let registry = Arc::new(registry);
         let mut engine = Engine::new(
             cfg.provider.clone(),
-            registry,
-            ctx,
+            registry.clone(),
+            ctx.clone(),
             cfg.model.clone(),
             cfg.temperature,
         );
+        engine.set_policy(Box::new(crate::turn_policy::CodingPolicy::from_ctx(&ctx)));
+        // Mode table — the host's mapping from a mode id to the registry that
+        // id dispatches against. The engine carries no mode names; these are
+        // the coding product's (mirroring `mode::AgentMode`).
+        //
+        // Plan mode = readonly set + the `submit_plan` contract — the model
+        // declares its deliverable as structured data, not prose.
+        let mut plan_reg = registry.readonly_only();
+        plan_reg.register(crate::tools::plan::spec_submit());
+        engine.add_mode(crate::engine::ModeEntry {
+            id: "plan".into(),
+            registry: Arc::new(plan_reg),
+            allow_plugins: false,
+        });
+        // Goal mode = full set + the completion contract — the model
+        // declares `goal_complete`/`goal_blocked` to end its run.
+        let mut goal_reg = (*registry).clone();
+        goal_reg.register(crate::tools::goal::spec_complete());
+        goal_reg.register(crate::tools::goal::spec_blocked());
+        engine.add_mode(crate::engine::ModeEntry {
+            id: "goal".into(),
+            registry: Arc::new(goal_reg),
+            allow_plugins: true,
+        });
+        // Office mode = full set + the `office_*` document tools (officecli
+        // wrappers). Same write surface as build — the difference is the
+        // document-producing contract in the prompt, not a narrower toolbox.
+        let mut office_reg = (*registry).clone();
+        for spec in crate::tools::office::specs() {
+            office_reg.register(spec);
+        }
+        for spec in crate::tools::assets::specs() {
+            office_reg.register(spec);
+        }
+        engine.add_mode(crate::engine::ModeEntry {
+            id: "office".into(),
+            registry: Arc::new(office_reg),
+            allow_plugins: true,
+        });
         engine.set_permissions(crate::permissions::PermissionGate::from_mode_str(
             &cfg.permission_mode,
         ));
-        engine.set_agent_mode(crate::mode::AgentMode::from_str(&cfg.agent_mode));
+        engine.set_agent_mode(cfg.agent_mode.clone());
         engine.set_thinking_level(cfg.thinking_level.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
         engine.set_context_window(cfg.context_window.unwrap_or(256_000) as usize);
@@ -774,7 +813,7 @@ impl SessionActor {
     /// blueprint region is re-rendered at once so the index never shows for
     /// a session that turned the layer off.
     pub fn set_blueprint_enabled(&mut self, enabled: bool) {
-        self.engine.set_blueprint_enabled(enabled);
+        self.engine.set_architecture_enabled(enabled);
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
                 let block = crate::blueprint::prompt_block(&self.workspace_root, enabled);
@@ -803,7 +842,7 @@ impl SessionActor {
 
     /// The shared agent-mode slot — `SetAgentMode` writes here mid-turn so
     /// the engine's next sampling round already sees the swapped registry.
-    pub fn agent_mode_writer(&self) -> Arc<std::sync::RwLock<crate::mode::AgentMode>> {
+    pub fn agent_mode_writer(&self) -> Arc<std::sync::RwLock<String>> {
         self.engine.agent_mode_writer()
     }
 
@@ -892,7 +931,7 @@ impl SessionActor {
             if let Some(content) = sys.content.take() {
                 let block = crate::blueprint::prompt_block(
                     &self.workspace_root,
-                    self.engine.blueprint_enabled(),
+                    self.engine.architecture_enabled(),
                 );
                 sys.content = Some(replace_block(&content, "blueprint", &block));
             }
@@ -1088,7 +1127,7 @@ impl SessionActor {
             model: (!model.is_empty()).then_some(model),
             provider: (!provider.is_empty()).then_some(provider),
             permission_mode: Some(self.current_permission_mode()),
-            agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
+            agent_mode: Some(self.engine.agent_mode()),
             thinking_level: self.engine.thinking_level(),
             queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
         },self.history_revision);
@@ -1175,7 +1214,7 @@ impl SessionActor {
             model: (!model.is_empty()).then_some(model),
             provider: (!provider.is_empty()).then_some(provider),
             permission_mode: Some(self.current_permission_mode()),
-            agent_mode: Some(self.engine.agent_mode().as_str().to_string()),
+            agent_mode: Some(self.engine.agent_mode()),
             thinking_level: self.engine.thinking_level(),
             queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
         });
@@ -1480,7 +1519,7 @@ impl SessionActor {
                 memory: self.memory.as_deref(),
                 plugin_commands: &plugin_commands,
                 ui_tx: &self.io.ui_tx,
-                blueprint_enabled: self.engine.blueprint_enabled(),
+                blueprint_enabled: self.engine.architecture_enabled(),
             };
             CommandRegistry::try_run(&text, &mut ctx).await
         }; // ctx dropped here — the history/ui_tx borrows end
@@ -1658,7 +1697,7 @@ impl SessionActor {
             UiCommand::SetAgentMode { mode } => {
                 let new = crate::mode::AgentMode::from_str(&mode);
                 let old = self.engine.agent_mode();
-                self.engine.set_agent_mode(new);
+                self.engine.set_agent_mode(new.as_str());
                 self.persist_settings();
                 // Rewrite the mode block inside the rendered system prompt —
                 // the contract text must match the registry the next round
@@ -1666,7 +1705,10 @@ impl SessionActor {
                 if let Some(sys) = self.history.first_mut() {
                     if sys.role == agent_llm::Role::System && sys.notice.is_none() {
                         if let Some(c) = sys.content.take() {
-                            sys.content = Some(c.replace(old.prompt_block(), new.prompt_block()));
+                            sys.content = Some(c.replace(
+                                crate::mode::AgentMode::from_str(&old).prompt_block(),
+                                new.prompt_block(),
+                            ));
                         }
                     }
                 }

@@ -515,6 +515,9 @@ impl SubagentSpawner {
         if let Some(level) = &spec.thinking {
             route.thinking_level = Some(level.clone());
         }
+        // The child's turn contracts (goal/plan/blueprint) run the same
+        // policy shape as the parent's, over the child's own controllers.
+        let policy = crate::turn_policy::CodingPolicy::from_ctx(&child_ctx);
         let mut engine = Engine::new(
             route.provider,
             registry,
@@ -522,6 +525,7 @@ impl SubagentSpawner {
             route.model,
             route.temperature,
         );
+        engine.set_policy(Box::new(policy));
         engine.set_permissions(PermissionGate::for_subagent());
         engine.set_context_window(route.context_window);
         engine.set_thinking_level(route.thinking_level);

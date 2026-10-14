@@ -278,7 +278,7 @@ fn agent_cmd_inner(
     }
     if let UiCommand::SetAgentMode { mode } = &cmd {
         if let Ok(mut slot) = agent_mode.write() {
-            *slot = agent_kernel::mode::AgentMode::from_str(mode);
+            *slot = agent_kernel::mode::AgentMode::from_str(mode).as_str().to_string();
         }
     }
     // Per-session tool whitelisting (computer-use's "本会话允许"): write

@@ -148,16 +148,19 @@ fn rig_with(
     let mut engine = Engine::new(
         stub,
         Arc::new(ToolRegistry::with_builtins()),
-        ctx,
+        ctx.clone(),
         "test-model",
         0.0,
     );
+    // The turn contracts (the `computer` cap among them) are the coding
+    // policy now — a bare `Engine::new` installs no product rules.
+    engine.set_policy(Box::new(agent_kernel::turn_policy::CodingPolicy::from_ctx(&ctx)));
     let mut gate = PermissionGate::from_mode_str(mode);
     for g in grant {
         gate.allow_tool_for_session(g);
     }
     engine.set_permissions(gate);
-    engine.set_agent_mode(agent_kernel::mode::AgentMode::Build);
+    engine.set_agent_mode("build");
     Rig { engine, desk, dir }
 }
 

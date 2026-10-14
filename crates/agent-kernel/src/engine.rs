@@ -65,31 +65,63 @@ pub enum CompactOutcome {
     NothingToDo,
 }
 
+/// The engine's view of one quiet round, built when the round goes quiet.
+///
+/// It holds clones of the engine's shared handles, not a borrow of the engine,
+/// so the loop can keep its `&mut self` while the policy runs.
+struct EngineTurnView {
+    mode: Arc<std::sync::RwLock<String>>,
+    /// Tool calls run so far this turn (the loop's `tool_calls_run`).
+    tool_calls_run: usize,
+    architecture_enabled: bool,
+}
+
+impl crate::turn_policy::TurnView for EngineTurnView {
+    fn mode(&self) -> String {
+        self.mode.read().map(|m| m.clone()).unwrap_or_default()
+    }
+    fn did_tool_work(&self) -> bool {
+        self.tool_calls_run > 0
+    }
+    fn architecture_enabled(&self) -> bool {
+        self.architecture_enabled
+    }
+}
+
 /// Handle to the live plugin router. `None` = no plugin dir discovered; `Some`
 /// with an inner `None` = a plugin manager existed but failed to load, which a
 /// later reload can still fill in.
 pub type PluginHandle = Arc<std::sync::RwLock<Option<Arc<agent_plugin::PluginManager>>>>;
 
+/// One host-declared agent mode: an id the session slot carries, the registry
+/// that mode dispatches against, and whether plugin tools are advertised in
+/// it. The kernel names no modes — the host assembles its own table (the
+/// coding product: plan/goal/office; a second product: whatever it wants).
+pub struct ModeEntry {
+    pub id: String,
+    pub registry: Arc<ToolRegistry>,
+    /// Plugin exports ride the request's `tools` array in this mode. A
+    /// read-only mode (plan) turns them off — the permission gate treats an
+    /// unknown tool name as a write, which is the behaviour we want for MCP
+    /// calls in every other mode.
+    pub allow_plugins: bool,
+}
+
 pub struct Engine {
     sampler: Sampler,
-    /// Mode-scoped registries — `set_agent_mode` swaps `registry` between
-    /// these. `plan` = readonly view; `goal` = full + goal contract tools;
-    /// `office` = full + `office_*` document tools.
+    /// The registry the engine was built with — the default for any mode id
+    /// without an entry (and the empty-id "build" mode).
     registry_full: Arc<ToolRegistry>,
-    registry_plan: Arc<ToolRegistry>,
-    registry_goal: Arc<ToolRegistry>,
-    registry_office: Arc<ToolRegistry>,
+    /// Host-declared modes — `set_agent_mode` swaps `registry` between these
+    /// by id. Unknown/empty ids fall back to `registry_full`.
+    modes: Vec<ModeEntry>,
     ctx: Arc<ToolCtx>,
-    /// The turn's goal and plan signal, held directly rather than re-read from
-    /// `ctx` each turn: the state machine has no degraded path, so a context
-    /// without them is a construction bug, caught in `new`.
-    goal: Arc<crate::tools::goal::GoalController>,
-    plan: Arc<crate::tools::plan::PlanController>,
     model: String,
     temperature: f32,
     /// Agent mode — shared slot like `permissions` so a mid-turn composer
     /// switch applies at the next sampling round instead of next session.
-    agent_mode: Arc<std::sync::RwLock<crate::mode::AgentMode>>,
+    /// Holds a mode id from the host's table ("" = the full registry).
+    agent_mode: Arc<std::sync::RwLock<String>>,
     /// Pending mid-turn steering text drained from `io.steer_rx`.
     steer_queue: VecDeque<String>,
     /// Steers actually injected into this turn — reset per `run_turn`, and the
@@ -135,11 +167,13 @@ pub struct Engine {
     /// runtime (a plugin added in settings). Read per request, never cached, so
     /// a live session picks up a reload without being restarted.
     plugin_router: Option<PluginHandle>,
-    /// This session's `.blueprint/` switch (settings 偏好). Off hides the
-    /// prompt index, the turn-end check and the baseline — per session, so a
-    /// toggle never reaches another session in the same process.
-    blueprint_enabled: bool,
-    /// Product rules applied when a round goes quiet. `CodingPolicy` by default.
+    /// The session's architecture-checking switch (the coding product: the
+    /// `.blueprint/` 偏好). The engine only carries it — the prompt block, the
+    /// turn-end check and the baseline are the installed policy's business.
+    architecture_enabled: bool,
+    /// Product rules applied when a round goes quiet. [`NoopPolicy`] by
+    /// default — the host installs its own (the coding product:
+    /// `CodingPolicy`) before the first turn.
     policy: Box<dyn crate::turn_policy::TurnPolicy>,
     /// Thinking / reasoning intensity level (e.g. "off", "low", "medium",
     /// "high", "max"). Shared slot like `permissions` — the bridge reads it
@@ -161,48 +195,14 @@ impl Engine {
         model: impl Into<String>,
         temperature: f32,
     ) -> Self {
-        // Plan mode = readonly set + the `submit_plan` contract — the model
-        // declares its deliverable as structured data, not prose.
-        let mut plan_reg = registry.readonly_only();
-        plan_reg.register(crate::tools::plan::spec_submit());
-        let registry_plan = Arc::new(plan_reg);
-        // Goal mode = full set + the completion contract — the model
-        // declares `goal_complete`/`goal_blocked` to end its run.
-        let mut goal_reg = (*registry).clone();
-        goal_reg.register(crate::tools::goal::spec_complete());
-        goal_reg.register(crate::tools::goal::spec_blocked());
-        let registry_goal = Arc::new(goal_reg);
-        // Office mode = full set + the `office_*` document tools (officecli
-        // wrappers). Same write surface as build — the difference is the
-        // document-producing contract in the prompt, not a narrower toolbox.
-        let mut office_reg = (*registry).clone();
-        for spec in crate::tools::office::specs() {
-            office_reg.register(spec);
-        }
-        for spec in crate::tools::assets::specs() {
-            office_reg.register(spec);
-        }
-        let registry_office = Arc::new(office_reg);
-        let goal = ctx
-            .ext
-            .get::<crate::tools::goal::GoalController>()
-            .expect("engine context missing GoalController - build it with ToolCtx::new");
-        let plan = ctx
-            .ext
-            .get::<crate::tools::plan::PlanController>()
-            .expect("engine context missing PlanController - build it with ToolCtx::new");
         Self {
             sampler: Sampler::new(provider),
-            registry_full: registry.clone(),
-            registry_plan,
-            registry_goal,
-            registry_office,
-            goal,
-            plan,
+            registry_full: registry,
+            modes: Vec::new(),
             ctx,
             model: model.into(),
             temperature,
-            agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
+            agent_mode: Arc::new(std::sync::RwLock::new(String::new())),
             steer_queue: VecDeque::new(),
             steers_this_turn: Vec::new(),
             denials_this_turn: Vec::new(),
@@ -219,8 +219,8 @@ impl Engine {
             last_prompt_tokens: 0,
             hooks: crate::hooks::HookChain::new(),
             plugin_router: None,
-            blueprint_enabled: true,
-            policy: Box::new(crate::turn_policy::CodingPolicy),
+            architecture_enabled: true,
+            policy: Box::new(crate::turn_policy::NoopPolicy),
             thinking_level: Arc::new(std::sync::RwLock::new(None)),
             thinking_level_map: None,
             model_params: agent_llm::ModelParams::EMPTY,
@@ -318,12 +318,13 @@ impl Engine {
     /// exports as `plugin_id__tool`. The names are sanitized by the plugin
     /// layer into the wire's `function.name` charset — an illegal character
     /// here (`:` in the old spelling) makes a strict upstream reject the whole
-    /// request as `invalid_argument`. Plan mode is read-only, so plugins sit it
-    /// out there — the permission gate treats an unknown tool name as a write,
-    /// which is the behaviour we want for MCP calls in every other mode.
+    /// request as `invalid_argument`. A mode that opts plugins out (plan)
+    /// advertises built-ins only — the permission gate treats an unknown tool
+    /// name as a write, which is the behaviour we want for MCP calls in every
+    /// other mode.
     fn request_tools_schema(&self) -> serde_json::Value {
         let builtin = self.active_registry().request_schema();
-        if self.plan_mode() {
+        if !self.plugins_allowed() {
             return builtin;
         }
         let Some(mgr) = self.plugins() else {
@@ -341,13 +342,27 @@ impl Engine {
         self.hooks = chain;
     }
 
-    /// Per-session `.blueprint/` switch — SessionActor forwards the preference.
-    pub fn set_blueprint_enabled(&mut self, enabled: bool) {
-        self.blueprint_enabled = enabled;
+    /// Install the product rules for quiet rounds (and the per-turn contracts).
+    /// Must happen before the first turn — the default [`NoopPolicy`] ends
+    /// every quiet round immediately.
+    pub fn set_policy(&mut self, policy: Box<dyn crate::turn_policy::TurnPolicy>) {
+        self.policy = policy;
     }
 
-    pub fn blueprint_enabled(&self) -> bool {
-        self.blueprint_enabled
+    /// Declare a mode the session slot may carry. Ids repeat = later wins.
+    pub fn add_mode(&mut self, entry: ModeEntry) {
+        self.modes.retain(|m| m.id != entry.id);
+        self.modes.push(entry);
+    }
+
+    /// The session's architecture-checking switch — SessionActor forwards the
+    /// preference (the coding product's `.blueprint/` toggle).
+    pub fn set_architecture_enabled(&mut self, enabled: bool) {
+        self.architecture_enabled = enabled;
+    }
+
+    pub fn architecture_enabled(&self) -> bool {
+        self.architecture_enabled
     }
 
     /// The active model's context window — SessionActor sets it from config.
@@ -384,43 +399,52 @@ impl Engine {
     }
 
     /// Switch the agent mode — swaps the active registry immediately; the
-    /// next sampling round sees the new tool set.
-    pub fn set_agent_mode(&mut self, mode: crate::mode::AgentMode) {
+    /// next sampling round sees the new tool set. An unknown id keeps the
+    /// full registry (the mode slot may carry a host id the engine was not
+    /// told about; dispatching the full set is the safe fallback).
+    pub fn set_agent_mode(&mut self, mode: impl Into<String>) {
         if let Ok(mut w) = self.agent_mode.write() {
-            *w = mode;
+            *w = mode.into();
         }
     }
 
     /// Shared mode slot — the actor polls it in `run_turn` (a mid-turn
     /// `SetAgentMode` writes the slot without needing `&mut Engine`).
-    /// True in plan mode — plugins are advertised and dispatched everywhere
-    /// else (their calls are treated as writes by the permission gate).
-    fn plan_mode(&self) -> bool {
-        self.agent_mode
-            .read()
-            .map(|m| matches!(*m, crate::mode::AgentMode::Plan))
-            .unwrap_or(false)
+    /// True when the current mode's entry opts plugins out — a read-only
+    /// mode advertises built-ins only, since the permission gate treats an
+    /// unknown tool name as a write.
+    fn plugins_allowed(&self) -> bool {
+        let id = self.agent_mode();
+        self.modes
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.allow_plugins)
+            .unwrap_or(true)
     }
 
-    pub fn agent_mode_writer(&self) -> Arc<std::sync::RwLock<crate::mode::AgentMode>> {
+    pub fn agent_mode_writer(&self) -> Arc<std::sync::RwLock<String>> {
         self.agent_mode.clone()
     }
 
-    /// Current agent mode — the actor reads this for the prompt swap and
-    /// the goal contract.
-    pub fn agent_mode(&self) -> crate::mode::AgentMode {
-        self.agent_mode.read().map(|m| *m).unwrap_or_default()
+    /// Current agent mode id — the actor reads this for the prompt swap.
+    /// Empty string = the full registry (the host's "build" mode).
+    pub fn agent_mode(&self) -> String {
+        self.agent_mode
+            .read()
+            .map(|m| m.clone())
+            .unwrap_or_default()
     }
 
     /// The registry for the mode currently in the slot — resolved per call
     /// so a mid-turn `SetAgentMode` applies at the very next dispatch.
     fn active_registry(&self) -> Arc<ToolRegistry> {
-        let reg = match self.agent_mode() {
-            crate::mode::AgentMode::Plan => self.registry_plan.clone(),
-            crate::mode::AgentMode::Goal => self.registry_goal.clone(),
-            crate::mode::AgentMode::Office => self.registry_office.clone(),
-            crate::mode::AgentMode::Build => self.registry_full.clone(),
-        };
+        let id = self.agent_mode();
+        let reg = self
+            .modes
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.registry.clone())
+            .unwrap_or_else(|| self.registry_full.clone());
         // Refresh the ctx slot — `batch_execute` dispatches through the
         // same mode-scoped registry this call resolved.
         *self.ctx.active_registry.write().unwrap() = Some(reg.clone());
@@ -560,16 +584,11 @@ impl Engine {
         // Runaway-loop bound; delegated children get a smaller budget via
         // set_max_tool_rounds.
         let max_tool_rounds = self.max_tool_rounds;
-        // Per-turn state the turn policy keeps across quiet rounds (pushback
-        // counters, the blueprint baseline). See `turn_policy`.
-        let mut turn_state = crate::turn_policy::TurnState::default();
-        // A fresh turn starts with a clean goal signal — a leftover
-        // `goal_complete` from an earlier turn must not short-circuit this
-        // one (the contract is per-turn: each goal prompt ends declared).
-        self.goal.reset();
-        // Same per-turn contract for plan mode — a stale `submit_plan` must
-        // not surface as this turn's deliverable.
-        self.plan.reset();
+        // A fresh turn starts from a clean policy state — a leftover
+        // `goal_complete`/`submit_plan` from an earlier turn must not
+        // short-circuit this one (the contracts are per-turn: each goal
+        // prompt ends declared).
+        self.policy.begin_turn();
         /// Cancel sentinel — the `Err` value and `Failed` reason (never
         /// rendered verbatim; the status bar localizes `Failed`). The
         /// user-facing line is `CANCEL_TEXT`.
@@ -951,32 +970,23 @@ impl Engine {
                     continue;
                 }
 
-                // Plan contract — in `plan` mode a working turn's deliverable
-                // is the structured plan, not prose. A submitted plan is taken
-                // here so the card lands after the final assistant text; a
-                // turn that did tool work but never submitted gets ONE nudge —
-                // capped so a plain question can't be pushed twice.
-                // Plan cards are taken here, not by the policy: the card lands after
-                // the final text, so the engine keeps the value for that point.
-                let submitted_plan = if self.agent_mode() == crate::mode::AgentMode::Plan {
-                    self.plan.take_signal()
-                } else {
-                    None
-                };
+                // The quiet round goes to the installed policy: it may end the
+                // turn (with an optional check report and an optional
+                // deliverable payload — the plan card) or push a hidden nudge.
+                // Plan cards are taken by the policy, not the loop: the card
+                // lands after the final text, and the policy holds the
+                // controller the signal rides on.
                 let touched: Vec<std::path::PathBuf> = hunks
                     .files_in_turn(hunks.current_turn())
                     .into_iter()
                     .map(|p| p.to_path_buf())
                     .collect();
-                let view = crate::turn_policy::EngineTurnView {
-                    goal: self.goal.clone(),
-                    plan: self.plan.clone(),
+                let view = EngineTurnView {
                     mode: self.agent_mode.clone(),
-                    workspace_root: self.ctx.workspace_root.to_path_buf(),
-                    blueprint_enabled: self.blueprint_enabled,
                     tool_calls_run,
+                    architecture_enabled: self.architecture_enabled,
                 };
-                let verdict = self.policy.on_quiet_round(&mut turn_state, &view, touched).await;
+                let verdict = self.policy.on_quiet_round(&view, touched).await;
                 let blueprint_report = match verdict {
                     crate::turn_policy::Verdict::Nudge { hidden } => {
                         if !final_text.is_empty() {
@@ -989,7 +999,13 @@ impl Engine {
                         history.push(ChatMessage::user_hidden(hidden));
                         continue;
                     }
-                    crate::turn_policy::Verdict::Finish { report } => report,
+                    crate::turn_policy::Verdict::Finish { report, deliverable } => {
+                        if let Some(plan) = deliverable {
+                            history.push(ChatMessage::plan(plan.clone()));
+                            let _ = io.ui_tx.send(UiEvent::PlanSubmitted { plan });
+                        }
+                        report
+                    }
                 };
                 let mut final_text = final_text;
                 self.hooks.run_on_response(&mut final_text).await;
@@ -1013,24 +1029,17 @@ impl Engine {
                 self.set_state(io, AgentState::Finished);
                 let _ = io.ui_tx.send(UiEvent::AssistantMessage(final_text));
                 if let Some(report) = blueprint_report {
-                    let text = report.render();
-                    history.push(if report.errors() > 0 {
+                    let text = report.text.clone();
+                    history.push(if report.errors > 0 {
                         ChatMessage::notice_error(text.clone())
                     } else {
                         ChatMessage::notice(text.clone())
                     });
                     let _ = io.ui_tx.send(UiEvent::BlueprintReport {
-                        errors: report.errors(),
-                        warnings: report.issues.len() - report.errors(),
+                        errors: report.errors,
+                        warnings: report.warnings,
                         text,
                     });
-                }
-                // The plan card lands last — it IS the turn's deliverable and
-                // the composer's action strip keys off it being the last item.
-                if let Some(plan) = submitted_plan {
-                    let payload = serde_json::to_string(&plan).unwrap_or_default();
-                    history.push(ChatMessage::plan(payload.clone()));
-                    let _ = io.ui_tx.send(UiEvent::PlanSubmitted { plan: payload });
                 }
                 return Ok(TurnOutcome {
                     text,
@@ -1193,20 +1202,8 @@ impl Engine {
                 // Anything not declared read-only may write, and a plugin/MCP
                 // tool has no built-in spec at all — so the baseline keys off
                 // `readonly`, not `class`, and an unknown name counts as a write.
-                // Baseline taken lazily, right before the first tool that can change
-                // the workspace — before any write lands, so it is the state the turn
-                // started from. A read-only turn never pays for it.
-                if !turn_state.blueprint_baseline_taken && !is_readonly {
-                    turn_state.blueprint_baseline_taken = true;
-                    let root = self.ctx.workspace_root.to_path_buf();
-                    let enabled = self.blueprint_enabled;
-                    turn_state.blueprint_baseline = tokio::task::spawn_blocking(move || {
-                        crate::blueprint::snapshot(&root, enabled)
-                    })
-                    .await
-                    .ok()
-                    .flatten();
-                }
+                // The baseline itself is the installed policy's business: it is
+                // taken inside `before_dispatch`, lazily before the first write.
                 let shell_cmd = args.get("command").and_then(|v| v.as_str());
                 let diff_summary = computer_summary.clone().unwrap_or_else(|| {
                     args.get("path")
@@ -1423,11 +1420,11 @@ impl Engine {
                     Decision::Allow => {}
                 }
 
-                if let Some(msg) = self.policy.before_dispatch(
-                    &mut turn_state,
-                    &call.name,
-                    computer_action.is_some(),
-                ) {
+                if let Some(msg) = self
+                    .policy
+                    .before_dispatch(&call.name, is_readonly, self.architecture_enabled)
+                    .await
+                {
                     let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                         name: call.name.clone(),
                         ok: false,
@@ -1467,7 +1464,7 @@ impl Engine {
                                 // names are reserved and can't be shadowed).
                                 // Plugins never stage deferred writes → empty vec.
                                 // Plan mode dispatches read-only built-ins only.
-                                if self.plan_mode() {
+                                if !self.plugins_allowed() {
                                     (e.to_string(), None, false, Vec::new(), Vec::new())
                                 } else if let Some(mgr) = self.plugins() {
                                     // Report the plugin's own failure. Its message names the

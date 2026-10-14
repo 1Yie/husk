@@ -108,14 +108,15 @@ async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<Ch
     let mut engine = Engine::new(
         stub,
         Arc::new(ToolRegistry::with_builtins()),
-        ctx,
+        ctx.clone(),
         "test-model",
         0.0,
     );
+    engine.set_policy(Box::new(agent_kernel::turn_policy::CodingPolicy::from_ctx(&ctx)));
     engine.set_permissions(agent_kernel::permissions::PermissionGate::from_mode_str(
         "auto",
     ));
-    engine.set_agent_mode(agent_kernel::mode::AgentMode::Build);
+    engine.set_agent_mode("build");
     engine.set_model_input(model_input);
     let (ui_tx, _ui_rx) = agent_kernel::channels::UiSink::channel();
     let (_steer_tx, steer_rx) = tokio::sync::mpsc::channel(4);

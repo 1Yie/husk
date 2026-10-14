@@ -123,7 +123,7 @@ pub struct SessionHandle {
     pub permissions: Arc<std::sync::RwLock<crate::permissions::PermissionGate>>,
     /// The session's live agent mode — `SetAgentMode` writes here mid-turn
     /// so the next sampling round dispatches against the swapped registry.
-    pub agent_mode: Arc<std::sync::RwLock<crate::mode::AgentMode>>,
+    pub agent_mode: Arc<std::sync::RwLock<String>>,
     /// The session's live thinking level — the engine's shared slot. Read by
     /// `model_info` so the UI shows the session's actual value, which may
     /// differ from the stored default after a prefs change.
@@ -1202,7 +1202,7 @@ impl SessionManager {
                 self.permission_mode = g.mode().as_str().to_string();
             }
             if let Ok(m) = h.agent_mode.read() {
-                self.agent_mode = m.as_str().to_string();
+                self.agent_mode = m.clone();
             }
             if let Ok(l) = h.thinking_level.read() {
                 self.active_thinking_level = l.clone();
@@ -2129,11 +2129,7 @@ impl SessionManager {
                     .ok()
                     .map(|g| g.mode().as_str().to_string());
                 let t = h.thinking_level.read().ok().and_then(|l| l.clone());
-                let a = h
-                    .agent_mode
-                    .read()
-                    .ok()
-                    .map(|mode| mode.as_str().to_string());
+                let a = h.agent_mode.read().ok().map(|m| m.clone());
                 (m, t, a)
             })
             .unwrap_or((None, None, None));
@@ -2681,7 +2677,7 @@ max = "max"
                 permissions: Arc::new(std::sync::RwLock::new(
                     crate::permissions::PermissionGate::from_mode_str("default"),
                 )),
-                agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
+                agent_mode: Arc::new(std::sync::RwLock::new("build".to_string())),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -2944,7 +2940,7 @@ max = "max"
         /// A stand-in actor — only its agent-mode slot is read here.
         fn fake_handle(
             id: i64,
-            mode: AgentMode,
+            mode: String,
         ) -> (
             SessionHandle,
             tokio::sync::mpsc::Receiver<agent_ipc::UiCommand>,
@@ -2981,7 +2977,7 @@ max = "max"
         // Receivers stay alive: a dropped one closes the queue the config
         // reload pushes `ReloadModel` into.
         let mut _live = Vec::new();
-        for (id, mode) in [(1, AgentMode::Plan), (2, AgentMode::Build)] {
+        for (id, mode) in [(1, "plan".to_string()), (2, "build".to_string())] {
             let (handle, rx) = fake_handle(id, mode);
             mgr.handles.insert(id, handle);
             _live.push(rx);
@@ -3037,7 +3033,7 @@ max = "max"
                     permissions: Arc::new(std::sync::RwLock::new(
                         crate::permissions::PermissionGate::from_mode_str("default"),
                     )),
-                    agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Build)),
+                    agent_mode: Arc::new(std::sync::RwLock::new("build".to_string())),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -3107,7 +3103,7 @@ max = "max"
                 permissions: Arc::new(std::sync::RwLock::new(
                     crate::permissions::PermissionGate::from_mode_str("auto"),
                 )),
-                agent_mode: Arc::new(std::sync::RwLock::new(crate::mode::AgentMode::Plan)),
+                agent_mode: Arc::new(std::sync::RwLock::new("plan".to_string())),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
