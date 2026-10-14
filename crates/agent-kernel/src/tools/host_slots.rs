@@ -193,7 +193,7 @@ impl ToolCtx {
 
     /// Install the host's app directories.
     pub fn install_paths(&mut self, paths: AppPaths) {
-        self.ext.insert(Arc::new(AppPathsSlot(paths)));
+        self.ext.insert_shared(Arc::new(AppPathsSlot(paths)));
     }
 
     /// The question channel, or a refusal when the context has no one to ask.
@@ -233,16 +233,7 @@ impl ToolCtx {
 
     /// Install the workspace memory handle.
     pub fn install_memory(&mut self, memory: MemoryHandle) {
-        self.ext.insert(Arc::new(MemorySlot(memory)));
-    }
-
-    /// Share the parent's memory handle with a child, so a subagent's
-    /// `remember` lands in the same workspace store.
-    pub fn inherit_memory(mut self, parent: &ToolCtx) -> Self {
-        if let Some(slot) = parent.ext.get::<MemorySlot>() {
-            self.ext.insert(slot);
-        }
-        self
+        self.ext.insert_shared(Arc::new(MemorySlot(memory)));
     }
 
     /// The subagent spawner, if this context can delegate.
@@ -282,7 +273,7 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(None),
             ext: Extensions::default(),
         };
-        ctx.ext.insert(Arc::new(SandboxSlot(sandbox)));
+        ctx.ext.insert_shared(Arc::new(SandboxSlot(sandbox)));
         ctx
     }
 
@@ -298,44 +289,21 @@ impl ToolCtx {
     /// `batch_execute` that fans out `screenshot`+`computer` items must keep
     /// them sequenced, or the click can map onto the previous frame.
     pub fn with_desktop(mut self, desktop: Arc<dyn agent_computer::DesktopBackend>) -> Self {
-        self.ext.insert(Arc::new(DesktopSlot(desktop)));
+        self.ext.insert_shared(Arc::new(DesktopSlot(desktop)));
         self
     }
 
-    /// Hand the parent's desktop backend to a child context. Only this slot is
-    /// copied: the goal and plan controllers must stay per-context, so the
-    /// child never inherits the parent's `ext` wholesale.
-    pub fn inherit_desktop(mut self, parent: &ToolCtx) -> Self {
-        if let Some(slot) = parent.ext.get::<DesktopSlot>() {
-            self.ext.insert(slot);
-        }
-        self
-    }
 
     /// Install the process sandbox on an existing context. `with_sandbox` is
     /// the builder form; hosts that assemble a context in steps use this.
     pub fn install_sandbox(&mut self, sandbox: Arc<dyn agent_sandbox::SandboxBackend>) {
-        self.ext.insert(Arc::new(SandboxSlot(sandbox)));
+        self.ext.insert_shared(Arc::new(SandboxSlot(sandbox)));
     }
 
     /// Install the host's sandbox overrides. Optional: without this the audit's
     /// own defaults apply.
     pub fn with_sandbox_limits(mut self, limits: agent_sandbox::SandboxLimits) -> Self {
-        self.ext.insert(Arc::new(SandboxLimitsSlot(limits)));
-        self
-    }
-
-    /// Hand the parent's process sandbox and its limits to a child context.
-    /// The limits travel with the sandbox on purpose: a child's `bash` must
-    /// obey the host's forced network policy and caps, or a subagent would be
-    /// the one place the host's settings stop applying.
-    pub fn inherit_sandbox(mut self, parent: &ToolCtx) -> Self {
-        if let Some(slot) = parent.ext.get::<SandboxSlot>() {
-            self.ext.insert(slot);
-        }
-        if let Some(slot) = parent.ext.get::<SandboxLimitsSlot>() {
-            self.ext.insert(slot);
-        }
+        self.ext.insert_shared(Arc::new(SandboxLimitsSlot(limits)));
         self
     }
 

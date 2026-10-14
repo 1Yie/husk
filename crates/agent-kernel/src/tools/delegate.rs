@@ -486,17 +486,16 @@ impl SubagentSpawner {
             active_registry: std::sync::RwLock::new(None),
             // Subagent engines carry no plugin router, so plugin names
             // genuinely are unknown here — batch should keep saying so.
-            // Own goal/plan contract pair, never the parent's: the policy
-            // factory below installs it (the kernel does not know the
-            // controller types), so the child's completion signal can never
-            // land on the parent's controller.
-            ext: Default::default(),
-        }
-        .inherit_desktop(&parent_ctx)
-        .inherit_sandbox(&parent_ctx)
-        // Memory is shared: a subagent's `remember` lands in the same
-        // workspace store, like its todo state would if it had a session.
-        .inherit_memory(&parent_ctx);
+            // Only the slots the host marked shared (sandbox + its limits,
+            // desktop, memory, app paths) — never the parent's per-context
+            // ones. The policy factory below installs the child's OWN
+            // goal/plan contract pair (the kernel does not know the controller
+            // types), so a child's completion signal can never land on the
+            // parent's controller. The limits travel with the sandbox on
+            // purpose: a child's `bash` must obey the host's forced network
+            // policy and caps.
+            ext: parent_ctx.ext.inheritable(),
+        };
         // The child's fan-out events go to its own tagged sink, so a batched
         // child call never masquerades as the parent's.
         child_ctx.install_ui(child_sink.clone());

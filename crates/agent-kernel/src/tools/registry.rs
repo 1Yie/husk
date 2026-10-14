@@ -418,7 +418,8 @@ mod tests {
             agent_computer::NoneBackend::new("probe"),
         ));
         parent.ext.insert(Arc::new(Marker(1)));
-        let child = ToolCtx::new(std::env::temp_dir()).inherit_desktop(&parent);
+        let mut child = ToolCtx::new(std::env::temp_dir());
+        child.ext = parent.ext.inheritable();
         // The same backend instance, so a child screenshot steers the parent's
         // coordinate mapping exactly as the parent's own would.
         assert!(Arc::ptr_eq(
@@ -581,7 +582,8 @@ mod tests {
 
         // A child shares the very same handle, so a later switch on the
         // parent's side is visible to the child without re-inheriting.
-        let child = ToolCtx::new(std::env::temp_dir()).inherit_memory(&parent);
+        let mut child = ToolCtx::new(std::env::temp_dir());
+        child.ext = parent.ext.inheritable();
         assert!(child.memory().is_some());
         assert!(Arc::ptr_eq(
             &child.memory().unwrap().0,
@@ -630,7 +632,8 @@ mod tests {
         // A slot the host installed (the contract controllers live in
         // agent-coding now — a marker stands in for the scoping check).
         parent.ext.insert(Arc::new(Marker(1)));
-        let child = ToolCtx::new(std::env::temp_dir()).inherit_sandbox(&parent);
+        let mut child = ToolCtx::new(std::env::temp_dir());
+        child.ext = parent.ext.inheritable();
         // The child's bash must obey the host's forced network policy.
         assert_eq!(child.sandbox_limits().network, Some(false));
         assert!(child.sandbox().is_ok());
