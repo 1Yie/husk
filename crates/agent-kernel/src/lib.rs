@@ -22,6 +22,7 @@ pub mod session_manager;
 pub mod session_store;
 pub mod skills;
 pub mod tools;
+pub mod turn_policy;
 
 pub use session_store::{
     load_appearance_settings, load_default_preferences, save_appearance_settings,

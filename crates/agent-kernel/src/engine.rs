@@ -147,6 +147,8 @@ pub struct Engine {
     /// prompt index, the turn-end check and the baseline — per session, so a
     /// toggle never reaches another session in the same process.
     blueprint_enabled: bool,
+    /// Product rules applied when a round goes quiet. `CodingPolicy` by default.
+    policy: Box<dyn crate::turn_policy::TurnPolicy>,
     /// Thinking / reasoning intensity level (e.g. "off", "low", "medium",
     /// "high", "max"). Shared slot like `permissions` — the bridge reads it
     /// to report a session's live level back to the UI.
@@ -227,6 +229,7 @@ impl Engine {
             hooks: crate::hooks::HookChain::new(),
             plugin_router: None,
             blueprint_enabled: true,
+            policy: Box::new(crate::turn_policy::CodingPolicy),
             thinking_level: Arc::new(std::sync::RwLock::new(None)),
             thinking_level_map: None,
             model_params: agent_llm::ModelParams::EMPTY,
@@ -567,23 +570,9 @@ impl Engine {
         // Runaway-loop bound; delegated children get a smaller budget via
         // set_max_tool_rounds.
         let max_tool_rounds = self.max_tool_rounds;
-        // Goal-mode pushback counter — how many times the model went
-        // quiet without declaring `goal_complete`/`goal_blocked`.
-        let mut goal_followups = 0usize;
-        const MAX_GOAL_FOLLOWUPS: usize = 8;
-        // Plan-mode nudge — one reminder when a working turn goes quiet
-        // without `submit_plan`; a plain question must not pay a second.
-        let mut plan_followups = 0usize;
-        const MAX_PLAN_FOLLOWUPS: usize = 1;
-        // Blueprint rework — one hidden follow-up when the turn's writes
-        // break `.blueprint/` rules; a second failure lands as a report.
-        let mut blueprint_followups = 0usize;
-        const MAX_BLUEPRINT_FOLLOWUPS: usize = 1;
-        // Baseline taken lazily, right before the first tool that can change
-        // the workspace — before any write lands, so it is the state the turn
-        // started from. A read-only turn never pays for it.
-        let mut blueprint_baseline: Option<crate::blueprint::Baseline> = None;
-        let mut blueprint_baseline_taken = false;
+        // Per-turn state the turn policy keeps across quiet rounds (pushback
+        // counters, the blueprint baseline). See `turn_policy`.
+        let mut turn_state = crate::turn_policy::TurnState::default();
         // A fresh turn starts with a clean goal signal — a leftover
         // `goal_complete` from an earlier turn must not short-circuit this
         // one (the contract is per-turn: each goal prompt ends declared).
@@ -977,110 +966,41 @@ impl Engine {
                 // here so the card lands after the final assistant text; a
                 // turn that did tool work but never submitted gets ONE nudge —
                 // capped so a plain question can't be pushed twice.
+                // Plan cards are taken here, not by the policy: the card lands after
+                // the final text, so the engine keeps the value for that point.
                 let submitted_plan = if self.agent_mode() == crate::mode::AgentMode::Plan {
                     self.plan.take_signal()
                 } else {
                     None
                 };
-                if self.agent_mode() == crate::mode::AgentMode::Plan
-                    && submitted_plan.is_none()
-                    && tool_calls_run > 0
-                    && plan_followups < MAX_PLAN_FOLLOWUPS
-                {
-                    plan_followups += 1;
-                    if !final_text.is_empty() {
-                        history.push(
-                            ChatMessage::assistant(final_text)
-                                .with_reasoning(Some(reasoning))
-                                .with_duration_ms(reasoning_ms),
-                        );
-                    }
-                    let nudge = "若方案已成型，请调用 `submit_plan` 提交结构化计划（summary/steps/verification/risks）；若本轮只是回答问题、没有方案要交付，直接结束即可。";
-                    history.push(ChatMessage::user_hidden(nudge));
-                    continue;
-                }
-
-                // Goal contract — in `goal` mode going quiet undeclared is
-                // not a finish: the model must call `goal_complete` /
-                // `goal_blocked`. Push it back to work (capped — a model
-                // that can't converge shouldn't spin forever).
-                if self.agent_mode() == crate::mode::AgentMode::Goal
-                    && self.goal.state() == crate::tools::goal::GoalState::Running
-                    && goal_followups < MAX_GOAL_FOLLOWUPS
-                {
-                    goal_followups += 1;
-                    if !final_text.is_empty() {
-                        history.push(
-                            ChatMessage::assistant(final_text)
-                                .with_reasoning(Some(reasoning))
-                                .with_duration_ms(reasoning_ms),
-                        );
-                    }
-                    let nudge =
-                        "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。";
-                    history.push(ChatMessage::user_hidden(nudge));
-                    continue;
-                }
-
-                // Blueprint contract — the files this turn wrote are checked
-                // against `.blueprint/` (no-op without the directory). Errors
-                // buy one rework round; in goal mode a declared completion is
-                // re-opened so the model has to declare again after fixing.
-                // Warnings never block — they ride out as a report.
-                let blueprint_report = {
-                    let root = self.ctx.workspace_root.to_path_buf();
-                    let enabled = self.blueprint_enabled;
-                    let mut touched: Vec<std::path::PathBuf> = hunks
-                        .files_in_turn(hunks.current_turn())
-                        .into_iter()
-                        .map(|p| p.to_path_buf())
-                        .collect();
-                    let baseline = blueprint_baseline.clone();
-                    if touched.is_empty() && baseline.is_none() {
-                        None
-                    } else {
-                        tokio::task::spawn_blocking(move || {
-                            if let Some(before) = &baseline {
-                                for p in crate::blueprint::changed_since(&root, before) {
-                                    if !touched.contains(&p) {
-                                        touched.push(p);
-                                    }
-                                }
-                            }
-                            crate::blueprint::check_turn(&root, enabled, &touched, baseline.as_ref())
-                        })
-                        .await
-                        .ok()
-                        .flatten()
-                    }
+                let touched: Vec<std::path::PathBuf> = hunks
+                    .files_in_turn(hunks.current_turn())
+                    .into_iter()
+                    .map(|p| p.to_path_buf())
+                    .collect();
+                let view = crate::turn_policy::EngineTurnView {
+                    goal: self.goal.clone(),
+                    plan: self.plan.clone(),
+                    mode: self.agent_mode.clone(),
+                    workspace_root: self.ctx.workspace_root.to_path_buf(),
+                    blueprint_enabled: self.blueprint_enabled,
+                    tool_calls_run,
                 };
-                if let Some(report) = blueprint_report
-                    .as_ref()
-                    .filter(|r| r.errors() > 0 && blueprint_followups < MAX_BLUEPRINT_FOLLOWUPS)
-                {
-                    blueprint_followups += 1;
-                    if !final_text.is_empty() {
-                        history.push(
-                            ChatMessage::assistant(final_text)
-                                .with_reasoning(Some(reasoning))
-                                .with_duration_ms(reasoning_ms),
-                        );
+                let verdict = self.policy.on_quiet_round(&mut turn_state, &view, touched).await;
+                let blueprint_report = match verdict {
+                    crate::turn_policy::Verdict::Nudge { hidden } => {
+                        if !final_text.is_empty() {
+                            history.push(
+                                ChatMessage::assistant(final_text)
+                                    .with_reasoning(Some(reasoning))
+                                    .with_duration_ms(reasoning_ms),
+                            );
+                        }
+                        history.push(ChatMessage::user_hidden(hidden));
+                        continue;
                     }
-                    let mut nudge = crate::blueprint::nudge(report);
-                    if self.agent_mode() == crate::mode::AgentMode::Goal
-                        && self.goal.state() != crate::tools::goal::GoalState::Running
-                    {
-                        self.goal.reset();
-                        nudge.push_str("\n目标的完成宣告已撤回 — 修正后重新调用 `goal_complete`。");
-                    }
-                    history.push(ChatMessage::user_hidden(nudge));
-                    continue;
-                }
-
-                // `on_response` hooks — the last mutation point before the
-                // answer lands in history and on screen. Runs only on the
-                // finishing path: the nudge branches above pushed pre-hook
-                // text deliberately, the turn wasn't over there.
+                    crate::turn_policy::Verdict::Finish { report } => report,
+                };
                 let mut final_text = final_text;
                 self.hooks.run_on_response(&mut final_text).await;
 
@@ -1283,11 +1203,14 @@ impl Engine {
                 // Anything not declared read-only may write, and a plugin/MCP
                 // tool has no built-in spec at all — so the baseline keys off
                 // `readonly`, not `class`, and an unknown name counts as a write.
-                if !blueprint_baseline_taken && !is_readonly {
-                    blueprint_baseline_taken = true;
+                // Baseline taken lazily, right before the first tool that can change
+                // the workspace — before any write lands, so it is the state the turn
+                // started from. A read-only turn never pays for it.
+                if !turn_state.blueprint_baseline_taken && !is_readonly {
+                    turn_state.blueprint_baseline_taken = true;
                     let root = self.ctx.workspace_root.to_path_buf();
                     let enabled = self.blueprint_enabled;
-                    blueprint_baseline = tokio::task::spawn_blocking(move || {
+                    turn_state.blueprint_baseline = tokio::task::spawn_blocking(move || {
                         crate::blueprint::snapshot(&root, enabled)
                     })
                     .await
