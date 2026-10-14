@@ -305,7 +305,7 @@ fn pin_linux_rendering_env() {
 /// Mirrors the frontend's rule: `dark` / `light` pin the mode, `system`
 /// follows the OS. Dark uses the dark override when one is set.
 fn main_window_ground(win: &tauri::WebviewWindow) -> tauri::webview::Color {
-    let cfg = agent_kernel::load_appearance_settings();
+    let cfg = husk_host::prefs::load_appearance_settings();
     let dark = match cfg.theme_mode.as_str() {
         "dark" => true,
         "light" => false,

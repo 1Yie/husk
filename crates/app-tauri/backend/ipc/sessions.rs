@@ -396,7 +396,7 @@ fn agent_session_inner(
             // duplicate, and a removed project's store stays on disk so
             // the empty sidebar still has something to reopen.
             let recents = if mgr.recent_workspaces().is_empty() {
-                agent_kernel::session_store::known_workspaces()
+                husk_host::prefs::known_workspaces()
             } else {
                 Vec::new()
             };
@@ -1050,12 +1050,12 @@ fn agent_session_inner(
         // this at boot; a write from the settings window lands on the next
         // main-window load.
         "get_appearance" => {
-            let s = agent_kernel::load_appearance_settings();
+            let s = husk_host::prefs::load_appearance_settings();
             Ok(serde_json::to_value(&s).map_err(|e| e.to_string())?)
         }
         "set_appearance" => {
             let p = payload.ok_or("set_appearance needs payload")?;
-            let cur = agent_kernel::load_appearance_settings();
+            let cur = husk_host::prefs::load_appearance_settings();
             let merged = serde_json::to_value(&cur).unwrap_or_else(|_| serde_json::json!({}));
             let mut obj = match merged {
                 serde_json::Value::Object(m) => m,
@@ -1081,10 +1081,10 @@ fn agent_session_inner(
                     obj.insert(k.into(), v.clone());
                 }
             }
-            let s: agent_kernel::AppearanceSettings =
+            let s: husk_host::prefs::AppearanceSettings =
                 serde_json::from_value(serde_json::Value::Object(obj))
                     .map_err(|e| e.to_string())?;
-            agent_kernel::save_appearance_settings(&s).map_err(|e| e.to_string())?;
+            husk_host::prefs::save_appearance_settings(&s).map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true }))
         }
         "open_url" => {

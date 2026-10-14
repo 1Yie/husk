@@ -1,16 +1,18 @@
 //! Workspace and user preferences — the settings the UI owns.
 //!
-//! These live beside the session repository because they are stored in the same
-//! database, but they are a different concern: the repository persists
+//! Stored in the session repository's database (`agent-store` global rows), but
+//! they are the host's concern, not the kernel's: the repository persists
 //! conversations, this module persists the choices that shape them (model,
-//! thinking level, permission mode, appearance, recent workspaces). Splitting
-//! them is what lets the repository be extracted on its own.
+//! thinking level, permission mode, sandbox / memory / blueprint switches,
+//! appearance, recent workspaces). The kernel engine reads none of it.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session_store::{global_get, global_put, global_update, is_office_root, SessionStore};
+use agent_kernel::session_store::{
+    global_get, global_put, global_update, is_office_root, SessionStore,
+};
 
 // ---------------------------------------------------------------------------
 // Workspace preferences — per-workspace UI prefs (model / thinking / permission)

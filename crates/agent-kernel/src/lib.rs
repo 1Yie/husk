@@ -11,7 +11,6 @@
 pub mod channels;
 pub mod compaction;
 pub mod engine;
-pub mod prefs;
 pub mod hooks;
 pub mod permissions;
 pub mod session_store;
@@ -23,8 +22,3 @@ pub mod turn_policy;
 // dependency on the context crate — the turn loop takes a `HunkTracker`, and
 // that is the kernel's signature, not the product's concern.
 pub use agent_context::HunkTracker;
-
-pub use session_store::{
-    load_appearance_settings, load_default_preferences, save_appearance_settings,
-    save_default_preferences, try_load_default_preferences, AppearanceSettings, DefaultPreferences,
-};
