@@ -65,11 +65,6 @@ pub enum CompactOutcome {
     NothingToDo,
 }
 
-/// Hard cap on `computer` calls in one turn. A session grant removes the
-/// per-call prompt, so this is what bounds a runaway or injected loop of
-/// synthetic input; the model is told to stop and report instead.
-const MAX_COMPUTER_ACTIONS_PER_TURN: usize = 60;
-
 /// Handle to the live plugin router. `None` = no plugin dir discovered; `Some`
 /// with an inner `None` = a plugin manager existed but failed to load, which a
 /// later reload can still fill in.
@@ -104,9 +99,6 @@ pub struct Engine {
     /// Tools the user denied via an approval card this turn — same provenance
     /// role as `steers_this_turn` for `TurnOutcome::denials`.
     denials_this_turn: Vec<String>,
-    /// `computer` calls that reached dispatch this turn — bounded by
-    /// [`MAX_COMPUTER_ACTIONS_PER_TURN`].
-    computer_actions_this_turn: usize,
     /// Permission gate consulted before every tool dispatch.
     permissions: Arc<std::sync::RwLock<PermissionGate>>,
     /// Decision slot shared with SessionActor — the engine can't hold a
@@ -214,7 +206,6 @@ impl Engine {
             steer_queue: VecDeque::new(),
             steers_this_turn: Vec::new(),
             denials_this_turn: Vec::new(),
-            computer_actions_this_turn: 0,
             permissions: Arc::new(std::sync::RwLock::new(PermissionGate::from_mode_str(
                 "default",
             ))),
@@ -542,7 +533,6 @@ impl Engine {
         // Fresh provenance record for this turn — see `TurnOutcome::steers`.
         self.steers_this_turn.clear();
         self.denials_this_turn.clear();
-        self.computer_actions_this_turn = 0;
         let mut user_msg = ChatMessage::user(user_text);
         if !images.is_empty() {
             if self.supports_images() {
@@ -1435,24 +1425,21 @@ impl Engine {
                     Decision::Allow => {}
                 }
 
-                if computer_action.is_some() {
-                    self.computer_actions_this_turn += 1;
-                    if self.computer_actions_this_turn > MAX_COMPUTER_ACTIONS_PER_TURN {
-                        let msg = format!(
-                            "computer action limit reached ({MAX_COMPUTER_ACTIONS_PER_TURN} per turn) — \
-                             stop driving the desktop and report progress to the user"
-                        );
-                        let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
-                            name: call.name.clone(),
-                            ok: false,
-                            content: msg.clone(),
-                            ui_type: None,
-                            parent: None,
-                            child_id: None,
-                        });
-                        history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
-                        continue;
-                    }
+                if let Some(msg) = self.policy.before_dispatch(
+                    &mut turn_state,
+                    &call.name,
+                    computer_action.is_some(),
+                ) {
+                    let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
+                        name: call.name.clone(),
+                        ok: false,
+                        content: msg.clone(),
+                        ui_type: None,
+                        parent: None,
+                        child_id: None,
+                    });
+                    history.push(ChatMessage::tool_result_err(call.id.clone(), msg));
+                    continue;
                 }
 
                 // Staged write tools already hold their result; dispatch the

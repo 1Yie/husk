@@ -410,3 +410,41 @@ async fn refused_grant_skips_the_approval_card() {
         tool_results(&h)
     );
 }
+
+/// The desktop cap counts `computer` actions only. A turn that runs more
+/// non-desktop calls than the cap must still leave the full desktop budget for
+/// the computer calls that follow it.
+#[tokio::test]
+async fn non_desktop_calls_do_not_spend_the_desktop_budget() {
+    const CAP: usize = 60;
+    // Cap+10 bash calls (each distinct, so the doom-loop guard keeps them),
+    // then three desktop actions in a later round.
+    let bash_calls: Vec<serde_json::Value> = (0..CAP + 10)
+        .map(|i| serde_json::json!({"command": format!("echo {i}")}))
+        .collect();
+    let mut bash_round: Vec<StreamChunk> = bash_calls
+        .iter()
+        .enumerate()
+        .map(|(i, a)| StreamChunk::ToolCallDelta {
+            slot: i,
+            id: Some(format!("bash_{i}")),
+            name: Some("bash".into()),
+            args_delta: a.to_string(),
+        })
+        .collect();
+    bash_round.push(done());
+    let desk_round = round(&[
+        serde_json::json!({"action": "left_click", "coordinate": [1, 1]}),
+        serde_json::json!({"action": "left_click", "coordinate": [2, 2]}),
+        serde_json::json!({"action": "left_click", "coordinate": [3, 3]}),
+    ]);
+    let mut r = rig("default", &["computer", "bash"], vec![bash_round, desk_round]);
+    let (_h, _cards) = run(&mut r, |_, _| true).await;
+
+    assert_eq!(
+        actions(&r).len(),
+        3,
+        "bash calls must not consume the desktop budget: {:?}",
+        actions(&r)
+    );
+}

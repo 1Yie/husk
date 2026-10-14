@@ -21,6 +21,8 @@ pub struct TurnState {
     /// Whether the baseline was attempted, so a read-only turn pays for it at
     /// most once and never at all.
     pub blueprint_baseline_taken: bool,
+    /// Desktop actions dispatched this turn (the `computer` tool's cap).
+    pub computer_actions: usize,
 }
 
 /// The policy's answer when the model finished a round without tool calls.
@@ -61,6 +63,16 @@ pub trait TurnView: Send + Sync {
 /// Product rules applied to a turn that went quiet.
 #[async_trait::async_trait]
 pub trait TurnPolicy: Send + Sync {
+    /// Called for each tool call that cleared permission and is about to run.
+    /// Returns `Some(message)` to refuse the call: the engine reports the
+    /// message as the call's failed result and does not dispatch it.
+    fn before_dispatch(
+        &self,
+        state: &mut TurnState,
+        tool: &str,
+        is_computer_action: bool,
+    ) -> Option<String>;
+
     /// Decide whether a quiet round may end the turn. `touched` lists the files
     /// this turn changed.
     async fn on_quiet_round(
@@ -82,8 +94,32 @@ const MAX_GOAL_FOLLOWUPS: usize = 8;
 const MAX_PLAN_FOLLOWUPS: usize = 1;
 const MAX_BLUEPRINT_FOLLOWUPS: usize = 1;
 
+/// Hard cap on `computer` calls in one turn. A session grant removes the
+/// per-call prompt, so this is what bounds a runaway or injected loop of
+/// synthetic input; the model is told to stop and report instead.
+const MAX_COMPUTER_ACTIONS_PER_TURN: usize = 60;
+
 #[async_trait::async_trait]
 impl TurnPolicy for CodingPolicy {
+    fn before_dispatch(
+        &self,
+        state: &mut TurnState,
+        _tool: &str,
+        is_computer_action: bool,
+    ) -> Option<String> {
+        if !is_computer_action {
+            return None;
+        }
+        state.computer_actions += 1;
+        if state.computer_actions > MAX_COMPUTER_ACTIONS_PER_TURN {
+            return Some(format!(
+                "computer action limit reached ({MAX_COMPUTER_ACTIONS_PER_TURN} per turn) — \
+                 stop driving the desktop and report progress to the user"
+            ));
+        }
+        None
+    }
+
     async fn on_quiet_round(
         &self,
         state: &mut TurnState,
