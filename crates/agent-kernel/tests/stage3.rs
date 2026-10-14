@@ -10,7 +10,11 @@ fn registry() -> ToolRegistry {
 }
 
 fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
-    Arc::new(ToolCtx::new(dir))
+    // A host that runs shell commands installs a sandbox; `ToolCtx::new` does not.
+    let (detected, _loud) = agent_sandbox::detect_backend();
+    let mut ctx = ToolCtx::new(dir);
+    ctx.install_sandbox(Arc::from(detected));
+    Arc::new(ctx)
 }
 
 #[tokio::test]

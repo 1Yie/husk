@@ -1,7 +1,7 @@
 //! Shared audit → sandbox-config derivation.
 //!
 //! Both `bash` and `smart_test_runner` run a shell command through
-//! `ctx.sandbox`; the mount/network/resource policy must be identical between
+//! `ctx.sandbox()`; the mount/network/resource policy must be identical between
 //! them (a test run is not a lesser command), so the derivation lives here
 //! instead of in either tool.
 
@@ -19,6 +19,7 @@ pub(crate) fn sandbox_config(
     verdict: &agent_sandbox::AuditResult,
     workspace_root: &Path,
     timeout: Duration,
+    limits: &crate::sandbox_prefs::SandboxLimits,
 ) -> agent_sandbox::SandboxConfig {
     // Canonicalize before the plan: the deny_write set must match the path
     // spelling the backend binds (it canonicalizes too).
@@ -59,7 +60,7 @@ pub(crate) fn sandbox_config(
     };
     // User overrides from the settings UI fold in last — a forced network
     // policy / memory / process cap beats the audit plan's defaults.
-    crate::sandbox_prefs::apply_to(&mut cfg);
+    crate::sandbox_prefs::apply_limits(&mut cfg, limits);
     cfg
 }
 
@@ -74,7 +75,8 @@ mod tests {
     fn sandbox_config_mounts_global_skills_read_only() {
         let root = Path::new("/tmp/ws");
         let verdict = agent_sandbox::audit_command_scoped("ls", Some(root));
-        let cfg = sandbox_config(&verdict, root, Duration::from_secs(30));
+        let limits = crate::sandbox_prefs::SandboxLimits::default();
+        let cfg = sandbox_config(&verdict, root, Duration::from_secs(30), &limits);
 
         assert_eq!(
             cfg.extra_ro_mounts,

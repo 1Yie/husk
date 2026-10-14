@@ -565,6 +565,13 @@ impl SessionActor {
         let mut tool_ctx =
             ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
         tool_ctx.cancel = Some(cancel.clone());
+        // The host's sandbox: the detected backend behind the live master switch.
+        // Installed here, not in `ToolCtx::new`, so a context built elsewhere
+        // (an SSH worker, a test) has no local sandbox unless it asks for one.
+        let (detected, _loud) = agent_sandbox::detect_backend();
+        tool_ctx.install_sandbox(Arc::new(crate::sandbox_prefs::SwitchableSandbox::new(
+            Arc::from(detected),
+        )));
         let memory_handle = crate::tools::registry::MemoryHandle::default();
         memory_handle.set(memory.clone());
         tool_ctx.memory = memory_handle.clone();

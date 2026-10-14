@@ -160,13 +160,23 @@ impl Extensions {
 /// so the trait object is wrapped to give the slot a single identity.
 pub struct DesktopSlot(pub Arc<dyn agent_computer::DesktopBackend>);
 
+/// Newtype key for the process sandbox, same reason as [`DesktopSlot`].
+///
+/// Installed by the host. Absent means the host runs no local sandbox at all
+/// (an SSH worker); process tools then refuse rather than run unisolated by
+/// accident. An installed `none` backend is a different, deliberate state:
+/// the user turned the sandbox off, and `bash` still runs, loudly.
+pub struct SandboxSlot(pub Arc<dyn agent_sandbox::SandboxBackend>);
+
+/// The host's sandbox overrides (memory, processes, network policy). Optional:
+/// a context without one runs the audit's own defaults, which is what a host
+/// that never configured limits should get.
+pub struct SandboxLimitsSlot(pub crate::sandbox_prefs::SandboxLimits);
+
 pub struct ToolCtx {
     /// Canonical workspace root — all path args resolve and are checked
     /// against this (symlink-escape guard: canonicalize before compare).
     pub workspace_root: Arc<Path>,
-    /// The sandbox backend for process tools (`bash`, `test_runner`, pty).
-    /// `id() == "none"` means loud-unsandboxed: every `bash` must confirm.
-    pub sandbox: Arc<dyn agent_sandbox::SandboxBackend>,
     /// Owning session's id + its per-workspace store. Tools that keep
     /// per-session scratch state (`todo`) write next to the session's
     /// history file in the app state dir — never into the user's repo.
@@ -213,27 +223,33 @@ pub struct ToolCtx {
 }
 
 impl ToolCtx {
-    /// The sandbox a process tool should dispatch through — the detected
-    /// backend when enabled, the loud `none` backend when the user turned
-    /// the master switch off. Read per-call so toggling the pref hits the
-    /// very next `bash`/`service`/`test_runner` spawn, not just new
-    /// sessions.
-    pub fn effective_sandbox(&self) -> &dyn agent_sandbox::SandboxBackend {
-        static NONE: agent_sandbox::NoneBackend = agent_sandbox::NoneBackend;
-        if crate::sandbox_prefs::current().enabled() {
-            &*self.sandbox
-        } else {
-            &NONE
-        }
+    /// The host's sandbox overrides, or the defaults when none were installed.
+    pub fn sandbox_limits(&self) -> crate::sandbox_prefs::SandboxLimits {
+        self.ext
+            .get::<SandboxLimitsSlot>()
+            .map(|s| s.0.clone())
+            .unwrap_or_default()
+    }
+
+    /// The sandbox a process tool dispatches through. The host decides which
+    /// backend is installed (the detected one, a `none` backend when the user
+    /// turned isolation off, or nothing at all); this only reads what it
+    /// installed. Refuses when nothing is installed, so `bash` can never run
+    /// unisolated by omission.
+    pub fn sandbox(&self) -> Result<Arc<dyn agent_sandbox::SandboxBackend>, ToolError> {
+        self.ext
+            .get::<SandboxSlot>()
+            .map(|s| s.0.clone())
+            .ok_or_else(|| {
+                ToolError::Failed("shell execution is not available in this context".into())
+            })
     }
 
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let root = root.canonicalize().unwrap_or(root);
-        let (sandbox, _loud) = agent_sandbox::detect_backend();
         Self {
             workspace_root: Arc::from(root.as_path()),
-            sandbox: Arc::from(sandbox),
             session: None,
             memory: MemoryHandle::default(),
             cancel: None,
@@ -265,16 +281,16 @@ impl ToolCtx {
         self
     }
 
-    /// Explicit backend (tests / custom wiring).
+    /// Explicit backend (tests / custom wiring): a context with `sandbox`
+    /// installed as its process sandbox.
     pub fn with_sandbox(
         root: impl Into<PathBuf>,
         sandbox: Arc<dyn agent_sandbox::SandboxBackend>,
     ) -> Self {
         let root = root.into();
         let root = root.canonicalize().unwrap_or(root);
-        Self {
+        let mut ctx = Self {
             workspace_root: Arc::from(root.as_path()),
-            sandbox,
             session: None,
             memory: MemoryHandle::default(),
             cancel: None,
@@ -286,7 +302,9 @@ impl ToolCtx {
             ext: Extensions::default(),
             plugins: None,
         }
-        .with_controllers()
+        .with_controllers();
+        ctx.ext.insert(Arc::new(SandboxSlot(sandbox)));
+        ctx
     }
 
     /// Install the desktop-control backend the computer-use tools drive.
@@ -310,6 +328,33 @@ impl ToolCtx {
     /// child never inherits the parent's `ext` wholesale.
     pub fn inherit_desktop(mut self, parent: &ToolCtx) -> Self {
         if let Some(slot) = parent.ext.get::<DesktopSlot>() {
+            self.ext.insert(slot);
+        }
+        self
+    }
+
+    /// Install the process sandbox on an existing context. `with_sandbox` is
+    /// the builder form; hosts that assemble a context in steps use this.
+    pub fn install_sandbox(&mut self, sandbox: Arc<dyn agent_sandbox::SandboxBackend>) {
+        self.ext.insert(Arc::new(SandboxSlot(sandbox)));
+    }
+
+    /// Install the host's sandbox overrides. Optional: without this the audit's
+    /// own defaults apply.
+    pub fn with_sandbox_limits(mut self, limits: crate::sandbox_prefs::SandboxLimits) -> Self {
+        self.ext.insert(Arc::new(SandboxLimitsSlot(limits)));
+        self
+    }
+
+    /// Hand the parent's process sandbox and its limits to a child context.
+    /// The limits travel with the sandbox on purpose: a child's `bash` must
+    /// obey the host's forced network policy and caps, or a subagent would be
+    /// the one place the host's settings stop applying.
+    pub fn inherit_sandbox(mut self, parent: &ToolCtx) -> Self {
+        if let Some(slot) = parent.ext.get::<SandboxSlot>() {
+            self.ext.insert(slot);
+        }
+        if let Some(slot) = parent.ext.get::<SandboxLimitsSlot>() {
             self.ext.insert(slot);
         }
         self
@@ -343,7 +388,6 @@ impl ToolCtx {
     pub fn with_cancel(&self, cancel: Arc<std::sync::atomic::AtomicBool>) -> ToolCtx {
         ToolCtx {
             workspace_root: self.workspace_root.clone(),
-            sandbox: self.sandbox.clone(),
             session: self.session.clone(),
             memory: self.memory.clone(),
             cancel: Some(cancel),
@@ -778,6 +822,46 @@ mod tests {
         let parent_goal = parent.require::<crate::tools::goal::GoalController>("goal").unwrap();
         assert!(child_goal.is_ok());
         assert!(!Arc::ptr_eq(&parent_goal, &child_goal.unwrap()));
+    }
+
+    #[test]
+    fn a_context_without_a_sandbox_refuses_shell_execution() {
+        // An SSH worker installs no local sandbox. `bash` must refuse, not run
+        // unisolated because nobody said otherwise.
+        let ctx = ToolCtx::new(std::env::temp_dir());
+        let err = ctx.sandbox().err().expect("no sandbox was installed");
+        assert!(err.to_string().contains("shell execution is not available"));
+    }
+
+    #[test]
+    fn an_installed_none_backend_still_runs_and_says_so() {
+        // A deliberately disabled sandbox is a different state from an absent
+        // one: the backend is present, reports `none`, and commands still run.
+        let ctx = ToolCtx::with_sandbox(
+            std::env::temp_dir(),
+            Arc::new(agent_sandbox::NoneBackend),
+        );
+        assert_eq!(ctx.sandbox().unwrap().id(), "none");
+    }
+
+    #[test]
+    fn child_inherits_the_sandbox_and_its_limits() {
+        let parent = ToolCtx::with_sandbox(
+            std::env::temp_dir(),
+            Arc::new(agent_sandbox::NoneBackend),
+        )
+        .with_sandbox_limits(crate::sandbox_prefs::SandboxLimits {
+            network: Some(false),
+            ..Default::default()
+        });
+        let child = ToolCtx::new(std::env::temp_dir()).inherit_sandbox(&parent);
+        // The child's bash must obey the host's forced network policy.
+        assert_eq!(child.sandbox_limits().network, Some(false));
+        assert!(child.sandbox().is_ok());
+        // And it still owns its controllers; nothing was copied wholesale.
+        let parent_goal = parent.require::<crate::tools::goal::GoalController>("goal").unwrap();
+        let child_goal = child.require::<crate::tools::goal::GoalController>("goal").unwrap();
+        assert!(!Arc::ptr_eq(&parent_goal, &child_goal));
     }
 
     #[test]

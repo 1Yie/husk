@@ -3,7 +3,7 @@
 //! Registered only into the `office` agent-mode registry (see `Engine::new`),
 //! not the shared `with_builtins` set — they would just be noise in the
 //! programming modes. Each spec runs `officecli <cmd> --json` through the same
-//! `ctx.sandbox` pipeline as `bash` (audit → `sandbox_config` → `run_command`),
+//! `ctx.sandbox()` pipeline as `bash` (audit → `sandbox_config` → `run_command`),
 //! so the permission gate, audit tier and sandbox policy all apply unchanged.
 //!
 //! `officecli` speaks OpenXML directly: `get`/`query` read, `set`/`add`/
@@ -50,10 +50,15 @@ async fn run(
     // the file itself, so a reported success always means on-disk truth.
     let cmd = format!("OFFICECLI_NO_AUTO_RESIDENT=1 {}", shell_join(&argv));
     let verdict = agent_sandbox::audit_command_scoped(&cmd, Some(ctx.workspace_root.as_ref()));
-    let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), timeout);
+    let sandbox = ctx.sandbox()?;
+    let cfg = sandbox_config(
+        &verdict,
+        ctx.workspace_root.as_ref(),
+        timeout,
+        &ctx.sandbox_limits(),
+    );
 
-    let output = ctx
-        .effective_sandbox()
+    let output = sandbox
         .run_command(&cmd, &[], &cfg)
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;

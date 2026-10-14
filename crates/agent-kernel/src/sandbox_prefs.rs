@@ -86,7 +86,7 @@ pub fn apply_to(cfg: &mut SandboxConfig) {
 
 /// `apply_to` over an explicit snapshot — pure, so the precedence rules are
 /// testable without touching the process-global overrides.
-fn apply_limits(cfg: &mut SandboxConfig, l: &SandboxLimits) {
+pub fn apply_limits(cfg: &mut SandboxConfig, l: &SandboxLimits) {
     if let Some(net) = l.network {
         cfg.allow_network = net;
     }
@@ -160,5 +160,60 @@ mod tests {
         apply_limits(&mut cfg, &limits);
         assert_eq!(cfg.allowed_domains, ["registry.npmjs.org", "github.com"]);
         assert_eq!(cfg.denied_domains, ["evil.example"]);
+    }
+}
+
+/// The host's sandbox, honouring the live master switch.
+///
+/// The switch can flip mid-session (the settings page), so the choice is made
+/// per call, not once at spawn: `enabled` reads the current overrides and
+/// forwards to the real backend, or to `none` when isolation is off. `id` and
+/// `tier` follow the same choice, so the UI never names a backend that is not
+/// the one actually running the command.
+pub struct SwitchableSandbox {
+    real: std::sync::Arc<dyn agent_sandbox::SandboxBackend>,
+}
+
+impl SwitchableSandbox {
+    pub fn new(real: std::sync::Arc<dyn agent_sandbox::SandboxBackend>) -> Self {
+        Self { real }
+    }
+
+    fn active(&self) -> &dyn agent_sandbox::SandboxBackend {
+        static NONE: agent_sandbox::NoneBackend = agent_sandbox::NoneBackend;
+        if current().enabled() {
+            &*self.real
+        } else {
+            &NONE
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl agent_sandbox::SandboxBackend for SwitchableSandbox {
+    fn id(&self) -> &'static str {
+        self.active().id()
+    }
+
+    fn tier(&self) -> agent_sandbox::SandboxTier {
+        self.active().tier()
+    }
+
+    async fn run_command(
+        &self,
+        cmd: &str,
+        args: &[&str],
+        cfg: &SandboxConfig,
+    ) -> anyhow::Result<agent_sandbox::CommandOutput> {
+        self.active().run_command(cmd, args, cfg).await
+    }
+
+    fn wrap_spawn(
+        &self,
+        cfg: &SandboxConfig,
+        cmd: &str,
+        args: &[&str],
+    ) -> Option<tokio::process::Command> {
+        self.active().wrap_spawn(cfg, cmd, args)
     }
 }

@@ -63,13 +63,13 @@ pub async fn spawn_persistent(
     cfg: &agent_sandbox::SandboxConfig,
     command: &str,
 ) -> Result<ToolResult, ToolError> {
-    let mut cmd = ctx
-        .effective_sandbox()
+    let sandbox = ctx.sandbox()?;
+    let mut cmd = sandbox
         .wrap_spawn(cfg, "/bin/sh", &["-c", command])
         .ok_or_else(|| {
             ToolError::Failed(format!(
                 "sandbox backend {:?} can't spawn persistent services",
-                ctx.effective_sandbox().id()
+                sandbox.id()
             ))
         })?;
 

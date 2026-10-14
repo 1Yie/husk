@@ -1,6 +1,6 @@
 //! `bash` — sandboxed shell execution.
 //!
-//! Runs through `ctx.sandbox` (`SandboxBackend::run_command`) — bwrap on Linux, the
+//! Runs through the installed sandbox (`ctx.sandbox()` → `SandboxBackend::run_command`) — bwrap on Linux, the
 //! loud `none` fallback elsewhere. The audit gate runs before dispatch and stamps the
 //! risk tier on the result; the permission layer already gated the call.
 
@@ -72,14 +72,19 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let verdict =
         agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.workspace_root.as_ref()));
 
-    let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), timeout);
+    let sandbox = ctx.sandbox()?;
+    let cfg = sandbox_config(
+        &verdict,
+        ctx.workspace_root.as_ref(),
+        timeout,
+        &ctx.sandbox_limits(),
+    );
 
     if parsed.persistent.unwrap_or(false) {
         return super::services::spawn_persistent(&ctx, &cfg, &parsed.command).await;
     }
 
-    let output = ctx
-        .effective_sandbox()
+    let output = sandbox
         .run_command(&parsed.command, &[], &cfg)
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;

@@ -456,7 +456,6 @@ impl SubagentSpawner {
         // tools degrade) and cannot delegate further (no spawner).
         let child_ctx = ToolCtx {
             workspace_root: parent_ctx.workspace_root.clone(),
-            sandbox: parent_ctx.sandbox.clone(),
             // Screenshots are inherited (a delegated visual check needs to
             // see the screen); input is not — `computer` is absent from every
             // child registry, and a refusing backend is the second guard
@@ -485,7 +484,8 @@ impl SubagentSpawner {
         // (see `child_builtins`): the child engine still reads its own
         // controller each turn, and must never share the parent's.
         .with_controllers()
-        .inherit_desktop(&parent_ctx);
+        .inherit_desktop(&parent_ctx)
+        .inherit_sandbox(&parent_ctx);
         // Either side can ask for read-only; the manifest cannot grant write back.
         let base = if readonly || spec.readonly {
             self.registry_readonly.clone()

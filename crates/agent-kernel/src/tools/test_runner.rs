@@ -4,7 +4,7 @@
 //! drop `passed`/progress noise, keep only failed test names + assertion
 //! locations + panic backtrace frames. 20k-line log → ≤300 tok diagnostic.
 //!
-//! Spawning goes through `ctx.sandbox` exactly like `bash`
+//! Spawning goes through `ctx.sandbox()` exactly like `bash`
 //! (`sandbox_cfg::sandbox_config` + `SandboxBackend::run_command`), so a test
 //! run gets the same audit-derived network/fs policy, env sanitization and
 //! timeout tree-kill instead of a bare `sh -c` with a discarded child. The
@@ -56,10 +56,15 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     // backend (which owns env sanitization, limits and timeout tree-kill).
     let verdict =
         agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.workspace_root.as_ref()));
-    let cfg = sandbox_config(&verdict, ctx.workspace_root.as_ref(), TIMEOUT);
+    let sandbox = ctx.sandbox()?;
+    let cfg = sandbox_config(
+        &verdict,
+        ctx.workspace_root.as_ref(),
+        TIMEOUT,
+        &ctx.sandbox_limits(),
+    );
 
-    let out = ctx
-        .effective_sandbox()
+    let out = sandbox
         .run_command(&parsed.command, &[], &cfg)
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
@@ -205,7 +210,7 @@ mod tests {
 
     /// Answers with a canned `CommandOutput` and records what it was asked to
     /// run — the record is the proof that the tool dispatches through
-    /// `ctx.sandbox` rather than spawning `sh` itself.
+    /// `ctx.sandbox()` rather than spawning `sh` itself.
     struct FakeBackend {
         calls: Mutex<Vec<String>>,
         status: i32,

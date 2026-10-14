@@ -6,6 +6,14 @@ use std::sync::Arc;
 
 use agent_kernel::tools::registry::ToolCtx;
 
+/// A context with the detected backend installed, as a shell-capable host has.
+fn ctx_with_sandbox(root: &std::path::Path) -> ToolCtx {
+    let (detected, _loud) = agent_sandbox::detect_backend();
+    let mut ctx = ToolCtx::new(root);
+    ctx.install_sandbox(Arc::from(detected));
+    ctx
+}
+
 fn call(spec_name: &str, args: serde_json::Value, ctx: Arc<ToolCtx>) -> String {
     let spec = match spec_name {
         "bash" => agent_kernel::tools::bash::spec(),
@@ -22,7 +30,7 @@ fn call(spec_name: &str, args: serde_json::Value, ctx: Arc<ToolCtx>) -> String {
 #[test]
 fn persistent_service_lifecycle() {
     let dir = tempfile::tempdir().unwrap();
-    let ctx = Arc::new(ToolCtx::new(dir.path()));
+    let ctx = Arc::new(ctx_with_sandbox(dir.path()));
 
     // spawn: a loop that prints immediately then idles.
     let out = call(
@@ -75,7 +83,7 @@ fn persistent_service_lifecycle() {
 fn persistent_server_reachable_from_host() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("index.html"), "hello-host").unwrap();
-    let ctx = Arc::new(ToolCtx::new(dir.path()));
+    let ctx = Arc::new(ctx_with_sandbox(dir.path()));
 
     let out = call(
         "bash",
@@ -121,19 +129,25 @@ fn persistent_server_reachable_from_host() {
 }
 
 /// The master switch: `enabled:false` routes process tools to the loud
-/// `none` backend — same ToolCtx, live toggle, no session restart.
+/// `none` backend — same ToolCtx, live toggle, no session restart. The host
+/// installs the switchable wrapper; the context itself reads nothing global.
 #[test]
 fn sandbox_disabled_routes_to_none() {
     let dir = tempfile::tempdir().unwrap();
-    let ctx = Arc::new(ToolCtx::new(dir.path()));
-    let detected = ctx.effective_sandbox().id();
-    assert_ne!(detected, "none-simulated");
+    let (detected, _loud) = agent_sandbox::detect_backend();
+    let mut ctx = ToolCtx::new(dir.path());
+    ctx.install_sandbox(Arc::new(
+        agent_kernel::sandbox_prefs::SwitchableSandbox::new(Arc::from(detected)),
+    ));
+    let ctx = Arc::new(ctx);
+    let on = ctx.sandbox().unwrap().id();
+    assert_ne!(on, "none-simulated");
 
     agent_kernel::sandbox_prefs::set(agent_kernel::sandbox_prefs::SandboxLimits {
         enabled: Some(false),
         ..Default::default()
     });
-    assert_eq!(ctx.effective_sandbox().id(), "none");
+    assert_eq!(ctx.sandbox().unwrap().id(), "none");
 
     // off → command runs unsandboxed (HOME is visible again on `none`)
     let out = call(
@@ -144,5 +158,5 @@ fn sandbox_disabled_routes_to_none() {
     assert!(out.contains("/home") || out.contains("/root"), "{out}");
 
     agent_kernel::sandbox_prefs::set(agent_kernel::sandbox_prefs::SandboxLimits::default());
-    assert_eq!(ctx.effective_sandbox().id(), detected);
+    assert_eq!(ctx.sandbox().unwrap().id(), on);
 }
