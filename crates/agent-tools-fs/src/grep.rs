@@ -17,7 +17,7 @@ use grep_searcher::SearcherBuilder;
 use grep_searcher::SinkError;
 use serde::Deserialize;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// Stdout cap per truncation table.
 const MAX_OUTPUT: usize = 5 * 1024 * 1024;
@@ -65,7 +65,7 @@ struct GrepArgs {
     max_hits: Option<usize>,
 }
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "smart_grep",
         schema: schema_for::<GrepArgs>(
@@ -74,13 +74,13 @@ pub fn spec() -> ToolSpec {
              .gitignore. Prefer this over list_dir for locating code.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: GrepArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("smart_grep args: {e}")))?;
 
@@ -129,8 +129,8 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         .map_err(|e| ToolError::Args(format!("bad glob: {e}")))?;
 
     let include_hidden = parsed.include_hidden.unwrap_or(false);
-    let ws = ctx.workspace_root.clone();
-    let ctx_cancel = ctx.cancel.clone();
+    let ws = ctx.root().to_path_buf();
+    let ctx_cancel = ctx.cancel_flag();
 
     // Shared stop flag: the timeout arms it so the blocking search actually
     // halts at the next sink call / file — not just stops being awaited.

@@ -89,15 +89,12 @@ dependencies = [
  "agent-skills",
  "agent-store",
  "agent-tool",
+ "agent-tools-fs",
  "anyhow",
  "async-trait",
  "dirs",
  "fs2",
  "futures",
- "globset",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
  "htmd",
  "ignore",
  "image",
@@ -106,17 +103,10 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "similar",
- "strsim",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
- "tree-sitter",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
  "xxhash-rust",
 ]
 
@@ -220,6 +210,33 @@ dependencies = [
  "schemars 1.2.2",
  "serde_json",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "agent-tools-fs"
+version = "0.1.0"
+dependencies = [
+ "agent-tool",
+ "dirs",
+ "futures",
+ "globset",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "similar",
+ "strsim",
+ "tempfile",
+ "tokio",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+ "xxhash-rust",
 ]
 
 [[package]]

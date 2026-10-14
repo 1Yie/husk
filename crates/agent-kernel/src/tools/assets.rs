@@ -17,7 +17,7 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use super::net;
-use super::registry::{schema_for, ToolError, ToolResult, ToolSpec};
+use super::registry::{schema_for, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// Refuse to attach images larger than this — bigger payloads mostly break
 /// the wire, not inform it (providers cap ~5 MB/part anyway).

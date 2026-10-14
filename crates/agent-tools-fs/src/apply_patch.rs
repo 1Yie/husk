@@ -27,8 +27,8 @@ use futures::FutureExt;
 use serde::Deserialize;
 use similar::TextDiff;
 
-use super::registry::{
-    schema_for, Args, PendingWrite, ToolCtx, ToolError, ToolResult, ToolSpec, WriteOp,
+use agent_tool::{
+    schema_for, Args, PendingWrite, ToolError, ToolResult, ToolSpec, WorkspaceCtx, WriteOp,
 };
 
 #[derive(Debug, serde::Serialize, Deserialize, schemars::JsonSchema)]
@@ -43,7 +43,7 @@ struct ApplyPatchArgs {
 /// the model shouldn't control.
 const MAX_PATCH_BYTES: usize = 2 * 1024 * 1024;
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "apply_patch",
         schema: schema_for::<ApplyPatchArgs>(
@@ -55,7 +55,7 @@ pub fn spec() -> ToolSpec {
              expressed as a patch or involves multiple hunks/files.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::WorkspaceMutation,
+        class: agent_tool::ToolClass::WorkspaceMutation,
         network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
@@ -114,7 +114,7 @@ impl Hunk {
     }
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: ApplyPatchArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("apply_patch args: {e}")))?;
     if parsed.patch.len() > MAX_PATCH_BYTES {

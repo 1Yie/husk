@@ -38,6 +38,24 @@ impl Extensions {
     }
 }
 
+/// What a workspace-scoped tool needs from the context it runs in.
+///
+/// The kernel's `ToolCtx` implements this; the tools themselves only name the
+/// trait, so a tool crate can be written, tested and shipped without depending
+/// on the kernel that drives it. `root`/`cancel_flag` are accessors rather than
+/// fields because a generic `C` has no fields to reach for.
+pub trait WorkspaceCtx: Send + Sync + 'static {
+    /// Canonical workspace root — path args resolve against this.
+    fn root(&self) -> &std::path::Path;
+
+    /// The parent turn's cooperative cancel flag, if this context has one.
+    fn cancel_flag(&self) -> Option<Arc<std::sync::atomic::AtomicBool>>;
+
+    /// Resolve a model-supplied path against the workspace root and prove it
+    /// stays inside. Returns the canonical path or a sandbox-escape error.
+    fn resolve(&self, path: &str) -> Result<std::path::PathBuf, ToolError>;
+}
+
 /// A deferred write a tool wants the engine to commit — returned instead
 /// of writing inside the tool so the engine can apply the change *after*
 /// the permission decision and record it in the HunkTracker in one step

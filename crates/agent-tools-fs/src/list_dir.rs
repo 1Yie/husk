@@ -7,7 +7,7 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// Max entries returned before the fold marker — bounds the OUTPUT.
 const MAX_ENTRIES: usize = 500;
@@ -28,7 +28,7 @@ struct ListDirArgs {
     include_hidden: Option<bool>,
 }
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "list_dir",
         schema: schema_for::<ListDirArgs>(
@@ -37,13 +37,13 @@ pub fn spec() -> ToolSpec {
              targeted lookups instead of deep listings.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: ListDirArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(format!("list_dir args: {e}")))?;
     let rel = parsed.path.as_deref().unwrap_or(".");

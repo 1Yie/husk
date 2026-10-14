@@ -16,7 +16,7 @@ use serde::Deserialize;
 use similar::TextDiff;
 use xxhash_rust::xxh3::xxh3_64;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 const FUZZY_THRESHOLD: f64 = 0.9;
 
@@ -43,7 +43,7 @@ pub struct PatchResult {
     pub match_line: usize,
 }
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "fuzzy_patch",
         schema: schema_for::<FuzzyPatchArgs>(
@@ -55,13 +55,13 @@ pub fn spec() -> ToolSpec {
              from smart_read to guard against file drift.",
         ),
         readonly: false,
-        class: super::registry::ToolClass::WorkspaceMutation,
+        class: agent_tool::ToolClass::WorkspaceMutation,
         network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: FuzzyPatchArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("fuzzy_patch args: {e}")))?;
     let path = ctx.resolve(&parsed.path)?;
@@ -99,7 +99,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         content,
         ui_type: Some("diff"),
         fuzzy: res.matched_fuzzily,
-        pending_write: vec![crate::tools::registry::PendingWrite::write(
+        pending_write: vec![agent_tool::PendingWrite::write(
             path,
             res.patched_content.into_bytes(),
         )],

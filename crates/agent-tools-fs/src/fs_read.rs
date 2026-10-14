@@ -15,7 +15,7 @@ use futures::FutureExt;
 use serde::Deserialize;
 use xxhash_rust::xxh3::xxh3_64;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec, WorkspaceCtx};
 
 /// `range` mode hard cap per the truncation table (1000 lines).
 const MAX_RANGE_LINES: usize = 1000;
@@ -40,7 +40,7 @@ struct SmartReadArgs {
     pattern: Option<String>,
 }
 
-pub fn spec() -> ToolSpec {
+pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
     ToolSpec {
         name: "smart_read",
         schema: schema_for::<SmartReadArgs>(
@@ -54,13 +54,13 @@ pub fn spec() -> ToolSpec {
              read's target depends on this read's result.",
         ),
         readonly: true,
-        class: super::registry::ToolClass::Observation,
+        class: agent_tool::ToolClass::Observation,
         network: false,
         exec: std::sync::Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: SmartReadArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("smart_read args: {e}")))?;
     let path = ctx.resolve(&parsed.path)?;
@@ -190,7 +190,7 @@ fn outline(path: &str, content: &str, lines: &[&str], hash: &str) -> String {
     #[cfg(not(feature = "tree-sitter"))]
     let _ = content;
     #[cfg(feature = "tree-sitter")]
-    if let Some(ts) = super::outline_ts::outline_treesitter(path, content) {
+    if let Some(ts) = crate::outline_ts::outline_treesitter(path, content) {
         out.push_str(&ts);
         return out;
     }

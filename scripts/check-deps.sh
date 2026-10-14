@@ -26,8 +26,10 @@ declare -A ALLOW=(
   [agent-paths]=""
   # the conversation repository — names no product and no kernel type
   [agent-store]="agent-llm"
+  # workspace file tools — generic over the context, so nothing of the kernel
+  [agent-tools-fs]="agent-tool"
   # runtime
-  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-store agent-tool"
+  [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-store agent-tool agent-tools-fs"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox"

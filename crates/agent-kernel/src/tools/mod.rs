@@ -3,7 +3,6 @@
 //! `smart_read`, `fuzzy_patch`, `smart_test_runner`, `list_dir`, `smart_grep`,
 //! `bash` and the session/skill tools.
 
-pub mod apply_patch;
 pub mod ask;
 pub mod assets;
 pub mod bash;
@@ -11,15 +10,15 @@ pub mod batch;
 pub mod blueprint;
 pub mod computer;
 pub mod delegate;
-pub mod fs_patch;
-pub mod fs_read;
 pub mod goal;
-pub mod grep;
-pub mod list_dir;
 pub(crate) mod net;
 pub mod office;
+// File tools live in `agent-tools-fs`: generic over the context there, so
+// this crate depends on them rather than the other way round.
+pub use agent_tools_fs::{apply_patch, fs_patch, fs_read, grep, list_dir};
 #[cfg(feature = "tree-sitter")]
-pub mod outline_ts;
+pub use agent_tools_fs::outline_ts;
+
 pub mod builtins;
 pub mod host_slots;
 pub mod plan;

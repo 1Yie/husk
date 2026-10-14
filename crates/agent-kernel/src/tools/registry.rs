@@ -26,6 +26,9 @@ pub type ToolSpec = agent_tool::ToolSpec<ToolCtx>;
 // `crate::tools::registry::X` paths keep working.
 pub use crate::tools::host_slots::*;
 
+// The context contract the file tools are generic over.
+pub use agent_tool::WorkspaceCtx;
+
 
 /// Shared context handed to every tool invocation.
 
@@ -111,9 +114,31 @@ impl ToolCtx {
     }
 
 
+}
+
+
+
+
+
+
+
+
+
+/// What the file tools need from this context. The tools live in
+/// `agent-tools-fs` and are generic over the trait, so they never name
+/// `ToolCtx`; this is the one place the two are tied together.
+impl agent_tool::WorkspaceCtx for ToolCtx {
+    fn root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    fn cancel_flag(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        self.cancel.clone()
+    }
+
     /// Resolve a model-supplied path against the workspace root and prove it
     /// stays inside. Returns the canonical path or a sandbox-escape error.
-    pub fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
+    fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
         let p = Path::new(path);
         let joined = if p.is_absolute() {
             p.to_path_buf()
@@ -167,14 +192,6 @@ impl ToolCtx {
         Ok(canon)
     }
 }
-
-
-
-
-
-
-
-
 
 /// Name → spec map. `BTreeMap` keeps the `tools` array deterministic
 /// (provider prompt-cache friendly).
