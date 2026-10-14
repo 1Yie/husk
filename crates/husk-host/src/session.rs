@@ -474,7 +474,7 @@ impl SessionActor {
             .replace("{{SKILLS_BLOCK}}", skills.catalog())
             .replace(
                 "{{BLUEPRINT_BLOCK}}",
-                &agent_kernel::blueprint::prompt_block(&cfg.workspace_root, true),
+                &agent_coding::blueprint::prompt_block(&cfg.workspace_root, true),
             )
             .replace(
                 "{{SUBAGENTS_BLOCK}}",
@@ -551,7 +551,12 @@ impl SessionActor {
         // subagents inherit it (a user cancel tears down in-flight child
         // runs instead of orphaning them).
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let registry = ToolRegistry::with_builtins();
+        let mut registry = ToolRegistry::with_builtins();
+        // The `blueprint` tool is the coding product's — the kernel's builtin
+        // set no longer names it; the host adds it to every registry that can
+        // reach an architecture layer (full, readonly and child bases alike,
+        // matching what `with_builtins` carried before T9).
+        registry.register(agent_coding::blueprint_tool::spec());
         // Subagent registries: a child never carries `delegate` (recursion
         // guard) or `HumanInteraction` tools (nobody can answer a child's
         // question — deny at the policy layer, not just via missing ui_tx);
@@ -565,10 +570,14 @@ impl SessionActor {
         // child's `ToolCtx` carries a refusing desktop backend as the second
         // one. `screenshot` stays: looking at the screen is an observation a
         // delegated visual check legitimately needs.
-        let child_full = agent_kernel::tools::registry::ToolRegistry::child_builtins();
+        let mut child_full = agent_kernel::tools::registry::ToolRegistry::child_builtins();
+        child_full.register(agent_coding::blueprint_tool::spec());
         let child_ro = child_full.readonly_only();
         let mut tool_ctx =
             ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
+        // This context's own goal/plan contract pair — the coding crate owns
+        // the controller types, so installation is an explicit host step now.
+        agent_coding::install_contract(&mut tool_ctx);
         tool_ctx.cancel = Some(cancel.clone());
         // The host's sandbox: the detected backend behind the live master switch.
         // Installed here, not in `ToolCtx::new`, so a context built elsewhere
@@ -598,7 +607,8 @@ impl SessionActor {
             child_route.clone(),
             Arc::new(child_full),
             Arc::new(child_ro),
-        ));
+        )
+        .with_policy(agent_coding::policy::coding_policy_factory()));
         // `ask_question` emits its card through the session's event channel;
         // fan-out tools (batch items) emit ToolCallStarted/Finished on ui_tx.
         tool_ctx.install_ask(Arc::new(agent_kernel::tools::registry::AskChannel::new(Some(
@@ -614,7 +624,7 @@ impl SessionActor {
             cfg.model.clone(),
             cfg.temperature,
         );
-        engine.set_policy(Box::new(agent_kernel::turn_policy::CodingPolicy::from_ctx(&ctx)));
+        engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx)));
         // Mode table — the host's mapping from a mode id to the registry that
         // id dispatches against. The engine carries no mode names; these are
         // the coding product's (mirroring `mode::AgentMode`).
@@ -622,7 +632,7 @@ impl SessionActor {
         // Plan mode = readonly set + the `submit_plan` contract — the model
         // declares its deliverable as structured data, not prose.
         let mut plan_reg = registry.readonly_only();
-        plan_reg.register(agent_kernel::tools::plan::spec_submit());
+        plan_reg.register(agent_coding::plan::spec_submit());
         engine.add_mode(agent_kernel::engine::ModeEntry {
             id: "plan".into(),
             registry: Arc::new(plan_reg),
@@ -631,8 +641,8 @@ impl SessionActor {
         // Goal mode = full set + the completion contract — the model
         // declares `goal_complete`/`goal_blocked` to end its run.
         let mut goal_reg = (*registry).clone();
-        goal_reg.register(agent_kernel::tools::goal::spec_complete());
-        goal_reg.register(agent_kernel::tools::goal::spec_blocked());
+        goal_reg.register(agent_coding::goal::spec_complete());
+        goal_reg.register(agent_coding::goal::spec_blocked());
         engine.add_mode(agent_kernel::engine::ModeEntry {
             id: "goal".into(),
             registry: Arc::new(goal_reg),
@@ -816,7 +826,7 @@ impl SessionActor {
         self.engine.set_architecture_enabled(enabled);
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
-                let block = agent_kernel::blueprint::prompt_block(&self.workspace_root, enabled);
+                let block = agent_coding::blueprint::prompt_block(&self.workspace_root, enabled);
                 sys.content = Some(replace_block(&content, "blueprint", &block));
             }
         }
@@ -929,7 +939,7 @@ impl SessionActor {
         // stay as they are.
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
-                let block = agent_kernel::blueprint::prompt_block(
+                let block = agent_coding::blueprint::prompt_block(
                     &self.workspace_root,
                     self.engine.architecture_enabled(),
                 );

@@ -112,7 +112,7 @@ async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<Ch
         "test-model",
         0.0,
     );
-    engine.set_policy(Box::new(agent_kernel::turn_policy::CodingPolicy::from_ctx(&ctx)));
+    engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx)));
     engine.set_permissions(agent_kernel::permissions::PermissionGate::from_mode_str(
         "auto",
     ));

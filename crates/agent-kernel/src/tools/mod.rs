@@ -5,9 +5,7 @@
 
 pub mod ask;
 pub mod batch;
-pub mod blueprint;
 pub mod delegate;
-pub mod goal;
 // File tools live in `agent-tools-fs`: generic over the context there, so
 // this crate depends on them rather than the other way round.
 pub use agent_tools_fs::{apply_patch, fs_patch, fs_read, grep, list_dir};
@@ -20,7 +18,6 @@ pub use agent_tools_fs::outline_ts;
 
 pub mod builtins;
 pub mod host_slots;
-pub mod plan;
 pub mod registry;
 pub mod remember;
 // The serena meta-tool lives in `agent-tools-serena` — same generic-over-ctx

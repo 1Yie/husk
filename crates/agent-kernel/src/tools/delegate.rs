@@ -251,6 +251,11 @@ pub struct SubagentSpawner {
     registry_full: Arc<ToolRegistry>,
     /// `registry_full` minus non-readonly tools — `readonly: true` calls.
     registry_readonly: Arc<ToolRegistry>,
+    /// Builds the child's turn policy over the child's own context. The
+    /// kernel cannot name the product's policy (or the contract controllers
+    /// it reads) — the host supplies a factory that installs the child's own
+    /// pair and wraps it. Defaults to the kernel's no-op policy.
+    policy: std::sync::Arc<dyn Fn(&mut ToolCtx) -> Box<dyn crate::turn_policy::TurnPolicy> + Send + Sync>,
 }
 
 impl SubagentSpawner {
@@ -263,7 +268,21 @@ impl SubagentSpawner {
             route,
             registry_full,
             registry_readonly,
+            policy: std::sync::Arc::new(|_| {
+                Box::new(crate::turn_policy::NoopPolicy) as Box<dyn crate::turn_policy::TurnPolicy>
+            }),
         }
+    }
+
+    /// Set the child policy factory — the host's product rules for delegated
+    /// children (the coding product installs `agent-coding`'s factory, which
+    /// also gives the child its own goal/plan contract controllers).
+    pub fn with_policy(
+        mut self,
+        policy: std::sync::Arc<dyn Fn(&mut ToolCtx) -> Box<dyn crate::turn_policy::TurnPolicy> + Send + Sync>,
+    ) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// Whether a tool name exists in the child registry at all. Used to refuse a
@@ -468,14 +487,12 @@ impl SubagentSpawner {
             active_registry: std::sync::RwLock::new(None),
             // Subagent engines carry no plugin router, so plugin names
             // genuinely are unknown here — batch should keep saying so.
-            // Own pair, never the parent's: the child's goal/plan signal must
-            // not land on the parent's controller.
+            // Own goal/plan contract pair, never the parent's: the policy
+            // factory below installs it (the kernel does not know the
+            // controller types), so the child's completion signal can never
+            // land on the parent's controller.
             ext: Default::default(),
         }
-        // Installed even though the child registry holds no goal/plan tool
-        // (see `child_builtins`): the child engine still reads its own
-        // controller each turn, and must never share the parent's.
-        .with_controllers()
         .inherit_desktop(&parent_ctx)
         .inherit_sandbox(&parent_ctx)
         // Memory is shared: a subagent's `remember` lands in the same
@@ -515,9 +532,10 @@ impl SubagentSpawner {
         if let Some(level) = &spec.thinking {
             route.thinking_level = Some(level.clone());
         }
-        // The child's turn contracts (goal/plan/blueprint) run the same
-        // policy shape as the parent's, over the child's own controllers.
-        let policy = crate::turn_policy::CodingPolicy::from_ctx(&child_ctx);
+        // The child's turn contracts run the host's policy shape over the
+        // child's own context — the factory installs the child's contract
+        // controllers as part of that, so it needs the ctx mutable.
+        let policy = (self.policy)(&mut child_ctx);
         let mut engine = Engine::new(
             route.provider,
             registry,
@@ -525,7 +543,7 @@ impl SubagentSpawner {
             route.model,
             route.temperature,
         );
-        engine.set_policy(Box::new(policy));
+        engine.set_policy(policy);
         engine.set_permissions(PermissionGate::for_subagent());
         engine.set_context_window(route.context_window);
         engine.set_thinking_level(route.thinking_level);

@@ -210,7 +210,7 @@ impl CommandRegistry {
             }
             // Architecture blueprint — index/check/graph answer locally;
             // `init` hands the model a bootstrap prompt.
-            "blueprint" => match agent_kernel::blueprint::command(
+            "blueprint" => match agent_coding::blueprint::command(
                 ctx.workspace_root,
                 ctx.blueprint_enabled,
                 args,

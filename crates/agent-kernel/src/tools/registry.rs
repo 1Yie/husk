@@ -64,7 +64,8 @@ pub struct ToolCtx {
     /// Typed host services — the goal and plan controllers live here, not as
     /// fields, so this crate does not name the modules that own them. See
     /// [`Extensions`]; the `GoalController`/`PlanController` slots are
-    /// installed by [`ToolCtx::with_controllers`].
+    /// installed by the product crate (`agent-coding`) at assembly time, per
+    /// root context and per delegated child.
     pub ext: Extensions,
 }
 
@@ -363,19 +364,25 @@ mod tests {
 
     #[test]
     fn derived_ctx_shares_the_controller_but_a_child_gets_its_own() {
-        let parent = ToolCtx::new(std::env::temp_dir());
-        let parent_goal = parent.require::<crate::tools::goal::GoalController>("goal").unwrap();
-        // `with_cancel` is how batch and the turn scope a ctx: same controller.
+        // The contract controllers are no longer kernel types (the coding
+        // crate owns them) — the scoping guarantee they exercise is generic:
+        // a derived ctx shares the parent's slots, a fresh child does not.
+        let mut parent = ToolCtx::new(std::env::temp_dir());
+        parent.ext.insert(Arc::new(Marker(7)));
+        let parent_goal = parent.require::<Marker>("contract").unwrap();
+        // `with_cancel` is how batch and the turn scope a ctx: same slot.
         let scoped = parent.with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
-        let scoped_goal = scoped.require::<crate::tools::goal::GoalController>("goal").unwrap();
+        let scoped_goal = scoped.require::<Marker>("contract").unwrap();
         assert!(Arc::ptr_eq(&parent_goal, &scoped_goal));
-        // A subagent builds its own pair: its completion must not reach the parent.
-        let child = ToolCtx::with_sandbox(
+        // A subagent ctx is built fresh: its slots start empty, and whatever
+        // the host installs into it is a different pair than the parent's.
+        let mut child = ToolCtx::with_sandbox(
             std::env::temp_dir(),
             Arc::new(agent_sandbox::NoneBackend),
-        )
-        .with_controllers();
-        let child_goal = child.require::<crate::tools::goal::GoalController>("goal").unwrap();
+        );
+        assert!(child.require::<Marker>("contract").is_err());
+        child.ext.insert(Arc::new(Marker(9)));
+        let child_goal = child.require::<Marker>("contract").unwrap();
         assert!(!Arc::ptr_eq(&parent_goal, &child_goal));
     }
 
@@ -386,10 +393,10 @@ mod tests {
             ..ToolCtx::new(std::env::temp_dir())
         };
         let err = bare
-            .require::<crate::tools::goal::GoalController>("goal control")
+            .require::<Marker>("contract control")
             .err()
             .expect("missing service must be an error");
-        assert!(err.to_string().contains("goal control is not available"));
+        assert!(err.to_string().contains("contract control is not available"));
     }
 
     #[test]
@@ -403,9 +410,10 @@ mod tests {
 
     #[test]
     fn child_inherits_only_the_desktop_not_the_controllers() {
-        let parent = ToolCtx::new(std::env::temp_dir()).with_desktop(Arc::new(
+        let mut parent = ToolCtx::new(std::env::temp_dir()).with_desktop(Arc::new(
             agent_computer::NoneBackend::new("probe"),
         ));
+        parent.ext.insert(Arc::new(Marker(1)));
         let child = ToolCtx::new(std::env::temp_dir()).inherit_desktop(&parent);
         // The same backend instance, so a child screenshot steers the parent's
         // coordinate mapping exactly as the parent's own would.
@@ -413,11 +421,9 @@ mod tests {
             &parent.desktop().unwrap(),
             &child.desktop().unwrap()
         ));
-        // And the child still has its own controllers: nothing was copied wholesale.
-        let child_goal = child.require::<crate::tools::goal::GoalController>("goal");
-        let parent_goal = parent.require::<crate::tools::goal::GoalController>("goal").unwrap();
-        assert!(child_goal.is_ok());
-        assert!(!Arc::ptr_eq(&parent_goal, &child_goal.unwrap()));
+        // And nothing else was copied wholesale: the parent's slots (including
+        // the contract controllers a host installs) do not leak into the child.
+        assert!(child.require::<Marker>("contract").is_err());
     }
 
     #[test]
@@ -612,7 +618,7 @@ mod tests {
 
     #[test]
     fn child_inherits_the_sandbox_and_its_limits() {
-        let parent = ToolCtx::with_sandbox(
+        let mut parent = ToolCtx::with_sandbox(
             std::env::temp_dir(),
             Arc::new(agent_sandbox::NoneBackend),
         )
@@ -620,14 +626,16 @@ mod tests {
             network: Some(false),
             ..Default::default()
         });
+        // A slot the host installed (the contract controllers live in
+        // agent-coding now — a marker stands in for the scoping check).
+        parent.ext.insert(Arc::new(Marker(1)));
         let child = ToolCtx::new(std::env::temp_dir()).inherit_sandbox(&parent);
         // The child's bash must obey the host's forced network policy.
         assert_eq!(child.sandbox_limits().network, Some(false));
         assert!(child.sandbox().is_ok());
-        // And it still owns its controllers; nothing was copied wholesale.
-        let parent_goal = parent.require::<crate::tools::goal::GoalController>("goal").unwrap();
-        let child_goal = child.require::<crate::tools::goal::GoalController>("goal").unwrap();
-        assert!(!Arc::ptr_eq(&parent_goal, &child_goal));
+        // And nothing else was copied wholesale: the parent's slots (including
+        // the contract controllers a host installs) do not leak into the child.
+        assert!(child.require::<Marker>("contract").is_err());
     }
 
     #[test]

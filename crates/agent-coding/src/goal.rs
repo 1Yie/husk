@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_kernel::tools::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
 
 /// The declared lifecycle state — the model's claim, not a verified fact.
 #[repr(u8)]
@@ -127,7 +127,7 @@ pub fn spec_complete() -> ToolSpec {
              verifiably met; a declared completion IS the result the user sees.",
         ),
         readonly: true, // auto-allowed control signal, not a filesystem read
-        class: super::registry::ToolClass::Control,
+        class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
         exec: Arc::new(|args, ctx| exec_complete(args, ctx).boxed()),
     }
@@ -141,7 +141,7 @@ pub fn spec_blocked() -> ToolSpec {
              Call when you cannot make progress without outside input.",
         ),
         readonly: true, // auto-allowed control signal
-        class: super::registry::ToolClass::Control,
+        class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
         exec: Arc::new(|args, ctx| exec_blocked(args, ctx).boxed()),
     }

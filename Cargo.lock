@@ -29,6 +29,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-coding"
+version = "0.1.0"
+dependencies = [
+ "agent-computer",
+ "agent-context",
+ "agent-ipc",
+ "agent-kernel",
+ "agent-llm",
+ "agent-paths",
+ "agent-sandbox",
+ "anyhow",
+ "async-trait",
+ "futures",
+ "image",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "agent-computer"
 version = "0.1.0"
 dependencies = [
@@ -4056,6 +4078,7 @@ dependencies = [
 name = "husk-host"
 version = "0.1.0"
 dependencies = [
+ "agent-coding",
  "agent-computer",
  "agent-context",
  "agent-ipc",

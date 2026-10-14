@@ -172,8 +172,8 @@ pub struct Engine {
     /// turn-end check and the baseline are the installed policy's business.
     architecture_enabled: bool,
     /// Product rules applied when a round goes quiet. [`NoopPolicy`] by
-    /// default — the host installs its own (the coding product:
-    /// `CodingPolicy`) before the first turn.
+    /// default — the host installs its own (the coding product's
+    /// `agent-coding` policy) before the first turn.
     policy: Box<dyn crate::turn_policy::TurnPolicy>,
     /// Thinking / reasoning intensity level (e.g. "off", "low", "medium",
     /// "high", "max"). Shared slot like `permissions` — the bridge reads it

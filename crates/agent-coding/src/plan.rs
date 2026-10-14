@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 
-use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_kernel::tools::registry::{schema_for, Args, ToolCtx, ToolError, ToolResult, ToolSpec};
 
 /// Whether the model has declared its plan this turn.
 #[repr(u8)]
@@ -143,7 +143,7 @@ pub fn spec_submit() -> ToolSpec {
              reviews this card and decides whether to execute it in build mode.",
         ),
         readonly: true, // control signal — declares, never mutates
-        class: super::registry::ToolClass::Control,
+        class: agent_kernel::tools::registry::ToolClass::Control,
         network: false,
         exec: Arc::new(|args, ctx| exec_submit(args, ctx).boxed()),
     }

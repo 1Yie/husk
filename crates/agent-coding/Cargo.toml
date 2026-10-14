@@ -1,0 +1,28 @@
+[package]
+name = "agent-coding"
+version = "0.1.0"
+edition = "2021"
+description = "The coding product's semantics: plan/goal/blueprint contracts, the blueprint tool and the coding turn policy"
+license = "MIT"
+
+[dependencies]
+agent-kernel = { path = "../agent-kernel" }
+agent-context = { path = "../agent-context" }
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+agent-paths = { path = "../agent-paths" }
+agent-llm = { path = "../agent-llm" }
+agent-ipc = { path = "../agent-ipc" }
+agent-sandbox = { path = "../agent-sandbox" }
+agent-computer = { path = "../agent-computer" }
+image.workspace = true
+tempfile = "3"

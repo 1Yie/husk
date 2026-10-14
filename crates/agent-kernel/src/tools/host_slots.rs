@@ -265,16 +265,6 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(None),
             ext: Extensions::default(),
         }
-        .with_controllers()
-    }
-
-    /// Install a fresh goal and plan controller. Each root context owns its
-    /// own pair; a subagent calls this on its own ctx so it never shares the
-    /// parent's completion signal.
-    pub fn with_controllers(mut self) -> Self {
-        self.ext.insert(Arc::new(crate::tools::goal::GoalController::new()));
-        self.ext.insert(Arc::new(crate::tools::plan::PlanController::new()));
-        self
     }
 
     /// Explicit backend (tests / custom wiring): a context with `sandbox`
@@ -291,8 +281,7 @@ impl ToolCtx {
             depth: 0,
             active_registry: std::sync::RwLock::new(None),
             ext: Extensions::default(),
-        }
-        .with_controllers();
+        };
         ctx.ext.insert(Arc::new(SandboxSlot(sandbox)));
         ctx
     }
