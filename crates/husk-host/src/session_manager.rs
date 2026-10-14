@@ -2624,8 +2624,15 @@ mod tests {
     fn test_paths_with_config() -> AppPaths {
         let paths = test_paths();
         std::fs::create_dir_all(&paths.config_dir).unwrap();
+        // Every test in this process shares `config_dir`, so a plain `write`
+        // (truncate, then fill) lets a concurrent `AppConfig::load` read an
+        // empty file and fall back to "no provider configured". Write aside
+        // and rename: readers see the old or the new file, never a torn one.
+        let tmp = paths
+            .config_dir
+            .join(format!("config.toml.{:?}.tmp", std::thread::current().id()));
         std::fs::write(
-            paths.config_dir.join("config.toml"),
+            &tmp,
             r#"active_provider = "devin"
 active_model = "devin/swe-2"
 
@@ -2653,6 +2660,7 @@ max = "max"
 "#,
         )
         .unwrap();
+        std::fs::rename(&tmp, paths.config_dir.join("config.toml")).unwrap();
         paths
     }
 
@@ -2742,7 +2750,16 @@ max = "max"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         write_config(&path, "devin", "devin/swe-2");
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
+        // Private config dir: the boot stamp is the mtime of `config_dir`'s
+        // `config.toml`, and the shared one can be rewritten by a sibling test
+        // within the same mtime tick — the "changed file loads" check then
+        // sees an equal stamp and skips the load.
+        let paths = AppPaths::new(
+            dir.path().join("config"),
+            dir.path().join("data"),
+            ".husk",
+        );
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), paths);
 
         assert!(
             mgr.reload_model_config_from(Some(&path)),
