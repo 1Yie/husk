@@ -6,9 +6,8 @@ use std::sync::Arc;
 
 use agent_ipc::{AgentState, UiCommand, UiEvent};
 use husk_host::session::{SessionActor, SessionConfig};
-mod common;
+use agent_testkit::ScriptedProvider;
 use agent_llm::types::StreamChunk;
-use common::ScriptedProvider;
 
 fn collect_script_tool_call_then_answer() -> Vec<Vec<StreamChunk>> {
     // Script 1: model emits a tool call to `list_dir` + Done.

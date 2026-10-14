@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use agent_ipc::{UiCommand, UiEvent};
 use husk_host::session::{SessionActor, SessionConfig};
-mod common;
+use agent_testkit::ScriptedProvider;
 use agent_llm::types::{NoticeKind, StreamChunk};
-use common::ScriptedProvider;
 
 fn spawn(
     dir: &std::path::Path,

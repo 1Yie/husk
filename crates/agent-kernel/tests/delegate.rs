@@ -1,8 +1,7 @@
 //! `delegate` — parallel read-only fan-out, end to end: real child engines,
 //! scripted provider, no network.
 
-#[path = "common/mod.rs"]
-mod common;
+use agent_testkit::ScriptedProvider;
 
 use std::sync::Arc;
 
@@ -15,7 +14,6 @@ use agent_kernel::channels::UiSink;
 use agent_kernel::tools::delegate::{ChildRoute, SubagentSpawner};
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
-use common::ScriptedProvider;
 
 fn spawner(provider: Arc<dyn agent_llm::LlmProvider>) -> SubagentSpawner {
     let full = ToolRegistry::with_builtins()

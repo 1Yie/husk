@@ -4,9 +4,7 @@ use agent_kernel::tools::registry::AskChannel;
 use agent_llm::types::StreamChunk;
 use std::time::Duration;
 
-#[path = "../../agent-kernel/tests/common/mod.rs"]
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 
 #[tokio::test]
 async fn headless_approval_and_denial_release_the_running_turn() {

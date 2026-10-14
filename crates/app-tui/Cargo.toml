@@ -26,5 +26,6 @@ unicode-width = "0.2"
 libc = "0.2"
 
 [dev-dependencies]
+agent-testkit = { path = "../agent-testkit" }
 async-trait.workspace = true
 tempfile = "3"

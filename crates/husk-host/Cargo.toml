@@ -27,5 +27,6 @@ ignore.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
+agent-testkit = { path = "../agent-testkit" }
 agent-computer = { path = "../agent-computer" }
 image.workspace = true

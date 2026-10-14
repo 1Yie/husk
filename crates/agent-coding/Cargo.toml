@@ -16,6 +16,7 @@ async-trait.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+agent-testkit = { path = "../agent-testkit" }
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true

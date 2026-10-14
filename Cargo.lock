@@ -39,6 +39,7 @@ dependencies = [
  "agent-llm",
  "agent-paths",
  "agent-sandbox",
+ "agent-testkit",
  "anyhow",
  "async-trait",
  "futures",
@@ -110,6 +111,7 @@ dependencies = [
  "agent-sandbox",
  "agent-skills",
  "agent-store",
+ "agent-testkit",
  "agent-tool",
  "agent-tools-computer",
  "agent-tools-fs",
@@ -224,6 +226,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "xxhash-rust",
+]
+
+[[package]]
+name = "agent-testkit"
+version = "0.1.0"
+dependencies = [
+ "agent-llm",
+ "anyhow",
+ "async-trait",
+ "futures",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -473,6 +487,7 @@ dependencies = [
  "agent-kernel",
  "agent-llm",
  "agent-paths",
+ "agent-testkit",
  "anyhow",
  "async-trait",
  "futures",
@@ -492,6 +507,7 @@ dependencies = [
  "agent-llm",
  "agent-paths",
  "agent-sandbox",
+ "agent-testkit",
  "anyhow",
  "async-trait",
  "crossterm",
@@ -4087,6 +4103,7 @@ dependencies = [
  "agent-paths",
  "agent-plugin",
  "agent-sandbox",
+ "agent-testkit",
  "anyhow",
  "async-trait",
  "dirs",

@@ -13,9 +13,8 @@ use std::sync::Arc;
 use agent_kernel::engine::{Engine, EngineIo};
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 
-mod common;
+use agent_testkit::ScriptedProvider;
 use agent_llm::types::{ChatMessage, StreamChunk};
-use common::ScriptedProvider;
 
 /// A desktop backend that always succeeds and writes a real 4×4 PNG.
 struct FakeDesktop;

@@ -4,9 +4,7 @@ use agent_llm::types::StreamChunk;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
-#[path = "../../agent-kernel/tests/common/mod.rs"]
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 
 fn seed(dir: &std::path::Path, provider: Arc<ScriptedProvider>) -> SessionSeed {
     SessionSeed {

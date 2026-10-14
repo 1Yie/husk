@@ -11,8 +11,7 @@ use agent_kernel::permissions::{PermissionGate, PermissionMode};
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 use agent_llm::types::{ChatMessage, StreamChunk};
 
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 
 /// Records every input call so a test can say what actually reached the
 /// desktop, and what did not.

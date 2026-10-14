@@ -8,8 +8,7 @@ use agent_ipc::{UiCommand, UiEvent};
 use husk_host::session::{SessionActor, SessionConfig};
 use agent_llm::types::NoticeKind;
 
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 use agent_llm::types::StreamChunk;
 
 fn tool_call(name: &str, args: serde_json::Value) -> Vec<StreamChunk> {

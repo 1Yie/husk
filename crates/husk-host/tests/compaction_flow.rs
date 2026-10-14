@@ -16,8 +16,7 @@ use agent_kernel::session_store::SessionStore;
 use agent_llm::types::{ChatMessage, NoticeKind, StreamChunk};
 
 #[allow(dead_code)] // Shared harness — this binary uses only part of it.
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 
 const SUMMARY: &str = "MERGED-NOTE: earlier turns covered alpha and beta decisions.";
 const SESSION_ID: i64 = 7;

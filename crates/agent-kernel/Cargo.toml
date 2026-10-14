@@ -39,6 +39,7 @@ fs2 = "0.4"
 tempfile = "3"
 
 [dev-dependencies]
+agent-testkit = { path = "../agent-testkit" }
 tempfile = "3"
 # The computer-use acceptance test installs a scripted desktop backend and
 # writes a real PNG through it — both crates are normal deps, listed here for

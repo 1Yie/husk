@@ -6,8 +6,7 @@ use std::sync::Arc;
 use husk_host::session::{SessionActor, SessionConfig};
 use agent_ipc::UiCommand;
 use agent_llm::types::StreamChunk;
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 
 fn test_paths() -> agent_paths::AppPaths {
     let base = std::env::temp_dir().join("husk-plugin-test");

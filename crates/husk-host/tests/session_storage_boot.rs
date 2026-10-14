@@ -12,8 +12,7 @@ use husk_host::session::{SessionActor, SessionConfig};
 use husk_host::session_manager::SessionManager;
 use agent_kernel::session_store::SessionStore;
 
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 
 const PROBE_MODE: &str = "HUSK_STORAGE_BOOT_PROBE";
 

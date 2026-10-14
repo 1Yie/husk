@@ -12,9 +12,8 @@ use std::sync::Arc;
 use agent_ipc::{UiCommand, UiEvent};
 use agent_kernel::hooks::{chain_from_specs, HookChain};
 use husk_host::session::{SessionActor, SessionConfig};
-mod common;
+use agent_testkit::ScriptedProvider;
 use agent_llm::types::StreamChunk;
-use common::ScriptedProvider;
 
 /// Write `.husk/plugins/<id>/manifest.json` + an executable hook script, and
 /// return the chain the kernel would build from it.

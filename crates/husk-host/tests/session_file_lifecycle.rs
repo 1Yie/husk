@@ -7,8 +7,7 @@ use agent_kernel::session_store::SessionStore;
 use agent_llm::types::StreamChunk;
 use std::sync::Arc;
 use std::time::Duration;
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 
 fn cfg(root: &std::path::Path, provider: Arc<ScriptedProvider>) -> SessionConfig {
     SessionConfig {

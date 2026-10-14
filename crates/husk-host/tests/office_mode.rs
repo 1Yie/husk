@@ -9,8 +9,7 @@ use std::sync::Arc;
 use agent_ipc::UiCommand;
 use husk_host::mode::AgentMode;
 use husk_host::session::{SessionActor, SessionConfig};
-mod common;
-use common::ScriptedProvider;
+use agent_testkit::ScriptedProvider;
 
 fn spawn(
     dir: &std::path::Path,
