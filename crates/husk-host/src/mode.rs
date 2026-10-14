@@ -23,8 +23,8 @@ pub enum AgentMode {
 impl AgentMode {
     pub fn from_str(s: &str) -> Self {
         match s {
-            "plan" => Self::Plan,
-            "goal" => Self::Goal,
+            agent_coding::MODE_PLAN => Self::Plan,
+            agent_coding::MODE_GOAL => Self::Goal,
             "office" => Self::Office,
             _ => Self::Build,
         }
@@ -33,8 +33,8 @@ impl AgentMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Build => "build",
-            Self::Plan => "plan",
-            Self::Goal => "goal",
+            Self::Plan => agent_coding::MODE_PLAN,
+            Self::Goal => agent_coding::MODE_GOAL,
             Self::Office => "office",
         }
     }

@@ -46,8 +46,6 @@ pub trait TurnView: Send + Sync {
     fn mode(&self) -> String;
     /// Whether this turn ran at least one tool call.
     fn did_tool_work(&self) -> bool;
-    /// Whether the session's architecture-checking switch is on.
-    fn architecture_enabled(&self) -> bool;
 }
 
 /// Product rules applied to a turn that went quiet.
@@ -61,15 +59,13 @@ pub trait TurnPolicy: Send + Sync {
     fn begin_turn(&self);
 
     /// Called for each tool call that cleared permission and is about to run.
-    /// `is_readonly` keys the architecture baseline (taken lazily before the
-    /// first write); `architecture_enabled` is the session's live switch for
-    /// it. Returns `Some(message)` to refuse the call: the engine reports the
+    /// `is_readonly` lets a policy snapshot state lazily before the first
+    /// write. Returns `Some(message)` to refuse the call: the engine reports the
     /// message as the call's failed result and does not dispatch.
     async fn before_dispatch(
         &self,
         tool: &str,
         is_readonly: bool,
-        architecture_enabled: bool,
     ) -> Option<String>;
 
     /// Decide whether a quiet round may end the turn. `touched` lists the
@@ -91,7 +87,6 @@ impl TurnPolicy for NoopPolicy {
         &self,
         _tool: &str,
         _is_readonly: bool,
-        _architecture_enabled: bool,
     ) -> Option<String> {
         None
     }

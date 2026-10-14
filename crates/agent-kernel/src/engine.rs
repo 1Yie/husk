@@ -73,7 +73,6 @@ struct EngineTurnView {
     mode: Arc<std::sync::RwLock<String>>,
     /// Tool calls run so far this turn (the loop's `tool_calls_run`).
     tool_calls_run: usize,
-    architecture_enabled: bool,
 }
 
 impl crate::turn_policy::TurnView for EngineTurnView {
@@ -82,9 +81,6 @@ impl crate::turn_policy::TurnView for EngineTurnView {
     }
     fn did_tool_work(&self) -> bool {
         self.tool_calls_run > 0
-    }
-    fn architecture_enabled(&self) -> bool {
-        self.architecture_enabled
     }
 }
 
@@ -167,10 +163,6 @@ pub struct Engine {
     /// runtime (a plugin added in settings). Read per request, never cached, so
     /// a live session picks up a reload without being restarted.
     plugin_router: Option<PluginHandle>,
-    /// The session's architecture-checking switch (the coding product: the
-    /// `.blueprint/` 偏好). The engine only carries it — the prompt block, the
-    /// turn-end check and the baseline are the installed policy's business.
-    architecture_enabled: bool,
     /// Product rules applied when a round goes quiet. [`NoopPolicy`] by
     /// default — the host installs its own (the coding product's
     /// `agent-coding` policy) before the first turn.
@@ -219,7 +211,6 @@ impl Engine {
             last_prompt_tokens: 0,
             hooks: crate::hooks::HookChain::new(),
             plugin_router: None,
-            architecture_enabled: true,
             policy: Box::new(crate::turn_policy::NoopPolicy),
             thinking_level: Arc::new(std::sync::RwLock::new(None)),
             thinking_level_map: None,
@@ -353,16 +344,6 @@ impl Engine {
     pub fn add_mode(&mut self, entry: ModeEntry) {
         self.modes.retain(|m| m.id != entry.id);
         self.modes.push(entry);
-    }
-
-    /// The session's architecture-checking switch — SessionActor forwards the
-    /// preference (the coding product's `.blueprint/` toggle).
-    pub fn set_architecture_enabled(&mut self, enabled: bool) {
-        self.architecture_enabled = enabled;
-    }
-
-    pub fn architecture_enabled(&self) -> bool {
-        self.architecture_enabled
     }
 
     /// The active model's context window — SessionActor sets it from config.
@@ -984,7 +965,6 @@ impl Engine {
                 let view = EngineTurnView {
                     mode: self.agent_mode.clone(),
                     tool_calls_run,
-                    architecture_enabled: self.architecture_enabled,
                 };
                 let verdict = self.policy.on_quiet_round(&view, touched).await;
                 let blueprint_report = match verdict {
@@ -1422,7 +1402,7 @@ impl Engine {
 
                 if let Some(msg) = self
                     .policy
-                    .before_dispatch(&call.name, is_readonly, self.architecture_enabled)
+                    .before_dispatch(&call.name, is_readonly)
                     .await
                 {
                     let _ = io.ui_tx.send(UiEvent::ToolCallFinished {

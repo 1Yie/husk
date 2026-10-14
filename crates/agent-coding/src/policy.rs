@@ -21,6 +21,9 @@ use agent_kernel::turn_policy::{TurnPolicy, TurnReport, Verdict};
 /// Checks run in this order and the first one that asks for more work wins, so
 /// a round pushed back for a plan or a goal is never also blueprint-checked.
 pub struct CodingPolicy {
+    /// The session's `.blueprint/` switch — shared with the host, which flips
+    /// it live from the settings; the engine never sees it.
+    architecture: ArchitectureSwitch,
     /// The workspace root the architecture check runs against.
     workspace_root: PathBuf,
     /// The session's goal/plan signal, as installed in the context's
@@ -29,6 +32,26 @@ pub struct CodingPolicy {
     goal: Option<std::sync::Arc<crate::goal::GoalController>>,
     plan: Option<std::sync::Arc<crate::plan::PlanController>>,
     state: std::sync::Mutex<TurnCounters>,
+}
+
+/// The session's live `.blueprint/` on/off switch. Cloning shares the flag:
+/// the host keeps one clone to flip, the policy reads the other. On by default.
+#[derive(Clone)]
+pub struct ArchitectureSwitch(Arc<std::sync::atomic::AtomicBool>);
+
+impl ArchitectureSwitch {
+    pub fn set(&self, enabled: bool) {
+        self.0.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn get(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Default for ArchitectureSwitch {
+    fn default() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+    }
 }
 
 /// Nudge texts and caps. They are the product's contract with the model.
@@ -61,6 +84,7 @@ impl CodingPolicy {
         plan: Option<std::sync::Arc<crate::plan::PlanController>>,
     ) -> Self {
         Self {
+            architecture: ArchitectureSwitch::default(),
             workspace_root,
             goal,
             plan,
@@ -76,6 +100,19 @@ impl CodingPolicy {
             ctx.ext.get::<crate::goal::GoalController>(),
             ctx.ext.get::<crate::plan::PlanController>(),
         )
+    }
+
+    /// Whether both contract controllers were found in the context. A host that
+    /// assembles the coding product asserts this: `from_ctx` before
+    /// [`crate::install_contract`] silently yields a policy whose plan/goal
+    /// contracts never fire.
+    pub fn has_contract(&self) -> bool {
+        self.goal.is_some() && self.plan.is_some()
+    }
+
+    /// The handle the host flips when the user toggles `.blueprint/`.
+    pub fn architecture_switch(&self) -> ArchitectureSwitch {
+        self.architecture.clone()
     }
 
     fn plan_submitted(&self) -> bool {
@@ -113,7 +150,6 @@ impl TurnPolicy for CodingPolicy {
         &self,
         tool: &str,
         is_readonly: bool,
-        architecture_enabled: bool,
     ) -> Option<String> {
         // The architecture baseline is the workspace as the turn found it,
         // taken lazily right before the first tool that can change it — before
@@ -134,12 +170,12 @@ impl TurnPolicy for CodingPolicy {
             }
             if !state.architecture_baseline_taken && !is_readonly {
                 state.architecture_baseline_taken = true;
-                Some(self.workspace_root.clone())
+                Some((self.workspace_root.clone(), self.architecture.get()))
             } else {
                 None
             }
         };
-        if let Some(root) = take_baseline {
+        if let Some((root, architecture_enabled)) = take_baseline {
             let baseline = tokio::task::spawn_blocking(move || {
                 crate::blueprint::snapshot(&root, architecture_enabled)
             })
@@ -158,7 +194,7 @@ impl TurnPolicy for CodingPolicy {
         // gets ONE nudge, so a plain question cannot be pushed twice.
         {
             let mut state = self.state.lock().unwrap();
-            if mode == "plan"
+            if mode == crate::MODE_PLAN
                 && view.did_tool_work()
                 && !self.plan_submitted()
                 && state.plan_followups < MAX_PLAN_FOLLOWUPS
@@ -170,7 +206,7 @@ impl TurnPolicy for CodingPolicy {
             }
 
             // Goal contract — in goal mode going quiet undeclared is not a finish.
-            if mode == "goal" && self.goal_running() && state.goal_followups < MAX_GOAL_FOLLOWUPS {
+            if mode == crate::MODE_GOAL && self.goal_running() && state.goal_followups < MAX_GOAL_FOLLOWUPS {
                 state.goal_followups += 1;
                 return Verdict::Nudge {
                     hidden: "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。".into(),
@@ -189,7 +225,7 @@ impl TurnPolicy for CodingPolicy {
         {
             state.blueprint_followups += 1;
             let mut nudge = crate::blueprint::nudge(r);
-            if mode == "goal" && self.goal_settled() {
+            if mode == crate::MODE_GOAL && self.goal_settled() {
                 if let Some(g) = &self.goal {
                     g.reset();
                 }
@@ -197,7 +233,7 @@ impl TurnPolicy for CodingPolicy {
             }
             return Verdict::Nudge { hidden: nudge };
         }
-        let deliverable = if mode == "plan" && self.plan_submitted() {
+        let deliverable = if mode == crate::MODE_PLAN && self.plan_submitted() {
             self.plan.as_ref().and_then(|p| {
                 p.take_signal()
                     .as_ref()
@@ -228,7 +264,7 @@ impl CodingPolicy {
         touched: Vec<PathBuf>,
     ) -> Option<agent_context::blueprint::Report> {
         let root = self.workspace_root.clone();
-        let enabled = view.architecture_enabled();
+        let enabled = self.architecture.get();
         let mut touched = touched;
         let baseline = self.state.lock().unwrap().architecture_baseline.clone();
         if touched.is_empty() && baseline.is_none() {

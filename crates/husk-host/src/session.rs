@@ -235,10 +235,39 @@ pub struct SessionConfig {
     pub memory_distill: bool,
 }
 
+/// The host-added tools every full registry carries on top of the kernel's
+/// builtins: `blueprint` (coding product) and `serena` (MCP bridge). One list,
+/// applied to both the parent and the child base, so a new host tool cannot be
+/// added to one and forgotten in the other.
+fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
+    vec![
+        agent_coding::blueprint_tool::spec(),
+        agent_tools_serena::spec(),
+    ]
+}
+
+/// The parent's base registry and the base a delegated child draws from
+/// (`child_builtins` — no `delegate`, `remember`, `computer` or
+/// human-interaction tools — plus the same [`host_tools`]).
+fn base_registries() -> (ToolRegistry, ToolRegistry) {
+    let mut full = ToolRegistry::with_builtins();
+    let mut child = ToolRegistry::child_builtins();
+    for spec in host_tools() {
+        full.register(spec);
+    }
+    for spec in host_tools() {
+        child.register(spec);
+    }
+    (full, child)
+}
+
 /// One live session: owns history + engine, consumes commands, emits events.
 pub struct SessionActor {
     history: Vec<ChatMessage>,
     engine: Engine,
+    /// The coding policy's `.blueprint/` switch — the host owns the flip, the
+    /// kernel engine knows nothing of it.
+    architecture: agent_coding::policy::ArchitectureSwitch,
     /// Model + provider key this session runs — stamped into the store's meta
     /// with every usage write so the stats pane can group spend by model.
     model: String,
@@ -551,14 +580,7 @@ impl SessionActor {
         // subagents inherit it (a user cancel tears down in-flight child
         // runs instead of orphaning them).
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut registry = ToolRegistry::with_builtins();
-        // The `blueprint` tool is the coding product's — the kernel's builtin
-        // set no longer names it; the host adds it to every registry that can
-        // reach an architecture layer (full, readonly and child bases alike,
-        // matching what `with_builtins` carried before T9).
-        registry.register(agent_coding::blueprint_tool::spec());
-        // Same for `serena` (the MCP bridge): host-registered, not a kernel builtin.
-        registry.register(agent_tools_serena::spec());
+        let (registry, child_full) = base_registries();
         // Subagent registries: a child never carries `delegate` (recursion
         // guard) or `HumanInteraction` tools (nobody can answer a child's
         // question — deny at the policy layer, not just via missing ui_tx);
@@ -572,9 +594,6 @@ impl SessionActor {
         // child's `ToolCtx` carries a refusing desktop backend as the second
         // one. `screenshot` stays: looking at the screen is an observation a
         // delegated visual check legitimately needs.
-        let mut child_full = agent_kernel::tools::registry::ToolRegistry::child_builtins();
-        child_full.register(agent_coding::blueprint_tool::spec());
-        child_full.register(agent_tools_serena::spec());
         let child_ro = child_full.readonly_only();
         let mut tool_ctx =
             ToolCtx::new(&cfg.workspace_root).with_session(session_id, store.clone());
@@ -627,7 +646,13 @@ impl SessionActor {
             cfg.model.clone(),
             cfg.temperature,
         );
-        engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx)));
+        let coding_policy = agent_coding::policy::CodingPolicy::from_ctx(&ctx);
+        debug_assert!(
+            coding_policy.has_contract(),
+            "install_contract must run on the ToolCtx before the coding policy is built"
+        );
+        let architecture = coding_policy.architecture_switch();
+        engine.set_policy(Box::new(coding_policy));
         // Mode table — the host's mapping from a mode id to the registry that
         // id dispatches against. The engine carries no mode names; these are
         // the coding product's (mirroring `mode::AgentMode`).
@@ -637,7 +662,7 @@ impl SessionActor {
         let mut plan_reg = registry.readonly_only();
         plan_reg.register(agent_coding::plan::spec_submit());
         engine.add_mode(agent_kernel::engine::ModeEntry {
-            id: "plan".into(),
+            id: agent_coding::MODE_PLAN.into(),
             registry: Arc::new(plan_reg),
             allow_plugins: false,
         });
@@ -647,7 +672,7 @@ impl SessionActor {
         goal_reg.register(agent_coding::goal::spec_complete());
         goal_reg.register(agent_coding::goal::spec_blocked());
         engine.add_mode(agent_kernel::engine::ModeEntry {
-            id: "goal".into(),
+            id: agent_coding::MODE_GOAL.into(),
             registry: Arc::new(goal_reg),
             allow_plugins: true,
         });
@@ -727,6 +752,7 @@ impl SessionActor {
             Self {
                 history,
                 engine,
+                architecture,
                 model: cfg.model.clone(),
                 provider_name: cfg.provider_name.clone(),
                 state: AgentState::Idle,
@@ -821,12 +847,12 @@ impl SessionActor {
         self.engine.set_fallbacks(primary, chain);
     }
 
-    /// The session's `.blueprint/` switch. Forwarded to the engine (which
+    /// The session's `.blueprint/` switch. Forwarded to the coding policy (which
     /// gates the turn-end check and baseline), and the system prompt's
     /// blueprint region is re-rendered at once so the index never shows for
     /// a session that turned the layer off.
     pub fn set_blueprint_enabled(&mut self, enabled: bool) {
-        self.engine.set_architecture_enabled(enabled);
+        self.architecture.set(enabled);
         if let Some(sys) = self.history.get_mut(0) {
             if let Some(content) = sys.content.take() {
                 let block = agent_coding::blueprint::prompt_block(&self.workspace_root, enabled);
@@ -944,7 +970,7 @@ impl SessionActor {
             if let Some(content) = sys.content.take() {
                 let block = agent_coding::blueprint::prompt_block(
                     &self.workspace_root,
-                    self.engine.architecture_enabled(),
+                    self.architecture.get(),
                 );
                 sys.content = Some(replace_block(&content, "blueprint", &block));
             }
@@ -1532,7 +1558,7 @@ impl SessionActor {
                 memory: self.memory.as_deref(),
                 plugin_commands: &plugin_commands,
                 ui_tx: &self.io.ui_tx,
-                blueprint_enabled: self.engine.architecture_enabled(),
+                blueprint_enabled: self.architecture.get(),
             };
             CommandRegistry::try_run(&text, &mut ctx).await
         }; // ctx dropped here — the history/ui_tx borrows end
@@ -1878,6 +1904,22 @@ fn strip_call_echo(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Parent and child bases share the host tools; the child only differs by
+    /// what `child_builtins` strips. Guards against a host tool landing in one
+    /// registry and not the other.
+    #[test]
+    fn base_registries_carry_the_same_host_tools() {
+        let (full, child) = base_registries();
+        for spec in host_tools() {
+            assert!(full.spec(spec.name).is_some(), "{} missing in parent", spec.name);
+            assert!(child.spec(spec.name).is_some(), "{} missing in child", spec.name);
+        }
+        for stripped in ["delegate", "remember", "computer"] {
+            assert!(full.spec(stripped).is_some());
+            assert!(child.spec(stripped).is_none(), "child must not hold {stripped}");
+        }
+    }
 
     /// The bundled template must keep the markers — without them the per-turn
     /// refresh silently degrades to the legacy literal swap (this is exactly

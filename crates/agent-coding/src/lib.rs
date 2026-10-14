@@ -16,6 +16,12 @@ pub mod policy;
 
 use std::sync::Arc;
 
+/// Mode ids the coding contracts are keyed on. The host's mode table
+/// (`husk-host`) registers its entries under these same ids — one definition,
+/// so renaming a mode cannot silently disarm the policy that watches it.
+pub const MODE_PLAN: &str = "plan";
+pub const MODE_GOAL: &str = "goal";
+
 use agent_kernel::tools::registry::ToolCtx;
 
 /// Install the goal/plan contract controllers this context owns — its own
