@@ -27,8 +27,8 @@ declare -A ALLOW=(
   # runtime
   [agent-kernel]="agent-computer agent-context agent-ipc agent-llm agent-plugin agent-paths agent-sandbox agent-skills agent-tool"
   # products / frontends — nothing may depend on these
-  [app-cli]="agent-ipc agent-kernel agent-llm"
-  [app-tui]="agent-ipc agent-kernel agent-llm agent-sandbox"
+  [app-cli]="agent-ipc agent-kernel agent-llm agent-paths"
+  [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox"
   [husk]="agent-context agent-ipc agent-kernel agent-llm agent-paths agent-sandbox"
 )
 

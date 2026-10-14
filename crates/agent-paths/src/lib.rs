@@ -54,6 +54,16 @@ impl AppPaths {
         self.data_dir.join(name)
     }
 
+    /// Throwaway paths under the system temp dir. Tests use this so they never
+    /// touch the real user directories; the name is deliberately product-free.
+    pub fn for_tests(label: &str) -> Self {
+        let base = std::env::temp_dir().join(format!(
+            "agent-paths-test-{label}-{}",
+            std::process::id()
+        ));
+        Self::new(base.join("config"), base.join("data"), ".agent")
+    }
+
     /// The workspace-local state directory under `root`.
     pub fn workspace_dir(&self, root: &Path) -> PathBuf {
         root.join(&self.workspace_dir_name)

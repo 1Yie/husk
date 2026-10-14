@@ -306,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = SessionConfig {
         workspace_root: cli.workspace.clone(),
+        paths: agent_paths::AppPaths::from_app_name("husk", ".husk").unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk")),
         provider,
         provider_name,
         model,

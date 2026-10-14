@@ -41,6 +41,7 @@ async fn delegate_call_in_build_mode_is_a_builtin_not_a_plugin() {
 
     let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: provider.clone(),
         model: "test-model".into(),
         temperature: 0.0,
@@ -102,6 +103,7 @@ async fn builtin_failure_is_not_masked_by_plugin_no_owner_message() {
     )));
     let (mut actor, _ch) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: provider.clone(),
         model: "test-model".into(),
         temperature: 0.0,

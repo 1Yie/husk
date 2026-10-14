@@ -294,6 +294,7 @@ fn make_cfg(seed: &SessionSeed, meta: Option<&SessionMeta>) -> Result<SessionCon
         .unwrap_or_default();
     Ok(SessionConfig {
         workspace_root: seed.workspace.clone(),
+        paths: agent_paths::AppPaths::from_app_name("husk", ".husk").unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk")),
         provider,
         provider_name,
         model,

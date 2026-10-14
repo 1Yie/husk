@@ -55,6 +55,7 @@ fn actor_for(
 ) -> (SessionActor, agent_kernel::channels::UiChannels) {
     SessionActor::spawn(SessionConfig {
         workspace_root: ws.to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: stub,
         model: "test-model".into(),
         temperature: 0.0,

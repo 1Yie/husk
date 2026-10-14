@@ -185,6 +185,9 @@ fn open_memory_store(workspace_root: &Path) -> Option<MemoryStore> {
 
 /// SessionActor configuration for one workspace.
 pub struct SessionConfig {
+    /// Where the host keeps its config and workspace-local state. Supplied by
+    /// the product; the kernel never guesses a name.
+    pub paths: agent_paths::AppPaths,
     pub workspace_root: PathBuf,
     /// Live plugin router — shared with the manager so a reload swaps what the
     /// engine advertises without rebuilding the session.
@@ -476,9 +479,7 @@ impl SessionActor {
         // (project) append verbatim as dedicated sections — custom rules live
         // outside the template so they never fight its contract.
         let mut system_prompt = system_prompt;
-        if let Some(cfg_dir) = dirs::config_dir() {
-            append_instructions(&mut system_prompt, &cfg_dir.join("husk/AGENTS.md"), "user");
-        }
+        append_instructions(&mut system_prompt, &cfg.paths.config_file("AGENTS.md"), "user");
         append_instructions(
             &mut system_prompt,
             &cfg.workspace_root.join("AGENTS.md"),
@@ -506,9 +507,7 @@ impl SessionActor {
                     let mut c = set_memory_block(&c, &initial_memory_block);
                     if let Some(idx) = c.find("\n\n## User instructions — ") {
                         c.truncate(idx);
-                        if let Some(cfg_dir) = dirs::config_dir() {
-                            append_instructions(&mut c, &cfg_dir.join("husk/AGENTS.md"), "user");
-                        }
+                        append_instructions(&mut c, &cfg.paths.config_file("AGENTS.md"), "user");
                         append_instructions(
                             &mut c,
                             &cfg.workspace_root.join("AGENTS.md"),

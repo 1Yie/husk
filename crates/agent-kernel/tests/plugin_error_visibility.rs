@@ -73,6 +73,7 @@ async fn model_sees_the_plugins_own_error_not_unknown_tool() {
     stub.script_text("done");
     let (mut actor, _ch) = SessionActor::spawn(SessionConfig {
         workspace_root: ws.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: stub.clone(),
         model: "m".into(),
         temperature: 0.0,

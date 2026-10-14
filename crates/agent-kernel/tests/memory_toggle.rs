@@ -39,6 +39,7 @@ async fn remember_with(toggle_off: bool, key: &str) -> (Vec<String>, Vec<String>
     stub.script_text("done");
     let (mut actor, _ch) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: stub.clone(),
         model: "m".into(),
         temperature: 0.0,
@@ -122,6 +123,7 @@ async fn remember_refuses_a_credential_value() {
     stub.script_text("done");
     let (mut actor, _ch) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: stub.clone(),
         model: "m".into(),
         temperature: 0.0,

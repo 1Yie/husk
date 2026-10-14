@@ -13,6 +13,7 @@ use common::ScriptedProvider;
 fn cfg(root: &std::path::Path, provider: Arc<ScriptedProvider>) -> SessionConfig {
     SessionConfig {
         workspace_root: root.into(),
+    paths: agent_paths::AppPaths::for_tests("kernel"),
         provider,
         provider_name: "test".into(),
         model: "test".into(),

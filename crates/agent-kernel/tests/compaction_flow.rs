@@ -46,6 +46,7 @@ fn spawn(
     SessionActor::resume(
         SessionConfig {
             workspace_root: cfg_root.to_path_buf(),
+            paths: agent_paths::AppPaths::for_tests("kernel"),
             provider: stub,
             model: "test-model".into(),
             temperature: 0.0,
@@ -195,6 +196,7 @@ async fn compact_on_a_short_history_is_a_neutral_noop() {
     let (mut actor, mut channels) = SessionActor::resume(
         SessionConfig {
             workspace_root: dir.path().to_path_buf(),
+            paths: agent_paths::AppPaths::for_tests("kernel"),
             provider: stub,
             model: "test-model".into(),
             temperature: 0.0,
@@ -297,6 +299,7 @@ async fn auto_compaction_fires_between_tool_rounds_mid_turn() {
     let (mut actor, mut channels) = SessionActor::resume(
         SessionConfig {
             workspace_root: dir.path().to_path_buf(),
+            paths: agent_paths::AppPaths::for_tests("kernel"),
             provider: stub,
             model: "test-model".into(),
             temperature: 0.0,
@@ -399,6 +402,7 @@ async fn compact_ratio_change_applies_to_a_live_session() {
     };
     let config = |root: &std::path::Path, stub: Arc<ScriptedProvider>| SessionConfig {
         workspace_root: root.to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: stub,
         model: "test-model".into(),
         temperature: 0.0,

@@ -9,6 +9,7 @@ name = "husk-tui"
 path = "src/main.rs"
 
 [dependencies]
+agent-paths = { path = "../agent-paths" }
 agent-kernel = { path = "../agent-kernel" }
 agent-ipc = { path = "../agent-ipc" }
 agent-llm = { path = "../agent-llm" }

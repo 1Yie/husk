@@ -184,6 +184,7 @@ fn storage_boot_probe() {
     let (mut actor, _) = SessionActor::spawn_with_id(
         SessionConfig {
             workspace_root: root.clone(),
+            paths: agent_paths::AppPaths::for_tests("kernel"),
             provider: Arc::new(provider),
             provider_name: "test".into(),
             model: "test".into(),

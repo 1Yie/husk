@@ -944,6 +944,7 @@ impl SessionManager {
         let context_window = resolved.as_ref().and_then(|d| d.context_window);
 
         let cfg = SessionConfig {
+            paths: self.paths.clone(),
             workspace_root: self.workspace_root.clone(),
             plugins: self.plugins.clone(),
             provider,

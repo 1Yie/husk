@@ -18,6 +18,7 @@ fn spawn_plan(
 ) -> (SessionActor, agent_kernel::channels::UiChannels) {
     SessionActor::spawn(SessionConfig {
         workspace_root: dir.to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: stub,
         model: "test-model".into(),
         temperature: 0.0,

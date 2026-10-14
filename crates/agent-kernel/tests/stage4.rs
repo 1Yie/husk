@@ -52,6 +52,7 @@ async fn headless_react_loop_drives_tool_then_answers() {
 
     let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: Arc::new(stub),
         model: "test-model".into(),
         temperature: 0.0,
@@ -134,6 +135,7 @@ async fn system_prompt_is_rendered_with_workspace_and_git() {
 
     let (mut actor, _c) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: Arc::new(stub),
         model: "m".into(),
         temperature: 0.0,
@@ -168,6 +170,7 @@ async fn steer_between_turns_becomes_a_prompt() {
 
     let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: Arc::new(stub),
         model: "m".into(),
         temperature: 0.0,
@@ -250,6 +253,7 @@ async fn reasoning_traces_persist_for_replay() {
 
     let (mut actor, _c) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: Arc::new(stub),
         model: "test-model".into(),
         temperature: 0.0,
@@ -319,6 +323,7 @@ async fn subagent_catalog_is_in_the_prompt_and_refreshes() {
     stub.script_text("ok");
     let (mut actor, _c) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: Arc::new(stub),
         model: "m".into(),
         temperature: 0.0,
@@ -384,6 +389,7 @@ async fn skill_catalog_is_in_the_prompt_and_refreshes() {
     stub.script_text("ok");
     let (mut actor, _c) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: Arc::new(stub),
         model: "m".into(),
         temperature: 0.0,
@@ -439,6 +445,7 @@ async fn queued_prompts_drain_one_per_turn() {
 
     let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider: Arc::new(stub),
         model: "m".into(),
         temperature: 0.0,

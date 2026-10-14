@@ -10,6 +10,7 @@ name = "husk-cli"
 path = "src/main.rs"
 
 [dependencies]
+agent-paths = { path = "../agent-paths" }
 agent-kernel = { path = "../agent-kernel" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }
