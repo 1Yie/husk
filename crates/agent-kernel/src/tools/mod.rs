@@ -20,6 +20,8 @@ pub(crate) mod net;
 pub mod office;
 #[cfg(feature = "tree-sitter")]
 pub mod outline_ts;
+pub mod builtins;
+pub mod host_slots;
 pub mod plan;
 pub mod registry;
 pub mod remember;
