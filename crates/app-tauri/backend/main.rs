@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dev_config;
 mod ipc;
 mod kernel;
 
@@ -219,7 +220,7 @@ fn linux_nvidia_gpu() -> bool {
 
 #[cfg(target_os = "linux")]
 fn pin_linux_rendering_env() {
-    let dev = agent_llm::config::DevConfig::load(&crate::kernel::app_paths().config_dir)
+    let dev = crate::dev_config::DevConfig::load(&crate::kernel::app_paths().config_dir)
         .unwrap_or_default();
     let nvidia = linux_nvidia_gpu();
 

@@ -135,7 +135,6 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
- "dirs",
  "futures",
  "keyring",
  "reqwest 0.13.5",

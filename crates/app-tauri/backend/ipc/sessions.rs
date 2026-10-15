@@ -1147,7 +1147,7 @@ fn agent_session_inner(
         // file sits beside `config.toml` so a broken renderer flag can
         // be reverted by hand even while the GUI is dead.
         "get_dev_config" => {
-            let dev = agent_llm::config::DevConfig::load(&crate::kernel::app_paths().config_dir)
+            let dev = crate::dev_config::DevConfig::load(&crate::kernel::app_paths().config_dir)
                 .map_err(|e| format!("load dev config: {e}"))?;
             Ok(serde_json::to_value(&dev).map_err(|e| e.to_string())?)
         }
@@ -1155,7 +1155,7 @@ fn agent_session_inner(
             let Some(val) = payload else {
                 return Err("save_dev_config requires payload".into());
             };
-            let dev: agent_llm::config::DevConfig =
+            let dev: crate::dev_config::DevConfig =
                 serde_json::from_value(val).map_err(|e| format!("dev config: {e}"))?;
             // Validate enum-ish fields so a typo'd renderer can't silently
             // fall back to the default.
@@ -1166,7 +1166,7 @@ fn agent_session_inner(
                     ));
                 }
             }
-            agent_llm::config::DevConfig::save(&crate::kernel::app_paths().config_dir, &dev)
+            crate::dev_config::DevConfig::save(&crate::kernel::app_paths().config_dir, &dev)
                 .map_err(|e| format!("save dev config: {e}"))?;
             Ok(serde_json::json!({ "success": true }))
         }
