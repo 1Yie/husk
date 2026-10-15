@@ -971,12 +971,7 @@ fn to_rig_messages(
 
     for m in messages {
         // UI-only rows — render metadata, never context.
-        if m.role == Role::System
-            && matches!(
-                m.notice,
-                Some(NoticeKind::Compacted) | Some(NoticeKind::Plan)
-            )
-        {
+        if m.role == Role::System && m.notice.as_ref().is_some_and(NoticeKind::is_ui_only) {
             continue;
         }
         match m.role {

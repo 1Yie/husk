@@ -140,7 +140,7 @@ async fn submit_plan_emits_the_event_and_persists_the_row() {
         actor
             .history()
             .iter()
-            .any(|m| m.notice == Some(NoticeKind::Plan)),
+            .any(|m| m.notice == Some(NoticeKind::Card("plan".into()))),
         "the plan row was not persisted for replay"
     );
     // Pin the landing order the policy asks for: the plan card (event and
@@ -157,7 +157,7 @@ async fn submit_plan_emits_the_event_and_persists_the_row() {
     let hist = actor.history();
     let row_plan = hist
         .iter()
-        .position(|m| m.notice == Some(NoticeKind::Plan))
+        .position(|m| m.notice == Some(NoticeKind::Card("plan".into())))
         .unwrap();
     let row_final = hist
         .iter()
@@ -234,7 +234,7 @@ async fn an_unsubmitted_plan_gets_at_most_one_nudge() {
         !actor
             .history()
             .iter()
-            .any(|m| m.notice == Some(NoticeKind::Plan)),
+            .any(|m| m.notice == Some(NoticeKind::Card("plan".into()))),
         "nothing submitted → no plan row"
     );
 }

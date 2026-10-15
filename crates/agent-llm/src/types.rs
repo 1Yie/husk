@@ -71,8 +71,7 @@ impl ImageRef {
 /// instructions) — without it a reloaded view invents a user bubble the
 /// user never typed. Adapters strip this before the wire like
 /// [`ChatMessage::is_error`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoticeKind {
     /// Plain system line — e.g. "已被用户中断", a `/` command reply.
     System,
@@ -92,11 +91,49 @@ pub enum NoticeKind {
     /// compaction card. Dropped from every provider wire body: it is
     /// render metadata, never context for the model.
     Compacted,
-    /// UI-only plan card row (`ChatMessage::plan`) — the persisted
-    /// `submit_plan` payload the frontend replays as the plan card. The
-    /// model already has the plan in its own `submit_plan` tool call, so
-    /// adapters drop it from the wire like [`NoticeKind::Compacted`].
-    Plan,
+    /// UI-only product card (`ChatMessage::card`). Persisted as its kind
+    /// string (`"plan"`), so earlier snapshots read back unchanged. Adapters
+    /// drop it from the wire like [`NoticeKind::Compacted`].
+    Card(String),
+}
+
+impl NoticeKind {
+    const NAMES: [(&'static str, NoticeKind); 5] = [
+        ("system", NoticeKind::System),
+        ("error", NoticeKind::Error),
+        ("hidden", NoticeKind::Hidden),
+        ("compacted_memory", NoticeKind::CompactedMemory),
+        ("compacted", NoticeKind::Compacted),
+    ];
+
+    /// Render metadata only — never context for the model.
+    pub fn is_ui_only(&self) -> bool {
+        matches!(self, NoticeKind::Compacted | NoticeKind::Card(_))
+    }
+}
+
+impl Serialize for NoticeKind {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            NoticeKind::Card(kind) => s.serialize_str(kind),
+            known => {
+                let name = Self::NAMES.iter().find(|(_, k)| k == known).map(|(n, _)| *n);
+                s.serialize_str(name.expect("every non-card notice is named"))
+            }
+        }
+    }
+}
+
+/// Reserved names map to their variants; any other string is a card kind.
+impl<'de> Deserialize<'de> for NoticeKind {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(d)?;
+        Ok(Self::NAMES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, k)| k.clone())
+            .unwrap_or(NoticeKind::Card(name)))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,18 +390,16 @@ impl ChatMessage {
             duration_ms: None,
         }
     }
-    /// The persisted plan card — the `submit_plan` payload as a JSON string
-    /// (`summary`, `steps`, `verification`, `risks`) the frontend renders as
-    /// the plan card on replay. `NoticeKind::Plan` rows are dropped by every
-    /// adapter — the model sees the plan through its own `submit_plan` call.
-    pub fn plan(payload: String) -> Self {
+    /// A persisted UI-only card of `kind` whose `payload` the host's frontend
+    /// renders on replay. Adapters drop it: it is never model context.
+    pub fn card(kind: impl Into<String>, payload: String) -> Self {
         Self {
             role: Role::System,
             content: Some(payload),
             tool_calls: None,
             tool_call_id: None,
             is_error: None,
-            notice: Some(NoticeKind::Plan),
+            notice: Some(NoticeKind::Card(kind.into())),
             ts: Some(now_ms()),
             images: Vec::new(),
             reasoning: None,
@@ -884,6 +919,24 @@ mod tests {
         let old = r#"{"role":"system","content":"a context note"}"#;
         let back: ChatMessage = serde_json::from_str(old).unwrap();
         assert_eq!(back.notice, None);
+    }
+
+    /// Card kinds persist as their bare name, so a snapshot written before
+    /// cards were generic (`"notice":"plan"`) reads back as the same card.
+    #[test]
+    fn card_notices_keep_the_bare_kind_on_disk() {
+        let m = ChatMessage::card("plan", "{}".into());
+        let j = serde_json::to_string(&m).unwrap();
+        assert!(j.contains("\"notice\":\"plan\""), "{j}");
+        let old = r#"{"role":"system","content":"{}","notice":"plan"}"#;
+        let back: ChatMessage = serde_json::from_str(old).unwrap();
+        assert_eq!(back.notice, Some(NoticeKind::Card("plan".into())));
+        assert!(back.notice.unwrap().is_ui_only());
+        for (name, kind) in NoticeKind::NAMES {
+            let j = serde_json::to_string(&kind).unwrap();
+            assert_eq!(j, format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<NoticeKind>(&j).unwrap(), kind);
+        }
     }
 
     #[test]

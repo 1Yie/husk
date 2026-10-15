@@ -1587,11 +1587,11 @@ impl Engine {
         // `history[0]` is the rendered kernel system prompt — it survives
         // compaction verbatim, so feeding it to the compactor only burns
         // input tokens and risks protocol language leaking into the note.
-        // `NoticeKind::Compacted` rows are UI cards, not conversation —
-        // feeding their JSON payload to the compactor is pure noise.
+        // UI-only rows are cards, not conversation — feeding their JSON
+        // payload to the compactor is pure noise.
         let prefix_text: String = history[1..plan.prefix_end]
             .iter()
-            .filter(|m| m.notice != Some(agent_llm::types::NoticeKind::Compacted))
+            .filter(|m| !m.notice.as_ref().is_some_and(|n| n.is_ui_only()))
             .map(compaction::render_for_summary)
             .collect::<Vec<_>>()
             .join("\n---\n");

@@ -267,7 +267,7 @@ impl TurnPolicy for CodingPolicy {
                 .map(|card| {
                     let plan = serde_json::to_string(&card).unwrap_or_default();
                     Effect {
-                        history: Some(ChatMessage::plan(plan.clone())),
+                        history: Some(ChatMessage::card("plan", plan.clone())),
                         ui: Some(UiEvent::PlanSubmitted { plan }),
                     }
                 })
