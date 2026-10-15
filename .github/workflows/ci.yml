@@ -43,5 +43,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # `cargo metadata --no-deps` resolves nothing and compiles nothing.
+      # check-deps.sh: `cargo metadata --no-deps` resolves nothing and compiles
+      # nothing. check-kernel-deps.sh also runs `cargo tree`, which resolves the
+      # lockfile (no compile).
       - run: ./scripts/check-deps.sh
+      - run: ./scripts/check-kernel-deps.sh
