@@ -9,13 +9,13 @@ name = "husk-tui"
 path = "src/main.rs"
 
 [dependencies]
-agent-paths = { path = "../../../korei-ext/crates/agent-paths" }
-agent-kernel = { path = "../../../korei/crates/agent-kernel" }
+agent-paths = { workspace = true }
+agent-kernel = { workspace = true }
 agent-store = { path = "../agent-store" }
 husk-host = { path = "../husk-host" }
-agent-ipc = { path = "../../../korei/crates/agent-ipc" }
+agent-ipc = { workspace = true }
 agent-llm = { path = "../agent-llm" }
-agent-sandbox = { path = "../../../korei-ext/crates/agent-sandbox" }
+agent-sandbox = { workspace = true }
 tokio.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
@@ -27,6 +27,6 @@ unicode-width = "0.2"
 libc = "0.2"
 
 [dev-dependencies]
-agent-testkit = { path = "../../../korei/crates/agent-testkit" }
+agent-testkit = { workspace = true }
 async-trait.workspace = true
 tempfile = "3"

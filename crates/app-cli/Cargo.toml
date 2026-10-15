@@ -10,19 +10,19 @@ name = "husk-cli"
 path = "src/main.rs"
 
 [dependencies]
-agent-paths = { path = "../../../korei-ext/crates/agent-paths" }
-agent-kernel = { path = "../../../korei/crates/agent-kernel" }
+agent-paths = { workspace = true }
+agent-kernel = { workspace = true }
 agent-store = { path = "../agent-store" }
 husk-host = { path = "../husk-host" }
 agent-llm = { path = "../agent-llm" }
-agent-ipc = { path = "../../../korei/crates/agent-ipc" }
+agent-ipc = { workspace = true }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-agent-testkit = { path = "../../../korei/crates/agent-testkit" }
+agent-testkit = { workspace = true }
 tempfile = "3"
 async-trait.workspace = true
 futures.workspace = true

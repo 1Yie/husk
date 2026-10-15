@@ -12,14 +12,14 @@ path = "backend/main.rs"
 
 [dependencies]
 agent-context = { path = "../agent-context" }
-agent-kernel = { path = "../../../korei/crates/agent-kernel" }
+agent-kernel = { workspace = true }
 agent-store = { path = "../agent-store" }
 husk-host = { path = "../husk-host" }
 agent-skills = { path = "../agent-skills" }
-agent-ipc = { path = "../../../korei/crates/agent-ipc" }
+agent-ipc = { workspace = true }
 agent-llm = { path = "../agent-llm" }
-agent-paths = { path = "../../../korei-ext/crates/agent-paths" }
-agent-sandbox = { path = "../../../korei-ext/crates/agent-sandbox" }
+agent-paths = { workspace = true }
+agent-sandbox = { workspace = true }
 dirs.workspace = true
 base64.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }

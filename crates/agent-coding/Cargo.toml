@@ -6,13 +6,13 @@ description = "The coding product's semantics: plan/goal/blueprint contracts, th
 license = "MIT"
 
 [dependencies]
-agent-kernel = { path = "../../../korei/crates/agent-kernel" }
-agent-capabilities = { path = "../../../korei-ext/crates/agent-capabilities" }
+agent-kernel = { workspace = true }
+agent-capabilities = { workspace = true }
 agent-context = { path = "../agent-context" }
-agent-tools-fs = { path = "../../../korei-ext/crates/agent-tools-fs" }
-agent-ipc = { path = "../../../korei/crates/agent-ipc" }
+agent-tools-fs = { workspace = true }
+agent-ipc = { workspace = true }
 agent-skills = { path = "../agent-skills" }
-agent-llm-core = { path = "../../../korei/crates/agent-llm-core" }
+agent-llm-core = { workspace = true }
 globset.workspace = true
 toml.workspace = true
 serde.workspace = true
@@ -23,9 +23,9 @@ async-trait.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-agent-testkit = { path = "../../../korei/crates/agent-testkit" }
+agent-testkit = { workspace = true }
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
-agent-sandbox = { path = "../../../korei-ext/crates/agent-sandbox" }
+agent-sandbox = { workspace = true }
 tempfile = "3"

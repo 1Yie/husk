@@ -93,23 +93,39 @@ fn src_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// `src/` of a dependency, wherever cargo put it (a git checkout, a registry
+/// unpack or a local path).
+fn dependency_src(name: &str) -> PathBuf {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let out = std::process::Command::new(cargo)
+        .args(["metadata", "--format-version", "1", "--locked"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("cargo metadata runs");
+    assert!(out.status.success(), "cargo metadata failed");
+    let text = String::from_utf8(out.stdout).expect("utf-8 metadata");
+    let meta: serde_json::Value = serde_json::from_str(&text).expect("metadata is json");
+    let manifest = meta["packages"]
+        .as_array()
+        .and_then(|ps| ps.iter().find(|p| p["name"] == name))
+        .and_then(|p| p["manifest_path"].as_str())
+        .unwrap_or_else(|| panic!("{name} is not in the dependency graph"));
+    Path::new(manifest)
+        .parent()
+        .expect("manifest has a parent")
+        .join("src")
+}
+
 #[test]
 fn every_compat_field_is_wired_or_listed_as_debt() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     // Consumers live in this crate's adapters/factory, in the contract crate
-    // that owns `ProviderCompat`, and in the kernel (a sibling repository).
+    // that owns `ProviderCompat`, and in the kernel. The last two are
+    // dependencies, so ask cargo where their sources are.
     src_files(&manifest.join("src"), &mut files);
-    for sibling in [
-        "../../../korei/crates/agent-kernel/src",
-        "../../../korei/crates/agent-llm-core/src",
-    ] {
-        let dir = manifest.join(sibling);
-        assert!(
-            dir.is_dir(),
-            "kernel sources not found at {} — check out `korei` next to this repository",
-            dir.display()
-        );
+    for dep in ["agent-kernel", "agent-llm-core"] {
+        let dir = dependency_src(dep);
         src_files(&dir, &mut files);
     }
     let sources: Vec<String> = files

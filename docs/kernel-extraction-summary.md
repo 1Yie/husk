@@ -100,3 +100,14 @@ workspace/
 - 内核仓库的远端地址（`korei-ext/.github/workflows/ci.yml` 里是 `OWNER/korei` 占位）。
 - 三个仓库的 CI 彼此依赖兄弟目录，远端化之前 CI 跑不通。
 - 新仓库的提交历史是一次性导入，没有保留原 crate 的 git 历史。
+
+
+## 第五轮：真实依赖
+
+`korei` 与 `korei-ext` 已建为 GitHub 私有仓库（`1Yie/korei`、`1Yie/korei-ext`），三个仓库之间改为 git 依赖：
+
+- `agent-rs` 与 `korei-ext` 在 `[workspace.dependencies]` 里集中声明 `git = "ssh://git@github.com/1Yie/korei*.git", branch = "main"`。
+- 各仓库 `.cargo/config.toml` 设 `net.git-fetch-with-cli = true`，私有仓库走系统 git 与 SSH 配置。
+- 验证：把本地 `korei` / `korei-ext` 目录挪走后，`agent-rs` 仍能编译并通过测试。
+- `compat_wiring` 改为用 `cargo metadata` 找依赖源码，不再假设兄弟目录布局。
+- CI 需要仓库密钥 `KOREI_TOKEN`（能读取 korei / korei-ext 的 token），未配置前 CI 无法拉取私有依赖。

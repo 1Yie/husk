@@ -6,23 +6,23 @@ description = "Host layer over agent-kernel: session assembly, commands, mode ta
 license = "MIT"
 
 [dependencies]
-agent-kernel = { path = "../../../korei/crates/agent-kernel" }
-agent-capabilities = { path = "../../../korei-ext/crates/agent-capabilities", features = ["sandbox", "desktop"] }
+agent-kernel = { workspace = true }
+agent-capabilities = { workspace = true, features = ["sandbox", "desktop"] }
 agent-coding = { path = "../agent-coding" }
 agent-llm = { path = "../agent-llm" }
-agent-ipc = { path = "../../../korei/crates/agent-ipc" }
-agent-sandbox = { path = "../../../korei-ext/crates/agent-sandbox" }
+agent-ipc = { workspace = true }
+agent-sandbox = { workspace = true }
 agent-context = { path = "../agent-context" }
-agent-plugin = { path = "../../../korei-ext/crates/agent-plugin" }
+agent-plugin = { workspace = true }
 agent-skills = { path = "../agent-skills" }
 agent-store = { path = "../agent-store" }
-agent-tools-fs = { path = "../../../korei-ext/crates/agent-tools-fs" }
-agent-tools-shell = { path = "../../../korei-ext/crates/agent-tools-shell" }
-agent-tools-web = { path = "../../../korei-ext/crates/agent-tools-web" }
-agent-tools-computer = { path = "../../../korei-ext/crates/agent-tools-computer" }
-agent-tools-office = { path = "../../../korei-ext/crates/agent-tools-office" }
-agent-tools-serena = { path = "../../../korei-ext/crates/agent-tools-serena" }
-agent-paths = { path = "../../../korei-ext/crates/agent-paths" }
+agent-tools-fs = { workspace = true }
+agent-tools-shell = { workspace = true }
+agent-tools-web = { workspace = true }
+agent-tools-computer = { workspace = true }
+agent-tools-office = { workspace = true }
+agent-tools-serena = { workspace = true }
+agent-paths = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -36,8 +36,8 @@ ignore.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
-agent-testkit = { path = "../../../korei/crates/agent-testkit" }
-agent-computer = { path = "../../../korei-ext/crates/agent-computer" }
+agent-testkit = { workspace = true }
+agent-computer = { workspace = true }
 image.workspace = true
 
 [features]
