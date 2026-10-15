@@ -6,23 +6,23 @@ description = "Host layer over agent-kernel: session assembly, commands, mode ta
 license = "MIT"
 
 [dependencies]
-agent-kernel = { path = "../agent-kernel" }
-agent-capabilities = { path = "../agent-capabilities", features = ["sandbox", "desktop"] }
+agent-kernel = { path = "../../../korei/crates/agent-kernel" }
+agent-capabilities = { path = "../../../korei-ext/crates/agent-capabilities", features = ["sandbox", "desktop"] }
 agent-coding = { path = "../agent-coding" }
 agent-llm = { path = "../agent-llm" }
-agent-ipc = { path = "../agent-ipc" }
-agent-sandbox = { path = "../agent-sandbox" }
+agent-ipc = { path = "../../../korei/crates/agent-ipc" }
+agent-sandbox = { path = "../../../korei-ext/crates/agent-sandbox" }
 agent-context = { path = "../agent-context" }
-agent-plugin = { path = "../agent-plugin" }
+agent-plugin = { path = "../../../korei-ext/crates/agent-plugin" }
 agent-skills = { path = "../agent-skills" }
 agent-store = { path = "../agent-store" }
-agent-tools-fs = { path = "../agent-tools-fs" }
-agent-tools-shell = { path = "../agent-tools-shell" }
-agent-tools-web = { path = "../agent-tools-web" }
-agent-tools-computer = { path = "../agent-tools-computer" }
-agent-tools-office = { path = "../agent-tools-office" }
-agent-tools-serena = { path = "../agent-tools-serena" }
-agent-paths = { path = "../agent-paths" }
+agent-tools-fs = { path = "../../../korei-ext/crates/agent-tools-fs" }
+agent-tools-shell = { path = "../../../korei-ext/crates/agent-tools-shell" }
+agent-tools-web = { path = "../../../korei-ext/crates/agent-tools-web" }
+agent-tools-computer = { path = "../../../korei-ext/crates/agent-tools-computer" }
+agent-tools-office = { path = "../../../korei-ext/crates/agent-tools-office" }
+agent-tools-serena = { path = "../../../korei-ext/crates/agent-tools-serena" }
+agent-paths = { path = "../../../korei-ext/crates/agent-paths" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -36,8 +36,8 @@ ignore.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
-agent-testkit = { path = "../agent-testkit" }
-agent-computer = { path = "../agent-computer" }
+agent-testkit = { path = "../../../korei/crates/agent-testkit" }
+agent-computer = { path = "../../../korei-ext/crates/agent-computer" }
 image.workspace = true
 
 [features]

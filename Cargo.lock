@@ -75,7 +75,6 @@ dependencies = [
  "futures-util",
  "image",
  "reis",
- "tempfile",
  "tokio",
  "tracing",
  "windows 0.62.2",
@@ -114,7 +113,6 @@ version = "0.1.0"
 dependencies = [
  "agent-ipc",
  "agent-llm-core",
- "agent-testkit",
  "agent-tool",
  "anyhow",
  "async-trait",
@@ -188,7 +186,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -204,7 +201,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "libc",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -266,12 +262,10 @@ dependencies = [
  "agent-paths",
  "agent-tool",
  "anyhow",
- "async-trait",
  "futures",
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
 ]
 
@@ -293,7 +287,6 @@ dependencies = [
  "serde_json",
  "similar",
  "strsim",
- "tempfile",
  "tokio",
  "tree-sitter",
  "tree-sitter-javascript",
@@ -316,7 +309,6 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
 ]
 
@@ -331,7 +323,6 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
 ]
 
@@ -342,13 +333,10 @@ dependencies = [
  "agent-capabilities",
  "agent-sandbox",
  "agent-tool",
- "anyhow",
- "async-trait",
  "futures",
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
 ]
 
@@ -365,7 +353,6 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
 ]
 

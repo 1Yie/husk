@@ -43,8 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # check-deps.sh: `cargo metadata --no-deps` resolves nothing and compiles
-      # nothing. check-kernel-deps.sh also runs `cargo tree`, which resolves the
-      # lockfile (no compile).
+      # `cargo metadata --no-deps` resolves nothing and compiles nothing.
+      # The kernel (korei) and extensions (korei-ext) run their own laws in
+      # their own repositories.
       - run: ./scripts/check-deps.sh
-      - run: ./scripts/check-kernel-deps.sh

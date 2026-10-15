@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Product dependency law. The kernel (korei) and the extensions (korei-ext) live
+# in sibling repositories and police themselves; this table covers only the
+# crates that stay here, and allows them to name those siblings.
+#
 # Workspace dependency law — fails when a crate depends on an internal crate it
 # is not allowed to. Only normal/build edges count; dev-dependencies are free.
 #
@@ -10,55 +14,27 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 declare -A ALLOW=(
-  # leaves — know nothing about the rest of the workspace
-  [agent-ipc]=""
-  [agent-llm-core]=""
   # provider implementations (rig, HTTP, config, credentials) over the contract
   [agent-llm]="agent-llm-core"
-  [agent-sandbox]=""
+  # knowledge and storage — no kernel, no products
   [agent-context]=""
-  [agent-computer]=""
-  # extension ecosystem
-  [agent-plugin]="agent-llm-core agent-paths agent-sandbox"
-  # the tool contract — a leaf that knows no product, only the wire types
-  [agent-tool]="agent-llm-core"
-  # optional host adapters — never a kernel dependency
-  [agent-capabilities]="agent-computer agent-paths agent-sandbox agent-tool"
-  # skills are knowledge, not capability — no kernel, no products
   [agent-skills]=""
-  # where the app keeps its files — pure path resolution, names no product
-  [agent-paths]=""
   # the conversation repository — names no product and no kernel type
   [agent-store]="agent-llm-core"
-  # workspace file tools — generic over the context, so nothing of the kernel
-  [agent-tools-fs]="agent-capabilities agent-tool"
-  # networking tools — same pattern
-  [agent-tools-web]="agent-capabilities agent-llm-core agent-tool"
-  # process tools — these also need the sandbox seam
-  [agent-tools-shell]="agent-capabilities agent-sandbox agent-tool"
-  # screen tools — the desktop seam is optional by design
-  [agent-tools-computer]="agent-capabilities agent-computer agent-llm-core agent-paths agent-tool"
-  # document tools — share the shell package's sandbox derivation
-  [agent-tools-office]="agent-capabilities agent-sandbox agent-tool agent-tools-shell"
-  # serena MCP bridge — spawns a stdio child, generic over the context
-  [agent-tools-serena]="agent-capabilities agent-tool"
   # the coding product's semantics — depends on the kernel, never the reverse
   [agent-coding]="agent-capabilities agent-context agent-ipc agent-kernel agent-llm-core agent-skills agent-tools-fs"
   # host layer over the kernel — session assembly, commands, modes, sandbox prefs
   [husk-host]="agent-capabilities agent-coding agent-skills agent-store agent-context agent-ipc agent-kernel agent-llm agent-llm-core agent-paths agent-plugin agent-sandbox agent-tools-computer agent-tools-fs agent-tools-office agent-tools-serena agent-tools-shell agent-tools-web"
-  # runtime
-  [agent-kernel]="agent-ipc agent-llm-core agent-tool"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths agent-store husk-host"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host"
+  [app-tauri]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host agent-plugin agent-skills agent-context agent-llm-core"
+  [app-desktop]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host"
   [husk]="agent-context agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-skills agent-store husk-host"
-  # the second-product acceptance test (T11): kernel + llm only, by design
-  # dev-only test support — reached only through [dev-dependencies]
-  [agent-testkit]="agent-llm-core"
 )
 
 # Crates nobody may depend on (frontends).
-LEAF_PRODUCTS=" app-cli app-tui husk agent-testkit "
+LEAF_PRODUCTS=" app-cli app-tui husk "
 
 meta=$(cargo metadata --no-deps --format-version 1)
 fail=0
@@ -84,7 +60,7 @@ done < <(jq -r '
   | .packages[]
   | [ .name,
       ([ .dependencies[]
-         | select(.kind != "dev" and (.name as $n | $ws | index($n)))
+         | select(.kind != "dev" and (.name | test("^(agent-|husk-)")))
          | .name ] | unique | join(" ")) ]
   | @tsv' <<<"$meta")
 

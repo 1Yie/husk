@@ -3,7 +3,8 @@
 //! "defaults to unset" indistinguishable at runtime. This test is the forcing
 //! function the review asked for:
 //!
-//!   a field must EITHER have a reader outside `config.rs` (adapter call or a
+//!   a field must EITHER have a reader outside its definition (`compat.rs` in
+//!   `agent-llm-core`; adapter call or a
 //!   helper that adapters call) OR sit in `KNOWN_DEAD` — declared upstream,
 //!   not wired here yet. Adding a field without a consumer fails red; wiring
 //!   a dead field means removing it from `KNOWN_DEAD`, which is how the debt
@@ -83,7 +84,9 @@ fn src_files(root: &Path, out: &mut Vec<PathBuf>) {
         if path.is_dir() {
             src_files(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs")
-            && path.file_name().is_some_and(|n| n != "config.rs")
+            && path
+                .file_name()
+                .is_some_and(|n| n != "config.rs" && n != "compat.rs")
         {
             out.push(path);
         }
@@ -94,9 +97,21 @@ fn src_files(root: &Path, out: &mut Vec<PathBuf>) {
 fn every_compat_field_is_wired_or_listed_as_debt() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    // Consumers live in this crate's adapters/factory and in the kernel.
+    // Consumers live in this crate's adapters/factory, in the contract crate
+    // that owns `ProviderCompat`, and in the kernel (a sibling repository).
     src_files(&manifest.join("src"), &mut files);
-    src_files(&manifest.join("../agent-kernel/src"), &mut files);
+    for sibling in [
+        "../../../korei/crates/agent-kernel/src",
+        "../../../korei/crates/agent-llm-core/src",
+    ] {
+        let dir = manifest.join(sibling);
+        assert!(
+            dir.is_dir(),
+            "kernel sources not found at {} — check out `korei` next to this repository",
+            dir.display()
+        );
+        src_files(&dir, &mut files);
+    }
     let sources: Vec<String> = files
         .iter()
         .map(|p| std::fs::read_to_string(p).expect("source file readable"))

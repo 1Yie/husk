@@ -6,7 +6,7 @@ description = "Pluggable LLM provider layer: normalized StreamChunk over OpenAI-
 license = "MIT"
 
 [dependencies]
-agent-llm-core = { path = "../agent-llm-core" }
+agent-llm-core = { path = "../../../korei/crates/agent-llm-core" }
 async-trait.workspace = true
 futures.workspace = true
 serde.workspace = true
