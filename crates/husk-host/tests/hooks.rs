@@ -9,7 +9,8 @@
 
 use std::sync::Arc;
 
-use agent_ipc::{UiCommand, UiEvent};
+use agent_ipc::UiEvent;
+use husk_host::command::UiCommand;
 use agent_kernel::hooks::HookChain;
 use husk_host::plugins::chain_from_specs;
 use husk_host::session::{SessionActor, SessionConfig};
@@ -52,7 +53,7 @@ fn script(ws: &std::path::Path, id: &str, name: &str, body: &str) {
 fn actor_for(
     ws: &std::path::Path,
     stub: Arc<ScriptedProvider>,
-) -> (SessionActor, agent_kernel::channels::UiChannels) {
+) -> (SessionActor, agent_kernel::channels::UiChannels<husk_host::command::UiCommand>) {
     SessionActor::spawn(SessionConfig {
         workspace_root: ws.to_path_buf(),
         paths: agent_paths::AppPaths::for_tests("kernel"),

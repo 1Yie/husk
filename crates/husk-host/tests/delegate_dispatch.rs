@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use husk_host::session::{SessionActor, SessionConfig};
-use agent_ipc::UiCommand;
+use husk_host::command::UiCommand;
 use agent_llm::types::StreamChunk;
 use agent_testkit::ScriptedProvider;
 

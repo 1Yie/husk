@@ -22,21 +22,21 @@ fn main() {
     mgr.open_session(112);
     let tx = mgr.active().expect("active handle").cmd_tx.clone();
     // Match the live session: cline + deepseek-v4.1-flash + max thinking + auto.
-    tx.try_send(agent_ipc::UiCommand::SetModel {
+    tx.try_send(husk_host::command::UiCommand::SetModel {
         provider: "cline(chat compat)".into(),
         model: "deepseek/deepseek-v4.1-flash".into(),
     })
     .unwrap();
-    tx.try_send(agent_ipc::UiCommand::SetThinkingLevel {
+    tx.try_send(husk_host::command::UiCommand::SetThinkingLevel {
         level: "max".into(),
     })
     .unwrap();
-    tx.try_send(agent_ipc::UiCommand::SetPermissionMode {
+    tx.try_send(husk_host::command::UiCommand::SetPermissionMode {
         mode: "auto".into(),
     })
     .unwrap();
     std::thread::sleep(Duration::from_secs(1));
-    tx.try_send(agent_ipc::UiCommand::Prompt {
+    tx.try_send(husk_host::command::UiCommand::Prompt {
         text: "/slugify Java 实践".into(),
     })
     .unwrap();

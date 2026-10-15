@@ -2,7 +2,8 @@
 //! stream bookkeeping, modal routing, and the keymap — every path returns
 //! `UiCommand`s so `dispatch` stays the single routing chokepoint.
 
-use agent_ipc::{AgentState, UiCommand, UiEvent};
+use agent_ipc::{AgentState, UiEvent};
+use husk_host::command::UiCommand;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::app::{fail_tail, App, ChildTool, LiveItem, StreamText, TodoItem};

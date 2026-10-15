@@ -25,7 +25,7 @@ use crate::tools::{ToolCtx, ToolRegistry};
 /// The engine's observable side — channels + sink for UI events.
 pub struct EngineIo {
     pub ui_tx: crate::channels::UiSink,
-    /// Mid-turn steering texts — SessionActor forwards `UiCommand::Steer`
+    /// Mid-turn steering texts — the host forwards its steer command
     /// into this channel; the engine drains it between tool calls.
     pub steer_rx: mpsc::Receiver<String>,
     /// Cooperative cancel flag — the UI/actor sets it (bypassing the command

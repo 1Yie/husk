@@ -16,7 +16,8 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_ipc::{UiCommand, UiEvent};
+use agent_ipc::UiEvent;
+use husk_host::command::UiCommand;
 use husk_host::session::{SessionActor, SessionConfig};
 use husk_host::sandbox_prefs;
 use agent_llm::{AppConfig, ProviderFactory};

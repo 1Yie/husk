@@ -115,7 +115,7 @@ fn project_name(root: &std::path::Path) -> String {
 pub struct SessionHandle {
     #[allow(dead_code)]
     pub id: i64,
-    pub cmd_tx: tokio::sync::mpsc::Sender<agent_ipc::UiCommand>,
+    pub cmd_tx: tokio::sync::mpsc::Sender<crate::command::UiCommand>,
     pub decision: Arc<Mutex<Option<(u64, bool)>>>,
     /// `AnswerQuestion` resolves the parked ask_question oneshot — same
     /// bypass-the-pump channel as `decision`.
@@ -1972,7 +1972,7 @@ impl SessionManager {
     /// for ITS OWN provider/model — broadcasting the mirror once re-pointed
     /// every session at the active one's model. Returns `(notified, live)`.
     fn notify_live_actors(&self) -> (usize, usize) {
-        let cmd = agent_ipc::UiCommand::ReloadModel;
+        let cmd = crate::command::UiCommand::ReloadModel;
         let mut notified = 0;
         let mut live = 0;
         for h in self
@@ -2337,7 +2337,7 @@ impl SessionManager {
         for h in live {
             let _ = h
                 .cmd_tx
-                .try_send(agent_ipc::UiCommand::SetBlueprintEnabled { enabled: v });
+                .try_send(crate::command::UiCommand::SetBlueprintEnabled { enabled: v });
         }
         // A no-op memory update re-saves the whole prefs row — which now
         // carries the flag.
@@ -2392,7 +2392,7 @@ impl SessionManager {
         for handle in live {
             let _ = handle
                 .cmd_tx
-                .try_send(agent_ipc::UiCommand::SetMemory { enabled, distill });
+                .try_send(crate::command::UiCommand::SetMemory { enabled, distill });
         }
     }
 
@@ -2410,7 +2410,7 @@ impl SessionManager {
         for handle in live {
             let _ = handle
                 .cmd_tx
-                .try_send(agent_ipc::UiCommand::SetCompactAt { fraction: frac });
+                .try_send(crate::command::UiCommand::SetCompactAt { fraction: frac });
         }
     }
 
@@ -2718,7 +2718,7 @@ max = "max"
 
         let mut sent = Vec::new();
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if let agent_ipc::UiCommand::ReloadModel = cmd {
+            if let crate::command::UiCommand::ReloadModel = cmd {
                 sent.push(());
             }
         }
@@ -2960,7 +2960,7 @@ max = "max"
             mode: String,
         ) -> (
             SessionHandle,
-            tokio::sync::mpsc::Receiver<agent_ipc::UiCommand>,
+            tokio::sync::mpsc::Receiver<crate::command::UiCommand>,
         ) {
             let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(4);
             let (ui, _ui_rx) = agent_kernel::channels::UiSink::channel();

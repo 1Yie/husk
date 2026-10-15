@@ -1,7 +1,7 @@
 //! Wire codec: serde JSON + length-prefixed framing.
 //!
 //! Layout per frame: `u32 BE length` + `length` bytes of JSON — always a serialized
-//! `UiCommand`/`UiEvent` enum.
+//! command or `UiEvent` value.
 
 use thiserror::Error;
 

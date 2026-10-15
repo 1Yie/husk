@@ -4,7 +4,8 @@
 //! bypass the command pump (direct flag / channel) so they are not queued behind a
 //! running turn.
 
-use agent_ipc::{UiCommand, UiEvent};
+use agent_ipc::UiEvent;
+use husk_host::command::UiCommand;
 use tauri::State;
 
 use crate::kernel::KernelState;

@@ -10,7 +10,7 @@
 //!    names (`/review …` → FeedToAgent). Unknown `/x` falls through to
 //!    the LLM — same behavior as the desktop.
 
-use agent_ipc::UiCommand;
+use husk_host::command::UiCommand;
 
 use crate::app::App;
 use crate::cells::Cell;

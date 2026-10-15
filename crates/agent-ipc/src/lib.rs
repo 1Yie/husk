@@ -1,8 +1,8 @@
 //! agent-ipc — the channel contract between kernel and every frontend.
 //!
-//! `UiCommand`/`UiEvent` live here, not in the kernel: `agent-kernel` publishes
-//! and consumes them, the frontends translate, and no frontend imports kernel
-//! types for event shapes. `AgentEvent` — the kernel-internal sampler→session
+//! `UiEvent` lives here, not in the kernel: `agent-kernel` publishes it, the
+//! frontends translate, and no frontend imports kernel types for event shapes.
+//! Commands are each product's own; the kernel's command channel is generic. `AgentEvent` — the kernel-internal sampler→session
 //! feedback — stays in `agent-kernel/src/channels.rs`; it never crosses a
 //! transport.
 
@@ -12,4 +12,4 @@
 pub mod codec;
 pub mod events;
 
-pub use events::{AgentState, UiCommand, UiEvent};
+pub use events::{AgentState, UiEvent};

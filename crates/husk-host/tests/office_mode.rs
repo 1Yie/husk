@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use agent_ipc::UiCommand;
+use husk_host::command::UiCommand;
 use husk_host::mode::AgentMode;
 use husk_host::session::{SessionActor, SessionConfig};
 use agent_testkit::ScriptedProvider;
@@ -15,7 +15,7 @@ fn spawn(
     dir: &std::path::Path,
     mode: &str,
     stub: Arc<ScriptedProvider>,
-) -> (SessionActor, agent_kernel::channels::UiChannels) {
+) -> (SessionActor, agent_kernel::channels::UiChannels<husk_host::command::UiCommand>) {
     SessionActor::spawn(SessionConfig {
         workspace_root: dir.to_path_buf(),
         paths: agent_paths::AppPaths::for_tests("kernel"),

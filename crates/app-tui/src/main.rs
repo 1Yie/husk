@@ -21,7 +21,7 @@ use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_ipc::UiCommand;
+use husk_host::command::UiCommand;
 use agent_kernel::channels::UiReceiver;
 use husk_host::sandbox_prefs;
 use husk_host::session::{SessionActor, SessionConfig};

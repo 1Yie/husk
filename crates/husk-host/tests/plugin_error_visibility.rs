@@ -6,7 +6,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, RwLock};
 
-use agent_ipc::UiCommand;
+use husk_host::command::UiCommand;
 use husk_host::session::{SessionActor, SessionConfig};
 use agent_llm::types::{Role, StreamChunk};
 use agent_testkit::ScriptedProvider;

@@ -4,7 +4,8 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use agent_ipc::{AgentState, UiCommand};
+use agent_ipc::AgentState;
+use husk_host::command::UiCommand;
 use agent_kernel::channels::UiReceiver;
 
 use ratatui::text::Line;

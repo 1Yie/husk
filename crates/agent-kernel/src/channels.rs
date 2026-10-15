@@ -2,7 +2,7 @@
 //! channel between the shell and the actor.
 //!
 //! ```text
-//! UI ──UiCommand──▶ SessionActor ──sampling──▶ SamplerActor (agent-llm)
+//! UI ──command───▶ SessionActor ──sampling──▶ SamplerActor (agent-llm)
 //! UI ◀─UiEvent───── SessionActor ◀─chunks────
 //! ```
 //!
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-use agent_ipc::{UiCommand, UiEvent};
+use agent_ipc::UiEvent;
 use agent_llm::StreamChunk;
 
 /// Internal sampler→session feedback — the kernel-internal counterpart that
@@ -294,20 +294,21 @@ fn snapshot(stats: &UiStats) -> UiStatsSnapshot {
     }
 }
 
-/// UI-facing endpoints created by [`channels`].
-pub struct UiChannels {
-    /// UI → kernel commands.
-    pub cmd_rx: mpsc::Receiver<UiCommand>,
+/// UI-facing endpoints created by [`ui_channels`]. `C` is the host's command
+/// type; the kernel never inspects it.
+pub struct UiChannels<C> {
+    /// UI → session commands.
+    pub cmd_rx: mpsc::Receiver<C>,
     /// Kernel → UI events.
     pub event_tx: UiSink,
     /// The frontend's send/recv halves (kept for the bridge layer).
-    pub cmd_tx: mpsc::Sender<UiCommand>,
+    pub cmd_tx: mpsc::Sender<C>,
     pub event_rx: UiReceiver,
 }
 
 /// Create the UI channel pair. The bridge splits `UiChannels` into
 /// its command-sender and event-receiver halves.
-pub fn ui_channels() -> UiChannels {
+pub fn ui_channels<C>() -> UiChannels<C> {
     let (cmd_tx, cmd_rx) = mpsc::channel(CMD_CHANNEL_CAP);
     let (event_tx, event_rx) = UiSink::channel();
     UiChannels {

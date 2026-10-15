@@ -12,7 +12,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use agent_ipc::UiCommand;
+use husk_host::command::UiCommand;
 
 pub enum Modal {
     Approval {
@@ -418,7 +418,7 @@ impl Modal {
                 items,
                 selected,
             } => {
-                use agent_ipc::UiCommand;
+                use husk_host::command::UiCommand;
                 match key.code {
                     KeyCode::Esc => {
                         if *stage == 0 {

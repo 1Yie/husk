@@ -1,7 +1,8 @@
 //! Storage tombstones stop deleted actors from recreating history or draining
 //! queued tasks. The real actor path also verifies durable /clear behavior.
 
-use agent_ipc::{UiCommand, UiEvent};
+use agent_ipc::UiEvent;
+use husk_host::command::UiCommand;
 use husk_host::session::{SessionActor, SessionConfig};
 use agent_store::SessionStore;
 use agent_llm::types::StreamChunk;

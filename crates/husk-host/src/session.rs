@@ -14,7 +14,8 @@ use agent_context::{
     git_snapshot, memory::TurnRecord, MemoryStore, TrackingMode, TurnDistiller,
     WorkspaceScanner,
 };
-use agent_ipc::{AgentState, UiCommand, UiEvent};
+use agent_ipc::{AgentState, UiEvent};
+use crate::command::UiCommand;
 use agent_llm::types::ChatMessage;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -372,7 +373,7 @@ pub struct SessionActor {
 impl SessionActor {
     /// Boot a session: scan workspace + git snapshot → render system prompt →
     /// return the actor plus the UI channel endpoints.
-    pub fn spawn(cfg: SessionConfig) -> (Self, agent_kernel::channels::UiChannels) {
+    pub fn spawn(cfg: SessionConfig) -> (Self, agent_kernel::channels::UiChannels<crate::command::UiCommand>) {
         Self::spawn_inner(cfg, None, 0)
     }
 
@@ -381,7 +382,7 @@ impl SessionActor {
     pub fn spawn_with_id(
         cfg: SessionConfig,
         session_id: i64,
-    ) -> (Self, agent_kernel::channels::UiChannels) {
+    ) -> (Self, agent_kernel::channels::UiChannels<crate::command::UiCommand>) {
         Self::spawn_inner(cfg, None, session_id)
     }
 
@@ -392,7 +393,7 @@ impl SessionActor {
         cfg: SessionConfig,
         session_id: i64,
         history: Vec<ChatMessage>,
-    ) -> (Self, agent_kernel::channels::UiChannels) {
+    ) -> (Self, agent_kernel::channels::UiChannels<crate::command::UiCommand>) {
         // Sanitize persisted history (a snapshot poisoned by an old bug
         // replays into every later request and crashes devin's upstream as
         // `invalid_argument`):
@@ -463,7 +464,7 @@ impl SessionActor {
         cfg: SessionConfig,
         prior_history: Option<Vec<ChatMessage>>,
         session_id: i64,
-    ) -> (Self, agent_kernel::channels::UiChannels) {
+    ) -> (Self, agent_kernel::channels::UiChannels<crate::command::UiCommand>) {
         let mut channels = ui_channels();
 
         // Workspace skeleton + git snapshot.
