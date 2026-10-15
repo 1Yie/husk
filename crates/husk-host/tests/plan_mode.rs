@@ -133,8 +133,10 @@ async fn submit_plan_emits_the_event_and_persists_the_row() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, UiEvent::PlanSubmitted { plan } if plan.contains("把 memory 存储拆成独立模块"))),
-        "no PlanSubmitted event"
+            .any(|e| matches!(e, UiEvent::Custom { kind, payload }
+                if kind == "plan_submitted"
+                    && payload["plan"].as_str().unwrap_or_default().contains("把 memory 存储拆成独立模块"))),
+        "no plan_submitted event"
     );
     assert!(
         actor
@@ -147,7 +149,7 @@ async fn submit_plan_emits_the_event_and_persists_the_row() {
     // row) goes in ahead of the final assistant message.
     let ev_plan = events
         .iter()
-        .position(|e| matches!(e, UiEvent::PlanSubmitted { .. }))
+        .position(|e| matches!(e, UiEvent::Custom { kind, .. } if kind == "plan_submitted"))
         .unwrap();
     let ev_final = events
         .iter()

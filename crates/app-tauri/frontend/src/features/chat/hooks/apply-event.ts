@@ -632,12 +632,12 @@ export function applyEvent(
     items.push({ kind: "system", text: `⚠ ${ev.Error}`, standalone: !v.turnOpen, ts: Date.now() });
     return { ...v, items, streaming: false };
   }
-  if ("PlanSubmitted" in ev) {
+  if ("Custom" in ev && ev.Custom.kind === "plan_submitted") {
     // The plan card IS the deliverable — it lands after the turn's final
     // assistant text so it folds into this turn and closes it.
     closeOpenThinking(items);
     try {
-      const plan = JSON.parse(ev.PlanSubmitted.plan);
+      const plan = JSON.parse((ev.Custom.payload as { plan: string }).plan);
       items.push({ kind: "plan", plan, ts: Date.now() });
     } catch {
       // A malformed payload degrades to a system line, not a dropped turn.
@@ -645,11 +645,11 @@ export function applyEvent(
     }
     return { ...v, items };
   }
-  if ("BlueprintReport" in ev) {
+  if ("Custom" in ev && ev.Custom.kind === "blueprint_report") {
     // Same shape the persisted notice row replays as: errors draw as a
     // `⚠` line, warnings-only as a plain system line.
     closeOpenThinking(items);
-    const { errors, text } = ev.BlueprintReport;
+    const { errors, text } = ev.Custom.payload as { errors: number; text: string };
     items.push({ kind: "system", text: errors > 0 ? `⚠ ${text}` : text, standalone: !v.turnOpen, ts: Date.now() });
     return { ...v, items };
   }

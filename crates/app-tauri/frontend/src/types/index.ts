@@ -43,6 +43,12 @@ export interface PlanPayload {
   architecture?: string;
 }
 
+/** Product events the kernel forwards untouched (`UiEvent::Custom`). */
+export type CustomEvent =
+  | { kind: "plan_submitted"; payload: { plan: string } }
+  | { kind: "blueprint_report"; payload: { errors: number; warnings: number; text: string } }
+  | { kind: string; payload: unknown };
+
 export type UiEvent =
   | { StateChanged: AgentState }
   | {
@@ -98,8 +104,7 @@ export type UiEvent =
       };
     }
   | { CompactionStarted: { manual: boolean } }
-  | { PlanSubmitted: { plan: string } }
-  | { BlueprintReport: { errors: number; warnings: number; text: string } }
+  | { Custom: CustomEvent }
   | "TurnRetry"
   | { QueuedPrompts: { items: string[] } };
 

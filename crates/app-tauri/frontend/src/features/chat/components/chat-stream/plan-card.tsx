@@ -1,5 +1,5 @@
 // The plan-mode deliverable card — rendered from the `submit_plan` contract
-// payload (live `PlanSubmitted` event or the persisted `NoticeKind::Plan`
+// payload (live `plan_submitted` event or the persisted `"plan"` card notice
 // row on replay). Always expanded: the plan IS the answer, not a footnote.
 import { memo } from "react";
 import { ClipboardList, CheckCircle2, AlertTriangle, FileCode2, Boxes } from "lucide-react";

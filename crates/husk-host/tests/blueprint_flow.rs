@@ -173,8 +173,11 @@ async fn rule_violation_buys_one_rework_round_then_reports() {
     let mut idx = 0;
     while let Some(ev) = ch.event_rx.recv().await {
         match ev {
-            UiEvent::BlueprintReport { errors, text, .. } => {
-                report = Some((errors, text));
+            UiEvent::Custom { kind, payload } if kind == "blueprint_report" => {
+                report = Some((
+                    payload["errors"].as_u64().unwrap(),
+                    payload["text"].as_str().unwrap().to_string(),
+                ));
                 report_at = Some(idx);
             }
             UiEvent::AssistantMessage(_) => final_at = Some(idx),
@@ -187,7 +190,7 @@ async fn rule_violation_buys_one_rework_round_then_reports() {
         report_at.unwrap() > final_at.unwrap(),
         "report must follow the final message"
     );
-    let (errors, text) = report.expect("BlueprintReport emitted");
+    let (errors, text) = report.expect("blueprint_report emitted");
     assert_eq!(errors, 1);
     assert!(text.contains("belongs to no node"), "{text}");
     assert!(
@@ -234,7 +237,7 @@ async fn fixed_violation_ends_clean() {
     ch.event_rx.close();
     while let Some(ev) = ch.event_rx.recv().await {
         assert!(
-            !matches!(ev, UiEvent::BlueprintReport { .. }),
+            !matches!(&ev, UiEvent::Custom { kind, .. } if kind == "blueprint_report"),
             "clean turn must not report: {ev:?}"
         );
     }

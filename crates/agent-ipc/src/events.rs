@@ -309,20 +309,11 @@ pub enum UiEvent {
     /// sample so the UI can draw the running card while the (potentially
     /// slow) pass runs. `manual` mirrors `Compacted`; no accounting yet.
     CompactionStarted { manual: bool },
-    /// The model called `submit_plan` — `plan` is the contract payload as a
-    /// JSON string (`summary`, `steps`, `verification`, `risks`). Emitted
-    /// after the turn's final `AssistantMessage` so the plan card lands last
-    /// and the composer can offer the approve/revise/discard strip off the
-    /// last item.
-    PlanSubmitted { plan: String },
-    /// The turn's writes broke `.blueprint/` rules or moved code without
-    /// its node file — emitted after the final `AssistantMessage`. `text` is
-    /// the rendered report (also persisted as a notice row, so the model
-    /// sees it next turn and a replay draws it as a system line).
-    BlueprintReport {
-        errors: usize,
-        warnings: usize,
-        text: String,
+    /// A product-defined event. The kernel forwards it untouched; `kind`
+    /// names it for the host's frontends and `payload` is its data.
+    Custom {
+        kind: String,
+        payload: serde_json::Value,
     },
     /// A `Retry` command rewound the session to the last user prompt —
     /// the UI drops the retried turn's items before the fresh

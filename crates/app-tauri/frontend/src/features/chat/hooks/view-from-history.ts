@@ -371,7 +371,7 @@ function foldMessage(
         if (card) v.items.push({ ...card, ts: m.ts ?? undefined, hi });
       } else if (m.notice === "plan") {
         // The `submit_plan` payload replays as the same plan card the live
-        // `PlanSubmitted` event drew — inside the turn it ended.
+        // `plan_submitted` event drew — inside the turn it ended.
         try {
           const plan = JSON.parse(m.content ?? "");
           v.items.push({ kind: "plan", plan, ts: m.ts ?? undefined, hi });

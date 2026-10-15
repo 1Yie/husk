@@ -268,7 +268,10 @@ impl TurnPolicy for CodingPolicy {
                     let plan = serde_json::to_string(&card).unwrap_or_default();
                     Effect {
                         history: Some(ChatMessage::card("plan", plan.clone())),
-                        ui: Some(UiEvent::PlanSubmitted { plan }),
+                        ui: Some(UiEvent::Custom {
+                            kind: "plan_submitted".into(),
+                            payload: serde_json::json!({ "plan": plan }),
+                        }),
                     }
                 })
                 .into_iter()
@@ -285,10 +288,13 @@ impl TurnPolicy for CodingPolicy {
                     } else {
                         ChatMessage::notice(text.clone())
                     }),
-                    ui: Some(UiEvent::BlueprintReport {
-                        errors,
-                        warnings: r.issues.len() - errors,
-                        text,
+                    ui: Some(UiEvent::Custom {
+                        kind: "blueprint_report".into(),
+                        payload: serde_json::json!({
+                            "errors": errors,
+                            "warnings": r.issues.len() - errors,
+                            "text": text,
+                        }),
                     }),
                 }
             })

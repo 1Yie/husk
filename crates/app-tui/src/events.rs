@@ -235,12 +235,18 @@ impl App {
                 ));
             }
             UiEvent::QueuedPrompts { items } => self.queued = items,
-            UiEvent::PlanSubmitted { plan } => self.commit(Cell::Plan(plan)),
-            UiEvent::BlueprintReport { errors, text, .. } => self.commit(if errors > 0 {
-                Cell::Err(text)
-            } else {
-                Cell::Sys(text)
-            }),
+            UiEvent::Custom { kind, payload } => {
+                let text = |key: &str| payload[key].as_str().unwrap_or_default().to_string();
+                match kind.as_str() {
+                    "plan_submitted" => self.commit(Cell::Plan(text("plan"))),
+                    "blueprint_report" => self.commit(if payload["errors"].as_u64() > Some(0) {
+                        Cell::Err(text("text"))
+                    } else {
+                        Cell::Sys(text("text"))
+                    }),
+                    _ => {}
+                }
+            }
             UiEvent::SessionToolWhitelisted { tool_name, stopped } => {
                 self.commit(Cell::Note(if stopped {
                     format!("{tool_name} 移出本会话白名单")
