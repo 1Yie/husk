@@ -719,6 +719,9 @@ impl SessionActor {
             crate::sandbox_prefs::SwitchableSandbox::new(Arc::from(detected))
                 .with_deny_read(crate::sandbox_prefs::protected_paths(&cfg.paths)),
         ));
+        // Background services belong to this session: its `service` tool lists
+        // and stops only its own, and they are killed when the session drops.
+        agent_tools_shell::services::install_registry(&mut tool_ctx);
         let memory_handle = agent_coding::remember::MemoryHandle::default();
         memory_handle.set(memory.clone());
         memory_handle.install(&mut tool_ctx);

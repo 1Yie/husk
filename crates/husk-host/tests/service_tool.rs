@@ -181,3 +181,55 @@ fn sandbox_disabled_routes_to_none() {
     };
     assert_eq!(ctx.sandbox().unwrap().id(), on);
 }
+
+/// A session sees only its own services: each context with its own registry
+/// lists nothing of the other's, and stopping by the other's id is refused.
+#[test]
+fn services_are_scoped_to_the_owning_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = ctx_with_sandbox(dir.path());
+    agent_tools_shell::services::install_registry(&mut a);
+    let mut b = ctx_with_sandbox(dir.path());
+    agent_tools_shell::services::install_registry(&mut b);
+    let (a, b) = (Arc::new(a), Arc::new(b));
+
+    let out = call(
+        "bash",
+        serde_json::json!({ "command": "sleep 60", "persistent": true }),
+        a.clone(),
+    );
+    let id = out
+        .split_whitespace()
+        .find(|t| t.starts_with("id="))
+        .expect("spawn returns an id")
+        .trim_start_matches("id=")
+        .to_string();
+
+    let theirs = call(
+        "service",
+        serde_json::json!({ "action": "list" }),
+        b.clone(),
+    );
+    assert!(theirs.contains("no services running"), "leaked: {theirs}");
+    let stop = call(
+        "service",
+        serde_json::json!({ "action": "stop", "id": id }),
+        b,
+    );
+    assert!(
+        stop.contains("ERR") || stop.contains("no service"),
+        "{stop}"
+    );
+
+    let mine = call(
+        "service",
+        serde_json::json!({ "action": "list" }),
+        a.clone(),
+    );
+    assert!(mine.contains(&id), "{mine}");
+    call(
+        "service",
+        serde_json::json!({ "action": "stop", "id": id }),
+        a,
+    );
+}

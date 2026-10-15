@@ -53,8 +53,25 @@
 - **发布元数据**：内核四个 crate 的内部依赖补了 `version`。`agent-ipc`、`agent-llm-core` 已能 `cargo package`；
   `agent-tool`、`agent-kernel` 要等上游先发布到 registry 才能打包，这是预期。
 
+## 第三轮
+
+- **`agent-tools-shell` 的 `SERVICES` 已按会话隔离**：新增 `ServiceRegistry` / `ServiceRegistrySlot` /
+  `install_registry`；`husk-host` 在每个会话的 `ToolCtx` 上安装一个，委派的子上下文共享它，会话丢弃时服务随之被杀。
+  没装槽位的上下文仍用进程默认注册表（行为不变）。测试 `services_are_scoped_to_the_owning_registry` 覆盖。
+- **`scripts/export-kernel.sh <dir>`**：把内核闭包（ipc / llm-core / tool / kernel / testkit）导出成独立 cargo 工作区，
+  并带上 `check-kernel-deps.sh`。导出树在没有产品代码的情况下 `cargo test --workspace` 全绿，闭包校验通过。
+
+## 有意保留的进程级全局
+
+- `husk-host::sandbox_prefs::LIMITS`：用户级偏好，设置页改动要对所有活跃会话即时生效，进程级就是它的语义；
+  拆成按会话持有会改变这一点，还要改三个前端入口。`SwitchableSandbox::with_limits` 已允许宿主注入自己的来源。
+- `agent-store::shared_db`：进程内唯一的会话库，数据目录由 `init_data_dir` 一次设定。
+- `agent-tools-serena::MANAGERS`：按工作区根目录共享昂贵的 Serena 服务，`shutdown(root)` 负责释放。
+- `agent-kernel` 的 `ACTIVE_STEERS`、`todo` 的 `LOCKS`：分别按 session / store key 隔离。
+
+这些都只在「两个产品同进程」时才可能冲突，且不在内核闭包内。
+
 ## 仍未做
 
-- 产品侧进程级全局（`agent-store::shared_db`、`husk-host::sandbox_prefs::LIMITS`、
-  `agent-tools-shell::SERVICES`、`agent-tools-serena::MANAGERS`）：只在两个产品同进程时才冲突，且需要改宿主装配，没有动。
+- `wrap_spawn` 的 bwrap 遮罩竞态窗口（长驻服务启动）。
 - 真正搬到独立仓库、path 依赖改 git/registry：需要你决定仓库位置与发布方式。

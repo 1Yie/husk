@@ -30,9 +30,33 @@ use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 const MAX_LOG_BYTES: u64 = 256 * 1024;
 const DEFAULT_TAIL_LINES: usize = 80;
 
-static SERVICES: LazyLock<Mutex<BTreeMap<String, Service>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+/// The set of live background services one owner can see and stop. A host
+/// installs one per session ([`ServiceRegistrySlot`]) so sessions never see
+/// each other's services; a context without a slot uses the process default.
+/// Dropping the registry kills whatever it still holds.
+#[derive(Default)]
+pub struct ServiceRegistry {
+    map: Mutex<BTreeMap<String, Service>>,
+}
+
+/// Host-installed registry for this context (and its delegated children).
+pub struct ServiceRegistrySlot(pub Arc<ServiceRegistry>);
+
+/// Ids stay unique process-wide so log files never collide across registries.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn registry<C: SandboxCtx>(ctx: &C) -> Arc<ServiceRegistry> {
+    static DEFAULT: LazyLock<Arc<ServiceRegistry>> = LazyLock::new(Default::default);
+    ctx.service::<ServiceRegistrySlot>()
+        .map(|slot| slot.0.clone())
+        .unwrap_or_else(|| DEFAULT.clone())
+}
+
+/// Install a fresh per-owner registry on `ctx`, shared with delegated children.
+pub fn install_registry<C: SandboxCtx>(ctx: &mut C) {
+    ctx.extensions_mut()
+        .insert_shared(Arc::new(ServiceRegistrySlot(Arc::default())));
+}
 
 struct Service {
     command: String,
@@ -98,7 +122,7 @@ pub async fn spawn_persistent<C: SandboxCtx>(
         .map_err(|e| ToolError::Failed(format!("spawn service: {e}")))?;
     let pid = child.id();
 
-    SERVICES.lock().await.insert(
+    registry(&**ctx).map.lock().await.insert(
         id.clone(),
         Service {
             command: command.to_string(),
@@ -181,12 +205,13 @@ pub fn spec<C: SandboxCtx>() -> ToolSpec<C> {
     }
 }
 
-async fn exec<C: SandboxCtx>(args: Args, _ctx: Arc<C>) -> Result<ToolResult, ToolError> {
+async fn exec<C: SandboxCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
     let parsed: ServiceArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(format!("service args: {e}")))?;
+    let reg = registry(&*ctx);
     match parsed.action.as_str() {
         "list" => {
-            let mut map = SERVICES.lock().await;
+            let mut map = reg.map.lock().await;
             if map.is_empty() {
                 return Ok(ToolResult::text("no services running"));
             }
@@ -206,7 +231,7 @@ async fn exec<C: SandboxCtx>(args: Args, _ctx: Arc<C>) -> Result<ToolResult, Too
             let id = parsed
                 .id
                 .ok_or_else(|| ToolError::Args("logs needs id".into()))?;
-            let mut map = SERVICES.lock().await;
+            let mut map = reg.map.lock().await;
             let svc = map
                 .get_mut(&id)
                 .ok_or_else(|| ToolError::Failed(format!("no service {id}")))?;
@@ -225,7 +250,7 @@ async fn exec<C: SandboxCtx>(args: Args, _ctx: Arc<C>) -> Result<ToolResult, Too
                 .ok_or_else(|| ToolError::Args("stop needs id".into()))?;
             // Take the child out under a short lock; await outside it.
             let child = {
-                let mut map = SERVICES.lock().await;
+                let mut map = reg.map.lock().await;
                 let svc = map
                     .get_mut(&id)
                     .ok_or_else(|| ToolError::Failed(format!("no service {id}")))?;
@@ -241,7 +266,7 @@ async fn exec<C: SandboxCtx>(args: Args, _ctx: Arc<C>) -> Result<ToolResult, Too
                         .await
                         .map(|r| r.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string()))
                         .unwrap_or_else(|_| "kill sent, wait timed out".into());
-                    SERVICES.lock().await.remove(&id);
+                    reg.map.lock().await.remove(&id);
                     Ok(ToolResult::text(format!("{id} stopped: {status}")))
                 }
             }
