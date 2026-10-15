@@ -1,22 +1,25 @@
 +++
-owns = ["crates/agent-kernel/Cargo.toml", "crates/agent-kernel/{assets,tests,examples}/**", "crates/agent-kernel/src/{engine,session,session_manager,commands,compaction,channels,hooks,lib,mode,permissions,sandbox_prefs,blueprint}.rs"]
-forbidden_deps = ["iced*", "tauri*", "ratatui*"]
-invariants = ["文件写工具经权限门并由 HunkTracker 记录；bash 的写入不入 HunkTracker，新文件由回合起止的文件快照比对补查"]
+owns = ["crates/agent-kernel/Cargo.toml", "crates/agent-kernel/src/{channels,compaction,engine,hooks,lib,permissions,plugins,turn_policy}.rs", "crates/agent-kernel/{tests,examples}/**"]
+forbidden_deps = ["iced*", "tauri*", "ratatui*", "agent-coding", "husk-host"]
+invariants = ["模型请求一律经 agent-llm 归一化的 StreamChunk，内核不含厂商字段", "写工具只暂存 Commit，落盘由引擎在权限决定之后执行", "内核不命名任何产品概念（plan / goal / blueprint / office / husk）"]
 +++
-内核主干：ReAct 循环、会话、权限门、压缩、模式与回合末蓝图检查。
+内核主干：ReAct 回合循环、会话状态机、权限门、压缩、hook 链与插件路由——纯引擎，不含产品语义。
 
-关键词：permission gate, ReAct loop, compaction, session, session manager, plan mode, goal mode, office mode, slash commands, system prompt, hooks chain, blueprint turn check
+关键词：react loop, engine, agent state machine, permission gate, compaction, hooks chain, plugin router, turn policy, ui channels, mode table
 
 ## 职责
-- `AgentState` 状态机与回合循环（engine / session）
-- 权限门、上下文压缩、模式（build / plan / goal / office）与斜杠命令
-- 回合末蓝图检查与一次返工；goal 模式下撤回已宣告的完成
-- 会话与多会话管理（SessionActor / SessionManager），插件 hook 链的编排
+- `Engine` 的回合循环、工具派发与提交（engine.rs），`AgentState` 状态机
+- `UiChannels` 事件/命令通道（channels.rs，对命令类型泛型）、权限门（permissions.rs）
+- 上下文压缩（compaction.rs）、hook 链（hooks.rs）、插件路由接缝（plugins.rs 的 `PluginRouter` / `PluginHandle`）
+- 回合策略接缝 `TurnPolicy` / `TurnView` / `Verdict`（turn_policy.rs）与宿主注入的模式表
+- 工具注册表与扩展槽的内核侧实现（见 kernel-tools）
 
 ## 不做
-- 不渲染任何 UI；前端只通过 agent-ipc 的 UiEvent/UiCommand 交互
-- 模型请求一律经 agent-llm，不含厂商专有字段
-- 不直接实现具体工具（属于 kernel-tools）
+- 不渲染 UI；只经 agent-ipc 的 UiEvent/UiCommand 交互
+- 不含 Coding 语义（plan / goal / blueprint / office / computer 策略）——属于 agent-coding
+- 不实现具体工具（属于 kernel-tools 与 agent-tools-*），不依赖任何 agent-tools-*
+- 不持有会话装配、持久化、技能与用户设置——分别属于 husk-host / agent-store / agent-skills
 
 ## 对外契约
-- `SessionActor` / `SessionManager`：前端以 `UiCommand` 驱动，事件经 `UiEvent` 回流
+- `Engine` / `ToolRegistry` / `TurnPolicy`：宿主装配后驱动；`Engine::new` 只装通用会话工具
+- 内核正常依赖闭包 = agent-ipc / agent-llm / agent-tool

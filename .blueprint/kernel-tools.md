@@ -1,19 +1,20 @@
 +++
 owns = ["crates/agent-kernel/src/tools/**"]
-invariants = ["工具输出必须经过截断预算", "网络只用于 web_fetch 等显式工具（tools/net.rs）"]
+invariants = ["工具输出必须经过截断预算", "内置工具只有通用会话工具，不含任何产品能力", "写类工具只暂存 Commit，不自行落盘"]
 +++
-内置工具与模式化注册表。
+内核内置工具与注册表：通用会话工具 + 扩展槽，具体能力由宿主注册。
 
-关键词：tool registry, tool spec, apply_patch, fuzzy_patch, bash, smart_test_runner, web_fetch, delegate subagent, batch_execute, todo, plan tool, goal tool, office tools, blueprint tool, serena bridge
+关键词：tool registry, tool spec, extension slots, batch_execute, delegate subagent, ask_question, todo, host slots, tool dispatch
 
 ## 职责
-- `ToolSpec`（`readonly` + `ToolClass`）与按模式过滤的注册表（build / plan / goal / office）
-- 文件读写、补丁、grep、bash、测试运行器、桌面操作、web_fetch、子代理 delegate、todo、plan/goal 控制信号
-- 写类工具只暂存 `PendingWrite`，落盘由 engine 在权限决定之后提交
+- `ToolRegistry` / `ToolSpec` / `ToolCtx` / `Extensions`（registry.rs）与扩展槽（host_slots.rs）
+- 通用会话工具：`batch_execute`、`delegate`、`ask_question`、`todo`（batch / delegate / ask / todo）
+- `with_builtins` / `child_builtins`：内核只注册这四个通用工具
 
 ## 不做
-- 不自行落盘或绕过权限门；不决定回合流程（属于 kernel-core）
-- 不渲染 UI
+- 不含文件、shell、web、桌面、office、serena 等具体能力（属于 agent-tools-*，由宿主注册）
+- 不决定回合流程（属于 kernel-core）；不渲染 UI
 
 ## 对外契约
-- `ToolSpec` 的 `readonly` / `ToolClass` 决定权限与是否可批量并行；新增工具必须声明
+- `ToolSpec` 的 `readonly` / `ToolClass` / `network` / `staged` / `review` 决定权限、批量与提交行为；新增工具必须声明
+- `ToolContext` / `Extensions` 是工具契约（agent-tool）在内核的实例化点

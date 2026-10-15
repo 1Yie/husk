@@ -184,8 +184,12 @@ cargo run -p app-cli -- --headless --workspace . --prompt "解释这个仓库的
 ### 测试
 
 ```bash
-cargo test
+nice -n 10 cargo test
+npm --prefix crates/app-tauri/frontend test
+npm --prefix crates/app-tauri/frontend run check
 ```
+
+前端使用 Vitest、React Testing Library 和 jsdom，覆盖事件流、会话状态、历史回放及关键组件交互；`check` 会运行类型检查、覆盖率测试和生产构建。监听模式、测试夹具及报告说明见 [前端测试文档](crates/app-tauri/frontend/TESTING.md)。
 
 ## 配置
 
