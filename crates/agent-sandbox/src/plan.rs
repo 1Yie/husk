@@ -138,11 +138,11 @@ impl SandboxPlan {
         // Credential dirs the sandbox always masks — capability-driven
         // policy can't widen these (OutOfScope/PrivilegeEscalation/Deny
         // capabilities keep them denied even when approved). srt leaves
-        // denyRead to user config entirely; agent-rs keeps a small built-in
+        // denyRead to user config entirely; we keep a small built-in
         // secrets set — reading a key is useless without egress anyway,
         // but belt-and-suspenders is cheap.
         let mut deny: Vec<PathBuf> = Vec::new();
-        for sub in [".ssh", ".gnupg", ".aws", ".config/agent-rs", ".config/husk"] {
+        for sub in [".ssh", ".gnupg", ".aws"] {
             if let Some(p) = shellexpand_home(sub) {
                 deny.push(p);
             }
@@ -262,8 +262,8 @@ const DANGEROUS_FILE_NAMES: &[&str] = &[
 ];
 
 /// Directories srt write-denies (relative to the writable root) — IDE task
-/// runners and agent config a command could poison. agent-rs adds its own
-/// config dirs plus other agents' (`.pi`, `.agents`, `.codex`).
+/// runners and agent config a command could poison, including configuration
+/// directories such as `.pi`, `.agents`, and `.codex`.
 const DANGEROUS_DIR_NAMES: &[&str] = &[
     ".vscode",
     ".idea",

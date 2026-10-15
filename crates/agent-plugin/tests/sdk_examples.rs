@@ -29,7 +29,7 @@ fn hook_for(dir: &Path) -> Vec<agent_plugin::CommandHook> {
     m.dir = dir.to_path_buf();
     m.validate()
         .unwrap_or_else(|e| panic!("{}: manifest invalid: {e}", dir.display()));
-    agent_plugin::hooks_from_manifest(&m)
+    agent_plugin::hooks_from_manifest(&m, &[])
 }
 
 /// Every example appends 喵～ to the answer it is handed.

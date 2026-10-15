@@ -46,7 +46,7 @@ async fn documented_hook_manifest_validates_and_runs() {
         .validate()
         .expect("the documented manifest must validate");
 
-    let hooks = agent_plugin::hooks_from_manifest(&manifest);
+    let hooks = agent_plugin::hooks_from_manifest(&manifest, &[]);
     assert_eq!(hooks.len(), 1);
     let hook = &hooks[0];
     assert!(hook.matches("bash"));

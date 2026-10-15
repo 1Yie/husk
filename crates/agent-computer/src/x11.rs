@@ -576,7 +576,7 @@ mod tests {
     /// picks its format from it) and stay a sibling of the final file.
     #[test]
     fn temp_capture_name_is_a_png_sibling() {
-        let dest = Path::new("/ws/.husk/attachments/shot-42.png");
+        let dest = Path::new("/ws/.agent/attachments/shot-42.png");
         let tmp = tmp_sibling(dest);
         assert_eq!(tmp.parent(), dest.parent());
         assert_eq!(tmp.extension().and_then(|e| e.to_str()), Some("png"));

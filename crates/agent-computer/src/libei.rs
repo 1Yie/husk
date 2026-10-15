@@ -111,7 +111,7 @@ async fn connection() -> Result<Arc<Connection>> {
 async fn establish() -> Result<Arc<Connection>> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
-        .name("husk-libei".into())
+        .name("agent-libei".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -192,7 +192,7 @@ async fn negotiate_inner() -> Result<(Arc<Connection>, reis::tokio::EiConvertEve
 
     let context = ei::Context::new(UnixStream::from(fd)).context("wrap the input socket")?;
     let (_connection, mut events) = context
-        .handshake_tokio("husk", ei::handshake::ContextType::Sender)
+        .handshake_tokio("agent", ei::handshake::ContextType::Sender)
         .await
         .context("libei handshake")?;
 

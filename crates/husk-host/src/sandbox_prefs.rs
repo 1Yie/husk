@@ -11,6 +11,7 @@
 //! `SandboxConfig` AFTER the audit plan fills its defaults — `None` fields
 //! leave the plan's values untouched.
 
+use std::path::PathBuf;
 use std::sync::RwLock;
 
 use agent_sandbox::SandboxConfig;
@@ -49,6 +50,24 @@ pub fn apply_to(cfg: &mut SandboxConfig) {
     apply_limits(cfg, &current());
 }
 
+/// Current and historical product configuration paths. The sandbox library
+/// keeps generic secret defaults; the host supplies its own private state.
+pub fn protected_paths(paths: &agent_paths::AppPaths) -> Vec<PathBuf> {
+    let mut denied = Vec::new();
+    if !paths.config_dir.as_os_str().is_empty() {
+        denied.push(paths.config_dir.clone());
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for name in [".config/husk", ".config/agent-rs"] {
+            let path = home.join(name);
+            if !denied.contains(&path) {
+                denied.push(path);
+            }
+        }
+    }
+    denied
+}
+
 /// The host's sandbox, honouring the live master switch.
 ///
 /// The switch can flip mid-session (the settings page), so the choice is made
@@ -59,6 +78,7 @@ pub fn apply_to(cfg: &mut SandboxConfig) {
 pub struct SwitchableSandbox {
     real: std::sync::Arc<dyn agent_sandbox::SandboxBackend>,
     limits: std::sync::Arc<dyn Fn() -> SandboxLimits + Send + Sync>,
+    deny_read: Vec<PathBuf>,
 }
 
 impl SwitchableSandbox {
@@ -76,7 +96,20 @@ impl SwitchableSandbox {
         Self {
             real,
             limits: std::sync::Arc::new(limits),
+            deny_read: Vec::new(),
         }
+    }
+
+    /// Protect host-owned paths on both short commands and persistent spawns.
+    pub fn with_deny_read(mut self, paths: Vec<PathBuf>) -> Self {
+        self.deny_read = paths;
+        self
+    }
+
+    fn config(&self, cfg: &SandboxConfig) -> SandboxConfig {
+        let mut cfg = cfg.clone();
+        cfg.deny_read.extend(self.deny_read.iter().cloned());
+        cfg
     }
 
     fn active(&self) -> &dyn agent_sandbox::SandboxBackend {
@@ -105,7 +138,8 @@ impl agent_sandbox::SandboxBackend for SwitchableSandbox {
         args: &[&str],
         cfg: &SandboxConfig,
     ) -> anyhow::Result<agent_sandbox::CommandOutput> {
-        self.active().run_command(cmd, args, cfg).await
+        let cfg = self.config(cfg);
+        self.active().run_command(cmd, args, &cfg).await
     }
 
     fn wrap_spawn(
@@ -114,6 +148,6 @@ impl agent_sandbox::SandboxBackend for SwitchableSandbox {
         cmd: &str,
         args: &[&str],
     ) -> Option<tokio::process::Command> {
-        self.active().wrap_spawn(cfg, cmd, args)
+        self.active().wrap_spawn(&self.config(cfg), cmd, args)
     }
 }

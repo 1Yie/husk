@@ -1341,7 +1341,11 @@ impl SessionManager {
         // runtime runs `load_all`. A runtime dropped after the handshake
         // kills them, leaving clients that list tools but never see a
         // response. Run on a process-lifetime runtime instead.
-        let mgr = plugin_runtime().block_on(agent_plugin::load_all(root, paths));
+        let mgr = plugin_runtime().block_on(agent_plugin::load_all(
+            root,
+            paths,
+            &crate::sandbox_prefs::protected_paths(paths),
+        ));
         hooks.replace(crate::plugins::manifest_hooks(mgr.hook_specs()));
         tracing::info!(
             tools = mgr.exported_tools().len(),
@@ -1504,7 +1508,13 @@ impl SessionManager {
         let Ok(manifest) = serde_json::from_str::<agent_plugin::PluginManifest>(&text) else {
             return serde_json::json!({ "ok": false, "error": "manifest 解析失败" });
         };
-        match agent_plugin::McpClient::start(&manifest, paths.app_name()).await {
+        match agent_plugin::McpClient::start(
+            &manifest,
+            paths.app_name(),
+            &crate::sandbox_prefs::protected_paths(paths),
+        )
+        .await
+        {
             Ok(client) => {
                 let (name, version) = client.server_info();
                 serde_json::json!({

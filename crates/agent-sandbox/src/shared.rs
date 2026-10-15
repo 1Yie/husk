@@ -25,8 +25,6 @@ pub(crate) const SENSITIVE_NAMES: &[&str] = &[
     ".bash_history",
     ".zsh_history",
     ".history",
-    ".config/agent-rs",
-    ".config/husk",
     ".cargo/credentials",
     ".cargo/credentials.toml",
     ".npmrc",

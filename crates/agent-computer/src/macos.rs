@@ -43,7 +43,7 @@ impl MacBackend {
     /// not preflightable without prompting, so it's checked at first use.
     pub fn probe() -> Result<Self> {
         if let Err(e) = screen_capture_access() {
-            bail!("{e} — grant Screen Recording in System Settings → Privacy & Security, then restart Husk");
+            bail!("{e} — grant Screen Recording in System Settings → Privacy & Security, then restart the app");
         }
         Ok(Self {
             last: Mutex::new(None),

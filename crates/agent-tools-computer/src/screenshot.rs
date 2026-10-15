@@ -2,7 +2,7 @@
 //!
 //! Read-only *and* `Observation`, so it auto-runs in `default` mode and
 //! survives plan mode (looking at the screen does not change it). The PNG
-//! lands in `<workspace>/.husk/attachments/` — the same staged-attachment
+//! lands in `<workspace state dir>/attachments/` — the same staged-attachment
 //! directory the composer uses, so replay and cleanup already know it — and
 //! rides the wire through `ToolResult.images` when the model declares vision.
 //!
@@ -89,7 +89,8 @@ async fn exec<C: WorkspaceCtx + DesktopCtx>(ctx: Arc<C>) -> Result<ToolResult, T
 }
 
 /// Sweep the `shot-*.png` captures this session staged under
-/// `.husk/attachments/`. Called once per turn boundary — a capture's job
+/// `<workspace state dir>/attachments/`. Called once per turn boundary — a
+/// capture's job
 /// ends with the turn it fed (the model's grid and the raw file both die
 /// with it), so leaving them on disk just leaks megabytes of PNG per turn.
 /// Only `shot-` prefixed files are touched; user attachments that share the
@@ -151,8 +152,8 @@ mod tests {
     #[test]
     fn cleanup_removes_shot_files_only() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = agent_paths::AppPaths::new(dir.path(), dir.path(), ".husk");
-        let att = dir.path().join(".husk").join("attachments");
+        let paths = agent_paths::AppPaths::new(dir.path(), dir.path(), ".agent");
+        let att = dir.path().join(".agent").join("attachments");
         std::fs::create_dir_all(&att).unwrap();
         let shot = att.join("shot-1.png");
         let tmp = att.join(".shot-1.tmp.png");

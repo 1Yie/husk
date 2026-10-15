@@ -690,9 +690,10 @@ impl SessionActor {
         // (an SSH worker, a test) has no local sandbox unless it asks for one.
         let (detected, _loud) = agent_sandbox::detect_backend();
         tool_ctx.install_paths(cfg.paths.clone());
-        tool_ctx.install_sandbox(Arc::new(crate::sandbox_prefs::SwitchableSandbox::new(
-            Arc::from(detected),
-        )));
+        tool_ctx.install_sandbox(Arc::new(
+            crate::sandbox_prefs::SwitchableSandbox::new(Arc::from(detected))
+                .with_deny_read(crate::sandbox_prefs::protected_paths(&cfg.paths)),
+        ));
         let memory_handle = agent_coding::remember::MemoryHandle::default();
         memory_handle.set(memory.clone());
         memory_handle.install(&mut tool_ctx);

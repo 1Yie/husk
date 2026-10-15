@@ -275,7 +275,7 @@ pub trait DesktopBackend: Send + Sync {
     /// Acquire whatever the backend needs before the user is asked to approve
     /// a `computer` call — on Wayland, the compositor's input grant. Lets the
     /// system permission prompt come first, so an approval the user has
-    /// already given in Husk is not followed by a second, unexpected prompt.
+    /// already given in the app is not followed by a second, unexpected prompt.
     /// Errors here mean the action cannot run at all, so the approval card is
     /// never shown. Default: nothing to acquire.
     async fn prepare(&self) -> Result<()> {

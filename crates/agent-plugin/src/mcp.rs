@@ -16,6 +16,7 @@
 //! timeout; non-text `content[]` becomes a placeholder marker.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -131,8 +132,13 @@ fn response_id(v: &Value) -> Option<u64> {
 
 impl McpClient {
     /// Spawn + handshake + initial `tools/list` (+ resources/prompts when
-    /// the server declares them).
-    pub async fn start(manifest: &PluginManifest, client_name: &str) -> Result<Arc<Self>> {
+    /// the server declares them). `deny_read` protects host-owned paths in
+    /// sandboxed stdio children.
+    pub async fn start(
+        manifest: &PluginManifest,
+        client_name: &str,
+        deny_read: &[PathBuf],
+    ) -> Result<Arc<Self>> {
         // No `entry` = a pure plugin (host-side capabilities only) — there is
         // nothing to connect and this constructor should never have run.
         let entry = manifest
@@ -248,6 +254,7 @@ impl McpClient {
             };
             let cfg = agent_sandbox::SandboxConfig {
                 workspace_dir: ws,
+                deny_read: deny_read.to_vec(),
                 allow_network: !perms.network.is_empty(),
                 environment: agent_sandbox::plan::EnvironmentPolicy::Minimal,
                 trusted_env: env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),

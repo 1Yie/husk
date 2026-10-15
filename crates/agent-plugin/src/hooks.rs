@@ -373,13 +373,17 @@ fn resolve_command(dir: &Path, command: &str) -> PathBuf {
 /// `from_decl` is total here: `PluginManifest::validate` already accepted the
 /// declarations, and anything it did refuse is skipped rather than aborting
 /// the plugin.
-pub fn hooks_from_manifest(manifest: &crate::PluginManifest) -> Vec<CommandHook> {
+/// `deny_read` carries the host's private paths into sandboxed hooks.
+pub fn hooks_from_manifest(
+    manifest: &crate::PluginManifest,
+    deny_read: &[PathBuf],
+) -> Vec<CommandHook> {
     manifest
         .capabilities
         .hooks
         .iter()
         .filter_map(|d| CommandHook::new(&manifest.id, d, &manifest.dir))
-        .map(|h| with_manifest_sandbox(h, manifest))
+        .map(|h| with_manifest_sandbox(h, manifest, deny_read))
         .collect()
 }
 
@@ -387,7 +391,11 @@ pub fn hooks_from_manifest(manifest: &crate::PluginManifest) -> Vec<CommandHook>
 /// `trusted_env` carries this hook's declared env — inside the sandbox it
 /// lands unfiltered (the manifest is the declaring authority; the env
 /// denylist's job is host secrets, not the plugin's own literals).
-fn with_manifest_sandbox(hook: CommandHook, manifest: &crate::PluginManifest) -> CommandHook {
+fn with_manifest_sandbox(
+    hook: CommandHook,
+    manifest: &crate::PluginManifest,
+    deny_read: &[PathBuf],
+) -> CommandHook {
     if !manifest.wants_sandbox() {
         return hook;
     }
@@ -400,6 +408,7 @@ fn with_manifest_sandbox(hook: CommandHook, manifest: &crate::PluginManifest) ->
         .collect();
     hook.with_sandbox(agent_sandbox::SandboxConfig {
         workspace_dir: manifest.dir.clone(),
+        deny_read: deny_read.to_vec(),
         allow_network: !perms.network.is_empty(),
         environment: agent_sandbox::plan::EnvironmentPolicy::Minimal,
         trusted_env,
@@ -407,6 +416,31 @@ fn with_manifest_sandbox(hook: CommandHook, manifest: &crate::PluginManifest) ->
         extra_rw_mounts: rw,
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod sandbox_policy_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_hooks_protect_host_supplied_paths() {
+        let manifest: crate::PluginManifest = serde_json::from_value(serde_json::json!({
+            "id": "protected-hook",
+            "name": "Protected Hook",
+            "sandboxed": true,
+            "capabilities": {
+                "hooks": [{
+                    "event": "before_tool_execute",
+                    "run": { "command": "check" }
+                }]
+            }
+        }))
+        .unwrap();
+        let protected = vec![PathBuf::from("/private/product-config")];
+        let hooks = hooks_from_manifest(&manifest, &protected);
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].sandbox.as_ref().unwrap().deny_read, protected);
+    }
 }
 
 #[cfg(all(test, unix))]

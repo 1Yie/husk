@@ -38,7 +38,7 @@ fn plugin_chain(ws: &std::path::Path, id: &str, hooks: serde_json::Value) -> Hoo
     let mut manifest: agent_plugin::PluginManifest = serde_json::from_str(&text).unwrap();
     manifest.dir = dir;
     manifest.validate().expect("manifest validates");
-    chain_from_specs(agent_plugin::hooks_from_manifest(&manifest))
+    chain_from_specs(agent_plugin::hooks_from_manifest(&manifest, &[]))
 }
 
 fn script(ws: &std::path::Path, id: &str, name: &str, body: &str) {

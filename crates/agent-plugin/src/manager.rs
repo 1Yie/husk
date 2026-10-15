@@ -237,6 +237,8 @@ pub struct PluginManager {
     /// Where the host keeps config and workspace-local state. The crate names
     /// no product, so the host supplies this.
     paths: AppPaths,
+    /// Host-owned paths kept unreadable to sandboxed hooks and MCP servers.
+    sandbox_deny_read: Vec<PathBuf>,
     plugins: HashMap<String, Arc<dyn Plugin>>,
     /// Every accepted manifest, keyed by id — INCLUDING pure plugins with no
     /// `entry` and bridges whose connection failed. Kernel-side capabilities
@@ -270,8 +272,12 @@ pub struct PluginManager {
 impl PluginManager {
     /// Empty manager. `load_all` is the usual entry point.
     pub fn new(paths: AppPaths) -> Self {
+        let sandbox_deny_read = std::iter::once(paths.config_dir.clone())
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
         Self {
             paths,
+            sandbox_deny_read,
             plugins: HashMap::new(),
             manifests: HashMap::new(),
             order: Vec::new(),
@@ -316,7 +322,7 @@ impl PluginManager {
                         .manifests
                         .get(id)
                         .map(|m| {
-                            hooks_from_manifest(m)
+                            hooks_from_manifest(m, &self.sandbox_deny_read)
                                 .iter()
                                 .map(|h| {
                                     serde_json::json!({
@@ -368,7 +374,7 @@ impl PluginManager {
                 continue;
             }
             if let Some(manifest) = self.manifests.get(id) {
-                out.extend(hooks_from_manifest(manifest));
+                out.extend(hooks_from_manifest(manifest, &self.sandbox_deny_read));
             }
         }
         out
@@ -484,9 +490,13 @@ impl PluginManager {
         // means MCP, which is what every entry-bearing manifest is today.
         let plugin: Arc<dyn Plugin> = match manifest.kind.unwrap_or(PluginKind::Mcp) {
             PluginKind::Mcp => {
-                let client = McpClient::start(&manifest, self.paths.app_name())
-                    .await
-                    .map_err(|e| format!("MCP `{id}` start: {e}"))?;
+                let client = McpClient::start(
+                    &manifest,
+                    self.paths.app_name(),
+                    &self.sandbox_deny_read,
+                )
+                .await
+                .map_err(|e| format!("MCP `{id}` start: {e}"))?;
                 Arc::new(McpPlugin { manifest, client })
             }
             PluginKind::Wasm => {
@@ -806,8 +816,13 @@ fn truncate(s: &str, n: usize) -> String {
 /// Bounded on purpose: a dead endpoint is logged and skipped, so one broken
 /// server can neither stall the app's boot nor keep the other plugins from
 /// loading. Called once at startup (see `SessionManager::spawn_at`).
-pub async fn load_all(repo: &Path, paths: &AppPaths) -> PluginManager {
+pub async fn load_all(repo: &Path, paths: &AppPaths, deny_read: &[PathBuf]) -> PluginManager {
     let mut mgr = PluginManager::new(paths.clone());
+    for path in deny_read {
+        if !mgr.sandbox_deny_read.contains(path) {
+            mgr.sandbox_deny_read.push(path.clone());
+        }
+    }
     // Consent recorded by earlier runs. Without it a repo-local plugin would
     // be refused on every boot, so the grant has to come from disk.
     mgr.trust = TrustStore::load(&trust_store_path(paths));
