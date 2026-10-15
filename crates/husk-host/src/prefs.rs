@@ -10,9 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use agent_store::{
-    global_get, global_put, global_update, SessionStore,
-};
+use agent_store::{global_get, global_put, global_update, SessionStore};
 
 use crate::office::is_office_root;
 
@@ -50,8 +48,10 @@ pub struct DefaultPreferences {
     /// Fraction of the context window that triggers compaction (0.70/0.80/0.90).
     #[serde(default = "default_pref_compact_at")]
     pub compact_at: f32,
-    /// Sandbox master switch — absent/true = sandboxed (default);
-    /// `false` = process tools run through the loud `none` backend.
+    /// Sandbox master switch — `true` = sandboxed; absent/`false` = process
+    /// tools run through the loud `none` backend (default off). Rows written
+    /// before `schema_version` 1 used absent to mean ON; see
+    /// [`migrate_default_preferences`].
     #[serde(default)]
     pub sandbox_enabled: Option<bool>,
     /// Sandbox network override: "auto" (audit decides) | "allow" | "deny".
@@ -83,6 +83,35 @@ pub struct DefaultPreferences {
     /// everywhere (prompt index, `blueprint` tool, turn-end check).
     #[serde(default = "default_pref_bool_true")]
     pub blueprint_enabled: bool,
+    /// Row format version. Absent (0) = written before the sandbox default
+    /// flipped to off; loading such a row migrates it once.
+    #[serde(default)]
+    pub schema_version: u32,
+}
+
+/// Current `DefaultPreferences::schema_version`.
+pub const DEFAULT_PREFERENCES_VERSION: u32 = 1;
+
+/// Permission mode when neither the workspace nor the stored defaults name
+/// one — the single fallback every resolver and the settings echo share.
+/// The strictest mode: an untouched install asks before every edit/command.
+pub const DEFAULT_PERMISSION_MODE: &str = "default";
+
+/// Bring a stored row up to [`DEFAULT_PREFERENCES_VERSION`]; `true` when it
+/// changed and must be written back.
+///
+/// v0 → v1: the sandbox default flipped from on to off. A v0 row only stored
+/// `sandbox_enabled` when the user turned it OFF, so absent there meant "on"
+/// — pin it, or upgrading would silently drop an existing user's isolation.
+pub fn migrate_default_preferences(p: &mut DefaultPreferences) -> bool {
+    if p.schema_version >= DEFAULT_PREFERENCES_VERSION {
+        return false;
+    }
+    if p.schema_version < 1 && p.sandbox_enabled.is_none() {
+        p.sandbox_enabled = Some(true);
+    }
+    p.schema_version = DEFAULT_PREFERENCES_VERSION;
+    true
 }
 
 fn default_pref_bool_true() -> bool {
@@ -94,7 +123,7 @@ fn default_pref_compact_at() -> f32 {
 }
 
 fn default_pref_permission_mode() -> String {
-    "auto".into()
+    DEFAULT_PERMISSION_MODE.into()
 }
 
 fn default_pref_agent_mode() -> String {
@@ -115,7 +144,9 @@ impl Default for DefaultPreferences {
             active_provider: None,
             active_model: None,
             permission_mode: default_pref_permission_mode(),
-            thinking_level: default_pref_thinking_level(),
+            // No row = no level: the spawn resolvers fall back to `None`,
+            // and the settings echo must report the same thing.
+            thinking_level: None,
             agent_mode: default_pref_agent_mode(),
             default_workspace_mode: default_pref_workspace_mode(),
             compact_at: default_pref_compact_at(),
@@ -128,6 +159,7 @@ impl Default for DefaultPreferences {
             memory_enabled: true,
             memory_distill: true,
             blueprint_enabled: true,
+            schema_version: DEFAULT_PREFERENCES_VERSION,
         }
     }
 }
@@ -259,21 +291,18 @@ pub fn record_recent_workspace(workspace_root: &Path) {
         .unwrap_or(0);
 
     {
-        let _ = global_update(
-            "recent_workspaces",
-            |list: &mut Vec<RecentWorkspace>| {
-                list.retain(|w| w.path != canon && w.path.is_dir());
-                list.insert(
-                    0,
-                    RecentWorkspace {
-                        path: canon,
-                        name,
-                        last_opened: now,
-                    },
-                );
-                list.truncate(15);
-            },
-        );
+        let _ = global_update("recent_workspaces", |list: &mut Vec<RecentWorkspace>| {
+            list.retain(|w| w.path != canon && w.path.is_dir());
+            list.insert(
+                0,
+                RecentWorkspace {
+                    path: canon,
+                    name,
+                    last_opened: now,
+                },
+            );
+            list.truncate(15);
+        });
     }
 }
 
@@ -283,10 +312,9 @@ pub fn remove_recent_workspace(workspace_root: &Path) {
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
     {
-        let _ = global_update(
-            "recent_workspaces",
-            |list: &mut Vec<RecentWorkspace>| list.retain(|w| w.path != canon),
-        );
+        let _ = global_update("recent_workspaces", |list: &mut Vec<RecentWorkspace>| {
+            list.retain(|w| w.path != canon)
+        });
     }
 }
 
@@ -326,14 +354,18 @@ pub fn known_workspaces() -> Vec<RecentWorkspace> {
 }
 
 pub fn load_default_preferences() -> DefaultPreferences {
-    global_get("default_preferences").unwrap_or_default()
+    try_load_default_preferences().unwrap_or_default()
 }
 
 /// Load the global default preferences only when a row actually exists —
 /// `None` when absent or corrupt. Used as a *fallback* layer below
 /// per-workspace prefs so an untouched install keeps the built-in defaults.
 pub fn try_load_default_preferences() -> Option<DefaultPreferences> {
-    global_get("default_preferences")
+    let mut p: DefaultPreferences = global_get("default_preferences")?;
+    if migrate_default_preferences(&mut p) {
+        let _ = save_default_preferences(&p);
+    }
+    Some(p)
 }
 
 pub fn save_default_preferences(prefs: &DefaultPreferences) -> std::io::Result<()> {
@@ -346,4 +378,51 @@ pub fn load_appearance_settings() -> AppearanceSettings {
 
 pub fn save_appearance_settings(s: &AppearanceSettings) -> std::io::Result<()> {
     global_put("appearance", s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row saved before the sandbox default flipped stored nothing for a
+    /// user who left it ON — loading it must keep them sandboxed.
+    #[test]
+    fn v0_row_without_sandbox_flag_migrates_to_on() {
+        let mut p: DefaultPreferences = serde_json::from_value(serde_json::json!({
+            "permission_mode": "acceptEdits",
+        }))
+        .unwrap();
+        assert_eq!(p.schema_version, 0);
+        assert!(migrate_default_preferences(&mut p));
+        assert_eq!(p.sandbox_enabled, Some(true));
+        assert_eq!(p.schema_version, DEFAULT_PREFERENCES_VERSION);
+        // Idempotent: a migrated row is left alone.
+        assert!(!migrate_default_preferences(&mut p));
+    }
+
+    /// An explicit choice in a v0 row survives the migration.
+    #[test]
+    fn v0_row_with_sandbox_off_stays_off() {
+        let mut p: DefaultPreferences =
+            serde_json::from_value(serde_json::json!({ "sandbox_enabled": false })).unwrap();
+        migrate_default_preferences(&mut p);
+        assert_eq!(p.sandbox_enabled, Some(false));
+    }
+
+    /// A current row with no flag means the user never turned it on — off.
+    #[test]
+    fn current_row_without_sandbox_flag_stays_off() {
+        let mut p = DefaultPreferences::default();
+        assert!(!migrate_default_preferences(&mut p));
+        assert_eq!(p.sandbox_enabled, None);
+    }
+
+    /// The settings echo for an untouched install must match what a new
+    /// session actually spawns with.
+    #[test]
+    fn untouched_defaults_match_the_spawn_fallbacks() {
+        let d = DefaultPreferences::default();
+        assert_eq!(d.permission_mode, DEFAULT_PERMISSION_MODE);
+        assert_eq!(d.thinking_level, None);
+    }
 }

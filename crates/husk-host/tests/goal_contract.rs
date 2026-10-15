@@ -5,12 +5,12 @@
 use std::sync::Arc;
 
 use agent_ipc::UiEvent;
+use agent_llm::types::NoticeKind;
 use husk_host::command::UiCommand;
 use husk_host::session::{SessionActor, SessionConfig};
-use agent_llm::types::NoticeKind;
 
-use agent_testkit::ScriptedProvider;
 use agent_llm::types::StreamChunk;
+use agent_testkit::ScriptedProvider;
 
 fn tool_call(name: &str, args: serde_json::Value) -> Vec<StreamChunk> {
     vec![
@@ -32,7 +32,10 @@ fn spawn(
     dir: &std::path::Path,
     stub: Arc<ScriptedProvider>,
     agent_mode: &str,
-) -> (SessionActor, agent_kernel::channels::UiChannels<husk_host::command::UiCommand>) {
+) -> (
+    SessionActor,
+    agent_kernel::channels::UiChannels<husk_host::command::UiCommand>,
+) {
     SessionActor::spawn(SessionConfig {
         workspace_root: dir.to_path_buf(),
         paths: agent_paths::AppPaths::for_tests("kernel"),

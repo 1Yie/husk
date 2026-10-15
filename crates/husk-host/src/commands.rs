@@ -422,11 +422,7 @@ fn expand_skill_refs(text: &str, root: &Path) -> String {
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_');
         let resolved = looks_like_name
-            .then(|| {
-                agent_skills::SkillManager::new(root)
-                    .load(token, None)
-                    .ok()
-            })
+            .then(|| agent_skills::SkillManager::new(root).load(token, None).ok())
             .flatten();
         if let Some(skill) = resolved {
             out.push_str(&format!(
@@ -752,9 +748,13 @@ mod tests {
             CommandResult::Reply(r) => assert!(r.contains("credential"), "{r}"),
             _ => panic!("expected Reply"),
         }
-        assert!(store.all_persona().unwrap().is_empty(), "credential was stored");
+        assert!(
+            store.all_persona().unwrap().is_empty(),
+            "credential was stored"
+        );
     }
 
+    #[tokio::test]
     async fn remember_memory_forget_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store =

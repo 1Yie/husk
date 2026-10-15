@@ -3,10 +3,10 @@
 
 use std::sync::Arc;
 
-use husk_host::command::UiCommand;
-use husk_host::session::{SessionActor, SessionConfig};
 use agent_llm::types::StreamChunk;
 use agent_testkit::ScriptedProvider;
+use husk_host::command::UiCommand;
+use husk_host::session::{SessionActor, SessionConfig};
 
 fn tool_call(name: &str, args: serde_json::Value) -> Vec<StreamChunk> {
     vec![
@@ -29,12 +29,10 @@ fn tool_call(name: &str, args: serde_json::Value) -> Vec<StreamChunk> {
 /// tool result text the model received.
 async fn remember_with(toggle_off: bool, key: &str) -> (Vec<String>, Vec<String>) {
     let dir = tempfile::tempdir().unwrap();
-    let stub = Arc::new(
-        ScriptedProvider::new().with_script(tool_call(
-            "remember",
-            serde_json::json!({ "key": key, "value": "v" }),
-        )),
-    );
+    let stub = Arc::new(ScriptedProvider::new().with_script(tool_call(
+        "remember",
+        serde_json::json!({ "key": key, "value": "v" }),
+    )));
     stub.script_text("done");
     let (mut actor, _ch) = SessionActor::spawn(SessionConfig {
         workspace_root: dir.path().to_path_buf(),
@@ -75,7 +73,12 @@ async fn remember_with(toggle_off: bool, key: &str) -> (Vec<String>, Vec<String>
         .join(format!("husk-test-{}", std::process::id()))
         .join("memory.db");
     let store = agent_context::memory::MemoryStore::open(&db, dir.path()).unwrap();
-    let keys = store.all_persona().unwrap().into_iter().map(|p| p.key).collect();
+    let keys = store
+        .all_persona()
+        .unwrap()
+        .into_iter()
+        .map(|p| p.key)
+        .collect();
     let results = actor
         .history()
         .iter()
@@ -151,10 +154,14 @@ async fn remember_refuses_a_credential_value() {
         .join(format!("husk-test-{}", std::process::id()))
         .join("memory.db");
     let store = agent_context::memory::MemoryStore::open(&db, dir.path()).unwrap();
-    let keys: Vec<String> = store.all_persona().unwrap().into_iter().map(|p| p.key).collect();
+    let keys: Vec<String> = store
+        .all_persona()
+        .unwrap()
+        .into_iter()
+        .map(|p| p.key)
+        .collect();
     assert!(
         !keys.contains(&"leak_probe_key".to_string()),
         "a credential was persisted: {keys:?}"
     );
 }
-

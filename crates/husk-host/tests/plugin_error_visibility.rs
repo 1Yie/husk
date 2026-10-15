@@ -6,10 +6,10 @@
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, RwLock};
 
-use husk_host::command::UiCommand;
-use husk_host::session::{SessionActor, SessionConfig};
 use agent_llm::types::{Role, StreamChunk};
 use agent_testkit::ScriptedProvider;
+use husk_host::command::UiCommand;
+use husk_host::session::{SessionActor, SessionConfig};
 
 fn test_paths() -> agent_paths::AppPaths {
     let base = std::env::temp_dir().join("husk-plugin-test");
@@ -67,10 +67,22 @@ async fn model_sees_the_plugins_own_error_not_unknown_tool() {
     mgr.register_plugin(m, plugin_dir.path()).await.unwrap();
     let runtime: husk_host::plugins::RuntimePluginHandle = Arc::new(RwLock::new(None));
     let handle = husk_host::plugins::router_handle(runtime.clone());
-    assert!(handle.read().unwrap().as_ref().unwrap().exported_tools().is_empty());
+    assert!(handle
+        .read()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .exported_tools()
+        .is_empty());
     // An already-installed adapter must see the runtime that a reload installs.
     *runtime.write().unwrap() = Some(Arc::new(mgr));
-    assert!(!handle.read().unwrap().as_ref().unwrap().exported_tools().is_empty());
+    assert!(!handle
+        .read()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .exported_tools()
+        .is_empty());
 
     let ws = tempfile::tempdir().unwrap();
     let stub = Arc::new(ScriptedProvider::new().with_script(tool_call("flaky__boom")));

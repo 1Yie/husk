@@ -3,10 +3,10 @@
 
 use std::sync::Arc;
 
-use husk_host::session::{SessionActor, SessionConfig};
-use husk_host::command::UiCommand;
 use agent_llm::types::StreamChunk;
 use agent_testkit::ScriptedProvider;
+use husk_host::command::UiCommand;
+use husk_host::session::{SessionActor, SessionConfig};
 
 fn test_paths() -> agent_paths::AppPaths {
     let base = std::env::temp_dir().join("husk-plugin-test");
@@ -25,7 +25,11 @@ async fn delegate_call_in_build_mode_is_a_builtin_not_a_plugin() {
             name: Some("list_dir".into()),
             args_delta: r#"{"path":"."}"#.into(),
         },
-        StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
+        StreamChunk::Done {
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+        },
     ]);
     provider.push_script(vec![
         StreamChunk::ToolCallDelta {
@@ -63,7 +67,10 @@ async fn delegate_call_in_build_mode_is_a_builtin_not_a_plugin() {
 
     let mut finished = Vec::new();
     while let Some(ev) = channels.event_rx.try_recv() {
-        if let agent_ipc::UiEvent::ToolCallFinished { name, ok, content, .. } = ev {
+        if let agent_ipc::UiEvent::ToolCallFinished {
+            name, ok, content, ..
+        } = ev
+        {
             finished.push((name, ok, content));
         }
     }
@@ -93,7 +100,11 @@ async fn builtin_failure_is_not_masked_by_plugin_no_owner_message() {
             name: Some("delegate".into()),
             args_delta: r#"{}"#.into(),
         },
-        StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
+        StreamChunk::Done {
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+        },
     ]);
     provider.script_text("done");
 

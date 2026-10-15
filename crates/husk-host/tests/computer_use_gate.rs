@@ -144,7 +144,11 @@ fn rig_with(
         stub.push_script(s);
     }
     stub.script_text("done");
-    let ctx = Arc::new(ToolCtx::new().with_workspace(dir.path()).with_desktop(desk.clone()));
+    let ctx = Arc::new(
+        ToolCtx::new()
+            .with_workspace(dir.path())
+            .with_desktop(desk.clone()),
+    );
     let mut engine = Engine::new(
         stub,
         Arc::new(husk_host::session::base_registries().0),
@@ -154,9 +158,14 @@ fn rig_with(
     );
     // The turn contracts (the `computer` cap among them) are the coding
     // policy now — a bare `Engine::new` installs no product rules.
-    engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(&ctx, dir.path().to_path_buf())));
-    let mut gate = PermissionGate::from_mode_str(mode)
-        .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy));
+    engine.set_policy(Box::new(agent_coding::policy::CodingPolicy::from_ctx(
+        &ctx,
+        dir.path().to_path_buf(),
+    )));
+    let mut gate = PermissionGate::from_mode_str(mode).with_policy(
+        "computer",
+        Arc::new(agent_coding::computer_policy::ComputerPolicy),
+    );
     for g in grant {
         gate.allow_tool_for_session(g);
     }
@@ -295,7 +304,9 @@ async fn explicit_launch_rule_skips_the_card() {
     let mut r = rig(
         "default",
         &["computer", "computer:launch"],
-        vec![round(&[serde_json::json!({"action": "launch", "text": "kwrite"})])],
+        vec![round(&[
+            serde_json::json!({"action": "launch", "text": "kwrite"}),
+        ])],
     );
     let (_h, cards) = run(&mut r, |_, _| false).await;
     assert!(cards.is_empty());
@@ -308,7 +319,9 @@ async fn launch_is_denied_under_dont_ask() {
     let mut r = rig(
         "dontAsk",
         &["computer"],
-        vec![round(&[serde_json::json!({"action": "launch", "text": "kwrite"})])],
+        vec![round(&[
+            serde_json::json!({"action": "launch", "text": "kwrite"}),
+        ])],
     );
     let (h, cards) = run(&mut r, |_, _| true).await;
     assert!(cards.is_empty());
@@ -350,7 +363,9 @@ async fn mode_switch_keeps_the_session_grant() {
     let mut r = rig(
         "default",
         &["computer"],
-        vec![round(&[serde_json::json!({"action": "left_click", "coordinate": [3, 4]})])],
+        vec![round(&[
+            serde_json::json!({"action": "left_click", "coordinate": [3, 4]}),
+        ])],
     );
     {
         let slot = r.engine.permissions_writer();
@@ -371,13 +386,18 @@ async fn desktop_grant_is_requested_before_the_approval_card() {
     let mut r = rig(
         "default",
         &[],
-        vec![round(&[serde_json::json!({"action": "left_click", "coordinate": [1, 2]})])],
+        vec![round(&[
+            serde_json::json!({"action": "left_click", "coordinate": [1, 2]}),
+        ])],
     );
     let log = r.desk_log();
     let (_h, cards) = run(&mut r, |_, _| true).await;
     assert_eq!(cards.len(), 1);
     let order = log.lock().unwrap().clone();
-    let prepare = order.iter().position(|e| e == "prepare").expect("prepare ran");
+    let prepare = order
+        .iter()
+        .position(|e| e == "prepare")
+        .expect("prepare ran");
     let card = order
         .iter()
         .position(|e| e.starts_with("card "))
@@ -400,11 +420,16 @@ async fn refused_grant_skips_the_approval_card() {
     let mut r = rig_with(
         "default",
         &[],
-        vec![round(&[serde_json::json!({"action": "left_click", "coordinate": [1, 2]})])],
+        vec![round(&[
+            serde_json::json!({"action": "left_click", "coordinate": [1, 2]}),
+        ])],
         true,
     );
     let (h, cards) = run(&mut r, |_, _| true).await;
-    assert!(cards.is_empty(), "no card for an action that cannot run: {cards:?}");
+    assert!(
+        cards.is_empty(),
+        "no card for an action that cannot run: {cards:?}"
+    );
     assert!(actions(&r).is_empty(), "refused grant: no input ran");
     assert!(
         tool_results(&h)[0].contains("computer control unavailable"),
@@ -440,7 +465,11 @@ async fn non_desktop_calls_do_not_spend_the_desktop_budget() {
         serde_json::json!({"action": "left_click", "coordinate": [2, 2]}),
         serde_json::json!({"action": "left_click", "coordinate": [3, 3]}),
     ]);
-    let mut r = rig("default", &["computer", "bash"], vec![bash_round, desk_round]);
+    let mut r = rig(
+        "default",
+        &["computer", "bash"],
+        vec![bash_round, desk_round],
+    );
     let (_h, _cards) = run(&mut r, |_, _| true).await;
 
     assert_eq!(

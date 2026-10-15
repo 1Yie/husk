@@ -2,8 +2,7 @@ fn main() {
     let db = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "/tmp/probe2.db".into());
-    let stores =
-        agent_store::SessionStore::all_workspaces_at(std::path::Path::new(&db));
+    let stores = agent_store::SessionStore::all_workspaces_at(std::path::Path::new(&db));
     for s in &stores {
         for m in s.list() {
             if m.id == 112 {

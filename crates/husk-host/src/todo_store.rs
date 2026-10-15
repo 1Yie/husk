@@ -10,8 +10,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_store::SessionStore;
 use agent_kernel::tools::todo::{TodoStorage, TodoStorageSlot};
+use agent_store::SessionStore;
 
 const ROW: &str = "todos.json";
 
@@ -23,7 +23,11 @@ pub struct SessionTodoStorage {
 }
 
 impl SessionTodoStorage {
-    pub fn new(store: Arc<SessionStore>, session_id: i64, workspace_root: &std::path::Path) -> Self {
+    pub fn new(
+        store: Arc<SessionStore>,
+        session_id: i64,
+        workspace_root: &std::path::Path,
+    ) -> Self {
         Self {
             store,
             session_id,
@@ -71,8 +75,8 @@ impl TodoStorage for SessionTodoStorage {
 
 #[cfg(test)]
 mod tests {
-    use agent_capabilities::WorkspaceCtx;
     use super::*;
+    use agent_capabilities::WorkspaceCtx;
     use agent_kernel::tools::registry::ToolCtx;
 
     fn storage(dir: &std::path::Path) -> SessionTodoStorage {
@@ -100,11 +104,17 @@ mod tests {
     async fn the_list_persists_in_the_session_database() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx_over(storage(dir.path()), dir.path());
-        run(&ctx, serde_json::json!({"action":"add","text":"a"})).await.unwrap();
-        run(&ctx, serde_json::json!({"action":"add","text":"b"})).await.unwrap();
+        run(&ctx, serde_json::json!({"action":"add","text":"a"}))
+            .await
+            .unwrap();
+        run(&ctx, serde_json::json!({"action":"add","text":"b"}))
+            .await
+            .unwrap();
 
         let again = ctx_over(storage(dir.path()), dir.path());
-        let out = run(&again, serde_json::json!({"action":"add","text":"c"})).await.unwrap();
+        let out = run(&again, serde_json::json!({"action":"add","text":"c"}))
+            .await
+            .unwrap();
         assert!(out.contains("#3"), "ids collided after reload: {out}");
     }
 
@@ -123,10 +133,17 @@ mod tests {
 
         let s = storage(dir.path());
         let ctx = ctx_over(s, dir.path());
-        let out = run(&ctx, serde_json::json!({"action":"list"})).await.unwrap();
+        let out = run(&ctx, serde_json::json!({"action":"list"}))
+            .await
+            .unwrap();
         assert!(out.contains("#3 old task"), "{out}");
-        assert!(!legacy.exists(), "migration should clean the workspace copy");
-        let out = run(&ctx, serde_json::json!({"action":"add","text":"next"})).await.unwrap();
+        assert!(
+            !legacy.exists(),
+            "migration should clean the workspace copy"
+        );
+        let out = run(&ctx, serde_json::json!({"action":"add","text":"next"}))
+            .await
+            .unwrap();
         assert!(out.contains("#4 next"), "{out}");
     }
 
@@ -140,7 +157,9 @@ mod tests {
         std::fs::write(&legacy, "{ this is not json").unwrap();
 
         let ctx = ctx_over(storage(dir.path()), dir.path());
-        let err = run(&ctx, serde_json::json!({"action":"list"})).await.unwrap_err();
+        let err = run(&ctx, serde_json::json!({"action":"list"}))
+            .await
+            .unwrap_err();
         assert!(err.contains("legacy"), "{err}");
         assert!(legacy.exists(), "the only copy of the list was deleted");
     }

@@ -9,12 +9,12 @@
 use std::collections::HashMap;
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
-use agent_kernel::channels::{UiSink, UiStatsSnapshot};
 use crate::session::{SessionActor, SessionConfig};
-use agent_store::{SessionMeta, SessionStore};
 use agent_ipc::UiEvent;
-use agent_paths::AppPaths;
+use agent_kernel::channels::{UiSink, UiStatsSnapshot};
 use agent_llm::{AppConfig, ProviderFactory};
+use agent_paths::AppPaths;
+use agent_store::{SessionMeta, SessionStore};
 use serde::{Deserialize, Serialize};
 
 /// Detailed model description exposed to the UI.
@@ -76,8 +76,21 @@ pub struct ProjectSessionRow {
     /// Live turn flag. Only the active workspace has actors to report it,
     /// so rows of other projects always read `false`.
     pub running: bool,
-    /// User-pinned rows float to the top of the sidebar list.
+    /// Pinned within the workspace — leads the project's list.
     pub pinned: bool,
+    /// Pinned globally — leads the cross-project 会话 list.
+    #[serde(default)]
+    pub pinned_global: bool,
+    /// Archived — the sidebar shows it only under 已归档.
+    #[serde(default)]
+    pub archived: bool,
+}
+
+/// The store a sidebar session op addresses — see `edit_session_at`.
+enum SessionTarget {
+    Active,
+    Other(SessionStore),
+    Missing,
 }
 
 /// One project (workspace) with its full conversation list.
@@ -292,12 +305,8 @@ impl SessionManager {
         // No explicit root → the boot workspace `default_workspace_mode`
         // asks for. Nothing to open → empty state (no cwd fallback — don't
         // silently attach the launch directory).
-        let cwd: Option<std::path::PathBuf> = root.or_else(|| {
-            boot_workspace(
-                defaults.as_ref(),
-                &crate::prefs::load_recent_workspaces(),
-            )
-        });
+        let cwd: Option<std::path::PathBuf> = root
+            .or_else(|| boot_workspace(defaults.as_ref(), &crate::prefs::load_recent_workspaces()));
         let cfg = AppConfig::load(&paths.config_dir, None).unwrap_or_default();
         let (event_tx, event_rx) = std_mpsc::channel();
         let (_p, default_model, default_pname) = resolve_provider(&cfg);
@@ -308,7 +317,8 @@ impl SessionManager {
         // is skipped without even creating a runtime.
         let hooks = agent_kernel::hooks::HookChain::new();
         let plugins = cwd.as_ref().map(|root| {
-            let handle: crate::plugins::RuntimePluginHandle = Arc::new(std::sync::RwLock::new(None));
+            let handle: crate::plugins::RuntimePluginHandle =
+                Arc::new(std::sync::RwLock::new(None));
             // Background the load: a wedged MCP handshake must not hold up
             // boot — the router starts empty and the swap lands whenever the
             // registrations finish. A turn taken before then just sees no
@@ -320,7 +330,7 @@ impl SessionManager {
             std::thread::Builder::new()
                 .name("mcp-boot-load".into())
                 .spawn(move || {
-                    *h.write().unwrap() = Self::load_plugins(&root, &hooks_bg, &paths_bg);
+                    *h.write().unwrap() = Self::load_plugins(&root, &hooks_bg, &paths_bg, None);
                 })
                 .expect("mcp boot loader");
             handle
@@ -381,7 +391,7 @@ impl SessionManager {
                 permission_mode: defaults
                     .as_ref()
                     .map(|d| d.permission_mode.clone())
-                    .unwrap_or_else(|| "default".into()),
+                    .unwrap_or_else(|| crate::prefs::DEFAULT_PERMISSION_MODE.into()),
                 agent_mode: defaults
                     .as_ref()
                     .map(|d| d.agent_mode.clone())
@@ -418,7 +428,7 @@ impl SessionManager {
 
         crate::prefs::record_recent_workspace(&canon);
 
-        let prefs = store.load_prefs();
+        let prefs = workspace_layer(&canon, &store.load_prefs());
         // `defaults` (loaded at the top of `spawn_at`) fills any gap the
         // workspace prefs leave. Absent file → built-ins.
         // Model resolution order: workspace's saved pair → the settings
@@ -435,7 +445,7 @@ impl SessionManager {
         let permission_mode = prefs
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
-            .unwrap_or_else(|| "default".into());
+            .unwrap_or_else(|| crate::prefs::DEFAULT_PERMISSION_MODE.into());
         let agent_mode = resolve_agent_mode(
             &canon,
             &prefs.agent_mode,
@@ -508,7 +518,7 @@ impl SessionManager {
             .store
             .last_active()
             .filter(|id| mgr.metas.iter().any(|m| m.id == *id))
-            .or_else(|| mgr.metas.first().map(|m| m.id));
+            .or_else(|| mgr.metas.iter().find(|m| !m.archived).map(|m| m.id));
         match first {
             Some(id) => mgr.open_session(id),
             // Auto-create only for a workspace that has NEVER had a session —
@@ -534,7 +544,7 @@ impl SessionManager {
         }
         let canon = new_root.canonicalize().unwrap_or_else(|_| new_root.clone());
         let store = Arc::new(SessionStore::open(&canon)?);
-        let prefs = store.load_prefs();
+        let prefs = workspace_layer(&canon, &store.load_prefs());
         let defaults = crate::prefs::try_load_default_preferences();
         let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
         // Same chain as spawn: workspace pair → Agent 偏好 default →
@@ -551,7 +561,7 @@ impl SessionManager {
         self.permission_mode = prefs
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
-            .unwrap_or_else(|| "default".into());
+            .unwrap_or_else(|| crate::prefs::DEFAULT_PERMISSION_MODE.into());
         self.agent_mode = resolve_agent_mode(
             &canon,
             &prefs.agent_mode,
@@ -589,7 +599,7 @@ impl SessionManager {
             .store
             .last_active()
             .filter(|id| self.metas.iter().any(|m| m.id == *id))
-            .or_else(|| self.metas.first().map(|m| m.id));
+            .or_else(|| self.metas.iter().find(|m| !m.archived).map(|m| m.id));
         match first {
             Some(id) => self.open_session(id),
             // Same never-used gate as spawn — and a workspace that was
@@ -671,8 +681,7 @@ impl SessionManager {
             .workspace_root
             .canonicalize()
             .unwrap_or_else(|_| self.workspace_root.clone());
-        let office_root =
-            crate::office::office_root().map(|p| p.canonicalize().unwrap_or(p));
+        let office_root = crate::office::office_root().map(|p| p.canonicalize().unwrap_or(p));
         let office_is_current =
             self.workspace_active && office_root.as_ref().is_some_and(|o| *o == canon);
 
@@ -712,6 +721,8 @@ impl SessionManager {
                                     active: false,
                                     running: live.map(|h| h.running).unwrap_or(false),
                                     pinned: m.pinned,
+                                    pinned_global: m.pinned_global,
+                                    archived: m.archived,
                                 }
                             })
                             .collect()
@@ -768,6 +779,8 @@ impl SessionManager {
                                 active: false,
                                 running: live.map(|h| h.running).unwrap_or(false),
                                 pinned: m.pinned,
+                                pinned_global: m.pinned_global,
+                                archived: m.archived,
                             }
                         })
                         .collect()
@@ -869,6 +882,8 @@ impl SessionManager {
                     active: m.id == self.active_id,
                     running: live.map(|h| h.running).unwrap_or(false),
                     pinned: m.pinned,
+                    pinned_global: m.pinned_global,
+                    archived: m.archived,
                 }
             })
             .collect()
@@ -982,9 +997,11 @@ impl SessionManager {
         // Say WHY the session cannot answer, once, before the first turn. The
         // turn itself fails with the same reason, so this is the early notice.
         if let Some(reason) = &unavailable {
-            let _ = channels.event_tx.send(agent_ipc::UiEvent::SystemMessage(format!(
-                "无法使用该会话的模型提供商: {reason}"
-            )));
+            let _ = channels
+                .event_tx
+                .send(agent_ipc::UiEvent::SystemMessage(format!(
+                    "无法使用该会话的模型提供商: {reason}"
+                )));
         }
         let cmd_tx = actor.command_sender();
         let decision = actor.decision_writer();
@@ -1137,6 +1154,7 @@ impl SessionManager {
             agent_mode: None,
             thinking_level: None,
             queued_prompts: Vec::new(),
+            ..Default::default()
         });
         self.metas = self.store.list();
         self.spawn_actor(id);
@@ -1161,6 +1179,14 @@ impl SessionManager {
         // the cache, so spawning/mirroring off the stale copy restores the
         // session's PRE-swap model. Read fresh.
         self.metas = self.store.list();
+        // The manager's model / provider / mode / level fields are the
+        // PREVIOUS session's mirror. Falling back to them for a session that
+        // never pinned a field is how one session's change leaked into
+        // another ("switched the model here and the other session changed
+        // too"): `spawn_actor` and `mirror_active_settings` both use `self.*`
+        // as the "workspace default". Re-resolve that default first; the
+        // session's own pins and live slots override it below.
+        self.restore_workspace_default_settings();
         if !self.handles.contains_key(&id) {
             self.spawn_actor(id);
         }
@@ -1216,7 +1242,7 @@ impl SessionManager {
     /// `self.*` may currently be mirroring another session's per-session
     /// choice. Same precedence as `spawn_at`/`switch_workspace`.
     fn restore_workspace_default_settings(&mut self) {
-        let prefs = self.store.load_prefs();
+        let prefs = workspace_layer(&self.workspace_root, &self.store.load_prefs());
         let defaults = crate::prefs::try_load_default_preferences();
         let (_p, default_model, default_pname) = resolve_provider(&self.provider_cfg);
         // Same three-layer chain as spawn_at/switch_workspace — the previous
@@ -1235,7 +1261,7 @@ impl SessionManager {
         self.permission_mode = prefs
             .permission_mode
             .or_else(|| defaults.as_ref().map(|d| d.permission_mode.clone()))
-            .unwrap_or_else(|| "default".into());
+            .unwrap_or_else(|| crate::prefs::DEFAULT_PERMISSION_MODE.into());
         self.agent_mode = resolve_agent_mode(
             &self.workspace_root,
             &prefs.agent_mode,
@@ -1265,7 +1291,7 @@ impl SessionManager {
         }
         self.metas = self.store.list();
         if self.active_id == id {
-            match self.metas.first().map(|m| m.id) {
+            match self.metas.iter().find(|m| !m.archived).map(|m| m.id) {
                 Some(next) => self.open_session(next),
                 // Deleting the last session leaves the workspace empty —
                 // no auto-created replacement; the user makes the next
@@ -1300,7 +1326,8 @@ impl SessionManager {
                 .unwrap_or_else(|| "新会话".into()),
             preview: src.as_ref().map(|m| m.preview.clone()).unwrap_or_default(),
             updated_at: now,
-            pinned: src.as_ref().map(|m| m.pinned).unwrap_or(false),
+            // Pins, archive and the custom-title flag stay with the source —
+            // a fork is a new conversation, not a duplicate of its placement.
             // The fork inherits the source's meter — its first prompt
             // re-samples the same history, so the number is a fair stand-in
             // until that turn's real `Usage` lands.
@@ -1315,6 +1342,7 @@ impl SessionManager {
             // The fork copies history, not pending intent — parked prompts
             // stay with the source session.
             queued_prompts: Vec::new(),
+            ..Default::default()
         });
         self.metas = self.store.list();
         self.spawn_actor(new_id);
@@ -1332,6 +1360,7 @@ impl SessionManager {
         root: &std::path::Path,
         hooks: &agent_kernel::hooks::HookChain,
         paths: &AppPaths,
+        prev: Option<&agent_plugin::PluginManager>,
     ) -> Option<Arc<agent_plugin::PluginManager>> {
         if agent_plugin::discover(root, paths).is_empty() {
             hooks.replace(Vec::new());
@@ -1341,10 +1370,11 @@ impl SessionManager {
         // runtime runs `load_all`. A runtime dropped after the handshake
         // kills them, leaving clients that list tools but never see a
         // response. Run on a process-lifetime runtime instead.
-        let mgr = plugin_runtime().block_on(agent_plugin::load_all(
+        let mgr = plugin_runtime().block_on(agent_plugin::reload_all(
             root,
             paths,
             &crate::sandbox_prefs::protected_paths(paths),
+            prev,
         ));
         hooks.replace(crate::plugins::manifest_hooks(mgr.hook_specs()));
         tracing::info!(
@@ -1406,7 +1436,10 @@ impl SessionManager {
         ),
     ) -> Vec<serde_json::Value> {
         let (handle, hooks, root, paths) = parts;
-        let loaded = Self::load_plugins(root, hooks, paths);
+        // Hold the old manager across the reload so unchanged servers keep
+        // their live connection; it drops (killing leftovers) after the swap.
+        let prev = handle.read().unwrap().clone();
+        let loaded = Self::load_plugins(root, hooks, paths, prev.as_deref());
         let summary = loaded.as_ref().map(|m| m.status()).unwrap_or_default();
         *handle.write().unwrap() = loaded;
         summary
@@ -1632,7 +1665,8 @@ impl SessionManager {
             let trusted = agent_plugin::current_manifest(&id, &self.workspace_root, &self.paths)
                 .zip(mgr.as_ref())
                 .is_some_and(|(manifest, m)| {
-                    m.trust.is_trusted_content(&id, &self.workspace_root, &manifest)
+                    m.trust
+                        .is_trusted_content(&id, &self.workspace_root, &manifest)
                 });
             // The toggle binds the PERSISTED intent, not the live flag — a
             // failed or untrusted plugin reads "on" (it would run once the
@@ -1893,17 +1927,115 @@ impl SessionManager {
             .collect()
     }
 
-    /// Pin/unpin a session in the sidebar. Returns the new flag value —
-    /// `Err` only when the id isn't in the index.
-    pub fn pin_session(&mut self, id: i64, pinned: bool) -> std::io::Result<bool> {
-        if !self.workspace_active {
-            return Ok(false);
+    /// Pin/unpin a session within its workspace. `root` names the workspace
+    /// (`None` = the active one) — see [`Self::edit_session_at`].
+    pub fn pin_session(
+        &mut self,
+        root: Option<&str>,
+        id: i64,
+        pinned: bool,
+    ) -> std::io::Result<bool> {
+        self.edit_session_at(root, |s| s.set_pinned(id, pinned))
+    }
+
+    /// Global pin/unpin — the cross-project 会话 list's top tier.
+    pub fn pin_session_global(
+        &mut self,
+        root: Option<&str>,
+        id: i64,
+        pinned: bool,
+    ) -> std::io::Result<bool> {
+        self.edit_session_at(root, |s| s.set_pinned_global(id, pinned))
+    }
+
+    /// Archive/restore. Archiving drops both pins (see `set_archived`).
+    pub fn archive_session(
+        &mut self,
+        root: Option<&str>,
+        id: i64,
+        archived: bool,
+    ) -> std::io::Result<bool> {
+        self.edit_session_at(root, |s| s.set_archived(id, archived))
+    }
+
+    /// User title; blank resets to the title derived from the first prompt.
+    pub fn rename_session(
+        &mut self,
+        root: Option<&str>,
+        id: i64,
+        title: &str,
+    ) -> std::io::Result<bool> {
+        self.edit_session_at(root, |s| s.rename(id, title))
+    }
+
+    /// One meta edit on the store of `root`'s workspace.
+    ///
+    /// These edits only touch a session's index row, so unlike fork/delete
+    /// (which own live actors) they work on any known workspace: the sidebar
+    /// lists every project's sessions and each row gets the same menu. A
+    /// parked actor of that workspace committing a turn later keeps the edit
+    /// (`commit_turn` preserves user-owned fields).
+    fn edit_session_at(
+        &mut self,
+        root: Option<&str>,
+        f: impl FnOnce(&SessionStore) -> std::io::Result<bool>,
+    ) -> std::io::Result<bool> {
+        match self.session_target(root) {
+            SessionTarget::Active => {
+                let ok = f(&self.store)?;
+                if ok {
+                    self.metas = self.store.list();
+                }
+                Ok(ok)
+            }
+            SessionTarget::Other(store) => f(&store),
+            SessionTarget::Missing => Ok(false),
         }
-        let ok = self.store.set_pinned(id, pinned)?;
-        if ok {
-            self.metas = self.store.list();
+    }
+
+    /// Which store a sidebar op on `root` addresses.
+    fn session_target(&self, root: Option<&str>) -> SessionTarget {
+        let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let active = self.workspace_active.then(|| canon(&self.workspace_root));
+        match root.filter(|r| !r.is_empty()) {
+            None => match active {
+                Some(_) => SessionTarget::Active,
+                None => SessionTarget::Missing,
+            },
+            Some(r) => {
+                let target = canon(std::path::Path::new(r));
+                if active.as_ref() == Some(&target) {
+                    SessionTarget::Active
+                } else {
+                    SessionStore::open_existing(&target)
+                        .map(SessionTarget::Other)
+                        .unwrap_or(SessionTarget::Missing)
+                }
+            }
         }
-        Ok(ok)
+    }
+
+    /// The session as a Markdown transcript — what「导出记录」saves. `None`
+    /// when the session has no history yet.
+    pub fn export_session_markdown(&self, root: Option<&str>, id: i64) -> Option<(String, String)> {
+        let other;
+        let store: &SessionStore = match self.session_target(root) {
+            SessionTarget::Active => &self.store,
+            SessionTarget::Other(s) => {
+                other = s;
+                &other
+            }
+            SessionTarget::Missing => return None,
+        };
+        let history = store.load_history(id)?;
+        let title = store
+            .list()
+            .into_iter()
+            .find(|m| m.id == id)
+            .map(|m| m.title)
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| format!("会话 {id}"));
+        Some((title.clone(), session_markdown(&title, id, &history)))
     }
 
     /// mtime of the config file — the gate for a disk reload.
@@ -2008,23 +2140,12 @@ impl SessionManager {
         for (pname, pcfg) in &self.provider_cfg.providers {
             if !pcfg.models.is_empty() {
                 for m in &pcfg.models {
-                    let d = m.detailed();
-                    let reasoning = d.and_then(|x| x.reasoning).unwrap_or(false)
-                        || d.and_then(|x| x.thinking_level_map.as_ref()).is_some();
-                    let thinking_level_map = d.and_then(|x| x.thinking_level_map.clone());
-                    // Levels come ONLY from the model's thinking_level_map
-                    // — a model with `reasoning: true` but no map exposes no
-                    // selectable levels, and the picker stays hidden.
-                    let mut available_levels = Vec::new();
-                    if let Some(map) = &thinking_level_map {
-                        for lvl in &["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
-                            if *lvl == "off" {
-                                available_levels.push("off".to_string());
-                            } else if let Some(Some(_)) = map.get(*lvl) {
-                                available_levels.push(lvl.to_string());
-                            }
-                        }
-                    }
+                    // Resolve overrides exactly as session spawn/hot-swap does.
+                    let d = pcfg.model_opts(m.id());
+                    let reasoning = d.reasoning.unwrap_or(false) || d.thinking_level_map.is_some();
+                    let thinking_level_map = d.thinking_level_map.clone();
+                    let available_levels =
+                        agent_llm::config::available_thinking_levels(thinking_level_map.as_ref());
 
                     models.push(ModelDetails {
                         provider: pname.clone(),
@@ -2033,11 +2154,9 @@ impl SessionManager {
                         reasoning,
                         thinking_level_map,
                         available_levels,
-                        context_window: d.and_then(|x| x.context_window),
-                        max_tokens: d
-                            .and_then(|x| x.max_tokens)
-                            .map(|v| v.min(u32::MAX as u64) as u32),
-                        cost: d.and_then(|x| x.cost.clone()),
+                        context_window: d.context_window,
+                        max_tokens: d.max_tokens.map(|v| v.min(u32::MAX as u64) as u32),
+                        cost: d.cost.clone(),
                     });
                 }
             } else if let Some(dm) = &pcfg.default_model {
@@ -2107,25 +2226,6 @@ impl SessionManager {
             );
         }
 
-        if self.active_thinking_level.is_none() {
-            if let Some(m) = models
-                .iter()
-                .find(|m| m.provider == active_provider && m.model == active_model)
-            {
-                if m.reasoning {
-                    if m.available_levels.contains(&"medium".to_string()) {
-                        self.active_thinking_level = Some("medium".into());
-                    } else if let Some(first_non_off) =
-                        m.available_levels.iter().find(|l| *l != "off")
-                    {
-                        self.active_thinking_level = Some(first_non_off.clone());
-                    } else {
-                        self.active_thinking_level = Some("off".into());
-                    }
-                }
-            }
-        }
-
         // Report the ACTIVE session's live values — the composer mirrors the
         // session's actual gate/level, which may differ from the stored
         // defaults once the settings popup changes them (prefs only apply to
@@ -2144,6 +2244,14 @@ impl SessionManager {
             })
             .unwrap_or((None, None, None));
 
+        let requested_level = live_level.or_else(|| self.active_thinking_level.clone());
+        let active_map = models
+            .iter()
+            .find(|model| model.provider == active_provider && model.model == active_model)
+            .and_then(|model| model.thinking_level_map.as_ref());
+        let active_thinking_level =
+            agent_llm::config::normalize_thinking_level(requested_level.as_deref(), active_map);
+
         let path = Some(
             AppConfig::default_path(&self.paths.config_dir)
                 .to_string_lossy()
@@ -2152,7 +2260,7 @@ impl SessionManager {
         SessionModelInfo {
             active_provider,
             active_model,
-            active_thinking_level: live_level.or_else(|| self.active_thinking_level.clone()),
+            active_thinking_level,
             active_permission_mode: live_mode.or_else(|| Some(self.permission_mode.clone())),
             // Same rule as the gate/level above. Reporting the manager-level
             // default here made plan mode look workspace-wide: a plan ran in
@@ -2169,11 +2277,17 @@ impl SessionManager {
     /// The settings popup reads/writes these; already-running sessions keep
     /// whatever they were spawned (or later switched) with.
     pub fn default_prefs(&self) -> (String, Option<String>, String, f32) {
+        // The STORED row, not `self.*`: `permission_mode`,
+        // `active_thinking_level` and `agent_mode` on the manager mirror the
+        // ACTIVE SESSION (`mirror_active_settings`). Returning those made the
+        // 设置 page display whichever session was in front, and the next save
+        // wrote that session's values back as the "default".
+        let stored = crate::prefs::try_load_default_preferences().unwrap_or_default();
         (
-            self.permission_mode.clone(),
-            self.active_thinking_level.clone(),
-            self.agent_mode.clone(),
-            self.compact_at,
+            stored.permission_mode,
+            stored.thinking_level,
+            stored.agent_mode,
+            stored.compact_at,
         )
     }
 
@@ -2184,33 +2298,47 @@ impl SessionManager {
         self.default_workspace_mode.clone()
     }
 
+    /// The `default_preferences` row every setter writes back.
+    ///
+    /// `permission_mode`, `thinking_level` and `agent_mode` on `self` mirror the
+    /// ACTIVE SESSION (`mirror_active_settings`) — they are not the user's saved
+    /// defaults, so they come from the stored row, never from `self`. Saving
+    /// them from `self` meant that changing 「默认进入」, the default model or a
+    /// memory switch silently overwrote the saved defaults with whatever
+    /// session happened to be in front. Every other field follows `self` (or
+    /// the process-wide sandbox slot); `set_default_prefs` then patches the
+    /// three fields it was explicitly given.
+    fn defaults_for_save(&self) -> crate::prefs::DefaultPreferences {
+        let stored = crate::prefs::try_load_default_preferences().unwrap_or_default();
+        let lim = crate::sandbox_prefs::current();
+        crate::prefs::DefaultPreferences {
+            permission_mode: stored.permission_mode,
+            thinking_level: stored.thinking_level,
+            agent_mode: stored.agent_mode,
+            default_workspace_mode: self.default_workspace_mode.clone(),
+            compact_at: self.compact_at,
+            active_provider: self.default_provider.clone(),
+            active_model: self.default_model.clone(),
+            sandbox_enabled: lim.enabled,
+            sandbox_network: Some(lim.network_label().into()),
+            sandbox_max_memory_mb: lim.max_memory_mb,
+            sandbox_max_processes: lim.max_processes,
+            sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
+                .then(|| lim.allowed_domains.clone()),
+            sandbox_denied_domains: (!lim.denied_domains.is_empty())
+                .then(|| lim.denied_domains.clone()),
+            memory_enabled: self.memory_enabled,
+            memory_distill: self.memory_distill,
+            blueprint_enabled: self.blueprint_enabled,
+            schema_version: crate::prefs::DEFAULT_PREFERENCES_VERSION,
+        }
+    }
+
     /// Store the「默认进入」preference. Boot-only — no live session or
     /// workspace is touched; the value takes effect at the next launch.
     pub fn set_default_workspace_mode(&mut self, mode: String) {
         self.default_workspace_mode = mode;
-        let lim = crate::sandbox_prefs::current();
-        let _ = crate::prefs::save_default_preferences(
-            &crate::prefs::DefaultPreferences {
-                permission_mode: self.permission_mode.clone(),
-                thinking_level: self.active_thinking_level.clone(),
-                agent_mode: self.agent_mode.clone(),
-                default_workspace_mode: self.default_workspace_mode.clone(),
-                compact_at: self.compact_at,
-                active_provider: self.default_provider.clone(),
-                active_model: self.default_model.clone(),
-                memory_enabled: self.memory_enabled,
-                memory_distill: self.memory_distill,
-                blueprint_enabled: self.blueprint_enabled,
-                sandbox_enabled: lim.enabled,
-                sandbox_network: Some(lim.network_label().into()),
-                sandbox_max_memory_mb: lim.max_memory_mb,
-                sandbox_max_processes: lim.max_processes,
-                sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
-                    .then(|| lim.allowed_domains.clone()),
-                sandbox_denied_domains: (!lim.denied_domains.is_empty())
-                    .then(|| lim.denied_domains.clone()),
-            },
-        );
+        let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
     }
 
     /// Update the stored default preferences. Permission mode, thinking
@@ -2225,15 +2353,6 @@ impl SessionManager {
         agent_mode: Option<String>,
         compact_at: Option<f32>,
     ) {
-        if let Some(m) = permission_mode {
-            self.permission_mode = m;
-        }
-        if let Some(l) = thinking_level {
-            self.active_thinking_level = if l.is_empty() { None } else { Some(l) };
-        }
-        if let Some(m) = agent_mode {
-            self.agent_mode = m;
-        }
         if let Some(f) = compact_at {
             self.compact_at = f.clamp(0.5, 0.95);
             // The ratio is a workspace-wide rule with no per-session
@@ -2241,33 +2360,47 @@ impl SessionManager {
             // was spawned with.
             self.broadcast_compact_at(self.compact_at);
         }
-        self.persist_prefs();
-        // Also persist the global defaults so fresh workspaces inherit them.
-        // Sandbox overrides live in the process-wide slot — read it back so
-        // the file always mirrors the effective values.
-        let lim = crate::sandbox_prefs::current();
-        let _ = crate::prefs::save_default_preferences(
-            &crate::prefs::DefaultPreferences {
-                permission_mode: self.permission_mode.clone(),
-                thinking_level: self.active_thinking_level.clone(),
-                agent_mode: self.agent_mode.clone(),
-                default_workspace_mode: self.default_workspace_mode.clone(),
-                compact_at: self.compact_at,
-                active_provider: self.default_provider.clone(),
-                active_model: self.default_model.clone(),
-                memory_enabled: self.memory_enabled,
-                memory_distill: self.memory_distill,
-                blueprint_enabled: self.blueprint_enabled,
-                sandbox_enabled: lim.enabled,
-                sandbox_network: Some(lim.network_label().into()),
-                sandbox_max_memory_mb: lim.max_memory_mb,
-                sandbox_max_processes: lim.max_processes,
-                sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
-                    .then(|| lim.allowed_domains.clone()),
-                sandbox_denied_domains: (!lim.denied_domains.is_empty())
-                    .then(|| lim.denied_domains.clone()),
-            },
-        );
+        // Write the DEFAULTS row only. `self.permission_mode` /
+        // `active_thinking_level` / `agent_mode` mirror the ACTIVE SESSION, so
+        // assigning them here re-pointed the live session's displayed settings
+        // at the new default (its actual gate never changed) and left the
+        // 设置 pane reading a value that followed the session. Only the fields
+        // THIS call set may be written: the pane sends a single-field patch.
+        let mut prefs = self.defaults_for_save();
+        if let Some(m) = &permission_mode {
+            prefs.permission_mode = m.clone();
+        }
+        if let Some(l) = &thinking_level {
+            prefs.thinking_level = if l.is_empty() { None } else { Some(l.clone()) };
+        }
+        if let Some(m) = &agent_mode {
+            prefs.agent_mode = m.clone();
+        }
+        if let Some(f) = compact_at {
+            prefs.compact_at = f.clamp(0.5, 0.95);
+        }
+        let _ = crate::prefs::save_default_preferences(&prefs);
+        // A workspace pin outranks the default at spawn, so drop the pinned
+        // fields the user just re-defaulted HERE — "new sessions use X" has to
+        // mean exactly that, the same treatment `set_default_model` gives the
+        // model pair. Other workspaces keep theirs.
+        let mut ws = self.store.load_prefs();
+        let mut touched = false;
+        if permission_mode.is_some() && ws.permission_mode.is_some() {
+            ws.permission_mode = None;
+            touched = true;
+        }
+        if thinking_level.is_some() && ws.thinking_level.is_some() {
+            ws.thinking_level = None;
+            touched = true;
+        }
+        if agent_mode.is_some() && ws.agent_mode.is_some() {
+            ws.agent_mode = None;
+            touched = true;
+        }
+        if touched {
+            let _ = self.store.save_prefs(&ws);
+        }
     }
 
     /// Memory subsystem switches — `(enabled, distill)`. Both are
@@ -2297,29 +2430,7 @@ impl SessionManager {
         // A pair is only meaningful whole — callers clear both or set both.
         self.default_provider = provider;
         self.default_model = model;
-        let lim = crate::sandbox_prefs::current();
-        let _ = crate::prefs::save_default_preferences(
-            &crate::prefs::DefaultPreferences {
-                permission_mode: self.permission_mode.clone(),
-                thinking_level: self.active_thinking_level.clone(),
-                agent_mode: self.agent_mode.clone(),
-                default_workspace_mode: self.default_workspace_mode.clone(),
-                compact_at: self.compact_at,
-                active_provider: self.default_provider.clone(),
-                active_model: self.default_model.clone(),
-                memory_enabled: self.memory_enabled,
-                memory_distill: self.memory_distill,
-                blueprint_enabled: self.blueprint_enabled,
-                sandbox_enabled: lim.enabled,
-                sandbox_network: Some(lim.network_label().into()),
-                sandbox_max_memory_mb: lim.max_memory_mb,
-                sandbox_max_processes: lim.max_processes,
-                sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
-                    .then(|| lim.allowed_domains.clone()),
-                sandbox_denied_domains: (!lim.denied_domains.is_empty())
-                    .then(|| lim.denied_domains.clone()),
-            },
-        );
+        let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
         // A workspace pin (`prefs.provider`/`prefs.model`, written whenever a
         // model is picked in the composer) silently outranks the pair the
         // user just chose as the default — from their view "new sessions use
@@ -2364,29 +2475,7 @@ impl SessionManager {
         if let Some(v) = distill {
             self.memory_distill = v;
         }
-        let lim = crate::sandbox_prefs::current();
-        let _ = crate::prefs::save_default_preferences(
-            &crate::prefs::DefaultPreferences {
-                permission_mode: self.permission_mode.clone(),
-                thinking_level: self.active_thinking_level.clone(),
-                agent_mode: self.agent_mode.clone(),
-                default_workspace_mode: self.default_workspace_mode.clone(),
-                compact_at: self.compact_at,
-                active_provider: self.default_provider.clone(),
-                active_model: self.default_model.clone(),
-                memory_enabled: self.memory_enabled,
-                memory_distill: self.memory_distill,
-                blueprint_enabled: self.blueprint_enabled,
-                sandbox_enabled: lim.enabled,
-                sandbox_network: Some(lim.network_label().into()),
-                sandbox_max_memory_mb: lim.max_memory_mb,
-                sandbox_max_processes: lim.max_processes,
-                sandbox_allowed_domains: (!lim.allowed_domains.is_empty())
-                    .then(|| lim.allowed_domains.clone()),
-                sandbox_denied_domains: (!lim.denied_domains.is_empty())
-                    .then(|| lim.denied_domains.clone()),
-            },
-        );
+        let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
     }
 
     /// Push the current memory switches into every LIVE actor — same
@@ -2424,44 +2513,102 @@ impl SessionManager {
         }
     }
 
-    /// Persist current workspace composer preferences (model, thinking level, permission mode).
-    pub fn persist_prefs(&self) {
-        let prefs = agent_store::WorkspacePrefs {
-            provider: Some(self.provider_name.clone()),
-            model: Some(self.model_name.clone()),
-            thinking_level: self.active_thinking_level.clone(),
-            permission_mode: Some(self.permission_mode.clone()),
-            agent_mode: Some(self.agent_mode.clone()),
-        };
+    /// Pin ONE workspace preference, leaving the others as stored.
+    ///
+    /// Writing every field from `self.*` turned a model pick into a pin on
+    /// permission / mode / level too — and `self.*` mirrors the active
+    /// session, so those pins were whatever session happened to be in front.
+    /// It also re-pinned, on the next composer change, the fields
+    /// `set_default_prefs` had just cleared so a new default could apply.
+    fn pin_workspace_pref(&self, f: impl FnOnce(&mut agent_store::WorkspacePrefs)) {
+        let mut prefs = self.store.load_prefs();
+        f(&mut prefs);
         let _ = self.store.save_prefs(&prefs);
     }
 
-    /// Update active model & provider in manager metadata and persist to workspace prefs.
+    /// Update active model & provider in manager metadata and pin the pair
+    /// for this workspace.
     pub fn set_model(&mut self, provider: String, model: String) {
-        self.provider_name = provider;
-        self.model_name = model;
-        self.persist_prefs();
+        self.provider_name = provider.clone();
+        self.model_name = model.clone();
+        self.pin_workspace_pref(|p| {
+            p.provider = Some(provider);
+            p.model = Some(model);
+        });
     }
 
-    /// Update active thinking level in manager metadata and persist to workspace prefs.
+    /// Update active thinking level in manager metadata and pin it for this
+    /// workspace (`""` clears the pin).
     pub fn set_thinking_level(&mut self, level: String) {
         self.active_thinking_level = if level.is_empty() { None } else { Some(level) };
-        self.persist_prefs();
+        let level = self.active_thinking_level.clone();
+        self.pin_workspace_pref(|p| p.thinking_level = level);
     }
 
-    /// Update active permission mode in manager metadata and persist to workspace prefs.
+    /// Update active permission mode in manager metadata and pin it for this
+    /// workspace.
     pub fn set_permission_mode(&mut self, mode: String) {
-        self.permission_mode = mode;
-        self.persist_prefs();
+        self.permission_mode = mode.clone();
+        self.pin_workspace_pref(|p| p.permission_mode = Some(mode));
     }
 
     /// Update active agent mode in manager metadata and persist to
     /// workspace prefs — the session's live swap happens through the
     /// `SetAgentMode` command the caller also pumps in.
     pub fn set_agent_mode(&mut self, mode: String) {
-        self.agent_mode = mode;
-        self.persist_prefs();
+        self.agent_mode = mode.clone();
+        self.pin_workspace_pref(|p| p.agent_mode = Some(mode));
     }
+}
+
+/// A readable transcript: user/assistant turns as sections, tool calls and
+/// results as fenced blocks. Hidden/system rows (the kernel prompt, injected
+/// nudges, compaction bookkeeping) are not part of the conversation and are
+/// left out; error notices stay, since they explain gaps in the transcript.
+fn session_markdown(title: &str, id: i64, history: &[agent_llm::types::ChatMessage]) -> String {
+    use agent_llm::types::{NoticeKind, Role};
+    let mut out = format!("# {title}\n\n> 会话 ID: {id}\n");
+    for m in history {
+        let text = m.content.as_deref().unwrap_or("").trim();
+        match m.role {
+            Role::User => {
+                if matches!(m.notice, Some(NoticeKind::Hidden)) || text.is_empty() {
+                    continue;
+                }
+                out.push_str(&format!("\n## 用户\n\n{text}\n"));
+            }
+            Role::Assistant => {
+                if !text.is_empty() {
+                    out.push_str(&format!("\n## 助手\n\n{text}\n"));
+                }
+                for call in m.tool_calls.iter().flatten() {
+                    out.push_str(&format!(
+                        "\n**工具调用** `{}`\n\n```json\n{}\n```\n",
+                        call.name,
+                        call.arguments.trim()
+                    ));
+                }
+            }
+            Role::Tool => {
+                let label = if m.is_error == Some(true) {
+                    "工具结果（失败）"
+                } else {
+                    "工具结果"
+                };
+                out.push_str(&format!(
+                    "\n<details><summary>{label}</summary>\n\n```\n{text}\n```\n\n</details>\n"
+                ));
+            }
+            Role::System => {
+                if matches!(m.notice, Some(NoticeKind::Error) | Some(NoticeKind::System))
+                    && !text.is_empty()
+                {
+                    out.push_str(&format!("\n> {text}\n"));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Resolve the active provider from `config.toml`.
@@ -2472,6 +2619,26 @@ impl SessionManager {
 /// and finally the first buildable provider. Every layer validates the
 /// provider still exists in `providers` — a deleted provider falls
 /// through instead of stranding the session on a dead backend.
+/// The per-workspace preference layer, minus the office pseudo-workspace.
+///
+/// Office is a mode, not a project: every office session shares one root, and
+/// the composer setters (`set_model` & co.) pin model / mode / level there on
+/// every change. A pin saved by one office session would then outrank the Agent 偏好
+/// defaults for every *later* office session — a new office session silently
+/// ignoring the default model. Office therefore has no workspace layer at all;
+/// the global defaults govern. (Agent mode is separate: `resolve_agent_mode`
+/// pins it to `office` for this root regardless.)
+fn workspace_layer(
+    root: &std::path::Path,
+    prefs: &agent_store::WorkspacePrefs,
+) -> agent_store::WorkspacePrefs {
+    if crate::office::is_office_root(root) {
+        agent_store::WorkspacePrefs::default()
+    } else {
+        prefs.clone()
+    }
+}
+
 fn resolve_model_pair(
     ws_provider: &Option<String>,
     ws_model: &Option<String>,
@@ -2526,16 +2693,14 @@ fn boot_workspace(
     match defaults.map(|d| d.default_workspace_mode.as_str()) {
         // The office dir is created lazily by `spawn_at` — a boot landing
         // there needs nothing pre-existing.
-        Some("office") => crate::office::office_root()
-            .or_else(|| recents.first().map(|w| w.path.clone())),
+        Some("office") => {
+            crate::office::office_root().or_else(|| recents.first().map(|w| w.path.clone()))
+        }
         Some("build") => recents
             .iter()
             .map(|w| w.path.clone())
             .find(|p| p.is_dir() && !crate::office::is_office_root(p)),
-        _ => recents
-            .iter()
-            .map(|w| w.path.clone())
-            .find(|p| p.is_dir()),
+        _ => recents.iter().map(|w| w.path.clone()).find(|p| p.is_dir()),
     }
 }
 
@@ -2764,11 +2929,7 @@ max = "max"
         // `config.toml`, and the shared one can be rewritten by a sibling test
         // within the same mtime tick — the "changed file loads" check then
         // sees an equal stamp and skips the load.
-        let paths = AppPaths::new(
-            dir.path().join("config"),
-            dir.path().join("data"),
-            ".husk",
-        );
+        let paths = AppPaths::new(dir.path().join("config"), dir.path().join("data"), ".husk");
         let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), paths);
 
         assert!(
@@ -2831,7 +2992,11 @@ max = "max"
         };
 
         let (provider, reason) = choose_session_provider(&cfg, "openai");
-        assert_eq!(provider.id(), "unavailable", "must not borrow another vendor");
+        assert_eq!(
+            provider.id(),
+            "unavailable",
+            "must not borrow another vendor"
+        );
         let reason = reason.expect("the failure reason must be carried");
         assert!(reason.contains("CHOOSE_PROVIDER_MISSING_KEY"), "{reason}");
     }
@@ -2936,6 +3101,72 @@ max = "max"
     }
 
     #[test]
+    fn model_info_clamps_restored_and_stale_thinking_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let paths = AppPaths::new(dir.path().join("config"), dir.path().join("data"), ".husk");
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(
+            paths.config_dir.join("config.toml"),
+            r#"
+active_provider = "test"
+active_model = "a"
+[providers.test]
+type = "openai_compat"
+base_url = "https://example.invalid/v1"
+api_key = "test"
+[[providers.test.models]]
+id = "a"
+reasoning = true
+[providers.test.models.thinking_level_map]
+low = "low"
+high = "high"
+xhigh = "xhigh"
+[providers.test.model_overrides.a.thinking_level_map]
+xhigh = ""
+max = "max"
+"#,
+        )
+        .unwrap();
+        let store = agent_store::SessionStore::open(&root).unwrap();
+        store
+            .save_prefs(&agent_store::WorkspacePrefs {
+                provider: Some("test".into()),
+                model: Some("a".into()),
+                thinking_level: Some("xhigh".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(root), paths);
+        let info = mgr.model_info();
+        let active = info
+            .models
+            .iter()
+            .find(|model| model.provider == "test" && model.model == "a")
+            .unwrap();
+        assert_eq!(active.available_levels, ["off", "low", "high", "max"]);
+        assert_eq!(info.active_thinking_level.as_deref(), Some("low"));
+        assert_eq!(
+            mgr.active()
+                .unwrap()
+                .thinking_level
+                .read()
+                .unwrap()
+                .as_deref(),
+            Some("low")
+        );
+        // Model-info can run between a config reload and its actor command.
+        *mgr.active().unwrap().thinking_level.write().unwrap() = Some("xhigh".into());
+        assert_eq!(
+            mgr.model_info().active_thinking_level.as_deref(),
+            Some("low")
+        );
+        store.delete_workspace().unwrap();
+    }
+
+    #[test]
     fn test_workspace_prefs_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
@@ -2962,8 +3193,6 @@ max = "max"
     /// up in every session that happened to end on an assistant block.
     #[test]
     fn model_info_reports_the_active_sessions_agent_mode() {
-        use crate::mode::AgentMode;
-
         /// A stand-in actor — only its agent-mode slot is read here.
         fn fake_handle(
             id: i64,
@@ -2988,7 +3217,7 @@ max = "max"
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                shutdown: Arc::new(tokio::sync::Notify::new()),
+                    shutdown: Arc::new(tokio::sync::Notify::new()),
                     preview: String::new(),
                     running: false,
                     ui,
@@ -3046,6 +3275,7 @@ max = "max"
                 agent_mode: Some("build".into()),
                 thinking_level: None,
                 queued_prompts: Vec::new(),
+                ..Default::default()
             };
             mgr.store.upsert_meta(meta).unwrap();
             let (cmd_tx, _rx) = tokio::sync::mpsc::channel(4);
@@ -3065,7 +3295,7 @@ max = "max"
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                shutdown: Arc::new(tokio::sync::Notify::new()),
+                    shutdown: Arc::new(tokio::sync::Notify::new()),
                     preview: String::new(),
                     running: false,
                     ui,
@@ -3095,11 +3325,25 @@ max = "max"
     fn a_session_without_settings_falls_back_to_the_workspace_default() {
         use agent_store::SessionMeta;
         let dir = tempfile::tempdir().unwrap();
-        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
+        let (mut mgr, _rx) =
+            SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths_with_config());
         mgr.workspace_active = true;
-        // Workspace default the fresh session should inherit.
-        mgr.provider_name = "fallback-p".into();
-        mgr.model_name = "fallback-m".into();
+        // The workspace default the fresh session should inherit — seeded in
+        // the store, where the resolver reads it. Not on the manager's mirror:
+        // `open_session` re-resolves the default before using it as a
+        // fallback, so a hand-set mirror never acts as one.
+        mgr.store
+            .save_prefs(&agent_store::WorkspacePrefs {
+                provider: Some("devin".into()),
+                model: Some("devin/swe-2".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        // A stale mirror left by the previously active session must NOT be the
+        // fallback — that is the "changed the model in one session and another
+        // session changed too" leak.
+        mgr.provider_name = "stale-p".into();
+        mgr.model_name = "stale-m".into();
 
         // Session meta with NO per-session choices — every field falls back.
         let meta = SessionMeta {
@@ -3115,6 +3359,7 @@ max = "max"
             agent_mode: None,
             thinking_level: None,
             queued_prompts: Vec::new(),
+            ..Default::default()
         };
         mgr.store.upsert_meta(meta).unwrap();
         mgr.metas = mgr.store.list();
@@ -3143,10 +3388,11 @@ max = "max"
         );
 
         mgr.open_session(7);
-        // Model/provider fall back to the workspace default (meta unset); the
-        // live handle's mode/level slots still override where they exist.
-        assert_eq!(mgr.provider_name, "fallback-p");
-        assert_eq!(mgr.model_name, "fallback-m");
+        // Model/provider fall back to the workspace default (meta unset), not
+        // to the stale mirror; the live handle's mode/level slots still
+        // override where they exist.
+        assert_eq!(mgr.provider_name, "devin");
+        assert_eq!(mgr.model_name, "devin/swe-2");
         assert_eq!(mgr.permission_mode, "auto");
         assert_eq!(mgr.agent_mode, "plan");
     }
@@ -3184,12 +3430,11 @@ max = "max"
         assert_eq!(got, ("b".to_string(), "b-model".to_string()));
 
         // A default pair pointing at a deleted provider falls to config.
-        let stale: crate::prefs::DefaultPreferences =
-            serde_json::from_value(serde_json::json!({
-                "active_provider": "gone",
-                "active_model": "m",
-            }))
-            .unwrap();
+        let stale: crate::prefs::DefaultPreferences = serde_json::from_value(serde_json::json!({
+            "active_provider": "gone",
+            "active_model": "m",
+        }))
+        .unwrap();
         let got = resolve_model_pair(&None, &None, Some(&stale), &providers, fb());
         assert_eq!(got, ("cfg-p".to_string(), "cfg-m".to_string()));
 
@@ -3216,6 +3461,145 @@ max = "max"
             resolve_agent_mode(dir.path(), &Some("plan".to_string()), None),
             "plan"
         );
+    }
+
+    /// Office carries no workspace preference layer. Every office session
+    /// shares one root, so a model pinned there by an earlier office session
+    /// used to outrank the Agent 偏好 default — the next new office session
+    /// silently kept the stale model instead of the configured default.
+    #[test]
+    fn office_workspace_ignores_a_pinned_model() {
+        let pinned = agent_store::WorkspacePrefs {
+            provider: Some("a".into()),
+            model: Some("a-model".into()),
+            thinking_level: Some("max".into()),
+            permission_mode: Some("bypassPermissions".into()),
+            agent_mode: Some("plan".into()),
+        };
+
+        // A real project keeps its pin.
+        let dir = tempfile::tempdir().unwrap();
+        let kept = workspace_layer(dir.path(), &pinned);
+        assert_eq!(kept.provider.as_deref(), Some("a"));
+        assert_eq!(kept.model.as_deref(), Some("a-model"));
+        assert_eq!(kept.thinking_level.as_deref(), Some("max"));
+
+        // Office drops it entirely, so the Agent 偏好 defaults layer wins.
+        let office = crate::office::office_root().unwrap();
+        let dropped = workspace_layer(&office, &pinned);
+        assert_eq!(dropped.provider, None);
+        assert_eq!(dropped.model, None);
+        assert_eq!(dropped.thinking_level, None);
+        assert_eq!(dropped.permission_mode, None);
+        assert_eq!(dropped.agent_mode, None);
+    }
+
+    /// Saving a default must not touch the session in front, and saving an
+    /// unrelated row must not overwrite the saved defaults with the active
+    /// session's mirror — the "I set 自动 and it keeps wandering off" bug.
+    #[test]
+    fn default_prefs_are_independent_of_the_active_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
+        let saved = crate::prefs::try_load_default_preferences();
+        // A workspace pin the new default has to displace.
+        mgr.store
+            .save_prefs(&agent_store::WorkspacePrefs {
+                permission_mode: Some("bypassPermissions".into()),
+                model: Some("kept".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        // The active session's mirror.
+        mgr.permission_mode = "bypassPermissions".into();
+        mgr.agent_mode = "plan".into();
+
+        mgr.set_default_prefs(Some("acceptEdits".into()), None, None, None);
+        // The live display is the session's, not the new default.
+        assert_eq!(mgr.permission_mode, "bypassPermissions");
+        assert_eq!(mgr.agent_mode, "plan");
+        let stored = crate::prefs::try_load_default_preferences().unwrap();
+        assert_eq!(stored.permission_mode, "acceptEdits");
+        // The re-defaulted field's pin is dropped; untouched pins stay.
+        let ws = mgr.store.load_prefs();
+        assert_eq!(ws.permission_mode, None);
+        assert_eq!(ws.model.as_deref(), Some("kept"));
+
+        // An unrelated save keeps the stored default, not the mirror.
+        mgr.set_memory_prefs(None, None);
+        let stored = crate::prefs::try_load_default_preferences().unwrap();
+        assert_eq!(stored.permission_mode, "acceptEdits");
+        assert_ne!(stored.agent_mode, "plan");
+        assert_eq!(mgr.default_prefs().0, "acceptEdits");
+
+        if let Some(p) = saved {
+            let _ = crate::prefs::save_default_preferences(&p);
+        }
+        mgr.store.delete_workspace().unwrap();
+    }
+
+    /// A composer change pins only the field it changed — picking a model
+    /// must not freeze the mirrored permission / mode / level into the
+    /// workspace, which would re-pin what `set_default_prefs` just cleared.
+    #[test]
+    fn composer_setters_pin_only_their_own_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
+        mgr.store
+            .save_prefs(&agent_store::WorkspacePrefs::default())
+            .unwrap();
+        mgr.permission_mode = "bypassPermissions".into();
+        mgr.active_thinking_level = Some("max".into());
+
+        mgr.set_model("p".into(), "m".into());
+        let ws = mgr.store.load_prefs();
+        assert_eq!(ws.provider.as_deref(), Some("p"));
+        assert_eq!(ws.model.as_deref(), Some("m"));
+        assert_eq!(ws.permission_mode, None);
+        assert_eq!(ws.thinking_level, None);
+        assert_eq!(ws.agent_mode, None);
+
+        mgr.set_thinking_level("high".into());
+        let ws = mgr.store.load_prefs();
+        assert_eq!(ws.thinking_level.as_deref(), Some("high"));
+        assert_eq!(ws.model.as_deref(), Some("m"));
+        assert_eq!(ws.permission_mode, None);
+        mgr.store.delete_workspace().unwrap();
+    }
+
+    /// The export keeps the conversation and drops what the model saw but
+    /// the user never did (the system prompt, hidden nudges).
+    #[test]
+    fn markdown_export_renders_turns_and_skips_hidden_rows() {
+        use agent_llm::types::{ChatMessage, NoticeKind, Role};
+        let mut hidden = ChatMessage::user("nudge");
+        hidden.notice = Some(NoticeKind::Hidden);
+        let mut tool = ChatMessage::assistant("");
+        tool.tool_calls = Some(vec![agent_llm::types::ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{\"cmd\":\"ls\"}".into(),
+        }]);
+        let mut result = ChatMessage::assistant("a.txt");
+        result.role = Role::Tool;
+        let md = session_markdown(
+            "标题",
+            3,
+            &[
+                ChatMessage::system("SYSTEM PROMPT"),
+                ChatMessage::user("你好"),
+                hidden,
+                tool,
+                result,
+                ChatMessage::assistant("完成"),
+            ],
+        );
+        assert!(md.starts_with("# 标题\n\n> 会话 ID: 3"));
+        assert!(md.contains("## 用户\n\n你好"));
+        assert!(md.contains("`bash`") && md.contains("{\"cmd\":\"ls\"}"));
+        assert!(md.contains("a.txt"));
+        assert!(md.contains("## 助手\n\n完成"));
+        assert!(!md.contains("SYSTEM PROMPT") && !md.contains("nudge"));
     }
 
     /// The「默认进入」preference picks the boot workspace: 工作 opens the

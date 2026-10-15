@@ -7,10 +7,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
+use agent_store::SessionStore;
 use husk_host::command::UiCommand;
 use husk_host::session::{SessionActor, SessionConfig};
 use husk_host::session_manager::SessionManager;
-use agent_store::SessionStore;
 
 use agent_testkit::ScriptedProvider;
 

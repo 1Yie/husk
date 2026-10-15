@@ -11,18 +11,23 @@ use std::sync::Arc;
 
 use agent_capabilities::{DesktopCtx, WorkspaceCtx, WorkspacePaths};
 use agent_computer::{DesktopBackend, MouseButton, ScreenshotMeta, ScrollDir};
-use husk_host::mode::AgentMode;
 use agent_kernel::permissions::{CallRisk, Decision, PermissionGate, PermissionMode};
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
+use husk_host::mode::AgentMode;
 
 fn registry() -> ToolRegistry {
     husk_host::session::base_registries().0
 }
 
-fn desktop_gate(mode: PermissionMode, rules: agent_kernel::permissions::PermissionRules) -> PermissionGate {
-    PermissionGate::new(mode, rules)
-        .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy))
+fn desktop_gate(
+    mode: PermissionMode,
+    rules: agent_kernel::permissions::PermissionRules,
+) -> PermissionGate {
+    PermissionGate::new(mode, rules).with_policy(
+        "computer",
+        Arc::new(agent_coding::computer_policy::ComputerPolicy),
+    )
 }
 
 /// A desktop backend that behaves, without a display: it records the calls it
@@ -143,13 +148,8 @@ fn plan_mode_keeps_the_eyes_and_drops_the_hands() {
 /// / `acceptEdits`, denies in `dontAsk`, and auto-runs only in `auto`/`bypass`.
 #[test]
 fn permission_matrix_for_desktop_tools() {
-    let shot_readonly = registry()
-        .spec("screenshot")
-        .map(|s| s.readonly)
-        .unwrap();
-    let comp_class = registry()
-        .spec("computer")
-        .map(|s| s.class);
+    let shot_readonly = registry().spec("screenshot").map(|s| s.readonly).unwrap();
+    let comp_class = registry().spec("computer").map(|s| s.class);
 
     for mode in [
         "default",
@@ -225,8 +225,10 @@ fn child_registries_never_carry_desktop_input() {
     // elevated `computer` gate produces `Ask` in auto, and `headless`
     // converts that `Ask` into a `Deny`. Between the registry exclusion
     // and this, a delegated subagent can't drive the desktop on any path.
-    let g = PermissionGate::for_subagent()
-        .with_policy("computer", Arc::new(agent_coding::computer_policy::ComputerPolicy));
+    let g = PermissionGate::for_subagent().with_policy(
+        "computer",
+        Arc::new(agent_coding::computer_policy::ComputerPolicy),
+    );
     let comp_class = registry.spec("computer").map(|s| s.class);
     assert!(
         matches!(

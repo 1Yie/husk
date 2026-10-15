@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use husk_host::sandbox_prefs::{SandboxLimits, SwitchableSandbox};
 use agent_capabilities::{SandboxCtx, WorkspaceCtx};
 use agent_kernel::tools::registry::ToolCtx;
+use husk_host::sandbox_prefs::{SandboxLimits, SwitchableSandbox};
 
 /// A context with the detected backend installed, as a shell-capable host has.
 fn ctx_with_sandbox(root: &std::path::Path) -> ToolCtx {
@@ -43,8 +43,12 @@ fn persistent_service_lifecycle() {
         }),
         ctx.clone(),
     );
-    assert!(out.contains("svc-"), "spawn should return a service id: {out}");
-    let id = out.split_whitespace()
+    assert!(
+        out.contains("svc-"),
+        "spawn should return a service id: {out}"
+    );
+    let id = out
+        .split_whitespace()
         .find(|t| t.starts_with("id="))
         .unwrap()
         .trim_start_matches("id=")
@@ -53,7 +57,11 @@ fn persistent_service_lifecycle() {
     std::thread::sleep(std::time::Duration::from_millis(800));
 
     // list shows it running.
-    let out = call("service", serde_json::json!({"action": "list"}), ctx.clone());
+    let out = call(
+        "service",
+        serde_json::json!({"action": "list"}),
+        ctx.clone(),
+    );
     assert!(out.contains(&id), "list should contain {id}: {out}");
     assert!(out.contains("running"), "{id} should be running: {out}");
 
@@ -96,7 +104,8 @@ fn persistent_server_reachable_from_host() {
         ctx.clone(),
     );
     assert!(out.contains("svc-"), "spawn failed: {out}");
-    let id = out.split_whitespace()
+    let id = out
+        .split_whitespace()
         .find(|t| t.starts_with("id="))
         .unwrap()
         .trim_start_matches("id=")
@@ -138,7 +147,12 @@ fn sandbox_disabled_routes_to_none() {
     let dir = tempfile::tempdir().unwrap();
     // Local, injected switch source: the test never touches the process-global
     // overrides, so it can run in parallel with other sandbox tests.
-    let switch = Arc::new(std::sync::RwLock::new(SandboxLimits::default()));
+    // The sandbox default is off; this test is about the ON → OFF flip, so it
+    // starts from an explicitly enabled switch.
+    let switch = Arc::new(std::sync::RwLock::new(SandboxLimits {
+        enabled: Some(true),
+        ..Default::default()
+    }));
     let (detected, _loud) = agent_sandbox::detect_backend();
     let mut ctx = ToolCtx::new().with_workspace(dir.path());
     let src = switch.clone();
@@ -161,6 +175,9 @@ fn sandbox_disabled_routes_to_none() {
     );
     assert!(out.contains("/home") || out.contains("/root"), "{out}");
 
-    *switch.write().unwrap() = SandboxLimits::default();
+    *switch.write().unwrap() = SandboxLimits {
+        enabled: Some(true),
+        ..Default::default()
+    };
     assert_eq!(ctx.sandbox().unwrap().id(), on);
 }

@@ -2,18 +2,18 @@
 //! queued tasks. The real actor path also verifies durable /clear behavior.
 
 use agent_ipc::UiEvent;
+use agent_llm::types::StreamChunk;
+use agent_store::SessionStore;
+use agent_testkit::ScriptedProvider;
 use husk_host::command::UiCommand;
 use husk_host::session::{SessionActor, SessionConfig};
-use agent_store::SessionStore;
-use agent_llm::types::StreamChunk;
 use std::sync::Arc;
 use std::time::Duration;
-use agent_testkit::ScriptedProvider;
 
 fn cfg(root: &std::path::Path, provider: Arc<ScriptedProvider>) -> SessionConfig {
     SessionConfig {
         workspace_root: root.into(),
-    paths: agent_paths::AppPaths::for_tests("kernel"),
+        paths: agent_paths::AppPaths::for_tests("kernel"),
         provider,
         provider_name: "test".into(),
         model: "test".into(),
@@ -138,7 +138,9 @@ async fn approve_after<F: FnOnce()>(root: &std::path::Path, patch: &str, between
     let tx = actor.command_sender();
     let decision = actor.decision_writer();
     let task = tokio::spawn(async move { actor.run().await });
-    tx.send(UiCommand::Prompt { text: "go".into() }).await.unwrap();
+    tx.send(UiCommand::Prompt { text: "go".into() })
+        .await
+        .unwrap();
     let request_id = tokio::time::timeout(Duration::from_secs(3), async {
         while let Some(event) = channels.event_rx.recv().await {
             if let UiEvent::ApprovalRequested { request_id, .. } = event {
@@ -153,7 +155,10 @@ async fn approve_after<F: FnOnce()>(root: &std::path::Path, patch: &str, between
     *decision.lock().unwrap() = Some((request_id, true));
     tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = channels.event_rx.recv().await {
-            if matches!(event, UiEvent::StateChanged(agent_ipc::AgentState::Finished)) {
+            if matches!(
+                event,
+                UiEvent::StateChanged(agent_ipc::AgentState::Finished)
+            ) {
                 return;
             }
         }

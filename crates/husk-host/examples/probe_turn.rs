@@ -7,8 +7,7 @@ fn main() {
         std::env::temp_dir().join("probe/data"),
         ".husk",
     );
-    let (mut mgr, rx) =
-        husk_host::session_manager::SessionManager::spawn_at(Some(root), paths);
+    let (mut mgr, rx) = husk_host::session_manager::SessionManager::spawn_at(Some(root), paths);
     eprintln!(
         "booted, active={} provider={} model={}",
         mgr.active_id, mgr.provider_name, mgr.model_name

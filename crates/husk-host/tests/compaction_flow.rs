@@ -10,11 +10,11 @@
 use std::sync::Arc;
 
 use agent_ipc::{AgentState, UiEvent};
-use husk_host::command::UiCommand;
 use agent_kernel::compaction::estimate_tokens;
-use husk_host::session::{SessionActor, SessionConfig};
-use agent_store::SessionStore;
 use agent_llm::types::{ChatMessage, NoticeKind, StreamChunk};
+use agent_store::SessionStore;
+use husk_host::command::UiCommand;
+use husk_host::session::{SessionActor, SessionConfig};
 
 #[allow(dead_code)] // Shared harness — this binary uses only part of it.
 use agent_testkit::ScriptedProvider;
@@ -42,7 +42,10 @@ fn seeded_history() -> Vec<ChatMessage> {
 fn spawn(
     cfg_root: &std::path::Path,
     stub: Arc<ScriptedProvider>,
-) -> (SessionActor, agent_kernel::channels::UiChannels<husk_host::command::UiCommand>) {
+) -> (
+    SessionActor,
+    agent_kernel::channels::UiChannels<husk_host::command::UiCommand>,
+) {
     SessionActor::resume(
         SessionConfig {
             workspace_root: cfg_root.to_path_buf(),
@@ -421,7 +424,9 @@ async fn compact_ratio_change_applies_to_a_live_session() {
         plugins: None,
         provider_name: "test".into(),
     };
-    async fn drain(rx: &mut agent_kernel::channels::UiChannels<husk_host::command::UiCommand>) -> Vec<UiEvent> {
+    async fn drain(
+        rx: &mut agent_kernel::channels::UiChannels<husk_host::command::UiCommand>,
+    ) -> Vec<UiEvent> {
         rx.event_rx.close();
         let mut out = Vec::new();
         while let Some(ev) = rx.event_rx.recv().await {

@@ -3,8 +3,8 @@
 //! `ToolRegistry::dispatch` path so the errors the model sees are what we
 //! actually assert on.
 
-use std::sync::Arc;
 use agent_capabilities::WorkspaceCtx;
+use std::sync::Arc;
 
 use agent_kernel::tools::{ToolCtx, ToolRegistry};
 

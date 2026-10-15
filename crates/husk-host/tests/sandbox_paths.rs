@@ -81,7 +81,11 @@ async fn host_paths_are_protected_for_commands_and_persistent_spawns() {
     for config in configs.iter() {
         assert!(config.deny_read.contains(&user_private));
         for path in &protected {
-            assert!(config.deny_read.contains(path), "missing {}", path.display());
+            assert!(
+                config.deny_read.contains(path),
+                "missing {}",
+                path.display()
+            );
         }
     }
     assert_eq!(cfg.deny_read, vec![user_private]);

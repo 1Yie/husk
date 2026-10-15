@@ -121,7 +121,9 @@ async fn engine_uses_the_tools_review_instead_of_parsing_command_arguments() {
             ]);
             provider.script_text("done");
             let ctx = Arc::new(
-                ToolCtx::new().with_workspace(dir.path()).with_sandbox(Arc::new(agent_sandbox::NoneBackend)),
+                ToolCtx::new()
+                    .with_workspace(dir.path())
+                    .with_sandbox(Arc::new(agent_sandbox::NoneBackend)),
             );
             let mut engine = Engine::new(
                 provider,

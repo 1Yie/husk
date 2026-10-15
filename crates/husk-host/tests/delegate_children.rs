@@ -1,8 +1,8 @@
 //! `delegate` — parallel read-only fan-out, end to end: real child engines,
 //! scripted provider, no network.
 
-use agent_testkit::ScriptedProvider;
 use agent_capabilities::{WorkspaceCtx, WorkspacePaths};
+use agent_testkit::ScriptedProvider;
 
 use std::sync::Arc;
 
@@ -247,12 +247,9 @@ async fn unknown_tool_in_manifest_is_refused_before_spawning() {
     let ctx = ctx_with(dir.path(), spawner);
 
     let spec = registry().spec("delegate").unwrap();
-    let err = (spec.exec)(
-        serde_json::json!({"task": "go", "agent": "typo"}),
-        ctx,
-    )
-    .await
-    .expect_err("unknown tool name must be refused");
+    let err = (spec.exec)(serde_json::json!({"task": "go", "agent": "typo"}), ctx)
+        .await
+        .expect_err("unknown tool name must be refused");
 
     assert!(format!("{err}").contains("raed"), "{err}");
     assert_eq!(provider.calls.lock().unwrap().len(), 0, "nothing may spawn");
@@ -396,9 +393,12 @@ async fn manifest_thinking_is_validated_and_applied() {
     let ctx = ctx_with(dir.path(), spawner);
     let spec = registry().spec("delegate").unwrap();
 
-    let err = (spec.exec)(serde_json::json!({"task": "x", "agent": "garbled"}), ctx.clone())
-        .await
-        .expect_err("unknown thinking level must be refused");
+    let err = (spec.exec)(
+        serde_json::json!({"task": "x", "agent": "garbled"}),
+        ctx.clone(),
+    )
+    .await
+    .expect_err("unknown thinking level must be refused");
     assert!(format!("{err}").contains("ultra"), "{err}");
     assert_eq!(provider.calls.lock().unwrap().len(), 0, "nothing may spawn");
 
@@ -448,7 +448,10 @@ async fn steer_reaches_a_running_child_on_its_next_request() {
     // request, so the id is stable here. Bounded so a stuck child fails loudly.
     let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if let Some(id) = agent_kernel::tools::delegate::active_children(0).first().copied() {
+            if let Some(id) = agent_kernel::tools::delegate::active_children(0)
+                .first()
+                .copied()
+            {
                 return id;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -514,9 +517,12 @@ async fn writing_child_inherits_repo_rules_by_default() {
     let ctx = ctx_with(dir.path(), spawner(provider.clone()));
 
     let spec = registry().spec("delegate").unwrap();
-    (spec.exec)(serde_json::json!({"task": "fix it", "agent": "builder"}), ctx)
-        .await
-        .expect("writer must run");
+    (spec.exec)(
+        serde_json::json!({"task": "fix it", "agent": "builder"}),
+        ctx,
+    )
+    .await
+    .expect("writer must run");
 
     assert!(first_system(&provider).contains("RULE-FROM-REPO"));
 }
@@ -548,15 +554,22 @@ async fn manifest_context_files_overrides_the_readonly_default() {
     let _serial = DELEGATE_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     project_rules(dir.path());
-    manifest(dir.path(), "auditor", "readonly: true\ncontext_files: true\n");
+    manifest(
+        dir.path(),
+        "auditor",
+        "readonly: true\ncontext_files: true\n",
+    );
     let provider = Arc::new(ScriptedProvider::new());
     provider.script_text("ok");
     let ctx = ctx_with(dir.path(), spawner(provider.clone()));
 
     let spec = registry().spec("delegate").unwrap();
-    (spec.exec)(serde_json::json!({"task": "audit", "agent": "auditor"}), ctx)
-        .await
-        .expect("auditor must run");
+    (spec.exec)(
+        serde_json::json!({"task": "audit", "agent": "auditor"}),
+        ctx,
+    )
+    .await
+    .expect("auditor must run");
 
     let system = first_system(&provider);
     assert!(system.contains("RULE-FROM-REPO"), "{system}");
@@ -594,8 +607,5 @@ async fn child_transcript_is_saved_as_jsonl() {
         .collect();
     assert!(lines.len() >= 2, "{lines:?}");
     let last = lines.last().unwrap();
-    assert!(
-        last.to_string().contains("the transcript answer"),
-        "{last}"
-    );
+    assert!(last.to_string().contains("the transcript answer"), "{last}");
 }

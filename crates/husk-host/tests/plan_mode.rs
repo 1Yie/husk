@@ -7,15 +7,18 @@
 use std::sync::Arc;
 
 use agent_ipc::UiEvent;
+use agent_llm::types::{NoticeKind, StreamChunk};
+use agent_testkit::ScriptedProvider;
 use husk_host::command::UiCommand;
 use husk_host::session::{SessionActor, SessionConfig};
-use agent_testkit::ScriptedProvider;
-use agent_llm::types::{NoticeKind, StreamChunk};
 
 fn spawn_plan(
     dir: &std::path::Path,
     stub: Arc<ScriptedProvider>,
-) -> (SessionActor, agent_kernel::channels::UiChannels<husk_host::command::UiCommand>) {
+) -> (
+    SessionActor,
+    agent_kernel::channels::UiChannels<husk_host::command::UiCommand>,
+) {
     SessionActor::spawn(SessionConfig {
         workspace_root: dir.to_path_buf(),
         paths: agent_paths::AppPaths::for_tests("kernel"),
@@ -156,7 +159,10 @@ async fn submit_plan_emits_the_event_and_persists_the_row() {
         .iter()
         .rposition(|e| matches!(e, UiEvent::AssistantMessage(_)))
         .expect("final AssistantMessage");
-    assert!(ev_plan < ev_final, "plan card must precede the final message");
+    assert!(
+        ev_plan < ev_final,
+        "plan card must precede the final message"
+    );
     let hist = actor.history();
     let row_plan = hist
         .iter()
@@ -166,7 +172,10 @@ async fn submit_plan_emits_the_event_and_persists_the_row() {
         .iter()
         .rposition(|m| m.role == agent_llm::Role::Assistant && m.content.is_some())
         .unwrap();
-    assert!(row_plan < row_final, "plan row must precede the final message");
+    assert!(
+        row_plan < row_final,
+        "plan row must precede the final message"
+    );
     // Submitted → the deliverable landed, no follow-up nudge.
     assert_eq!(stub.calls.lock().unwrap().len(), 2);
 }
