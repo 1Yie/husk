@@ -50,7 +50,7 @@ pub struct TodoStorageSlot(pub Arc<dyn TodoStorage>);
 /// The default when a host installed nothing: the list lives in memory for as
 /// long as the context does. Nothing else about the tool changes.
 #[derive(Default)]
-struct MemoryTodos {
+pub struct MemoryTodos {
     row: StdMutex<Option<Vec<u8>>>,
 }
 
@@ -112,19 +112,14 @@ pub fn spec() -> ToolSpec {
     }
 }
 
-/// The context's storage: the host's slot, else one in-memory list shared by
-/// every call on this context. The ctx is immutable behind an `Arc`, so the
-/// fallback is keyed by the context's own address in a process table rather
-/// than stored on it.
+/// The context's storage: the host's slot, else the in-memory list the
+/// context itself carries (`ToolCtx::todo_fallback`), shared by every call on
+/// it and dropped with it.
 fn storage(ctx: &ToolCtx) -> Arc<dyn TodoStorage> {
     if let Some(slot) = ctx.ext.get::<TodoStorageSlot>() {
         return slot.0.clone();
     }
-    static FALLBACK: OnceLock<StdMutex<HashMap<usize, Arc<MemoryTodos>>>> = OnceLock::new();
-    let table = FALLBACK.get_or_init(|| StdMutex::new(HashMap::new()));
-    let mut table = table.lock().unwrap_or_else(|e| e.into_inner());
-    let id = ctx as *const ToolCtx as usize;
-    table.entry(id).or_default().clone()
+    ctx.todo_fallback.clone()
 }
 
 /// One async lock per store row, shared process-wide.

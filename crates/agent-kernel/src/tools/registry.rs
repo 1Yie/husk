@@ -48,6 +48,10 @@ pub struct ToolCtx {
     /// installed by the product crate (`agent-coding`) at assembly time, per
     /// root context and per delegated child.
     pub ext: Extensions,
+    /// The todo list used when the host installed no `TodoStorageSlot`; owned
+    /// by the context so it is freed with it. Scoped copies share it, children
+    /// get their own.
+    pub todo_fallback: Arc<crate::tools::todo::MemoryTodos>,
 }
 
 impl ToolCtx {
@@ -72,6 +76,7 @@ impl ToolCtx {
             active_registry: std::sync::RwLock::new(self.active_registry.read().unwrap().clone()),
             depth: self.depth,
             ext: self.ext.clone(),
+            todo_fallback: self.todo_fallback.clone(),
         }
     }
 }

@@ -456,6 +456,14 @@ fn sandbox_preamble(net: &NetPlan) -> String {
     )
 }
 
+/// bwrap died while creating a mount point for a mask whose host file had
+/// just been removed — nothing of the user command ran.
+fn is_mask_setup_race(o: &std::process::Output) -> bool {
+    !o.status.success()
+        && o.stdout.is_empty()
+        && String::from_utf8_lossy(&o.stderr).starts_with("bwrap: Can't mkdir parents for")
+}
+
 /// Format proxy denials into the human-facing list on `CommandOutput`.
 #[async_trait::async_trait]
 impl SandboxBackend for LinuxBwrap {
@@ -485,10 +493,6 @@ impl SandboxBackend for LinuxBwrap {
             _ => None,
         };
 
-        let mut argv = sandbox_argv(cfg, &run_dir, &ws, &net);
-        argv.push("/bin/sh".into());
-        argv.push("-c".into());
-
         let mut inner = String::new();
         if cfg.max_memory_mb > 0 {
             inner.push_str(&format!("ulimit -v {}; ", cfg.max_memory_mb * 1024));
@@ -498,18 +502,34 @@ impl SandboxBackend for LinuxBwrap {
         }
         inner.push_str(&sandbox_preamble(&net));
         inner.push_str(cmd);
-        argv.push(inner);
 
         let timeout = std::time::Duration::from_secs(cfg.timeout_secs.min(600));
-        let child = tokio::process::Command::new("bwrap")
-            .args(&argv)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .context("spawn bwrap")?;
-
-        let status = tokio::time::timeout(timeout, child.wait_with_output()).await;
+        // A host socket can vanish between the $HOME scan and bwrap creating
+        // its mask mount point; bwrap then refuses to start (before any user
+        // code ran). The argv is rebuilt — the rescan no longer sees the
+        // socket — and the run is retried, bounded.
+        let mut attempt = 0u32;
+        let status = loop {
+            let mut argv = sandbox_argv(cfg, &run_dir, &ws, &net);
+            argv.push("/bin/sh".into());
+            argv.push("-c".into());
+            argv.push(inner.clone());
+            let child = tokio::process::Command::new("bwrap")
+                .args(&argv)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .context("spawn bwrap")?;
+            let status = tokio::time::timeout(timeout, child.wait_with_output()).await;
+            if let Ok(Ok(o)) = &status {
+                if attempt < 3 && is_mask_setup_race(o) {
+                    attempt += 1;
+                    continue;
+                }
+            }
+            break status;
+        };
         let elapsed = started.elapsed().as_millis() as u64;
 
         let (out, err, code, is_timeout) = match status {

@@ -517,6 +517,7 @@ impl SubagentSpawner {
             // purpose: a child's `bash` must obey the host's forced network
             // policy and caps.
             ext: parent_ctx.ext.inheritable(),
+            todo_fallback: Default::default(),
         };
         // The child's fan-out events go to its own tagged sink, so a batched
         // child call never masquerades as the parent's.
