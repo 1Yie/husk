@@ -244,6 +244,7 @@ pub struct SessionConfig {
 /// capabilities that only the parent may hold.
 fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
     vec![
+        agent_kernel::tools::batch::spec_with(batch_profile()),
         agent_tools_fs::fs_read::spec(),
         agent_tools_fs::fs_patch::spec(),
         agent_tools_fs::apply_patch::spec(),
@@ -260,6 +261,37 @@ fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
         agent_coding::skill::spec(),
         agent_tools_serena::spec(),
     ]
+}
+
+/// `batch_execute` described with Husk's own observation tools, plus the
+/// argument signatures a nameless batch item is recognised by.
+fn batch_profile() -> agent_kernel::tools::batch::BatchProfile {
+    const DESCRIPTION: &str = "The DEFAULT way to issue 2+ INDEPENDENT observation calls \
+         (smart_read, list_dir, smart_grep, web_fetch…) — pack them into \
+         ONE round trip instead of firing read-only tools back to back. \
+         Args shape is always an object with a `calls` array, and every \
+         item MUST carry a `tool` string: \
+         {\"calls\":[{\"tool\":\"smart_read\",\"args\":{\"path\":\"src/lib.rs\"}},\
+         {\"tool\":\"smart_grep\",\"args\":{\"pattern\":\"TODO\"}}]}. \
+         Known-target rule: if the targets are already known (e.g. three \
+         file paths, a dir listing plus a grep), batch them now — never \
+         read A → reason → read B when A and B were both known up front. \
+         Only go sequential when the next call's arguments depend on this \
+         call's result. Calls run at limited concurrency (max 4, max 4 \
+         network calls); results return in the order you sent them, and \
+         one call's failure doesn't fail the batch (check each \
+         `── [i] ──` section). Forbidden by design: mutations \
+         (write/patch/shell/test), delegate, todo, ask_question, goal \
+         signals, and nested batch_execute.";
+    agent_kernel::tools::batch::BatchProfile {
+        description: Some(DESCRIPTION),
+        example_call: Some(r#"{"tool":"smart_read","args":{"path":"src/lib.rs"}}"#),
+        infer: vec![
+            (&["url"], "web_fetch"),
+            (&["pattern", "regex", "max_hits"], "smart_grep"),
+            (&["command"], "bash"),
+        ],
+    }
 }
 
 /// Tools only the parent holds. `remember` writes the persona every later

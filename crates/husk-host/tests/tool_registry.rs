@@ -1,7 +1,7 @@
 //! Metadata and batch guarantees for the tool set Husk actually assembles.
 
-use std::sync::Arc;
 use agent_capabilities::WorkspaceCtx;
+use std::sync::Arc;
 
 use agent_kernel::tools::registry::ToolClass;
 use agent_kernel::tools::ToolCtx;
@@ -120,4 +120,37 @@ async fn a_real_batch_runs_and_isolates_a_shapeless_item() {
     assert!(text.contains("smart_read (ok"), "{text}");
     assert!(text.contains("rejected"), "{text}");
     assert!(text.contains("could not be parsed"), "{text}");
+}
+
+/// Husk's `batch_execute` keeps the description its models were tuned on and
+/// still recognises nameless items by their argument signature.
+#[test]
+fn husk_batch_keeps_its_description_and_signature_inference() {
+    let reg = base_registries().0;
+    let description = reg.spec("batch_execute").unwrap().schema["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(description.len(), 994, "{description}");
+    assert!(description
+        .starts_with("The DEFAULT way to issue 2+ INDEPENDENT observation calls (smart_read"));
+    assert!(description.ends_with("goal signals, and nested batch_execute."));
+}
+
+#[tokio::test]
+async fn husk_batch_infers_nameless_items_from_their_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn needle() {}\n").unwrap();
+    let reg = Arc::new(base_registries().0);
+    let mut ctx = ToolCtx::new().with_workspace(dir.path());
+    ctx.active_registry = std::sync::RwLock::new(Some(reg.clone()));
+    let out = reg
+        .dispatch(
+            "batch_execute",
+            serde_json::json!({"calls": [{"pattern": "needle", "max_hits": 5}]}),
+            Arc::new(ctx),
+        )
+        .await
+        .unwrap();
+    assert!(out.content.contains("smart_grep (ok"), "{}", out.content);
 }

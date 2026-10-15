@@ -60,10 +60,10 @@ struct ItemOut {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct BatchCall {
-    /// Tool name — must be an observation tool (read_file, list_dir,
-    /// smart_grep, web_fetch…). Mutations, delegation, questions, session
-    /// state, and control signals are rejected per-item. `name`/`tool_name`
-    /// are accepted because models reach for them.
+    /// Tool name — must be an available observation tool. Mutations,
+    /// delegation, questions, session state, and control signals are
+    /// rejected per-item. `name`/`tool_name` are accepted because models
+    /// reach for them.
     #[serde(alias = "name", alias = "tool_name")]
     tool: String,
     /// Arguments for that tool, same shape as a direct call. `arguments` is
@@ -110,10 +110,36 @@ enum ParsedItem {
     },
 }
 
-/// The documented shape, quoted back at the model when an item makes no sense.
-const SHAPE_HINT: &str = "`{calls: [{tool, args}]}` — e.g. \
-{\"calls\":[{\"tool\":\"smart_read\",\"args\":{\"path\":\"src/lib.rs\"}}]} \
-(`args` may be omitted and its keys written inline next to `tool`)";
+/// What a host tells `batch_execute` about its own observation tools. The
+/// kernel names none: by default the description is generic and a nameless
+/// item is rejected rather than guessed.
+#[derive(Clone, Default)]
+pub struct BatchProfile {
+    /// The tool description shown to the model, naming the host's own
+    /// observation tools. `None` uses the kernel's generic description.
+    pub description: Option<&'static str>,
+    /// One example call, as JSON, quoted back in the shape hint.
+    pub example_call: Option<&'static str>,
+    /// Signature inference for nameless items: if the args carry any of the
+    /// keys, the item is that tool. Checked in order; first match wins.
+    pub infer: Vec<(&'static [&'static str], &'static str)>,
+}
+
+impl BatchProfile {
+    fn example_call(&self) -> &str {
+        self.example_call.unwrap_or(r#"{"tool":"<observation tool>","args":{}}"#)
+    }
+
+    /// The documented shape, quoted back at the model when an item makes no sense.
+    fn shape_hint(&self) -> String {
+        format!(
+            "`{{calls: [{{tool, args}}]}}` — e.g. \
+             {{\"calls\":[{}]}} \
+             (`args` may be omitted and its keys written inline next to `tool`)",
+            self.example_call()
+        )
+    }
+}
 
 /// Hoist the function-call shapes models actually emit onto `{tool, args}`
 /// before the strict derive runs: the OpenAI wire spelling
@@ -121,7 +147,7 @@ const SHAPE_HINT: &str = "`{calls: [{tool, args}]}` — e.g. \
 /// `{"tool": {"name": "x"}}`, and the `call`/`command`/`action` aliases.
 /// Without this each becomes a `(unnamed)` Bad item — parseable intent
 /// rejected on a label technicality.
-fn normalize_shape(mut item: serde_json::Value) -> serde_json::Value {
+fn normalize_shape(mut item: serde_json::Value, profile: &BatchProfile) -> serde_json::Value {
     let Some(obj) = item.as_object_mut() else {
         return item;
     };
@@ -171,10 +197,9 @@ fn normalize_shape(mut item: serde_json::Value) -> serde_json::Value {
             obj.insert("tool".into(), s.into());
         }
     }
-    // No name anywhere — infer from the args signature when it's
-    // unambiguous (`{"args":{"max_hits":…,"path":…}}` is smart_grep's
-    // shape, `{"url":…}` is web_fetch's). A guessed read-only tool beats a
-    // rejected row: worst case it reads the wrong thing once.
+    // No name anywhere — infer from the args signature the host declared,
+    // when it's unambiguous. A guessed read-only tool beats a rejected row:
+    // worst case it reads the wrong thing once.
     if obj.get("tool").is_none() {
         let args_obj = obj
             .get("args")
@@ -201,15 +226,11 @@ fn normalize_shape(mut item: serde_json::Value) -> serde_json::Value {
                     .collect()
             });
         let has = |k: &str| args_obj.contains_key(k);
-        let inferred = if has("url") {
-            Some("web_fetch")
-        } else if has("pattern") || has("regex") || has("max_hits") {
-            Some("smart_grep")
-        } else if has("command") {
-            Some("bash")
-        } else {
-            None
-        };
+        let inferred = profile
+            .infer
+            .iter()
+            .find(|(keys, _)| keys.iter().any(|k| has(k)))
+            .map(|(_, tool)| *tool);
         if let Some(t) = inferred {
             obj.insert("tool".into(), t.into());
             // Inline keys carry the args — make them the args object too so
@@ -255,7 +276,7 @@ fn json_kind(v: &serde_json::Value) -> &'static str {
 /// envelope itself is flexible — models also send a bare array, a single
 /// `{"tool","args"}` object, or the array under `items`/`tool_calls`/
 /// `batch`/`requests`/`operations`; each unwraps to the same calls list.
-fn parse_items(args: serde_json::Value) -> Result<Vec<ParsedItem>, ToolError> {
+fn parse_items(args: serde_json::Value, profile: &BatchProfile) -> Result<Vec<ParsedItem>, ToolError> {
     let raw = if let Some(c) = args.get("calls") {
         c.clone()
     } else if let Some(alt) = ["items", "tool_calls", "batch", "requests", "operations"]
@@ -271,19 +292,21 @@ fn parse_items(args: serde_json::Value) -> Result<Vec<ParsedItem>, ToolError> {
         serde_json::Value::Array(vec![args])
     } else {
         return Err(ToolError::Args(format!(
-            "batch_execute args: missing field `calls`\nExpected {SHAPE_HINT}"
+            "batch_execute args: missing field `calls`\nExpected {}",
+            profile.shape_hint()
         )));
     };
     let items = raw.as_array().cloned().ok_or_else(|| {
         ToolError::Args(format!(
-            "batch_execute args: `calls` must be an array, got {}\nExpected {SHAPE_HINT}",
-            json_kind(&raw)
+            "batch_execute args: `calls` must be an array, got {}\nExpected {}",
+            json_kind(&raw),
+            profile.shape_hint()
         ))
     })?;
     Ok(items
         .into_iter()
         .map(
-            |item| match serde_json::from_value::<BatchCall>(normalize_shape(item.clone())) {
+            |item| match serde_json::from_value::<BatchCall>(normalize_shape(item.clone(), profile)) {
                 Ok(call) => ParsedItem::Call(call.normalized()),
                 Err(e) => {
                     let name = ["tool", "name", "tool_name"]
@@ -319,34 +342,37 @@ struct BatchArgs {
     calls: Vec<BatchCall>,
 }
 
+/// Generic description: names no tool, since the kernel ships none.
+const GENERIC_DESCRIPTION: &str = "The DEFAULT way to issue 2+ INDEPENDENT observation calls \
+     — pack them into ONE round trip instead of firing read-only tools back to \
+     back. Args shape is always an object with a `calls` array, and every item \
+     MUST carry a `tool` string naming an available observation tool: \
+     {\"calls\":[{\"tool\":\"<tool>\",\"args\":{}}]}. Only go sequential when \
+     the next call's arguments depend on this call's result. Calls run at \
+     limited concurrency (max 4, max 4 network calls); results return in the \
+     order you sent them, and one call's failure doesn't fail the batch (check \
+     each `── [i] ──` section). Forbidden by design: anything that is not an \
+     observation, delegate, todo, ask_question, and nested batch_execute.";
+
+/// The kernel's `batch_execute`, naming no tool.
 pub fn spec() -> ToolSpec {
+    spec_with(BatchProfile::default())
+}
+
+/// `batch_execute` described in terms of the host's own observation tools.
+pub fn spec_with(profile: BatchProfile) -> ToolSpec {
+    let profile = Arc::new(profile);
     ToolSpec {
         name: "batch_execute",
         schema: super::registry::schema_for::<BatchArgs>(
-            "The DEFAULT way to issue 2+ INDEPENDENT observation calls \
-             (smart_read, list_dir, smart_grep, web_fetch…) — pack them into \
-             ONE round trip instead of firing read-only tools back to back. \
-             Args shape is always an object with a `calls` array, and every \
-             item MUST carry a `tool` string: \
-             {\"calls\":[{\"tool\":\"smart_read\",\"args\":{\"path\":\"src/lib.rs\"}},\
-             {\"tool\":\"smart_grep\",\"args\":{\"pattern\":\"TODO\"}}]}. \
-             Known-target rule: if the targets are already known (e.g. three \
-             file paths, a dir listing plus a grep), batch them now — never \
-             read A → reason → read B when A and B were both known up front. \
-             Only go sequential when the next call's arguments depend on this \
-             call's result. Calls run at limited concurrency (max 4, max 4 \
-             network calls); results return in the order you sent them, and \
-             one call's failure doesn't fail the batch (check each \
-             `── [i] ──` section). Forbidden by design: mutations \
-             (write/patch/shell/test), delegate, todo, ask_question, goal \
-             signals, and nested batch_execute.",
+            profile.description.unwrap_or(GENERIC_DESCRIPTION),
         ),
         readonly: true, // orchestrator — only ever runs auto-allowed Observation specs
         class: ToolClass::Orchestration,
         network: false,
         staged: false,
         review: None,
-        exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
+        exec: Arc::new(move |args, ctx| exec(args, ctx, profile.clone()).boxed()),
     }
 }
 
@@ -355,8 +381,12 @@ fn is_batchable(spec: &ToolSpec) -> bool {
     spec.class == ToolClass::Observation
 }
 
-async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
-    let items = parse_items(args)?;
+async fn exec(
+    args: Args,
+    ctx: Arc<ToolCtx>,
+    profile: Arc<BatchProfile>,
+) -> Result<ToolResult, ToolError> {
+    let items = parse_items(args, &profile)?;
     if items.is_empty() {
         return Err(ToolError::Args("`calls` must not be empty".into()));
     }
@@ -666,7 +696,7 @@ mod tests {
             {"name": "list_dir", "arguments": {"path": "."}},
             {"tool_name": "smart_grep", "pattern": "TODO"},
             {"tool": "smart_read", "path": "b.rs", "start": 3}
-        ]}))
+        ]}), &BatchProfile::default())
         .unwrap();
         assert_eq!(items.len(), 4);
         for item in &items {
@@ -689,6 +719,10 @@ mod tests {
 
     #[test]
     fn nameless_items_recover_by_signature() {
+        let profile = BatchProfile {
+            infer: vec![(&["url"], "web_fetch"), (&["max_hits"], "smart_grep")],
+            ..Default::default()
+        };
         let items = parse_items(serde_json::json!({"calls": [
             // The real-world miss: args only, no tool key anywhere.
             {"args": {"max_hits": 40, "path": "src"}},
@@ -698,7 +732,7 @@ mod tests {
             {"tool": {"name": "smart_read"}, "args": {"path": "b.rs"}},
             // Genuinely ambiguous — `path` alone could be read or list.
             {"path": "orphan.rs"}
-        ]}))
+        ]}), &profile)
         .unwrap();
         let name_of = |i: &ParsedItem| -> String {
             match i {
@@ -724,25 +758,25 @@ mod tests {
         // Bare array — the `calls` key omitted entirely.
         let items = parse_items(serde_json::json!([
             {"tool": "list_dir", "args": {"path": "."}}
-        ]))
+        ]), &BatchProfile::default())
         .unwrap();
         assert_eq!(items.len(), 1);
         // Alternate envelope keys.
         for key in ["items", "tool_calls", "batch", "requests", "operations"] {
-            let items = parse_items(serde_json::json!({key: [{"tool": "list_dir"}]})).unwrap();
+            let items = parse_items(serde_json::json!({key: [{"tool": "list_dir"}]}), &BatchProfile::default()).unwrap();
             assert_eq!(items.len(), 1, "{key}");
         }
         // A single call object — the model forgot it was batching.
         let items =
-            parse_items(serde_json::json!({"tool": "smart_read", "args": {"path": "a"}})).unwrap();
+            parse_items(serde_json::json!({"tool": "smart_read", "args": {"path": "a"}}), &BatchProfile::default()).unwrap();
         assert_eq!(items.len(), 1);
         // `function` alone still counts as a call-shaped object.
-        let items = parse_items(serde_json::json!({"function": "smart_read"})).unwrap();
+        let items = parse_items(serde_json::json!({"function": "smart_read"}), &BatchProfile::default()).unwrap();
         assert_eq!(items.len(), 1);
         // Truly unrecognised envelopes still name the shape.
         let e = format!(
             "{}",
-            parse_items(serde_json::json!({"nope": 1})).unwrap_err()
+            parse_items(serde_json::json!({"nope": 1}), &BatchProfile::default()).unwrap_err()
         );
         assert!(e.contains("missing field `calls`"), "{e}");
     }
@@ -753,7 +787,7 @@ mod tests {
             {"tool": "list_dir", "args": {"path": "."}},
             {"path": "orphan.rs"},
             7
-        ]}))
+        ]}), &BatchProfile::default())
         .unwrap();
         assert!(matches!(items[0], ParsedItem::Call(_)));
         let ParsedItem::Bad { name, reason } = &items[1] else {
@@ -764,14 +798,31 @@ mod tests {
         assert!(matches!(items[2], ParsedItem::Bad { .. }));
     }
 
+    /// The kernel ships no tools, so it must not invent a tool name.
+    #[test]
+    fn the_generic_profile_never_guesses_a_tool_or_names_one() {
+        let items = parse_items(
+            serde_json::json!({"calls": [{"url": "https://x"}, {"pattern": "TODO", "max_hits": 5}]}),
+            &BatchProfile::default(),
+        )
+        .unwrap();
+        assert!(items.iter().all(|i| matches!(i, ParsedItem::Bad { .. })));
+        let description = spec().schema["description"].as_str().unwrap().to_string();
+        for name in ["smart_read", "smart_grep", "web_fetch", "bash", "list_dir"] {
+            assert!(!description.contains(name), "{name} in {description}");
+        }
+        let hint = BatchProfile::default().shape_hint();
+        assert!(!hint.contains("smart_read"), "{hint}");
+    }
+
     #[test]
     fn a_missing_or_non_array_calls_field_names_the_shape() {
-        let e = format!("{}", parse_items(serde_json::json!({})).unwrap_err());
+        let e = format!("{}", parse_items(serde_json::json!({}), &BatchProfile::default()).unwrap_err());
         assert!(e.contains("missing field `calls`"), "{e}");
         assert!(e.contains("{calls:"), "{e}");
         let e = format!(
             "{}",
-            parse_items(serde_json::json!({"calls": {}})).unwrap_err()
+            parse_items(serde_json::json!({"calls": {}}), &BatchProfile::default()).unwrap_err()
         );
         assert!(e.contains("must be an array"), "{e}");
     }
