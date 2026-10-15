@@ -78,13 +78,56 @@ export async function deleteSession(id: number) {
   );
 }
 
-/** Toggle a session's pinned flag — pinned rows float to the top of the
- * sidebar ahead of recency order. */
-export async function pinSession(id: number, pinned: boolean) {
+// Session meta edits address `root`'s workspace — every listed project's rows
+// are editable, not only the active workspace's.
+
+/** Pin/unpin within the session's workspace. */
+export async function pinSession(root: string, id: number, pinned: boolean) {
   return invoke<{ pinned: boolean }>("agent_session", {
     op: "pin",
     id,
+    path: root,
     payload: { pinned },
+  });
+}
+
+/** Pin/unpin in the sidebar's cross-project 会话 list. */
+export async function pinSessionGlobal(root: string, id: number, pinned: boolean) {
+  return invoke<{ pinned: boolean }>("agent_session", {
+    op: "pin_global",
+    id,
+    path: root,
+    payload: { pinned },
+  });
+}
+
+/** Archive/restore. Archiving also drops both pins. */
+export async function archiveSession(root: string, id: number, archived: boolean) {
+  return invoke<{ archived: boolean }>("agent_session", {
+    op: "archive",
+    id,
+    path: root,
+    payload: { archived },
+  });
+}
+
+/** Set a session's title; blank resets it to the auto-derived one. */
+export async function renameSession(root: string, id: number, title: string) {
+  return invoke<{ renamed: boolean }>("agent_session", {
+    op: "rename",
+    id,
+    path: root,
+    payload: { title },
+  });
+}
+
+/** Save the session as a Markdown transcript via a native save dialog.
+ *  `saved: false` = the user cancelled. */
+export async function exportSession(root: string, id: number) {
+  return invoke<{ saved: boolean; path?: string }>("agent_session", {
+    op: "export",
+    id,
+    path: root,
   });
 }
 

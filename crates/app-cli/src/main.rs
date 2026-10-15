@@ -17,10 +17,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_ipc::UiEvent;
-use husk_host::command::UiCommand;
-use husk_host::session::{SessionActor, SessionConfig};
-use husk_host::sandbox_prefs;
 use agent_llm::{AppConfig, ProviderFactory};
+use husk_host::command::UiCommand;
+use husk_host::sandbox_prefs;
+use husk_host::session::{SessionActor, SessionConfig};
 
 const USAGE: &str = "\
 husk-cli — headless frontend for the agent kernel
@@ -46,6 +46,7 @@ OPTIONS:
     --verbose               print state transitions and tool results
     --sandbox on|off        master switch — off runs every process tool
                             through the loud unsandboxed `none` backend
+                            (default: off)
     --sandbox-network M     auto | allow | deny  (default: auto)
     --allow-domain HOST     allow extra egress domains for sandboxed
                             commands ('*.example.com', 'host:443',
@@ -111,7 +112,9 @@ fn parse_args() -> Result<Cli, String> {
                 return Ok(v);
             }
             i += 1;
-            args.get(i).cloned().ok_or_else(|| format!("{flag} needs a value"))
+            args.get(i)
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value"))
         };
         match flag {
             "--headless" => {}
@@ -180,9 +183,7 @@ fn apply_sandbox_flags(cli: &Cli) -> Result<(), String> {
     }
     if let Some(net) = &cli.sandbox_network {
         match net.as_str() {
-            "auto" | "allow" | "deny" => {
-                lim.network = sandbox_prefs::network_from_label(net)
-            }
+            "auto" | "allow" | "deny" => lim.network = sandbox_prefs::network_from_label(net),
             other => return Err(format!("--sandbox-network: bad value {other}")),
         }
     }
@@ -214,9 +215,7 @@ fn pick_model(
     if let Some(d) = &pcfg.default_model {
         return d.clone();
     }
-    cfg.active_model
-        .clone()
-        .unwrap_or_else(|| "default".into())
+    cfg.active_model.clone().unwrap_or_else(|| "default".into())
 }
 
 fn resolve_provider(
@@ -231,19 +230,14 @@ fn resolve_provider(
             .providers
             .get(name)
             .ok_or_else(|| format!("provider {name:?} not in config.toml"))?;
-        let p = ProviderFactory::build(pcfg)
-            .map_err(|e| format!("provider {name:?}: {e}"))?;
+        let p = ProviderFactory::build(pcfg).map_err(|e| format!("provider {name:?}: {e}"))?;
         return Ok((p, name.into(), pick_model(cfg, pcfg, want_model)));
     }
     // Active pair first…
     if let Some(name) = &cfg.active_provider {
         if let Some(pcfg) = cfg.providers.get(name) {
             if let Ok(p) = ProviderFactory::build(pcfg) {
-                return Ok((
-                    p,
-                    name.clone(),
-                    pick_model(cfg, pcfg, want_model),
-                ));
+                return Ok((p, name.clone(), pick_model(cfg, pcfg, want_model)));
             }
         }
     }
@@ -285,7 +279,10 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk"));
     husk_host::office::init_store(paths.data_dir.clone());
     let app_cfg = agent_llm::AppConfig::load(&paths.config_dir, None).unwrap_or_default();
-    let pname = cli.provider.as_deref().or(app_cfg.active_provider.as_deref());
+    let pname = cli
+        .provider
+        .as_deref()
+        .or(app_cfg.active_provider.as_deref());
     let (provider, provider_name, model) =
         match resolve_provider(&app_cfg, cli.provider.as_deref(), cli.model.as_deref()) {
             Ok(t) => t,
@@ -295,16 +292,14 @@ async fn main() -> anyhow::Result<()> {
             }
         };
     let pcfg = pname.and_then(|p| app_cfg.providers.get(p));
-    let resolved = pcfg.and_then(|p| p.find_model(&model)).map(|_| {
-        pcfg.map(|p| p.model_opts(&model)).unwrap_or_default()
-    });
+    let resolved = pcfg
+        .and_then(|p| p.find_model(&model))
+        .map(|_| pcfg.map(|p| p.model_opts(&model)).unwrap_or_default());
     let model_params = resolved
         .as_ref()
         .map(agent_llm::ProviderFactory::model_params_from)
         .unwrap_or_default();
-    let thinking_level_map = resolved
-        .as_ref()
-        .and_then(|d| d.thinking_level_map.clone());
+    let thinking_level_map = resolved.as_ref().and_then(|d| d.thinking_level_map.clone());
     let context_window = resolved.as_ref().and_then(|d| d.context_window);
     let model_input = resolved.map(|d| d.input.clone()).unwrap_or_default();
 
@@ -359,10 +354,14 @@ async fn main() -> anyhow::Result<()> {
                     UiEvent::SystemMessage(m) => eprintln!("\n[sys] {m}"),
                     UiEvent::Error(e) => eprintln!("[err] {e}"),
                     UiEvent::AssistantMessage(m) => println!("\n{m}"),
-                    UiEvent::ToolCallStarted { name, args_preview, .. } => {
+                    UiEvent::ToolCallStarted {
+                        name, args_preview, ..
+                    } => {
                         eprintln!("[tool →] {name} {args_preview}")
                     }
-                    UiEvent::ToolCallFinished { name, ok, content, .. } => {
+                    UiEvent::ToolCallFinished {
+                        name, ok, content, ..
+                    } => {
                         if verbose {
                             eprintln!("[tool ✓] {name} ok={ok}\n{content}")
                         } else {
@@ -370,7 +369,10 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     UiEvent::ApprovalRequested { tool_name, .. } => {
-                        eprintln!("[approval] {tool_name} — {}", if yes { "auto-approved" } else { "auto-denied" })
+                        eprintln!(
+                            "[approval] {tool_name} — {}",
+                            if yes { "auto-approved" } else { "auto-denied" }
+                        )
                     }
                     UiEvent::QuestionAsked { question, .. } => {
                         eprintln!("[question] {question}")
@@ -399,12 +401,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let code = if cli.timeout > 0 && one_shot {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(cli.timeout),
-            pump,
-        )
-        .await
-        {
+        match tokio::time::timeout(std::time::Duration::from_secs(cli.timeout), pump).await {
             Ok(Ok(c)) => c,
             Ok(Err(_)) => 1,
             Err(_) => {
@@ -435,7 +432,11 @@ fn auto_decide(
         UiEvent::ApprovalRequested { request_id, .. } => {
             *decision_slot.lock().unwrap() = Some((*request_id, yes));
         }
-        UiEvent::QuestionAsked { request_id, options, .. } => {
+        UiEvent::QuestionAsked {
+            request_id,
+            options,
+            ..
+        } => {
             let answer = if yes {
                 options.first().map(|o| o.label.clone()).unwrap_or_default()
             } else {

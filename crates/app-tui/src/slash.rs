@@ -158,10 +158,9 @@ impl App {
                 |v| UiCommand::SetThinkingLevel { level: v },
             )),
             "/resume" => {
-                let items =
-                    agent_store::SessionStore::open_existing(&self.workspace)
-                        .map(|s| s.list())
-                        .unwrap_or_default();
+                let items = agent_store::SessionStore::open_existing(&self.workspace)
+                    .map(|s| s.list())
+                    .unwrap_or_default();
                 // pre-select the live session so reopening shows where you are
                 let selected = items
                     .iter()

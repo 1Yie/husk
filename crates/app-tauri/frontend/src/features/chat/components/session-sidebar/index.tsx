@@ -16,11 +16,15 @@ import {
   Bin,
   Bookmark,
   X,
+  Pen,
+  Copy,
+  Archive,
+  Globe,
 } from "@keyline-icons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Download, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
-import type { ProjectOverview, SessionRow } from "@/types";
+import type { ProjectOverview, ProjectSessionRow, SessionRow } from "@/types";
 import { Orb } from "@/features/chat/components/agent-orb/index";
 import { ExtIcon } from "@/features/chat/components/artifacts-panel";
 import {
@@ -30,12 +34,15 @@ import {
   saveArtifact,
   type RecentArtifact,
 } from "@/lib/agent-ipc/index";
-import { useActiveView } from "@/stores/agent-store";
+import { useActiveViewSelector } from "@/stores/agent-store";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -43,6 +50,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -144,9 +154,25 @@ interface Props {
   onSwitchMode?: (path: string) => void;
   onRemoveWorkspace?: (project: ProjectOverview) => void;
   onOpenSettings?: () => void;
-  onFork?: (id: number) => void;
-  onPin?: (id: number, pinned: boolean) => void;
-  onDelete?: (id: number) => void;
+  /** Per-row session actions — see `SessionActions`. */
+  actions?: SessionActions;
+}
+
+/** Which pin a list orders by — see `SessionItem.pinMark`. */
+type PinMark = "workspace" | "global" | "single";
+
+/** What a session row's menu can do. Every handler gets the row's workspace
+ *  `root`: meta edits (rename, pins, archive, export) work on any listed
+ *  project, while fork/delete need the session's live actor and so are only
+ *  offered on the active workspace's rows. */
+export interface SessionActions {
+  rename?: (root: string, row: SessionRow) => void;
+  pin?: (root: string, id: number, pinned: boolean) => void;
+  pinGlobal?: (root: string, id: number, pinned: boolean) => void;
+  archive?: (root: string, row: SessionRow, archived: boolean) => void;
+  exportRecord?: (root: string, id: number) => void;
+  fork?: (id: number) => void;
+  delete?: (id: number) => void;
 }
 
 
@@ -180,9 +206,7 @@ export function SessionSidebar({
   onSwitchMode,
   onRemoveWorkspace,
   onOpenSettings,
-  onFork,
-  onPin,
-  onDelete,
+  actions = {},
 }: Props) {
   const notifications = useNotifications();
   const unreadCount = useUnreadCount();
@@ -210,25 +234,27 @@ export function SessionSidebar({
       onOpenSession(n.root, n.session);
     }
   };
-  // Global recents: every *project's* conversations merged — pinned first
-  // (each tier newest-first), so the top of the sidebar always answers
-  // "what was I just doing" while pinned sessions stay reachable. Office
-  // sessions stay out of it — modes are separate: the 会话 list is
-  // build-mode content, and office sessions only ever show on the 工作 tab.
+  // Global recents: every *project's* conversations merged. Globally pinned
+  // sessions are always listed, ahead of the RECENT_LIMIT newest others, so
+  // the top of the sidebar answers "what was I just doing" while global pins
+  // stay reachable. Workspace pins order only their own project's list.
+  // Archived sessions are out; office sessions too — modes are separate: the
+  // 会话 list is build-mode content, office sessions show on the 工作 tab.
   const recents = useMemo(() => {
     const all = projectList.flatMap((p) =>
-      p.sessions.map((s) => ({
-        root: p.root,
-        project: p.name,
-        current: p.current,
-        row: s,
-      })),
+      p.sessions
+        .filter((s) => !s.archived)
+        .map((s) => ({
+          root: p.root,
+          project: p.name,
+          current: p.current,
+          row: s,
+        })),
     );
-    all.sort((a, b) =>
-      Number(b.row.pinned) - Number(a.row.pinned) ||
-      b.row.updated_at - a.row.updated_at
-    );
-    return all.slice(0, RECENT_LIMIT);
+    all.sort((a, b) => b.row.updated_at - a.row.updated_at);
+    const pinned = all.filter((e) => e.row.pinned_global);
+    const rest = all.filter((e) => !e.row.pinned_global).slice(0, RECENT_LIMIT);
+    return [...pinned, ...rest];
   }, [projectList]);
 
   // Projects open/close independently — opening one reveals its full
@@ -265,8 +291,9 @@ export function SessionSidebar({
   // sessions produced, grouped by day (今天/昨天/date) like projects group
   // conversations. Refetches whenever the active view registers a new
   // artifact mid-turn, when a session's stamp bumps, or on tab entry.
-  const view = useActiveView();
-  const viewArtifactCount = officeMode ? (view?.artifacts?.length ?? 0) : 0;
+  const viewArtifactCount = useActiveViewSelector((view) =>
+    officeMode ? view.artifacts.length : 0,
+  );
   const sessionsStamp = officeMode
     ? (officeProject?.sessions.map((s) => `${s.id}:${s.updated_at}`).join("|") ?? "")
     : "";
@@ -472,13 +499,13 @@ export function SessionSidebar({
                     <SessionItem
                       key={`${root}:${row.id}`}
                       row={row}
+                      root={root}
                       hint={current ? undefined : project}
                       isActive={current && (activeId ? row.id === activeId : row.active)}
-                      showActions={current}
+                      live={current}
+                      pinMark="global"
                       onOpen={() => onOpenSession(root, row.id)}
-                      onFork={onFork}
-                      onPin={onPin}
-                      onDelete={onDelete}
+                      actions={actions}
                     />
                   ))
                 )}
@@ -508,7 +535,7 @@ export function SessionSidebar({
                       data-tauri-drag-region="false"
                       onClick={onNew}
                       aria-label="新建会话"
-                      className="h-5 w-5 rounded flex items-center justify-center text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+                      className="h-5 w-5 rounded-full flex items-center justify-center text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
                     >
                       <Plus className="h-3.5 w-3.5" />
                     </button>
@@ -527,7 +554,7 @@ export function SessionSidebar({
                       data-tauri-drag-region="false"
                       onClick={onPickWorkspace}
                       aria-label="打开其他工作区"
-                      className="h-5 w-5 rounded flex items-center justify-center text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
+                      className="h-5 w-5 rounded-full flex items-center justify-center text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] transition-colors"
                     >
                       <FolderPlus className="h-3.5 w-3.5" />
                     </button>
@@ -549,23 +576,20 @@ export function SessionSidebar({
                 <div className="flex flex-col gap-0.5 px-2 pb-1">
                   {!projectsLoaded && !officeProject ? (
                     <SidebarRowSkeleton rows={2} />
-                  ) : officeProject && officeProject.sessions.length === 0 ? (
+                  ) : officeProject && officeProject.sessions.every((s) => s.archived) ? (
                     <div className="pl-7 h-8 flex items-center text-[13px] text-neutral-500">
                       暂无会话
                     </div>
                   ) : (
-                    officeProject?.sessions.map((s) => (
-                      <SessionItem
-                        key={s.id}
-                        row={s}
-                        isActive={activeId ? s.id === activeId : s.active}
-                        showActions
-                        onOpen={() => onOpenSession(officeProject.root, s.id)}
-                        onFork={onFork}
-                        onPin={onPin}
-                        onDelete={onDelete}
-                      />
-                    ))
+                    <SessionList
+                      sessions={officeProject?.sessions ?? []}
+                      root={officeProject?.root ?? ""}
+                      activeId={activeId}
+                      live
+                      pinMark="single"
+                      onOpenSession={onOpenSession}
+                      actions={actions}
+                    />
                   )}
                 </div>
               </div>
@@ -622,9 +646,7 @@ export function SessionSidebar({
                       onOpenSession={onOpenSession}
                       onSwitchWorkspace={onSwitchWorkspace}
                       onRemoveWorkspace={onRemoveWorkspace}
-                      onFork={onFork}
-                      onPin={onPin}
-                      onDelete={onDelete}
+                      actions={actions}
                     />
                   ))
                 )}
@@ -726,74 +748,176 @@ export function SessionSidebar({
   );
 }
 
+/** A project's (or office's) sessions: live rows first, archived ones folded
+ *  under a collapsed 已归档 toggle at the bottom. */
+function SessionList({
+  sessions,
+  root,
+  activeId,
+  live,
+  small = false,
+  pinMark = "workspace",
+  onOpenSession,
+  actions,
+}: {
+  sessions: ProjectSessionRow[];
+  root: string;
+  activeId?: number;
+  /** The rows belong to the active workspace (fork/delete available). */
+  live: boolean;
+  small?: boolean;
+  /** See `SessionItem.pinMark`. */
+  pinMark?: PinMark;
+  onOpenSession: (root: string, id: number) => void;
+  actions: SessionActions;
+}) {
+  const [showArchived, setShowArchived] = useState(false);
+  const visible = sessions.filter((s) => !s.archived);
+  const archived = sessions.filter((s) => s.archived);
+  const item = (s: ProjectSessionRow) => (
+    <SessionItem
+      key={s.id}
+      row={s}
+      root={root}
+      isActive={live && (activeId ? s.id === activeId : s.active)}
+      live={live}
+      pinMark={pinMark}
+      onOpen={() => onOpenSession(root, s.id)}
+      actions={actions}
+    />
+  );
+  return (
+    <>
+      {visible.map(item)}
+      {archived.length > 0 && (
+        <button
+          type="button"
+          data-nodrag
+          data-tauri-drag-region="false"
+          onClick={() => setShowArchived((v) => !v)}
+          className={cn(
+            "flex-none flex items-center gap-1 pl-7 text-neutral-500 hover:text-neutral-700",
+            small ? "h-7 text-[12px]" : "h-8 text-[13px]",
+          )}
+        >
+          {showArchived ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          已归档 {archived.length}
+        </button>
+      )}
+      {showArchived && archived.map(item)}
+    </>
+  );
+}
+
 function SessionItem({
   row,
+  root,
   isActive,
   hint,
-  showActions = true,
+  live,
+  pinMark,
   onOpen,
-  onFork,
-  onPin,
-  onDelete,
+  actions,
 }: {
   row: SessionRow;
+  root: string;
   isActive: boolean;
   /** Trailing project label — set on the cross-project recent list so rows
    * from different projects stay tellable apart. */
   hint?: string;
-  /** Fork/delete only exist for the active workspace: its store and actors
-   * are the only ones the kernel can address (ids are per-workspace). */
-  showActions?: boolean;
+  /** The row belongs to the active workspace. Fork/delete need its live
+   *  actor (ids are per-workspace), so other projects' rows omit them. */
+  live: boolean;
+  /** Which pin the row shows and its menu offers — each list orders by its
+   *  own. `single`: office mode is one workspace, so there is no workspace vs
+   *  global distinction — one plain 置顶 (the workspace pin) is the whole of it. */
+  pinMark: PinMark;
   onOpen: () => void;
-  onFork?: (id: number) => void;
-  onPin?: (id: number, pinned: boolean) => void;
-  onDelete?: (id: number) => void;
+  actions: SessionActions;
 }) {
   const displayTitle = row.title === "new session" ? "新会话" : row.title || `会话 ${row.id}`;
   const [menuOpen, setMenuOpen] = useState(false);
+  const pinnedHere = pinMark === "global" ? row.pinned_global : row.pinned;
+
+  const copyId = () => {
+    void navigator.clipboard
+      .writeText(String(row.id))
+      .then(() => toast.success(`已复制会话 ID：${row.id}`))
+      .catch(() => toast.error("复制失败"));
+  };
 
   // Identical items for the "···" dropdown and the row's right-click menu.
   // The two Radix families keep separate `Menu` contexts, so the same JSX
   // can't be shared — one builder renders the items with whichever
-  // Item/Separator primitives the host menu provides.
-  const renderActionItems = (
-    Item: typeof DropdownMenuItem,
-    Separator: typeof DropdownMenuSeparator,
-  ) => (
-    <>
-      <Item
-        className="gap-2 text-xs cursor-pointer"
+  // primitives the host menu provides.
+  const renderActionItems = (M: {
+    Item: typeof DropdownMenuItem;
+    Separator: typeof DropdownMenuSeparator;
+    Sub: typeof DropdownMenuSub;
+    SubTrigger: typeof DropdownMenuSubTrigger;
+    SubContent: typeof DropdownMenuSubContent;
+  }) => {
+    const item = (icon: ReactNode, label: string, run: () => void, danger = false) => (
+      <M.Item
+        className={cn(
+          "gap-2 text-xs cursor-pointer",
+          danger &&
+            "text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400 focus:bg-red-50 dark:focus:bg-red-950/40",
+        )}
         onClick={(e) => {
           e.stopPropagation();
-          onPin?.(row.id, !row.pinned);
+          run();
         }}
       >
-        <Bookmark className={cn("h-3.5 w-3.5", row.pinned && "fill-current")} />
-        {row.pinned ? "取消置顶" : "置顶会话"}
-      </Item>
-      <Item
-        className="gap-2 text-xs cursor-pointer"
-        onClick={(e) => {
-          e.stopPropagation();
-          onFork?.(row.id);
-        }}
-      >
-        <GitFork className="h-3.5 w-3.5" />
-        Fork 会话
-      </Item>
-      <Separator />
-      <Item
-        className="gap-2 text-xs cursor-pointer text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400 focus:bg-red-50 dark:focus:bg-red-950/40"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete?.(row.id);
-        }}
-      >
-        <Bin className="h-3.5 w-3.5" />
-        删除会话
-      </Item>
-    </>
-  );
+        {icon}
+        {label}
+      </M.Item>
+    );
+    const icon = "h-3.5 w-3.5";
+    return (
+      <>
+        {actions.rename && item(<Pen className={icon} />, "重命名", () => actions.rename?.(root, row))}
+        {!row.archived && pinMark === "single" &&
+          item(
+            <Bookmark className={cn(icon, row.pinned && "fill-current")} />,
+            row.pinned ? "取消置顶" : "置顶",
+            () => actions.pin?.(root, row.id, !row.pinned),
+          )}
+        {!row.archived && pinMark !== "single" && (
+          <M.Sub>
+            <M.SubTrigger className="gap-2 text-xs">
+              <Bookmark className={cn(icon, (row.pinned || row.pinned_global) && "fill-current")} />
+              置顶
+            </M.SubTrigger>
+            <M.SubContent className="min-w-[140px]">
+              {item(
+                <Folder className={icon} />,
+                row.pinned ? "取消工作区置顶" : "在工作区置顶",
+                () => actions.pin?.(root, row.id, !row.pinned),
+              )}
+              {item(
+                <Globe className={icon} />,
+                row.pinned_global ? "取消全局置顶" : "在全局置顶",
+                () => actions.pinGlobal?.(root, row.id, !row.pinned_global),
+              )}
+            </M.SubContent>
+          </M.Sub>
+        )}
+        {live && actions.fork && item(<GitFork className={icon} />, "Fork 会话", () => actions.fork?.(row.id))}
+        <M.Separator />
+        {item(<Copy className={icon} />, "复制会话 ID", copyId)}
+        {actions.exportRecord &&
+          item(<Download className={icon} />, "导出记录", () => actions.exportRecord?.(root, row.id))}
+        <M.Separator />
+        {item(
+          <Archive className={icon} />,
+          row.archived ? "取消归档" : "归档",
+          () => actions.archive?.(root, row, !row.archived),
+        )}
+        {live && actions.delete && item(<Bin className={icon} />, "删除会话", () => actions.delete?.(row.id), true)}
+      </>
+    );
+  };
 
   const rowEl = (
     <div
@@ -810,10 +934,11 @@ function SessionItem({
         isActive
           ? "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
           : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] hover:text-neutral-900 font-normal",
+        row.archived && "text-neutral-400",
       )}
     >
       <span className="flex-1 min-w-0 truncate text-left">{displayTitle}</span>
-      {row.pinned && (
+      {pinnedHere && (
         <Bookmark className="h-3 w-3 flex-none fill-current text-amber-500 dark:text-amber-400" />
       )}
       {hint && (
@@ -835,46 +960,61 @@ function SessionItem({
           )}
         </span>
       )}
-      {showActions && (
-        <DropdownMenu onOpenChange={setMenuOpen}>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              data-nodrag
-              data-tauri-drag-region="false"
-              aria-label="会话操作"
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => e.stopPropagation()}
-              // right-2 lands it exactly on the orb's rest position
-              // (pr-2 + w-5); the button also backs itself with a panel
-              // blur so a long title doesn't bleed through.
-              className="absolute right-2 top-1/2 h-5 w-5 -translate-y-1/2 rounded flex items-center justify-center text-neutral-500 invisible group-hover:visible group-focus-visible:visible data-[state=open]:visible bg-[color-mix(in_srgb,var(--husk-panel)_85%,transparent)] backdrop-blur-sm hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            side="right"
-            align="start"
-            sideOffset={4}
-            className="min-w-[140px]"
+      <DropdownMenu onOpenChange={setMenuOpen}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            data-nodrag
+            data-tauri-drag-region="false"
+            aria-label="会话操作"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            // right-2 lands it exactly on the orb's rest position
+            // (pr-2 + w-5); the button also backs itself with a panel
+            // blur so a long title doesn't bleed through.
+            className="absolute right-2 top-1/2 h-5 w-5 -translate-y-1/2 rounded-full flex items-center justify-center text-neutral-500 invisible group-hover:visible group-focus-visible:visible data-[state=open]:visible bg-[color-mix(in_srgb,var(--husk-panel)_85%,transparent)] backdrop-blur-sm hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
           >
-            {renderActionItems(DropdownMenuItem, DropdownMenuSeparator)}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+        {/* The menu portals out of the DOM but stays inside this row in the
+            React tree, so its clicks and keys bubble to the row's
+            onClick/onKeyDown and open the session. Items stopped that
+            themselves; the 置顶 sub-trigger, separators, padding and Enter on
+            an item did not — the "clicking 置顶 reloads the chat" bug. Stop
+            them all here, once. */}
+        <DropdownMenuContent
+          side="right"
+          align="start"
+          sideOffset={4}
+          className="min-w-[150px]"
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          {renderActionItems({
+            Item: DropdownMenuItem,
+            Separator: DropdownMenuSeparator,
+            Sub: DropdownMenuSub,
+            SubTrigger: DropdownMenuSubTrigger,
+            SubContent: DropdownMenuSubContent,
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 
   // Right-click on the row opens the same menu the "···" button does.
-  // Cross-project recents (`showActions === false`) get no menu — fork/delete
-  // only address the active workspace's store.
-  if (!showActions) return rowEl;
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{rowEl}</ContextMenuTrigger>
-      <ContextMenuContent className="min-w-[140px]">
-        {renderActionItems(ContextMenuItem, ContextMenuSeparator)}
+      <ContextMenuContent className="min-w-[150px]">
+        {renderActionItems({
+          Item: ContextMenuItem as typeof DropdownMenuItem,
+          Separator: ContextMenuSeparator as typeof DropdownMenuSeparator,
+          Sub: ContextMenuSub as typeof DropdownMenuSub,
+          SubTrigger: ContextMenuSubTrigger as typeof DropdownMenuSubTrigger,
+          SubContent: ContextMenuSubContent as typeof DropdownMenuSubContent,
+        })}
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -1025,7 +1165,7 @@ function OfficeFileRow({ file }: { file: RecentArtifact }) {
       )}
       {/* Floating hover actions — same pattern as the dock: absolute over
           the row's right edge, no reserved space. */}
-      <span className="absolute right-1 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded-md bg-[color-mix(in_srgb,var(--husk-panel)_85%,transparent)] p-0.5 backdrop-blur-sm group-hover:flex group-focus-visible:flex">
+      <span className="absolute right-1 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded-full bg-[color-mix(in_srgb,var(--husk-panel)_85%,transparent)] p-0.5 backdrop-blur-sm group-hover:flex group-focus-visible:flex">
         <button
           type="button"
           aria-label="打开"
@@ -1033,7 +1173,7 @@ function OfficeFileRow({ file }: { file: RecentArtifact }) {
             e.stopPropagation();
             open();
           }}
-          className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
+          className="flex h-5 w-5 items-center justify-center rounded-full text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
         >
           <ExternalLink className="h-3 w-3" />
         </button>
@@ -1046,7 +1186,7 @@ function OfficeFileRow({ file }: { file: RecentArtifact }) {
               toast.error(`另存为失败：${err instanceof Error ? err.message : err}`),
             );
           }}
-          className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
+          className="flex h-5 w-5 items-center justify-center rounded-full text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
         >
           <Download className="h-3 w-3" />
         </button>
@@ -1059,7 +1199,7 @@ function OfficeFileRow({ file }: { file: RecentArtifact }) {
               toast.error(`打开文件夹失败：${err instanceof Error ? err.message : err}`),
             );
           }}
-          className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
+          className="flex h-5 w-5 items-center justify-center rounded-full text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
         >
           <FolderOpen className="h-3 w-3" />
         </button>
@@ -1079,9 +1219,7 @@ function ProjectItem({
   onOpenSession,
   onSwitchWorkspace,
   onRemoveWorkspace,
-  onFork,
-  onPin,
-  onDelete,
+  actions,
 }: {
   project: ProjectOverview;
   open: boolean;
@@ -1091,9 +1229,7 @@ function ProjectItem({
   onOpenSession: (root: string, id: number) => void;
   onSwitchWorkspace?: (path: string) => void;
   onRemoveWorkspace?: (project: ProjectOverview) => void;
-  onFork?: (id: number) => void;
-  onPin?: (id: number, pinned: boolean) => void;
-  onDelete?: (id: number) => void;
+  actions: SessionActions;
 }) {
   return (
     <div className="flex flex-col">
@@ -1133,7 +1269,7 @@ function ProjectItem({
             {/* Hover actions float over the count badge / current dot —
                 `invisible`-in-flow used to reserve ~40px of dead space on
                 every row. */}
-            <span className="absolute right-1 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded-md bg-[color-mix(in_srgb,var(--husk-panel)_85%,transparent)] p-0.5 backdrop-blur-sm group-hover:flex group-focus-visible:flex">
+            <span className="absolute right-1 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded-full bg-[color-mix(in_srgb,var(--husk-panel)_85%,transparent)] p-0.5 backdrop-blur-sm group-hover:flex group-focus-visible:flex">
               {!project.current && onSwitchWorkspace && (
                 <button
                   type="button"
@@ -1145,7 +1281,7 @@ function ProjectItem({
                     onSwitchWorkspace(project.root);
                   }}
                   onKeyDown={(e) => e.stopPropagation()}
-                  className="flex-none rounded p-0.5 text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
+                  className="flex h-5 w-5 flex-none items-center justify-center rounded-full text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
                 >
                   <FolderOpen className="h-3.5 w-3.5" />
                 </button>
@@ -1161,15 +1297,16 @@ function ProjectItem({
                     onRemoveWorkspace(project);
                   }}
                   onKeyDown={(e) => e.stopPropagation()}
-                  className="flex-none rounded p-0.5 text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
+                  className="flex h-5 w-5 flex-none items-center justify-center rounded-full text-neutral-500 hover:text-neutral-700 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
               )}
             </span>
-            {project.sessions.length > 0 && (
+            {/* Archived sessions are out of sight, so out of the count too. */}
+            {project.sessions.some((s) => !s.archived) && (
               <span className="flex-none text-[11px] text-neutral-500 tabular-nums">
-                {project.sessions.length}
+                {project.sessions.filter((s) => !s.archived).length}
               </span>
             )}
             {project.current && (
@@ -1188,18 +1325,15 @@ function ProjectItem({
               暂无对话记录
             </div>
           ) : (
-            project.sessions.map((s) => (
-              <SessionItem
-                key={s.id}
-                row={s}
-                isActive={project.current && (activeId ? s.id === activeId : s.active)}
-                showActions={project.current}
-                onOpen={() => onOpenSession(project.root, s.id)}
-                onFork={onFork}
-                onPin={onPin}
-                onDelete={onDelete}
-              />
-            ))
+            <SessionList
+              sessions={project.sessions}
+              root={project.root}
+              activeId={activeId}
+              live={project.current}
+              small
+              onOpenSession={onOpenSession}
+              actions={actions}
+            />
           )}
         </div>
       )}

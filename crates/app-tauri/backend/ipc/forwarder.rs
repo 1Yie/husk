@@ -28,7 +28,14 @@ pub fn spawn(
                 // Nothing else writes `handle.running` on this shell, so
                 // without this `sidebar_rows()` reports the creation-time
                 // `false` forever and the running orb never shows.
-                if let Ok(mut m) = mgr.lock() {
+                //
+                // Only these two events touch the handle. Taking the global
+                // manager mutex for every streamed delta made the stream queue
+                // behind any slow IPC op holding it (plugin reload, session
+                // switch), which is what stalled output.
+                let needs_handle =
+                    matches!(&ev, UiEvent::StateChanged(_) | UiEvent::AssistantMessage(_));
+                if let Some(mut m) = needs_handle.then(|| mgr.lock().ok()).flatten() {
                     // `handle_mut_at` resolves the handle in whichever
                     // workspace owns it — a parked workspace's actor keeps
                     // streaming after a switch, and its sidebar row must
@@ -68,7 +75,9 @@ pub fn spawn(
                                 .map(|h| crate::ipc::overlay::Controlled::of(&root, session_id, h))
                         });
                         if let Some(c) = held {
-                            if let Ok(mut g) = app.state::<crate::ipc::overlay::OverlayState>().0.lock() {
+                            if let Ok(mut g) =
+                                app.state::<crate::ipc::overlay::OverlayState>().0.lock()
+                            {
                                 *g = Some(c);
                             }
                             let app2 = app.clone();
@@ -80,7 +89,8 @@ pub fn spawn(
                         // Revoke on the controlling session (the kernel ends the
                         // grant at every turn end): release the overlay. A revoke
                         // on any OTHER session is not ours to act on.
-                        if let Ok(mut g) = app.state::<crate::ipc::overlay::OverlayState>().0.lock() {
+                        if let Ok(mut g) = app.state::<crate::ipc::overlay::OverlayState>().0.lock()
+                        {
                             *g = None;
                         }
                         let app2 = app.clone();

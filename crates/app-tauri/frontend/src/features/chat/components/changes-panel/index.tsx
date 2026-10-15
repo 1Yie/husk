@@ -54,7 +54,7 @@ function FileRow({
           )}
         </span>
         <KindIcon kind={change.kind} />
-        <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-700 dark:text-neutral-300">
+        <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-700">
           <span className="font-medium">{base}</span>
           {dir && <span className="ml-1 text-[10.5px] text-neutral-400">{dir}</span>}
         </span>
@@ -122,7 +122,7 @@ export function ChangesPanel({
   return (
     <aside className="flex h-full w-[300px] flex-none flex-col overflow-hidden border-l border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none">
       <div className="flex h-9 w-[300px] flex-none items-center gap-2 border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] px-3">
-        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-300">
+        <span className="text-[12px] font-medium text-neutral-700">
           改动
         </span>
         <span className="text-[10.5px] text-neutral-400">

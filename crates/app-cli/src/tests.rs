@@ -21,7 +21,8 @@ async fn headless_approval_and_denial_release_the_running_turn() {
         provider.script_text("done");
         let cfg = SessionConfig {
             workspace_root: dir.path().into(),
-            paths: agent_paths::AppPaths::from_app_name("husk", ".husk").unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk")),
+            paths: agent_paths::AppPaths::from_app_name("husk", ".husk")
+                .unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk")),
             provider,
             provider_name: "test".into(),
             model: "test".into(),

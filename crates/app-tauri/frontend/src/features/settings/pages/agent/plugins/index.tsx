@@ -76,8 +76,8 @@ export function PluginsPane({
   const reload = async () => {
     setReloading(true);
     try {
-      const r = await reloadMcp();
-      toast.success(`已重新加载 ${(r.plugins ?? []).length} 个插件`);
+      await reloadMcp();
+      toast.success("已重新加载");
       onReload();
     } catch (e) {
       toast.error("重新加载失败", { description: String(e) });

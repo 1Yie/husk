@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  ChevronRight,
   Brain,
   Coins,
   Cpu,
@@ -16,10 +17,11 @@ import {
 } from "@keyline-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
-import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
+import { KvList, KvListContent, KvListHeader, KvRow } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
@@ -62,10 +64,42 @@ const numOr = (v: string) => {
   const n = Number(v);
   return v.trim() !== "" && !isNaN(n) ? n : undefined;
 };
-const THINK_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+import { THINKING_LEVELS } from "@/lib/thinking";
 
 const triOr = (v: string) =>
   v === "true" ? true : v === "false" ? false : undefined;
+
+/** A titled group inside an editor dialog — keeps a long form scannable. */
+function Group({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-2.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">{title}</span>
+        {hint && <span className="text-[11px] text-neutral-400">{hint}</span>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Rarely-touched options, folded away until asked for. */
+function Advanced({ label, children }: { label: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 hover:text-neutral-800">
+        <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+        {label}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="flex flex-col gap-3 pt-3">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/** Scrolls inside the dialog instead of growing it past the window. */
+const FORM = "flex max-h-[60vh] flex-col gap-5 overflow-y-auto p-1";
 
 /** Arm a destructive button for a few seconds.
  *
@@ -288,7 +322,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     setMCostCr(c.cache_read != null ? String(c.cache_read) : "");
     setMCostCw(c.cache_write != null ? String(c.cache_write) : "");
     const t = m.thinking_level_map ?? m.thinkingLevelMap ?? {};
-    setMThink(Object.fromEntries(THINK_LEVELS.map((l) => [l, t[l] ?? ""])));
+    setMThink(Object.fromEntries(THINKING_LEVELS.map((l) => [l.value, t[l.value] ?? ""])));
   };
 
   const submitEditModel = async () => {
@@ -314,9 +348,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     if (cw2 !== undefined) cost.cache_write = cw2;
     if (Object.keys(cost).length) m.cost = cost; else delete m.cost;
     const tlm: Record<string, string> = {};
-    for (const l of THINK_LEVELS) {
-      const v = (mThink[l] ?? "").trim();
-      if (v) tlm[l] = v;
+    for (const l of THINKING_LEVELS) {
+      const v = (mThink[l.value] ?? "").trim();
+      if (v) tlm[l.value] = v;
     }
     if (Object.keys(tlm).length) m.thinking_level_map = tlm; else delete m.thinking_level_map;
     models[editModel.index] = m;
@@ -373,23 +407,26 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   ];
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
       {loadError && (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
           <div className="font-medium">配置文件无法解析，已禁止编辑以免覆盖原文件</div>
           <div className="font-mono break-all">{loadError}</div>
         </div>
       )}
-      <div className="flex items-center justify-between gap-2">
-        {cfgPath && (
-          <span className="text-[11px] text-neutral-500 font-mono truncate">
-            {cfgPath}{fmt ? `（${fmt}）` : ""}
-          </span>
-        )}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-sm font-semibold text-neutral-900">模型提供商</span>
+          {cfgPath && (
+            <span className="truncate text-[11px] text-neutral-500" title={cfgPath}>
+              配置文件 · {cfgPath}{fmt ? `（${fmt}）` : ""}
+            </span>
+          )}
+        </div>
         <Button
           size="sm"
           variant="outline"
-          className="h-7 text-xs gap-1 shrink-0"
+          className="h-7 shrink-0 gap-1 text-xs"
           disabled={!!loadError}
           onClick={() => setProvOpen(true)}
         >
@@ -397,190 +434,104 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         </Button>
       </div>
 
-      {cfg && (
-        <div className="flex flex-col gap-2 rounded-md border border-neutral-200 px-3 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-neutral-800">降级链</span>
-            <span className="text-[11px] text-neutral-500">
-              主提供商耗尽重试后，按顺序切换到下列备用
-            </span>
-          </div>
-          {chain.length ? (
-            <ol className="flex flex-col gap-1">
-              {chain.map((name, i) => (
-                <li key={name} className="flex items-center justify-between gap-2 text-xs">
-                  <span className="font-mono text-neutral-800">
-                    {i + 1}. {name}
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
-                      disabled={i === 0 || busy}
-                      onClick={() => {
-                        const next = [...chain];
-                        [next[i - 1], next[i]] = [next[i], next[i - 1]];
-                        saveChain(next);
-                      }}>
-                      <ArrowUp className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
-                      disabled={i === chain.length - 1 || busy}
-                      onClick={() => {
-                        const next = [...chain];
-                        [next[i], next[i + 1]] = [next[i + 1], next[i]];
-                        saveChain(next);
-                      }}>
-                      <ArrowDown className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
-                      disabled={busy}
-                      onClick={() => saveChain(chain.filter((n) => n !== name))}>
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <span className="text-[11px] text-neutral-500">未设置，主提供商失败时不会切换</span>
-          )}
-          {chainCandidates.length > 0 && (
-            <SettingSelect
-              value=""
-              placeholder="添加备用提供商…"
-              onChange={(v) => v && saveChain([...chain, v])}
-              options={chainCandidates.map((k) => ({ value: k, label: k }))}
-            />
-          )}
-        </div>
-      )}
       {!cfg ? (
         // Only the provider list waits on the config; the header above is
         // usable straight away.
         <SkeletonKvList rows={2} />
       ) : provEntries.length ? (
-        provEntries.map(([pk, p]: [string, any]) => (
-          <div key={pk} className="flex flex-col gap-2">
-            {/* provider header */}
-            <div className="flex items-center justify-between gap-2 mt-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="text-xs font-semibold text-neutral-800">{pk}</span>
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-mono">
-                  {p.kind ?? p.type ?? p.api ?? "openai_completions"}
-                </Badge>
-                <span className="text-[11px] text-neutral-500 font-mono truncate">
-                  {p.base_url ?? p.baseUrl ?? ""}
-                </span>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
+        provEntries.map(([pk, p]: [string, any]) => {
+          const models: any[] = p.models ?? [];
+          return (
+            <KvList key={pk}>
+              {/* provider header — the card owns its title, URL and actions */}
+              <div className="flex items-center justify-between gap-3 border-b border-neutral-100 px-5 py-3 dark:border-white/8">
+                <div className="flex min-w-0 flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold text-neutral-900">{pk}</span>
+                    <Badge variant="outline" className="h-4 shrink-0 rounded-full border-neutral-200 px-2 py-0 font-mono text-[10px] font-medium text-neutral-500">
+                      {p.kind ?? p.type ?? p.api ?? "openai_completions"}
+                    </Badge>
+                  </div>
+                  <span className="truncate font-mono text-[11px] text-neutral-500">
+                    {p.base_url ?? p.baseUrl ?? ""}
+                  </span>
+                </div>
                 <TooltipSimple content="编辑提供商" side="top">
                   <Button
-                    size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
+                    size="sm" variant="ghost" aria-label="编辑提供商"
+                    className="h-7 w-7 shrink-0 rounded-full p-0 text-neutral-500"
                     onClick={() => openEditProv(pk)}
                   >
                     <SquarePen className="h-3.5 w-3.5" />
                   </Button>
                 </TooltipSimple>
-                <TooltipSimple content="新建模型" side="top">
-                  <Button
-                    size="sm" variant="ghost" className="h-6 w-6 p-0 text-neutral-500"
-                    onClick={() => openEditModel(pk, (p.models ?? []).length)}
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </Button>
-                </TooltipSimple>
               </div>
-            </div>
-            <KvList>
-              <KvListContent>
-                {(p.models ?? []).length ? (
-                  (p.models ?? []).map((raw: any, i: number) => {
-                    const m = normModel(raw);
-                    const isActive =
-                      pk === active?.active_provider && m.id === active?.active_model;
-                    const thinkLvls = m.thinking_level_map
-                      ? THINK_LEVELS.filter((l) => (m.thinking_level_map as Record<string, unknown>)[l] != null)
-                      : [];
-                    const segs = [
-                      Array.isArray(m.input) && m.input.length
-                        ? { icon: <Layers className="h-3 w-3" />, text: m.input.join("/") }
-                        : null,
-                      thinkLvls.length
-                        ? { icon: <Brain className="h-3 w-3" />, text: thinkLvls.join("/") }
-                        : null,
-                      m.cost
-                        ? { icon: <Coins className="h-3 w-3" />, text: `in ${m.cost.input ?? 0} / out ${m.cost.output ?? 0}` +
-                            (m.cost.cache_read != null || m.cost.cache_write != null
-                              ? ` / 缓存 ${m.cost.cache_read ?? 0}+${m.cost.cache_write ?? 0}`
-                              : "") }
-                        : null,
-                    ].filter((x): x is NonNullable<typeof x> => x !== null);
-                    return (
-                      <div
-                        key={m.id ?? i}
-                        className="px-5 py-3 hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] transition-colors"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <span className="text-neutral-500 shrink-0">
-                              <Cpu className="h-4 w-4" />
-                            </span>
-                            <span className="text-sm text-neutral-800 truncate">
-                              {m.name || m.id}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {isActive && (
-                              <Badge className="text-[10px] px-1.5 py-0 h-4">当前</Badge>
-                            )}
-                            {m.reasoning === true && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                                思考
-                              </Badge>
-                            )}
-                            {m.reasoning === false && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                                无思考
-                              </Badge>
-                            )}
-                            {m.context_window ? (
-                              <span className="text-[11px] text-neutral-500 font-mono tabular-nums">
-                                {(m.context_window / 1000).toFixed(0)}k
-                              </span>
-                            ) : null}
-                            <TooltipSimple content="编辑模型" side="top">
-                              <Button
-                                size="sm" variant="ghost"
-                                className="h-6 w-6 p-0 text-neutral-500"
-                                onClick={() => openEditModel(pk, i)}
-                              >
-                                <SquarePen className="h-3.5 w-3.5" />
-                              </Button>
-                            </TooltipSimple>
-                          </div>
+              <KvListContent className="dark:divide-[var(--husk-border)]">
+                {models.map((raw: any, i: number) => {
+                  const m = normModel(raw);
+                  const isActive = pk === active?.active_provider && m.id === active?.active_model;
+                  const thinkLvls = m.thinking_level_map
+                    ? THINKING_LEVELS.filter((l) => (m.thinking_level_map as Record<string, unknown>)[l.value] != null)
+                    : [];
+                  const meta = [
+                    m.name && m.name !== m.id ? m.id : null,
+                    m.context_window ? `${(m.context_window / 1000).toFixed(0)}k 上下文` : null,
+                    Array.isArray(m.input) && m.input.length ? m.input.join("/") : null,
+                    m.reasoning === true
+                      ? thinkLvls.length ? `思考 ${thinkLvls.map((l) => l.label).join("/")}` : "支持思考"
+                      : m.reasoning === false ? "无思考" : null,
+                    m.cost ? `in ${m.cost.input ?? 0} · out ${m.cost.output ?? 0}` : null,
+                  ].filter((x): x is string => !!x);
+                  return (
+                    <div
+                      key={m.id ?? i}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openEditModel(pk, i)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openEditModel(pk, i);
+                        }
+                      }}
+                      className="group flex cursor-pointer items-center justify-between gap-3 px-5 py-2.5 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] focus-visible:outline-none"
+                    >
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm text-neutral-800">{m.name || m.id}</span>
+                          {isActive && (
+                            <Badge variant="outline" className="h-4 shrink-0 rounded-full border-transparent bg-emerald-500/15 px-2 py-0 text-[10px] font-medium text-emerald-600 dark:border-transparent dark:text-emerald-400">当前</Badge>
+                          )}
                         </div>
-                        {/* Meta line spanning the full card width. */}
-                        {(m.id || segs.length > 0) && (
-                          <div className="mt-1.5 pl-7 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono text-neutral-500">
-                            {m.id && <span>{m.id}</span>}
-                            {segs.map((seg, j) => (
-                              <span key={j} className="inline-flex items-center gap-1">
-                                <span className="text-neutral-300">·</span>
-                                {seg.icon}
-                                {seg.text}
+                        {meta.length > 0 && (
+                          <span className="truncate text-[11px] text-neutral-500">
+                            {meta.map((t, j) => (
+                              <span key={j} className={j === 0 && m.name && m.name !== m.id ? "font-mono" : undefined}>
+                                {j > 0 && <span className="px-1.5 text-neutral-300">·</span>}
+                                {t}
                               </span>
                             ))}
-                          </div>
+                          </span>
                         )}
                       </div>
-                    );
-                  })
-                ) : (
-                  <KvRow label="暂无模型" description="点右侧 + 添加一个模型" />
+                      <SquarePen className="h-3.5 w-3.5 shrink-0 text-neutral-400 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+                    </div>
+                  );
+                })}
+                {models.length === 0 && (
+                  <div className="px-5 py-3 text-xs text-neutral-500">暂无模型</div>
                 )}
+                <button
+                  type="button"
+                  onClick={() => openEditModel(pk, models.length)}
+                  className="flex w-full cursor-pointer items-center gap-2 px-5 py-2.5 text-xs text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] hover:text-neutral-800"
+                >
+                  <Plus className="h-3.5 w-3.5" /> 添加模型
+                </button>
               </KvListContent>
             </KvList>
-          </div>
-        ))
+          );
+        })
       ) : (
         <KvList>
           <KvListContent>
@@ -589,6 +540,86 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         </KvList>
       )}
 
+      {cfg && (
+        <KvList>
+          <KvListHeader
+            title="降级链"
+            description="主提供商耗尽重试后，按顺序切换到下列备用"
+          />
+          <KvListContent className="dark:divide-[var(--husk-border)]">
+            {chain.length ? (
+              chain.map((name, i) => {
+                const p: any = cfg.providers?.[name];
+                const kind = p ? (p.kind ?? p.type ?? p.api ?? "openai_completions") : null;
+                const move = (to: number) => {
+                  const next = [...chain];
+                  [next[to], next[i]] = [next[i], next[to]];
+                  saveChain(next);
+                };
+                return (
+                  <div
+                    key={name}
+                    className="flex items-center justify-between gap-3 px-5 py-2.5 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)]"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-neutral-100 text-[11px] font-medium tabular-nums text-neutral-600">
+                        {i + 1}
+                      </span>
+                      <span className="truncate text-sm text-neutral-800">{name}</span>
+                      {kind ? (
+                        <Badge variant="outline" className="h-4 shrink-0 rounded-full border-neutral-200 px-2 py-0 font-mono text-[10px] font-medium text-neutral-500">
+                          {kind}
+                        </Badge>
+                      ) : (
+                        <span className="shrink-0 text-[11px] text-amber-600">提供商已不存在</span>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-0.5 rounded-full bg-neutral-100 p-0.5">
+                      <TooltipSimple content="上移" side="top">
+                        <Button size="sm" variant="ghost" aria-label="上移"
+                          className="h-6 w-6 rounded-full p-0 text-neutral-500 hover:bg-white"
+                          disabled={i === 0 || busy}
+                          onClick={() => move(i - 1)}>
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </Button>
+                      </TooltipSimple>
+                      <TooltipSimple content="下移" side="top">
+                        <Button size="sm" variant="ghost" aria-label="下移"
+                          className="h-6 w-6 rounded-full p-0 text-neutral-500 hover:bg-white"
+                          disabled={i === chain.length - 1 || busy}
+                          onClick={() => move(i + 1)}>
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        </Button>
+                      </TooltipSimple>
+                      <TooltipSimple content="移出降级链" side="top">
+                        <Button size="sm" variant="ghost" aria-label="移出降级链"
+                          className="h-6 w-6 rounded-full p-0 text-neutral-500 hover:bg-white hover:text-red-600"
+                          disabled={busy}
+                          onClick={() => saveChain(chain.filter((n) => n !== name))}>
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </TooltipSimple>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <KvRow label="未设置" description="主提供商失败时不会切换" />
+            )}
+            {chainCandidates.length > 0 && (
+              <div className="px-5 py-2.5">
+                <SettingSelect
+                  value=""
+                  placeholder="添加备用提供商…"
+                  triggerClassName="w-full rounded-full border-dashed bg-transparent shadow-none text-neutral-500"
+                  onChange={(v) => v && saveChain([...chain, v])}
+                  options={chainCandidates.map((k) => ({ value: k, label: k }))}
+                />
+              </div>
+            )}
+          </KvListContent>
+        </KvList>
+      )}
       {/* ======== 添加 API ======== */}
       <FormDialog
         open={provOpen}
@@ -599,58 +630,64 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         disabled={!provKey.trim() || !provBase.trim()}
         onSubmit={() => void submitAddProvider()}
       >
-          <div className="flex flex-col gap-3 py-1">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="名称（唯一标识）">
-                <Input value={provKey} onChange={(e) => setProvKey(e.target.value)}
-                  placeholder="openai / anthropic / …" className="h-8 text-xs font-mono" />
+          <div className={FORM}>
+            <Group title="连接">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="名称（唯一标识）">
+                  <Input value={provKey} onChange={(e) => setProvKey(e.target.value)}
+                    placeholder="openai / anthropic / …" className="h-8 text-xs font-mono" />
+                </Field>
+                <Field label="类型">
+                  <SettingSelect
+                    value={provKind}
+                    onChange={(v) => {
+                      setProvKind(v);
+                      if (!provBase.trim() && DEFAULT_BASES[v]) setProvBase(DEFAULT_BASES[v]);
+                    }}
+                    options={KIND_OPTIONS}
+                  />
+                </Field>
+              </div>
+              <Field label="Base URL">
+                <Input value={provBase} onChange={(e) => setProvBase(e.target.value)}
+                  placeholder="https://api.openai.com/v1" className="h-8 text-xs font-mono" />
               </Field>
-              <Field label="类型">
-                <SettingSelect
-                  value={provKind}
-                  onChange={(v) => {
-                    setProvKind(v);
-                    if (!provBase.trim() && DEFAULT_BASES[v]) setProvBase(DEFAULT_BASES[v]);
-                  }}
-                  options={KIND_OPTIONS}
-                />
+              <Field label="API Key（支持 env:VAR 引用）">
+                <Input type="password" value={provKey_} onChange={(e) => setProvKey_(e.target.value)}
+                  placeholder="sk-… 或 env:OPENAI_API_KEY" className="h-8 text-xs font-mono" />
               </Field>
-            </div>
-            <Field label="Base URL">
-              <Input value={provBase} onChange={(e) => setProvBase(e.target.value)}
-                placeholder="https://api.openai.com/v1" className="h-8 text-xs font-mono" />
-            </Field>
-            <Field label="API Key（支持 env:VAR 引用）">
-              <Input type="password" value={provKey_} onChange={(e) => setProvKey_(e.target.value)}
-                placeholder="sk-… 或 env:OPENAI_API_KEY" className="h-8 text-xs font-mono" />
-            </Field>
-            <Field label="模型列表（逗号分隔的模型 ID）">
-              <Input value={provModels} onChange={(e) => setProvModels(e.target.value)}
-                placeholder="gpt-5.4, gpt-5-mini" className="h-8 text-xs font-mono" />
-            </Field>
-            <Field label="默认模型（可选）">
-              <Input value={provDefault} onChange={(e) => setProvDefault(e.target.value)}
-                placeholder="默认同第一个模型" className="h-8 text-xs font-mono" />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="supports_store">
-                <SettingSelect value={nStore} onChange={setNStore} options={TRI_OPTS} />
+            </Group>
+            <Group title="模型">
+              <Field label="模型列表（逗号分隔的模型 ID）">
+                <Input value={provModels} onChange={(e) => setProvModels(e.target.value)}
+                  placeholder="gpt-5.4, gpt-5-mini" className="h-8 text-xs font-mono" />
               </Field>
-              <Field label="supports_developer_role">
-                <SettingSelect value={nDev} onChange={setNDev} options={TRI_OPTS} />
+              <Field label="默认模型（可选）">
+                <Input value={provDefault} onChange={(e) => setProvDefault(e.target.value)}
+                  placeholder="默认同第一个模型" className="h-8 text-xs font-mono" />
               </Field>
-              <Field label="supports_reasoning_effort">
-                <SettingSelect value={nEff} onChange={setNEff} options={TRI_OPTS} />
+            </Group>
+            <Advanced label="兼容性与请求头">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="supports_store">
+                  <SettingSelect value={nStore} onChange={setNStore} options={TRI_OPTS} />
+                </Field>
+                <Field label="supports_developer_role">
+                  <SettingSelect value={nDev} onChange={setNDev} options={TRI_OPTS} />
+                </Field>
+                <Field label="supports_reasoning_effort">
+                  <SettingSelect value={nEff} onChange={setNEff} options={TRI_OPTS} />
+                </Field>
+                <Field label="max_tokens_field">
+                  <Input value={nTok} onChange={(e) => setNTok(e.target.value)}
+                    placeholder="max_tokens" className="h-8 text-xs font-mono" />
+                </Field>
+              </div>
+              <Field label="请求头 JSON（可选）">
+                <Textarea value={nHeaders} onChange={(e) => setNHeaders(e.target.value)}
+                  rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono resize-y max-h-40" />
               </Field>
-              <Field label="max_tokens_field">
-                <Input value={nTok} onChange={(e) => setNTok(e.target.value)}
-                  placeholder="max_tokens" className="h-8 text-xs font-mono" />
-              </Field>
-            </div>
-            <Field label="请求头 JSON（可选）">
-              <Textarea value={nHeaders} onChange={(e) => setNHeaders(e.target.value)}
-                rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono resize-y max-h-40" />
-            </Field>
+            </Advanced>
           </div>
       </FormDialog>
 
@@ -671,45 +708,51 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
           />
         }
       >
-          <div className="flex flex-col gap-3 py-1">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="名称（唯一标识）">
-                <Input value={eName} onChange={(e) => setEName(e.target.value)}
-                  placeholder="openai / anthropic / …" className="h-8 text-xs font-mono" />
+          <div className={FORM}>
+            <Group title="连接">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="名称（唯一标识）">
+                  <Input value={eName} onChange={(e) => setEName(e.target.value)}
+                    placeholder="openai / anthropic / …" className="h-8 text-xs font-mono" />
+                </Field>
+                <Field label="类型">
+                  <SettingSelect value={eKind} onChange={setEKind} options={KIND_OPTIONS} />
+                </Field>
+              </div>
+              <Field label="Base URL">
+                <Input value={eBase} onChange={(e) => setEBase(e.target.value)} className="h-8 text-xs font-mono" />
               </Field>
-              <Field label="类型">
-                <SettingSelect value={eKind} onChange={setEKind} options={KIND_OPTIONS} />
+              <Field label="API Key">
+                {/* Stored plaintext keys arrive masked; submitting the mask keeps the stored key. */}
+                <Input type="password" value={eKey} onChange={(e) => setEKey(e.target.value)} className="h-8 text-xs font-mono" />
               </Field>
-            </div>
-            <Field label="Base URL">
-              <Input value={eBase} onChange={(e) => setEBase(e.target.value)} className="h-8 text-xs font-mono" />
-            </Field>
-            <Field label="API Key">
-              {/* Stored plaintext keys arrive masked; submitting the mask keeps the stored key. */}
-              <Input type="password" value={eKey} onChange={(e) => setEKey(e.target.value)} className="h-8 text-xs font-mono" />
-            </Field>
-            <Field label="默认模型">
-              <Input value={eDefault} onChange={(e) => setEDefault(e.target.value)} className="h-8 text-xs font-mono" />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="supports_store">
-                <SettingSelect value={eStore} onChange={setEStore} options={TRI_OPTS} />
+            </Group>
+            <Group title="模型">
+              <Field label="默认模型">
+                <Input value={eDefault} onChange={(e) => setEDefault(e.target.value)} className="h-8 text-xs font-mono" />
               </Field>
-              <Field label="supports_developer_role">
-                <SettingSelect value={eDevRole} onChange={setEDevRole} options={TRI_OPTS} />
+            </Group>
+            <Advanced label="兼容性与请求头">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="supports_store">
+                  <SettingSelect value={eStore} onChange={setEStore} options={TRI_OPTS} />
+                </Field>
+                <Field label="supports_developer_role">
+                  <SettingSelect value={eDevRole} onChange={setEDevRole} options={TRI_OPTS} />
+                </Field>
+                <Field label="supports_reasoning_effort">
+                  <SettingSelect value={eEffort} onChange={setEEffort} options={TRI_OPTS} />
+                </Field>
+                <Field label="max_tokens_field">
+                  <Input value={eMaxTok} onChange={(e) => setEMaxTok(e.target.value)}
+                    placeholder="max_tokens" className="h-8 text-xs font-mono" />
+                </Field>
+              </div>
+              <Field label="请求头 JSON（可选，留空清除）">
+                <Textarea value={eHeaders} onChange={(e) => setEHeaders(e.target.value)}
+                  rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono resize-y max-h-40" />
               </Field>
-              <Field label="supports_reasoning_effort">
-                <SettingSelect value={eEffort} onChange={setEEffort} options={TRI_OPTS} />
-              </Field>
-              <Field label="max_tokens_field">
-                <Input value={eMaxTok} onChange={(e) => setEMaxTok(e.target.value)}
-                  placeholder="max_tokens" className="h-8 text-xs font-mono" />
-              </Field>
-            </div>
-            <Field label="请求头 JSON（可选，留空清除）">
-              <Textarea value={eHeaders} onChange={(e) => setEHeaders(e.target.value)}
-                rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono resize-y max-h-40" />
-            </Field>
+            </Advanced>
           </div>
       </FormDialog>
 
@@ -733,53 +776,61 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
           )
         }
       >
-          <div className="flex flex-col gap-3 py-1">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="模型 ID">
-                <Input value={mId} onChange={(e) => setMId(e.target.value)} className="h-8 text-xs font-mono" />
-              </Field>
-              <Field label="显示名">
-                <Input value={mName} onChange={(e) => setMName(e.target.value)} className="h-8 text-xs" />
-              </Field>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="上下文窗口（tokens）">
-                <Input value={mCtx} onChange={(e) => setMCtx(e.target.value)}
-                  placeholder="262144" className="h-8 text-xs font-mono" />
-              </Field>
-              <Field label="推理/思考支持">
-                <SettingSelect value={mReasoning} onChange={setMReasoning} options={TRI_OPTS} />
-              </Field>
-            </div>
-            <Field label="输入模态（逗号分隔）">
-              <Input value={mInput} onChange={(e) => setMInput(e.target.value)}
-                placeholder="text, image" className="h-8 text-xs font-mono" />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="成本 input">
-                <Input value={mCostIn} onChange={(e) => setMCostIn(e.target.value)} className="h-8 text-xs font-mono" />
-              </Field>
-              <Field label="成本 output">
-                <Input value={mCostOut} onChange={(e) => setMCostOut(e.target.value)} className="h-8 text-xs font-mono" />
-              </Field>
-              <Field label="成本 cache_read">
-                <Input value={mCostCr} onChange={(e) => setMCostCr(e.target.value)} className="h-8 text-xs font-mono" />
-              </Field>
-              <Field label="成本 cache_write">
-                <Input value={mCostCw} onChange={(e) => setMCostCw(e.target.value)} className="h-8 text-xs font-mono" />
-              </Field>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {THINK_LEVELS.map((l) => (
-                <Field key={l} label={`思考 ${l}`}>
-                  <Input value={mThink[l] ?? ""} onChange={(e) => setMThink({ ...mThink, [l]: e.target.value })}
-                    placeholder={l} className="h-8 text-xs font-mono" />
+          <div className={FORM}>
+            <Group title="标识">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="模型 ID">
+                  <Input value={mId} onChange={(e) => setMId(e.target.value)} className="h-8 text-xs font-mono" />
                 </Field>
-              ))}
-            </div>
-            <p className="text-[11px] text-neutral-500">
-              思考等级映射：留空 = 不映射（按提供商默认传参）
-            </p>
+                <Field label="显示名">
+                  <Input value={mName} onChange={(e) => setMName(e.target.value)} className="h-8 text-xs" />
+                </Field>
+              </div>
+            </Group>
+            <Group title="能力">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="上下文窗口（tokens）">
+                  <Input value={mCtx} onChange={(e) => setMCtx(e.target.value)}
+                    placeholder="262144" className="h-8 text-xs font-mono" />
+                </Field>
+                <Field label="推理/思考支持">
+                  <SettingSelect value={mReasoning} onChange={setMReasoning} options={TRI_OPTS} />
+                </Field>
+              </div>
+              <Field label="输入模态（逗号分隔）">
+                <Input value={mInput} onChange={(e) => setMInput(e.target.value)}
+                  placeholder="text, image" className="h-8 text-xs font-mono" />
+              </Field>
+            </Group>
+            <Group title="价格">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="输入">
+                  <Input value={mCostIn} onChange={(e) => setMCostIn(e.target.value)} className="h-8 text-xs font-mono" />
+                </Field>
+                <Field label="输出">
+                  <Input value={mCostOut} onChange={(e) => setMCostOut(e.target.value)} className="h-8 text-xs font-mono" />
+                </Field>
+                <Field label="缓存读取">
+                  <Input value={mCostCr} onChange={(e) => setMCostCr(e.target.value)} className="h-8 text-xs font-mono" />
+                </Field>
+                <Field label="缓存写入">
+                  <Input value={mCostCw} onChange={(e) => setMCostCw(e.target.value)} className="h-8 text-xs font-mono" />
+                </Field>
+              </div>
+            </Group>
+            <Advanced label="思考等级映射">
+              <div className="grid grid-cols-2 gap-3">
+                {THINKING_LEVELS.map((l) => (
+                  <Field key={l.value} label={l.label}>
+                    <Input value={mThink[l.value] ?? ""} onChange={(e) => setMThink({ ...mThink, [l.value]: e.target.value })}
+                      placeholder={l.value} className="h-8 text-xs font-mono" />
+                  </Field>
+                ))}
+              </div>
+              <p className="text-[11px] text-neutral-500">
+                思考等级映射：留空 = 不映射（按提供商默认传参）
+              </p>
+            </Advanced>
           </div>
       </FormDialog>
     </div>

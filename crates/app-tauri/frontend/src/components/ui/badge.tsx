@@ -14,7 +14,7 @@ const badgeVariants = cva(
           "border-transparent bg-neutral-100 text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)]",
         destructive:
           "border-transparent bg-red-600 text-neutral-50 dark:text-[var(--husk-black)] shadow hover:bg-red-600/80",
-        outline: "text-neutral-950",
+        outline: "border-neutral-200 text-neutral-950 dark:border-[var(--husk-border)]",
       },
     },
     defaultVariants: {

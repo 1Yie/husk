@@ -77,7 +77,11 @@ fn spawn_glow(app: &AppHandle) -> Result<(), String> {
     .skip_taskbar(true)
     .resizable(false)
     .visible(false);
-    let builder = if layer { builder } else { builder.fullscreen(true) };
+    let builder = if layer {
+        builder
+    } else {
+        builder.fullscreen(true)
+    };
 
     // `.transparent` is compiled out on macOS (`#[cfg(any(not(macos),
     // macos-private-api))]`) — calling it unconditionally breaks the macOS
@@ -96,7 +100,9 @@ fn spawn_glow(app: &AppHandle) -> Result<(), String> {
     // `init_for_window` accepts (see layer_shell.rs).
     #[cfg(target_os = "linux")]
     if layer {
-        let gtk_win = win.gtk_window().map_err(|e| format!("glow gtk window: {e}"))?;
+        let gtk_win = win
+            .gtk_window()
+            .map_err(|e| format!("glow gtk window: {e}"))?;
         crate::ipc::layer_shell::full_screen(&gtk_win);
     }
 
@@ -144,7 +150,9 @@ fn spawn_hud(app: &AppHandle) -> Result<(), String> {
     // The toplevel placement below is ignored on Wayland, so it is skipped.
     #[cfg(target_os = "linux")]
     if crate::ipc::layer_shell::available() {
-        let gtk_win = win.gtk_window().map_err(|e| format!("hud gtk window: {e}"))?;
+        let gtk_win = win
+            .gtk_window()
+            .map_err(|e| format!("hud gtk window: {e}"))?;
         // The layer surface takes its size from the request, not from
         // `inner_size` alone — pin it to the logical HUD size.
         use gtk::prelude::WidgetExt as _;

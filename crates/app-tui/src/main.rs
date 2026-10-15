@@ -21,17 +21,17 @@ use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use husk_host::command::UiCommand;
 use agent_kernel::channels::UiReceiver;
+use agent_llm::{AppConfig, ProviderFactory};
+use agent_store::{SessionMeta, SessionStore};
+use husk_host::command::UiCommand;
 use husk_host::sandbox_prefs;
 use husk_host::session::{SessionActor, SessionConfig};
-use agent_store::{SessionMeta, SessionStore};
-use agent_llm::{AppConfig, ProviderFactory};
 
 use app::App;
 
-use crossterm::event::{Event, EventStream};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{Event, EventStream};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
@@ -55,7 +55,7 @@ OPTIONS:
     --permission MODE     default | acceptEdits | auto | dontAsk |
                           bypassPermissions  (default: auto)
     --yes, -y             auto-approve approvals / first-answer questions
-    --sandbox on|off      sandbox master switch (default: on)
+    --sandbox on|off      sandbox master switch (default: off)
     --sandbox-network M   auto | allow | deny
     --allow-domain HOST   extra egress allowlist entry (repeatable)
     --deny-domain HOST    egress denylist entry (repeatable)

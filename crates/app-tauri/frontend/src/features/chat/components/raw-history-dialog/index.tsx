@@ -181,7 +181,7 @@ const EventRow = memo(function EventRow({
         <Badge variant="secondary" className={cn("flex-none rounded-md text-[11px] font-medium", ROLE[role].tag)}>
           {ROLE[role].label}
         </Badge>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-neutral-700 dark:text-neutral-300">
+        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-neutral-700">
           {preview(m)}
         </span>
         {dur && (
@@ -206,7 +206,7 @@ const EventRow = memo(function EventRow({
       {open && (
         <div className="mx-4 mb-2 max-h-[320px] overflow-auto rounded-lg border border-neutral-200 bg-neutral-50 dark:border-white/10 dark:bg-white/[0.03]">
           <pre
-            className="whitespace-pre-wrap break-all p-3 font-mono text-[11px] leading-relaxed text-neutral-700 dark:text-neutral-300"
+            className="whitespace-pre-wrap break-all p-3 font-mono text-[11px] leading-relaxed text-neutral-700"
             dangerouslySetInnerHTML={{ __html: html }}
           />
         </div>
@@ -352,7 +352,7 @@ export function RawHistoryDialog({
               if (items.length === 0) return null;
               return (
                 <section key={r.index}>
-                  <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-neutral-100 bg-white px-4 py-1.5 dark:border-white/5 dark:bg-neutral-950">
+                  <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-neutral-100 bg-white px-4 py-1.5 dark:border-[var(--husk-border)] dark:bg-[var(--husk-hover)]">
                     <Badge variant="outline" className="font-mono text-[10px] font-normal">
                       第 {r.index + 1} 轮
                     </Badge>

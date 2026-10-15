@@ -324,7 +324,10 @@ fn finished_tool_appears_once_and_leaves_the_live_region() {
     app.on_ui_event(tool_start("list_dir", "crates"));
     app.on_ui_event(tool_done("list_dir", "a.rs\nb.rs"));
     let committed = plain_lines(&app.pending);
-    assert_eq!(committed.iter().filter(|l| l.contains("list_dir")).count(), 1);
+    assert_eq!(
+        committed.iter().filter(|l| l.contains("list_dir")).count(),
+        1
+    );
     assert!(app.live.is_empty(), "finished tool still in live region");
 }
 
@@ -349,10 +352,16 @@ fn batch_children_are_grouped_under_their_parent_with_previews() {
             child_id: None,
         });
     }
-    assert!(plain_lines(&app.pending).is_empty(), "children committed before parent finished");
+    assert!(
+        plain_lines(&app.pending).is_empty(),
+        "children committed before parent finished"
+    );
     app.on_ui_event(tool_done("batch_execute", ""));
     let committed = plain_lines(&app.pending);
-    let parent = committed.iter().position(|l| l.contains("batch_execute")).unwrap();
+    let parent = committed
+        .iter()
+        .position(|l| l.contains("batch_execute"))
+        .unwrap();
     assert!(committed[parent + 1].contains("smart_read") && committed[parent + 1].contains("a.rs"));
     assert!(committed[parent + 2].contains("smart_read") && committed[parent + 2].contains("b.rs"));
 }
@@ -361,12 +370,21 @@ fn batch_children_are_grouped_under_their_parent_with_previews() {
 fn reasoning_is_committed_before_the_tool_it_precedes() {
     let (_dir, mut app) = app_and_dir();
     app.set_width(80);
-    app.on_ui_event(UiEvent::ReasoningDelta { text: "first look at the dir".into(), parent: None });
+    app.on_ui_event(UiEvent::ReasoningDelta {
+        text: "first look at the dir".into(),
+        parent: None,
+    });
     app.on_ui_event(tool_start("list_dir", "crates"));
     app.on_ui_event(tool_done("list_dir", ""));
     let committed = plain_lines(&app.pending);
-    let reason = committed.iter().position(|l| l.contains("first look")).expect("reasoning not committed");
-    let tool = committed.iter().position(|l| l.contains("list_dir")).unwrap();
+    let reason = committed
+        .iter()
+        .position(|l| l.contains("first look"))
+        .expect("reasoning not committed");
+    let tool = committed
+        .iter()
+        .position(|l| l.contains("list_dir"))
+        .unwrap();
     assert!(reason < tool, "reasoning committed after the tool");
 }
 

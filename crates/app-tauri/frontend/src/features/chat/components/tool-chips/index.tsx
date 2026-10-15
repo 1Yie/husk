@@ -272,6 +272,17 @@ export type ToolChipRow = {
   };
 };
 
+/** Keep the phase header on an active call, including a running batch item. */
+export function toolActivityPreview(rows: ToolChipRow[]): string {
+  const row = rows.find((item) => item.status === "running") ?? rows[rows.length - 1];
+  if (!row) return "";
+  if (row.children?.some((item) => item.status === "running")) {
+    return toolActivityPreview(row.children);
+  }
+  const args = formatChipArgs(row.label, row.chip);
+  return args ? `${row.label} · ${args}` : row.label;
+}
+
 function DetailLines({
   detailText,
   label,

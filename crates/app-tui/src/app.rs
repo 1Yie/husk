@@ -5,8 +5,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use agent_ipc::AgentState;
-use husk_host::command::UiCommand;
 use agent_kernel::channels::UiReceiver;
+use husk_host::command::UiCommand;
 
 use ratatui::text::Line;
 use tokio::sync::mpsc;

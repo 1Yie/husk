@@ -147,7 +147,12 @@ export interface SessionRow {
   preview: string;
   active: boolean;
   running: boolean;
+  /** Pinned within its workspace — leads the project's list. */
   pinned: boolean;
+  /** Pinned globally — leads the cross-project 会话 list. */
+  pinned_global?: boolean;
+  /** Archived — listed only under 已归档. */
+  archived?: boolean;
 }
 
 /** A session row inside a project — `SessionRow` plus the timestamp the

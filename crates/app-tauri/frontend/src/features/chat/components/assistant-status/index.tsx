@@ -81,7 +81,7 @@ const ElapsedLabel = memo(function ElapsedLabel({
   // Nothing worth showing during the first second.
   if (ms < 1000) return null;
   return (
-    <span className="whitespace-nowrap text-neutral-500 font-normal tabular-nums">
+    <span className="shrink-0 whitespace-nowrap text-neutral-500 font-normal tabular-nums">
       · {formatElapsed(ms)}
     </span>
   );
@@ -99,32 +99,32 @@ const ElapsedLabel = memo(function ElapsedLabel({
 const ThinkingBody = memo(function ThinkingBody({
   text,
   animating,
-  open,
 }: {
   text: string;
   animating?: boolean;
-  /** The parent's Collapsible open state — needed to gate the plain-div
-   *  fallback that bypasses Radix's measured-height animation for huge
-   *  traces. */
-  open: boolean;
 }) {
-  const body = <ReasoningBody text={text} animating={animating} />;
-  // A huge trace skips Radix's collapsible entirely: expanding it would pay a
-  // synchronous getBoundingClientRect on the fresh subtree plus a 240ms
-  // animated reflow — a plain open-gated div does neither.
-  if (text.length > HUGE_TRACE_CHARS) {
-    return open ? body : null;
-  }
+  // Keep the same container throughout a stream. Switching from Radix to a
+  // plain div at 16k chars remounted the whole markdown tree mid-thought.
+  // Radix measures on open/close, not on every delta; disable its height
+  // animation for a growing or large body without replacing the subtree.
+  const skipAnimation = animating || text.length > HUGE_TRACE_CHARS;
   return (
-    <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
-      {body}
+    <CollapsibleContent
+      className={cn(skipAnimation && "data-[state=open]:animate-none data-[state=closed]:animate-none")}
+    >
+      <ReasoningBody text={text} animating={animating} />
     </CollapsibleContent>
   );
 });
 
-/** Past this length the reasoning body mounts without the collapse
- *  animation (and without Radix's content measurement). */
+/** Large settled traces also skip the height animation when expanded. */
 const HUGE_TRACE_CHARS = 16_000;
+
+function thinkingPreview(text: string): string {
+  const trimmed = text.trimEnd();
+  const line = trimmed.slice(trimmed.lastIndexOf("\n") + 1).trim();
+  return line.length > 240 ? `…${line.slice(-240)}` : line;
+}
 
 export function AssistantStatus({
   mode,
@@ -132,6 +132,7 @@ export function AssistantStatus({
   startedAt,
   elapsedMs,
   doneLabel,
+  preview,
   children,
 }: {
   mode:
@@ -156,6 +157,9 @@ export function AssistantStatus({
    *  (count from the caller), exactly like "思考过程" carries the thinking
    *  phase's name. */
   doneLabel?: string;
+  /** Current operation shown on the collapsed row; thinking defaults to its
+   *  latest non-empty line. */
+  preview?: string;
   /** Collapsible body for non-thinking rows — the tools row mounts its chip
    *  list here so the status row IS the collapse toggle, one-to-one with
    *  the thinking row's expand-to-trace pattern. */
@@ -199,6 +203,8 @@ export function AssistantStatus({
               ? (doneLabel ?? "工具调用")
               : "思考过程";
   const canToggle = Boolean(thinkingText) || children != null;
+  const previewText = (preview ?? thinkingPreview(thinkingText)).replace(/\s+/g, " ").trim();
+  const showPreview = !open && Boolean(previewText);
   /** Pinned while expanded — see the capsule note below. */
   const pinned = open && canToggle;
 
@@ -218,14 +224,15 @@ export function AssistantStatus({
           swallows clicks aimed at the content underneath. The capsule is
           opaque and `w-fit`, so it floats over the body, stays readable over
           text or a diff, and only its own area is interactive. */}
-      <div className={cn(pinned && "sticky top-0 z-10 w-fit")}>
+      <div className={cn("min-w-0 max-w-full", showPreview && "w-full", pinned && "sticky top-0 z-10 w-fit")}>
         <CollapsibleTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
             aria-expanded={canToggle ? open : undefined}
             className={cn(
-              "h-7 w-fit gap-1.5 text-xs font-medium text-neutral-500 hover:text-neutral-700",
+              "h-7 w-fit min-w-0 max-w-full gap-1.5 text-xs font-medium text-neutral-500 hover:text-neutral-700",
+              showPreview && "w-full justify-start",
               pinned
                 ? "rounded-full border border-neutral-200 bg-white px-2.5 shadow-sm"
                 : "px-1.5"
@@ -233,29 +240,30 @@ export function AssistantStatus({
             disabled={!canToggle}
           >
             <span className="relative w-5 h-5 shrink-0 flex items-center justify-center">
-              {/* Orbs mount only while the row is live — each one is a
-               *  few hundred infinitely-animating spans, and opacity:0
-               *  does NOT stop the animation engine, so a long session
-               *  was paying N_rows × 3 × infinite keyframes forever. */}
-              {live && (
-                [
-                  ["reply", "B3"],
-                  ["thinking", "S1"],
-                  ["tools", "S3"],
-                  ["compacting", "S2"],
-                ] as const
-              ).map(([item, variant]) => (
-                <span
-                  key={item}
-                  aria-hidden={mode !== item}
-                  className={cn(
-                    "absolute inset-0 flex items-center justify-center transition-opacity duration-300 ease-out",
-                    mode === item ? "opacity-100" : "opacity-0 pointer-events-none"
-                  )}
-                >
-                  <Orb label={label} variant={variant} size={14} className="text-neutral-800" />
-                </span>
-              ))}
+              {/* Only the ACTIVE mode's orb mounts, and only while the row is
+               *  live. The old stack kept all four mounted and faded three to
+               *  opacity:0 — but opacity:0 does NOT stop the animation engine,
+               *  so every live row ran ~4× the infinite keyframes (and the
+               *  blur filters among them repaint on the main thread). The
+               *  orb fades in on mount instead of crossfading. */}
+              {live &&
+                (
+                  [
+                    ["reply", "B3"],
+                    ["thinking", "S1"],
+                    ["tools", "S3"],
+                    ["compacting", "S2"],
+                  ] as const
+                )
+                  .filter(([item]) => item === mode)
+                  .map(([item, variant]) => (
+                    <span
+                      key={item}
+                      className="absolute inset-0 flex items-center justify-center animate-in fade-in duration-300"
+                    >
+                      <Orb label={label} variant={variant} size={14} className="text-neutral-800" />
+                    </span>
+                  ))}
               <span
                 className={cn(
                   "absolute inset-0 flex items-center justify-center transition-opacity duration-300 ease-out",
@@ -270,7 +278,7 @@ export function AssistantStatus({
                 />
               </span>
             </span>
-            <span className="relative">
+            <span className="relative shrink-0">
               {(
                 [
                   "正在回复",
@@ -322,10 +330,18 @@ export function AssistantStatus({
             ) : elapsedMs != null && elapsedMs >= 1000 ? (
               /* Replayed settled row — no clock ever ran this session, but
                * the persisted span still names how long it took. */
-              <span className="whitespace-nowrap text-neutral-500 font-normal tabular-nums">
+              <span className="shrink-0 whitespace-nowrap text-neutral-500 font-normal tabular-nums">
                 · {formatElapsed(elapsedMs)}
               </span>
             ) : null}
+            {showPreview && (
+              <>
+                <span aria-hidden="true" className="shrink-0 font-normal">·</span>
+                <span className="min-w-0 flex-1 truncate text-left font-normal dark:text-neutral-600">
+                  {previewText}
+                </span>
+              </>
+            )}
           </Button>
         </CollapsibleTrigger>
       </div>
@@ -335,7 +351,6 @@ export function AssistantStatus({
         <ThinkingBody
           text={thinkingText}
           animating={mode === "thinking"}
-          open={open}
         />
       ) : (
         /* Non-thinking body (the tools row's chip list) — same Radix

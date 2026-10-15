@@ -13,7 +13,6 @@ import {
 import {
   ChevronsUpDown,
   Check,
-  Brain,
   Bot,
   FileText,
   Shield,
@@ -25,7 +24,6 @@ import {
   Route,
   Flag,
 } from "@keyline-icons/react";
-import { cn } from "@/lib/utils";
 
 // Each mode carries its own icon so the trigger and the menu tell the modes
 // apart at a glance, instead of one shield for every choice.
@@ -46,30 +44,11 @@ export const AGENT_MODES = [
   { value: "office", label: "工作", desc: "Word / Excel / PPT — 创建与编辑 Office 文档", icon: FileText },
 ] as const;
 
-export const THINKING_LEVELS = [
-  { value: "off", label: "关闭思考", desc: "不使用推理计算" },
-  { value: "minimal", label: "最小推理", desc: "最轻量推理深度" },
-  { value: "low", label: "轻度思考", desc: "快速简短的分析" },
-  { value: "medium", label: "中等思考", desc: "标准平衡思考" },
-  { value: "high", label: "深度思考", desc: "深度推演与设计" },
-  { value: "xhigh", label: "超高思考", desc: "超深层推演" },
-  { value: "max", label: "最大推理", desc: "最大算力深度推演" },
-] as const;
-
-/** Suffix shown after a level's label — the raw wire value, or
- *  `value→mapped` when the active model's thinking_level_map rewrites it
- *  (e.g. low→max means picking low sends `max` to the model). */
-export function thinkingSuffix(value: string, map?: Record<string, string | null>): string {
-  const mapped = map?.[value];
-  return typeof mapped === "string" && mapped && mapped !== value
-    ? `${value}→${mapped}`
-    : value;
-}
-
 /** The model picker's primary label: the `name` set in settings, falling back
 
-/** The composer toolbar's left-side pickers: agent mode, permission mode,
- * and (when the model reasons) thinking level. */
+/** The composer toolbar's left-side pickers: agent mode and permission mode.
+ *  The thinking level is NOT here — it lives in the model picker on the right,
+ *  so one menu chooses both what answers and how hard it thinks. */
 export function ModePicker({
   agentMode,
   agentModeLabel,
@@ -78,12 +57,6 @@ export function ModePicker({
   mode,
   modeLabel,
   switchMode,
-  hasReasoning,
-  activeThinkingLevel,
-  currentThinkingLabel,
-  thinkingMap,
-  effectiveThinkingLevels,
-  onSelectThinkingLevel,
 }: {
   agentMode: string;
   agentModeLabel: string;
@@ -95,12 +68,6 @@ export function ModePicker({
   mode: string;
   modeLabel: string;
   switchMode: (m: string) => Promise<void>;
-  hasReasoning: boolean;
-  activeThinkingLevel: string;
-  currentThinkingLabel: string;
-  thinkingMap?: Record<string, string | null>;
-  effectiveThinkingLevels: readonly { value: string; label: string; desc: string }[];
-  onSelectThinkingLevel: (level: string) => Promise<void>;
 }) {
   const ModeIcon = PERMISSION_MODES.find((m) => m.value === mode)?.icon ?? Shield;
   const AgentModeIcon = AGENT_MODES.find((m) => m.value === agentMode)?.icon ?? Hammer;
@@ -199,59 +166,6 @@ export function ModePicker({
         </DropdownMenu>
         )}
 
-        {hasReasoning && effectiveThinkingLevels.length > 0 && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-              aria-label={`思考推理强度: ${currentThinkingLabel}`}
-              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
-              >
-                <Brain
-                  className={cn(
-                    "h-3.5 w-3.5 shrink-0",
-                    activeThinkingLevel === "off"
-                      ? "text-neutral-500"
-                      : "text-purple-600 dark:text-purple-400",
-                  )}
-                />
-                <span className="truncate max-w-[140px]">
-                  {currentThinkingLabel}
-                </span>
-                <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top" className="w-48">
-              <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
-                思考推理强度
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                {effectiveThinkingLevels.map((lvl) => {
-                  const active = lvl.value === activeThinkingLevel;
-                  return (
-                    <DropdownMenuItem
-                      key={lvl.value}
-                      onClick={() => void onSelectThinkingLevel(lvl.value)}
-                      className="flex items-center justify-between text-xs py-2 cursor-pointer"
-                    >
-                      <div className="flex flex-col gap-0.5 min-w-0 pr-2">
-                        <span className="font-medium text-neutral-800">
-                          {lvl.label}（{thinkingSuffix(lvl.value, thinkingMap)}）
-                        </span>
-                        <span className="text-[10.5px] text-neutral-500 truncate">
-                          {lvl.desc}
-                        </span>
-                      </div>
-                      {active && (
-                        <Check className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
-                      )}
-                    </DropdownMenuItem>
-                  );
-                })}
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
     </>
   );
 }

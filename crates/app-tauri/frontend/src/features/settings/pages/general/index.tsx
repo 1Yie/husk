@@ -25,6 +25,7 @@ import {
   SettingsSection,
   type SettingsCardOption,
 } from "@/features/settings/components";
+import { THINKING_LEVELS } from "@/lib/thinking";
 import {
   getDefaultPrefs,
   setDefaultPrefs,
@@ -71,38 +72,30 @@ const PERMISSION_OPTIONS: SettingsCardOption[] = [
   },
 ];
 
-const THINKING_OPTIONS = [
-  { value: "off", label: "关闭思考（off）", desc: "不使用额外推理过程，响应最快" },
-  { value: "minimal", label: "最小推理（minimal）", desc: "最轻量推理深度" },
-  { value: "low", label: "轻度思考（low）", desc: "进行快速简短的分析" },
-  { value: "medium", label: "中等思考（medium）", desc: "平衡速度与分析质量" },
-  { value: "high", label: "深度思考（high）", desc: "深层推演架构与复杂逻辑" },
-  { value: "xhigh", label: "超高思考（xhigh）", desc: "超深层推演，慢而透彻" },
-  { value: "max", label: "最大推理（max）", desc: "全速深度推理，解决高难任务" },
-];
+const THINKING_OPTIONS = THINKING_LEVELS.map((l) => ({ value: l.value, label: l.label }));
 
 const AGENT_MODE_OPTIONS = [
-  { value: "build", label: "构建", desc: "完整工具集 — 读写、执行、验证" },
-  { value: "plan", label: "计划", desc: "只读分析，产出实施方案，批准后执行" },
-  { value: "goal", label: "目标", desc: "自主推进直到目标达成或明确受阻" },
+  { value: "build", label: "构建" },
+  { value: "plan", label: "计划" },
+  { value: "goal", label: "目标" },
 ];
 
 const WORKSPACE_MODE_OPTIONS = [
-  { value: "last", label: "上次使用", desc: "继续上次退出时的模式" },
-  { value: "build", label: "编程", desc: "上次打开的项目" },
-  { value: "office", label: "工作", desc: "Word / Excel / PPT 办公空间" },
+  { value: "last", label: "上次使用" },
+  { value: "build", label: "编程" },
+  { value: "office", label: "工作" },
 ];
 
 const COMPACT_AT_OPTIONS = [
-  { value: "70", label: "70%", desc: "更早压缩，给后续轮次留足余量" },
-  { value: "80", label: "80%", desc: "默认平衡值" },
-  { value: "90", label: "90%", desc: "尽量保留原始上下文，压缩更晚" },
+  { value: "70", label: "70%" },
+  { value: "80", label: "80%" },
+  { value: "90", label: "90%" },
 ];
 
 const SANDBOX_NETWORK_OPTIONS = [
-  { value: "auto", label: "自动", desc: "按命令审计结果放行网络（默认）" },
-  { value: "allow", label: "始终允许", desc: "所有沙盒命令均可联网" },
-  { value: "deny", label: "始终禁止", desc: "强制断开所有沙盒命令的网络" },
+  { value: "auto", label: "自动" },
+  { value: "allow", label: "始终允许" },
+  { value: "deny", label: "始终禁止" },
 ];
 
 const SANDBOX_MEMORY_OPTIONS = [
@@ -129,7 +122,7 @@ export function GeneralPane() {
   const [workspaceMode, setWorkspaceMode] = useState("last");
   const [compactAt, setCompactAt] = useState("80");
   const [providers, setProviders] = useState<Record<string, any>>({});
-  const [sandboxEnabled, setSandboxEnabled] = useState(true);
+  const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [blueprintEnabled, setBlueprintEnabled] = useState(true);
   const [sandboxNetwork, setSandboxNetwork] = useState("auto");
   const [sandboxMem, setSandboxMem] = useState("default");
@@ -147,8 +140,8 @@ export function GeneralPane() {
         if (prefs.agent_mode) setAgentMode(prefs.agent_mode);
         if (prefs.default_workspace_mode) setWorkspaceMode(prefs.default_workspace_mode);
         if (prefs.compact_at) setCompactAt(String(Math.round(prefs.compact_at * 100)));
-        // absent = default-on — only an explicit false flips it off.
-        setSandboxEnabled(prefs.sandbox_enabled !== false);
+        // absent = default-off — only an explicit true turns it on.
+        setSandboxEnabled(prefs.sandbox_enabled === true);
         setBlueprintEnabled(prefs.blueprint_enabled !== false);
         if (prefs.sandbox_network) setSandboxNetwork(prefs.sandbox_network);
         setSandboxMem(
@@ -218,7 +211,6 @@ export function GeneralPane() {
           <KvListContent>
             <KvRow
               label="默认进入"
-              description="启动应用时打开的模式（下次启动生效）"
               icon={<FileText className="h-4 w-4" />}
             >
               <SettingSelect
@@ -228,16 +220,11 @@ export function GeneralPane() {
                   void save({ default_workspace_mode: v });
                 }}
                 placeholder="选择启动模式"
-                options={WORKSPACE_MODE_OPTIONS.map((t) => ({
-                  value: t.value,
-                  label: t.label,
-                  description: t.desc,
-                }))}
+                options={WORKSPACE_MODE_OPTIONS}
               />
             </KvRow>
             <KvRow
               label="默认代理模式"
-              description="新会话启动时的代理模式"
               icon={<Bot className="h-4 w-4" />}
             >
               <SettingSelect
@@ -247,16 +234,11 @@ export function GeneralPane() {
                   void save({ agent_mode: v });
                 }}
                 placeholder="选择代理模式"
-                options={AGENT_MODE_OPTIONS.map((t) => ({
-                  value: t.value,
-                  label: t.label,
-                  description: t.desc,
-                }))}
+                options={AGENT_MODE_OPTIONS}
               />
             </KvRow>
             <KvRow
               label="默认模型"
-              description="新会话启动时使用的模型"
               icon={<Cpu className="h-4 w-4" />}
             >
               <SettingSelect
@@ -275,7 +257,6 @@ export function GeneralPane() {
             </KvRow>
             <KvRow
               label="默认思考深度"
-              description="新会话启动时的默认推理思考深度"
               icon={<Sparkles className="h-4 w-4" />}
             >
               <SettingSelect
@@ -285,16 +266,11 @@ export function GeneralPane() {
                   void save({ thinking_level: v });
                 }}
                 placeholder="选择思考深度"
-                options={THINKING_OPTIONS.map((t) => ({
-                  value: t.value,
-                  label: t.label,
-                  description: t.desc,
-                }))}
+                options={THINKING_OPTIONS}
               />
             </KvRow>
             <KvRow
               label="上下文压缩阈值"
-              description="历史占用达到上下文窗口的该比例时触发自动压缩"
               icon={<Archive className="h-4 w-4" />}
             >
               <SettingSelect
@@ -304,16 +280,11 @@ export function GeneralPane() {
                   void save({ compact_at: Number(v) / 100 });
                 }}
                 placeholder="选择阈值"
-                options={COMPACT_AT_OPTIONS.map((t) => ({
-                  value: t.value,
-                  label: t.label,
-                  description: t.desc,
-                }))}
+                options={COMPACT_AT_OPTIONS}
               />
             </KvRow>
             <KvRow
               label="架构蓝图"
-              description="项目里有架构说明文件时，让 AI 按说明修改代码，并检查是否违反约定"
               icon={<Layers className="h-4 w-4" />}
             >
               <Switch
@@ -345,7 +316,6 @@ export function GeneralPane() {
             </KvRow>
             <KvRow
               label="网络访问"
-              description={sandboxEnabled ? "沙盒内命令的网络放行策略" : undefined}
               icon={<Globe className="h-4 w-4" />}
             >
               <SettingSelect
@@ -355,16 +325,11 @@ export function GeneralPane() {
                   void save({ sandbox_network: v as "auto" | "allow" | "deny" });
                 }}
                 placeholder="选择网络策略"
-                options={SANDBOX_NETWORK_OPTIONS.map((t) => ({
-                  value: t.value,
-                  label: t.label,
-                  description: t.desc,
-                }))}
+                options={SANDBOX_NETWORK_OPTIONS}
               />
             </KvRow>
             <KvRow
               label="内存上限"
-              description="单条命令的常驻内存上限"
               icon={<Cpu className="h-4 w-4" />}
             >
               <SettingSelect
@@ -379,7 +344,6 @@ export function GeneralPane() {
             </KvRow>
             <KvRow
               label="进程数上限"
-              description="单条命令可派生的最大进程数"
               icon={<Activity className="h-4 w-4" />}
             >
               <SettingSelect

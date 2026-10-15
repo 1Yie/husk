@@ -13,7 +13,7 @@
 import { create } from "zustand";
 import * as agent from "@/lib/agent-ipc";
 import type { AgentEventEnvelope } from "@/types";
-import { applyEvent } from "@/features/chat/hooks/apply-event";
+import { applyEvents } from "@/features/chat/hooks/apply-event";
 import { emptyView, type SessionView, type StreamItem } from "@/features/chat/hooks/stream-view";
 import { notify } from "@/lib/notifications";
 
@@ -141,6 +141,15 @@ export function useActiveView(): SessionView {
   );
 }
 
+/** Subscribe to a field of the foreground view without rerendering for
+ * unrelated streaming text. Selectors should return stable references or
+ * primitives, just like a regular Zustand selector. */
+export function useActiveViewSelector<T>(select: (view: SessionView) => T): T {
+  return useAgentStore(
+    (s) => select(s.views.get(viewKey(s.workspaceRoot, s.activeId)) ?? EMPTY_VIEW)
+  );
+}
+
 /** Whether the foreground session has older history to pull. A boolean, so a
  *  consumer re-renders when it flips, not on every delta. */
 export function useHasMoreHistory(): boolean {
@@ -176,6 +185,13 @@ export function activeViewNow(): SessionView {
 
 /** Git + model chips: refreshed on session switch and at every streaming edge
  *  (a turn is the main thing that dirties the tree and may switch the model). */
+/** Only the newest `getModelInfo` may write the chips. Session switches and
+ *  streaming edges issue overlapping reads, and IPC resolves in completion
+ *  order — a slow response for the session just left would otherwise pin the
+ *  header to the previous model's window and price, which is the same A→B→A
+ *  flip the composer picker already guards against with its own stamp. */
+let chipsSeq = 0;
+
 /** Exported for the composer: `setModel` is a fire-and-forget session command
  *  with no event to key off, so the picker triggers the refresh itself. */
 export function refreshAgentChips() {
@@ -183,28 +199,37 @@ export function refreshAgentChips() {
     .getGitInfo()
     .then((g) => useAgentStore.setState({ gitInfo: g }))
     .catch(() => {});
+  const seq = ++chipsSeq;
   void agent
     .getModelInfo()
     .then((info) => {
-      if (!info) return;
+      // Stale: a newer read was issued after this one, so this response
+      // describes a session that is no longer in front.
+      if (!info || seq !== chipsSeq) return;
       const cur =
         info.models.find((m) => m.model === info.active_model && m.provider === info.active_provider) ??
         info.models.find((m) => m.model === info.active_model);
-      useAgentStore.setState((s) => ({
-        ctxWindow: cur?.context_window ?? s.ctxWindow,
+      useAgentStore.setState({
+        // A model with no declared window (a bare id in `config.toml`, or one
+        // whose provider was since removed) must NOT inherit the previous
+        // model's — that is what pinned the header to a stale window while the
+        // session actually ran something else. Clearing lets `TitleBar` fall
+        // back to THIS session's own recorded usage.
+        ctxWindow: cur?.context_window ?? 0,
         modelCost: cur?.cost,
-      }));
+      });
     })
     .catch(() => {});
 }
 
-let installed = false;
+let disposeStore: (() => void) | null = null;
 
-/** Install the kernel subscription and the chip refreshes. Idempotent — call
- *  once from the app shell, before React mounts. */
-export function initAgentStore() {
-  if (installed) return;
-  installed = true;
+/** Install the kernel subscription and chip refreshes once. Returning the
+ * disposer lets app teardown/HMR and integration tests release every listener. */
+export function initAgentStore(): () => void {
+  if (disposeStore) return disposeStore;
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
 
   // Coalesce the kernel stream into ~60 fps batches: the engine already merges
   // deltas (~120 chars/event), but turn-end flushes and tool transitions land
@@ -217,9 +242,16 @@ export function initAgentStore() {
     const batch = queue.splice(0, queue.length);
     const s = useAgentStore.getState();
     const next = new Map(s.views);
+    // Group by session so each view copies its history once per batch.
+    const byView = new Map<string, AgentEventEnvelope["event"][]>();
     for (const { session, event, root } of batch) {
       const k = viewKey(root ?? "", session);
-      next.set(k, applyEvent(next.get(k) ?? emptyView(), event));
+      const g = byView.get(k);
+      if (g) g.push(event);
+      else byView.set(k, [event]);
+    }
+    for (const [k, events] of byView) {
+      next.set(k, applyEvents(next.get(k) ?? emptyView(), events));
     }
     // NOTE: `activeId` is deliberately NOT driven by events — otherwise a
     // background session's traffic yanks the visible session, and the
@@ -231,6 +263,7 @@ export function initAgentStore() {
   };
 
   void agent.onAgentEvent((env) => {
+    if (disposed) return;
     queue.push(env);
     const ev = env.event;
     if (typeof ev === "object" && "StateChanged" in ev) {
@@ -246,6 +279,9 @@ export function initAgentStore() {
       }
     }
     if (timer == null) timer = setTimeout(flush, 16);
+  }).then((stop) => {
+    if (disposed) stop();
+    else unlisten = stop;
   });
 
   // Chips follow the foreground session and its streaming edges. Watched here
@@ -260,10 +296,22 @@ export function initAgentStore() {
       refreshAgentChips();
     }
   };
-  useAgentStore.subscribe(syncChips);
+  const unsubscribe = useAgentStore.subscribe(syncChips);
   syncChips();
 
   // A settings save broadcasts CONFIG_CHANGED_EVENT — re-read so a renamed /
   // repriced / re-windowed model shows immediately.
   window.addEventListener(agent.CONFIG_CHANGED_EVENT, refreshAgentChips);
+  disposeStore = () => {
+    if (disposed) return;
+    disposed = true;
+    if (timer !== null) clearTimeout(timer);
+    queue.length = 0;
+    unlisten?.();
+    unsubscribe();
+    window.removeEventListener(agent.CONFIG_CHANGED_EVENT, refreshAgentChips);
+    ++chipsSeq; // pending model reads from a disposed subscription are stale
+    disposeStore = null;
+  };
+  return disposeStore;
 }

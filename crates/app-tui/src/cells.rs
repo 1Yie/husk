@@ -17,12 +17,20 @@ fn dim(s: impl Into<String>) -> Span<'static> {
 pub enum Cell {
     /// User turn — `❯ text` on a subtle highlight row, `h:MM AM` stamped
     /// at the right edge (pi-style turn boundary).
-    User { text: String, time: String },
+    User {
+        text: String,
+        time: String,
+    },
     /// Assistant reply — markdown body + right-aligned timestamp on the
     /// last line when there's room.
-    Agent { md: String, time: String },
+    Agent {
+        md: String,
+        time: String,
+    },
     /// `Worked for Ns` — turn-elapsed footer after the reply lands.
-    Worked { secs: f32 },
+    Worked {
+        secs: f32,
+    },
     Tool {
         name: String,
         preview: String,
@@ -164,7 +172,9 @@ impl Cell {
             ))],
             Cell::Note(m) => vec![Line::from(dim(format!("— {m} —")))],
             Cell::Reasoning(text) => {
-                let style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+                let style = Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC);
                 let mut out: Vec<Line<'static>> = text
                     .lines()
                     .map(|l| Line::from(Span::styled(format!("  {l}"), style)))

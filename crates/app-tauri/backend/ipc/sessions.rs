@@ -100,8 +100,9 @@ fn agent_session_inner(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let (history, total, turns, turn_from) =
-            mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
+        let (history, total, turns, turn_from) = mgr
+            .store_history_page(mgr.active_id, None, HISTORY_PAGE)
+            .map_err(|e| e.to_string())?;
         return Ok(serde_json::json!({
             "root": mgr.workspace_root.to_string_lossy(),
             "name": name,
@@ -134,7 +135,11 @@ fn agent_session_inner(
             let m = state.lock().map_err(|e| e.to_string())?;
             m.workspace_root.clone()
         };
-        husk_host::session_manager::SessionManager::remove_plugin(&root, &id, &crate::kernel::app_paths())?;
+        husk_host::session_manager::SessionManager::remove_plugin(
+            &root,
+            &id,
+            &crate::kernel::app_paths(),
+        )?;
         return Ok(serde_json::json!({ "success": true }));
     }
     // Artifact actions for the office dock — open / reveal / save-as on a
@@ -183,6 +188,33 @@ fn agent_session_inner(
     }
     // Save-as is a modal dialog → runs through `dialog_on_main`, kernel
     // mutex dropped between the root read and the copy (see the header).
+    //「导出记录」— render the transcript under the lock, then release it
+    // before the save dialog (same rule as `save_artifact`: never hold the
+    // kernel mutex across a main-thread dialog).
+    if op == "export" {
+        let id = id.ok_or("export needs id")?;
+        let (title, markdown) = {
+            let m = state.lock().map_err(|e| e.to_string())?;
+            m.export_session_markdown(path.as_deref(), id)
+                .ok_or("会话还没有可导出的记录")?
+        };
+        let name = format!("{}.md", export_file_stem(&title));
+        let Some(target) = dialog_on_main(&app, move || {
+            rfd::FileDialog::new()
+                .set_title("导出会话记录")
+                .set_file_name(&name)
+                .add_filter("Markdown", &["md"])
+                .save_file()
+        })
+        .flatten() else {
+            return Ok(serde_json::json!({ "saved": false }));
+        };
+        std::fs::write(&target, markdown).map_err(|e| format!("export: {e}"))?;
+        return Ok(serde_json::json!({
+            "saved": true,
+            "path": target.to_string_lossy(),
+        }));
+    }
     if op == "save_artifact" {
         let rel = payload
             .as_ref()
@@ -295,7 +327,9 @@ fn agent_session_inner(
             // Paged: only the newest slice mounts — older pages stream in
             // on scroll-up via `history_page`. `history_total` lets the
             // webview compute `loadedStart = total - history.len()`.
-            let (history, total, turns, turn_from) = mgr.store_history_page(id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
+            let (history, total, turns, turn_from) = mgr
+                .store_history_page(id, None, HISTORY_PAGE)
+                .map_err(|e| e.to_string())?;
             // `usage` is the persisted last-turn meter — seeds the header
             // stats so a reopened session doesn't read 0/… until the next
             // turn's `Usage` event.
@@ -327,8 +361,9 @@ fn agent_session_inner(
                 .and_then(|p| p.get("before"))
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
-            let (history, total, turns, turn_from) =
-                mgr.store_history_page(id, before, HISTORY_PAGE).map_err(|e| e.to_string())?;
+            let (history, total, turns, turn_from) = mgr
+                .store_history_page(id, before, HISTORY_PAGE)
+                .map_err(|e| e.to_string())?;
             Ok(
                 serde_json::json!({ "history": history, "history_total": total, "turn_total": turns, "turn_offset": turn_from }),
             )
@@ -339,8 +374,9 @@ fn agent_session_inner(
         "delete" => {
             let id = id.ok_or("delete needs id")?;
             mgr.delete_session(id);
-            let (history, total, turns, turn_from) =
-                mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
+            let (history, total, turns, turn_from) = mgr
+                .store_history_page(mgr.active_id, None, HISTORY_PAGE)
+                .map_err(|e| e.to_string())?;
             let usage = mgr.store_usage(mgr.active_id);
             Ok(
                 serde_json::json!({"active": mgr.active_id, "history": history, "history_total": total, "turn_total": turns,
@@ -353,8 +389,9 @@ fn agent_session_inner(
             let id = id.ok_or("fork needs id")?;
             match mgr.fork_session(id) {
                 Some(new_id) => {
-                    let (history, total, turns, turn_from) =
-                        mgr.store_history_page(new_id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
+                    let (history, total, turns, turn_from) = mgr
+                        .store_history_page(new_id, None, HISTORY_PAGE)
+                        .map_err(|e| e.to_string())?;
                     Ok(serde_json::json!({
                             "active": mgr.active_id,
                             "id": new_id,
@@ -369,9 +406,11 @@ fn agent_session_inner(
                 None => Err("session has no history to fork yet".into()),
             }
         }
-        // `pin` flips a session's pinned flag in the index — the sidebar
-        // re-reads `projects`/`list` after the call, so nothing else needs
-        // returning beyond the flag itself.
+        // Session meta edits — `pin` (workspace), `pin_global`, `archive`,
+        // `rename`. Each flips a field in the session's index row; `path`
+        // names the workspace (absent = the active one), so rows of every
+        // listed project are editable. The sidebar re-reads `projects` after
+        // the call, so only the outcome flag comes back.
         "pin" => {
             let id = id.ok_or("pin needs id")?;
             let pinned = payload
@@ -379,8 +418,46 @@ fn agent_session_inner(
                 .and_then(|p| p.get("pinned"))
                 .and_then(|v| v.as_bool())
                 .ok_or("pin needs payload.pinned")?;
-            let ok = mgr.pin_session(id, pinned).map_err(|e| e.to_string())?;
+            let ok = mgr
+                .pin_session(path.as_deref(), id, pinned)
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "pinned": ok }))
+        }
+        "pin_global" => {
+            let id = id.ok_or("pin_global needs id")?;
+            let pinned = payload
+                .as_ref()
+                .and_then(|p| p.get("pinned"))
+                .and_then(|v| v.as_bool())
+                .ok_or("pin_global needs payload.pinned")?;
+            let ok = mgr
+                .pin_session_global(path.as_deref(), id, pinned)
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "pinned": ok }))
+        }
+        "archive" => {
+            let id = id.ok_or("archive needs id")?;
+            let archived = payload
+                .as_ref()
+                .and_then(|p| p.get("archived"))
+                .and_then(|v| v.as_bool())
+                .ok_or("archive needs payload.archived")?;
+            let ok = mgr
+                .archive_session(path.as_deref(), id, archived)
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "archived": ok }))
+        }
+        "rename" => {
+            let id = id.ok_or("rename needs id")?;
+            let title = payload
+                .as_ref()
+                .and_then(|p| p.get("title"))
+                .and_then(|v| v.as_str())
+                .ok_or("rename needs payload.title")?;
+            let ok = mgr
+                .rename_session(path.as_deref(), id, title)
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "renamed": ok }))
         }
         "workspace_info" => {
             let name = if mgr.workspace_active {
@@ -444,8 +521,9 @@ fn agent_session_inner(
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let (history, total, turns, turn_from) =
-                mgr.store_history_page(mgr.active_id, None, HISTORY_PAGE).map_err(|e| e.to_string())?;
+            let (history, total, turns, turn_from) = mgr
+                .store_history_page(mgr.active_id, None, HISTORY_PAGE)
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({
                 "root": mgr.workspace_root.to_string_lossy(),
                 "name": name,
@@ -1133,7 +1211,8 @@ fn agent_session_inner(
                 Ok(c) => (c, None),
                 Err(e) => (agent_llm::AppConfig::default(), Some(e.to_string())),
             };
-            let mut config_val = serde_json::to_value(&cfg).unwrap_or_else(|_| serde_json::json!({}));
+            let mut config_val =
+                serde_json::to_value(&cfg).unwrap_or_else(|_| serde_json::json!({}));
             mask_config_keys(&mut config_val);
             Ok(serde_json::json!({
                 "path": path.to_string_lossy().to_string(),
@@ -1477,6 +1556,28 @@ fn resolve_workspace_path(root: &std::path::Path, rel: &str) -> Result<std::path
         return Err("path escapes workspace".into());
     }
     Ok(canon)
+}
+
+/// A session title as a file name: path separators and control characters
+/// out, length capped, never empty.
+fn export_file_stem(title: &str) -> String {
+    let stem: String = title
+        .chars()
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .take(60)
+        .collect();
+    let stem = stem.trim().trim_matches('.').to_string();
+    if stem.is_empty() {
+        "会话记录".into()
+    } else {
+        stem
+    }
 }
 
 fn save_download(
@@ -1993,5 +2094,10 @@ pub async fn mcp_probe(
         let m = state.0.lock().map_err(|e| e.to_string())?;
         m.workspace_root.clone()
     };
-    Ok(husk_host::session_manager::SessionManager::mcp_probe(&root, &id, &crate::kernel::app_paths()).await)
+    Ok(husk_host::session_manager::SessionManager::mcp_probe(
+        &root,
+        &id,
+        &crate::kernel::app_paths(),
+    )
+    .await)
 }

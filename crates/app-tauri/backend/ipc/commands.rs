@@ -267,8 +267,8 @@ fn agent_cmd_inner(
     // Composer settings are PER-SESSION: the command goes only to the active
     // actor, which applies it to its own engine and persists it into its own
     // SessionMeta. They deliberately do NOT touch the manager-level workspace
-    // default (`mgr.set_*`/`persist_prefs`) — that's what used to leak one
-    // session's model/mode/level into every other session's display & spawn.
+    // default (`mgr.set_*`) — that's what used to leak one session's
+    // model/mode/level into every other session's display & spawn.
     // `SetPermissionMode`/`SetAgentMode` still write the live handle slots here
     // so a mid-turn swap applies at the next dispatch rather than after the turn.
     if let UiCommand::SetPermissionMode { mode } = &cmd {
@@ -279,7 +279,9 @@ fn agent_cmd_inner(
     }
     if let UiCommand::SetAgentMode { mode } = &cmd {
         if let Ok(mut slot) = agent_mode.write() {
-            *slot = husk_host::mode::AgentMode::from_str(mode).as_str().to_string();
+            *slot = husk_host::mode::AgentMode::from_str(mode)
+                .as_str()
+                .to_string();
         }
     }
     // Per-session tool whitelisting (computer-use's "本会话允许"): write

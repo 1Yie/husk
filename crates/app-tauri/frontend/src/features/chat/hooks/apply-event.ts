@@ -263,7 +263,32 @@ export function applyEvent(
   v: SessionView,
   ev: AgentEventEnvelope["event"]
 ): SessionView {
-  const items = [...v.items];
+  return applyEventInto(v, ev, [...v.items]);
+}
+
+/** Fold a whole batch into one view with a single `items` copy — the
+ *  per-event `[...v.items]` made a burst cost O(events × history). Branches
+ *  that return a different array (or the untouched `v.items`) hand it back
+ *  un-owned, so it is re-copied before the next event may mutate it. */
+export function applyEvents(
+  v: SessionView,
+  events: AgentEventEnvelope["event"][]
+): SessionView {
+  if (events.length === 0) return v;
+  let owned = [...v.items];
+  let cur = v;
+  for (const ev of events) {
+    cur = applyEventInto(cur, ev, owned);
+    if (cur.items !== owned) owned = [...cur.items];
+  }
+  return cur.items === owned ? cur : { ...cur, items: owned };
+}
+
+function applyEventInto(
+  v: SessionView,
+  ev: AgentEventEnvelope["event"],
+  items: SessionView["items"]
+): SessionView {
   const last = () => items[items.length - 1];
 
   if (ev === "TurnRetry") {

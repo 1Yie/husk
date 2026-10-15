@@ -13,13 +13,43 @@ import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
 // `modal` is removed from the public props: a modal menu makes Radix scroll-lock
 // <body> (scrollbar disappears, layout shifts), and every menu here is modeless.
+//
+// The menu also shares its trigger element with the content (see
+// `DropdownMenuContent`): Radix knows it, but doesn't expose it, and the DOM
+// link (`aria-labelledby` → trigger id) breaks whenever the trigger brings its
+// own `id`.
+const TriggerRefContext = React.createContext<React.MutableRefObject<HTMLElement | null> | null>(null);
+
 const DropdownMenu = (
   props: Omit<
     React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Root>,
     "modal"
   >
-) => <DropdownMenuPrimitive.Root modal={false} {...props} />;
-const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
+) => {
+  const triggerRef = React.useRef<HTMLElement | null>(null);
+  return (
+    <TriggerRefContext.Provider value={triggerRef}>
+      <DropdownMenuPrimitive.Root modal={false} {...props} />
+    </TriggerRefContext.Provider>
+  );
+};
+
+const DropdownMenuTrigger = React.forwardRef<
+  React.ElementRef<typeof DropdownMenuPrimitive.Trigger>,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Trigger>
+>((props, ref) => {
+  const triggerRef = React.useContext(TriggerRefContext);
+  const composedRef = React.useCallback(
+    (node: HTMLButtonElement | null) => {
+      if (triggerRef) triggerRef.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref) ref.current = node;
+    },
+    [triggerRef, ref],
+  );
+  return <DropdownMenuPrimitive.Trigger ref={composedRef} {...props} />;
+});
+DropdownMenuTrigger.displayName = DropdownMenuPrimitive.Trigger.displayName;
 const DropdownMenuGroup = DropdownMenuPrimitive.Group;
 const DropdownMenuPortal = DropdownMenuPrimitive.Portal;
 const DropdownMenuSub = DropdownMenuPrimitive.Sub;
@@ -75,13 +105,28 @@ DropdownMenuSubContent.displayName =
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, onCloseAutoFocus, ...props }, ref) => {
+>(({ className, sideOffset = 4, onCloseAutoFocus, onPointerDownOutside, ...props }, ref) => {
   const { placed, setRef } = usePopperPlacedRef(ref);
+  // The trigger toggles on pointerdown. While this content is still mounted —
+  // either open, or playing its ~100ms exit animation — the same pointerdown
+  // also reaches its DismissableLayer as an "outside" press (the trigger lives
+  // outside the portal), which dismisses the menu the trigger just toggled
+  // open: closing then re-clicking within the animation always did nothing,
+  // so the user had to click twice. Popover exempts its trigger the same way;
+  // Radix's DropdownMenu does not. A press on the trigger is never "outside".
+  const triggerRef = React.useContext(TriggerRefContext);
   return (
   <DropdownMenuPrimitive.Portal>
     <DropdownMenuPrimitive.Content
       ref={setRef}
       sideOffset={sideOffset}
+      onPointerDownOutside={(event) => {
+        const target = event.target as Node | null;
+        if (target && triggerRef?.current?.contains(target)) {
+          event.preventDefault();
+        }
+        onPointerDownOutside?.(event);
+      }}
       onCloseAutoFocus={(e) => {
         e.preventDefault();
         onCloseAutoFocus?.(e);

@@ -7,7 +7,7 @@ import {
   formatElapsed,
 } from "@/features/chat/components/assistant-status/index";
 import { ChatSkeleton, OlderPageSkeleton } from "@/features/chat/components/chat-skeleton/index";
-import { ToolChips, type ToolChipRow } from "@/features/chat/components/tool-chips/index";
+import { ToolChips, toolActivityPreview, type ToolChipRow } from "@/features/chat/components/tool-chips/index";
 import {
   Check,
   Copy,
@@ -23,6 +23,7 @@ import {
 import { chatMarkdownComponents } from "@/features/chat/components/chat-stream/markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { ChatTurnRail, type RailMark } from "@/features/chat/components/chat-stream/chat-turn-rail";
+import { railHistoryBoundary } from "./rail-history";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -1131,6 +1132,7 @@ const ChatTurn = memo(function ChatTurn({
                     startedAt={step.startedAt}
                     elapsedMs={elapsedMs}
                     doneLabel={`${step.rows.length} 次工具调用`}
+                    preview={toolActivityPreview(step.rows)}
                   >
                     <ToolChips
                       rows={step.rows}
@@ -1527,24 +1529,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     // mark per turn, so one row per unloaded turn made the unloaded share
     // read as half its real length and put the load boundary in the wrong
     // place on the strip.
-    const loadedUserTurns = turns.reduce((n, t) => n + (t.userText ? 1 : 0), 0);
-    // Exact when the backend reported `turn_offset` — the ordinal of the
-    // first turn inside the loaded slice IS the unloaded count. The
-    // count-based figure stays as the fallback for views built before
-    // that field existed, or for live-only ones.
-    const unloaded = Math.max(
-      0,
-      view.turnOffset ?? (view.turnTotal ?? loadedUserTurns) - loadedUserTurns,
-    );
-    // The page is a slice of MESSAGES, so its first turn is usually a HALF
-    // turn: the cut landed mid-answer and `turnOffset` still counts that
-    // turn as wholly unloaded, while its answer already sits on screen as
-    // the first loaded mark. Crediting it two dots invented a whole extra
-    // turn in the unloaded share and dropped the load boundary one row too
-    // far — the rail then disagreed with the content about where the
-    // unloaded region ends. Only its prompt is missing, so it gets exactly
-    // ONE trailing dot, and that dot points at the answer it belongs to.
-    const boundaryTurn = turns[0] && !turns[0].userText ? turns[0] : null;
+    const { unloaded, boundaryTurn } = railHistoryBoundary(turns, view);
+    // A real half-loaded answer is missing one prompt; standalone notices
+    // and fully loaded views contribute no phantom placeholder.
     const openTurns = Math.max(0, unloaded - (boundaryTurn ? 1 : 0));
     const PH_CAP = 120;
     const boundaryRows = boundaryTurn ? 1 : 0;
@@ -1628,7 +1615,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                 ? `上下文压缩${step.manual ? "（手动）" : "（自动）"}${
                     step.pending ? " · 进行中" : ""
                   }`
-                : `助手回复 #${turnNum} · ${STEP_LABEL[step.type]}${
+                : step.type === "system"
+                  ? "系统提醒"
+                  : `助手回复 #${turnNum} · ${STEP_LABEL[step.type]}${
                     isStreaming ? " (生成中)" : ""
                   }`,
             previewSnippet: stepPreview(step),
@@ -1659,13 +1648,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     });
 
     return list;
-  }, [turns, view.streaming, showReplyWait, view.turnOffset, view.turnTotal]);
+  }, [turns, view.streaming, showReplyWait, view.historyStart, view.turnOffset, view.turnTotal]);
 
-  // Windowed shells change scrollHeight whenever they mount, unmount,
-  // or measure real heights. While pinned, follow the bottom; while not
-  // pinned, re-measure mark positions (debounced — a scroll pass mounts
-  // rows continuously and each resize would otherwise re-measure mid-
-  // gesture).
+  // Preview text changes on every delta; geometry only changes when the
+  // rendered content grows or marks mount/unmount. Keep the observers and
+  // measurement callbacks stable while their inputs follow the latest render.
+  const marksRef = useRef(marks);
+  marksRef.current = marks;
+  const markTargets = marks.map((mark) => `${mark.id}:${mark.targetId}`).join("\n");
   const measureMarks = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1673,7 +1663,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const base = el.scrollTop - containerTop;
     const tops: { id: string; top: number }[] = [];
     let prev = -Infinity;
-    for (const mark of marks) {
+    for (const mark of marksRef.current) {
       if (mark.type === "top") continue;
       const target = document.getElementById(mark.targetId);
       if (!target) continue;
@@ -1691,7 +1681,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       tops.push({ id: mark.id, top });
     }
     markTopsRef.current = tops;
-  }, [marks]);
+  }, []);
 
   const appliedStartRef = useRef(view.historyStart);
   useEffect(() => {
@@ -1734,6 +1724,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const updateActiveMark = useCallback(() => {
     if (isSmoothScrollingRef.current) return;
     const el = scrollRef.current;
+    const marks = marksRef.current;
     if (!el || marks.length === 0) return;
 
     const { scrollTop, scrollHeight, clientHeight } = el;
@@ -1801,18 +1792,15 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     }
     activeIdxRef.current = idx;
     setActiveMarkId(marks[idx].id);
-  }, [marks]);
+  }, []);
 
-  // Re-measure after every layout change (items, window slice) AND
-  // re-derive the active mark from those fresh positions: measuring alone
-  // left the rail pointing at a stale mark (its initial "mark-top") until
-  // the user happened to scroll.
+  // Measure structural changes here; ResizeObserver covers text growth,
+  // expanding a thinking/tool row, images, and fonts. A folded reasoning
+  // delta has no geometry to measure.
   useEffect(() => {
     measureMarks();
     updateActiveMark();
-    // `loading` matters: the reveal commit is what first renders real turns,
-    // and the effect above it ran against the skeleton (nothing to measure).
-  }, [measureMarks, updateActiveMark, view.items, hidden, loading]);
+  }, [measureMarks, updateActiveMark, markTargets, hidden, loading]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -1842,39 +1830,31 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     };
   }, [measureMarks, updateActiveMark]);
 
-  useEffect(() => {
-    // Own-message jump: a new `kind:"user"` item means the user just
-    // submitted — snap to the bottom even if they'd scrolled up to read
-    // (sending a message with no visible response feels broken).
-    // Identity check, NOT index: a prepended page shifts the last user
-    // item's index by the page size and would otherwise read as a fresh
-    // send — yanking the viewport to the bottom mid-read.
-    let lastUser: (typeof view.items)[number] | null = null;
+  const lastUserKey = useMemo(() => {
     for (let i = view.items.length - 1; i >= 0; i--) {
-      if (view.items[i].kind === "user") {
-        lastUser = view.items[i];
-        break;
-      }
+      const item = view.items[i];
+      if (item.kind === "user") return item.hi ?? item;
     }
-    const lastUserKey = lastUser ? (lastUser.hi ?? lastUser) : null;
+    return null;
+  }, [view.items]);
+  useEffect(() => {
+    // A fresh prompt re-pins; history prepends preserve the existing key.
+    // Stream growth follows through ResizeObserver instead of forcing
+    // scrollIntoView (and layout) on every reasoning delta.
     if (lastUserKey !== null && lastUserKey !== lastUserIdxRef.current) {
       pinnedRef.current = true;
+      endRef.current?.scrollIntoView({ block: "end" });
     }
     lastUserIdxRef.current = lastUserKey;
+    const marks = marksRef.current;
     if (pinnedRef.current) {
-      endRef.current?.scrollIntoView({ block: "end" });
       setIsAtBottom(true);
       if (marks.length > 0) {
         activeIdxRef.current = marks.length - 1;
         setActiveMarkId(marks[marks.length - 1].id);
       }
-    } else {
-      const el = scrollRef.current;
-      if (el) {
-        setIsAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 48);
-      }
     }
-  }, [view.items, marks]);
+  }, [lastUserKey, markTargets, sessionKey, loading]);
 
   const markRafRef = useRef(0);
   const onScroll = () => {
@@ -2140,7 +2120,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             padding so the greeting stays centred. */}
         <div
           className={cn(
-            "max-w-3xl w-full mx-auto pr-4 pt-4 flex flex-col gap-4 min-h-full",
+            "max-w-3xl w-full mx-auto pr-4 pt-4 flex shrink-0 flex-col gap-4 min-h-full",
             loading || view.items.length > 0 ? "pl-11" : "pl-4",
           )}
         >

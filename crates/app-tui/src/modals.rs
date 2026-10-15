@@ -432,9 +432,7 @@ impl Modal {
                         *stage = 0;
                         ModalOutcome::Handled
                     }
-                    _ if list_nav(&key, selected, items.len(), true) => {
-                        ModalOutcome::Handled
-                    }
+                    _ if list_nav(&key, selected, items.len(), true) => ModalOutcome::Handled,
                     KeyCode::Enter => {
                         if *stage == 0 {
                             if let Some(p) = items.get(*selected) {

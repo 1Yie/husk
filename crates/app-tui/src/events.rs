@@ -3,8 +3,8 @@
 //! `UiCommand`s so `dispatch` stays the single routing chokepoint.
 
 use agent_ipc::{AgentState, UiEvent};
-use husk_host::command::UiCommand;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use husk_host::command::UiCommand;
 
 use crate::app::{fail_tail, App, ChildTool, LiveItem, StreamText, TodoItem};
 use crate::cells::Cell;
@@ -64,7 +64,9 @@ impl App {
                         });
                     }
                     Some(parent_name) => {
-                        if let Some(LiveItem::Tool { children, .. }) = self.parent_tool(&parent_name) {
+                        if let Some(LiveItem::Tool { children, .. }) =
+                            self.parent_tool(&parent_name)
+                        {
                             children.push(ChildTool {
                                 name,
                                 preview: args_preview,
@@ -96,9 +98,7 @@ impl App {
                     // Fill the first unfinished child of this name — children
                     // run concurrently, so completion order is not start order.
                     if let Some(LiveItem::Tool { children, .. }) = self.parent_tool(&parent_name) {
-                        if let Some(child) = children
-                            .iter_mut()
-                            .find(|c| !c.done && c.name == name)
+                        if let Some(child) = children.iter_mut().find(|c| !c.done && c.name == name)
                         {
                             child.done = true;
                             child.ok = ok;
@@ -115,9 +115,12 @@ impl App {
                     .iter()
                     .rposition(|it| matches!(it, LiveItem::Tool { name: n, .. } if *n == name));
                 let (preview, secs, children) = match idx.map(|i| self.live.remove(i)) {
-                    Some(LiveItem::Tool { preview, started, children, .. }) => {
-                        (preview, Some(started.elapsed().as_secs_f32()), children)
-                    }
+                    Some(LiveItem::Tool {
+                        preview,
+                        started,
+                        children,
+                        ..
+                    }) => (preview, Some(started.elapsed().as_secs_f32()), children),
                     _ => (String::new(), None, Vec::new()),
                 };
                 let is_batch = !children.is_empty();

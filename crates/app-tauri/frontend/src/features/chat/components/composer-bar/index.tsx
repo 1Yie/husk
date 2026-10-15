@@ -1,6 +1,6 @@
 // Composer — floating input bar with config.toml-based model selection & Orb-driven send button.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
   ChevronDown,
@@ -13,6 +13,7 @@ import {
   FolderOpen,
   Search,
   ListCheck,
+  Brain,
   Wrench,
   Check,
   Image,
@@ -30,9 +31,8 @@ import {
   ModePicker,
   PERMISSION_MODES,
   AGENT_MODES,
-  THINKING_LEVELS,
-  thinkingSuffix,
 } from "@/features/chat/components/composer-bar/mode-picker";
+import { THINKING_LEVELS, normalizeThinkingLevel, thinkingSuffix } from "@/lib/thinking";
 import { Orb } from "@/features/chat/components/agent-orb/index";
 import { parseTodos, type TodoItem } from "@/features/chat/components/todo-view/index";
 import * as agent from "@/lib/agent-ipc/index";
@@ -40,6 +40,7 @@ import type { Attachment, FileItem, SkillItem } from "@/lib/agent-ipc/index";
 import type { SessionView } from "@/features/chat/hooks/stream-view";
 import type { PlanPayload } from "@/types";
 import { pendingApprovalOf } from "@/features/chat/hooks/stream-view";
+import { sameComposerView } from "./composer-state";
 import { planToMarkdown } from "@/features/chat/components/chat-stream/plan-card";
 import { onQuoteRequest } from "@/lib/selection-bus";
 import { useAgentStore } from "@/stores/agent-store";
@@ -182,7 +183,14 @@ function toolIcon(name: string) {
   return <Wrench className={cls} />;
 }
 
-export function ComposerBar({
+export const ComposerBar = memo(ComposerBarContent, (previous, next) =>
+  previous.workspaceRoot === next.workspaceRoot &&
+  previous.sessionKey === next.sessionKey &&
+  previous.officeMode === next.officeMode &&
+  sameComposerView(previous.view, next.view),
+);
+
+function ComposerBarContent({
   view,
   workspaceRoot,
   sessionKey,
@@ -284,7 +292,13 @@ export function ComposerBar({
       if (info) {
         if (info.active_model) setActiveModel(info.active_model);
         if (info.active_provider) setActiveProvider(info.active_provider);
-        if (info.active_thinking_level) setActiveThinkingLevel(info.active_thinking_level);
+        const active = info.models?.find((model) =>
+          model.model === info.active_model && model.provider === info.active_provider,
+        );
+        setActiveThinkingLevel(normalizeThinkingLevel(
+          info.active_thinking_level,
+          active?.available_levels,
+        ));
         if (info.active_permission_mode) setMode(info.active_permission_mode);
         if (info.active_agent_mode) setAgentMode(info.active_agent_mode);
         if (info.models && Array.isArray(info.models)) {
@@ -314,9 +328,9 @@ export function ComposerBar({
     };
   }, []);
 
-  const currentModelObj =
-    models.find((m) => m.model === activeModel && m.provider === activeProvider) ||
-    models.find((m) => m.model === activeModel);
+  const currentModelObj = models.find((model) =>
+    model.model === activeModel && model.provider === activeProvider,
+  );
 
   const hasReasoning = Boolean(
     currentModelObj?.reasoning ||
@@ -331,15 +345,14 @@ export function ComposerBar({
     availableLevelValues.includes(lvl.value),
   );
 
-  const currentThinkingObj = THINKING_LEVELS.find((l) => l.value === activeThinkingLevel);
-  const currentThinkingLabel = currentThinkingObj
-    ? `${currentThinkingObj.label}（${thinkingSuffix(currentThinkingObj.value, currentModelObj?.thinking_level_map ?? undefined)}）`
-    : activeThinkingLevel;
-
   const handleSelectModel = async (provider: string, model: string) => {
+    // A refresh already in flight describes the old route and cannot undo
+    // this selection. The backend switches model + normalized level together.
+    ++fetchSeq.current;
     setActiveModel(model);
     setActiveProvider(provider);
     const target = models.find((m) => m.model === model && m.provider === provider);
+    setActiveThinkingLevel(normalizeThinkingLevel(activeThinkingLevel, target?.available_levels));
     // SetModel is a fire-and-forget session command — getModelInfo can race
     // it and hand back the OLD active model, so the chips are set straight
     // from the list entry we already hold instead of re-reading the backend.
@@ -351,21 +364,14 @@ export function ComposerBar({
     }
     try {
       await agent.setModel(provider, model);
-      if (target?.available_levels && target.available_levels.length > 0) {
-        if (!target.available_levels.includes(activeThinkingLevel)) {
-          const nextLevel = target.available_levels.includes("medium")
-            ? "medium"
-            : target.available_levels.find((l) => l !== "off") || "off";
-          setActiveThinkingLevel(nextLevel);
-          await agent.setThinkingLevel(nextLevel);
-        }
-      }
     } catch (err) {
       console.error("setModel failed:", err);
     }
   };
 
   const handleSelectThinkingLevel = async (level: string) => {
+    if (!effectiveThinkingLevels.some((candidate) => candidate.value === level)) return;
+    ++fetchSeq.current;
     setActiveThinkingLevel(level);
     try {
       await agent.setThinkingLevel(level);
@@ -1310,7 +1316,6 @@ export function ComposerBar({
                   onSelectModel={handleSelectModel}
                   hasReasoning={hasReasoning}
                   activeThinkingLevel={activeThinkingLevel}
-                  currentThinkingLabel={currentThinkingLabel}
                   thinkingMap={currentModelObj?.thinking_level_map ?? undefined}
                   effectiveThinkingLevels={effectiveThinkingLevels}
                   onSelectThinkingLevel={handleSelectThinkingLevel}
@@ -1365,7 +1370,6 @@ export function ComposerBar({
                 onSelectModel={handleSelectModel}
                 hasReasoning={hasReasoning}
                 activeThinkingLevel={activeThinkingLevel}
-                currentThinkingLabel={currentThinkingLabel}
                 thinkingMap={currentModelObj?.thinking_level_map ?? undefined}
                 effectiveThinkingLevels={effectiveThinkingLevels}
                 onSelectThinkingLevel={handleSelectThinkingLevel}
@@ -1883,7 +1887,6 @@ function ComposerToolbar({
   onSelectModel,
   hasReasoning,
   activeThinkingLevel,
-  currentThinkingLabel,
   thinkingMap,
   effectiveThinkingLevels,
   onSelectThinkingLevel,
@@ -1908,9 +1911,8 @@ function ComposerToolbar({
   onSelectModel: (provider: string, model: string) => Promise<void>;
   hasReasoning: boolean;
   activeThinkingLevel: string;
-  currentThinkingLabel: string;
   thinkingMap?: Record<string, string | null>;
-  effectiveThinkingLevels: readonly { value: string; label: string; desc: string }[];
+  effectiveThinkingLevels: readonly { value: string; token: string }[];
   onSelectThinkingLevel: (level: string) => Promise<void>;
   streaming: boolean;
   text: string;
@@ -1924,9 +1926,16 @@ function ComposerToolbar({
   // trigger. `undefined` when the model isn't in the configured list (a
   // hand-encoded `/model` target, or a config edited outside the app): the
   // raw id is then the only thing we can show.
-  const activeItem =
-    models.find((m) => m.model === activeModel && m.provider === activeProvider) ||
-    models.find((m) => m.model === activeModel);
+  const activeItem = models.find((model) =>
+    model.model === activeModel && model.provider === activeProvider,
+  );
+  /** The wire value the active tier rewrites to, when the model remaps it
+   *  (e.g. picking Low sends `max`) — shown so the slider never lies. */
+  const thinkingOverride =
+    thinkingMap?.[activeThinkingLevel] &&
+    thinkingMap[activeThinkingLevel] !== activeThinkingLevel
+      ? thinkingMap[activeThinkingLevel]
+      : null;
 
   return (
     // `min-w-0` on both groups is what lets a narrow window compress the row
@@ -1981,12 +1990,6 @@ function ComposerToolbar({
           mode={mode}
           modeLabel={modeLabel}
           switchMode={switchMode}
-          hasReasoning={hasReasoning}
-          activeThinkingLevel={activeThinkingLevel}
-          currentThinkingLabel={currentThinkingLabel}
-          thinkingMap={thinkingMap}
-          effectiveThinkingLevels={effectiveThinkingLevels}
-          onSelectThinkingLevel={onSelectThinkingLevel}
         />
       </div>
 
@@ -2007,6 +2010,24 @@ function ComposerToolbar({
               >
                 {activeItem ? modelLabel(activeItem) : activeModel || "选择模型"}
               </span>
+              {hasReasoning && effectiveThinkingLevels.length > 0 && (
+                // The thinking level rides with the model — one control picks
+                // both what answers and how hard it thinks.
+                <span className="flex items-center gap-1 shrink-0 pl-1.5 border-l border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]">
+                  <Brain
+                    className={cn(
+                      "h-3 w-3 shrink-0",
+                      activeThinkingLevel === "off"
+                        ? "text-neutral-400"
+                        : "text-purple-600 dark:text-purple-400",
+                    )}
+                  />
+                  <span className="truncate max-w-[5em] text-[11px] text-neutral-500">
+                    {effectiveThinkingLevels.find((l) => l.value === activeThinkingLevel)?.token ??
+                      activeThinkingLevel}
+                  </span>
+                </span>
+              )}
               <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
             </button>
           </DropdownMenuTrigger>
@@ -2014,7 +2035,7 @@ function ComposerToolbar({
           <DropdownMenuContent
             align="end"
             side="top"
-            className="w-64 max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-hidden flex flex-col"
+            className="w-80 max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] overflow-hidden flex flex-col"
           >
             <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
               模型
@@ -2050,6 +2071,53 @@ function ComposerToolbar({
               </DropdownMenuGroup>
             ) : (
               <div className="px-3 py-3 text-xs text-neutral-500 text-center">未检测到模型</div>
+            )}
+
+            {hasReasoning && effectiveThinkingLevels.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                {/* Tier slider — one click switches, and the active tier reads
+                    as a raised segment instead of a bulleted list. */}
+                <DropdownMenuLabel className="flex items-center gap-1.5 text-xs text-neutral-500 font-normal">
+                  <Brain
+                    className={cn(
+                      "h-3 w-3 shrink-0",
+                      activeThinkingLevel === "off"
+                        ? "text-neutral-400"
+                        : "text-purple-600 dark:text-purple-400",
+                    )}
+                  />
+                  思考
+                  {thinkingOverride && (
+                    <span className="ml-auto font-mono text-[10px] text-neutral-400">
+                      → {thinkingOverride}
+                    </span>
+                  )}
+                </DropdownMenuLabel>
+                <DropdownMenuGroup className="flex items-center gap-0.5 rounded-lg bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] p-0.5">
+                  {effectiveThinkingLevels.map((lvl) => {
+                    const active = lvl.value === activeThinkingLevel;
+                    return (
+                      <DropdownMenuItem
+                        key={lvl.value}
+                        title={`${lvl.token}（${thinkingSuffix(lvl.value, thinkingMap)}）`}
+                        // Keep the menu open: the tier is tuned alongside the
+                        // model, often in a few clicks — Radix closes on select.
+                        onSelect={(e) => e.preventDefault()}
+                        onClick={() => void onSelectThinkingLevel(lvl.value)}
+                        className={cn(
+                          "flex-1 justify-center rounded-md px-1 py-1 text-[11px] font-medium cursor-pointer transition-colors",
+                          active
+                            ? "bg-white text-neutral-900 shadow-xs dark:bg-[var(--husk-hover)]"
+                            : "text-neutral-500 hover:text-neutral-800",
+                        )}
+                      >
+                        {lvl.token}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuGroup>
+              </>
             )}
           </DropdownMenuContent>
         </DropdownMenu>

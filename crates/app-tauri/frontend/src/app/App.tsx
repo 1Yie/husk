@@ -1,20 +1,21 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
-import { activeViewNow, useAgentStore, useRunningKeys } from "@/stores/agent-store";
+import { activeViewNow, refreshAgentChips, useAgentStore, useRunningKeys } from "@/stores/agent-store";
 import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
 import { viewFromHistory, viewFromHistoryChunked } from "@/features/chat/hooks/view-from-history";
 import { loadReset, loadStamp } from "@/lib/load-probe";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, historyPage, historyRaw, type WorkspaceInfo } from "@/lib/agent-ipc/index";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, historyRaw, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
-import { SessionSidebar } from "@/features/chat/components/session-sidebar/index";
+import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
 import { MainLayout } from "@/app/layout/main-layout/index";
 import { ChatPage } from "@/features/chat/pages/chat/index";
 import { SettingsPage } from "@/features/settings/pages/index";
 import { RawHistoryDialog } from "@/features/chat/components/raw-history-dialog/index";
 import { WorkspaceLoadingVeil } from "@/features/chat/components/workspace-loading-veil/index";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -139,6 +140,14 @@ export function App() {
   // a frozen half-frame instead of "loading → ready". Two rAFs carries
   // the flag past the next paint boundary.
   const releaseLoading = useCallback(() => {
+    // Every caller reaches here after its backend call has settled, so the
+    // backend's ACTIVE session is final — the first moment the header chips
+    // (the active model's window and price) can be read for it. `setActiveId`
+    // flips the frontend pointer BEFORE that IPC, so the refresh it triggers
+    // reads the PREVIOUS session's model, and nothing re-read afterwards: the
+    // header kept those numbers until the next turn. Failed flows land here
+    // too; re-reading whatever is active then is still correct.
+    refreshAgentChips();
     requestAnimationFrame(() =>
       // The reveal commit mounts the real turn tree (Streamdown/Streamdown
       // blocks) —
@@ -205,6 +214,11 @@ export function App() {
   // history is additive but irreversible, so it confirms first.
   const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
   const [pendingRemoveWs, setPendingRemoveWs] = useState<ProjectOverview | null>(null);
+  // Rename dialog — the row being renamed (with its workspace) + the draft.
+  const [pendingRename, setPendingRename] = useState<{ root: string; row: SessionRow } | null>(null);
+  // Archive confirmation — the row being archived and its workspace.
+  const [pendingArchive, setPendingArchive] = useState<{ root: string; row: SessionRow } | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   // Settings is an overlay layer, not a page swap — the workspace stays
   // mounted underneath, so closing it costs nothing (the old takeover
   // unmounted ChatPage and remounted the whole stream on return).
@@ -433,20 +447,20 @@ export function App() {
     : pendingDelete.title === "new session" || !pendingDelete.title
       ? "新会话"
       : pendingDelete.title;
+  const pendingArchiveTitle = !pendingArchive
+    ? ""
+    : pendingArchive.row.title === "new session" || !pendingArchive.row.title
+      ? "新会话"
+      : pendingArchive.row.title;
   const pendingForkTitle = !pendingFork
     ? ""
     : pendingFork.title === "new session" || !pendingFork.title
       ? "新会话"
       : pendingFork.title;
 
-  const requestRemoveWorkspace = (p: ProjectOverview) => {
-    // A running turn dies with it — confirm first.
-    if (p.sessions.some((r) => r.running)) {
-      setPendingRemoveWs(p);
-      return;
-    }
-    void doRemoveWorkspace(p.root);
-  };
+  // Removing a project always confirms — the copy says what happens to its
+  // records, and warns louder when a running task would be interrupted.
+  const requestRemoveWorkspace = (p: ProjectOverview) => setPendingRemoveWs(p);
 
   const doRemoveWorkspace = async (root: string) => {
     const res = await removeWorkspace(root).catch(() => null);
@@ -458,8 +472,51 @@ export function App() {
     if (ws) setWorkspace(ws);
   };
 
-  const handlePinSession = (id: number, pinned: boolean) => {
-    void pinSession(id, pinned).then(() => void refresh({ force: true })).catch(() => {});
+  // Meta edits: run, then re-read the tree; failures surface as a toast.
+  const editSession = (op: Promise<unknown>) => {
+    void op
+      .then(() => void refresh({ force: true }))
+      .catch((e) => toast.error(String(e)));
+  };
+
+  const sessionActions: SessionActions = {
+    rename: (root, row) => {
+      setRenameDraft(row.title === "new session" ? "" : row.title);
+      setPendingRename({ root, row });
+    },
+    pin: (root, id, pinned) => editSession(pinSession(root, id, pinned)),
+    pinGlobal: (root, id, pinned) => editSession(pinSessionGlobal(root, id, pinned)),
+    // Archiving hides the session and drops its pins — confirm first.
+    // Restoring is harmless and runs directly.
+    archive: (root, row, archived) => {
+      if (archived) setPendingArchive({ root, row });
+      else editSession(archiveSession(root, row.id, false));
+    },
+    exportRecord: (root, id) => {
+      void exportSession(root, id)
+        .then((r) => {
+          if (r.saved) toast.success(`已导出到 ${r.path}`);
+        })
+        .catch((e) => toast.error(String(e)));
+    },
+    fork: (id) => {
+      // Fork duplicates history — confirm before touching the store,
+      // same pattern as the delete dialog below.
+      const row = sessions.find((s) => s.id === id);
+      if (row) setPendingFork(row);
+    },
+    delete: (id) => {
+      // Deletion is destructive — park the row and let the dialog
+      // below confirm before touching the backend.
+      const row = sessions.find((s) => s.id === id);
+      if (row) setPendingDelete(row);
+    },
+  };
+
+  const submitRename = () => {
+    if (!pendingRename) return;
+    editSession(renameSession(pendingRename.root, pendingRename.row.id, renameDraft));
+    setPendingRename(null);
   };
 
   const doFork = (id: number) => {
@@ -509,19 +566,7 @@ export function App() {
           hasWorkspace={wsReady && !!workspace.root}
           onNew={handleNewSession}
           onOpenSession={handleOpenSession}
-          onFork={(id) => {
-            // Fork duplicates history — confirm before touching the store,
-            // same pattern as the delete dialog below.
-            const row = sessions.find((s) => s.id === id);
-            if (row) setPendingFork(row);
-          }}
-          onPin={handlePinSession}
-          onDelete={(id) => {
-            // Deletion is destructive — park the row and let the dialog
-            // below confirm before touching the backend.
-            const row = sessions.find((s) => s.id === id);
-            if (row) setPendingDelete(row);
-          }}
+          actions={sessionActions}
           onPickWorkspace={handlePickWorkspace}
           onSwitchWorkspace={(path) => void handleSwitchWorkspace(path)}
           onSwitchMode={(path) => void handleSwitchMode(path)}
@@ -618,7 +663,10 @@ export function App() {
           <DialogHeader>
             <DialogTitle className="text-base">移除项目</DialogTitle>
             <DialogDescription>
-              项目「{pendingRemoveWs?.name}」有任务正在运行，移除会立即中断这些任务。会话记录会保留，重新打开该文件夹即可恢复。确定移除吗？
+              {pendingRemoveWs?.sessions.some((r) => r.running)
+                ? `项目「${pendingRemoveWs?.name}」有任务正在运行，移除会立即中断这些任务。`
+                : `确定从列表中移除项目「${pendingRemoveWs?.name}」吗？`}
+              会话记录会保留，重新打开该文件夹即可恢复。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">
@@ -639,6 +687,74 @@ export function App() {
               }}
             >
               移除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pendingRename !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRename(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base">重命名会话</DialogTitle>
+            <DialogDescription>留空则恢复为自动生成的标题。</DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitRename();
+            }}
+          >
+            <Input
+              autoFocus
+              value={renameDraft}
+              maxLength={80}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              placeholder="会话标题"
+              className="h-8 text-sm"
+            />
+            <DialogFooter className="gap-2 mt-4">
+              <Button type="button" variant="outline" size="sm" onClick={() => setPendingRename(null)}>
+                取消
+              </Button>
+              <Button type="submit" size="sm">
+                保存
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pendingArchive !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingArchive(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base">归档会话</DialogTitle>
+            <DialogDescription>
+              确定要归档会话「{pendingArchiveTitle}」吗？归档后会从列表中隐藏并取消置顶，可在列表底部的「已归档」中恢复。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPendingArchive(null)}>
+              取消
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                if (!pendingArchive) return;
+                editSession(archiveSession(pendingArchive.root, pendingArchive.row.id, true));
+                setPendingArchive(null);
+              }}
+            >
+              归档
             </Button>
           </DialogFooter>
         </DialogContent>
