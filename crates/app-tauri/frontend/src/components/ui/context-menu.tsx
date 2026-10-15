@@ -1,10 +1,12 @@
 import * as React from "react";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
+import { ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
   SURFACE_OVERLAY,
   SURFACE_OVERLAY_FOCUS,
+  SURFACE_OVERLAY_OPEN,
 } from "@/lib/theme";
 import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
@@ -44,13 +46,16 @@ const ContextMenuSubTrigger = React.forwardRef<
   <ContextMenuPrimitive.SubTrigger
     ref={ref}
     className={cn(
-      "flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none focus:bg-neutral-100 dark:focus:bg-[var(--husk-border)] data-[state=open]:bg-neutral-100 dark:data-[state=open]:bg-[#34343d]",
+      "flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none focus:bg-neutral-100",
+      SURFACE_OVERLAY_FOCUS,
+      SURFACE_OVERLAY_OPEN,
       inset && "pl-8",
       className
     )}
     {...props}
   >
     {children}
+    <ChevronRight className="ml-auto h-4 w-4" />
   </ContextMenuPrimitive.SubTrigger>
 ));
 ContextMenuSubTrigger.displayName =
