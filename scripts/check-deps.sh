@@ -51,13 +51,12 @@ declare -A ALLOW=(
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host"
   [husk]="agent-context agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-skills agent-store husk-host"
   # the second-product acceptance test (T11): kernel + llm only, by design
-  [minimal-agent]="agent-kernel agent-llm"
   # dev-only test support — reached only through [dev-dependencies]
   [agent-testkit]="agent-llm"
 )
 
 # Crates nobody may depend on (frontends).
-LEAF_PRODUCTS=" app-cli app-tui husk minimal-agent agent-testkit "
+LEAF_PRODUCTS=" app-cli app-tui husk agent-testkit "
 
 meta=$(cargo metadata --no-deps --format-version 1)
 fail=0
