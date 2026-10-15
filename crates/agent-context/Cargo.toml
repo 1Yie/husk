@@ -7,8 +7,6 @@ license = "MIT"
 
 [dependencies]
 ignore.workspace = true
-globset.workspace = true
-toml.workspace = true
 gix.workspace = true
 similar.workspace = true
 thiserror.workspace = true

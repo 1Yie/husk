@@ -315,7 +315,7 @@ impl CodingPolicy {
     async fn check_blueprint(
         &self,
         touched: Vec<PathBuf>,
-    ) -> Option<agent_context::blueprint::Report> {
+    ) -> Option<crate::blueprint::Report> {
         let root = self.workspace_root.clone();
         let enabled = self.architecture.get();
         let mut touched = touched;

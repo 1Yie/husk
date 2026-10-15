@@ -1,5 +1,5 @@
 //! `blueprint` — read access to the workspace's `.blueprint/` architecture
-//! layer (see `agent_context::blueprint`).
+//! layer (see [`crate::blueprint`]).
 //!
 //! Readonly in every mode, plan and subagents included: locating the
 //! architecture before reading code is exactly what a planner needs. Writes
@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use agent_capabilities::WorkspaceCtx;
-use agent_context::blueprint::{render_node, Blueprint, BLUEPRINT_DIR};
+use crate::blueprint::{render_node, Blueprint, BLUEPRINT_DIR};
 use futures::FutureExt;
 use serde::Deserialize;
 

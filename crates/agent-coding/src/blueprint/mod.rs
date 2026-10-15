@@ -32,6 +32,9 @@
 
 pub mod imports;
 pub mod manifest;
+mod runtime;
+
+pub use runtime::{changed_since, check_turn, command, nudge, prompt_block, snapshot, Baseline};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -39,7 +42,7 @@ use std::path::{Path, PathBuf};
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 
-use crate::workspace::WorkspaceScanner;
+use agent_context::WorkspaceScanner;
 
 /// Workspace-relative directory holding the nodes.
 pub const BLUEPRINT_DIR: &str = ".blueprint";
@@ -332,7 +335,7 @@ impl Blueprint {
     /// Whether the file index hit its cap — then every file-based check is
     /// partial, and the report says so.
     fn index_truncated(files: &[String]) -> bool {
-        files.len() >= crate::workspace::MAX_INDEX_ENTRIES
+        files.len() >= agent_context::workspace::MAX_INDEX_ENTRIES
     }
 
     /// Derive the dependency graph: package manifests (attributed to the
@@ -521,7 +524,7 @@ impl Blueprint {
                 None,
                 format!(
                     "workspace index hit its {} entry cap — files past it are not checked",
-                    crate::workspace::MAX_INDEX_ENTRIES
+                    agent_context::workspace::MAX_INDEX_ENTRIES
                 ),
             );
         }

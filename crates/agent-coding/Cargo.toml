@@ -13,6 +13,8 @@ agent-tools-fs = { path = "../agent-tools-fs" }
 agent-ipc = { path = "../agent-ipc" }
 agent-skills = { path = "../agent-skills" }
 agent-llm = { path = "../agent-llm" }
+globset.workspace = true
+toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

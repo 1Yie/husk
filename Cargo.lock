@@ -54,11 +54,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "globset",
  "schemars 1.2.2",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -84,7 +86,6 @@ name = "agent-context"
 version = "0.1.0"
 dependencies = [
  "gix",
- "globset",
  "hnsw_rs",
  "ignore",
  "redb",
@@ -94,7 +95,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "toml 0.9.12+spec-1.1.0",
  "tracing",
  "xxhash-rust",
 ]

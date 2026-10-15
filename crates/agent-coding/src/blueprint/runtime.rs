@@ -1,7 +1,7 @@
-//! Kernel side of the `.blueprint/` architecture layer — the prompt block,
-//! the turn-end check, and the `/blueprint` command. The data model and
-//! every rule live in `agent_context::blueprint`; this module only decides
-//! *when* the kernel consults it.
+//! Session integration for the `.blueprint/` architecture layer — the prompt
+//! block, the turn-end check, and the `/blueprint` command. The data model
+//! and rules live in the parent module; this module decides when the coding
+//! policy consults them.
 //!
 //! Off by construction for workspaces without `.blueprint/`: every entry
 //! point loads first and returns the empty/neutral value on `None`, so the
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use agent_context::blueprint::{Blueprint, Report, BLUEPRINT_DIR};
+use super::{Blueprint, Report, BLUEPRINT_DIR};
 
 /// Load the blueprint for a session. `enabled` is that session's switch
 /// (settings 偏好, copied into its config) — it lives on the session, not in
