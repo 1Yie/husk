@@ -80,20 +80,6 @@ pub async fn get_ui_stats(
     .map_err(|e| e.to_string())?
 }
 
-/// `kernel_info` — the agent kernel this build is linked against.
-///
-/// Both values are resolved at build time from the dependency graph
-/// (`build.rs`), so they describe what was actually compiled in. `rev` is empty
-/// when the kernel came from a local path rather than a git checkout.
-#[tauri::command]
-pub fn kernel_info() -> serde_json::Value {
-    serde_json::json!({
-        "name": "Korei",
-        "version": env!("KOREI_VERSION"),
-        "rev": env!("KOREI_REV"),
-    })
-}
-
 /// `check_update` — query the GitHub Releases API for the newest published
 /// release and report whether it's newer than the running build.
 ///

@@ -15,24 +15,21 @@ import {
 } from "@keyline-icons/react";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { Button } from "@/components/ui/button";
-import { openUrl, checkUpdate, kernelInfo, type KernelInfo } from "@/lib/agent-ipc/sessions";
+import { openUrl, checkUpdate } from "@/lib/agent-ipc/sessions";
 import { toast } from "sonner";
 import iconUrl from "@/assets/husk-icon.png";
 
 const REPO_URL = "https://github.com/1Yie/husk";
+const KOREI_URL = "https://github.com/1Yie/korei";
 const WEBSITE_URL = "https://husk.ingstar.im";
 const DOCS_URL = "https://husk.ingstar.im/docs";
 
 export function AboutSettings() {
   const [version, setVersion] = useState("");
   const [checking, setChecking] = useState(false);
-  const [kernel, setKernel] = useState<KernelInfo | null>(null);
   useEffect(() => {
     void getVersion()
       .then(setVersion)
-      .catch(() => {});
-    void kernelInfo()
-      .then(setKernel)
       .catch(() => {});
   }, []);
 
@@ -90,17 +87,17 @@ export function AboutSettings() {
         <KvListContent>
           <KvRow
             label="内核"
-            description="基于 Korei 内核构建"
+            description="由 Korei 强力驱动"
             icon={<Cpu className="h-4 w-4" />}
           >
-            {kernel ? (
-              <span className="text-[13px] text-neutral-500 font-mono tabular-nums">
-                {kernel.name} v{kernel.version}
-                {kernel.rev ? ` · ${kernel.rev}` : ""}
-              </span>
-            ) : (
-              <Skeleton className="h-[18px] w-28" />
-            )}
+            <button
+              type="button"
+              onClick={() => void openUrl(KOREI_URL)}
+              className="flex items-center gap-1 text-[13px] text-accent hover:underline cursor-pointer"
+            >
+              github.com/1Yie/korei
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </button>
           </KvRow>
 
           <KvRow label="官网" icon={<Globe className="h-4 w-4" />}>
