@@ -959,7 +959,7 @@ fn to_rig_messages(
         () => {
             if !pending_tool_images.is_empty() {
                 let mut parts = vec![UserContent::Text(RigText::new(
-                    "(screenshots from the tool results above)",
+                    "(images from the tool results above)",
                 ))];
                 for img in pending_tool_images.drain(..) {
                     parts.push(UserContent::Image(img));

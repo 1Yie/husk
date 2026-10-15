@@ -43,7 +43,7 @@ pub fn spec() -> ToolSpec {
              is blocking progress and cannot be reasonably inferred. The UI shows the question \
              with your options as buttons plus a free-text field; the tool blocks until the user \
              answers or cancels the turn. Use sparingly — prefer reasonable defaults, and never \
-             ask questions you could answer by inspecting the workspace.",
+             ask questions you could answer by inspecting the environment yourself.",
         ),
         readonly: true, // asking mutates nothing; auto-allowed like the goal contract
         class: super::registry::ToolClass::HumanInteraction,

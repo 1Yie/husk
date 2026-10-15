@@ -106,7 +106,7 @@ pub fn prune_stale_tool_images(history: &mut [ChatMessage], keep: usize) {
         if seen > keep {
             m.images.clear();
             if let Some(c) = m.content.as_mut() {
-                c.push_str("\n[frame dropped: superseded by a newer screenshot]");
+                c.push_str("\n[image dropped: superseded by a newer image]");
             }
         }
     }
@@ -723,8 +723,8 @@ mod tests {
         let kept: Vec<bool> = h.iter().skip(1).map(|m| !m.images.is_empty()).collect();
         assert_eq!(kept, [false, false, false, true, true]);
         // The stripped rows say why, once; the kept rows are untouched.
-        assert!(h[1].content.as_deref().unwrap().contains("frame dropped"));
-        assert!(!h[5].content.as_deref().unwrap().contains("frame dropped"));
+        assert!(h[1].content.as_deref().unwrap().contains("image dropped"));
+        assert!(!h[5].content.as_deref().unwrap().contains("image dropped"));
         // Idempotent: a second pass appends nothing.
         let before = h[1].content.clone();
         prune_stale_tool_images(&mut h, 2);
