@@ -15,7 +15,7 @@ agent-context = { path = "../agent-context" }
 agent-kernel = { workspace = true }
 agent-store = { path = "../agent-store" }
 husk-host = { path = "../husk-host" }
-agent-skills = { path = "../agent-skills" }
+agent-skills.workspace = true
 agent-ipc = { workspace = true }
 agent-llm = { path = "../agent-llm" }
 agent-paths = { workspace = true }
@@ -63,3 +63,4 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json = { workspace = true }

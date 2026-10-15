@@ -548,6 +548,18 @@ export function checkUpdate() {
   return invoke<UpdateCheck>("check_update");
 }
 
+/** The agent kernel this build is linked against. `rev` is empty for a local
+ *  path build. */
+export interface KernelInfo {
+  name: string;
+  version: string;
+  rev: string;
+}
+
+export function kernelInfo() {
+  return invoke<KernelInfo>("kernel_info");
+}
+
 export interface AppConfigData {
   path?: string;
   config: Record<string, any>;

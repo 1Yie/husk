@@ -11,7 +11,7 @@ agent-capabilities = { workspace = true }
 agent-context = { path = "../agent-context" }
 agent-tools-fs = { workspace = true }
 agent-ipc = { workspace = true }
-agent-skills = { path = "../agent-skills" }
+agent-skills.workspace = true
 agent-llm-core = { workspace = true }
 globset.workspace = true
 toml.workspace = true

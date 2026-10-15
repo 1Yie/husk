@@ -18,7 +18,6 @@ declare -A ALLOW=(
   [agent-llm]="agent-llm-core"
   # knowledge and storage — no kernel, no products
   [agent-context]=""
-  [agent-skills]=""
   # the conversation repository — names no product and no kernel type
   [agent-store]="agent-llm-core"
   # the coding product's semantics — depends on the kernel, never the reverse

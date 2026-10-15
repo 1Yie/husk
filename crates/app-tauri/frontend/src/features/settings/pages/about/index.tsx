@@ -11,10 +11,11 @@ import {
   ArrowUpRight,
   Globe,
   BookOpen,
+  Cpu,
 } from "@keyline-icons/react";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { Button } from "@/components/ui/button";
-import { openUrl, checkUpdate } from "@/lib/agent-ipc/sessions";
+import { openUrl, checkUpdate, kernelInfo, type KernelInfo } from "@/lib/agent-ipc/sessions";
 import { toast } from "sonner";
 import iconUrl from "@/assets/husk-icon.png";
 
@@ -25,9 +26,13 @@ const DOCS_URL = "https://husk.ingstar.im/docs";
 export function AboutSettings() {
   const [version, setVersion] = useState("");
   const [checking, setChecking] = useState(false);
+  const [kernel, setKernel] = useState<KernelInfo | null>(null);
   useEffect(() => {
     void getVersion()
       .then(setVersion)
+      .catch(() => {});
+    void kernelInfo()
+      .then(setKernel)
       .catch(() => {});
   }, []);
 
@@ -83,6 +88,21 @@ export function AboutSettings() {
 
       <KvList className="w-full max-w-md">
         <KvListContent>
+          <KvRow
+            label="内核"
+            description="基于 Korei 内核构建"
+            icon={<Cpu className="h-4 w-4" />}
+          >
+            {kernel ? (
+              <span className="text-[13px] text-neutral-500 font-mono tabular-nums">
+                {kernel.name} v{kernel.version}
+                {kernel.rev ? ` · ${kernel.rev}` : ""}
+              </span>
+            ) : (
+              <Skeleton className="h-[18px] w-28" />
+            )}
+          </KvRow>
+
           <KvRow label="官网" icon={<Globe className="h-4 w-4" />}>
             <button
               type="button"

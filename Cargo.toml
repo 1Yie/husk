@@ -59,6 +59,7 @@ agent-tools-fs = { git = "ssh://git@github.com/1Yie/korei-ext.git", branch = "ma
 agent-tools-office = { git = "ssh://git@github.com/1Yie/korei-ext.git", branch = "main" }
 agent-tools-serena = { git = "ssh://git@github.com/1Yie/korei-ext.git", branch = "main" }
 agent-tools-shell = { git = "ssh://git@github.com/1Yie/korei-ext.git", branch = "main" }
+agent-skills = { git = "ssh://git@github.com/1Yie/korei-ext.git", branch = "main" }
 agent-tools-web = { git = "ssh://git@github.com/1Yie/korei-ext.git", branch = "main" }
 
 [profile.dev]
