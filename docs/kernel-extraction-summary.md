@@ -75,3 +75,28 @@
 
 - `wrap_spawn` 的 bwrap 遮罩竞态窗口（长驻服务启动）。
 - 真正搬到独立仓库、path 依赖改 git/registry：需要你决定仓库位置与发布方式。
+
+## 第四轮：拆成三个并列仓库
+
+```
+workspace/
+  korei/      内核：agent-ipc · agent-llm-core · agent-tool · agent-kernel · agent-testkit
+  korei-ext/  扩展：agent-capabilities · agent-sandbox · agent-computer · agent-plugin · agent-paths
+              · agent-tools-{fs,web,shell,computer,office,serena}
+  agent-rs/   产品侧（Husk 暂不拆）：agent-llm · agent-coding · agent-store · agent-context
+              · agent-skills · husk-host · app-*
+```
+
+- 依赖方向：`agent-rs → korei-ext → korei`；`agent-rs → korei`。内核不认识扩展，扩展只依赖内核的契约
+  （`agent-tool`、`agent-llm-core`），不依赖 `agent-kernel`。
+- 目前是兄弟目录 path 依赖；扩展仓库把内核 crate 集中声明在 `[workspace.dependencies]`，改成 git/registry 只需改一处。
+- 各仓库自带依赖校验：`korei/scripts/check-kernel-deps.sh`、`korei-ext/scripts/check-deps.sh`、
+  `agent-rs/scripts/check-deps.sh`（只管留下来的 crate）。
+- 迁移中暴露的一处耦合：`agent-llm/tests/compat_wiring.rs` 读内核源码，现改为读 `../../../korei`，
+  并在目录缺失时给出明确报错。
+- 验证：`korei`、`korei-ext`、`agent-rs` 各自 `cargo test --workspace` 全绿。
+
+### 待定
+- 内核仓库的远端地址（`korei-ext/.github/workflows/ci.yml` 里是 `OWNER/korei` 占位）。
+- 三个仓库的 CI 彼此依赖兄弟目录，远端化之前 CI 跑不通。
+- 新仓库的提交历史是一次性导入，没有保留原 crate 的 git 历史。
