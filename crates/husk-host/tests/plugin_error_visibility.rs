@@ -65,7 +65,12 @@ async fn model_sees_the_plugins_own_error_not_unknown_tool() {
     m.dir = plugin_dir.path().to_path_buf();
     let mut mgr = agent_plugin::PluginManager::new(test_paths());
     mgr.register_plugin(m, plugin_dir.path()).await.unwrap();
-    let handle: agent_kernel::engine::PluginHandle = Arc::new(RwLock::new(Some(Arc::new(mgr))));
+    let runtime: husk_host::plugins::RuntimePluginHandle = Arc::new(RwLock::new(None));
+    let handle = husk_host::plugins::router_handle(runtime.clone());
+    assert!(handle.read().unwrap().as_ref().unwrap().exported_tools().is_empty());
+    // An already-installed adapter must see the runtime that a reload installs.
+    *runtime.write().unwrap() = Some(Arc::new(mgr));
+    assert!(!handle.read().unwrap().as_ref().unwrap().exported_tools().is_empty());
 
     let ws = tempfile::tempdir().unwrap();
     let stub = Arc::new(ScriptedProvider::new().with_script(tool_call("flaky__boom")));
@@ -88,7 +93,7 @@ async fn model_sees_the_plugins_own_error_not_unknown_tool() {
         memory_enabled: false,
         memory_distill: false,
         queued_prompts: Vec::new(),
-        plugins: Some(handle),
+        plugins: Some(runtime),
         provider_name: "t".into(),
     });
     actor

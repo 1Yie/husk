@@ -41,4 +41,5 @@ agent-computer = { path = "../agent-computer" }
 image.workspace = true
 
 [features]
+wasm = ["agent-plugin/wasm"]
 tree-sitter = ["agent-tools-fs/tree-sitter"]

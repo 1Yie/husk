@@ -97,7 +97,7 @@ async fn builtin_failure_is_not_masked_by_plugin_no_owner_message() {
     ]);
     provider.script_text("done");
 
-    let handle: agent_kernel::engine::PluginHandle = Arc::new(std::sync::RwLock::new(Some(
+    let runtime: husk_host::plugins::RuntimePluginHandle = Arc::new(std::sync::RwLock::new(Some(
         Arc::new(agent_plugin::PluginManager::new(test_paths())),
     )));
     let (mut actor, _ch) = SessionActor::spawn(SessionConfig {
@@ -118,7 +118,7 @@ async fn builtin_failure_is_not_masked_by_plugin_no_owner_message() {
         memory_enabled: false,
         memory_distill: false,
         queued_prompts: Vec::new(),
-        plugins: Some(handle),
+        plugins: Some(runtime),
         provider_name: "test".into(),
     });
     actor.handle(UiCommand::Prompt { text: "go".into() }).await;

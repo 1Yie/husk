@@ -45,7 +45,7 @@ declare -A ALLOW=(
   # host layer over the kernel — session assembly, commands, modes, sandbox prefs
   [husk-host]="agent-capabilities agent-coding agent-skills agent-store agent-context agent-ipc agent-kernel agent-llm agent-paths agent-plugin agent-sandbox agent-tools-computer agent-tools-fs agent-tools-office agent-tools-serena agent-tools-shell agent-tools-web"
   # runtime
-  [agent-kernel]="agent-ipc agent-llm agent-plugin agent-tool"
+  [agent-kernel]="agent-ipc agent-llm agent-tool"
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths agent-store husk-host"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host"

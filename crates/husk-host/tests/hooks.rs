@@ -10,7 +10,8 @@
 use std::sync::Arc;
 
 use agent_ipc::{UiCommand, UiEvent};
-use agent_kernel::hooks::{chain_from_specs, HookChain};
+use agent_kernel::hooks::HookChain;
+use husk_host::plugins::chain_from_specs;
 use husk_host::session::{SessionActor, SessionConfig};
 use agent_testkit::ScriptedProvider;
 use agent_llm::types::StreamChunk;

@@ -114,7 +114,6 @@ version = "0.1.0"
 dependencies = [
  "agent-ipc",
  "agent-llm",
- "agent-plugin",
  "agent-testkit",
  "agent-tool",
  "anyhow",

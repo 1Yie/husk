@@ -99,10 +99,8 @@ fn land_effect(
     }
 }
 
-/// Handle to the live plugin router. `None` = no plugin dir discovered; `Some`
-/// with an inner `None` = a plugin manager existed but failed to load, which a
-/// later reload can still fill in.
-pub type PluginHandle = Arc<std::sync::RwLock<Option<Arc<agent_plugin::PluginManager>>>>;
+/// Handle to an optional live router, replaceable by its host.
+pub use crate::plugins::{PluginHandle, PluginRouter};
 
 /// One host-declared agent mode: an id the session slot carries, the registry
 /// that mode dispatches against, and whether plugin tools are advertised in
@@ -306,15 +304,15 @@ impl Engine {
         }
     }
 
-    /// SessionActor installs the plugin manager once plugins register.
+    /// Install the host's external tool router.
     pub fn set_plugins(&mut self, handle: PluginHandle) {
         self.ctx = Arc::new(self.ctx.with_plugins(handle.clone()));
         self.plugin_router = Some(handle);
     }
 
-    /// The manager currently installed, if any. A read lock, cloned out — the
+    /// The router currently installed, if any. A read lock, cloned out — the
     /// handle outlives any single reload.
-    fn plugins(&self) -> Option<Arc<agent_plugin::PluginManager>> {
+    fn plugins(&self) -> Option<Arc<dyn PluginRouter>> {
         self.plugin_router
             .as_ref()
             .and_then(|h| h.read().ok().and_then(|g| g.clone()))
@@ -1428,7 +1426,7 @@ impl Engine {
                             Err(e) => {
                                 // Built-in miss → try the plugin router (built-in
                                 // names are reserved and can't be shadowed).
-                                // Plugins never stage a commit → `None`.
+                                // External tools use the same result contract.
                                 // Plan mode dispatches read-only built-ins only.
                                 if !self.plugins_allowed() {
                                     (e.to_string(), None, false, None, Vec::new())
@@ -1438,13 +1436,18 @@ impl Engine {
                                     // "unknown tool" text would send the model hunting for a
                                     // tool that exists.
                                     match mgr.dispatch_tool_call(&call.name, args).await {
-                                        Ok(out) => (out, None, true, None, Vec::new()),
-                                        // "No plugin owns it" says nothing about why a built-in
-                                        // failed, so surface the built-in's real error instead.
-                                        Err(msg) if msg.starts_with("no plugin owns tool") => {
+                                        Some(Ok(out)) => (
+                                            out.content,
+                                            out.ui_type.map(|s| s.to_string()),
+                                            true,
+                                            out.commit,
+                                            out.images,
+                                        ),
+                                        // An unowned name preserves the registry's real error.
+                                        None => {
                                             (e.to_string(), None, false, None, Vec::new())
                                         }
-                                        Err(msg) => (msg, None, false, None, Vec::new()),
+                                        Some(Err(msg)) => (msg, None, false, None, Vec::new()),
                                     }
                                 } else {
                                     (e.to_string(), None, false, None, Vec::new())

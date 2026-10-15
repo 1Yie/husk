@@ -13,5 +13,6 @@ pub mod compaction;
 pub mod engine;
 pub mod hooks;
 pub mod permissions;
+pub mod plugins;
 pub mod tools;
 pub mod turn_policy;

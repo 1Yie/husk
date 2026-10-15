@@ -176,7 +176,7 @@ pub struct SessionManager {
     /// MCP servers registered once at boot (`agent_plugin::load_all`) — every
     /// session's engine gets this router, so plugin tools are advertised and
     /// dispatchable in the ReAct loop. `None` = no manifest discovered.
-    plugins: Option<agent_kernel::engine::PluginHandle>,
+    plugins: Option<crate::plugins::RuntimePluginHandle>,
     /// Plugin-declared lifecycle hooks, shared with every session's engine
     /// and rebuilt in place by `reload_plugins`.
     hooks: agent_kernel::hooks::HookChain,
@@ -308,7 +308,7 @@ impl SessionManager {
         // is skipped without even creating a runtime.
         let hooks = agent_kernel::hooks::HookChain::new();
         let plugins = cwd.as_ref().map(|root| {
-            let handle: agent_kernel::engine::PluginHandle = Arc::new(std::sync::RwLock::new(None));
+            let handle: crate::plugins::RuntimePluginHandle = Arc::new(std::sync::RwLock::new(None));
             // Background the load: a wedged MCP handshake must not hold up
             // boot — the router starts empty and the swap lands whenever the
             // registrations finish. A turn taken before then just sees no
@@ -1342,7 +1342,7 @@ impl SessionManager {
         // kills them, leaving clients that list tools but never see a
         // response. Run on a process-lifetime runtime instead.
         let mgr = plugin_runtime().block_on(agent_plugin::load_all(root, paths));
-        hooks.replace(agent_kernel::hooks::manifest_hooks(mgr.hook_specs()));
+        hooks.replace(crate::plugins::manifest_hooks(mgr.hook_specs()));
         tracing::info!(
             tools = mgr.exported_tools().len(),
             hooks = hooks.len(),
@@ -1377,7 +1377,7 @@ impl SessionManager {
     pub fn plugin_reload_parts(
         &self,
     ) -> Option<(
-        agent_kernel::engine::PluginHandle,
+        crate::plugins::RuntimePluginHandle,
         agent_kernel::hooks::HookChain,
         std::path::PathBuf,
         AppPaths,
@@ -1395,7 +1395,7 @@ impl SessionManager {
     /// `reload_plugins` over a snapshot — same swap, no manager borrow.
     pub fn reload_plugins_detached(
         parts: &(
-            agent_kernel::engine::PluginHandle,
+            crate::plugins::RuntimePluginHandle,
             agent_kernel::hooks::HookChain,
             std::path::PathBuf,
             AppPaths,
@@ -1412,7 +1412,7 @@ impl SessionManager {
     /// reload so the load path (which reads grants from disk) sees it.
     pub fn trust_plugin_detached(
         parts: &(
-            agent_kernel::engine::PluginHandle,
+            crate::plugins::RuntimePluginHandle,
             agent_kernel::hooks::HookChain,
             std::path::PathBuf,
             AppPaths,
@@ -1434,7 +1434,7 @@ impl SessionManager {
     /// the manager lock.
     pub fn set_plugin_enabled_detached(
         parts: &(
-            agent_kernel::engine::PluginHandle,
+            crate::plugins::RuntimePluginHandle,
             agent_kernel::hooks::HookChain,
             std::path::PathBuf,
             AppPaths,

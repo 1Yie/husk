@@ -197,7 +197,7 @@ pub struct SessionConfig {
     pub workspace_root: PathBuf,
     /// Live plugin router — shared with the manager so a reload swaps what the
     /// engine advertises without rebuilding the session.
-    pub plugins: Option<agent_kernel::engine::PluginHandle>,
+    pub plugins: Option<crate::plugins::RuntimePluginHandle>,
     pub provider: Arc<dyn agent_llm::LlmProvider>,
     /// Config-level provider key (`deepseek`, `anthropic`, …). The adapter's own
     /// `id()` names the wire protocol, not the deployment, so stats group by
@@ -331,7 +331,7 @@ pub struct SessionActor {
     /// Live plugin router — the SAME `Arc` the engine reads per request,
     /// so a `reload_plugins` swap reaches `/x` dispatch too. `None` = no
     /// plugin manager installed for this workspace.
-    plugins: Option<agent_kernel::engine::PluginHandle>,
+    plugins: Option<crate::plugins::RuntimePluginHandle>,
     /// Memory store + post-turn distiller (background task). `memory` is the
     /// actor's own view; `memory_handle` is the same slot the engine's tools
     /// read, so one switch covers recall, distillation and the `remember` tool.
@@ -755,7 +755,7 @@ impl SessionActor {
         engine.set_model_input(cfg.model_input.clone());
         engine.set_model_params(cfg.model_params.clone().unwrap_or_default());
         if let Some(handle) = cfg.plugins.clone() {
-            engine.set_plugins(handle);
+            engine.set_plugins(crate::plugins::router_handle(handle));
         }
         let decision_slot = engine.decision_slot();
         let ask_channel = engine.ask_channel();

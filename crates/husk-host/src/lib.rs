@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod mode;
+pub mod plugins;
 pub mod prefs;
 pub mod sandbox_prefs;
 pub mod session;

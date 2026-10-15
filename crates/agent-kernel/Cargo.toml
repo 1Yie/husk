@@ -9,7 +9,6 @@ license = "MIT"
 agent-tool = { path = "../agent-tool" }
 agent-llm = { path = "../agent-llm" }
 agent-ipc = { path = "../agent-ipc" }
-agent-plugin = { path = "../agent-plugin" }
 async-trait.workspace = true
 futures.workspace = true
 serde.workspace = true
@@ -23,9 +22,3 @@ schemars.workspace = true
 [dev-dependencies]
 agent-testkit = { path = "../agent-testkit" }
 async-trait.workspace = true
-
-[features]
-# On by default — WASM plugins are a shipped feature, not an opt-in demo.
-# `--no-default-features` builds without the wasmtime JIT for lean builds.
-default = ["wasm"]
-wasm = ["agent-plugin/wasm"]
