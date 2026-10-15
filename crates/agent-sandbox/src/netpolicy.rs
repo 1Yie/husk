@@ -55,9 +55,7 @@ impl DomainPattern {
             h => {
                 if let Ok(ip) = h.parse::<IpAddr>() {
                     HostPattern::Literal(ip)
-                } else if let Some(inner) =
-                    h.strip_prefix('[').and_then(|h| h.strip_suffix(']'))
-                {
+                } else if let Some(inner) = h.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
                     let ip = inner
                         .parse::<Ipv6Addr>()
                         .map_err(|_| format!("bad bracketed IPv6 literal {s:?}"))?;
@@ -240,9 +238,7 @@ pub fn local_interface_addresses() -> Vec<IpAddr> {
                 match (*ifa.ifa_addr).sa_family as i32 {
                     libc::AF_INET => {
                         let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in);
-                        out.push(IpAddr::V4(Ipv4Addr::from(u32::from_be(
-                            sa.sin_addr.s_addr,
-                        ))));
+                        out.push(IpAddr::V4(Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr))));
                     }
                     libc::AF_INET6 => {
                         let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
@@ -386,11 +382,17 @@ impl ResolvedGuard {
         if lower == "localhost" || lower.ends_with(".localhost") {
             let is_lo = matches!(address, IpAddr::V4(a) if a.is_loopback())
                 || matches!(address, IpAddr::V6(a) if a.is_loopback());
-            return if is_lo { None } else { Some("a non-loopback address") };
+            return if is_lo {
+                None
+            } else {
+                Some("a non-loopback address")
+            };
         }
         for (why, ranges) in &self.denied_classes {
             if ranges.iter().any(|r| r.contains(*address))
-                || v4.map(|v| ranges.iter().any(|r| r.contains(v))).unwrap_or(false)
+                || v4
+                    .map(|v| ranges.iter().any(|r| r.contains(v)))
+                    .unwrap_or(false)
             {
                 return Some(why);
             }
@@ -475,7 +477,9 @@ mod tests {
         let p = DomainPattern::parse("api.example.com:443").unwrap();
         assert!(p.matches("api.example.com", 443));
         assert!(!p.matches("api.example.com", 80));
-        assert!(DomainPattern::parse("*:22").unwrap().matches("any.host", 22));
+        assert!(DomainPattern::parse("*:22")
+            .unwrap()
+            .matches("any.host", 22));
     }
 
     #[test]
@@ -513,7 +517,12 @@ mod tests {
         let pol = EgressPolicy::from_strs(&["safe.example.com".to_string()], &[]).unwrap();
         let g = pol.guard();
         assert_eq!(
-            g.denial("safe.example.com", &IpAddr::V4(Ipv4Addr::LOCALHOST), 443, &[]),
+            g.denial(
+                "safe.example.com",
+                &IpAddr::V4(Ipv4Addr::LOCALHOST),
+                443,
+                &[]
+            ),
             Some("a loopback address")
         );
         // name resolving to an allow-listed literal is the sanctioned path
@@ -524,7 +533,12 @@ mod tests {
         .unwrap();
         let g2 = pol2.guard();
         assert_eq!(
-            g2.denial("safe.example.com", &IpAddr::V4(Ipv4Addr::LOCALHOST), 3000, &[]),
+            g2.denial(
+                "safe.example.com",
+                &IpAddr::V4(Ipv4Addr::LOCALHOST),
+                3000,
+                &[]
+            ),
             None
         );
         // cloud metadata
@@ -539,7 +553,12 @@ mod tests {
         );
         // normal public addr passes
         assert_eq!(
-            g2.denial("safe.example.com", &"93.184.216.34".parse().unwrap(), 443, &[]),
+            g2.denial(
+                "safe.example.com",
+                &"93.184.216.34".parse().unwrap(),
+                443,
+                &[]
+            ),
             None
         );
     }

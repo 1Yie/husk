@@ -54,7 +54,7 @@ struct ItemOut {
     body: String,
     /// Images an item produced (`screenshot` is batchable by class) — folded
     /// onto the batch result so a batched capture keeps its frame.
-    images: Vec<agent_llm::types::ImageRef>,
+    images: Vec<agent_llm_core::types::ImageRef>,
     duration_ms: u64,
 }
 
@@ -127,7 +127,8 @@ pub struct BatchProfile {
 
 impl BatchProfile {
     fn example_call(&self) -> &str {
-        self.example_call.unwrap_or(r#"{"tool":"<observation tool>","args":{}}"#)
+        self.example_call
+            .unwrap_or(r#"{"tool":"<observation tool>","args":{}}"#)
     }
 
     /// The documented shape, quoted back at the model when an item makes no sense.
@@ -276,7 +277,10 @@ fn json_kind(v: &serde_json::Value) -> &'static str {
 /// envelope itself is flexible — models also send a bare array, a single
 /// `{"tool","args"}` object, or the array under `items`/`tool_calls`/
 /// `batch`/`requests`/`operations`; each unwraps to the same calls list.
-fn parse_items(args: serde_json::Value, profile: &BatchProfile) -> Result<Vec<ParsedItem>, ToolError> {
+fn parse_items(
+    args: serde_json::Value,
+    profile: &BatchProfile,
+) -> Result<Vec<ParsedItem>, ToolError> {
     let raw = if let Some(c) = args.get("calls") {
         c.clone()
     } else if let Some(alt) = ["items", "tool_calls", "batch", "requests", "operations"]
@@ -305,8 +309,8 @@ fn parse_items(args: serde_json::Value, profile: &BatchProfile) -> Result<Vec<Pa
     })?;
     Ok(items
         .into_iter()
-        .map(
-            |item| match serde_json::from_value::<BatchCall>(normalize_shape(item.clone(), profile)) {
+        .map(|item| {
+            match serde_json::from_value::<BatchCall>(normalize_shape(item.clone(), profile)) {
                 Ok(call) => ParsedItem::Call(call.normalized()),
                 Err(e) => {
                     let name = ["tool", "name", "tool_name"]
@@ -327,8 +331,8 @@ fn parse_items(args: serde_json::Value, profile: &BatchProfile) -> Result<Vec<Pa
                         ),
                     }
                 }
-            },
-        )
+            }
+        })
         .collect())
 }
 
@@ -659,7 +663,7 @@ async fn exec(
     // tool message, so a batched `screenshot` still reaches the model's eyes.
     // The text sections already name each item's tool, so the model can pair
     // a frame with its call.
-    let images: Vec<agent_llm::types::ImageRef> =
+    let images: Vec<agent_llm_core::types::ImageRef> =
         results.into_iter().flat_map(|r| r.images).collect();
     let mut res = ToolResult::text(out);
     res.images = images;
@@ -691,12 +695,15 @@ mod tests {
     /// strict derive failed the whole batch with a bare `missing field \`tool\``.
     #[test]
     fn item_shapes_the_model_writes_all_parse() {
-        let items = parse_items(serde_json::json!({"calls": [
-            {"tool": "smart_read", "args": {"path": "a.rs"}},
-            {"name": "list_dir", "arguments": {"path": "."}},
-            {"tool_name": "smart_grep", "pattern": "TODO"},
-            {"tool": "smart_read", "path": "b.rs", "start": 3}
-        ]}), &BatchProfile::default())
+        let items = parse_items(
+            serde_json::json!({"calls": [
+                {"tool": "smart_read", "args": {"path": "a.rs"}},
+                {"name": "list_dir", "arguments": {"path": "."}},
+                {"tool_name": "smart_grep", "pattern": "TODO"},
+                {"tool": "smart_read", "path": "b.rs", "start": 3}
+            ]}),
+            &BatchProfile::default(),
+        )
         .unwrap();
         assert_eq!(items.len(), 4);
         for item in &items {
@@ -756,22 +763,36 @@ mod tests {
     #[test]
     fn envelope_variants_all_unwrap_to_calls() {
         // Bare array — the `calls` key omitted entirely.
-        let items = parse_items(serde_json::json!([
-            {"tool": "list_dir", "args": {"path": "."}}
-        ]), &BatchProfile::default())
+        let items = parse_items(
+            serde_json::json!([
+                {"tool": "list_dir", "args": {"path": "."}}
+            ]),
+            &BatchProfile::default(),
+        )
         .unwrap();
         assert_eq!(items.len(), 1);
         // Alternate envelope keys.
         for key in ["items", "tool_calls", "batch", "requests", "operations"] {
-            let items = parse_items(serde_json::json!({key: [{"tool": "list_dir"}]}), &BatchProfile::default()).unwrap();
+            let items = parse_items(
+                serde_json::json!({key: [{"tool": "list_dir"}]}),
+                &BatchProfile::default(),
+            )
+            .unwrap();
             assert_eq!(items.len(), 1, "{key}");
         }
         // A single call object — the model forgot it was batching.
-        let items =
-            parse_items(serde_json::json!({"tool": "smart_read", "args": {"path": "a"}}), &BatchProfile::default()).unwrap();
+        let items = parse_items(
+            serde_json::json!({"tool": "smart_read", "args": {"path": "a"}}),
+            &BatchProfile::default(),
+        )
+        .unwrap();
         assert_eq!(items.len(), 1);
         // `function` alone still counts as a call-shaped object.
-        let items = parse_items(serde_json::json!({"function": "smart_read"}), &BatchProfile::default()).unwrap();
+        let items = parse_items(
+            serde_json::json!({"function": "smart_read"}),
+            &BatchProfile::default(),
+        )
+        .unwrap();
         assert_eq!(items.len(), 1);
         // Truly unrecognised envelopes still name the shape.
         let e = format!(
@@ -783,11 +804,14 @@ mod tests {
 
     #[test]
     fn a_bad_item_is_rejected_alone_with_the_expected_shape() {
-        let items = parse_items(serde_json::json!({"calls": [
-            {"tool": "list_dir", "args": {"path": "."}},
-            {"path": "orphan.rs"},
-            7
-        ]}), &BatchProfile::default())
+        let items = parse_items(
+            serde_json::json!({"calls": [
+                {"tool": "list_dir", "args": {"path": "."}},
+                {"path": "orphan.rs"},
+                7
+            ]}),
+            &BatchProfile::default(),
+        )
         .unwrap();
         assert!(matches!(items[0], ParsedItem::Call(_)));
         let ParsedItem::Bad { name, reason } = &items[1] else {
@@ -817,7 +841,10 @@ mod tests {
 
     #[test]
     fn a_missing_or_non_array_calls_field_names_the_shape() {
-        let e = format!("{}", parse_items(serde_json::json!({}), &BatchProfile::default()).unwrap_err());
+        let e = format!(
+            "{}",
+            parse_items(serde_json::json!({}), &BatchProfile::default()).unwrap_err()
+        );
         assert!(e.contains("missing field `calls`"), "{e}");
         assert!(e.contains("{calls:"), "{e}");
         let e = format!(
@@ -826,5 +853,4 @@ mod tests {
         );
         assert!(e.contains("must be an array"), "{e}");
     }
-
 }

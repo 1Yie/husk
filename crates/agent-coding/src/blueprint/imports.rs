@@ -38,7 +38,7 @@ pub fn targets(rel: &str, text: &str, go_modules: &[(String, String)]) -> Vec<St
 /// `agent_sandbox`. Deliberately loose (`std`, local modules and enum paths
 /// come out too): the caller keeps only names some node's package provides.
 /// String literals and everything from `#[cfg(test)]` on are skipped — a
-/// fixture mentioning `agent_llm::x` is not a dependency.
+/// fixture mentioning `agent_llm_core::x` is not a dependency.
 pub fn rust_crate_refs(text: &str) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
     for raw in text.lines() {
@@ -367,7 +367,7 @@ mod tests {
             "use crate::tools::registry::{ToolCtx, ToolRegistry};\n\
              use crate::{mode::AgentMode, hooks};\n\
              pub(crate) use crate::session_store::files;\n\
-             use agent_llm::types::ChatMessage;\n\
+             use agent_llm_core::types::ChatMessage;\n\
              use super::x;\n",
             &[],
         );
@@ -412,7 +412,7 @@ mod tests {
             "use agent_sandbox::{Backend, plan::Plan};\n\
              let x = other_crate::run(std::fs::read(p)?); // ignored::comment\n\
              pub use crate::a::b;\n\
-             let s = \"use agent_llm::x;\";\n",
+             let s = \"use agent_llm_core::x;\";\n",
         );
         assert_eq!(r, ["agent_sandbox", "crate", "other_crate", "std"]);
         let r = rust_crate_refs("use a::b;\n#[cfg(test)]\nmod t { use c::d; }\n");

@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use tokio::sync::Mutex;
 
-use agent_tool::ToolError;
 use super::bridge::{BridgeFactory, McpBridge, SerenaBridge, SerenaToolInfo};
 use super::catalog::SerenaToolCatalog;
+use agent_tool::ToolError;
 
 /// A bridge plus the catalog fetched from it — one unit, because a catalog
 /// only describes the server it came from.

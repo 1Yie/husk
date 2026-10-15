@@ -20,8 +20,7 @@ impl ToolRegistry {
     /// The generic tools a delegated child may draw from. The host decides
     /// which additional capabilities its children may hold.
     pub fn child_builtins() -> Self {
-        Self::with_builtins().filtered(|s| {
-            s.name != "delegate" && s.class != ToolClass::HumanInteraction
-        })
+        Self::with_builtins()
+            .filtered(|s| s.name != "delegate" && s.class != ToolClass::HumanInteraction)
     }
 }

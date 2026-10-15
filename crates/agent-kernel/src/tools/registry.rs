@@ -13,8 +13,8 @@ use std::sync::Arc;
 // `crate::tools::registry::X` paths keep working, with the two context-generic
 // items instantiated for this kernel's `ToolCtx`.
 pub use agent_tool::{
-    arg_str, arg_usize, schema_for, Args, Commit, Extensions, Review, ToolClass,
-    ToolContext, ToolError, ToolResult,
+    arg_str, arg_usize, schema_for, Args, Commit, Extensions, Review, ToolClass, ToolContext,
+    ToolError, ToolResult,
 };
 /// A tool's exec, instantiated for [`ToolCtx`].
 pub type ExecFn = agent_tool::ExecFn<ToolCtx>;
@@ -25,20 +25,7 @@ pub type ToolSpec = agent_tool::ToolSpec<ToolCtx>;
 // `crate::tools::registry::X` paths keep working.
 pub use crate::tools::host_slots::*;
 
-
 /// Shared context handed to every tool invocation.
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[derive(Default)]
 pub struct ToolCtx {
@@ -68,17 +55,6 @@ impl ToolCtx {
         Self::default()
     }
 
-
-
-
-
-
-
-
-
-
-
-
     /// A required host service. A context built without it refuses the tool
     /// with a reason instead of panicking mid-turn.
     pub fn require<T: Any + Send + Sync>(&self, what: &str) -> Result<Arc<T>, ToolError> {
@@ -86,17 +62,6 @@ impl ToolCtx {
             .get::<T>()
             .ok_or_else(|| ToolError::Failed(format!("{what} is not available in this context")))
     }
-
-
-
-
-
-
-
-
-
-
-
 
     /// Same context with a different cancel flag — `batch_execute` scopes
     /// items to a batch deadline flag so a timeout can abort in-flight
@@ -109,17 +74,7 @@ impl ToolCtx {
             ext: self.ext.clone(),
         }
     }
-
-
 }
-
-
-
-
-
-
-
-
 
 /// Capability adapters access the context through this product-free contract.
 impl agent_tool::ToolContext for ToolCtx {
@@ -136,9 +91,6 @@ impl agent_tool::ToolContext for ToolCtx {
     }
 }
 
-
-
-
 /// Name → spec map. `BTreeMap` keeps the `tools` array deterministic
 /// (provider prompt-cache friendly).
 #[derive(Default, Clone)]
@@ -150,8 +102,6 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self::default()
     }
-
-
 
     pub fn register(&mut self, spec: ToolSpec) {
         self.specs.insert(spec.name, Arc::new(spec));
@@ -227,9 +177,6 @@ impl ToolRegistry {
     }
 }
 
-
-
-
 #[cfg(test)]
 mod tests {
     #[derive(Debug, PartialEq)]
@@ -244,7 +191,10 @@ mod tests {
         // A clone is the same slot: the controller a ctx was built with is
         // the controller its `with_cancel` copy reads.
         let copy = ext.clone();
-        assert!(Arc::ptr_eq(&ext.get::<Marker>().unwrap(), &copy.get::<Marker>().unwrap()));
+        assert!(Arc::ptr_eq(
+            &ext.get::<Marker>().unwrap(),
+            &copy.get::<Marker>().unwrap()
+        ));
     }
 
     #[test]
@@ -278,12 +228,10 @@ mod tests {
             .require::<Marker>("contract control")
             .err()
             .expect("missing service must be an error");
-        assert!(err.to_string().contains("contract control is not available"));
+        assert!(err
+            .to_string()
+            .contains("contract control is not available"));
     }
-
-
-
-
 
     #[test]
     fn ask_is_refused_without_a_host_channel_and_shared_after_cancel_scope() {
@@ -321,19 +269,20 @@ mod tests {
         // Never called: the test only checks presence, not delegation.
         struct Idle;
         #[async_trait::async_trait]
-        impl agent_llm::LlmProvider for Idle {
+        impl agent_llm_core::LlmProvider for Idle {
             fn id(&self) -> &'static str {
                 "idle"
             }
             async fn chat_stream(
                 &self,
                 _model: &str,
-                _messages: &[agent_llm::ChatMessage],
+                _messages: &[agent_llm_core::ChatMessage],
                 _tools: Option<serde_json::Value>,
                 _temperature: f32,
                 _reasoning_effort: Option<&str>,
-                _params: &agent_llm::ModelParams,
-            ) -> anyhow::Result<agent_llm::BoxStream<agent_llm::StreamChunk>> {
+                _params: &agent_llm_core::ModelParams,
+            ) -> anyhow::Result<agent_llm_core::BoxStream<agent_llm_core::StreamChunk>>
+            {
                 anyhow::bail!("idle provider")
             }
         }
@@ -345,7 +294,7 @@ mod tests {
             context_window: 0,
             thinking_level: None,
             thinking_level_map: None,
-            model_params: agent_llm::ModelParams::default(),
+            model_params: agent_llm_core::ModelParams::default(),
             model_input: Vec::new(),
             models: std::collections::HashMap::new(),
         }));
@@ -374,14 +323,12 @@ mod tests {
         let parent = ToolCtx::new();
         assert!(parent.plugins().is_none());
 
-        let handle: crate::engine::PluginHandle =
-            Arc::new(std::sync::RwLock::new(None));
+        let handle: crate::engine::PluginHandle = Arc::new(std::sync::RwLock::new(None));
         let routed = parent.with_plugins(handle.clone());
         // The engine swaps the whole ctx on set_plugins; the parent keeps none.
         assert!(parent.plugins().is_none());
         assert!(Arc::ptr_eq(&routed.plugins().unwrap(), &handle));
     }
-
 
     #[test]
     fn extension_keys_by_type_not_by_value() {
@@ -397,8 +344,12 @@ mod tests {
     fn builtins_are_only_the_generic_conversation_tools() {
         let r = ToolRegistry::with_builtins();
         let schema = r.request_schema();
-        let mut names: Vec<_> = schema.as_array().unwrap().iter()
-            .map(|s| s["function"]["name"].as_str().unwrap()).collect();
+        let mut names: Vec<_> = schema
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["function"]["name"].as_str().unwrap())
+            .collect();
         names.sort();
         assert_eq!(names, ["ask_question", "batch_execute", "delegate", "todo"]);
     }
@@ -412,17 +363,11 @@ mod tests {
         assert!(reg.is_readonly("todo"));
     }
 
-
-
-
     /// A child may track tasks and batch calls, but cannot recurse or reach a human.
     #[test]
     fn child_builtins_exclude_recursion_and_human_tools() {
         let child = ToolRegistry::child_builtins();
-        for banned in [
-            "delegate",
-            "ask_question",
-        ] {
+        for banned in ["delegate", "ask_question"] {
             assert!(
                 child.spec(banned).is_none(),
                 "child registry must not hold `{banned}`"

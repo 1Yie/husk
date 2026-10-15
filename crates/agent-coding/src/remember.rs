@@ -118,8 +118,8 @@ pub fn spec() -> ToolSpec {
 
 #[cfg(test)]
 mod tests {
-    use agent_capabilities::WorkspaceCtx;
     use super::*;
+    use agent_capabilities::WorkspaceCtx;
     use agent_kernel::tools::registry::ToolCtx;
 
     /// A delegated child shares the very same handle, so a later memory switch
@@ -137,8 +137,14 @@ mod tests {
 
         let mut child = ToolCtx::new().with_workspace(std::env::temp_dir());
         child.ext = parent.ext.inheritable();
-        let theirs = child.ext.get::<MemoryHandle>().expect("child inherits memory");
-        assert!(Arc::ptr_eq(&theirs.0, &handle.0), "same slot, not a snapshot");
+        let theirs = child
+            .ext
+            .get::<MemoryHandle>()
+            .expect("child inherits memory");
+        assert!(
+            Arc::ptr_eq(&theirs.0, &handle.0),
+            "same slot, not a snapshot"
+        );
     }
 
     /// `remember` refuses cleanly when memory is off rather than panicking.
@@ -147,12 +153,9 @@ mod tests {
         let mut ctx = ToolCtx::new().with_workspace(std::env::temp_dir());
         MemoryHandle::default().install(&mut ctx);
         let spec = spec();
-        let err = (spec.exec)(
-            serde_json::json!({"key": "k", "value": "v"}),
-            Arc::new(ctx),
-        )
-        .await
-        .unwrap_err();
+        let err = (spec.exec)(serde_json::json!({"key": "k", "value": "v"}), Arc::new(ctx))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("remember is unavailable"), "{err}");
     }
 }

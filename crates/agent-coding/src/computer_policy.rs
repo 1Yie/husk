@@ -59,7 +59,13 @@ mod tests {
     }
 
     fn decide(g: &PermissionGate) -> Decision {
-        g.decide("computer", Some(ToolClass::Process), false, CallRisk::Normal, "x")
+        g.decide(
+            "computer",
+            Some(ToolClass::Process),
+            false,
+            CallRisk::Normal,
+            "x",
+        )
     }
 
     #[test]
@@ -155,7 +161,10 @@ mod tests {
             g.escalate("computer", "launch", decide(&g), "x"),
             Decision::Ask { .. }
         ));
-        assert_eq!(g.decide("bash", None, false, CallRisk::Normal, ""), Decision::Allow);
+        assert_eq!(
+            g.decide("bash", None, false, CallRisk::Normal, ""),
+            Decision::Allow
+        );
         assert!(g.revoke_grants("computer"));
         assert!(!g.revoke_grants("computer"));
     }

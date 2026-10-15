@@ -293,7 +293,9 @@ fn has_credential_shape(text: &str) -> bool {
         }
     }
     let lower = text.to_lowercase();
-    for kw in ["password", "passwd", "token", "secret", "api key", "api_key", "apikey"] {
+    for kw in [
+        "password", "passwd", "token", "secret", "api key", "api_key", "apikey",
+    ] {
         let mut from = 0;
         while let Some(pos) = lower[from..].find(kw) {
             let after = &lower[from + pos + kw.len()..];
@@ -510,7 +512,9 @@ mod tests {
     /// Multi-byte text around a keyword must not panic on a byte-offset slice.
     #[test]
     fn looks_secret_is_safe_on_multibyte_text() {
-        assert!(!looks_secret("请记住：我的密码管理器是 1Password，不要存明文"));
+        assert!(!looks_secret(
+            "请记住：我的密码管理器是 1Password，不要存明文"
+        ));
         assert!(looks_secret("密码是 password: hunter22 请记住"));
         assert!(!looks_secret("İİİ token 使用说明"));
     }

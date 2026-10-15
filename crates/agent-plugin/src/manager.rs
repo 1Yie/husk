@@ -266,6 +266,12 @@ pub struct PluginManager {
     /// fails (dead endpoint, timeout). Reported to the settings UI so a broken
     /// server can explain itself without a reconnect attempt.
     errors: HashMap<String, String>,
+    /// Raw manifest text each id was registered from. A reload compares it to
+    /// reuse a live connection whose manifest did not change.
+    fingerprints: HashMap<String, String>,
+    /// Live connections carried over from the previous manager during a
+    /// reload, consumed by `register_plugin` instead of reconnecting.
+    reusable: HashMap<String, Arc<dyn Plugin>>,
     pub trust: TrustStore,
 }
 
@@ -286,6 +292,8 @@ impl PluginManager {
             enabled: HashMap::new(),
             disabled: DisabledStore::default(),
             errors: HashMap::new(),
+            fingerprints: HashMap::new(),
+            reusable: HashMap::new(),
             trust: TrustStore {
                 trusted: HashMap::new(),
             },
@@ -446,6 +454,31 @@ impl PluginManager {
         manifest: PluginManifest,
         repo: &Path,
     ) -> Result<(), String> {
+        let Some(manifest) = self.prepare_plugin(manifest, repo)? else {
+            return Ok(());
+        };
+        let id = manifest.id.clone();
+        let live = self.reusable.remove(&id);
+        let plugin = connect_plugin(
+            manifest,
+            live,
+            self.paths.app_name().to_string(),
+            self.sandbox_deny_read.clone(),
+        )
+        .await?;
+        self.finish_plugin(&id, plugin);
+        Ok(())
+    }
+
+    /// Synchronous half of registration: validate, trust-gate, record the
+    /// manifest (hooks live here). `Some(manifest)` means a runtime still has
+    /// to be connected; `None` means the plugin is complete as it stands
+    /// (pure plugin, or switched off).
+    fn prepare_plugin(
+        &mut self,
+        manifest: PluginManifest,
+        repo: &Path,
+    ) -> Result<Option<PluginManifest>, String> {
         manifest.validate()?;
         let id = manifest.id.clone();
 
@@ -476,57 +509,33 @@ impl PluginManager {
         // No `entry` = pure plugin — nothing to connect, done.
         if manifest.entry.is_none() {
             info!(plugin = %id, "plugin registered (no entry — host-side only)");
-            return Ok(());
+            return Ok(None);
         }
 
         // A plugin the user switched off must not run: no subprocess, no
         // router entries. `enable` followed by a reload registers it again.
         if self.disabled.is_disabled(&id) {
             info!(plugin = %id, "plugin registered but disabled — runtime not started");
-            return Ok(());
+            return Ok(None);
         }
+        Ok(Some(manifest))
+    }
 
-        // The `entry` shape IS the runtime declaration — an absent `kind`
-        // means MCP, which is what every entry-bearing manifest is today.
-        let plugin: Arc<dyn Plugin> = match manifest.kind.unwrap_or(PluginKind::Mcp) {
-            PluginKind::Mcp => {
-                let client = McpClient::start(
-                    &manifest,
-                    self.paths.app_name(),
-                    &self.sandbox_deny_read,
-                )
-                .await
-                .map_err(|e| format!("MCP `{id}` start: {e}"))?;
-                Arc::new(McpPlugin { manifest, client })
-            }
-            PluginKind::Wasm => {
-                #[cfg(feature = "wasm")]
-                {
-                    Arc::new(
-                        crate::wasm::WasmPlugin::load(manifest)
-                            .map_err(|e| format!("wasm `{id}` load: {e}"))?,
-                    )
-                }
-                #[cfg(not(feature = "wasm"))]
-                return Err("WASM plugins not built (feature `wasm` off)".into());
-            }
-        };
-
-        // Export tools → router, keyed by the SAME name `exported_tools` puts in
-        // the request. The two must agree exactly, or the model calls a name
-        // the router has never heard of.
+    /// Export tools → router, keyed by the SAME name `exported_tools` puts in
+    /// the request. The two must agree exactly, or the model calls a name
+    /// the router has never heard of.
+    fn finish_plugin(&mut self, id: &str, plugin: Arc<dyn Plugin>) {
         for t in plugin.export_tools() {
             let name = t["function"]["name"].as_str().unwrap_or("").to_string();
             if name.is_empty() {
                 continue;
             }
-            let advertised = wire_tool_name(&id, &name);
+            let advertised = wire_tool_name(id, &name);
             self.real_tool_names.insert(advertised.clone(), name);
             self.tool_router.insert(advertised, plugin.clone());
         }
-        self.plugins.insert(id.clone(), plugin);
+        self.plugins.insert(id.to_string(), plugin);
         info!(plugin = %id, "plugin registered");
-        Ok(())
     }
 
     /// Route a tool call → owning plugin → truncates to the 40 KB budget.
@@ -817,6 +826,59 @@ fn truncate(s: &str, n: usize) -> String {
 /// server can neither stall the app's boot nor keep the other plugins from
 /// loading. Called once at startup (see `SessionManager::spawn_at`).
 pub async fn load_all(repo: &Path, paths: &AppPaths, deny_read: &[PathBuf]) -> PluginManager {
+    reload_all(repo, paths, deny_read, None).await
+}
+
+/// Build the runtime for an entry-bearing manifest. Owns its inputs so many
+/// can be in flight at once. A reload passes the previous `live` connection
+/// of an unchanged manifest and nothing is handshaken again.
+async fn connect_plugin(
+    manifest: PluginManifest,
+    live: Option<Arc<dyn Plugin>>,
+    app_name: String,
+    deny_read: Vec<PathBuf>,
+) -> Result<Arc<dyn Plugin>, String> {
+    if let Some(live) = live {
+        return Ok(live);
+    }
+    let id = manifest.id.clone();
+    // The `entry` shape IS the runtime declaration — an absent `kind`
+    // means MCP, which is what every entry-bearing manifest is today.
+    match manifest.kind.unwrap_or(PluginKind::Mcp) {
+        PluginKind::Mcp => {
+            let client = McpClient::start(&manifest, &app_name, &deny_read)
+                .await
+                .map_err(|e| format!("MCP `{id}` start: {e}"))?;
+            Ok(Arc::new(McpPlugin { manifest, client }))
+        }
+        PluginKind::Wasm => {
+            #[cfg(feature = "wasm")]
+            {
+                // Reading + Cranelift-compiling the module is seconds of
+                // synchronous CPU — keep it off the async workers so it
+                // can't stall the other plugins loading beside it.
+                let loaded =
+                    tokio::task::spawn_blocking(move || crate::wasm::WasmPlugin::load(manifest))
+                        .await
+                        .map_err(|e| format!("wasm `{id}` load: {e}"))?
+                        .map_err(|e| format!("wasm `{id}` load: {e}"))?;
+                Ok(Arc::new(loaded) as Arc<dyn Plugin>)
+            }
+            #[cfg(not(feature = "wasm"))]
+            Err("WASM plugins not built (feature `wasm` off)".into())
+        }
+    }
+}
+
+/// `load_all` that keeps the live connection of every plugin whose manifest
+/// text is unchanged since `prev` — only new or edited entries handshake
+/// again. Everything else (trust, enabled flags, hooks) is re-read as usual.
+pub async fn reload_all(
+    repo: &Path,
+    paths: &AppPaths,
+    deny_read: &[PathBuf],
+    prev: Option<&PluginManager>,
+) -> PluginManager {
     let mut mgr = PluginManager::new(paths.clone());
     for path in deny_read {
         if !mgr.sandbox_deny_read.contains(path) {
@@ -827,6 +889,7 @@ pub async fn load_all(repo: &Path, paths: &AppPaths, deny_read: &[PathBuf]) -> P
     // be refused on every boot, so the grant has to come from disk.
     mgr.trust = TrustStore::load(&trust_store_path(paths));
     mgr.disabled = DisabledStore::load(&disabled_store_path(paths));
+    let mut pending: Vec<(String, PluginManifest, Option<Arc<dyn Plugin>>)> = Vec::new();
     for mpath in discover(repo, paths) {
         let Ok(text) = std::fs::read_to_string(&mpath) else {
             continue;
@@ -839,13 +902,47 @@ pub async fn load_all(repo: &Path, paths: &AppPaths, deny_read: &[PathBuf]) -> P
         // repo-local trust scope below and a relative hook `run.command`.
         manifest.dir = mpath.parent().unwrap_or(Path::new("")).to_path_buf();
         let id = manifest.id.clone();
-        let registered = tokio::time::timeout(
-            std::time::Duration::from_secs(8),
-            mgr.register_plugin(manifest, repo),
-        )
-        .await;
-        match registered {
-            Ok(Ok(())) => {}
+        if let Some(prev) = prev {
+            if let (Some(old), Some(live)) = (prev.fingerprints.get(&id), prev.plugins.get(&id)) {
+                if *old == text && prev.sandbox_deny_read == mgr.sandbox_deny_read {
+                    mgr.reusable.insert(id.clone(), live.clone());
+                }
+            }
+        }
+        mgr.fingerprints.insert(id.clone(), text);
+        match mgr.prepare_plugin(manifest, repo) {
+            Ok(Some(m)) => {
+                let live = mgr.reusable.remove(&id);
+                pending.push((id, m, live));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(plugin = %id, "plugin registration failed: {e}");
+                mgr.errors.insert(id, e);
+            }
+        }
+    }
+    // Handshakes are network/subprocess waits — run them all at once so the
+    // reload costs the slowest server, not the sum. Each keeps its own 8 s
+    // bound; results are applied in discovery order so the tool router stays
+    // deterministic.
+    let app_name = mgr.paths.app_name().to_string();
+    let deny = mgr.sandbox_deny_read.clone();
+    let results = futures::future::join_all(pending.into_iter().map(|(id, m, live)| {
+        let (app_name, deny) = (app_name.clone(), deny.clone());
+        async move {
+            let r = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                connect_plugin(m, live, app_name, deny),
+            )
+            .await;
+            (id, r)
+        }
+    }))
+    .await;
+    for (id, r) in results {
+        match r {
+            Ok(Ok(plugin)) => mgr.finish_plugin(&id, plugin),
             Ok(Err(e)) => {
                 warn!(plugin = %id, "plugin registration failed: {e}");
                 mgr.errors.insert(id, e);
@@ -1266,8 +1363,13 @@ mod tests {
         assert!(loaded.is_trusted_content("b", repo, &manifest("b")));
 
         // A missing file is an empty store, not an error.
-        assert!(!super::TrustStore::load(&dir.path().join("nope.json"))
-            .is_trusted_content("a", repo, &manifest("a")));
+        assert!(
+            !super::TrustStore::load(&dir.path().join("nope.json")).is_trusted_content(
+                "a",
+                repo,
+                &manifest("a")
+            )
+        );
         std::fs::write(&path, "{ not json").unwrap();
         assert!(!super::TrustStore::load(&path).is_trusted_content("b", repo, &manifest("b")));
     }
@@ -1387,15 +1489,16 @@ mod trust_content_tests {
         std::fs::create_dir_all(&repo).unwrap();
 
         let mut mgr = PluginManager::new(test_paths());
-        mgr.trust.trust_content("guard", &repo, &repo_plugin(&repo, "echo reviewed"));
-        assert!(mgr.trust.is_trusted_content("guard", &repo, &repo_plugin(&repo, "echo reviewed")));
+        mgr.trust
+            .trust_content("guard", &repo, &repo_plugin(&repo, "echo reviewed"));
+        assert!(mgr
+            .trust
+            .is_trusted_content("guard", &repo, &repo_plugin(&repo, "echo reviewed")));
 
         // Same manifest, different script: no longer the reviewed content.
-        assert!(!mgr.trust.is_trusted_content(
-            "guard",
-            &repo,
-            &repo_plugin(&repo, "echo swapped"),
-        ));
+        assert!(!mgr
+            .trust
+            .is_trusted_content("guard", &repo, &repo_plugin(&repo, "echo swapped"),));
     }
 
     /// Unchanged content keeps its trust across a reload.

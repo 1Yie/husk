@@ -213,14 +213,13 @@ pub(crate) fn egress_allow_list(cfg: &SandboxConfig) -> Vec<String> {
 pub(crate) fn register_egress(cfg: &SandboxConfig) -> Option<ProxiedRun> {
     let dir = run_dir();
     let proxy = global_proxy(&dir)?;
-    let policy =
-        match EgressPolicy::from_strs(&egress_allow_list(cfg), &cfg.denied_domains) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(?e, "sandbox: bad domain pattern — degrading to full deny");
-                return None;
-            }
-        };
+    let policy = match EgressPolicy::from_strs(&egress_allow_list(cfg), &cfg.denied_domains) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(?e, "sandbox: bad domain pattern — degrading to full deny");
+            return None;
+        }
+    };
     let key = proxy.register(policy)?;
     let (user, pass) = proxy.auth(&key);
     Some(ProxiedRun {
@@ -246,8 +245,7 @@ pub(crate) fn proxy_env_vars(
 ) -> Vec<(String, String)> {
     let http = format!("http://{user}:{pass}@{endpoint}");
     let socks = format!("socks5h://{user}:{pass}@{endpoint}");
-    let no_proxy =
-        "localhost,127.0.0.1,::1,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
+    let no_proxy = "localhost,127.0.0.1,::1,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 
     let mut v = vec![
         ("AGENT_SANDBOXED".into(), "1".into()),

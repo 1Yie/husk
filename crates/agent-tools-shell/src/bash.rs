@@ -10,10 +10,10 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
+use crate::sandbox_cfg::sandbox_config;
 use agent_capabilities::SandboxCtx;
 use agent_capabilities::WorkspaceCtx;
 use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
-use crate::sandbox_cfg::sandbox_config;
 
 /// Shell output cap per truncation table (~5k tok).
 const MAX_OUTPUT_CHARS: usize = 20 * 1024;
@@ -62,7 +62,10 @@ pub fn spec<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     }
 }
 
-async fn exec<C: WorkspaceCtx + SandboxCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx + SandboxCtx>(
+    args: Args,
+    ctx: Arc<C>,
+) -> Result<ToolResult, ToolError> {
     let parsed: BashArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(format!("bash args: {e}")))?;
     let timeout = parsed
@@ -73,16 +76,10 @@ async fn exec<C: WorkspaceCtx + SandboxCtx>(args: Args, ctx: Arc<C>) -> Result<T
 
     // Audit before spawn; its verdict becomes the result's risk tier.
     // Scoped to the workspace so out-of-scope writes flag ScopeViolation.
-    let verdict =
-        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()?));
+    let verdict = agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()?));
 
     let sandbox = ctx.sandbox()?;
-    let cfg = sandbox_config(
-        &verdict,
-        ctx.root()?,
-        timeout,
-        &ctx.sandbox_limits(),
-    );
+    let cfg = sandbox_config(&verdict, ctx.root()?, timeout, &ctx.sandbox_limits());
 
     if parsed.persistent.unwrap_or(false) {
         return crate::services::spawn_persistent(&ctx, &cfg, &parsed.command).await;

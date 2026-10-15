@@ -327,7 +327,10 @@ mod tests {
         // A unique key per test — the lock table is process-wide.
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         Arc::new(TestStorage {
-            key: format!("test-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+            key: format!(
+                "test-{}",
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
             row: StdMutex::new(None),
             legacy: StdMutex::new(legacy.map(|s| s.as_bytes().to_vec())),
             seeded: std::sync::atomic::AtomicBool::new(false),
@@ -510,9 +513,12 @@ mod tests {
     async fn without_a_host_storage_the_list_lives_in_memory_per_context() {
         let a = Arc::new(ToolCtx::new());
         let b = Arc::new(ToolCtx::new());
-        exec(serde_json::json!({"action":"add","text":"only in a"}), a.clone())
-            .await
-            .unwrap();
+        exec(
+            serde_json::json!({"action":"add","text":"only in a"}),
+            a.clone(),
+        )
+        .await
+        .unwrap();
         let in_a = exec(serde_json::json!({"action":"list"}), a.clone())
             .await
             .unwrap();
@@ -520,7 +526,11 @@ mod tests {
         let in_b = exec(serde_json::json!({"action":"list"}), b.clone())
             .await
             .unwrap();
-        assert!(in_b.content.contains("No todos"), "leaked across contexts: {}", in_b.content);
+        assert!(
+            in_b.content.contains("No todos"),
+            "leaked across contexts: {}",
+            in_b.content
+        );
     }
 
     /// `save` is one atomic commit — the row parses back and re-saving works.

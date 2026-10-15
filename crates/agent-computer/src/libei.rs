@@ -33,8 +33,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::StreamExt;
-use reis::event::{DeviceCapability, EiEvent};
 use reis::ei;
+use reis::event::{DeviceCapability, EiEvent};
 
 use crate::traits::{Capture, MouseButton, ScrollDir};
 
@@ -128,7 +128,8 @@ async fn establish() -> Result<Arc<Connection>> {
             rt.block_on(negotiate(tx));
         })
         .context("start the input thread")?;
-    rx.await.map_err(|_| anyhow!("the input thread exited before it finished"))?
+    rx.await
+        .map_err(|_| anyhow!("the input thread exited before it finished"))?
 }
 
 /// Everything that touches the `!Send` event stream. Returns owned, `Send`
@@ -250,9 +251,8 @@ async fn negotiate_inner() -> Result<(Arc<Connection>, reis::tokio::EiConvertEve
         }
     }
 
-    let (pdev, region_logical, scale) = pointer.ok_or_else(|| {
-        anyhow!("the compositor granted input but exposed no pointer region")
-    })?;
+    let (pdev, region_logical, scale) = pointer
+        .ok_or_else(|| anyhow!("the compositor granted input but exposed no pointer region"))?;
     let pointer = Emitter::from_device(&pdev, pointer_resumed.unwrap_or(0));
     let keyboard = keyboard_dev.map(|d| Emitter::from_device(&d, keyboard_resumed.unwrap_or(0)));
 
@@ -289,7 +289,12 @@ impl Emitter {
 /// `display` is the physical capture size (what `Capture` maps into); dividing
 /// the physical position by the region's `scale` lands it in logical pixels,
 /// which is what `motion_absolute` takes.
-pub fn logical_target(cap: Option<Capture>, at: [i32; 2], region: [f32; 2], scale: f32) -> [f32; 2] {
+pub fn logical_target(
+    cap: Option<Capture>,
+    at: [i32; 2],
+    region: [f32; 2],
+    scale: f32,
+) -> [f32; 2] {
     let phys = match cap {
         Some(c) => c.map_to_display(at),
         None => at,
@@ -335,7 +340,9 @@ where
     f(dev);
     dev.device.frame(dev.serial, now_micros());
     dev.device.stop_emulating(dev.serial);
-    conn.context.flush().context("send input to the compositor")?;
+    conn.context
+        .flush()
+        .context("send input to the compositor")?;
     Ok(())
 }
 
@@ -648,9 +655,9 @@ fn key_name_code(name: &str) -> Option<u32> {
         "pageup" => 104,
         "pagedown" => 109,
         f if f.len() >= 2 && f.starts_with('f') => match f[1..].parse::<u32>() {
-            Ok(n @ 1..=10) => 58 + n,           // F1..F10 = 59..68
-            Ok(11) => 87,                       // F11
-            Ok(12) => 88,                       // F12
+            Ok(n @ 1..=10) => 58 + n, // F1..F10 = 59..68
+            Ok(11) => 87,             // F11
+            Ok(12) => 88,             // F12
             _ => return None,
         },
         single if single.chars().count() == 1 => {
@@ -667,20 +674,78 @@ fn us_keycode(ch: char) -> Option<(u32, bool)> {
     let shift = ch.is_ascii_uppercase()
         || matches!(
             ch,
-            '!' | '@' | '#' | '$' | '%' | '^' | '&' | '*' | '(' | ')' | '_' | '+' | '{' | '}'
-                | '|' | ':' | '"' | '<' | '>' | '?' | '~'
+            '!' | '@'
+                | '#'
+                | '$'
+                | '%'
+                | '^'
+                | '&'
+                | '*'
+                | '('
+                | ')'
+                | '_'
+                | '+'
+                | '{'
+                | '}'
+                | '|'
+                | ':'
+                | '"'
+                | '<'
+                | '>'
+                | '?'
+                | '~'
         );
     let code = match lower {
-        'a' => 30, 'b' => 48, 'c' => 46, 'd' => 32, 'e' => 18, 'f' => 33, 'g' => 34,
-        'h' => 35, 'i' => 23, 'j' => 36, 'k' => 37, 'l' => 38, 'm' => 50, 'n' => 49,
-        'o' => 24, 'p' => 25, 'q' => 16, 'r' => 19, 's' => 31, 't' => 20, 'u' => 22,
-        'v' => 47, 'w' => 17, 'x' => 45, 'y' => 21, 'z' => 44,
-        '1' | '!' => 2, '2' | '@' => 3, '3' | '#' => 4, '4' | '$' => 5, '5' | '%' => 6,
-        '6' | '^' => 7, '7' | '&' => 8, '8' | '*' => 9, '9' | '(' => 10, '0' | ')' => 11,
-        '-' | '_' => 12, '=' | '+' => 13, '[' | '{' => 26, ']' | '}' => 27,
-        ';' | ':' => 39, '\'' | '"' => 40, '`' | '~' => 41, '\\' | '|' => 43,
-        ',' | '<' => 51, '.' | '>' => 52, '/' | '?' => 53,
-        ' ' => 57, '\n' | '\r' => 28, '\t' => 15,
+        'a' => 30,
+        'b' => 48,
+        'c' => 46,
+        'd' => 32,
+        'e' => 18,
+        'f' => 33,
+        'g' => 34,
+        'h' => 35,
+        'i' => 23,
+        'j' => 36,
+        'k' => 37,
+        'l' => 38,
+        'm' => 50,
+        'n' => 49,
+        'o' => 24,
+        'p' => 25,
+        'q' => 16,
+        'r' => 19,
+        's' => 31,
+        't' => 20,
+        'u' => 22,
+        'v' => 47,
+        'w' => 17,
+        'x' => 45,
+        'y' => 21,
+        'z' => 44,
+        '1' | '!' => 2,
+        '2' | '@' => 3,
+        '3' | '#' => 4,
+        '4' | '$' => 5,
+        '5' | '%' => 6,
+        '6' | '^' => 7,
+        '7' | '&' => 8,
+        '8' | '*' => 9,
+        '9' | '(' => 10,
+        '0' | ')' => 11,
+        '-' | '_' => 12,
+        '=' | '+' => 13,
+        '[' | '{' => 26,
+        ']' | '}' => 27,
+        ';' | ':' => 39,
+        '\'' | '"' => 40,
+        '`' | '~' => 41,
+        '\\' | '|' => 43,
+        ',' | '<' => 51,
+        '.' | '>' => 52,
+        '/' | '?' => 53,
+        ' ' => 57,
+        '\n' | '\r' => 28,
+        '\t' => 15,
         _ => return None,
     };
     Some((code, shift))

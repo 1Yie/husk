@@ -50,7 +50,9 @@ pub struct MacSandboxExec;
 
 /// Escape a path for embedding in an SBPL string literal.
 fn sb(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 /// What this run's network looks like.
@@ -72,9 +74,7 @@ fn mac_net_plan(cfg: &SandboxConfig) -> MacNet {
     match register_egress(cfg) {
         Some(run) => MacNet::Proxied(run),
         None => {
-            tracing::warn!(
-                "sandbox: egress proxy unavailable — degrading to full network deny"
-            );
+            tracing::warn!("sandbox: egress proxy unavailable — degrading to full network deny");
             MacNet::Deny
         }
     }
@@ -122,7 +122,10 @@ fn sbpl(cfg: &SandboxConfig, ws: &Path, net: &MacNet) -> String {
         p.push_str(&format!("(deny file-write* (subpath \"{}\"))", sb(d)));
     }
     // deny_read — built-in sensitive set + cfg additions.
-    for d in sensitive_masks().into_iter().chain(cfg.deny_read.iter().cloned()) {
+    for d in sensitive_masks()
+        .into_iter()
+        .chain(cfg.deny_read.iter().cloned())
+    {
         p.push_str(&format!(
             "(deny file-read* file-write* file-map-executable (subpath \"{}\"))",
             sb(&d)

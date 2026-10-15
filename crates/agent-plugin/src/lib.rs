@@ -21,8 +21,8 @@ use serde_json::Value;
 
 pub use hooks::{hooks_from_manifest, CommandHook, InputVerdict, ToolVerdict};
 pub use manager::{
-    current_manifest, disabled_store_path, discover, load_all, trust_store_path, wire_tool_name,
-    DisabledStore, PluginCommand, PluginInfo, PluginManager, TrustStore,
+    current_manifest, disabled_store_path, discover, load_all, reload_all, trust_store_path,
+    wire_tool_name, DisabledStore, PluginCommand, PluginInfo, PluginManager, TrustStore,
 };
 pub use manifest::{HookDecl, HookRun, McpServerEntry, PluginKind, PluginManifest, HOOK_EVENTS};
 pub use mcp::McpClient;

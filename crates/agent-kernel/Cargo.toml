@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 agent-tool = { path = "../agent-tool" }
-agent-llm = { path = "../agent-llm" }
+agent-llm-core = { path = "../agent-llm-core" }
 agent-ipc = { path = "../agent-ipc" }
 async-trait.workspace = true
 futures.workspace = true

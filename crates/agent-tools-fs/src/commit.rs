@@ -184,8 +184,15 @@ mod tests {
         // The user edits b while the card is open.
         std::fs::write(&b, "user edit").unwrap();
         let err = (commit.verify)().unwrap_err();
-        assert!(err.contains("b.txt") && err.contains("nothing was written"), "{err}");
-        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a0", "a must stay untouched");
+        assert!(
+            err.contains("b.txt") && err.contains("nothing was written"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&a).unwrap(),
+            "a0",
+            "a must stay untouched"
+        );
     }
 
     #[tokio::test]
@@ -207,7 +214,10 @@ mod tests {
         .unwrap();
         commit.apply.await.unwrap();
         assert!(!a.exists());
-        assert_eq!(seen.0.lock().unwrap()[0], (a, Some(b"gone".to_vec()), Vec::new()));
+        assert_eq!(
+            seen.0.lock().unwrap()[0],
+            (a, Some(b"gone".to_vec()), Vec::new())
+        );
     }
 
     #[test]

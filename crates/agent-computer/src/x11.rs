@@ -188,7 +188,7 @@ impl DesktopBackend for X11Backend {
             // so each runs as its own process; `hold_chord` guarantees every
             // pressed key is released, on failure and on cancellation too.
             Some(ms) => {
-                        crate::keys::hold_chord(
+                crate::keys::hold_chord(
                     &parts,
                     Duration::from_millis(ms),
                     |k| {
@@ -372,9 +372,7 @@ pub async fn capture(
             run("spectacle", &["-b", "-n", "-o", &raw_str], CAPTURE_TIMEOUT).await
         }
         CaptureTool::Scrot => run("scrot", &["-o", &raw_str], CAPTURE_TIMEOUT).await,
-        CaptureTool::Import => {
-            run("import", &["-window", "root", &raw_str], CAPTURE_TIMEOUT).await
-        }
+        CaptureTool::Import => run("import", &["-window", "root", &raw_str], CAPTURE_TIMEOUT).await,
     };
     if let Err(e) = grabbed {
         let _ = std::fs::remove_file(&raw);
@@ -657,7 +655,9 @@ mod tests {
     #[test]
     fn wayland_with_only_x11_grabbers_is_refused() {
         for tool in [CaptureTool::Scrot, CaptureTool::Import] {
-            let e = probe_inner(true, true, Some(tool), true).unwrap_err().to_string();
+            let e = probe_inner(true, true, Some(tool), true)
+                .unwrap_err()
+                .to_string();
             assert!(e.contains("Wayland") && e.contains("spectacle"), "{e}");
         }
         assert!(probe_inner(true, true, Some(CaptureTool::Spectacle), true).is_ok());
@@ -689,8 +689,8 @@ mod tests {
             }
         }
         assert!(!is_blank(&image::DynamicImage::ImageRgb8(img)));
-        assert!(is_blank(&image::DynamicImage::ImageRgb8(image::RgbImage::new(
-            1920, 1080
-        ))));
+        assert!(is_blank(&image::DynamicImage::ImageRgb8(
+            image::RgbImage::new(1920, 1080)
+        )));
     }
 }

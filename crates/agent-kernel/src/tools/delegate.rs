@@ -11,18 +11,15 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use super::registry::{
-    schema_for, Args, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolSpec,
-};
+use super::registry::{schema_for, Args, ToolCtx, ToolError, ToolRegistry, ToolResult, ToolSpec};
 use crate::engine::{Engine, EngineIo};
 use crate::permissions::PermissionGate;
 use agent_ipc::events::UiEvent;
-use agent_llm::types::ChatMessage;
+use agent_llm_core::types::ChatMessage;
 
 /// The child's system prompt — intentionally small: the parent's request
 /// carries the task context; the prompt only sets behavior contract.
-pub const SUBAGENT_PROMPT: &str =
-    "You are a delegated subagent. \
+pub const SUBAGENT_PROMPT: &str = "You are a delegated subagent. \
 A parent agent handed you one scoped task — complete it autonomously and return your findings or \
 result as your final message. Rules: (1) no user is listening — never ask questions, report \
 blockers instead; (2) stay strictly inside the task's scope; (3) verify before claiming done — \
@@ -152,7 +149,7 @@ pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high"
 pub struct ChildModel {
     pub context_window: usize,
     pub thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
-    pub model_params: agent_llm::ModelParams,
+    pub model_params: agent_llm_core::ModelParams,
     pub model_input: Vec<String>,
 }
 
@@ -161,13 +158,13 @@ pub struct ChildModel {
 /// running now, not the model it was born with.
 #[derive(Clone)]
 pub struct ChildRoute {
-    pub provider: Arc<dyn agent_llm::LlmProvider>,
+    pub provider: Arc<dyn agent_llm_core::LlmProvider>,
     pub model: String,
     pub temperature: f32,
     pub context_window: usize,
     pub thinking_level: Option<String>,
     pub thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
-    pub model_params: agent_llm::ModelParams,
+    pub model_params: agent_llm_core::ModelParams,
     pub model_input: Vec<String>,
     /// Models the parent's provider declares, keyed by id — the only ids a
     /// manifest `model:` may name.
@@ -269,7 +266,9 @@ pub struct SubagentSpawner {
     /// kernel cannot name the product's policy (or the contract controllers
     /// it reads) — the host supplies a factory that installs the child's own
     /// pair and wraps it. Defaults to the kernel's no-op policy.
-    policy: std::sync::Arc<dyn Fn(&mut ToolCtx) -> Box<dyn crate::turn_policy::TurnPolicy> + Send + Sync>,
+    policy: std::sync::Arc<
+        dyn Fn(&mut ToolCtx) -> Box<dyn crate::turn_policy::TurnPolicy> + Send + Sync,
+    >,
     host: Arc<dyn SubagentHost>,
 }
 
@@ -300,7 +299,9 @@ impl SubagentSpawner {
     /// also gives the child its own goal/plan contract controllers).
     pub fn with_policy(
         mut self,
-        policy: std::sync::Arc<dyn Fn(&mut ToolCtx) -> Box<dyn crate::turn_policy::TurnPolicy> + Send + Sync>,
+        policy: std::sync::Arc<
+            dyn Fn(&mut ToolCtx) -> Box<dyn crate::turn_policy::TurnPolicy> + Send + Sync,
+        >,
     ) -> Self {
         self.policy = policy;
         self
@@ -565,8 +566,8 @@ impl SubagentSpawner {
         engine.set_policy(policy);
         engine.set_permissions(PermissionGate::for_subagent());
         engine.set_context_window(route.context_window);
-        engine.set_thinking_level(route.thinking_level);
         engine.set_thinking_level_map(route.thinking_level_map);
+        engine.set_thinking_level(route.thinking_level);
         engine.set_model_params(route.model_params);
         engine.set_model_input(route.model_input);
         engine.set_max_tool_rounds(SUBAGENT_TOOL_ROUNDS);
@@ -748,7 +749,9 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         .agent
         .as_deref()
         .map(|n| {
-            spawner.host.resolve(&ctx, n)
+            spawner
+                .host
+                .resolve(&ctx, n)
                 .ok_or_else(|| format!("subagent `{n}` not found in host catalog"))
         })
         .transpose()
@@ -757,7 +760,10 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
         if let Some(unknown) = allow.iter().find(|t| !spawner.knows_tool(t)) {
             return Err(ToolError::Failed(format!(
                 "subagent `{}` lists unknown tool `{unknown}` in `tools:`",
-                resolved.as_ref().map(|s| s.name.as_str()).unwrap_or_default()
+                resolved
+                    .as_ref()
+                    .map(|s| s.name.as_str())
+                    .unwrap_or_default()
             )));
         }
     }
@@ -793,14 +799,7 @@ async fn exec(args: Args, ctx: Arc<ToolCtx>) -> Result<ToolResult, ToolError> {
     let text = if tasks.len() == 1 {
         let label = child_label(agent_name.as_deref(), 0, 1);
         spawner
-            .run(
-                ctx,
-                tasks[0].clone(),
-                parsed.readonly,
-                spec,
-                cancel,
-                &label,
-            )
+            .run(ctx, tasks[0].clone(), parsed.readonly, spec, cancel, &label)
             .await
             .map_err(ToolError::Failed)?
     } else {
@@ -883,13 +882,20 @@ mod tests {
         let foreign = steer_child(8, id, "theirs".into()).unwrap_err();
         let unknown = steer_child(7, 9_999_999, "nope".into()).unwrap_err();
         // Only the id differs between the two messages; the wording must not.
-        let digits = |m: &str| m.chars().filter(|c| !c.is_ascii_digit()).collect::<String>();
+        let digits = |m: &str| {
+            m.chars()
+                .filter(|c| !c.is_ascii_digit())
+                .collect::<String>()
+        };
         assert_eq!(
             digits(&foreign),
             digits(&unknown),
             "a foreign child must look exactly like an unknown one"
         );
-        assert!(rx.try_recv().is_err(), "a foreign steer must not be delivered");
+        assert!(
+            rx.try_recv().is_err(),
+            "a foreign steer must not be delivered"
+        );
     }
 
     /// A session lists only its own running children.
@@ -907,5 +913,4 @@ mod tests {
         assert!(listed.contains(&mine), "{listed:?}");
         assert!(!listed.contains(&theirs), "{listed:?}");
     }
-
 }

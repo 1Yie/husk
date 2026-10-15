@@ -10,10 +10,10 @@ use crate::traits::SandboxConfig;
 /// User overrides for sandboxed command execution.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxLimits {
-    /// Master switch — `None`/`Some(true)` = sandboxed (default);
-    /// `Some(false)` = every process tool runs through the loud
-    /// `none` backend instead (no fs/net containment, no rlimits —
-    /// the same contract as machines without bwrap).
+    /// Master switch — `Some(true)` = sandboxed; `None`/`Some(false)` =
+    /// every process tool runs through the loud `none` backend instead
+    /// (no fs/net containment, no rlimits — the same contract as machines
+    /// without bwrap). Absent means the user never turned it on.
     pub enabled: Option<bool>,
     /// `None` → the command's audit plan decides (default);
     /// `Some(true)` → force-allow network; `Some(false)` → force-deny.
@@ -33,9 +33,9 @@ pub struct SandboxLimits {
 }
 
 impl SandboxLimits {
-    /// Default is ON — a `None` slot means "the user never chose", not off.
+    /// Default is OFF — a `None` slot means "the user never turned it on".
     pub fn enabled(&self) -> bool {
-        self.enabled.unwrap_or(true)
+        self.enabled.unwrap_or(false)
     }
 
     /// `"auto"` / `"allow"` / `"deny"` label for persistence + the settings UI.
@@ -140,4 +140,3 @@ mod tests {
         assert_eq!(cfg.denied_domains, ["evil.example"]);
     }
 }
-

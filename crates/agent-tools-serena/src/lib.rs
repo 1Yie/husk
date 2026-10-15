@@ -28,7 +28,7 @@ pub use catalog::SerenaToolCatalog;
 pub use manager::{manager_for, shutdown, SerenaManager};
 
 use agent_capabilities::WorkspaceCtx;
-use agent_tool::{ToolSpec};
+use agent_tool::ToolSpec;
 
 pub fn spec<C: WorkspaceCtx>() -> ToolSpec<C> {
     tool::spec::<C>()

@@ -12,10 +12,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_kernel::tools::registry::ToolCtx;
 use agent_ipc::UiEvent;
+use agent_kernel::tools::registry::ToolCtx;
 use agent_kernel::turn_policy::{Effect, TurnPolicy, Verdict};
-use agent_llm::ChatMessage;
+use agent_llm_core::ChatMessage;
 
 /// The coding product's contract: plan nudge, goal pushback, blueprint rework,
 /// and the `computer` action cap.
@@ -166,11 +166,7 @@ impl TurnPolicy for CodingPolicy {
         }
     }
 
-    async fn before_dispatch(
-        &self,
-        tool: &str,
-        is_readonly: bool,
-    ) -> Option<String> {
+    async fn before_dispatch(&self, tool: &str, is_readonly: bool) -> Option<String> {
         // The architecture baseline is the workspace as the turn found it,
         // taken lazily right before the first tool that can change it — before
         // any write lands, so it is the state the turn started from. A
@@ -226,10 +222,15 @@ impl TurnPolicy for CodingPolicy {
             }
 
             // Goal contract — in goal mode going quiet undeclared is not a finish.
-            if mode == crate::MODE_GOAL && self.goal_running() && state.goal_followups < MAX_GOAL_FOLLOWUPS {
+            if mode == crate::MODE_GOAL
+                && self.goal_running()
+                && state.goal_followups < MAX_GOAL_FOLLOWUPS
+            {
                 state.goal_followups += 1;
                 return Verdict::Nudge {
-                    hidden: "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。".into(),
+                    hidden:
+                        "目标尚未宣告完成 — 继续推进；确实无法前进时调用 `goal_blocked` 说明阻塞。"
+                            .into(),
                 };
             }
         }
@@ -312,10 +313,7 @@ impl CodingPolicy {
     /// taken lazily by [`TurnPolicy::before_dispatch`] before the first write,
     /// so it is the state the turn started from. A turn with no touched files
     /// and no baseline skips the check.
-    async fn check_blueprint(
-        &self,
-        touched: Vec<PathBuf>,
-    ) -> Option<crate::blueprint::Report> {
+    async fn check_blueprint(&self, touched: Vec<PathBuf>) -> Option<crate::blueprint::Report> {
         let root = self.workspace_root.clone();
         let enabled = self.architecture.get();
         let mut touched = touched;

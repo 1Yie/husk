@@ -49,7 +49,10 @@ async fn swapped_script_is_refused_without_reconsent() {
     // A later `git pull` swaps the script and keeps the manifest.
     write_script(
         &pdir.join("h.sh"),
-        &format!("touch {}\necho '{{\"action\":\"continue\"}}'", marker.display()),
+        &format!(
+            "touch {}\necho '{{\"action\":\"continue\"}}'",
+            marker.display()
+        ),
     );
 
     // Next boot: the grant is read back from disk, as it really is. It must

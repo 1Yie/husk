@@ -16,10 +16,10 @@ use std::time::Duration;
 use futures::FutureExt;
 use serde::Deserialize;
 
+use crate::sandbox_cfg::sandbox_config;
 use agent_capabilities::SandboxCtx;
 use agent_capabilities::WorkspaceCtx;
 use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
-use crate::sandbox_cfg::sandbox_config;
 
 /// Failure-diagnostic budget (≤~300 tokens ≈ 1.2 KB of dense signal).
 const MAX_DIAGNOSTIC_CHARS: usize = 4 * 1024;
@@ -52,21 +52,18 @@ pub fn spec<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
     }
 }
 
-async fn exec<C: WorkspaceCtx + SandboxCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx + SandboxCtx>(
+    args: Args,
+    ctx: Arc<C>,
+) -> Result<ToolResult, ToolError> {
     let parsed: TestRunnerArgs = serde_json::from_value(args)
         .map_err(|e| ToolError::Args(format!("smart_test_runner args: {e}")))?;
 
     // Same dispatch as `bash`: audit first, derive the config, run through the
     // backend (which owns env sanitization, limits and timeout tree-kill).
-    let verdict =
-        agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()?));
+    let verdict = agent_sandbox::audit_command_scoped(&parsed.command, Some(ctx.root()?));
     let sandbox = ctx.sandbox()?;
-    let cfg = sandbox_config(
-        &verdict,
-        ctx.root()?,
-        TIMEOUT,
-        &ctx.sandbox_limits(),
-    );
+    let cfg = sandbox_config(&verdict, ctx.root()?, TIMEOUT, &ctx.sandbox_limits());
 
     let out = sandbox
         .run_command(&parsed.command, &[], &cfg)

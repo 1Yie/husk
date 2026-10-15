@@ -220,5 +220,4 @@ mod tests {
         assert_eq!(out.status, 0);
         assert!(out.stdout.contains("ready"));
     }
-
 }

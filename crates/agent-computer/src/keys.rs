@@ -74,7 +74,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             *log.borrow(),
-            ["down ctrl", "down shift", "down a", "up a", "up shift", "up ctrl"]
+            [
+                "down ctrl",
+                "down shift",
+                "down a",
+                "up a",
+                "up shift",
+                "up ctrl"
+            ]
         );
     }
 

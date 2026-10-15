@@ -138,7 +138,17 @@ pub struct LaunchSpec {
 /// still start any other program, which is why it is approved on its own
 /// terms (see `permissions.rs`).
 const SHELLS: &[&str] = &[
-    "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "cmd", "powershell", "pwsh",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "ksh",
+    "csh",
+    "tcsh",
+    "cmd",
+    "powershell",
+    "pwsh",
 ];
 
 /// Split a `launch` command into program + args **without a shell**.
@@ -213,7 +223,9 @@ pub fn parse_launch(command: &str) -> Result<LaunchSpec> {
         .to_ascii_lowercase();
     let base = base.strip_suffix(".exe").unwrap_or(&base);
     if SHELLS.contains(&base) {
-        bail!("`{program}` is a shell — launch starts applications; run shell commands with `bash`");
+        bail!(
+            "`{program}` is a shell — launch starts applications; run shell commands with `bash`"
+        );
     }
     Ok(LaunchSpec { program, args })
 }
@@ -317,7 +329,13 @@ mod tests {
         assert_eq!(fit_dimensions(1080, 1920, MAX_EDGE), (804, 1429));
         // A frame already inside both bounds is untouched.
         assert_eq!(fit_dimensions(1280, 720, MAX_EDGE), (1280, 720));
-        for (w, h) in [(3840, 2160), (2560, 1600), (5120, 1440), (1081, 1921), (7680, 4320)] {
+        for (w, h) in [
+            (3840, 2160),
+            (2560, 1600),
+            (5120, 1440),
+            (1081, 1921),
+            (7680, 4320),
+        ] {
             let (tw, th) = fit_dimensions(w, h, MAX_EDGE);
             assert!(tw as u64 * th as u64 <= MAX_PIXELS, "{w}x{h} -> {tw}x{th}");
             assert!(tw.max(th) <= MAX_EDGE, "{w}x{h} -> {tw}x{th}");
@@ -388,7 +406,12 @@ mod tests {
 
     #[test]
     fn launch_refuses_a_second_command_riding_a_newline() {
-        for cmd in ["kwrite\ntouch /tmp/x", "kwrite\rtouch /tmp/x", "kwrite\0x", "kwrite\x1b[0m"] {
+        for cmd in [
+            "kwrite\ntouch /tmp/x",
+            "kwrite\rtouch /tmp/x",
+            "kwrite\0x",
+            "kwrite\x1b[0m",
+        ] {
             let e = parse_launch(cmd).unwrap_err().to_string();
             assert!(e.contains("control character"), "{cmd:?}: {e}");
         }
@@ -413,8 +436,14 @@ mod tests {
     #[test]
     fn launch_rejects_empty_and_unterminated_quotes() {
         assert!(parse_launch("   ").is_err());
-        assert!(parse_launch("app 'oops").unwrap_err().to_string().contains("unterminated"));
-        assert!(parse_launch("app \"oops").unwrap_err().to_string().contains("unterminated"));
+        assert!(parse_launch("app 'oops")
+            .unwrap_err()
+            .to_string()
+            .contains("unterminated"));
+        assert!(parse_launch("app \"oops")
+            .unwrap_err()
+            .to_string()
+            .contains("unterminated"));
     }
 
     #[test]

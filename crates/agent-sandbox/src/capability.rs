@@ -306,12 +306,7 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
                 .args
                 .iter()
                 .any(|a| matches!(a.as_str(), "dev" | "start" | "serve"));
-            if is_dev_serve
-                && matches!(
-                    prog,
-                    "npm" | "yarn" | "pnpm" | "bun"
-                )
-            {
+            if is_dev_serve && matches!(prog, "npm" | "yarn" | "pnpm" | "bun") {
                 caps.push(Capability::Network { target: None });
             }
             if matches!(
@@ -364,10 +359,9 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         // the plan gives them shared network (egress stays unrestricted
         // for them, but `persistent` services need inbound anyway).
         "nginx" | "httpd" | "apache2" | "caddy" | "lighttpd" | "mysqld" | "mariadbd"
-        | "postgres" | "postmaster" | "redis-server" | "memcached" | "mongod"
-        | "influxd" | "sshd" | "rabbitmq-server" | "prometheus" | "minio"
-        | "uvicorn" | "gunicorn" | "hypercorn" | "daphne" | "vite" | "http-server"
-        | "serve" | "openresty" => {
+        | "postgres" | "postmaster" | "redis-server" | "memcached" | "mongod" | "influxd"
+        | "sshd" | "rabbitmq-server" | "prometheus" | "minio" | "uvicorn" | "gunicorn"
+        | "hypercorn" | "daphne" | "vite" | "http-server" | "serve" | "openresty" => {
             caps.push(Capability::Network { target: None });
         }
         // `php -S 127.0.0.1:8080` — built-in dev server.
@@ -384,18 +378,22 @@ fn extract_command(cmd: &Command, caps: &mut Vec<Capability>) {
         }
         // Subcommand servers — `flask run`, `rails s`, `hugo server`,
         // `next dev`, `ng serve`, `streamlit run`, `jupyter lab`, …
-        "flask" | "rails" | "hugo" | "jekyll" | "next" | "nuxt" | "astro" | "ng"
-        | "expo" | "streamlit" | "jupyter" | "wp" | "hexo" | "zola"
-            if cmd
-                .args
-                .iter()
-                .any(|a| {
-                    matches!(
-                        a.as_str(),
-                        "run" | "s" | "server" | "serve" | "dev" | "start" | "lab"
-                            | "notebook" | "develop"
-                    )
-                }) =>
+        "flask" | "rails" | "hugo" | "jekyll" | "next" | "nuxt" | "astro" | "ng" | "expo"
+        | "streamlit" | "jupyter" | "wp" | "hexo" | "zola"
+            if cmd.args.iter().any(|a| {
+                matches!(
+                    a.as_str(),
+                    "run"
+                        | "s"
+                        | "server"
+                        | "serve"
+                        | "dev"
+                        | "start"
+                        | "lab"
+                        | "notebook"
+                        | "develop"
+                )
+            }) =>
         {
             caps.push(Capability::Network { target: None });
         }

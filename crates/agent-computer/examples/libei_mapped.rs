@@ -12,7 +12,9 @@ async fn main() -> anyhow::Result<()> {
     let (x, y): (i32, i32) = (args[1].parse()?, args[2].parse()?);
     let backend = detect_backend();
     println!("backend={}", backend.id());
-    let dest = std::env::temp_dir().join("agent-libei-check").join("shot.png");
+    let dest = std::env::temp_dir()
+        .join("agent-libei-check")
+        .join("shot.png");
     let meta = backend.screenshot(&dest).await?;
     println!("display={:?} image={:?}", meta.display, meta.image);
     let c = meta.capture();

@@ -108,7 +108,9 @@ async fn proxied_mode_still_reaches_its_proxy() {
     assert!(
         code.len() == 3 && code != "000",
         "proxy was unreachable (http_code={code:?}, status={}, stdout={:?}, stderr={:?})",
-        out.status, out.stdout, out.stderr
+        out.status,
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -127,7 +129,12 @@ async fn home_sockets_are_masked_but_the_workspace_is_not() {
     };
     let dir = tempfile::Builder::new()
         .prefix("s3-home-")
-        .tempdir_in(home.join(".config").exists().then(|| home.join(".config")).unwrap_or(home.clone()))
+        .tempdir_in(
+            home.join(".config")
+                .exists()
+                .then(|| home.join(".config"))
+                .unwrap_or(home.clone()),
+        )
         .unwrap();
     let sock = dir.path().join("daemon.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -193,5 +200,8 @@ async fn proxy_listener_is_ready_when_the_command_starts() {
             not_ready += 1;
         }
     }
-    assert_eq!(not_ready, 0, "listener was not ready in {not_ready}/40 runs");
+    assert_eq!(
+        not_ready, 0,
+        "listener was not ready in {not_ready}/40 runs"
+    );
 }

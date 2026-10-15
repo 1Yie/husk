@@ -10,10 +10,10 @@ use std::sync::Arc;
 use futures::FutureExt;
 use serde_json::json;
 
-use agent_capabilities::WorkspaceCtx;
-use agent_tool::{schema_for, ExecFn, ToolClass, ToolError, ToolResult, ToolSpec};
 use super::catalog::DETAIL_ACTION;
 use super::manager::manager_for;
+use agent_capabilities::WorkspaceCtx;
+use agent_tool::{schema_for, ExecFn, ToolClass, ToolError, ToolResult, ToolSpec};
 
 /// `serena` meta-tool args — call one Serena tool by name.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]

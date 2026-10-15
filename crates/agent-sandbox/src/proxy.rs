@@ -28,7 +28,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::netpolicy::{Decision, EgressPolicy, ResolvedGuard, local_interface_addresses};
+use crate::netpolicy::{local_interface_addresses, Decision, EgressPolicy, ResolvedGuard};
 
 /// Proxy auth password shared by every run of this process. The username
 /// slot carries the per-run key (and is what selects the policy).
@@ -101,7 +101,11 @@ fn fresh_key() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("run-{}-{n}-{:x}", std::process::id(), t.wrapping_mul(0x2545f4914f6cdd1d) ^ n as u128)
+    format!(
+        "run-{}-{n}-{:x}",
+        std::process::id(),
+        t.wrapping_mul(0x2545f4914f6cdd1d) ^ n as u128
+    )
 }
 
 fn fresh_token() -> String {
@@ -130,10 +134,8 @@ impl SandboxProxy {
             l.set_nonblocking(true)?;
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &unix_path,
-                    std::fs::Permissions::from_mode(0o600),
-                );
+                let _ =
+                    std::fs::set_permissions(&unix_path, std::fs::Permissions::from_mode(0o600));
             }
             l
         };

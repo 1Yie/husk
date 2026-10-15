@@ -8,12 +8,14 @@
 
 use std::sync::Arc;
 
-use agent_capabilities::WorkspaceCtx;
 use crate::blueprint::{render_node, Blueprint, BLUEPRINT_DIR};
+use agent_capabilities::WorkspaceCtx;
 use futures::FutureExt;
 use serde::Deserialize;
 
-use agent_kernel::tools::registry::{schema_for, Args, ToolClass, ToolCtx, ToolError, ToolResult, ToolSpec};
+use agent_kernel::tools::registry::{
+    schema_for, Args, ToolClass, ToolCtx, ToolError, ToolResult, ToolSpec,
+};
 
 /// Direct hits `locate` returns at most.
 const LOCATE_LIMIT: usize = 5;

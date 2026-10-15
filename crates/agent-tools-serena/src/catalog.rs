@@ -8,8 +8,8 @@
 
 use serde_json::Value;
 
-use agent_tool::ToolError;
 use super::bridge::{McpBridge, SerenaToolInfo};
+use agent_tool::ToolError;
 
 #[derive(Debug, Default)]
 pub struct SerenaToolCatalog {

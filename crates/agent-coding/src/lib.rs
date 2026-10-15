@@ -13,9 +13,9 @@ pub mod blueprint_tool;
 pub mod computer_policy;
 pub mod goal;
 pub mod plan;
+pub mod policy;
 pub mod remember;
 pub mod skill;
-pub mod policy;
 pub mod tracker;
 
 use std::sync::Arc;

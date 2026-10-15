@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use agent_kernel::engine::{Engine, EngineIo};
 use agent_kernel::permissions::PermissionGate;
 use agent_kernel::tools::registry::{ToolClass, ToolCtx, ToolRegistry, ToolResult, ToolSpec};
-use agent_llm::{ChatMessage, LlmProvider, ModelParams, StreamChunk};
+use agent_llm_core::{ChatMessage, LlmProvider, ModelParams, StreamChunk};
 use futures::FutureExt;
 
 /// Run a command on a remote host. It opens no local process and asks for no
@@ -98,7 +98,7 @@ fn registry() -> ToolRegistry {
 /// card, so this worker runs its own tools without asking. The kernel's
 /// default (`default` mode) would park every non-readonly call on an approval
 /// nobody can give.
-fn engine(provider: Arc<dyn agent_llm::LlmProvider>) -> Engine {
+fn engine(provider: Arc<dyn agent_llm_core::LlmProvider>) -> Engine {
     // A bare context: no workspace, sandbox, desktop, session or plugins.
     let ctx = Arc::new(ToolCtx::new());
     let mut engine = Engine::new(provider, Arc::new(registry()), ctx, "scripted", 0.0);
@@ -128,7 +128,7 @@ impl LlmProvider for Scripted {
         _temperature: f32,
         _reasoning_effort: Option<&str>,
         _params: &ModelParams,
-    ) -> anyhow::Result<agent_llm::BoxStream<StreamChunk>> {
+    ) -> anyhow::Result<agent_llm_core::BoxStream<StreamChunk>> {
         let names = tools
             .as_ref()
             .and_then(|t| t.as_array())

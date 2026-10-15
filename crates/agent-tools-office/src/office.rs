@@ -53,12 +53,7 @@ async fn run<C: WorkspaceCtx + SandboxCtx>(
     let cmd = format!("OFFICECLI_NO_AUTO_RESIDENT=1 {}", shell_join(&argv));
     let verdict = agent_sandbox::audit_command_scoped(&cmd, Some(ctx.root()?));
     let sandbox = ctx.sandbox()?;
-    let cfg = sandbox_config(
-        &verdict,
-        ctx.root()?,
-        timeout,
-        &ctx.sandbox_limits(),
-    );
+    let cfg = sandbox_config(&verdict, ctx.root()?, timeout, &ctx.sandbox_limits());
 
     let output = sandbox
         .run_command(&cmd, &[], &cfg)
@@ -406,10 +401,7 @@ fn office_create<C: WorkspaceCtx + SandboxCtx>() -> ToolSpec<C> {
                 // own `<slug>/` folder, which usually does not exist yet.
                 if let Some(parent) = std::path::Path::new(&f).parent() {
                     std::fs::create_dir_all(parent).map_err(|e| {
-                        ToolError::Failed(format!(
-                            "office_create: mkdir {}: {e}",
-                            parent.display()
-                        ))
+                        ToolError::Failed(format!("office_create: mkdir {}: {e}", parent.display()))
                     })?;
                 }
                 run(

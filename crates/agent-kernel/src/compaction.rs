@@ -13,7 +13,7 @@
 //! Token estimate: ASCII ≈4 chars/token, non-ASCII ≈1 token/char — the
 //! provider's actual `prompt_tokens` overrides it whenever reported.
 
-use agent_llm::types::{ChatMessage, Role};
+use agent_llm_core::types::{ChatMessage, Role};
 
 /// What one completed compaction pass did — drives the UI card and the
 /// session's post-compaction accounting.
@@ -418,7 +418,7 @@ fn abbreviate(s: &str, n: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_llm::types::NoticeKind;
+    use agent_llm_core::types::NoticeKind;
 
     fn msg(role: Role, text: &str) -> ChatMessage {
         ChatMessage {
@@ -463,7 +463,7 @@ mod tests {
             ChatMessage {
                 role: Role::Assistant,
                 content: Some("calling".into()),
-                tool_calls: Some(vec![agent_llm::types::ToolCall {
+                tool_calls: Some(vec![agent_llm_core::types::ToolCall {
                     id: "1".into(),
                     name: "list_dir".into(),
                     arguments: "{\"path\":\".\"}".into(),
@@ -491,7 +491,7 @@ mod tests {
             ChatMessage {
                 role: Role::Assistant,
                 content: Some("ok".into()),
-                tool_calls: Some(vec![agent_llm::types::ToolCall {
+                tool_calls: Some(vec![agent_llm_core::types::ToolCall {
                     id: "1".into(),
                     name: "list_dir".into(),
                     arguments: "{\"path\":\".\"}".into(),
@@ -541,12 +541,12 @@ mod tests {
                 role: Role::Assistant,
                 content: Some("calling".into()),
                 tool_calls: Some(vec![
-                    agent_llm::types::ToolCall {
+                    agent_llm_core::types::ToolCall {
                         id: "call_a".into(),
                         name: "bash".into(),
                         arguments: "{}".into(),
                     },
-                    agent_llm::types::ToolCall {
+                    agent_llm_core::types::ToolCall {
                         id: "call_b".into(),
                         name: "bash".into(),
                         arguments: "{}".into(),
@@ -623,7 +623,7 @@ mod tests {
         h.push(ChatMessage {
             role: Role::Assistant,
             content: None,
-            tool_calls: Some(vec![agent_llm::types::ToolCall {
+            tool_calls: Some(vec![agent_llm_core::types::ToolCall {
                 id: "call_big".into(),
                 name: "bash".into(),
                 arguments: "{}".into(),
@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn render_for_summary_includes_tool_calls() {
         let mut m = msg(Role::Assistant, "checking");
-        m.tool_calls = Some(vec![agent_llm::types::ToolCall {
+        m.tool_calls = Some(vec![agent_llm_core::types::ToolCall {
             id: "c1".into(),
             name: "fs_read".into(),
             arguments: "{\"path\":\"a.rs\"}".into(),
@@ -709,7 +709,7 @@ mod tests {
     fn frame_row(id: &str) -> ChatMessage {
         let mut m = msg(Role::Tool, "screenshot saved: shot.png");
         m.tool_call_id = Some(id.into());
-        m.images = vec![agent_llm::types::ImageRef::for_path("/ws/shot.png".into()).unwrap()];
+        m.images = vec![agent_llm_core::types::ImageRef::for_path("/ws/shot.png".into()).unwrap()];
         m
     }
 
@@ -734,7 +734,7 @@ mod tests {
     #[test]
     fn user_attached_images_are_never_pruned() {
         let mut user = msg(Role::User, "look at this");
-        user.images = vec![agent_llm::types::ImageRef::for_path("/ws/a.png".into()).unwrap()];
+        user.images = vec![agent_llm_core::types::ImageRef::for_path("/ws/a.png".into()).unwrap()];
         let mut h = vec![msg(Role::System, "sys"), user];
         for i in 0..4 {
             h.push(frame_row(&format!("c{i}")));

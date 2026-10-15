@@ -41,7 +41,8 @@ impl WriteTracker {
     /// Install this tracker on the context: as the file tools' write observer,
     /// and as itself so [`crate::policy::CodingPolicy::from_ctx`] can find it.
     pub fn install(&self, ctx: &mut agent_kernel::tools::registry::ToolCtx) {
-        ctx.ext.insert(Arc::new(WriteObserverSlot(Arc::new(self.clone()))));
+        ctx.ext
+            .insert(Arc::new(WriteObserverSlot(Arc::new(self.clone()))));
         ctx.ext.insert(Arc::new(self.clone()));
     }
 }

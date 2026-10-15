@@ -257,11 +257,21 @@ impl CommandHook {
             });
         }
 
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(hook = %self.id(), "hook spawn failed: {e}");
-                return None;
+        // `ETXTBSY` (Linux): a sibling thread forked while the hook script's
+        // write fd was still open, so exec is refused for a few microseconds.
+        // Transient by nature — retry briefly rather than drop the hook.
+        let mut attempts = 0u32;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(c) => break c,
+                Err(e) if e.raw_os_error() == Some(26) && attempts < 5 => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(10 * u64::from(attempts))).await;
+                }
+                Err(e) => {
+                    warn!(hook = %self.id(), "hook spawn failed: {e}");
+                    return None;
+                }
             }
         };
 

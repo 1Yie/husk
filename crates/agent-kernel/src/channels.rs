@@ -19,7 +19,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use agent_ipc::UiEvent;
-use agent_llm::StreamChunk;
+use agent_llm_core::StreamChunk;
 
 /// Internal sampler→session feedback — the kernel-internal counterpart that
 /// carries `StreamChunk` plus sampler policy notices. NOT on the wire.

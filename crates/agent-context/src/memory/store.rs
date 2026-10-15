@@ -210,7 +210,11 @@ impl MemoryStore {
                 .map(|(k, _)| k.value())
                 .collect();
             for id in ids {
-                let Some(raw) = facts.get(id).map_err(|e| e.to_string())?.map(|v| v.value().to_vec()) else {
+                let Some(raw) = facts
+                    .get(id)
+                    .map_err(|e| e.to_string())?
+                    .map(|v| v.value().to_vec())
+                else {
                     continue;
                 };
                 let Ok(mut f) = serde_json::from_slice::<Fact>(&raw) else {
@@ -1070,8 +1074,10 @@ mod tests {
     fn chinese_near_duplicate_facts_merge() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
-        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6).unwrap();
-        s.upsert_fact("项目使用 pnpm 而不是 npm 来安装依赖", 0.6).unwrap();
+        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6)
+            .unwrap();
+        s.upsert_fact("项目使用 pnpm 而不是 npm 来安装依赖", 0.6)
+            .unwrap();
         assert_eq!(s.list_facts(20).unwrap().len(), 1);
     }
 
@@ -1087,12 +1093,18 @@ mod tests {
     fn chinese_recall_follows_shared_wording() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
-        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6).unwrap();
-        s.upsert_fact("测试命令是 cargo test --workspace", 0.6).unwrap();
+        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6)
+            .unwrap();
+        s.upsert_fact("测试命令是 cargo test --workspace", 0.6)
+            .unwrap();
 
         let install = s.recall_facts("怎么安装依赖", 1).unwrap();
         let test = s.recall_facts("测试命令怎么跑", 1).unwrap();
-        assert!(install[0].text.contains("安装依赖"), "{:?}", install[0].text);
+        assert!(
+            install[0].text.contains("安装依赖"),
+            "{:?}",
+            install[0].text
+        );
         assert!(test[0].text.contains("测试命令"), "{:?}", test[0].text);
     }
 
@@ -1106,14 +1118,19 @@ mod tests {
         let path = dir.path().join("m.db");
         let db_key = {
             let s = MemoryStore::open(&path, dir.path()).unwrap();
-            s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6).unwrap();
+            s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6)
+                .unwrap();
             let f = s.list_facts(10).unwrap().remove(0);
             // Simulate a schema-1 file: a stale vector and the old stamp.
             let stale = vec![0.0f32; 256];
             let w = s.db.begin_write().unwrap();
             {
                 let mut t = w.open_table(FACTS).unwrap();
-                let bytes = serde_json::to_vec(&Fact { embedding: stale, ..f.clone() }).unwrap();
+                let bytes = serde_json::to_vec(&Fact {
+                    embedding: stale,
+                    ..f.clone()
+                })
+                .unwrap();
                 t.insert(f.id, bytes.as_slice()).unwrap();
             }
             {
@@ -1135,7 +1152,12 @@ mod tests {
         assert_eq!(f.embedding, s.embed(&f.text), "vector re-embedded");
         assert!(f.embedding.iter().any(|x| *x != 0.0), "not left stale");
         let r = s.db.begin_read().unwrap();
-        let v = r.open_table(META).unwrap().get("schema_version").unwrap().unwrap();
+        let v = r
+            .open_table(META)
+            .unwrap()
+            .get("schema_version")
+            .unwrap()
+            .unwrap();
         assert_eq!(v.value(), SCHEMA_VERSION.to_string().as_bytes());
     }
 }
@@ -1171,7 +1193,8 @@ mod relevance_tests {
     fn related_query_still_injects_the_fact() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
-        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6).unwrap();
+        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6)
+            .unwrap();
         let block = s.memory_block("怎么安装依赖").unwrap();
         assert!(block.contains("pnpm"), "related fact dropped: {block:?}");
     }

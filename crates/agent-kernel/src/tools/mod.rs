@@ -2,12 +2,10 @@
 
 pub mod ask;
 pub mod batch;
-pub mod delegate;
 pub mod builtins;
+pub mod delegate;
 pub mod host_slots;
 pub mod registry;
 pub mod todo;
 
-pub use registry::{
-    Args, ToolContext, ToolCtx, ToolRegistry, ToolResult, ToolSpec,
-};
+pub use registry::{Args, ToolContext, ToolCtx, ToolRegistry, ToolResult, ToolSpec};

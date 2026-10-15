@@ -13,8 +13,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use agent_ipc::{AgentState, UiEvent};
-use agent_llm::sampler::{SampleRequest, Sampler, SamplerEvent};
-use agent_llm::types::{ChatMessage, StreamChunk, ToolCallAssembler};
+use agent_llm_core::sampler::{SampleRequest, Sampler, SamplerEvent};
+use agent_llm_core::types::{ChatMessage, StreamChunk, ToolCallAssembler};
 use tokio::sync::mpsc;
 use tracing::instrument;
 
@@ -86,11 +86,7 @@ impl crate::turn_policy::TurnView for EngineTurnView {
 
 /// Land one policy [`Effect`](crate::turn_policy::Effect): history row first,
 /// then the UI event, exactly as the policy handed them over.
-fn land_effect(
-    effect: crate::turn_policy::Effect,
-    history: &mut Vec<ChatMessage>,
-    io: &EngineIo,
-) {
+fn land_effect(effect: crate::turn_policy::Effect, history: &mut Vec<ChatMessage>, io: &EngineIo) {
     if let Some(row) = effect.history {
         history.push(row);
     }
@@ -189,12 +185,12 @@ pub struct Engine {
     /// Per-model wire settings from config (`maxTokens`, `samplingParams`,
     /// model-level `compat`) — swapped alongside the model on a hot-swap so
     /// the next request carries the new model's own caps.
-    model_params: agent_llm::ModelParams,
+    model_params: agent_llm_core::ModelParams,
 }
 
 impl Engine {
     pub fn new(
-        provider: Arc<dyn agent_llm::LlmProvider>,
+        provider: Arc<dyn agent_llm_core::LlmProvider>,
         registry: Arc<ToolRegistry>,
         ctx: Arc<ToolCtx>,
         model: impl Into<String>,
@@ -227,19 +223,19 @@ impl Engine {
             policy: Box::new(crate::turn_policy::NoopPolicy),
             thinking_level: Arc::new(std::sync::RwLock::new(None)),
             thinking_level_map: None,
-            model_params: agent_llm::ModelParams::EMPTY,
+            model_params: agent_llm_core::ModelParams::EMPTY,
         }
     }
 
     /// Install the active model's per-model wire settings (`maxTokens`,
     /// `samplingParams`, model-level `compat`) — the session actor resolves
     /// these from config at spawn and on every model switch.
-    pub fn set_model_params(&mut self, params: agent_llm::ModelParams) {
+    pub fn set_model_params(&mut self, params: agent_llm_core::ModelParams) {
         self.model_params = params;
     }
 
     /// The active model's per-model wire settings.
-    pub fn model_params(&self) -> &agent_llm::ModelParams {
+    pub fn model_params(&self) -> &agent_llm_core::ModelParams {
         &self.model_params
     }
 
@@ -249,11 +245,28 @@ impl Engine {
         self.max_tool_rounds = rounds;
     }
 
-    /// Set thinking / reasoning intensity level.
+    /// Set reasoning intensity. Explicit model maps constrain every caller;
+    /// map-less generic engines may still supply an explicit provider effort.
     pub fn set_thinking_level(&mut self, level: Option<String>) {
+        let level = if self.thinking_level_map.is_some() {
+            agent_llm_core::normalize_thinking_level(
+                level.as_deref(),
+                self.thinking_level_map.as_ref(),
+            )
+        } else {
+            level
+        };
         if let Ok(mut w) = self.thinking_level.write() {
             *w = level;
         }
+    }
+
+    /// Restore a model-bound selection; no map means no selectable level.
+    pub fn set_model_thinking_level(&mut self, level: Option<String>) {
+        self.set_thinking_level(agent_llm_core::normalize_thinking_level(
+            level.as_deref(),
+            self.thinking_level_map.as_ref(),
+        ));
     }
 
     /// Current thinking level if set.
@@ -273,6 +286,9 @@ impl Engine {
         map: Option<std::collections::HashMap<String, Option<String>>>,
     ) {
         self.thinking_level_map = map;
+        // Model switches and config reloads must update the shared live slot
+        // before model_info or the next request can observe an old tier.
+        self.set_model_thinking_level(self.thinking_level());
     }
 
     /// Resolves the effective wire reasoning effort ("low", "medium", "high", "max" or None).
@@ -289,19 +305,16 @@ impl Engine {
             return None;
         }
         if let Some(map) = &self.thinking_level_map {
-            if let Some(val) = map.get(level) {
-                return val.clone();
-            }
+            // The final shared-slot gate also rejects undeclared/null tiers.
+            return map
+                .get(level)?
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+                .cloned();
         }
-        match level {
-            "minimal" => Some("minimal".into()),
-            "low" => Some("low".into()),
-            "medium" => Some("medium".into()),
-            "high" => Some("high".into()),
-            "xhigh" => Some("xhigh".into()),
-            "max" => Some("max".into()),
-            other => Some(other.to_string()),
-        }
+        // Map-less generic kernel callers can set an explicit provider effort.
+        // Model-bound host paths use set_model_thinking_level instead.
+        Some(level.to_string())
     }
 
     /// Install the host's external tool router.
@@ -464,7 +477,7 @@ impl Engine {
     }
 
     /// Hot-swap provider for the next turn.
-    pub fn set_provider(&mut self, provider: Arc<dyn agent_llm::LlmProvider>) {
+    pub fn set_provider(&mut self, provider: Arc<dyn agent_llm_core::LlmProvider>) {
         self.sampler.set_provider(provider);
     }
 
@@ -478,7 +491,7 @@ impl Engine {
     pub fn set_fallbacks(
         &mut self,
         primary: &str,
-        chain: Vec<(String, Arc<dyn agent_llm::LlmProvider>)>,
+        chain: Vec<(String, Arc<dyn agent_llm_core::LlmProvider>)>,
     ) {
         self.sampler.set_primary_name(primary);
         self.sampler.set_fallbacks(chain);
@@ -723,7 +736,7 @@ impl Engine {
             let res = tokio::select! {
                 biased;
                 _ = cancel_watch => {
-                    Err(agent_llm::sampler::SampleError::Stream(CANCEL_ERR.into()))
+                    Err(agent_llm_core::sampler::SampleError::Stream(CANCEL_ERR.into()))
                 }
                 r = self.sampler.sample(
                     req,
@@ -745,7 +758,7 @@ impl Engine {
                             StreamChunk::ReasoningDelta(t) => {
                                 round_reasoning.push_str(t);
                                 pending_reasoning_delta.push_str(t);
-                                let now = agent_llm::types::now_ms();
+                                let now = agent_llm_core::types::now_ms();
                                 if reasoning_first.is_none() {
                                     reasoning_first = Some(now);
                                 }
@@ -997,7 +1010,7 @@ impl Engine {
                 self.hooks.run_on_response(&mut final_text).await;
 
                 history.push(ChatMessage {
-                    role: agent_llm::Role::Assistant,
+                    role: agent_llm_core::Role::Assistant,
                     content: if final_text.is_empty() {
                         None
                     } else {
@@ -1007,7 +1020,7 @@ impl Engine {
                     tool_call_id: None,
                     is_error: None,
                     notice: None,
-                    ts: Some(agent_llm::types::now_ms()),
+                    ts: Some(agent_llm_core::types::now_ms()),
                     images: Vec::new(),
                     reasoning: Some(reasoning),
                     duration_ms: reasoning_ms,
@@ -1027,7 +1040,7 @@ impl Engine {
             }
 
             history.push(ChatMessage {
-                role: agent_llm::Role::Assistant,
+                role: agent_llm_core::Role::Assistant,
                 content: if round_text.is_empty() {
                     None
                 } else {
@@ -1037,7 +1050,7 @@ impl Engine {
                 tool_call_id: None,
                 is_error: None,
                 notice: None,
-                ts: Some(agent_llm::types::now_ms()),
+                ts: Some(agent_llm_core::types::now_ms()),
                 images: Vec::new(),
                 reasoning: Some(reasoning),
                 duration_ms: reasoning_ms,
@@ -1102,46 +1115,47 @@ impl Engine {
                     .map(|f| f(&args, &self.ctx))
                     .unwrap_or_default();
                 let review_summary = review.summary.take();
-                let args_preview = review_summary.clone().unwrap_or_else(|| args
-                    .get("path")
-                    .or_else(|| args.get("command"))
-                    .or_else(|| args.get("pattern"))
-                    .or_else(|| args.get("query"))
-                    .or_else(|| args.get("file"))
-                    .or_else(|| args.get("action"))
-                    .or_else(|| args.get("url"))
-                    .or_else(|| args.get("target"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| {
-                        let s = s.trim();
-                        if s.chars().count() > 4096 {
-                            let mut chars = s.chars();
-                            let prefix: String = chars.by_ref().take(4096).collect();
-                            format!("{prefix}...")
-                        } else {
-                            s.to_string()
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        if let Some(obj) = args.as_object() {
-                            for v in obj.values() {
-                                if let Some(s) = v.as_str() {
-                                    let s = s.trim();
-                                    if !s.is_empty() {
-                                        if s.chars().count() > 4096 {
-                                            let mut chars = s.chars();
-                                            let prefix: String =
-                                                chars.by_ref().take(4096).collect();
-                                            return format!("{prefix}...");
-                                        } else {
-                                            return s.to_string();
+                let args_preview = review_summary.clone().unwrap_or_else(|| {
+                    args.get("path")
+                        .or_else(|| args.get("command"))
+                        .or_else(|| args.get("pattern"))
+                        .or_else(|| args.get("query"))
+                        .or_else(|| args.get("file"))
+                        .or_else(|| args.get("action"))
+                        .or_else(|| args.get("url"))
+                        .or_else(|| args.get("target"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            let s = s.trim();
+                            if s.chars().count() > 4096 {
+                                let mut chars = s.chars();
+                                let prefix: String = chars.by_ref().take(4096).collect();
+                                format!("{prefix}...")
+                            } else {
+                                s.to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| {
+                            if let Some(obj) = args.as_object() {
+                                for v in obj.values() {
+                                    if let Some(s) = v.as_str() {
+                                        let s = s.trim();
+                                        if !s.is_empty() {
+                                            if s.chars().count() > 4096 {
+                                                let mut chars = s.chars();
+                                                let prefix: String =
+                                                    chars.by_ref().take(4096).collect();
+                                                return format!("{prefix}...");
+                                            } else {
+                                                return s.to_string();
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        String::new()
-                    }));
+                            String::new()
+                        })
+                });
                 let _ = io.ui_tx.send(UiEvent::ToolCallStarted {
                     name: call.name.clone(),
                     args_preview,
@@ -1338,36 +1352,37 @@ impl Engine {
                         // K3: approval and cancel/policy change can race —
                         // `wait_for_decision` returns a verdict that was already
                         // in the slot. Re-check both right before side effects.
-                        let post_deny: Option<String> =
-                            if io.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                                Some(format!("{} cancelled before it ran", call.name))
-                            } else if let Decision::Deny { reason } = {
-                                let gate =
-                                    self.permissions.read().unwrap_or_else(|e| e.into_inner());
-                                let d = gate.decide(
-                                    &call.name,
-                                    class,
-                                    is_readonly,
-                                    review.risk,
-                                    diff_summary.clone(),
-                                );
-                                match &action {
-                                    Some(a) => {
-                                        // A revoke that landed while the card was open
-                                        // still wins; an action that was approved by
-                                        // this card is not re-asked here.
-                                        match gate.escalate(&call.name, a, d, diff_summary.clone()) {
-                                            Decision::Ask { .. } => Decision::Allow,
-                                            d => d,
-                                        }
+                        let post_deny: Option<String> = if io
+                            .cancel
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            Some(format!("{} cancelled before it ran", call.name))
+                        } else if let Decision::Deny { reason } = {
+                            let gate = self.permissions.read().unwrap_or_else(|e| e.into_inner());
+                            let d = gate.decide(
+                                &call.name,
+                                class,
+                                is_readonly,
+                                review.risk,
+                                diff_summary.clone(),
+                            );
+                            match &action {
+                                Some(a) => {
+                                    // A revoke that landed while the card was open
+                                    // still wins; an action that was approved by
+                                    // this card is not re-asked here.
+                                    match gate.escalate(&call.name, a, d, diff_summary.clone()) {
+                                        Decision::Ask { .. } => Decision::Allow,
+                                        d => d,
                                     }
-                                    None => d,
                                 }
-                            } {
-                                Some(reason)
-                            } else {
-                                None
-                            };
+                                None => d,
+                            }
+                        } {
+                            Some(reason)
+                        } else {
+                            None
+                        };
                         if let Some(msg) = post_deny {
                             let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                                 name: call.name.clone(),
@@ -1384,11 +1399,7 @@ impl Engine {
                     Decision::Allow => {}
                 }
 
-                if let Some(msg) = self
-                    .policy
-                    .before_dispatch(&call.name, is_readonly)
-                    .await
-                {
+                if let Some(msg) = self.policy.before_dispatch(&call.name, is_readonly).await {
                     let _ = io.ui_tx.send(UiEvent::ToolCallFinished {
                         name: call.name.clone(),
                         ok: false,
@@ -1444,9 +1455,7 @@ impl Engine {
                                             out.images,
                                         ),
                                         // An unowned name preserves the registry's real error.
-                                        None => {
-                                            (e.to_string(), None, false, None, Vec::new())
-                                        }
+                                        None => (e.to_string(), None, false, None, Vec::new()),
                                         Some(Err(msg)) => (msg, None, false, None, Vec::new()),
                                     }
                                 } else {
@@ -1767,7 +1776,7 @@ impl Engine {
 /// The marker itself stays in `content` (path provenance the model can
 /// act on with `read`/`bash`); the returned refs become real wire parts
 /// when the model declares `"image"` input.
-fn extract_attached_images(text: &str) -> Vec<agent_llm::types::ImageRef> {
+fn extract_attached_images(text: &str) -> Vec<agent_llm_core::types::ImageRef> {
     const TAG: &str = "<attached-image path=\"";
     let mut out = Vec::new();
     let mut rest = text;
@@ -1775,7 +1784,7 @@ fn extract_attached_images(text: &str) -> Vec<agent_llm::types::ImageRef> {
         let after = &rest[start + TAG.len()..];
         let Some(end) = after.find('"') else { break };
         if let Some(img) =
-            agent_llm::types::ImageRef::for_path(std::path::PathBuf::from(&after[..end]))
+            agent_llm_core::types::ImageRef::for_path(std::path::PathBuf::from(&after[..end]))
         {
             out.push(img);
         }
@@ -1809,13 +1818,16 @@ mod tests {
         assert!(!should_flush_delta(0, old), "empty buffer must not flush");
         assert!(!should_flush_delta(10, young), "small + young waits");
         assert!(should_flush_delta(10, old), "small but old flushes");
-        assert!(should_flush_delta(DELTA_FLUSH_BYTES, young), "full flushes immediately");
+        assert!(
+            should_flush_delta(DELTA_FLUSH_BYTES, young),
+            "full flushes immediately"
+        );
     }
 
     #[test]
     fn test_thinking_level_resolution() {
         let mut engine = Engine::new(
-            Arc::new(agent_llm::provider::UnconfiguredProvider),
+            Arc::new(agent_llm_core::provider::UnconfiguredProvider),
             Arc::new(ToolRegistry::with_builtins()),
             Arc::new(ToolCtx::new()),
             "devin/swe-2",
@@ -1829,6 +1841,8 @@ mod tests {
 
         engine.set_thinking_level(Some("medium".into()));
         assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("medium"));
+        engine.set_model_thinking_level(Some("xhigh".into()));
+        assert_eq!(engine.thinking_level(), None);
 
         // Custom thinking-level map (like Devin SWE-2).
         let mut map = std::collections::HashMap::new();
@@ -1850,9 +1864,58 @@ mod tests {
         assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("max"));
 
         engine.set_thinking_level(Some("low".into()));
-        assert_eq!(engine.resolve_reasoning_effort(), None);
+        // Null disables the tier; normalize to the model's supported default.
+        assert_eq!(engine.thinking_level().as_deref(), Some("medium"));
+        assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("medium"));
 
         engine.set_thinking_level(Some("off".into()));
+        assert_eq!(engine.resolve_reasoning_effort(), None);
+    }
+
+    #[test]
+    fn model_switch_normalizes_a_stale_thinking_level() {
+        let mut engine = Engine::new(
+            Arc::new(agent_llm_core::provider::UnconfiguredProvider),
+            Arc::new(ToolRegistry::with_builtins()),
+            Arc::new(ToolCtx::new()),
+            "model-b",
+            1.0,
+        );
+        engine.set_thinking_level_map(Some(std::collections::HashMap::from([(
+            "xhigh".into(),
+            Some("xhigh".into()),
+        )])));
+        engine.set_thinking_level(Some("xhigh".into()));
+        engine.set_thinking_level_map(Some(std::collections::HashMap::from([
+            ("low".into(), Some("low".into())),
+            ("high".into(), Some("high".into())),
+            ("max".into(), Some("max".into())),
+        ])));
+        assert_eq!(engine.thinking_level().as_deref(), Some("low"));
+        assert_eq!(engine.resolve_reasoning_effort().as_deref(), Some("low"));
+        engine.set_thinking_level(Some("xhigh".into()));
+        assert_eq!(engine.thinking_level().as_deref(), Some("low"));
+        engine.set_thinking_level_map(None);
+        assert_eq!(engine.thinking_level(), None);
+        assert_eq!(engine.resolve_reasoning_effort(), None);
+    }
+
+    #[test]
+    fn undeclared_thinking_level_never_reaches_the_wire() {
+        let mut engine = Engine::new(
+            Arc::new(agent_llm_core::provider::UnconfiguredProvider),
+            Arc::new(ToolRegistry::with_builtins()),
+            Arc::new(ToolCtx::new()),
+            "model-a",
+            1.0,
+        );
+        engine.set_thinking_level_map(Some(std::collections::HashMap::from([
+            ("low".into(), Some("low".into())),
+            ("high".into(), Some("high".into())),
+            ("max".into(), Some("max".into())),
+        ])));
+        // A stale/shared-slot value must also be caught at the wire boundary.
+        *engine.thinking_level_shared().write().unwrap() = Some("xhigh".into());
         assert_eq!(engine.resolve_reasoning_effort(), None);
     }
 

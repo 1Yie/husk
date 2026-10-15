@@ -14,8 +14,8 @@
 
 use std::collections::HashSet;
 
-pub use agent_tool::CallRisk;
 use crate::tools::registry::ToolClass;
+pub use agent_tool::CallRisk;
 
 /// The five modes — `from_str` accepts the labels the prompt/config use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +186,11 @@ impl PermissionGate {
     }
 
     /// Register a policy on an existing gate (the engine's shared one).
-    pub fn set_policy(&mut self, tool_name: impl Into<String>, policy: std::sync::Arc<dyn ToolPolicy>) {
+    pub fn set_policy(
+        &mut self,
+        tool_name: impl Into<String>,
+        policy: std::sync::Arc<dyn ToolPolicy>,
+    ) {
         self.policies.insert(tool_name.into(), policy);
     }
 
@@ -209,11 +213,18 @@ impl PermissionGate {
             return decision;
         };
         let can_ask = self.mode != PermissionMode::DontAsk && !self.headless;
-        let decision =
-            policy.escalate(action, decision, &self.rules.allow, can_ask, &diff_summary.into());
+        let decision = policy.escalate(
+            action,
+            decision,
+            &self.rules.allow,
+            can_ask,
+            &diff_summary.into(),
+        );
         match decision {
             Decision::Ask { .. } if !can_ask => Decision::Deny {
-                reason: format!("`{tool_name}` requires human approval — unavailable in this context"),
+                reason: format!(
+                    "`{tool_name}` requires human approval — unavailable in this context"
+                ),
             },
             decision => decision,
         }
@@ -490,7 +501,13 @@ mod tests {
     fn accept_edits_skips_patch_asks_shell() {
         let g = gate("acceptEdits");
         assert!(matches!(
-            g.decide("fuzzy_patch", Some(ToolClass::WorkspaceMutation), false, CallRisk::Normal, ""),
+            g.decide(
+                "fuzzy_patch",
+                Some(ToolClass::WorkspaceMutation),
+                false,
+                CallRisk::Normal,
+                ""
+            ),
             Decision::Allow
         ));
         // non-readonly shell (an install) still asks even in acceptEdits.
@@ -522,7 +539,13 @@ mod tests {
         ));
         // A classed non-writer still asks — metadata must not widen the gate.
         assert!(matches!(
-            g.decide("some_process", Some(ToolClass::Process), false, CallRisk::Normal, ""),
+            g.decide(
+                "some_process",
+                Some(ToolClass::Process),
+                false,
+                CallRisk::Normal,
+                ""
+            ),
             Decision::Ask { .. }
         ));
     }
@@ -533,7 +556,13 @@ mod tests {
             let g = guarded_gate(mode);
             assert!(
                 matches!(
-                    g.decide("guarded", Some(ToolClass::Process), false, CallRisk::Normal, ""),
+                    g.decide(
+                        "guarded",
+                        Some(ToolClass::Process),
+                        false,
+                        CallRisk::Normal,
+                        ""
+                    ),
                     Decision::Ask { .. }
                 ),
                 "mode {mode} should honour the policy"
@@ -543,16 +572,34 @@ mod tests {
         // The host policy applies even if the tool is marked readonly.
         let g = guarded_gate("dontAsk");
         assert!(matches!(
-            g.decide("guarded", Some(ToolClass::Observation), true, CallRisk::Normal, ""),
+            g.decide(
+                "guarded",
+                Some(ToolClass::Observation),
+                true,
+                CallRisk::Normal,
+                ""
+            ),
             Decision::Deny { .. }
         ));
 
-        for mode in ["default", "auto", "bypassPermissions", "acceptEdits", "dontAsk"] {
+        for mode in [
+            "default",
+            "auto",
+            "bypassPermissions",
+            "acceptEdits",
+            "dontAsk",
+        ] {
             let mut g = guarded_gate(mode);
             g.allow_tool_for_session("guarded");
             assert!(
                 matches!(
-                    g.decide("guarded", Some(ToolClass::Process), false, CallRisk::Normal, ""),
+                    g.decide(
+                        "guarded",
+                        Some(ToolClass::Process),
+                        false,
+                        CallRisk::Normal,
+                        ""
+                    ),
                     Decision::Allow
                 ),
                 "session-allowed tool should run in {mode}"
@@ -563,7 +610,13 @@ mod tests {
     #[test]
     fn an_unregistered_tool_has_only_the_generic_rules() {
         assert_eq!(
-            gate("auto").decide("guarded", Some(ToolClass::Process), false, CallRisk::Normal, ""),
+            gate("auto").decide(
+                "guarded",
+                Some(ToolClass::Process),
+                false,
+                CallRisk::Normal,
+                ""
+            ),
             Decision::Allow
         );
     }
@@ -667,7 +720,13 @@ mod tests {
         ));
         // deny > every interactive surface (computer would Ask, deny is stronger)
         assert!(matches!(
-            g.decide("computer", Some(ToolClass::Process), false, CallRisk::Normal, ""),
+            g.decide(
+                "computer",
+                Some(ToolClass::Process),
+                false,
+                CallRisk::Normal,
+                ""
+            ),
             Decision::Deny { .. }
         ));
         // ungoverned calls still auto-run
@@ -712,7 +771,13 @@ mod tests {
             Decision::Deny { .. }
         ));
         assert!(matches!(
-            g.decide("guarded", Some(ToolClass::Process), false, CallRisk::Normal, ""),
+            g.decide(
+                "guarded",
+                Some(ToolClass::Process),
+                false,
+                CallRisk::Normal,
+                ""
+            ),
             Decision::Deny { .. }
         ));
     }
@@ -721,8 +786,7 @@ mod tests {
     fn a_policy_cannot_ask_where_nobody_can_answer() {
         for mut g in [
             guarded_gate("dontAsk"),
-            PermissionGate::for_subagent()
-                .with_policy("guarded", std::sync::Arc::new(AskPolicy)),
+            PermissionGate::for_subagent().with_policy("guarded", std::sync::Arc::new(AskPolicy)),
         ] {
             g.allow_tool_for_session("guarded");
             assert!(matches!(
@@ -736,11 +800,20 @@ mod tests {
     #[test]
     fn escalation_never_relaxes_a_decision() {
         let g = guarded_gate("default");
-        let ask = g.decide("guarded", Some(ToolClass::Process), false, CallRisk::Normal, "s");
+        let ask = g.decide(
+            "guarded",
+            Some(ToolClass::Process),
+            false,
+            CallRisk::Normal,
+            "s",
+        );
         assert_eq!(g.escalate("guarded", "action", ask.clone(), "x"), ask);
         let deny = Decision::Deny { reason: "r".into() };
         assert_eq!(g.escalate("guarded", "action", deny.clone(), "x"), deny);
-        assert_eq!(g.escalate("unregistered", "action", Decision::Allow, ""), Decision::Allow);
+        assert_eq!(
+            g.escalate("unregistered", "action", Decision::Allow, ""),
+            Decision::Allow
+        );
     }
 
     /// Changing mode keeps the session grant.
@@ -751,7 +824,13 @@ mod tests {
         g.set_mode(PermissionMode::from_str("auto"));
         assert_eq!(g.mode(), PermissionMode::Auto);
         assert_eq!(
-            g.decide("guarded", Some(ToolClass::Process), false, CallRisk::Normal, ""),
+            g.decide(
+                "guarded",
+                Some(ToolClass::Process),
+                false,
+                CallRisk::Normal,
+                ""
+            ),
             Decision::Allow
         );
     }
@@ -764,7 +843,13 @@ mod tests {
         assert!(g.revoke_grants("guarded"));
         // Back to asking, and unrelated grants are left alone.
         assert!(matches!(
-            g.decide("guarded", Some(ToolClass::Process), false, CallRisk::Normal, ""),
+            g.decide(
+                "guarded",
+                Some(ToolClass::Process),
+                false,
+                CallRisk::Normal,
+                ""
+            ),
             Decision::Ask { .. }
         ));
         assert!(!g.rules.allow.contains("guarded:extra"));

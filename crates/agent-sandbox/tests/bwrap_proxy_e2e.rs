@@ -26,7 +26,12 @@ async fn proxied_egress_and_fs_model() {
         return;
     }
     for bin in ["bwrap", "socat", "curl"] {
-        if std::process::Command::new("which").arg(bin).output().map(|o| !o.status.success()).unwrap_or(true) {
+        if std::process::Command::new("which")
+            .arg(bin)
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
             panic!("{bin} missing");
         }
     }
@@ -35,14 +40,31 @@ async fn proxied_egress_and_fs_model() {
     let c = cfg(&ws, &["registry.npmjs.org", "*.npmjs.org"]);
 
     // Allowed host through the proxy.
-    let ok = run("curl -sS -o /dev/null -w '%{http_code}' https://registry.npmjs.org/ 2>/dev/null", &c).await;
-    assert_eq!(ok.stdout.trim(), "200", "allowlisted host should proxy: {}", ok.stderr);
+    let ok = run(
+        "curl -sS -o /dev/null -w '%{http_code}' https://registry.npmjs.org/ 2>/dev/null",
+        &c,
+    )
+    .await;
+    assert_eq!(
+        ok.stdout.trim(),
+        "200",
+        "allowlisted host should proxy: {}",
+        ok.stderr
+    );
 
     // Non-allowlisted host → proxy 403 + denial record.
     let bad = run("curl -sS https://example.com/ 2>&1 | head -3", &c).await;
-    assert!(!bad.sandbox_denials.is_empty(), "expected a recorded denial");
-    assert!(bad.sandbox_denials.iter().any(|d| d.contains("example.com")),
-        "denial should name example.com: {:?}", bad.sandbox_denials);
+    assert!(
+        !bad.sandbox_denials.is_empty(),
+        "expected a recorded denial"
+    );
+    assert!(
+        bad.sandbox_denials
+            .iter()
+            .any(|d| d.contains("example.com")),
+        "denial should name example.com: {:?}",
+        bad.sandbox_denials
+    );
 
     // Direct egress is dead even when a host unix-socket resolver still
     // answers (systemd-resolved runs over AF_UNIX, which netns doesn't
@@ -66,11 +88,18 @@ async fn proxied_egress_and_fs_model() {
     let wr = run("touch /etc/x-agent-sandbox-test 2>&1 || echo ro", &c).await;
     assert!(wr.stdout.contains("ro") || wr.stderr.contains("Read-only"));
     let wh = run("touch ~/.profile.d-agent-test 2>&1 || echo ro-home", &c).await;
-    assert!(wh.stdout.contains("ro-home") || wh.stderr.contains("Read-only"),
-        "home should be read-only: {}", wh.stderr);
+    assert!(
+        wh.stdout.contains("ro-home") || wh.stderr.contains("Read-only"),
+        "home should be read-only: {}",
+        wh.stderr
+    );
 
     // ...workspace writable...
-    let ww = run("mkdir -p target && echo ok > target/probe && cat target/probe", &c).await;
+    let ww = run(
+        "mkdir -p target && echo ok > target/probe && cat target/probe",
+        &c,
+    )
+    .await;
     assert_eq!(ww.stdout.trim(), "ok");
     assert!(ws.join("target/probe").exists());
 
@@ -85,15 +114,27 @@ async fn proxied_egress_and_fs_model() {
         ws.join(".git/config"),
     ];
     let denied = run("echo x > .git/hooks/pre-commit 2>&1 || echo hooks-ro", &c2).await;
-    assert!(denied.stdout.contains("hooks-ro") || denied.stderr.contains("Read-only"),
-        ".git/hooks should be write-denied: {}", denied.stderr);
+    assert!(
+        denied.stdout.contains("hooks-ro") || denied.stderr.contains("Read-only"),
+        ".git/hooks should be write-denied: {}",
+        denied.stderr
+    );
     let mv = run("mv .git .git-bak 2>&1 || echo git-pinned", &c2).await;
-    assert!(mv.stdout.contains("git-pinned") || mv.stderr.to_lowercase().contains("busy")
-        || mv.stderr.contains("Read-only") || mv.stderr.contains("move"),
-        "mv .git should fail: {}", mv.stderr);
+    assert!(
+        mv.stdout.contains("git-pinned")
+            || mv.stderr.to_lowercase().contains("busy")
+            || mv.stderr.contains("Read-only")
+            || mv.stderr.contains("move"),
+        "mv .git should fail: {}",
+        mv.stderr
+    );
 
     // in-sandbox DNS-free localhost service still works (socat listener).
-    let l = run("exec 3<>/dev/tcp/127.0.0.1/3128 && echo listener-up >&3 || echo listener-probe", &c).await;
+    let l = run(
+        "exec 3<>/dev/tcp/127.0.0.1/3128 && echo listener-up >&3 || echo listener-probe",
+        &c,
+    )
+    .await;
     let _ = l; // probing the listener itself is enough signal in stderr
 
     std::fs::remove_dir_all(&ws).ok();

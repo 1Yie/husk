@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_ipc::AgentState;
-use agent_llm::types::{ChatMessage, ToolCall};
+use agent_llm_core::types::{ChatMessage, ToolCall};
 use async_trait::async_trait;
 
 /// Per-hook latency cap — a slow hook degrades to `Continue`.

@@ -34,7 +34,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
-use wasmtime::{Config, Engine, Linker, Module, Store};
+use wasmtime::{Config, Engine, InstancePre, Linker, Module, Store};
 use wasmtime_wasi::cli::{IsTerminal, StdinStream, StdoutStream};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
@@ -81,7 +81,10 @@ impl StdoutStream for OutPipe {
 /// clone to `spawn_blocking` without moving `&self`.
 struct Inner {
     engine: Engine,
-    module: Module,
+    /// Module already linked against WASI once at load — a call only
+    /// instantiates, instead of rebuilding a `Linker` and re-resolving every
+    /// import each time.
+    pre: InstancePre<WasiP1Ctx>,
     /// `(ro_dirs, rw_dirs, env)` resolved once at load — preopens are the
     /// capability contract, re-created per call into the fresh ctx.
     ro_mounts: Vec<PathBuf>,
@@ -111,6 +114,12 @@ impl WasmPlugin {
         let module =
             Module::new(&engine, &bytes).map_err(|e| anyhow!("compile {}: {e}", path.display()))?;
 
+        let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+        p1::add_to_linker_sync(&mut linker, |t| t).map_err(|e| anyhow!("link wasi-p1: {e}"))?;
+        let pre = linker
+            .instantiate_pre(&module)
+            .map_err(|e| anyhow!("link {}: {e}", path.display()))?;
+
         // Capability resolution — `permissions` absent = no preopens, no
         // env (a manifest that declares nothing gets nothing, which is the
         // fail-closed answer for WASM where ambient = none anyway).
@@ -133,7 +142,7 @@ impl WasmPlugin {
             manifest,
             inner: Arc::new(Inner {
                 engine,
-                module,
+                pre,
                 ro_mounts: ro,
                 rw_mounts: rw,
                 env,
@@ -188,10 +197,9 @@ impl Inner {
             .set_fuel(FUEL_PER_CALL)
             .map_err(|e| anyhow!("engine lacks fuel accounting: {e}"))?;
 
-        let mut linker: Linker<WasiP1Ctx> = Linker::new(&self.engine);
-        p1::add_to_linker_sync(&mut linker, |t| t).map_err(|e| anyhow!("link wasi-p1: {e}"))?;
-        let instance = linker
-            .instantiate(&mut store, &self.module)
+        let instance = self
+            .pre
+            .instantiate(&mut store)
             .map_err(|e| anyhow!("instantiate wasm module: {e}"))?;
         let start = instance
             .get_typed_func::<(), ()>(&mut store, "_start")

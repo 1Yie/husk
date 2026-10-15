@@ -57,10 +57,8 @@ impl AppPaths {
     /// Throwaway paths under the system temp dir. Tests use this so they never
     /// touch the real user directories; the name is deliberately product-free.
     pub fn for_tests(label: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "agent-paths-test-{label}-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("agent-paths-test-{label}-{}", std::process::id()));
         Self::new(base.join("config"), base.join("data"), ".agent")
     }
 
@@ -87,9 +85,18 @@ mod tests {
     #[test]
     fn paths_join_without_naming_the_product() {
         let p = AppPaths::new("/cfg/demo", "/data/demo", ".demo");
-        assert_eq!(p.config_file("plugin-trust.json"), Path::new("/cfg/demo/plugin-trust.json"));
-        assert_eq!(p.data_file("sessions.db"), Path::new("/data/demo/sessions.db"));
-        assert_eq!(p.workspace_dir(Path::new("/repo")), Path::new("/repo/.demo"));
+        assert_eq!(
+            p.config_file("plugin-trust.json"),
+            Path::new("/cfg/demo/plugin-trust.json")
+        );
+        assert_eq!(
+            p.data_file("sessions.db"),
+            Path::new("/data/demo/sessions.db")
+        );
+        assert_eq!(
+            p.workspace_dir(Path::new("/repo")),
+            Path::new("/repo/.demo")
+        );
     }
 
     /// The crate names no product: a different app gets different dirs from the
@@ -99,6 +106,9 @@ mod tests {
         let a = AppPaths::new("/cfg/alpha", "/data/alpha", ".alpha");
         let b = AppPaths::new("/cfg/beta", "/data/beta", ".beta");
         assert_ne!(a.config_dir, b.config_dir);
-        assert_ne!(a.workspace_dir(Path::new("/repo")), b.workspace_dir(Path::new("/repo")));
+        assert_ne!(
+            a.workspace_dir(Path::new("/repo")),
+            b.workspace_dir(Path::new("/repo"))
+        );
     }
 }

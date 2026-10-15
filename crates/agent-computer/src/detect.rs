@@ -79,6 +79,9 @@ mod tests {
     #[test]
     fn detect_always_returns_a_backend() {
         let b = detect_backend();
-        assert!(matches!(b.id(), "x11" | "wayland" | "windows" | "macos" | "none"));
+        assert!(matches!(
+            b.id(),
+            "x11" | "wayland" | "windows" | "macos" | "none"
+        ));
     }
 }

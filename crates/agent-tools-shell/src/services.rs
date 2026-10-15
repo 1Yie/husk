@@ -84,7 +84,9 @@ pub async fn spawn_persistent<C: SandboxCtx>(
         .append(true)
         .open(&log_path)
         .map_err(|e| ToolError::Failed(format!("service log file: {e}")))?;
-    let log_err = log.try_clone().map_err(|e| ToolError::Failed(e.to_string()))?;
+    let log_err = log
+        .try_clone()
+        .map_err(|e| ToolError::Failed(e.to_string()))?;
 
     cmd.stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(log_err))
@@ -180,8 +182,8 @@ pub fn spec<C: SandboxCtx>() -> ToolSpec<C> {
 }
 
 async fn exec<C: SandboxCtx>(args: Args, _ctx: Arc<C>) -> Result<ToolResult, ToolError> {
-    let parsed: ServiceArgs = serde_json::from_value(args)
-        .map_err(|e| ToolError::Args(format!("service args: {e}")))?;
+    let parsed: ServiceArgs =
+        serde_json::from_value(args).map_err(|e| ToolError::Args(format!("service args: {e}")))?;
     match parsed.action.as_str() {
         "list" => {
             let mut map = SERVICES.lock().await;
@@ -235,13 +237,10 @@ async fn exec<C: SandboxCtx>(args: Args, _ctx: Arc<C>) -> Result<ToolResult, Too
                     if c.try_wait().ok().flatten().is_none() {
                         c.kill().await.ok();
                     }
-                    let status = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        c.wait(),
-                    )
-                    .await
-                    .map(|r| r.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string()))
-                    .unwrap_or_else(|_| "kill sent, wait timed out".into());
+                    let status = tokio::time::timeout(std::time::Duration::from_secs(5), c.wait())
+                        .await
+                        .map(|r| r.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string()))
+                        .unwrap_or_else(|_| "kill sent, wait timed out".into());
                     SERVICES.lock().await.remove(&id);
                     Ok(ToolResult::text(format!("{id} stopped: {status}")))
                 }

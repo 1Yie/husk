@@ -88,9 +88,7 @@ fn net_plan(cfg: &SandboxConfig, _run_dir: &Path) -> NetPlan {
         return NetPlan::Deny;
     }
     let Some(run) = register_egress(cfg) else {
-        tracing::warn!(
-            "sandbox: egress proxy unavailable — degrading to full network deny"
-        );
+        tracing::warn!("sandbox: egress proxy unavailable — degrading to full network deny");
         return NetPlan::Deny;
     };
     NetPlan::Proxied {
@@ -380,7 +378,10 @@ fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path, net: &NetPlan) -
     .iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .chain([
-        ("XDG_RUNTIME_DIR".to_string(), run_dir.to_string_lossy().into_owned()),
+        (
+            "XDG_RUNTIME_DIR".to_string(),
+            run_dir.to_string_lossy().into_owned(),
+        ),
         (
             "CARGO_TARGET_DIR".to_string(),
             ws.join("target").to_string_lossy().into_owned(),
@@ -400,7 +401,11 @@ fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path, net: &NetPlan) -
         &mut envs,
         &cfg.environment,
         Some(&[PathBuf::from("/")]),
-        &[ws.to_path_buf(), PathBuf::from("/tmp"), run_dir.to_path_buf()],
+        &[
+            ws.to_path_buf(),
+            PathBuf::from("/tmp"),
+            run_dir.to_path_buf(),
+        ],
     );
     for (k, v) in envs {
         argv.push("--setenv".into());
@@ -424,7 +429,6 @@ fn sandbox_argv(cfg: &SandboxConfig, run_dir: &Path, ws: &Path, net: &NetPlan) -
     argv.push("--".into());
     argv
 }
-
 
 /// POSIX single-quote a string for `sh -c` embedding.
 fn shell_quote(s: &str) -> String {

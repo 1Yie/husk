@@ -126,9 +126,7 @@ impl SandboxPlan {
             .capabilities
             .iter()
             .filter_map(|c| match c {
-                Capability::PackageInstall { manager } => {
-                    Some(registry_domains(manager))
-                }
+                Capability::PackageInstall { manager } => Some(registry_domains(manager)),
                 _ => None,
             })
             .flatten()
@@ -236,9 +234,11 @@ fn registry_domains(manager: &str) -> &'static [&'static str] {
         "gem" | "bundler" => &["rubygems.org", "*.rubygems.org", "index.rubygems.org"],
         "composer" => &["packagist.org", "repo.packagist.org", "*.packagist.org"],
         "dotnet" | "nuget" => &["api.nuget.org", "*.nuget.org"],
-        "maven" | "mvn" | "gradle" => {
-            &["repo.maven.apache.org", "repo1.maven.org", "plugins.gradle.org"]
-        }
+        "maven" | "mvn" | "gradle" => &[
+            "repo.maven.apache.org",
+            "repo1.maven.org",
+            "plugins.gradle.org",
+        ],
         "brew" => &["formulae.brew.sh", "ghcr.io", "*.githubusercontent.com"],
         // System package managers talk to user-configured mirrors — too
         // varied to enumerate; they get full egress.
@@ -302,7 +302,9 @@ fn mandatory_deny_write(workspace: &PathBuf) -> Vec<PathBuf> {
     // Iterative walk so no recursion plumbing is needed.
     let mut stack: Vec<(PathBuf, usize)> = vec![(workspace.clone(), 0)];
     while let Some((dir, depth)) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
@@ -318,11 +320,7 @@ fn mandatory_deny_write(workspace: &PathBuf) -> Vec<PathBuf> {
             // Dangerous dirs (single-segment ones match nested too — same as
             // srt's `**/${dirName}/**` glob).
             for d in DANGEROUS_DIR_NAMES {
-                if !d.contains('/')
-                    && name == *d
-                    && seen.insert(path.clone())
-                    && path.exists()
-                {
+                if !d.contains('/') && name == *d && seen.insert(path.clone()) && path.exists() {
                     out.push(path.clone());
                 }
             }
@@ -422,11 +420,8 @@ mod tests {
             force_snapshot: None,
             needs_network_prompt: false,
         };
-        let plan = SandboxPlan::from_audit(
-            &audit,
-            PathBuf::from("/tmp/ws"),
-            PathBuf::from("/tmp/run"),
-        );
+        let plan =
+            SandboxPlan::from_audit(&audit, PathBuf::from("/tmp/ws"), PathBuf::from("/tmp/run"));
         match plan.network {
             NetworkPolicy::AllowHosts(h) => {
                 assert!(h.iter().any(|d| d.contains("npmjs.org")), "{h:?}")
