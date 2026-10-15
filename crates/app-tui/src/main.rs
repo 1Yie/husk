@@ -346,7 +346,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let paths = app_paths();
-    agent_store::init_data_dir(paths.data_dir.clone());
+    husk_host::office::init_store(paths.data_dir.clone());
     let app_cfg = agent_llm::AppConfig::load(&paths.config_dir, None).unwrap_or_default();
     let (provider, provider_name, model) =
         match resolve_provider(&app_cfg, cli.provider.as_deref(), cli.model.as_deref()) {

@@ -248,7 +248,7 @@ fn agent_session_inner(
     // (.dashi-ppt-project) and officecli crash logs are noise, not deliverables.
     if op == "recent_artifacts" {
         let mut found: Vec<(String, String, u64)> = Vec::new();
-        if let Some(root) = agent_store::office_root() {
+        if let Some(root) = husk_host::office::office_root() {
             collect_recent_files(&root, &root, 3, &mut found);
         }
         found.sort_by(|a, b| b.2.cmp(&a.2));
@@ -406,7 +406,7 @@ fn agent_session_inner(
                 // The office pseudo-workspace root — the sidebar's「办公」
                 // block and the composer compare against it to know when
                 // they're rendering office mode.
-                "office_root": agent_store::office_root()
+                "office_root": husk_host::office::office_root()
                     .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().to_string())
                     .unwrap_or_default(),
                 "recents": recents.iter().map(|w| {

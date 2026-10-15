@@ -283,7 +283,7 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = agent_paths::AppPaths::from_app_name("husk", ".husk")
         .unwrap_or_else(|| agent_paths::AppPaths::new("", "", ".husk"));
-    agent_store::init_data_dir(paths.data_dir.clone());
+    husk_host::office::init_store(paths.data_dir.clone());
     let app_cfg = agent_llm::AppConfig::load(&paths.config_dir, None).unwrap_or_default();
     let pname = cli.provider.as_deref().or(app_cfg.active_provider.as_deref());
     let (provider, provider_name, model) =

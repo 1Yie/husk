@@ -101,7 +101,7 @@ pub struct ProjectOverview {
 /// path when there is none (filesystem root). The office pseudo-workspace
 /// gets a fixed「办公」label instead of the directory name.
 fn project_name(root: &std::path::Path) -> String {
-    if agent_store::is_office_root(root) {
+    if crate::office::is_office_root(root) {
         return "办公".into();
     }
     root.file_name()
@@ -284,7 +284,7 @@ impl SessionManager {
     ) -> (Self, std_mpsc::Receiver<(String, i64, UiEvent)>) {
         // The session database is a process-wide singleton, so its directory is
         // set once here rather than passed to every read.
-        agent_store::init_data_dir(paths.data_dir.clone());
+        crate::office::init_store(paths.data_dir.clone());
         // Global user defaults — the settings window's stored preference.
         // Loaded up here because the「默认进入」row decides the boot root
         // below; every later layer reads this same snapshot.
@@ -407,7 +407,7 @@ impl SessionManager {
         };
 
         let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
-        if agent_store::is_office_root(&canon) {
+        if crate::office::is_office_root(&canon) {
             // The office dir lives under the app data dir and is created
             // lazily — a boot landing here needs it to exist.
             let _ = std::fs::create_dir_all(&canon);
@@ -529,7 +529,7 @@ impl SessionManager {
         // The office pseudo-workspace lives under the app data dir and is
         // created lazily on first entry — canonicalize + the workspace
         // scan need a real directory.
-        if agent_store::is_office_root(&new_root) {
+        if crate::office::is_office_root(&new_root) {
             let _ = std::fs::create_dir_all(&new_root);
         }
         let canon = new_root.canonicalize().unwrap_or_else(|_| new_root.clone());
@@ -621,7 +621,7 @@ impl SessionManager {
         // The office pseudo-workspace is built-in — it can't be removed
         // from recents or torn down; its sessions live under its own
         // `office` namespace.
-        if agent_store::is_office_root(&canon) {
+        if crate::office::is_office_root(&canon) {
             return false;
         }
         let key = canon.to_string_lossy().into_owned();
@@ -672,7 +672,7 @@ impl SessionManager {
             .canonicalize()
             .unwrap_or_else(|_| self.workspace_root.clone());
         let office_root =
-            agent_store::office_root().map(|p| p.canonicalize().unwrap_or(p));
+            crate::office::office_root().map(|p| p.canonicalize().unwrap_or(p));
         let office_is_current =
             self.workspace_active && office_root.as_ref().is_some_and(|o| *o == canon);
 
@@ -901,7 +901,7 @@ impl SessionManager {
         // Office sessions are always office mode — the picker isn't offered
         // in the office workspace at all, so a stale per-session value from
         // before office became workspace-scoped can't survive a respawn.
-        let sess_agent_mode = if agent_store::is_office_root(&self.workspace_root) {
+        let sess_agent_mode = if crate::office::is_office_root(&self.workspace_root) {
             "office".to_string()
         } else {
             meta.as_ref()
@@ -2494,7 +2494,7 @@ fn resolve_agent_mode(
     prefs_mode: &Option<String>,
     defaults_mode: Option<&String>,
 ) -> String {
-    if agent_store::is_office_root(root) {
+    if crate::office::is_office_root(root) {
         return "office".into();
     }
     match prefs_mode.as_ref().or(defaults_mode) {
@@ -2516,12 +2516,12 @@ fn boot_workspace(
     match defaults.map(|d| d.default_workspace_mode.as_str()) {
         // The office dir is created lazily by `spawn_at` — a boot landing
         // there needs nothing pre-existing.
-        Some("office") => agent_store::office_root()
+        Some("office") => crate::office::office_root()
             .or_else(|| recents.first().map(|w| w.path.clone())),
         Some("build") => recents
             .iter()
             .map(|w| w.path.clone())
-            .find(|p| p.is_dir() && !agent_store::is_office_root(p)),
+            .find(|p| p.is_dir() && !crate::office::is_office_root(p)),
         _ => recents
             .iter()
             .map(|w| w.path.clone())
@@ -3194,7 +3194,7 @@ max = "max"
     /// lives in the sidebar, not the per-session picker.
     #[test]
     fn office_workspace_pins_agent_mode_to_office() {
-        let office = agent_store::office_root().unwrap();
+        let office = crate::office::office_root().unwrap();
         assert_eq!(resolve_agent_mode(&office, &None, None), "office");
 
         let dir = tempfile::tempdir().unwrap();
@@ -3219,7 +3219,7 @@ max = "max"
             name: "p".into(),
             last_opened: 0,
         };
-        let office = agent_store::office_root().unwrap();
+        let office = crate::office::office_root().unwrap();
         // The real app creates this lazily on the first office switch; the
         // canonicalising boot path needs it to exist to keep the entry.
         std::fs::create_dir_all(&office).unwrap();

@@ -11,8 +11,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use agent_store::{
-    global_get, global_put, global_update, is_office_root, SessionStore,
+    global_get, global_put, global_update, SessionStore,
 };
+
+use crate::office::is_office_root;
 
 // ---------------------------------------------------------------------------
 // Workspace preferences — per-workspace UI prefs (model / thinking / permission)

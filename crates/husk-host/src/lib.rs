@@ -6,6 +6,7 @@
 pub mod command;
 pub mod commands;
 pub mod mode;
+pub mod office;
 pub mod plugins;
 pub mod prefs;
 pub mod sandbox_prefs;

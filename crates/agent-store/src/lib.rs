@@ -133,17 +133,27 @@ pub struct SessionStore {
     db: Arc<SessionDatabase>,
 }
 
-/// Stable per-workspace key — xxh3 of the canonical root. The office
-/// pseudo-workspace keeps a literal `office` key instead, so its sessions
-/// sit at `metas/office/<id>` — the same `office/<id>` layout the UI
-/// describes (`~/.local/share/husk/office/<id>`).
+/// Stable per-workspace key — xxh3 of the canonical root, unless the host
+/// supplied a named namespace for this root.
 pub fn workspace_key(root: &Path) -> String {
-    if is_office_root(root) {
-        return "office".into();
-    }
     let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if let Some(key) = app_data_dir().and_then(|dir| {
+        let config = DATA_DIR.read().ok()?;
+        config.as_ref()?.namespaces.iter().find_map(|(path, key)| {
+            let path = dir.join(path);
+            let path = path.canonicalize().unwrap_or(path);
+            (canon == path).then(|| key.clone())
+        })
+    }) {
+        return key;
+    }
     let h = xxhash_rust::xxh3::xxh3_64(canon.to_string_lossy().as_bytes());
     format!("{h:016x}")
+}
+
+struct DataDir {
+    path: PathBuf,
+    namespaces: Vec<(PathBuf, String)>,
 }
 
 /// The host's data directory.
@@ -153,14 +163,27 @@ pub fn workspace_key(root: &Path) -> String {
 /// sets it once at startup ([`init_data_dir`], called from
 /// `SessionManager::spawn_at`). Directory resolution and any rename migration
 /// belong to the product, which knows its own name.
-static DATA_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+static DATA_DIR: std::sync::RwLock<Option<DataDir>> = std::sync::RwLock::new(None);
 
 /// Point the store at the host's data directory. Idempotent per directory; a
 /// later call replaces the value so a manager booted at another root sees its
 /// own. The database itself is opened lazily on first use.
 pub fn init_data_dir(dir: PathBuf) {
+    init_data_dir_with_namespaces(dir, &[]);
+}
+
+/// Set the host's data directory and stable keys for roots relative to it.
+/// Named namespaces preserve product-specific storage layouts without the
+/// repository knowing those products or interpreting their workspace modes.
+pub fn init_data_dir_with_namespaces(dir: PathBuf, namespaces: &[(&str, &str)]) {
     if let Ok(mut w) = DATA_DIR.write() {
-        *w = Some(dir);
+        *w = Some(DataDir {
+            path: dir,
+            namespaces: namespaces
+                .iter()
+                .map(|(path, key)| (PathBuf::from(*path), (*key).to_string()))
+                .collect(),
+        });
     }
 }
 
@@ -176,32 +199,10 @@ pub fn app_data_dir() -> Option<PathBuf> {
             std::process::id()
         )));
     }
-    DATA_DIR.read().ok().and_then(|d| d.clone())
-}
-
-/// The office-mode pseudo-workspace root: `<data dir>/office`.
-/// Every office session shares this directory as its workspace root, so a
-/// document one session produced is readable/writable by all the others
-/// (the `resolve` sandbox only confines paths to the workspace root).
-/// Created lazily — `SessionManager::switch_workspace` makes it on the
-/// first switch.
-pub fn office_root() -> Option<PathBuf> {
-    app_data_dir().map(|d| d.join("office"))
-}
-
-/// Whether `root` is the office pseudo-workspace. Compared both raw and
-/// canonicalized — the dir may not exist yet on a first switch, which
-/// makes `canonicalize` fail on one or both sides.
-pub fn is_office_root(root: &Path) -> bool {
-    let Some(office) = office_root() else {
-        return false;
-    };
-    if root == office {
-        return true;
-    }
-    let r = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let o = office.canonicalize().unwrap_or(office);
-    r == o
+    DATA_DIR
+        .read()
+        .ok()
+        .and_then(|d| d.as_ref().map(|d| d.path.clone()))
 }
 
 /// Open (creating) the sessions database at `path`, running the legacy
