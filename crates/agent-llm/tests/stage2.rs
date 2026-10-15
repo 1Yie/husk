@@ -154,6 +154,7 @@ async fn sampler_synthesizes_done_on_clean_close() {
             &[ChatMessage::user("x")],
             |c| chunks.push(c.clone()),
             |_| {},
+            || {},
         )
         .await
         .unwrap();
@@ -190,6 +191,7 @@ async fn sampler_retries_retryable_then_fails() {
             &[],
             |_| {},
             |e| events.push(format!("{e:?}")),
+            || {},
         )
         .await;
     // Retryable error → exhausted after MAX_RETRIES attempts.
@@ -220,6 +222,7 @@ async fn sampler_detects_doom_loop() {
             &[],
             |_| {},
             |_| {},
+            || {},
         )
         .await;
     assert!(res.is_err());

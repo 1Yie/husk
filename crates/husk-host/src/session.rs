@@ -120,6 +120,7 @@ fn distill_summarizer(
                         }
                     },
                     |_| {},
+                    || {},
                 )
                 .await
                 .ok()?;
