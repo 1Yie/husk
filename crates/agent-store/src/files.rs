@@ -103,8 +103,8 @@ enum Record {
 }
 
 fn is_turn(message: &ChatMessage) -> bool {
-    message.role == agent_llm::Role::User
-        && message.notice != Some(agent_llm::types::NoticeKind::Hidden)
+    message.role == agent_llm_core::Role::User
+        && message.notice != Some(agent_llm_core::types::NoticeKind::Hidden)
 }
 fn journal_index(journal: &Path, index: &Path) -> std::io::Result<JournalIndex> {
     let file = match File::open(journal) {
@@ -401,11 +401,40 @@ impl SessionStore {
         metas
     }
     pub fn set_pinned(&self, id: i64, pinned: bool) -> std::io::Result<bool> {
+        self.edit_meta(id, |m| m.pinned = pinned)
+    }
+    pub fn set_pinned_global(&self, id: i64, pinned: bool) -> std::io::Result<bool> {
+        self.edit_meta(id, |m| m.pinned_global = pinned)
+    }
+    /// Archiving also drops both pins — a pin on a hidden row means nothing,
+    /// and restoring shouldn't resurrect it at the top of a list.
+    pub fn set_archived(&self, id: i64, archived: bool) -> std::io::Result<bool> {
+        self.edit_meta(id, |m| {
+            m.archived = archived;
+            if archived {
+                m.pinned = false;
+                m.pinned_global = false;
+            }
+        })
+    }
+    /// User title. Blank clears the override: the next turn re-derives the
+    /// title from the first prompt.
+    pub fn rename(&self, id: i64, title: &str) -> std::io::Result<bool> {
+        let title = title.trim().to_string();
+        self.edit_meta(id, |m| {
+            m.renamed = !title.is_empty();
+            if !title.is_empty() {
+                m.title = title;
+            }
+        })
+    }
+    /// Read-modify-write one session's meta; `false` when it has none yet.
+    fn edit_meta(&self, id: i64, f: impl FnOnce(&mut SessionMeta)) -> std::io::Result<bool> {
         self.write(id, |w| {
             let Some(mut meta) = w.index.meta.clone() else {
                 return Ok(false);
             };
-            meta.pinned = pinned;
+            f(&mut meta);
             w.meta(meta)?;
             Ok(true)
         })
@@ -495,7 +524,7 @@ impl SessionStore {
     ) -> std::io::Result<()> {
         self.write(meta.id, |w| {
             if let Some(old) = &w.index.meta {
-                meta.pinned = old.pinned;
+                keep_user_fields(&mut meta, old);
                 meta.queued_prompts = old.queued_prompts.clone();
                 if meta.usage.is_none() {
                     meta.usage = old.usage;
@@ -543,7 +572,7 @@ impl SessionStore {
                 ));
             }
             if let Some(old) = &w.index.meta {
-                meta.pinned = old.pinned;
+                keep_user_fields(&mut meta, old);
                 meta.queued_prompts = old.queued_prompts.clone();
                 if meta.usage.is_none() {
                     meta.usage = old.usage;
@@ -641,20 +670,26 @@ impl SessionStore {
     }
 }
 
+/// Fields only the user sets (pins, archive, a custom title) — an actor's
+/// turn-boundary write carries stale or default values for them, so the
+/// stored ones win.
+fn keep_user_fields(meta: &mut SessionMeta, old: &SessionMeta) {
+    meta.pinned = old.pinned;
+    meta.pinned_global = old.pinned_global;
+    meta.archived = old.archived;
+    if old.renamed {
+        meta.renamed = true;
+        meta.title = old.title.clone();
+    }
+}
+
 fn empty_meta(id: i64) -> SessionMeta {
     SessionMeta {
         id,
         title: "新会话".into(),
         preview: String::new(),
         updated_at: 0,
-        pinned: false,
-        usage: None,
-        model: None,
-        provider: None,
-        permission_mode: None,
-        agent_mode: None,
-        thinking_level: None,
-        queued_prompts: vec![],
+        ..Default::default()
     }
 }
 

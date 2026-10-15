@@ -12,8 +12,8 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::StreamExt;
 
-use agent_llm::provider::{BoxStream, LlmProvider};
-use agent_llm::types::{ChatMessage, StreamChunk};
+use agent_llm_core::provider::{BoxStream, LlmProvider};
+use agent_llm_core::types::{ChatMessage, StreamChunk};
 
 pub struct ScriptedProvider {
     scripts: Mutex<VecDeque<Vec<StreamChunk>>>,
@@ -90,7 +90,7 @@ impl LlmProvider for ScriptedProvider {
         tools: Option<serde_json::Value>,
         _temperature: f32,
         reasoning_effort: Option<&str>,
-        _params: &agent_llm::ModelParams,
+        _params: &agent_llm_core::ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         self.reasoning_efforts
             .lock()
@@ -102,12 +102,10 @@ impl LlmProvider for ScriptedProvider {
         if let Some(gate) = gate {
             gate.notified().await;
         }
-        self.seen_messages.lock().unwrap().push(
-            messages
-                .iter()
-                .filter_map(|m| m.content.clone())
-                .collect(),
-        );
+        self.seen_messages
+            .lock()
+            .unwrap()
+            .push(messages.iter().filter_map(|m| m.content.clone()).collect());
         self.calls
             .lock()
             .unwrap()

@@ -224,7 +224,10 @@ async fn sampler_detects_doom_loop() {
         .await;
     assert!(res.is_err());
     let msg = res.unwrap_err().to_string();
-    assert!(msg.contains("doom loop detected"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("doom loop detected"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[tokio::test]

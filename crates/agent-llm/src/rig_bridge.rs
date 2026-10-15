@@ -36,8 +36,8 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rig_core::client::{self, BearerAuth, Capable, CompletionClient, Nothing};
 use rig_core::completion::request::CompletionError;
 use rig_core::completion::{CompletionModel, CompletionRequest, ToolDefinition};
-use rig_core::http_client::{self, HttpClientExt};
 use rig_core::http_client::sse::BoxedStream;
+use rig_core::http_client::{self, HttpClientExt};
 use rig_core::message::{
     AssistantContent, DocumentSourceKind, Image as RigImage, ImageMediaType, Message as RigMessage,
     Reasoning, ReasoningContent, Text as RigText, ToolCall as RigToolCall, ToolCallId,
@@ -51,7 +51,8 @@ use rig_core::wasm_compat::WasmCompatSend;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use crate::config::{ProviderCompat, ProviderConfig, ProviderKind};
+use crate::compat::ProviderCompat;
+use crate::config::{ProviderConfig, ProviderKind};
 use crate::provider::{BoxStream, Capabilities, LlmProvider, ModelParams};
 use crate::types::{ChatMessage, HarmonyStripper, ImageRef, NoticeKind, Role, StreamChunk};
 
@@ -428,11 +429,7 @@ impl RigProvider {
     /// Provider-level `ProviderCompat` is on the ext that goes through
     /// `with_ext`, so dialect hooks see the model-merged values only if we
     /// rebuild — which we do per call anyway.
-    fn build_model(
-        &self,
-        model: &str,
-        compat: &ProviderCompat,
-    ) -> anyhow::Result<RigModel> {
+    fn build_model(&self, model: &str, compat: &ProviderCompat) -> anyhow::Result<RigModel> {
         let mut headers = HeaderMap::new();
         for (k, v) in &self.headers {
             if let (Ok(name), Ok(value)) = (
@@ -2051,10 +2048,7 @@ mod tests {
             all.extend_from_slice(&item.unwrap());
         }
         let text = String::from_utf8(all).unwrap();
-        let v: Value = serde_json::from_str(
-            text.trim_start_matches("data: ").trim_end(),
-        )
-        .unwrap();
+        let v: Value = serde_json::from_str(text.trim_start_matches("data: ").trim_end()).unwrap();
         assert_eq!(v["response"]["created_at"], Value::from(0));
     }
 

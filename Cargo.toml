@@ -46,6 +46,19 @@ grep-matcher = "0.1"
 [profile.dev]
 panic = "unwind"       # tests need unwinding; debug UX needs backtraces
 
+# wasmtime/cranelift at opt-level 0 compile and run guests ~10x slower, which
+# is what made WASM plugins hang the dev app on load and reload.
+[profile.dev.package.wasmtime]
+opt-level = 3
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "thin"

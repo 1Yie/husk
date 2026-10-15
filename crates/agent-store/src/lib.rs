@@ -10,7 +10,7 @@ pub use files::SessionDatabase;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use agent_llm::types::ChatMessage;
+use agent_llm_core::types::ChatMessage;
 use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,7 @@ fn io_err(e: impl std::fmt::Display) -> std::io::Error {
 }
 
 /// One session's sidebar metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub id: i64,
     pub title: String,
@@ -36,10 +36,21 @@ pub struct SessionMeta {
     pub preview: String,
     /// Unix seconds of the last activity.
     pub updated_at: u64,
-    /// User-pinned sessions float to the top of `list()` ahead of recency —
-    /// the sidebar's pin toggle writes this.
+    /// Pinned within its workspace — floats to the top of `list()` (and so
+    /// of the project's sidebar list) ahead of recency.
     #[serde(default)]
     pub pinned: bool,
+    /// Pinned globally — leads the sidebar's cross-project 会话 list.
+    /// Independent of `pinned`.
+    #[serde(default)]
+    pub pinned_global: bool,
+    /// Archived — hidden from the regular lists (kept, restorable).
+    #[serde(default)]
+    pub archived: bool,
+    /// `title` was set by the user; the per-turn title derived from the first
+    /// prompt must not overwrite it.
+    #[serde(default)]
+    pub renamed: bool,
     /// Usage of the last completed turn — persisted so reopening a session
     /// seeds the header meter with real numbers before the next `Usage`
     /// event arrives (history alone can't reconstruct token counts).
@@ -194,10 +205,7 @@ pub fn init_data_dir_with_namespaces(dir: PathBuf, namespaces: &[(&str, &str)]) 
 /// directory or they would clobber each other's value.
 pub fn app_data_dir() -> Option<PathBuf> {
     if is_test_binary() {
-        return Some(std::env::temp_dir().join(format!(
-            "agent-test-{}-data",
-            std::process::id()
-        )));
+        return Some(std::env::temp_dir().join(format!("agent-test-{}-data", std::process::id())));
     }
     DATA_DIR
         .read()
@@ -249,10 +257,7 @@ pub(crate) fn sessions_db_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("AGENT_SESSION_DB") {
         Some(std::path::PathBuf::from(p))
     } else if is_test_binary() {
-        Some(std::env::temp_dir().join(format!(
-            "agent-test-{}-jsonl-sessions",
-            std::process::id()
-        )))
+        Some(std::env::temp_dir().join(format!("agent-test-{}-jsonl-sessions", std::process::id())))
     } else {
         app_data_dir().map(|d| d.join(DB_FILE))
     }
@@ -360,11 +365,10 @@ fn last_intact_jsonl_line(path: &Path) -> Option<Vec<u8>> {
     None
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_llm::types::ChatMessage;
+    use agent_llm_core::types::ChatMessage;
 
     /// An isolated store: temp db file + the tempdir as the workspace root.
     fn test_store(dir: &tempfile::TempDir) -> SessionStore {
@@ -386,6 +390,7 @@ mod tests {
             agent_mode: None,
             thinking_level: None,
             queued_prompts: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -427,6 +432,52 @@ mod tests {
         store.upsert_meta(meta(2, 500)).unwrap();
         let ids: Vec<i64> = store.list().iter().map(|m| m.id).collect();
         assert_eq!(ids, vec![3, 2, 1]);
+    }
+
+    /// Pins, archive and a user title belong to the user: an actor's turn
+    /// commit (which carries a derived title and default flags) keeps them.
+    #[test]
+    fn turn_commit_keeps_user_owned_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = test_store(&dir);
+        store.upsert_meta(meta(1, 1)).unwrap();
+        store.rename(1, "  我的标题 ").unwrap();
+        store.set_pinned_global(1, true).unwrap();
+        store.set_pinned(1, true).unwrap();
+        store
+            .commit_turn(&[ChatMessage::user("first prompt")], meta(1, 2))
+            .unwrap();
+        let m = store.list().into_iter().find(|m| m.id == 1).unwrap();
+        assert_eq!(m.title, "我的标题");
+        assert!(m.renamed && m.pinned && m.pinned_global);
+
+        // A blank rename hands the title back to the derived one.
+        store.rename(1, "  ").unwrap();
+        store
+            .commit_turn(&[ChatMessage::user("x")], meta(1, 3))
+            .unwrap();
+        let m = store.list().into_iter().find(|m| m.id == 1).unwrap();
+        assert_eq!(m.title, "s1");
+        assert!(!m.renamed);
+    }
+
+    /// Archiving hides nothing by itself but drops both pins; restoring
+    /// does not bring them back.
+    #[test]
+    fn archive_drops_pins() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = test_store(&dir);
+        store.upsert_meta(meta(1, 1)).unwrap();
+        store.set_pinned(1, true).unwrap();
+        store.set_pinned_global(1, true).unwrap();
+        store.set_archived(1, true).unwrap();
+        let m = store.list().into_iter().find(|m| m.id == 1).unwrap();
+        assert!(m.archived && !m.pinned && !m.pinned_global);
+        store.set_archived(1, false).unwrap();
+        let m = store.list().into_iter().find(|m| m.id == 1).unwrap();
+        assert!(!m.archived && !m.pinned);
+        // Editing a session with no meta is a no-op, not an error.
+        assert!(!store.set_archived(99, true).unwrap_or(false));
     }
 
     #[test]

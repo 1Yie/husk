@@ -9,6 +9,34 @@ permissions:
   contents: read
 
 jobs:
+  frontend:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/app-tauri/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/app-tauri/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:ci
+      - run: npm run build
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-test-reports
+          path: |
+            crates/app-tauri/frontend/coverage/
+            crates/app-tauri/frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   dependency-law:
     name: Dependency law
     runs-on: ubuntu-latest

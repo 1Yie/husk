@@ -17,8 +17,8 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use crate::net;
-use agent_capabilities::WorkspacePaths;
 use agent_capabilities::WorkspaceCtx;
+use agent_capabilities::WorkspacePaths;
 use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec};
 
 /// Refuse to attach images larger than this — bigger payloads mostly break
@@ -408,10 +408,7 @@ fn web_download<C: WorkspaceCtx>() -> ToolSpec<C> {
                 }
                 std::fs::write(&dest, &resp.body)
                     .map_err(|e| ToolError::Failed(format!("write {dest:?}: {e}")))?;
-                let shown = dest
-                    .strip_prefix(ctx.root()?)
-                    .unwrap_or(&dest)
-                    .display();
+                let shown = dest.strip_prefix(ctx.root()?).unwrap_or(&dest).display();
                 let mut res = ToolResult::text(format!(
                     "downloaded: {shown}  ({} bytes, {})",
                     resp.body.len(),
@@ -424,7 +421,7 @@ fn web_download<C: WorkspaceCtx>() -> ToolSpec<C> {
                 // Vision bonus: attach the image so the model sees exactly
                 // what it downloaded (engine drops it for text-only models).
                 if resp.content_type.starts_with("image/") {
-                    if let Some(img) = agent_llm::types::ImageRef::for_path(dest) {
+                    if let Some(img) = agent_llm_core::types::ImageRef::for_path(dest) {
                         res.images.push(img);
                     }
                 }
@@ -463,16 +460,14 @@ fn view_image<C: WorkspaceCtx>() -> ToolSpec<C> {
                         meta.len() as f64 / (1024.0 * 1024.0)
                     )));
                 }
-                let img = agent_llm::types::ImageRef::for_path(path.clone()).ok_or_else(|| {
-                    ToolError::Args(format!(
-                        "not a viewable image type: {} (want png/jpg/jpeg/gif/webp/bmp)",
-                        a.file
-                    ))
-                })?;
-                let shown = path
-                    .strip_prefix(ctx.root()?)
-                    .unwrap_or(&path)
-                    .display();
+                let img =
+                    agent_llm_core::types::ImageRef::for_path(path.clone()).ok_or_else(|| {
+                        ToolError::Args(format!(
+                            "not a viewable image type: {} (want png/jpg/jpeg/gif/webp/bmp)",
+                            a.file
+                        ))
+                    })?;
+                let shown = path.strip_prefix(ctx.root()?).unwrap_or(&path).display();
                 let mut res = ToolResult::text(format!(
                     "image: {shown}  ({} bytes, {})",
                     meta.len(),

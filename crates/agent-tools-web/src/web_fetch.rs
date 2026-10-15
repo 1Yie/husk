@@ -11,8 +11,8 @@ use futures::FutureExt;
 use serde::Deserialize;
 
 use crate::net;
-use agent_capabilities::WorkspacePaths;
 use agent_capabilities::WorkspaceCtx;
+use agent_capabilities::WorkspacePaths;
 use agent_tool::{schema_for, Args, ToolError, ToolResult, ToolSpec};
 
 const DEFAULT_MAX_CHARS: usize = 50_000;

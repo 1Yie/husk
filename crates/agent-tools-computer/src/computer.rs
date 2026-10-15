@@ -107,7 +107,10 @@ fn review<C: DesktopCtx>(args: &Args, ctx: &Arc<C>) -> agent_tool::Review {
     }
 }
 
-async fn exec<C: WorkspaceCtx + DesktopCtx>(args: Args, ctx: Arc<C>) -> Result<ToolResult, ToolError> {
+async fn exec<C: WorkspaceCtx + DesktopCtx>(
+    args: Args,
+    ctx: Arc<C>,
+) -> Result<ToolResult, ToolError> {
     let parsed: ComputerArgs =
         serde_json::from_value(args).map_err(|e| ToolError::Args(format!("computer args: {e}")))?;
     let action = parsed.action.trim().to_ascii_lowercase();
@@ -284,7 +287,11 @@ pub fn describe(args: &serde_json::Value) -> String {
     let action = action_of(args);
     let point = |k: &str| {
         let a = args.get(k)?.as_array()?;
-        Some(format!("({}, {})", a.first()?.as_i64()?, a.get(1)?.as_i64()?))
+        Some(format!(
+            "({}, {})",
+            a.first()?.as_i64()?,
+            a.get(1)?.as_i64()?
+        ))
     };
     let text = args.get("text").and_then(|v| v.as_str());
     let ms = args.get("duration_ms").and_then(|v| v.as_u64());
@@ -307,7 +314,9 @@ pub fn describe(args: &serde_json::Value) -> String {
                 .get("scroll_amount")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(DEFAULT_SCROLL_STEPS as i64);
-            let at = point("coordinate").map(|p| format!(" at {p}")).unwrap_or_default();
+            let at = point("coordinate")
+                .map(|p| format!(" at {p}"))
+                .unwrap_or_default();
             Some(format!("{dir} ×{n}{at}"))
         }
         "wait" => ms.map(|m| format!("{m}ms")),
@@ -468,7 +477,9 @@ mod tests {
             "launch \"code ~/p\""
         );
         assert_eq!(
-            d(serde_json::json!({"action": "left_click_drag", "start_coordinate": [1, 2], "coordinate": [3, 4]})),
+            d(
+                serde_json::json!({"action": "left_click_drag", "start_coordinate": [1, 2], "coordinate": [3, 4]})
+            ),
             "left_click_drag (1, 2) → (3, 4)"
         );
         assert_eq!(
@@ -485,17 +496,51 @@ mod tests {
         struct Live;
         #[async_trait::async_trait]
         impl agent_computer::DesktopBackend for Live {
-            fn id(&self) -> &'static str { "live" }
-            async fn screenshot(&self, _d: &std::path::Path) -> anyhow::Result<agent_computer::ScreenshotMeta> { anyhow::bail!("n/a") }
-            async fn click(&self, _b: agent_computer::MouseButton, _a: [i32; 2]) -> anyhow::Result<()> { Ok(()) }
-            async fn double_click(&self, _a: [i32; 2]) -> anyhow::Result<()> { Ok(()) }
-            async fn move_to(&self, _a: [i32; 2]) -> anyhow::Result<()> { Ok(()) }
-            async fn drag(&self, _f: [i32; 2], _t: [i32; 2]) -> anyhow::Result<()> { Ok(()) }
-            async fn type_text(&self, _t: &str) -> anyhow::Result<()> { Ok(()) }
-            async fn key(&self, _c: &str, _h: Option<u64>) -> anyhow::Result<()> { Ok(()) }
-            async fn scroll(&self, _d: agent_computer::ScrollDir, _a: i32, _at: Option<[i32; 2]>) -> anyhow::Result<()> { Ok(()) }
-            async fn cursor_position(&self) -> anyhow::Result<[i32; 2]> { Ok([0, 0]) }
-            async fn launch_app(&self, _c: &str) -> anyhow::Result<()> { Ok(()) }
+            fn id(&self) -> &'static str {
+                "live"
+            }
+            async fn screenshot(
+                &self,
+                _d: &std::path::Path,
+            ) -> anyhow::Result<agent_computer::ScreenshotMeta> {
+                anyhow::bail!("n/a")
+            }
+            async fn click(
+                &self,
+                _b: agent_computer::MouseButton,
+                _a: [i32; 2],
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn double_click(&self, _a: [i32; 2]) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn move_to(&self, _a: [i32; 2]) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn drag(&self, _f: [i32; 2], _t: [i32; 2]) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn type_text(&self, _t: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn key(&self, _c: &str, _h: Option<u64>) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn scroll(
+                &self,
+                _d: agent_computer::ScrollDir,
+                _a: i32,
+                _at: Option<[i32; 2]>,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn cursor_position(&self) -> anyhow::Result<[i32; 2]> {
+                Ok([0, 0])
+            }
+            async fn launch_app(&self, _c: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
         }
         let dir = tempfile::tempdir().unwrap();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -515,6 +560,10 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("cancelled"), "{e}");
-        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
+        );
     }
 }

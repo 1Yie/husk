@@ -530,8 +530,8 @@ mod tests {
 
     use crate::provider::BoxStream;
     use async_trait::async_trait;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     /// One scripted attempt: either `chat_stream` itself fails (establish
     /// phase) or the stream yields these items then closes.
@@ -573,12 +573,10 @@ mod tests {
             _params: &ModelParams,
         ) -> anyhow::Result<BoxStream<StreamChunk>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.seen.lock().unwrap().push(
-                _messages
-                    .iter()
-                    .filter_map(|m| m.content.clone())
-                    .collect(),
-            );
+            self.seen
+                .lock()
+                .unwrap()
+                .push(_messages.iter().filter_map(|m| m.content.clone()).collect());
             let script = self
                 .scripts
                 .lock()
@@ -674,7 +672,9 @@ mod tests {
         assert_eq!(chunks, vec!["ok"]);
         assert_eq!(backup.calls.load(Ordering::SeqCst), 1);
         assert!(
-            events.iter().any(|e| e.contains("FellBack") && e.contains("backup")),
+            events
+                .iter()
+                .any(|e| e.contains("FellBack") && e.contains("backup")),
             "{events:?}"
         );
     }
@@ -690,9 +690,16 @@ mod tests {
         let mut sampler = Sampler::new(primary.clone());
         sampler.set_fallbacks(vec![("backup".into(), backup.clone())]);
 
-        let err = sampler.sample(req(), &[], |_| {}, |_| {}).await.unwrap_err();
+        let err = sampler
+            .sample(req(), &[], |_| {}, |_| {})
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("400"), "{err}");
-        assert_eq!(backup.calls.load(Ordering::SeqCst), 0, "4xx must not fall back");
+        assert_eq!(
+            backup.calls.load(Ordering::SeqCst),
+            0,
+            "4xx must not fall back"
+        );
     }
 
     /// When every provider in the chain fails, the error names the last one
@@ -712,7 +719,10 @@ mod tests {
         let mut sampler = Sampler::new(primary);
         sampler.set_fallbacks(vec![("backup".into(), backup)]);
 
-        let err = sampler.sample(req(), &[], |_| {}, |_| {}).await.unwrap_err();
+        let err = sampler
+            .sample(req(), &[], |_| {}, |_| {})
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("502"), "{err}");
     }
 
@@ -742,7 +752,11 @@ mod tests {
             .await
             .expect("retry must recover");
 
-        assert_eq!(p.calls.load(Ordering::SeqCst), 2, "one retry, one extra call");
+        assert_eq!(
+            p.calls.load(Ordering::SeqCst),
+            2,
+            "one retry, one extra call"
+        );
         // The retry re-streams from scratch — the caller sees "hel" again.
         assert_eq!(chunks, vec!["hel", "hel", "lo"]);
         assert!(
@@ -828,11 +842,16 @@ mod tests {
         let sampler = Sampler::new(p);
         let mut dones = 0usize;
         sampler
-            .sample(req(), &[], |c| {
-                if matches!(c, StreamChunk::Done { .. }) {
-                    dones += 1;
-                }
-            }, |_| {})
+            .sample(
+                req(),
+                &[],
+                |c| {
+                    if matches!(c, StreamChunk::Done { .. }) {
+                        dones += 1;
+                    }
+                },
+                |_| {},
+            )
             .await
             .unwrap();
         assert_eq!(dones, 1, "provider double-Done is swallowed");
@@ -842,11 +861,16 @@ mod tests {
         let sampler = Sampler::new(p);
         let mut dones = 0usize;
         sampler
-            .sample(req(), &[], |c| {
-                if matches!(c, StreamChunk::Done { .. }) {
-                    dones += 1;
-                }
-            }, |_| {})
+            .sample(
+                req(),
+                &[],
+                |c| {
+                    if matches!(c, StreamChunk::Done { .. }) {
+                        dones += 1;
+                    }
+                },
+                |_| {},
+            )
             .await
             .unwrap();
         assert_eq!(dones, 1, "missing Done is synthesized");
@@ -860,7 +884,9 @@ mod tests {
         let p = ScriptedProvider::of(vec![
             Script::Chunks(vec![
                 delta("a"),
-                Ok(StreamChunk::Error("internal_server_error: upstream error".into())),
+                Ok(StreamChunk::Error(
+                    "internal_server_error: upstream error".into(),
+                )),
             ]),
             Script::Chunks(vec![done()]),
         ]);
@@ -868,11 +894,16 @@ mod tests {
 
         let mut saw_error_chunk = false;
         sampler
-            .sample(req(), &[], |c| {
-                if matches!(c, StreamChunk::Error(_)) {
-                    saw_error_chunk = true;
-                }
-            }, |_| {})
+            .sample(
+                req(),
+                &[],
+                |c| {
+                    if matches!(c, StreamChunk::Error(_)) {
+                        saw_error_chunk = true;
+                    }
+                },
+                |_| {},
+            )
             .await
             .expect("error chunk is retryable and recovers");
 

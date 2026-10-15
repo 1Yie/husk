@@ -6,19 +6,21 @@
 
 pub mod config;
 pub mod factory;
-pub mod masking;
-pub mod provider;
 mod rig_bridge;
-pub mod sampler;
-pub mod types;
 
+// The contract lives in `agent-llm-core`; re-exported so the module paths
+// (`agent_llm::types`, `agent_llm::provider`, …) keep resolving.
+pub use agent_llm_core::{compat, masking, provider, sampler, types};
+
+pub use agent_llm_core::{
+    BoxStream, Capabilities, EgressMasker, LlmProvider, ModelParams, ProviderCompat,
+    UnavailableProvider,
+};
+pub use agent_llm_core::{ChatMessage, Role, StreamChunk, ToolCall};
 pub use config::{
     AppConfig, ConfigWarning, CostTier, ImageLimits, ImageResize, InputLimits, ModelConfig,
-    ModelCost, ModelEntry, ModelOverride, PromptCache, ProviderCompat, ProviderConfig,
-    ProviderKind, THINKING_LEVELS,
+    ModelCost, ModelEntry, ModelOverride, PromptCache, ProviderConfig, ProviderKind,
+    THINKING_LEVELS,
 };
 pub use factory::ProviderFactory;
-pub use masking::EgressMasker;
-pub use provider::{BoxStream, Capabilities, LlmProvider, ModelParams, UnavailableProvider};
 pub use rig_bridge::RigProvider;
-pub use types::{ChatMessage, Role, StreamChunk, ToolCall};

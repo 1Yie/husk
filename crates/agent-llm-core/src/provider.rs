@@ -9,7 +9,7 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::config::ProviderCompat;
+use crate::compat::ProviderCompat;
 use crate::types::{ChatMessage, StreamChunk};
 
 pub type BoxStream<T> = Pin<Box<dyn Stream<Item = anyhow::Result<T>> + Send>>;
@@ -218,7 +218,10 @@ mod tests {
     #[tokio::test]
     async fn unavailable_provider_fails_with_the_real_reason() {
         let p = UnavailableProvider::new("env var OPENAI_API_KEY unset or empty");
-        let err = match p.chat_stream("m", &[], None, 0.0, None, &ModelParams::EMPTY).await {
+        let err = match p
+            .chat_stream("m", &[], None, 0.0, None, &ModelParams::EMPTY)
+            .await
+        {
             Ok(_) => panic!("unavailable provider must not stream"),
             Err(e) => e.to_string(),
         };

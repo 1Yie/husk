@@ -27,12 +27,10 @@ impl TestCtx {
     ) -> Self {
         let root = root.as_ref();
         let mut ext = agent_tool::Extensions::default();
-        ext.insert_shared(std::sync::Arc::new(agent_capabilities::DesktopSlot(desktop)));
-        Self {
-            ext,
-            cancel: None,
-        }
-        .with_workspace(root)
+        ext.insert_shared(std::sync::Arc::new(agent_capabilities::DesktopSlot(
+            desktop,
+        )));
+        Self { ext, cancel: None }.with_workspace(root)
     }
 }
 

@@ -115,7 +115,9 @@ impl std::fmt::Debug for Commit {
 
 impl Commit {
     /// A commit with nothing to re-verify.
-    pub fn new(apply: impl std::future::Future<Output = Result<(), String>> + Send + 'static) -> Self {
+    pub fn new(
+        apply: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+    ) -> Self {
         Self {
             verify: Box::new(|| Ok(())),
             apply: Box::pin(apply),
@@ -148,7 +150,7 @@ pub struct ToolResult {
     /// Staged image refs this result carries as model input (a screenshot).
     /// The engine hangs them on the tool message; adapters encode or annotate
     /// them per their wire (only the vision-capable ones get real parts).
-    pub images: Vec<agent_llm::types::ImageRef>,
+    pub images: Vec<agent_llm_core::types::ImageRef>,
 }
 
 impl ToolResult {
@@ -183,9 +185,8 @@ pub enum ToolError {
 /// A tool's exec — `Arc<dyn Fn>` so a bridged tool (e.g. a Serena MCP
 /// passthrough) can capture its bridge + remote name in a closure, while
 /// plain builtins still wrap a free fn.
-pub type ExecFn<C> = Arc<
-    dyn Fn(Args, Arc<C>) -> BoxFuture<'static, Result<ToolResult, ToolError>> + Send + Sync,
->;
+pub type ExecFn<C> =
+    Arc<dyn Fn(Args, Arc<C>) -> BoxFuture<'static, Result<ToolResult, ToolError>> + Send + Sync>;
 
 /// What a call actually does — the capability seam `batch_execute`,
 /// permission policy, and (eventually) audit all key off. `readonly`
@@ -310,7 +311,10 @@ mod tests {
         parent.insert(Arc::new(Marker(2)));
         let child = parent.inheritable();
         assert_eq!(child.get::<Shared>().map(|s| s.0), Some(1));
-        assert!(child.get::<Marker>().is_none(), "per-context slots stay put");
+        assert!(
+            child.get::<Marker>().is_none(),
+            "per-context slots stay put"
+        );
         // Shared means the same Arc, so a handle swap on the parent is seen.
         assert!(Arc::ptr_eq(
             &parent.get::<Shared>().unwrap(),

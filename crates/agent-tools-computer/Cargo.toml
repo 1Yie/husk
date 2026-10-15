@@ -8,7 +8,7 @@ agent-tool = { path = "../agent-tool" }
 agent-capabilities = { path = "../agent-capabilities", features = ["desktop"] }
 agent-computer = { path = "../agent-computer" }
 agent-paths = { path = "../agent-paths" }
-agent-llm = { path = "../agent-llm" }
+agent-llm-core = { path = "../agent-llm-core" }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

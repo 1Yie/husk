@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 
-use agent_capabilities::{DesktopCtx, WorkspacePaths};
 use agent_capabilities::WorkspaceCtx;
+use agent_capabilities::{DesktopCtx, WorkspacePaths};
 use agent_tool::{schema_for, ToolError, ToolResult, ToolSpec};
 
 /// No model-facing arguments: a full-screen capture is the only useful shape
@@ -51,7 +51,7 @@ async fn exec<C: WorkspaceCtx + DesktopCtx>(ctx: Arc<C>) -> Result<ToolResult, T
     // images, so captures sit with their siblings. Its name comes from the
     // host, not from here.
     let dir = ctx.workspace_state_dir()?.join("attachments");
-    let dest = dir.join(format!("shot-{}.png", agent_llm::types::now_ms()));
+    let dest = dir.join(format!("shot-{}.png", agent_llm_core::types::now_ms()));
 
     let meta = desktop
         .screenshot(&dest)
@@ -60,10 +60,7 @@ async fn exec<C: WorkspaceCtx + DesktopCtx>(ctx: Arc<C>) -> Result<ToolResult, T
 
     // Workspace-relative for the text: the absolute path is long and the
     // model only needs enough to name the file.
-    let shown = dest
-        .strip_prefix(ctx.root()?)
-        .unwrap_or(&dest)
-        .display();
+    let shown = dest.strip_prefix(ctx.root()?).unwrap_or(&dest).display();
     let mut content = format!(
         "screenshot saved: {shown}\n\
          display: {}x{} (real screen)\n\
@@ -82,7 +79,7 @@ async fn exec<C: WorkspaceCtx + DesktopCtx>(ctx: Arc<C>) -> Result<ToolResult, T
     res.ui_type = Some("screenshot");
     // The engine attaches these to the tool message; a text-only model just
     // keeps the printed path (same degradation the composer path uses).
-    if let Some(img) = agent_llm::types::ImageRef::for_path(meta.path) {
+    if let Some(img) = agent_llm_core::types::ImageRef::for_path(meta.path) {
         res.images.push(img);
     }
     Ok(res)

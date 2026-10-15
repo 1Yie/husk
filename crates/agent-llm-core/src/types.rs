@@ -117,7 +117,10 @@ impl Serialize for NoticeKind {
         match self {
             NoticeKind::Card(kind) => s.serialize_str(kind),
             known => {
-                let name = Self::NAMES.iter().find(|(_, k)| k == known).map(|(n, _)| *n);
+                let name = Self::NAMES
+                    .iter()
+                    .find(|(_, k)| k == known)
+                    .map(|(n, _)| *n);
                 s.serialize_str(name.expect("every non-card notice is named"))
             }
         }
@@ -682,20 +685,20 @@ impl ToolCallAssembler {
 ///
 /// A partial token split across deltas is held until it resolves or proves
 /// to be plain text; `flush` at stream end emits whatever was still held.
-pub(crate) struct HarmonyStripper {
+pub struct HarmonyStripper {
     /// Held-back tail that might still become a `<|…|>` token (`<` / `<|se` …).
     hold: String,
 }
 
 impl HarmonyStripper {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             hold: String::new(),
         }
     }
 
     /// Feed one delta; returns the text safe to emit (None = all held).
-    pub(crate) fn feed(&mut self, delta: &str) -> Option<String> {
+    pub fn feed(&mut self, delta: &str) -> Option<String> {
         self.hold.push_str(delta);
         let mut out = String::new();
         let bytes = self.hold.as_bytes();
@@ -735,7 +738,7 @@ impl HarmonyStripper {
     }
 
     /// Stream end — anything still held was plain text, not a token. Emit it.
-    pub(crate) fn flush(&mut self) -> Option<String> {
+    pub fn flush(&mut self) -> Option<String> {
         if self.hold.is_empty() {
             None
         } else {
@@ -744,7 +747,7 @@ impl HarmonyStripper {
     }
 
     /// One-shot strip for a whole string — assembled `arguments`, `name`.
-    pub(crate) fn strip_str(s: &str) -> String {
+    pub fn strip_str(s: &str) -> String {
         let mut st = Self::new();
         let mut out = st.feed(s).unwrap_or_default();
         if let Some(tail) = st.flush() {
