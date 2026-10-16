@@ -57,16 +57,6 @@ export function SkeletonKvList({ rows = 3 }: { rows?: number }) {
   );
 }
 
-/** A settings page's loading state — a section title, then a `KvList` skeleton. */
-export function SkeletonSection({ rows = 3 }: { rows?: number }) {
-  return (
-    <div className="flex flex-col gap-3 animate-pulse" aria-hidden="true">
-      <Skeleton className="h-4 w-24" />
-      <SkeletonKvList rows={rows} />
-    </div>
-  );
-}
-
 /** Stands in for one settings control while its value loads — same footprint as
  * the real `SettingSelect` (h-8, min-w-44) or `Switch` (h-5 w-9), so the row
  * keeps its labels and the control fills in without any layout shift. */
