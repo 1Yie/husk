@@ -595,6 +595,15 @@ export function getAppConfig() {
   return invoke<AppConfigData>("agent_session", { op: "get_app_config" });
 }
 
+/** Requested only by the API Key eye button. Keeps env:/keyring: references
+ * intact instead of resolving them into a different value for the editor. */
+export function getProviderApiKey(provider: string) {
+  return invoke<string>("agent_session", {
+    op: "get_provider_api_key",
+    payload: { provider },
+  });
+}
+
 export function saveAppConfig(payload: any) {
   return invoke<{ success: boolean }>("agent_session", { op: "save_app_config", payload })
     .then((r) => {

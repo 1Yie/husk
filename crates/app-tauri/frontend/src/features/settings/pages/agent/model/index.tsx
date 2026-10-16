@@ -16,6 +16,7 @@ import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import { getAppConfig, saveAppConfig, type AgentOverview } from "@/lib/agent-ipc/sessions";
 import { EmptyState, Field, ItemIcon, Tag } from "@/features/settings/pages/agent/shared/index";
+import { ApiKeyInput } from "./api-key-input";
 
 /* ============================ 模型 ============================ */
 
@@ -671,8 +672,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                   placeholder="https://api.openai.com/v1" className="h-8 text-xs font-mono" />
               </Field>
               <Field label="API Key（支持 env:VAR 引用）">
-                <Input type="password" value={provKey_} onChange={(e) => setProvKey_(e.target.value)}
-                  placeholder="sk-… 或 env:OPENAI_API_KEY" className="h-8 text-xs font-mono" />
+                <ApiKeyInput key={String(provOpen)} value={provKey_} onChange={setProvKey_} />
               </Field>
             </Group>
             <Group title="模型">
@@ -741,8 +741,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 <Input value={eBase} onChange={(e) => setEBase(e.target.value)} className="h-8 text-xs font-mono" />
               </Field>
               <Field label="API Key">
-                {/* Stored plaintext keys arrive masked; submitting the mask keeps the stored key. */}
-                <Input type="password" value={eKey} onChange={(e) => setEKey(e.target.value)} className="h-8 text-xs font-mono" />
+                <ApiKeyInput key={editProv} value={eKey} onChange={setEKey} provider={editProv ?? undefined} />
               </Field>
             </Group>
             <Group title="模型">

@@ -315,6 +315,20 @@ fn agent_session_inner(
                 .collect(),
         ));
     }
+    // The settings eye button reads only the selected provider's configured
+    // value. Keep the general config view masked and do not resolve handles.
+    if op == "get_provider_api_key" {
+        let provider = payload
+            .as_ref()
+            .and_then(|p| p.get("provider"))
+            .and_then(|p| p.as_str())
+            .ok_or("get_provider_api_key requires provider")?;
+        let cfg = agent_llm::AppConfig::load(&crate::kernel::app_paths().config_dir, None)
+            .map_err(|_| "无法读取模型配置".to_string())?;
+        return Ok(serde_json::Value::String(
+            configured_provider_api_key(&cfg, provider)?.to_string(),
+        ));
+    }
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
     // keyed by the active workspace root, same path as the session actor's.
@@ -1577,7 +1591,10 @@ fn notify_desktop(
     // `NOTIFICATION_CLICK_EVENT`; the frontend owns the navigation.
     let target = p.get("target").filter(|t| t.is_object()).cloned();
     show_notification(app, title, body, target)?;
-    if p.get("attention").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if p.get("attention")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.request_user_attention(Some(tauri::UserAttentionType::Informational));
         }
@@ -1937,8 +1954,20 @@ fn normalize_config_payload(val: &serde_json::Value) -> Result<agent_llm::AppCon
     Ok(cfg)
 }
 
-/// Placeholder the settings UI shows for a plaintext key it must not echo.
-/// Submitting it back means "keep the stored key".
+/// Read the configured value for the settings reveal action. Env/keyring
+/// references must stay references when the editor is saved.
+fn configured_provider_api_key<'a>(
+    config: &'a agent_llm::AppConfig,
+    provider: &str,
+) -> Result<&'a str, String> {
+    config
+        .providers
+        .get(provider)
+        .map(|p| p.api_key.as_str())
+        .ok_or_else(|| "提供商不存在".to_string())
+}
+
+/// Placeholder in the masked config view. Submitting it means "keep the stored key".
 const KEY_MASK: &str = "\u{2022}\u{2022}\u{2022}\u{2022}";
 
 /// Mask every plaintext `api_key` in an outgoing config view. `env:` and
@@ -2077,7 +2106,7 @@ mod tests {
         assert!(err.contains("config payload"), "{err}");
     }
 
-    /// The settings view must never carry a plaintext key to the webview.
+    /// The general config view must not carry plaintext keys to the webview.
     /// Handles (`env:` / `keyring:`) are not secrets and stay visible.
     #[test]
     fn config_view_masks_plaintext_keys_only() {
@@ -2140,6 +2169,34 @@ mod tests {
         let p = &payload["providers"]["DeepSeek"];
         assert_eq!(p["api_key"], "sk-renamed-original");
         assert!(p.get("renamed_from").is_none());
+    }
+
+    #[test]
+    fn provider_api_key_reveal_reads_only_the_selected_configured_value() {
+        let config: agent_llm::AppConfig = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "plain": { "kind": "openai_completions", "base_url": "https://example.invalid", "api_key": "test-reveal-value" },
+                "envd": { "kind": "openai_completions", "base_url": "https://example.invalid", "api_key": "env:HUSK_TEST_API_KEY" },
+                "kr": { "kind": "openai_completions", "base_url": "https://example.invalid", "api_key": "keyring:husk/test" },
+                "empty": { "kind": "openai_completions", "base_url": "https://example.invalid", "api_key": "" }
+            }
+        }))
+        .unwrap();
+        for (provider, expected) in [
+            ("plain", "test-reveal-value"),
+            ("envd", "env:HUSK_TEST_API_KEY"),
+            ("kr", "keyring:husk/test"),
+            ("empty", ""),
+        ] {
+            assert_eq!(
+                configured_provider_api_key(&config, provider).unwrap(),
+                expected
+            );
+        }
+        assert!(configured_provider_api_key(&config, "missing").is_err());
+        let mut view = serde_json::to_value(&config).unwrap();
+        mask_config_keys(&mut view);
+        assert_eq!(view["providers"]["plain"]["api_key"], KEY_MASK);
     }
 
     #[test]
