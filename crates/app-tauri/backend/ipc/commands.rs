@@ -178,7 +178,7 @@ fn agent_cmd_inner(
     cmd: UiCommand,
 ) -> Result<(), String> {
     let mut mgr = kernel.lock().map_err(|e| e.to_string())?;
-    let (cancel, steer_tx, decision, ask, permissions, agent_mode, ui, cmd_tx, queue) = {
+    let (cancel, steer_tx, decision, ask, permissions, agent_mode, model, ui, cmd_tx, queue) = {
         let Some(handle) = mgr.active() else {
             return Err("no active session".into());
         };
@@ -189,6 +189,7 @@ fn agent_cmd_inner(
             handle.ask.clone(),
             handle.permissions.clone(),
             handle.agent_mode.clone(),
+            handle.model.clone(),
             handle.ui.clone(),
             handle.cmd_tx.clone(),
             handle.queue.clone(),
@@ -314,5 +315,20 @@ fn agent_cmd_inner(
         });
         return Ok(());
     }
-    cmd_tx.try_send(cmd).map_err(|e| e.to_string())
+    // `SetModel` still travels the pump (the provider rebuild belongs to the
+    // actor), but the live slot is written as soon as it is queued: behind a
+    // running turn the pump only drains at turn end, and until then every
+    // `model_info` read snapped the composer back to the old model. Written
+    // after the send, so a full queue never advertises a switch that won't run.
+    let pick = match &cmd {
+        UiCommand::SetModel { provider, model } => Some((provider.clone(), model.clone())),
+        _ => None,
+    };
+    cmd_tx.try_send(cmd).map_err(|e| e.to_string())?;
+    if let Some(pick) = pick {
+        if let Ok(mut slot) = model.write() {
+            *slot = pick;
+        }
+    }
+    Ok(())
 }

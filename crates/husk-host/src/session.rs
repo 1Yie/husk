@@ -345,6 +345,10 @@ pub struct SessionActor {
     /// Engine's thinking-level slot — read by the manager to report the
     /// session's live level (defaults may differ once prefs change).
     thinking_slot: Arc<std::sync::RwLock<Option<String>>>,
+    /// The session's live `(provider, model)` — the IPC layer writes it the
+    /// moment a `SetModel` arrives, ahead of the pump (which waits behind a
+    /// running turn); the actor keeps it in step on every switch it applies.
+    model_slot: Arc<std::sync::RwLock<(String, String)>>,
     /// Forwards `UiCommand::Steer` texts into the engine's steer channel.
     steer_tx: mpsc::Sender<String>,
     /// Cooperative cancel flag shared with the engine — `UiCommand::Cancel`
@@ -873,6 +877,10 @@ impl SessionActor {
                 ask_channel,
                 permissions_slot,
                 thinking_slot,
+                model_slot: Arc::new(std::sync::RwLock::new((
+                    cfg.provider_name.clone(),
+                    cfg.model.clone(),
+                ))),
                 child_route,
                 steer_tx,
                 cancel,
@@ -1007,6 +1015,11 @@ impl SessionActor {
     /// level so the manager can report the session's actual value.
     pub fn thinking_writer(&self) -> Arc<std::sync::RwLock<Option<String>>> {
         self.thinking_slot.clone()
+    }
+
+    /// The shared `(provider, model)` slot — see `model_slot`.
+    pub fn model_writer(&self) -> Arc<std::sync::RwLock<(String, String)>> {
+        self.model_slot.clone()
     }
 
     /// The mid-turn steering sender — `Steer` texts go here when a turn is
@@ -1556,6 +1569,9 @@ impl SessionActor {
         // recorded a stale model against the spend.
         self.model = model.to_string();
         self.provider_name = provider.to_string();
+        if let Ok(mut slot) = self.model_slot.write() {
+            *slot = (provider.to_string(), model.to_string());
+        }
     }
 
     /// Execute a `ControlOp` from a slash command — session state changes

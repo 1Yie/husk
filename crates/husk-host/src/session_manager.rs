@@ -141,6 +141,10 @@ pub struct SessionHandle {
     /// `model_info` so the UI shows the session's actual value, which may
     /// differ from the stored default after a prefs change.
     pub thinking_level: Arc<std::sync::RwLock<Option<String>>>,
+    /// The session's live `(provider, model)`. `SetModel` writes it here
+    /// before the command reaches the pump, so `model_info` answers with the
+    /// new pick at once instead of after the running turn drains the queue.
+    pub model: Arc<std::sync::RwLock<(String, String)>>,
     pub steer_tx: tokio::sync::mpsc::Sender<String>,
     /// The session's parked-prompt deque, shared with the actor — the IPC
     /// layer mutates it directly (`Enqueue`/`SetQueued` bypass the command
@@ -1009,6 +1013,7 @@ impl SessionManager {
         let permissions = actor.permissions_writer();
         let agent_mode = actor.agent_mode_writer();
         let thinking_level = actor.thinking_writer();
+        let model_slot = actor.model_writer();
         let steer_tx = actor.steer_writer();
         let cancel = actor.cancel_writer();
         let shutdown = actor.shutdown_writer();
@@ -1111,6 +1116,7 @@ impl SessionManager {
                 permissions,
                 agent_mode,
                 thinking_level,
+                model: model_slot,
                 steer_tx,
                 queue,
                 cancel,
@@ -1232,6 +1238,15 @@ impl SessionManager {
             }
             if let Ok(l) = h.thinking_level.read() {
                 self.active_thinking_level = l.clone();
+            }
+            if let Ok(pm) = h.model.read() {
+                let (p, m) = pm.clone();
+                if !p.is_empty() {
+                    self.provider_name = p;
+                }
+                if !m.is_empty() {
+                    self.model_name = m;
+                }
             }
         }
     }
@@ -2191,20 +2206,27 @@ impl SessionManager {
         // workspace default, so reporting `self.model_name` here names the
         // model the session was SPAWNED with and every model_info refresh
         // snaps the pickers/chips back to it. Same rule as the live
-        // permission/thinking/agent-mode reads below.
-        let (active_provider, active_model) = self
-            .store
-            .list()
-            .into_iter()
-            .find(|m| m.id == self.active_id)
-            .map(|m| (m.provider, m.model))
-            .map(|(p, m)| {
-                (
-                    p.unwrap_or_else(|| self.provider_name.clone()),
-                    m.unwrap_or_else(|| self.model_name.clone()),
-                )
-            })
-            .unwrap_or_else(|| (self.provider_name.clone(), self.model_name.clone()));
+        // permission/thinking/agent-mode reads below. The live slot comes
+        // first: the meta row only catches up once the actor drains the
+        // `SetModel`, which waits behind a running turn.
+        let live_model = self
+            .active()
+            .and_then(|h| h.model.read().ok().map(|g| g.clone()))
+            .filter(|(p, m)| !p.is_empty() && !m.is_empty());
+        let (active_provider, active_model) = live_model.unwrap_or_else(|| {
+            self.store
+                .list()
+                .into_iter()
+                .find(|m| m.id == self.active_id)
+                .map(|m| (m.provider, m.model))
+                .map(|(p, m)| {
+                    (
+                        p.unwrap_or_else(|| self.provider_name.clone()),
+                        m.unwrap_or_else(|| self.model_name.clone()),
+                    )
+                })
+                .unwrap_or_else(|| (self.provider_name.clone(), self.model_name.clone()))
+        });
 
         if !models
             .iter()
@@ -2862,6 +2884,7 @@ max = "max"
                 )),
                 agent_mode: Arc::new(std::sync::RwLock::new("build".to_string())),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                model: Arc::default(),
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3214,6 +3237,7 @@ max = "max"
                     )),
                     agent_mode: Arc::new(std::sync::RwLock::new(mode)),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                    model: Arc::default(),
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3292,6 +3316,7 @@ max = "max"
                     )),
                     agent_mode: Arc::new(std::sync::RwLock::new("build".to_string())),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                    model: Arc::default(),
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3316,6 +3341,15 @@ max = "max"
         let info = mgr.model_info();
         assert_eq!(info.active_provider, "deepseek");
         assert_eq!(info.active_model, "ds-v3");
+
+        // A composer pick lands in the live slot before the actor has drained
+        // `SetModel` (it waits behind a running turn), so the meta row still
+        // names the old model. `model_info` must already report the pick —
+        // reading the meta first is what snapped the picker back for a whole turn.
+        *mgr.handles[&2].model.write().unwrap() = ("openai".into(), "gpt-5".into());
+        let info = mgr.model_info();
+        assert_eq!(info.active_provider, "openai");
+        assert_eq!(info.active_model, "gpt-5");
     }
 
     /// A session that never picked its own settings falls back to the
@@ -3377,6 +3411,7 @@ max = "max"
                 )),
                 agent_mode: Arc::new(std::sync::RwLock::new("plan".to_string())),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                model: Arc::default(),
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
