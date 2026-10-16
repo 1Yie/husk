@@ -14,6 +14,8 @@ import { MainLayout } from "@/app/layout/main-layout/index";
 import { ChatPage } from "@/features/chat/pages/chat/index";
 import { SettingsPage } from "@/features/settings/pages/index";
 import { RawHistoryDialog } from "@/features/chat/components/raw-history-dialog/index";
+import { UpdateDialog } from "@/features/update/update-dialog";
+import { useStartupUpdateCheck } from "@/features/update/use-update";
 import { WorkspaceLoadingVeil } from "@/features/chat/components/workspace-loading-veil/index";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -230,6 +232,9 @@ export function App() {
   // Changes panel docked right of the chat column; its content reads the
   // active view's `changes`, so it follows the foreground session.
   const [changesOpen, setChangesOpen] = useState(false);
+  // Silent startup update check — starts only once the sessions are on screen,
+  // so the network call never competes with first load.
+  useStartupUpdateCheck(sessionsLoaded);
   // The trace dialog owns its paged reads.
   const [rawOpen, setRawOpen] = useState(false);
   const handleShowRaw = useCallback(() => {
@@ -629,6 +634,8 @@ export function App() {
           <SettingsPage onClose={() => setSettingsOpen(false)} />
         </div>
       )}
+
+      <UpdateDialog />
 
       {/* Raw-JSON history viewer — opened from the title-bar icon. */}
       <RawHistoryDialog

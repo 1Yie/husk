@@ -572,6 +572,9 @@ export interface UpdateCheck {
   url: string | null;
   notes: string | null;
   is_newer: boolean;
+  /** Installer matching this platform; `null` = none published, so the UI can
+   *  only link to the release page. */
+  asset: { name: string; size: number } | null;
 }
 
 /** Query GitHub for the newest published release and compare it to the
@@ -579,6 +582,18 @@ export interface UpdateCheck {
  *  off-origin `fetch`. */
 export function checkUpdate() {
   return invoke<UpdateCheck>("check_update");
+}
+
+/** Download, verify and install the update found by the last `checkUpdate`.
+ *  Resolves when it is ready — the app keeps running until `relaunchApp`.
+ *  Progress arrives as `update-progress` events. */
+export function installUpdate() {
+  return invoke<void>("install_update");
+}
+
+/** Restart into the installed update. Only valid after `installUpdate` resolved. */
+export function relaunchApp() {
+  return invoke<void>("relaunch_app");
 }
 
 export interface AppConfigData {

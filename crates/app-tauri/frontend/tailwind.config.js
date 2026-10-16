@@ -109,10 +109,17 @@ export default {
           from: { height: "var(--radix-collapsible-content-height)", opacity: "1" },
           to: { height: "0", opacity: "0" },
         },
+        // A highlight band sweeping across a full bar — work that is running
+        // but has no measurable progress.
+        "progress-scan": {
+          from: { transform: "translateX(-100%)" },
+          to: { transform: "translateX(300%)" },
+        },
       },
       animation: {
         "collapsible-down": "collapsible-down 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
         "collapsible-up": "collapsible-up 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+        "progress-scan": "progress-scan 1.6s linear infinite",
       },
     },
   },

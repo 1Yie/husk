@@ -512,6 +512,7 @@ fn main() {
             let mgr = state.0.clone();
             app.manage(state);
             app.manage(ipc::overlay::OverlayState::default());
+            app.manage(ipc::update::UpdateState::default());
             ipc::forwarder::spawn(app.handle().clone(), rx, mgr);
 
             // Adapt the configured 1280×840 to the monitor that actually
@@ -539,7 +540,9 @@ fn main() {
             ipc::commands::agent_cmd,
             ipc::commands::get_ui_stats,
             ipc::commands::paste_clipboard,
-            ipc::commands::check_update,
+            ipc::update::check_update,
+            ipc::update::install_update,
+            ipc::update::relaunch_app,
             ipc::overlay::stop_computer_control,
             ipc::sessions::agent_session,
             ipc::sessions::mcp_probe,

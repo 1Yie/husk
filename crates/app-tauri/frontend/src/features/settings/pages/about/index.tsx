@@ -5,7 +5,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { Button } from "@/components/ui/button";
 import { ItemIcon, SettingsSection, Tag } from "@/features/settings/components";
-import { openUrl, checkUpdate } from "@/lib/agent-ipc/sessions";
+import { openUrl } from "@/lib/agent-ipc/sessions";
+import { useUpdateStore } from "@/features/update/update-store";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import iconUrl from "@/assets/husk-icon.png";
@@ -21,7 +22,7 @@ const LINKS = [
 
 export function AboutSettings() {
   const [version, setVersion] = useState("");
-  const [checking, setChecking] = useState(false);
+  const checking = useUpdateStore((s) => s.checking);
   const [updateStatus, setUpdateStatus] = useState("");
 
   useEffect(() => {
@@ -38,14 +39,12 @@ export function AboutSettings() {
 
   const handleCheck = async () => {
     if (checking) return;
-    setChecking(true);
     try {
-      const r = await checkUpdate();
-      if (r.is_newer && r.latest && r.url) {
+      const r = await useUpdateStore.getState().check();
+      if (!r) return;
+      if (r.is_newer && r.latest) {
+        // The shared dialog opens with the notes and the install button.
         setUpdateStatus(`新版本 v${r.latest} 可用`);
-        toast.success(`发现新版本 v${r.latest}`, {
-          action: { label: "前往下载", onClick: () => visit(r.url!) },
-        });
       } else if (r.latest) {
         setUpdateStatus("已是最新版本");
         toast.info(`已是最新版本 v${r.current}`);
@@ -56,8 +55,6 @@ export function AboutSettings() {
     } catch (e) {
       setUpdateStatus("检查更新失败");
       toast.error("检查更新失败", { description: String(e) });
-    } finally {
-      setChecking(false);
     }
   };
 
