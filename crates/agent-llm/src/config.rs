@@ -1028,8 +1028,48 @@ fn merge_into_toml(existing: &str, cfg: &AppConfig) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = existing.parse().map_err(|e| format!("{e}"))?;
     let fresh = toml::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     let fresh: toml_edit::DocumentMut = fresh.parse().map_err(|e| format!("{e}"))?;
+    prune_keyed(doc.as_table_mut(), fresh.as_table());
     merge_table(doc.as_table_mut(), fresh.as_table());
     Ok(doc.to_string())
+}
+
+/// Maps whose keys are user-chosen ids, not schema fields: `providers`, and
+/// inside each provider its `headers` / `model_overrides`. The config owns
+/// every entry, so an id missing from the new config was renamed or deleted
+/// and must leave the file too — merging alone would keep the old entry and
+/// a rename would show up as a second provider.
+fn prune_keyed(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
+    fn prune(dst: &mut toml_edit::Table, src: &toml_edit::Table, key: &str) {
+        let Some(d) = dst.get_mut(key).and_then(|i| i.as_table_like_mut()) else {
+            return;
+        };
+        let keep = src.get(key).and_then(|i| i.as_table_like());
+        let gone: Vec<String> = d
+            .iter()
+            .map(|(k, _)| k.to_string())
+            .filter(|k| !keep.is_some_and(|s| s.contains_key(k)))
+            .collect();
+        for k in gone {
+            d.remove(&k);
+        }
+    }
+    prune(dst, src, "providers");
+    let (Some(dp), Some(sp)) = (
+        dst.get_mut("providers").and_then(|i| i.as_table_mut()),
+        src.get("providers").and_then(|i| i.as_table()),
+    ) else {
+        return;
+    };
+    for (id, d) in dp.iter_mut() {
+        let (Some(d), Some(s)) = (
+            d.as_table_mut(),
+            sp.get(id.get()).and_then(|i| i.as_table()),
+        ) else {
+            continue;
+        };
+        prune(d, s, "headers");
+        prune(d, s, "model_overrides");
+    }
 }
 
 fn merge_table(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
@@ -1424,6 +1464,51 @@ high = "high"
         assert!(out.contains("# rotate yearly"), "{out}");
         assert!(out.contains("my_note = \"keep me\""), "{out}");
         assert!(out.contains("active_model = \"deepseek-chat\""), "{out}");
+    }
+
+    /// Renaming a provider in the settings writes the config under the new id.
+    /// The old table must leave the file — merging alone kept it, and the
+    /// rename showed up as a second, duplicate provider. Deleting works the
+    /// same way. Comments on surviving providers and unknown top-level keys
+    /// still stay.
+    #[test]
+    fn save_drops_renamed_and_deleted_providers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "my_note = \"keep me\"\n\
+            \n\
+            [providers.OldName]\n\
+            kind = \"openai_completions\"\n\
+            base_url = \"https://old\"\n\
+            \n\
+            [providers.gone]\n\
+            kind = \"openai_completions\"\n\
+            base_url = \"https://gone\"\n\
+            \n\
+            # keep this comment\n\
+            [providers.stay]\n\
+            kind = \"openai_completions\"\n\
+            base_url = \"https://stay\"\n\
+            [providers.stay.headers]\n\
+            X-Old = \"1\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut cfg = AppConfig::load_file(&path).unwrap();
+        let renamed = cfg.providers.remove("OldName").unwrap();
+        cfg.providers.insert("NewName".into(), renamed);
+        cfg.providers.remove("gone");
+        cfg.providers.get_mut("stay").unwrap().headers.clear();
+        AppConfig::save_to(&path, &cfg).unwrap();
+
+        let back = AppConfig::load_file(&path).unwrap();
+        let mut ids: Vec<_> = back.providers.keys().cloned().collect();
+        ids.sort();
+        assert_eq!(ids, vec!["NewName", "stay"]);
+        assert_eq!(back.providers["NewName"].base_url, "https://old");
+        assert!(back.providers["stay"].headers.is_empty());
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("# keep this comment"), "{out}");
+        assert!(out.contains("my_note = \"keep me\""), "{out}");
     }
 
     /// Every save keeps a timestamped backup, and only the newest few are kept.
