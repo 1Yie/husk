@@ -3,20 +3,20 @@
 import { SkeletonKvList } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronRight, Cpu, Plus, SquarePen, X } from "@keyline-icons/react";
-import { Badge } from "@/components/ui/badge";
+import { ChevronRight, Cpu, Plus, SquarePen } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
-import { KvList, KvListContent, KvListHeader, KvRow } from "@/components/ui/kv-list";
+import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import { getAppConfig, saveAppConfig, type AgentOverview } from "@/lib/agent-ipc/sessions";
 import { EmptyState, Field, ItemIcon, Tag } from "@/features/settings/pages/agent/shared/index";
 import { ApiKeyInput } from "./api-key-input";
+import { FallbackChain } from "./fallback-chain";
 
 /* ============================ 模型 ============================ */
 
@@ -390,11 +390,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     ? "fallback_chain"
     : "fallbackChain";
   const saveChain = (next: string[]) => {
-    if (!cfg) return;
+    if (!cfg || busy || loadError) return;
     void persist({ ...cfg, [chainKey]: next });
   };
-
-  const chainCandidates = Object.keys(cfg?.providers ?? {}).filter((k) => !chain.includes(k));
 
   /* ---------- render ---------- */
   const active = ov?.model;
@@ -414,6 +412,17 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
           <div className="mt-1 font-mono text-[11px] break-all">{loadError}</div>
         </div>
       )}
+      <div className="mb-4">
+        <FallbackChain
+          chain={chain}
+          providers={cfg?.providers ?? {}}
+          loading={!cfg}
+          busy={busy}
+          disabled={!!loadError}
+          onChange={saveChain}
+          onAddProvider={() => setProvOpen(true)}
+        />
+      </div>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="text-sm font-semibold text-neutral-900">模型提供商</span>
@@ -559,86 +568,6 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         </KvList>
       )}
 
-      {cfg && (
-        <KvList>
-          <KvListHeader
-            title="降级链"
-            description="主提供商耗尽重试后，按顺序切换到下列备用"
-          />
-          <KvListContent className="dark:divide-[var(--husk-border)]">
-            {chain.length ? (
-              chain.map((name, i) => {
-                const p: any = cfg.providers?.[name];
-                const kind = p ? (p.kind ?? p.type ?? p.api ?? "openai_completions") : null;
-                const move = (to: number) => {
-                  const next = [...chain];
-                  [next[to], next[i]] = [next[i], next[to]];
-                  saveChain(next);
-                };
-                return (
-                  <div
-                    key={name}
-                    className="flex items-center justify-between gap-3 px-5 py-2.5 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)]"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-neutral-100 text-[11px] font-medium tabular-nums text-neutral-600">
-                        {i + 1}
-                      </span>
-                      <span className="truncate text-sm text-neutral-800">{name}</span>
-                      {kind ? (
-                        <Badge variant="outline" className="h-4 shrink-0 rounded-full border-neutral-200 px-2 py-0 font-mono text-[10px] font-medium text-neutral-500">
-                          {kind}
-                        </Badge>
-                      ) : (
-                        <span className="shrink-0 text-[11px] text-amber-600">提供商已不存在</span>
-                      )}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-0.5 rounded-full bg-neutral-100 p-0.5">
-                      <TooltipSimple content="上移" side="top">
-                        <Button size="sm" variant="ghost" aria-label="上移"
-                          className="h-6 w-6 rounded-full p-0 text-neutral-500 hover:bg-white"
-                          disabled={i === 0 || busy}
-                          onClick={() => move(i - 1)}>
-                          <ArrowUp className="h-3.5 w-3.5" />
-                        </Button>
-                      </TooltipSimple>
-                      <TooltipSimple content="下移" side="top">
-                        <Button size="sm" variant="ghost" aria-label="下移"
-                          className="h-6 w-6 rounded-full p-0 text-neutral-500 hover:bg-white"
-                          disabled={i === chain.length - 1 || busy}
-                          onClick={() => move(i + 1)}>
-                          <ArrowDown className="h-3.5 w-3.5" />
-                        </Button>
-                      </TooltipSimple>
-                      <TooltipSimple content="移出降级链" side="top">
-                        <Button size="sm" variant="ghost" aria-label="移出降级链"
-                          className="h-6 w-6 rounded-full p-0 text-neutral-500 hover:bg-white hover:text-red-600"
-                          disabled={busy}
-                          onClick={() => saveChain(chain.filter((n) => n !== name))}>
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </TooltipSimple>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <KvRow label="未设置" description="主提供商失败时不会切换" />
-            )}
-            {chainCandidates.length > 0 && (
-              <div className="px-5 py-2.5">
-                <SettingSelect
-                  value=""
-                  placeholder="添加备用提供商…"
-                  triggerClassName="w-full rounded-full border-dashed bg-transparent shadow-none text-neutral-500"
-                  onChange={(v) => v && saveChain([...chain, v])}
-                  options={chainCandidates.map((k) => ({ value: k, label: k }))}
-                />
-              </div>
-            )}
-          </KvListContent>
-        </KvList>
-      )}
       {/* ======== 添加 API ======== */}
       <FormDialog
         open={provOpen}
