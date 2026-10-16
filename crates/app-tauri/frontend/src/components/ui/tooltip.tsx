@@ -3,7 +3,7 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
 import { cn } from "@/lib/utils";
 import { BORDER_ON_BUBBLE, INK_ON_BUBBLE, SURFACE_BUBBLE } from "@/lib/theme";
-import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
+import { POPPER_PENDING, usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
 const TooltipProvider = TooltipPrimitive.Provider;
 const Tooltip = TooltipPrimitive.Root;
@@ -27,7 +27,7 @@ const TooltipContent = React.forwardRef<
         SURFACE_BUBBLE,
         INK_ON_BUBBLE,
         "animate-in fade-in-0 zoom-in-95",
-        !placed && "invisible",
+        !placed && POPPER_PENDING,
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
         "data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1",
         "data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1",

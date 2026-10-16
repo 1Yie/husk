@@ -1,68 +1,50 @@
-// Radix popper placement gate.
-//
-// Radix parks popper content above the viewport until its first measurement, and
-// that measurement can be wrong: under StrictMode the double mount resets its
-// anchor, so the content measures a zero rect and reports `translate(2px, 0px)` —
-// a real-looking position at the viewport's top-left corner, painted for one frame
-// by WebKitGTK while `isPositioned` is already true.
-//
-// The content therefore stays `invisible` until the placement SETTLES: the same
-// wrapper transform on two consecutive samples. Cost: one frame (~16ms). The signal
-// is the DOM — Radix drops unknown props through the popper chain, and
-// `[data-radix-popper-content-wrapper]` carries the applied transform.
-
+// Radix can briefly measure a zero anchor under StrictMode and place a menu
+// at the viewport origin. Wait for its transform to settle before painting.
 import * as React from "react";
 
 const POPPER_WRAPPER = "[data-radix-popper-content-wrapper]";
 
-/** `placed` + the ref to put on the popper content. */
+// visibility:hidden blocks Radix autofocus. Opacity preserves focus while the
+// positioning gate prevents painting and pointer hits. !important also keeps
+// the entry animation from painting an unpositioned frame.
+export const POPPER_PENDING = "!opacity-0 !pointer-events-none";
+
 export function usePopperPlaced(): {
   placed: boolean;
   attach: (node: HTMLElement | null) => void;
 } {
   const [placed, setPlaced] = React.useState(false);
+  const [node, attach] = React.useState<HTMLElement | null>(null);
 
-  const attach = React.useCallback((node: HTMLElement | null) => {
+  React.useLayoutEffect(() => {
+    setPlaced(false);
     if (!node) return;
     const wrapper = (node.closest(POPPER_WRAPPER) as HTMLElement | null) ?? node;
-
     let last = "";
     let measuredSamples = 0;
-    let settled = false;
-    const reveal = () => {
-      if (settled) return;
-      settled = true;
-      observer.disconnect();
-      setPlaced(true);
-    };
-    const sample = () => {
-      if (wrapper.getBoundingClientRect().top < 0) return false; // still parked
-      measuredSamples += 1;
-      const transform = wrapper.style.transform;
-      // Settled = the same placement twice running. The sample cap is the safety
-      // net: a position that keeps moving must still end up visible rather than
-      // hidden forever (a menu that never appears is worse than a jumpy one).
-      if ((transform !== "" && transform === last) || measuredSamples >= 4) {
-        reveal();
-        return true;
-      }
-      last = transform;
-      return false;
-    };
-
-    // Radix writes the placement as an inline transform on the wrapper, so a
-    // style mutation is the exact moment to re-check; the animation frame keeps
-    // sampling for updates that arrive without a style write.
-    const observer = new MutationObserver(() => {
-      sample();
-    });
-    observer.observe(wrapper, { attributes: true, attributeFilter: ["style"] });
+    let frame = 0;
     const tick = () => {
-      if (settled || sample()) return;
-      requestAnimationFrame(tick);
+      const transform = wrapper.style.transform;
+      // Radix parks unpositioned content with a percentage transform. A
+      // negative pixel coordinate can be a valid placement above the viewport.
+      if (!transform || transform.includes("-200%")) {
+        last = "";
+        measuredSamples = 0;
+      } else {
+        measuredSamples += 1;
+        // Poll once per frame: repeated style mutations in one frame do not
+        // prove that placement has settled. A moving anchor gets four frames.
+        if (transform === last || measuredSamples >= 4) {
+          setPlaced(true);
+          return;
+        }
+        last = transform;
+      }
+      frame = requestAnimationFrame(tick);
     };
-    requestAnimationFrame(tick);
-  }, []);
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [node]);
 
   return { placed, attach };
 }

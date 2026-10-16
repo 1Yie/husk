@@ -9,7 +9,7 @@ import {
   SURFACE_OVERLAY_FOCUS,
   SURFACE_OVERLAY_OPEN,
 } from "@/lib/theme";
-import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
+import { POPPER_PENDING, usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
 // `modal` is removed from the public props: a modal menu makes Radix scroll-lock
 // <body> (scrollbar disappears, layout shifts), and every menu here is modeless.
@@ -92,7 +92,7 @@ const DropdownMenuSubContent = React.forwardRef<
     className={cn(
       "z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1",
       SURFACE_OVERLAY,
-      !placed && "invisible",
+      !placed && POPPER_PENDING,
       className
     )}
     {...props}
@@ -105,27 +105,23 @@ DropdownMenuSubContent.displayName =
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, onCloseAutoFocus, onPointerDownOutside, ...props }, ref) => {
+>(({ className, sideOffset = 4, onCloseAutoFocus, onInteractOutside, ...props }, ref) => {
   const { placed, setRef } = usePopperPlacedRef(ref);
-  // The trigger toggles on pointerdown. While this content is still mounted —
-  // either open, or playing its ~100ms exit animation — the same pointerdown
-  // also reaches its DismissableLayer as an "outside" press (the trigger lives
-  // outside the portal), which dismisses the menu the trigger just toggled
-  // open: closing then re-clicking within the animation always did nothing,
-  // so the user had to click twice. Popover exempts its trigger the same way;
-  // Radix's DropdownMenu does not. A press on the trigger is never "outside".
+  // The portalled content does not contain its trigger. Exempt BOTH pointer
+  // and focus events: focusin delivered after pointerdown can otherwise
+  // dismiss the menu that this very press just opened.
   const triggerRef = React.useContext(TriggerRefContext);
   return (
   <DropdownMenuPrimitive.Portal>
     <DropdownMenuPrimitive.Content
       ref={setRef}
       sideOffset={sideOffset}
-      onPointerDownOutside={(event) => {
+      onInteractOutside={(event) => {
         const target = event.target as Node | null;
         if (target && triggerRef?.current?.contains(target)) {
           event.preventDefault();
         }
-        onPointerDownOutside?.(event);
+        onInteractOutside?.(event);
       }}
       onCloseAutoFocus={(e) => {
         e.preventDefault();
@@ -134,7 +130,7 @@ const DropdownMenuContent = React.forwardRef<
       className={cn(
         "z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1",
         SURFACE_OVERLAY,
-        !placed && "invisible",
+        !placed && POPPER_PENDING,
         className
       )}
       {...props}

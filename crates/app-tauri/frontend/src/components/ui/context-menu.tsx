@@ -8,7 +8,7 @@ import {
   SURFACE_OVERLAY_FOCUS,
   SURFACE_OVERLAY_OPEN,
 } from "@/lib/theme";
-import { usePopperPlacedRef } from "@/components/ui/use-popper-placed";
+import { POPPER_PENDING, usePopperPlacedRef } from "@/components/ui/use-popper-placed";
 
 // Same visual contract as dropdown-menu.tsx — one menu look across the app.
 // modal={false}: Radix's modal branch mounts a focus trap + body scroll-lock
@@ -74,7 +74,7 @@ const ContextMenuSubContent = React.forwardRef<
       // Radix parks unpositioned content above the viewport; an engine that
       // paints it first puts the menu in the corner. Never paint it.
       SURFACE_OVERLAY,
-      !placed && "invisible",
+      !placed && POPPER_PENDING,
       className
     )}
     {...props}
@@ -106,7 +106,7 @@ const ContextMenuContent = React.forwardRef<
       className={cn(
         "z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
         SURFACE_OVERLAY,
-        !placed && "invisible",
+        !placed && POPPER_PENDING,
         className
       )}
       {...props}
