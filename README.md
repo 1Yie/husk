@@ -162,6 +162,18 @@ cargo tauri dev                             # 启动桌面端（Vite 起在 1420
 cargo tauri dev -c tauri.dev.conf.json5
 ```
 
+macOS 11+ 的系统通知使用 `UNUserNotificationCenter`，需要从签名的 `.app`
+运行。普通 `tauri dev` 可开发界面，测试通知和点击跳转时请在 macOS 上构建本地应用：
+
+```bash
+# 在 crates/app-tauri 下执行；开发配置使用独立标识和本地 ad-hoc 签名。
+cargo tauri build --debug --bundles app -c tauri.dev.conf.json5
+open ../../target/debug/bundle/macos/Husk.app
+```
+
+首次发送通知时系统会请求权限；拒绝后可在「系统设置 → 通知 → Husk」中开启。
+本地构建使用 ad-hoc 签名；发布时可通过 `APPLE_SIGNING_IDENTITY` 指定正式证书。
+
 只跑前端（Tauri API 用 stub）：
 
 ```bash

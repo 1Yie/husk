@@ -8,5 +8,7 @@ pub mod commands;
 pub mod forwarder;
 #[cfg(target_os = "linux")]
 pub mod layer_shell;
+#[cfg(target_os = "macos")]
+pub mod macos_notifications;
 pub mod overlay;
 pub mod sessions;

@@ -15,7 +15,8 @@ import * as agent from "@/lib/agent-ipc";
 import type { AgentEventEnvelope } from "@/types";
 import { applyEvents } from "@/features/chat/hooks/apply-event";
 import { emptyView, type SessionView, type StreamItem } from "@/features/chat/hooks/stream-view";
-import { notify } from "@/lib/notifications";
+import { markSessionRead, notifyForEvent } from "@/lib/notifications";
+import { isAppInFront, onAppFront } from "@/lib/desktop-notify";
 
 /** Composite view key — workspace root + per-workspace session id. Internal:
  *  callers go through the selectors below, which own that lookup. */
@@ -265,19 +266,11 @@ export function initAgentStore(): () => void {
   void agent.onAgentEvent((env) => {
     if (disposed) return;
     queue.push(env);
-    const ev = env.event;
-    if (typeof ev === "object" && "StateChanged" in ev) {
-      const st = ev.StateChanged;
-      const s = useAgentStore.getState();
-      const key = viewKey(env.root ?? "", env.session);
-      if (key !== viewKey(s.workspaceRoot, s.activeId)) {
-        if (st === "Finished") {
-          notify({ kind: "turn", title: "会话已完成", root: env.root ?? "", session: env.session });
-        } else if (typeof st === "object" && "Failed" in st) {
-          notify({ kind: "turn", title: "会话出错", body: st.Failed, root: env.root ?? "", session: env.session });
-        }
-      }
-    }
+    // The notification rule reads the pointer NOW rather than from the batch
+    // below — "can the user see this" is about this instant, and a background
+    // session finishing is exactly what the bell exists for.
+    const s = useAgentStore.getState();
+    notifyForEvent(env, { root: s.workspaceRoot, id: s.activeId });
     if (timer == null) timer = setTimeout(flush, 16);
   }).then((stop) => {
     if (disposed) stop();
@@ -302,6 +295,16 @@ export function initAgentStore(): () => void {
   // A settings save broadcasts CONFIG_CHANGED_EVENT — re-read so a renamed /
   // repriced / re-windowed model shows immediately.
   window.addEventListener(agent.CONFIG_CHANGED_EVENT, refreshAgentChips);
+
+  // A foreground session that rang while the window was away is on screen
+  // again the moment the window is — its rows count as read, the same as
+  // opening it from the sidebar.
+  const readForeground = () => {
+    if (!isAppInFront()) return;
+    const s = useAgentStore.getState();
+    markSessionRead(s.workspaceRoot, s.activeId);
+  };
+  const stopFront = onAppFront(readForeground);
   disposeStore = () => {
     if (disposed) return;
     disposed = true;
@@ -310,6 +313,7 @@ export function initAgentStore(): () => void {
     unlisten?.();
     unsubscribe();
     window.removeEventListener(agent.CONFIG_CHANGED_EVENT, refreshAgentChips);
+    stopFront();
     ++chipsSeq; // pending model reads from a disposed subscription are stale
     disposeStore = null;
   };

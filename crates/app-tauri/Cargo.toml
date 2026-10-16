@@ -37,6 +37,18 @@ xxhash-rust.workspace = true
 [dev-dependencies]
 tempfile = "3"
 
+# The desktop notification IPC is shared, with native UNUserNotificationCenter
+# on macOS and notify-rust on Linux/Windows. Do not enable notify-rust's legacy
+# NSUserNotificationCenter backend on macOS.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+notify-rust = "4.18.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSObject", "NSSet", "NSString", "NSUUID"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+
 # Linux trays go through a raw StatusNotifierItem: the libappindicator backend
 # behind Tauri's tray icon cannot tell left from right click (both open the
 # menu). `ksni` exposes `Activate` — left click — separately from the DBusMenu

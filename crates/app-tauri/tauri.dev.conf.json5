@@ -23,5 +23,13 @@
 // deliberately NOT shaped like `tauri.linux.conf.json`, since those exact names
 // are auto-merged and this overlay must never be picked up implicitly.
 {
-  "identifier": "dev.husk.app"
+  "identifier": "dev.husk.app",
+  // Modern macOS notifications need a real signed .app. This applies only
+  // when bundling for macOS; it does not turn `tauri dev` into an app bundle.
+  // A local ad-hoc signature is enough for notification development.
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
 }

@@ -1,7 +1,7 @@
 //! `agent_session` — session-list + switch/create commands for the sidebar.
 
 use base64::Engine as _;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::kernel::KernelState;
 
@@ -80,6 +80,27 @@ fn agent_session_inner(
             .iter()
             .map(|p: &std::path::PathBuf| p.to_string_lossy().to_string())
             .collect::<Vec<_>>()));
+    }
+    // Desktop notifications are an OS/D-Bus round-trip with nothing to do with
+    // kernel state — deliver them without waiting on the manager lock.
+    if op == "notify" {
+        return notify_desktop(&app, payload);
+    }
+    if op == "peek_notification_click" {
+        let clicks = NOTIFICATION_CLICKS.lock().map_err(|e| e.to_string())?;
+        return serde_json::to_value(clicks.front()).map_err(|e| e.to_string());
+    }
+    if op == "ack_notification_click" {
+        let id = payload
+            .as_ref()
+            .and_then(|p| p.get("id"))
+            .and_then(|id| id.as_u64())
+            .ok_or("ack_notification_click needs an id")?;
+        let mut clicks = NOTIFICATION_CLICKS.lock().map_err(|e| e.to_string())?;
+        if clicks.front().is_some_and(|click| click.id == id) {
+            clicks.pop_front();
+        }
+        return Ok(serde_json::Value::Null);
     }
     // The pick itself is the dialog half; only `switch_workspace` and the
     // response reads need the manager — lock after the user answers.
@@ -1533,6 +1554,161 @@ fn dialog_on_main<T: Send + 'static>(
     })
     .ok()?;
     rx.recv().ok()
+}
+
+/// Deliver a desktop (OS) notification. The frontend owns WHEN — it alone
+/// knows whether the window is in front of the user; this only delivers.
+///
+/// `attention` asks the window manager to draw attention to the window as
+/// well, and is sent only for a hidden one (close-to-tray, minimized), which
+/// has no visible surface at all.
+fn notify_desktop(
+    app: &tauri::AppHandle,
+    payload: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let p = payload.unwrap_or(serde_json::Value::Null);
+    let title = p
+        .get("title")
+        .and_then(|v| v.as_str())
+        .ok_or("notify needs a title")?
+        .to_string();
+    let body = p.get("body").and_then(|v| v.as_str()).map(String::from);
+    // Where a click on the toast leads — echoed back verbatim on
+    // `NOTIFICATION_CLICK_EVENT`; the frontend owns the navigation.
+    let target = p.get("target").filter(|t| t.is_object()).cloned();
+    show_notification(app, title, body, target)?;
+    if p.get("attention").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.request_user_attention(Some(tauri::UserAttentionType::Informational));
+        }
+    }
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// Emitted when the user clicks a desktop notification; the payload is the
+/// `target` the frontend attached when it asked for the toast.
+const NOTIFICATION_CLICK_EVENT: &str = "husk://notification-click";
+// A notification can launch macOS before the webview has a listener. Keep
+// clicks in order until the frontend acknowledges successful navigation.
+#[derive(Clone, serde::Serialize)]
+struct NotificationClick {
+    id: u64,
+    target: serde_json::Value,
+}
+static NEXT_NOTIFICATION_CLICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NOTIFICATION_CLICKS: std::sync::Mutex<std::collections::VecDeque<NotificationClick>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+#[cfg(target_os = "macos")]
+fn show_notification(
+    _app: &tauri::AppHandle,
+    title: String,
+    body: Option<String>,
+    target: Option<serde_json::Value>,
+) -> Result<(), String> {
+    super::macos_notifications::show(title, body, target)
+}
+
+/// Linux/Windows: notify-rust on a plain thread, which
+/// then waits for the user. A click on the toast body (or its「打开会话」
+/// button) raises the window and hands `target` back to the frontend; the
+/// wait ends when the toast is clicked, dismissed or expires.
+///
+/// Not `tauri-plugin-notification`: its desktop `show()` is fire-and-forget
+/// with no click callback, and on Linux it runs notify-rust inside a tokio
+/// task — with zbus's `tokio` feature on (ksni/ashpd turn it on) the D-Bus
+/// call is a `block_on` on zbus's own runtime, a nested-runtime panic.
+#[cfg(not(target_os = "macos"))]
+fn show_notification(
+    app: &tauri::AppHandle,
+    title: String,
+    body: Option<String>,
+    target: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("desktop-notify".into())
+        .spawn(move || {
+            let mut n = notify_rust::Notification::new();
+            n.summary(&title);
+            if let Some(body) = &body {
+                n.body(body);
+            }
+            brand_notification(&app, &mut n);
+            if target.is_some() {
+                // A body click is the platform's default activation; the
+                // button is for shells that only offer explicit actions.
+                n.action("default", "打开会话");
+            }
+            let handle = match n.show() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("[notify] desktop notification failed: {e}");
+                    return;
+                }
+            };
+            let Some(target) = target else { return };
+            // `wait_for_response`, not `wait_for_action`: the latter reports a
+            // Windows body click as `__closed`.
+            let waited = handle.wait_for_response(|r: &notify_rust::NotificationResponse| {
+                let clicked = match r {
+                    notify_rust::NotificationResponse::Default => true,
+                    notify_rust::NotificationResponse::Action(a) => a == "default",
+                    _ => false,
+                };
+                if clicked {
+                    open_from_notification(&app, target);
+                }
+            });
+            if let Err(e) = waited {
+                eprintln!("[notify] waiting for a notification click failed: {e}");
+            }
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Linux: the shell picks the toast's icon by name — the binary's.
+#[cfg(target_os = "linux")]
+fn brand_notification(_app: &tauri::AppHandle, n: &mut notify_rust::Notification) {
+    n.auto_icon();
+}
+
+/// Windows: a toast is attributed to an AppUserModelID. The installer
+/// registers the bundle identifier as ours; a `target/{debug,release}` run
+/// has no registration and keeps notify-rust's default (PowerShell's), which
+/// still shows — and still reports clicks to this process.
+#[cfg(target_os = "windows")]
+fn brand_notification(app: &tauri::AppHandle, n: &mut notify_rust::Notification) {
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.to_path_buf()))
+        .is_some_and(|dir| !(dir.ends_with("target/debug") || dir.ends_with("target/release")));
+    if installed {
+        n.app_id(&app.config().identifier);
+    }
+}
+
+/// Bring the main window back (close-to-tray hid it, or it is minimized) and
+/// tell the frontend which conversation the clicked toast was about.
+pub(crate) fn open_from_notification(app: &tauri::AppHandle, target: serde_json::Value) {
+    use tauri::Emitter as _;
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = app2.get_webview_window("main") {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+        NOTIFICATION_CLICKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(NotificationClick {
+                id: NEXT_NOTIFICATION_CLICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                target: target.clone(),
+            });
+        let _ = app2.emit(NOTIFICATION_CLICK_EVENT, target);
+    });
 }
 
 /// Workspace-relative path → absolute, canonicalized and contained —

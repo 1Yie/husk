@@ -475,6 +475,30 @@ export function setDefaultPrefs(prefs: DefaultPrefs) {
   });
 }
 
+/** Where a clicked desktop notification leads — echoed back on
+ *  `onNotificationClick`. */
+export interface NotificationTarget {
+  root: string;
+  session: number;
+}
+
+/** Deliver a desktop (OS) notification through the shell. The frontend owns
+ *  WHEN — it alone knows whether the window is in front of the user;
+ *  `attention` also asks the window manager to draw attention to Husk, and is
+ *  sent only for a hidden window so a visible one is never nagged. `target`
+ *  is handed back on `onNotificationClick` when the user clicks the toast. */
+export function notifyDesktop(
+  title: string,
+  body?: string,
+  attention = false,
+  target?: NotificationTarget
+) {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "notify",
+    payload: { title, body, attention, target },
+  });
+}
+
 /** Open an external link in the system browser (xdg-open / open / start). */
 export function openUrl(url: string) {
   return invoke<{ success: boolean }>("agent_session", {

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { TooltipProvider, GlobalTooltip } from "@/components/ui/tooltip";
 import { getAppearance } from "@/lib/agent-ipc";
 import { initAppearance } from "@/lib/appearance";
+import { initDesktopNotify } from "@/lib/desktop-notify";
 import { installDownloadBridge } from "@/lib/download-bridge";
 import { initAgentStore } from "@/stores/agent-store";
 
@@ -14,6 +15,10 @@ installDownloadBridge();
 // The kernel event stream belongs to no component: install its pump now, so the
 // first turn after mount cannot land before anyone is listening.
 initAgentStore();
+
+// Desktop notifications ride that same stream — read the stored switch now so
+// the first turn end already knows whether the shell should be told.
+initDesktopNotify();
 
 // Apply the stored appearance before first paint — the shell reads the `dark`
 // class + CSS vars off <html>, so waiting for React to mount would flash the

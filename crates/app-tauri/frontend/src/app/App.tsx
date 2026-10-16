@@ -5,7 +5,8 @@ import { activeViewNow, refreshAgentChips, useAgentStore, useRunningKeys } from 
 import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
 import { viewFromHistory, viewFromHistoryChunked } from "@/features/chat/hooks/view-from-history";
 import { loadReset, loadStamp } from "@/lib/load-probe";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, historyRaw, type WorkspaceInfo } from "@/lib/agent-ipc/index";
+import { markSessionRead, setSessionTitles } from "@/lib/notifications";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, historyRaw, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
 import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
@@ -127,6 +128,9 @@ export function App() {
   // → several black marks in the rail). The store is read AT CALL TIME — the
   // ref this used to need is exactly what `activeViewNow()` returns.
   const { projects, sessions, loaded: sessionsLoaded, refresh, fetchProjects, commit, newSession, openSession } = useAgentSession();
+  // The notification center names sessions in the bell AND in desktop toasts,
+  // which fire outside any render — it keeps its own copy of the titles.
+  useEffect(() => setSessionTitles(projects), [projects]);
   // True while a session/workspace switch is fetching history + rebuilding
   // the view — the stream renders a skeleton instead of a stale/empty pane.
   const [viewLoading, setViewLoading] = useState(false);
@@ -335,20 +339,24 @@ export function App() {
   // killed, so a running turn survives the switch.
   const handleOpenSession = async (root: string, id: number) => {
     loadReset();
+    // Opening the conversation is what "read" means — the bell counts what the
+    // user has not looked at, and the sidebar row is the other way in.
+    markSessionRead(root, id);
     setViewLoading(true);
     // Flip the pointer NOW — the clicked session's empty view +
     // skeleton replace the old content in the same frame instead of
     // the old conversation lingering through the whole kernel load.
     setActiveId(id);
-    if (root && root !== workspace.root) {
+    if (root && root !== useAgentStore.getState().workspaceRoot) {
       const res = await switchWorkspace(root).catch(() => null);
       if (!res) {
         setViewLoading(false);
         return;
       }
+      useAgentStore.getState().setWorkspaceRoot(res.root);
       setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
       void getWorkspaceInfo().then((ws) => {
-        if (ws) setWorkspace(ws);
+        if (ws && ws.root === useAgentStore.getState().workspaceRoot) setWorkspace(ws);
       });
     }
     const r = await openSession(id).catch(() => null);
@@ -360,11 +368,33 @@ export function App() {
     } else if (r.history.length > 0) {
       // `root` (the clicked row's project) is the canonical workspace
       // after any switch above — key the rebuilt view under it.
-      mountLoadedView(root || workspace.root, id, r);
+      await mountLoadedView(root || workspace.root, id, r);
     } else {
       releaseLoading();
     }
   };
+
+  // A clicked desktop notification lands here once the shell has raised the
+  // window — the same way in as the bell row. Through a ref: the listener is
+  // installed once the workspace is ready; the ref follows later switches.
+  const openSessionRef = useRef(handleOpenSession);
+  openSessionRef.current = handleOpenSession;
+  const bootLoaded = useRef(false);
+  const bootSessionLoad = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => {
+    if (!wsReady || !sessionsLoaded) return;
+    const controller = new AbortController();
+    void onNotificationClick(async ({ root, session }) => {
+      // A late startup response must not replace the clicked conversation.
+      bootLoaded.current = true;
+      await bootSessionLoad.current;
+      if (controller.signal.aborted) throw new Error("notification navigation cancelled");
+      await openSessionRef.current(root, session);
+    }, controller.signal).catch((e) => {
+      if (!controller.signal.aborted) toast.error(String(e));
+    });
+    return () => controller.abort();
+  }, [wsReady, sessionsLoaded]);
 
   const handleNewSession = async () => {
     const newId = await newSession();
@@ -416,7 +446,6 @@ export function App() {
   // the webview only sees *new* events — rebuild the stream from the
   // persisted snapshot so the resumed session isn't blank. `openSession`
   // is idempotent for a live actor; it only re-reads the store here.
-  const bootLoaded = useRef(false);
   useEffect(() => {
     if (bootLoaded.current || sessions.length === 0) return;
     bootLoaded.current = true;
@@ -425,11 +454,11 @@ export function App() {
     // may still be empty this early in the boot sequence.
     const currentRoot = projects.find((p) => p.current)?.root ?? "";
     setViewLoading(true);
-    void openSession(current.id).then((r) => {
+    bootSessionLoad.current = openSession(current.id).then(async (r) => {
       if (r && r.history.length > 0)
-        mountLoadedView(currentRoot, current.id, r);
+        await mountLoadedView(currentRoot, current.id, r);
       else releaseLoading();
-    });
+    }).catch(() => releaseLoading());
     setActiveId(current.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions]);

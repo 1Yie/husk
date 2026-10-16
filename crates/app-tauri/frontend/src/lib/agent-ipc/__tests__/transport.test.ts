@@ -3,9 +3,9 @@ import {
   answerQuestion, approveSessionTool, cancelTurn, decideTool, enqueue,
   sendPrompt, setModel, setQueued, setThinkingLevel, steer, steerChild,
 } from "../commands";
-import { onAgentEvent } from "../events";
+import { onAgentEvent, onNotificationClick } from "../events";
 import { getModelInfo } from "../sessions";
-import { emitAgentEvent, listenerCount, mockCommand, modelInfo, tauri } from "@/test/tauri";
+import { deferred, emitAgentEvent, emitTauriEvent, listenerCount, mockCommand, modelInfo, tauri } from "@/test/tauri";
 
 describe("Tauri command contract", () => {
   test.each([
@@ -48,4 +48,123 @@ test("event envelopes preserve workspace/session routing and stop after unsubscr
   expect(listenerCount()).toBe(0);
   emitAgentEvent(envelope);
   expect(handler).toHaveBeenCalledTimes(1);
+});
+
+describe("notification activation", () => {
+  const event = "husk://notification-click";
+  type Click = { id: number; target: { root: string; session: number } };
+
+  function nativeQueue(clicks: Click[] = []) {
+    mockCommand("agent_session", () => clicks[0] ?? null, "peek_notification_click");
+    mockCommand("agent_session", (args) => {
+      const id = (args?.payload as { id: number }).id;
+      if (clicks[0]?.id === id) clicks.shift();
+      return null;
+    }, "ack_notification_click");
+    return clicks;
+  }
+
+  test("drains startup clicks and follows live clicks in order without replaying them", async () => {
+    const clicks = nativeQueue([
+      { id: 1, target: { root: "/parked/项目", session: 7 } },
+      { id: 2, target: { root: "/other", session: 7 } },
+    ]);
+    const handler = vi.fn();
+    const stop = await onNotificationClick(handler);
+    expect(handler.mock.calls.map(([target]) => target)).toEqual([
+      { root: "/parked/项目", session: 7 }, { root: "/other", session: 7 },
+    ]);
+    clicks.push({ id: 3, target: { root: "/third", session: 2 } });
+    emitTauriEvent(event, clicks[0].target);
+    emitTauriEvent(event, clicks[0].target);
+    await vi.waitFor(() => expect(clicks).toHaveLength(0));
+    expect(handler).toHaveBeenCalledTimes(3);
+    expect(handler).toHaveBeenLastCalledWith({ root: "/third", session: 2 });
+    stop();
+    expect(listenerCount(event)).toBe(0);
+  });
+
+  test("an event racing the initial drain cannot open a target twice", async () => {
+    const click = { id: 1, target: { root: "/a", session: 1 } };
+    nativeQueue([click]);
+    const firstPeek = deferred<Click>();
+    let reads = 0;
+    mockCommand("agent_session", () => ++reads === 1 ? firstPeek.promise : null, "peek_notification_click");
+    const handler = vi.fn();
+    const subscribed = onNotificationClick(handler);
+    await vi.waitFor(() => expect(reads).toBe(1));
+    emitTauriEvent(event, click.target);
+    firstPeek.resolve(click);
+    const stop = await subscribed;
+    expect(handler).toHaveBeenCalledExactlyOnceWith(click.target);
+    stop();
+  });
+
+  test("listener replacement preserves a click whose read was still in flight", async () => {
+    const clicks = nativeQueue();
+    const oldHandler = vi.fn();
+    const stop = await onNotificationClick(oldHandler);
+    const peek = deferred<Click>();
+    let reads = 0;
+    mockCommand("agent_session", () => ++reads === 1 ? peek.promise : clicks[0] ?? null, "peek_notification_click");
+    const click = { id: 1, target: { root: "/a", session: 1 } };
+    clicks.push(click);
+    emitTauriEvent(event, click.target);
+    await vi.waitFor(() => expect(reads).toBe(1));
+    stop();
+    const newHandler = vi.fn();
+    const replacement = onNotificationClick(newHandler);
+    peek.resolve(click);
+    const stopReplacement = await replacement;
+    expect(oldHandler).not.toHaveBeenCalled();
+    expect(newHandler).toHaveBeenCalledExactlyOnceWith(click.target);
+    expect(clicks).toHaveLength(0);
+    stopReplacement();
+  });
+
+  test("separate project activations await each navigation before starting the next", async () => {
+    const clicks = nativeQueue();
+    const firstOpen = deferred<void>();
+    const handler = vi.fn(async (_target: Click["target"]): Promise<void> => {
+      if (handler.mock.calls.length === 1) await firstOpen.promise;
+    });
+    const stop = await onNotificationClick(handler);
+    clicks.push(
+      { id: 1, target: { root: "/a", session: 7 } },
+      { id: 2, target: { root: "/b", session: 7 } },
+    );
+    emitTauriEvent(event, null);
+    emitTauriEvent(event, null);
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    expect(clicks).toHaveLength(2);
+    firstOpen.resolve();
+    await vi.waitFor(() => expect(clicks).toHaveLength(0));
+    expect(handler.mock.calls.map(([target]) => target)).toEqual([
+      { root: "/a", session: 7 }, { root: "/b", session: 7 },
+    ]);
+    stop();
+  });
+
+  test("aborting the initial subscription leaves its target for the next listener", async () => {
+    const click = { id: 1, target: { root: "/a", session: 1 } };
+    const clicks = nativeQueue([click]);
+    const controller = new AbortController();
+    const handler = vi.fn();
+    const subscribed = onNotificationClick(handler, controller.signal);
+    controller.abort();
+    await subscribed;
+    expect(handler).not.toHaveBeenCalled();
+    expect(clicks).toEqual([click]);
+    expect(listenerCount(event)).toBe(0);
+    const next = vi.fn();
+    const stop = await onNotificationClick(next);
+    expect(next).toHaveBeenCalledExactlyOnceWith(click.target);
+    stop();
+  });
+
+  test("failed startup drain releases its listener", async () => {
+    mockCommand("agent_session", () => { throw new Error("IPC failed"); }, "peek_notification_click");
+    await expect(onNotificationClick(vi.fn())).rejects.toThrow("IPC failed");
+    expect(listenerCount(event)).toBe(0);
+  });
 });

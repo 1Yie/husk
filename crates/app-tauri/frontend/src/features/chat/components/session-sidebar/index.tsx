@@ -71,12 +71,38 @@ import {
   useUnreadCount,
   markRead,
   markAllRead,
+  markSessionRead,
+  clearAll,
+  notificationHeadline,
+  useSessionTitles,
   type AppNotification,
+  type NotificationKind,
 } from "@/lib/notifications";
 
 /** Cross-project recent list cap — everything beyond it stays reachable by
- * opening the owning project in 项目. */
+ *  opening the owning project in 项目. */
 const RECENT_LIMIT = 6;
+
+/** Unread marker colour per kind — the row's only severity cue. */
+const NOTIFY_DOT: Record<NotificationKind, string> = {
+  turn: "bg-blue-500",
+  attention: "bg-amber-500",
+  error: "bg-red-500",
+};
+
+/** Popover timestamp — clock time for today, day + time for anything older.
+ *  A bare time on yesterday's row reads as "just now". */
+function notifyStamp(ts: number): string {
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const day = (x: Date) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+  const today = new Date();
+  if (day(d) === day(today)) return time;
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (day(d) === day(yesterday)) return `昨天 ${time}`;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${time}`;
+}
 
 /** 产物 categories — the file tree's fixed buckets. `rep` is the ext used
  * for the group's icon; `asset` also matches anything under an
@@ -217,22 +243,18 @@ export function SessionSidebar({
   const officeProject = projects.find((p) => p.office);
   const projectList = projects.filter((p) => !p.office);
   const officeMode = officeProject?.current === true;
-  // Resolve a notification's session to its sidebar title — the store only
-  // carries root+id; names come from the same project tree the rows use.
-  const titleFor = (n: AppNotification): string => {
-    if (n.root === undefined || n.session === undefined) return n.title;
-    for (const p of projects) {
-      if (p.root !== n.root) continue;
-      const row = p.sessions.find((s) => s.id === n.session);
-      if (row) return `${n.title} — ${row.title}`;
-    }
-    return `${n.title} — 会话 #${n.session}`;
-  };
+  // Rows are named the way the desktop toast was — one headline rule, fed by
+  // the title index the app shell keeps current.
+  const sessionTitles = useSessionTitles();
+  const titleFor = (n: AppNotification): string => notificationHeadline(n, sessionTitles);
   const openNotification = (n: AppNotification) => {
-    markRead(n.id);
-    if (n.root !== undefined && n.session !== undefined) {
-      onOpenSession(n.root, n.session);
+    if (n.root === undefined || n.session === undefined) {
+      markRead(n.id);
+      return;
     }
+    // The whole conversation counts as seen once it is in front of the user.
+    markSessionRead(n.root, n.session);
+    onOpenSession(n.root, n.session);
   };
   // Global recents: every *project's* conversations merged. Globally pinned
   // sessions are always listed, ahead of the RECENT_LIMIT newest others, so
@@ -695,21 +717,32 @@ export function SessionSidebar({
                   通知
                 </TooltipContent>
               </Tooltip>
-              <PopoverContent side="top" align="start" className="w-64 p-0 text-xs overflow-hidden">
+              <PopoverContent side="top" align="start" className="w-72 p-0 text-xs overflow-hidden">
                 <div className="flex items-center justify-between px-3 pt-2.5 pb-2">
-                  <div className="font-semibold text-neutral-800">系统通知</div>
-                  {unreadCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => markAllRead()}
-                      className="text-[11px] text-neutral-500 hover:text-neutral-700 transition-colors cursor-pointer"
-                    >
-                      全部已读
-                    </button>
-                  )}
+                  <div className="font-semibold text-neutral-800">通知</div>
+                  <div className="flex items-center gap-2.5">
+                    {unreadCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => markAllRead()}
+                        className="text-[11px] text-neutral-500 hover:text-neutral-700 transition-colors cursor-pointer"
+                      >
+                        全部已读
+                      </button>
+                    )}
+                    {notifications.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => clearAll()}
+                        className="text-[11px] text-neutral-500 hover:text-neutral-700 transition-colors cursor-pointer"
+                      >
+                        清空
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {notifications.length === 0 ? (
-                  <div className="px-3 pb-3 text-neutral-500">暂无新通知。</div>
+                  <div className="px-3 pb-3 text-neutral-500">暂无通知。</div>
                 ) : (
                   <div data-tauri-drag-region="false" className="max-h-64 overflow-y-auto border-t border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]">
                     {notifications.map((n) => (
@@ -719,20 +752,28 @@ export function SessionSidebar({
                         onClick={() => openNotification(n)}
                         className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] transition-colors cursor-pointer"
                       >
-                        {!n.read && (
-                          <span className="mt-1.5 h-1.5 w-1.5 flex-none rounded-full bg-blue-500" />
-                        )}
-                        <span className={cn("min-w-0 flex-1", n.read && "pl-3.5")}>
+                        {/* The dot keeps its slot once read, so the row's text
+                            edge does not shift under the pointer. */}
+                        <span
+                          className={cn(
+                            "mt-1.5 h-1.5 w-1.5 flex-none rounded-full",
+                            n.read ? "bg-transparent" : NOTIFY_DOT[n.kind]
+                          )}
+                        />
+                        <span className="min-w-0 flex-1">
                           <span className={cn("block truncate", n.read ? "text-neutral-500" : "text-neutral-800 font-medium")}>
                             {titleFor(n)}
                           </span>
                           {n.body && (
-                            <span className="block truncate text-neutral-500 mt-0.5">
+                            <span
+                              className="block line-clamp-2 break-words text-neutral-500 mt-0.5"
+                              title={n.body}
+                            >
                               {n.body}
                             </span>
                           )}
                           <span className="block text-neutral-500 mt-0.5 text-[10.5px]">
-                            {new Date(n.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            {notifyStamp(n.ts)}
                           </span>
                         </span>
                       </button>

@@ -427,6 +427,24 @@ fn main() {
         )
     };
 
+    // Plugin setup runs during build, before AppKit's didFinishLaunching.
+    // Install the notification delegate there so a click that launches Husk
+    // can be captured before any window or webview exists.
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(
+        tauri::plugin::Builder::<tauri::Wry>::new("husk-notifications")
+            .setup(|app, _| {
+                let handle = app.clone();
+                if let Err(error) = ipc::macos_notifications::initialize(move |target| {
+                    ipc::sessions::open_from_notification(&handle, target);
+                }) {
+                    eprintln!("[notify] {error}");
+                }
+                Ok(())
+            })
+            .build(),
+    );
+
     builder
         // System clipboard access for image paste (see `paste_clipboard`).
         .plugin(tauri_plugin_clipboard_manager::init())

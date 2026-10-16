@@ -49,6 +49,10 @@ export function installDomMocks() {
     releasePointerCapture: { configurable: true, value: vi.fn() },
   });
   Object.defineProperty(document, "fonts", { configurable: true, value: { ready: Promise.resolve() } });
+  // jsdom's document is never a focused window. The notification rule asks
+  // whether the user can see the app, so tests start "in front" — a test that
+  // needs the other side spies on this.
+  Object.defineProperty(document, "hasFocus", { configurable: true, value: vi.fn(() => true) });
 }
 export function resetDomMocks() {
   for (const observer of TestResizeObserver.instances) observer.disconnect();

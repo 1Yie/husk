@@ -6,15 +6,15 @@ import {
 } from "../agent-store";
 import { emptyView } from "@/features/chat/hooks/stream-view";
 import { deferred, emitAgentEvent, listenerCount, mockCommand, modelInfo, tauri } from "@/test/tauri";
-import { notify } from "@/lib/notifications";
+import { clearAll, notificationsNow } from "@/lib/notifications";
 import { CONFIG_CHANGED_EVENT, type ModelInfo } from "@/lib/agent-ipc/sessions";
 import type { UiEvent } from "@/types";
 
-vi.mock("@/lib/notifications", () => ({ notify: vi.fn() }));
 let dispose: (() => void) | undefined;
 beforeEach(() => {
   useAgentStore.setState(useAgentStore.getInitialState(), true);
   useAgentStore.setState({ workspaceRoot: "/project", activeId: 1 });
+  clearAll();
 });
 afterEach(() => { dispose?.(); dispose = undefined; });
 function emit(event: UiEvent, session = 1, root = "/project") {
@@ -64,15 +64,41 @@ describe("kernel event to active view", () => {
     expect(useAgentStore.getState().activeId).toBe(1);
   });
 
-  test("only background completions/errors create notifications", async () => {
+  test("only what the user cannot see becomes a notification", async () => {
     start();
+    // The foreground session's own turn end is already on screen.
+    emit({ StateChanged: "Finished" });
+    // A session the user is not looking at.
+    emit({ StateChanged: "Finished" }, 2);
+    // A parked workspace's failure.
+    emit({ StateChanged: { Failed: "请求失败" } }, 1, "/parked");
+    // A cancel is the user's own doing, not a failure to report.
+    emit({ StateChanged: { Failed: "turn cancelled by user" } }, 3);
+    await flush();
+    expect(notificationsNow().map((n) => [n.kind, n.title, n.root, n.session, n.body])).toEqual([
+      ["error", "会话出错", "/parked", 1, "请求失败"],
+      ["turn", "会话已完成", "/project", 2, undefined],
+    ]);
+  });
+
+  test("bringing the window back reads what the foreground session raised", async () => {
+    start();
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     emit({ StateChanged: "Finished" });
     emit({ StateChanged: "Finished" }, 2);
-    emit({ StateChanged: { Failed: "请求失败" } }, 1, "/parked");
-    await flush();
-    expect(notify).toHaveBeenCalledTimes(2);
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ root: "/project", session: 2, title: "会话已完成" }));
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ root: "/parked", body: "请求失败" }));
+    expect(notificationsNow().map((n) => [n.session, n.read])).toEqual([
+      [2, false],
+      [1, false],
+    ]);
+    // Still away — a focus event the window does not actually hold reads nothing.
+    window.dispatchEvent(new Event("focus"));
+    expect(notificationsNow().every((n) => !n.read)).toBe(true);
+    focus.mockReturnValue(true);
+    window.dispatchEvent(new Event("focus"));
+    expect(notificationsNow().map((n) => [n.session, n.read])).toEqual([
+      [2, false],
+      [1, true],
+    ]);
   });
 
   test("disposing cancels queued work, unsubscribes, and supports reinstall", async () => {

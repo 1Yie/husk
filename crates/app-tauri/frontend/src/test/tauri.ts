@@ -7,6 +7,7 @@ type Handler = (args: Args) => unknown | Promise<unknown>;
 type EventHandler = (event: { event: string; id: number; payload: unknown }) => void;
 const handlers = new Map<string, Handler>();
 const listeners = new Map<string, Set<EventHandler>>();
+const focusHandlers = new Set<(e: { payload: boolean }) => void>();
 const key = (command: string, operation?: string) => operation ? `${command}:${operation}` : command;
 
 export const modelInfo = (): ModelInfo => ({
@@ -39,8 +40,17 @@ export const tauri = {
     startDragging: vi.fn(async () => {}), toggleMaximize: vi.fn(async () => {}),
     minimize: vi.fn(async () => {}), close: vi.fn(async () => {}),
     isMaximized: vi.fn(async () => false), onResized: vi.fn(async () => () => {}),
+    onFocusChanged: vi.fn(async (handler: (e: { payload: boolean }) => void) => {
+      focusHandlers.add(handler);
+      return () => focusHandlers.delete(handler);
+    }),
   },
 };
+
+/** Deliver the shell's native focus report — what `onFocusChanged` hears. */
+export function emitWindowFocus(focused: boolean) {
+  for (const handler of focusHandlers) handler({ payload: focused });
+}
 
 export function mockCommand(command: string, handler: Handler, operation?: string) {
   handlers.set(key(command, operation), handler);
@@ -57,12 +67,17 @@ export function listenerCount(event = "agent://event") {
 export function resetTauri() {
   listeners.clear();
   handlers.clear();
+  focusHandlers.clear();
   mockCommand("agent_cmd", () => undefined);
   mockCommand("agent_session", () => modelInfo(), "model_info");
   mockCommand("agent_session", () => ({ branch: "main", dirty: 0 }), "git_info");
   mockCommand("agent_session", () => [], "list_files");
   mockCommand("agent_session", () => [], "list_skills");
   mockCommand("agent_session", () => [], "plugin_commands");
+  mockCommand("agent_session", () => ({ desktop_notifications: true }), "get_default_prefs");
+  mockCommand("agent_session", () => ({ success: true }), "notify");
+  mockCommand("agent_session", () => null, "peek_notification_click");
+  mockCommand("agent_session", () => null, "ack_notification_click");
   mockCommand("paste_clipboard", () => null);
 }
 
