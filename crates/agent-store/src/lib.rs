@@ -42,7 +42,31 @@ impl std::error::Error for StaleRevision {}
 
 /// True when `error` is the stale-revision conflict from `commit_turn_checked`.
 pub fn is_stale_revision(error: &std::io::Error) -> bool {
-    error.get_ref().is_some_and(|inner| inner.is::<StaleRevision>())
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<StaleRevision>())
+}
+
+/// The paged history changed under the caller: another window committed or
+/// checkpointed a different revision between this caller's read and its
+/// `expected_revision` check. Refreshing the page is the only safe recovery.
+#[derive(Debug)]
+struct StaleHistoryPage;
+
+impl std::fmt::Display for StaleHistoryPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("会话历史已被其他窗口更新，请刷新后重试")
+    }
+}
+
+impl std::error::Error for StaleHistoryPage {}
+
+/// True when `error` is the stale-history-page conflict from
+/// [`SessionStore::load_history_page_checked`].
+pub fn is_stale_page(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<StaleHistoryPage>())
 }
 
 /// One session's sidebar metadata.
@@ -99,6 +123,25 @@ pub struct SessionMeta {
     /// by `spawn_actor`.
     #[serde(default)]
     pub queued_prompts: Vec<String>,
+}
+
+/// One checked page of a session's *effective* history — the recovery draft
+/// when it is still valid for the canonical journal, otherwise the journal
+/// itself. `revision` is the 16-char hex revision of the exact snapshot the
+/// page was sliced from, so a caller can detect a same-length rewrite without
+/// rereading (or trusting) the whole history.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryPageSnapshot {
+    /// The requested slice, oldest `before`-bounded page of the snapshot.
+    pub history: Vec<ChatMessage>,
+    /// Number of messages in the whole snapshot the page came from.
+    pub total: usize,
+    /// Number of non-hidden user turns in the whole snapshot.
+    pub turns: usize,
+    /// Ordinal of the first turn inside `history` (turns before it).
+    pub turn_offset: usize,
+    /// `format!("{:016x}", revision)` — hex, never a JS number.
+    pub revision: String,
 }
 
 /// A session's last-known token usage, persisted inside `SessionMeta`.
