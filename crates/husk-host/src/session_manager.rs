@@ -2352,6 +2352,9 @@ impl SessionManager {
             memory_enabled: self.memory_enabled,
             memory_distill: self.memory_distill,
             blueprint_enabled: self.blueprint_enabled,
+            // Not the manager's to own — the notification switch belongs to
+            // the shell, so a save from here carries the stored value over.
+            desktop_notifications: stored.desktop_notifications,
             schema_version: crate::prefs::DEFAULT_PREFERENCES_VERSION,
         }
     }

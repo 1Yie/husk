@@ -942,6 +942,8 @@ fn agent_session_inner(
                 "memory_enabled": memory_enabled,
                 "memory_distill": memory_distill,
                 "blueprint_enabled": mgr.blueprint_pref(),
+                "desktop_notifications": husk_host::prefs::load_default_preferences()
+                    .desktop_notifications,
                 "sandbox_enabled": lim.enabled(),
                 "sandbox_network": lim.network_label(),
                 "sandbox_max_memory_mb": lim.max_memory_mb,
@@ -1044,6 +1046,14 @@ fn agent_session_inner(
             }
             if let Some(v) = p.get("blueprint_enabled").and_then(|v| v.as_bool()) {
                 mgr.set_blueprint_enabled(v);
+            }
+            // Notification switch — the shell's own preference, so it is read
+            // back and rewritten in place instead of routed through the
+            // manager, which has no stake in it.
+            if let Some(v) = p.get("desktop_notifications").and_then(|v| v.as_bool()) {
+                let mut prefs = husk_host::prefs::load_default_preferences();
+                prefs.desktop_notifications = v;
+                let _ = husk_host::prefs::save_default_preferences(&prefs);
             }
             Ok(serde_json::json!({ "success": true }))
         }

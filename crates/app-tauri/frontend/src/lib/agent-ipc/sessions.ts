@@ -449,6 +449,9 @@ export interface DefaultPrefs {
   memory_distill?: boolean;
   /** `.blueprint/` architecture layer — off = the directory is ignored. */
   blueprint_enabled?: boolean;
+  /** Desktop (OS) notifications — off = the notification center stays in-app
+   *  (bell + badge), nothing is pushed to the system shell. Absent/true = on. */
+  desktop_notifications?: boolean;
 }
 
 /** The stored default preferences — what NEWLY created sessions spawn with.

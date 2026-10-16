@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Archive,
+  Bell,
   Bot,
   Cpu,
   FileText,
@@ -124,6 +125,7 @@ export function GeneralPane() {
   const [providers, setProviders] = useState<Record<string, any>>({});
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [blueprintEnabled, setBlueprintEnabled] = useState(true);
+  const [desktopNotify, setDesktopNotify] = useState(true);
   const [sandboxNetwork, setSandboxNetwork] = useState("auto");
   const [sandboxMem, setSandboxMem] = useState("default");
   const [sandboxProcs, setSandboxProcs] = useState("default");
@@ -143,6 +145,7 @@ export function GeneralPane() {
         // absent = default-off — only an explicit true turns it on.
         setSandboxEnabled(prefs.sandbox_enabled === true);
         setBlueprintEnabled(prefs.blueprint_enabled !== false);
+        setDesktopNotify(prefs.desktop_notifications !== false);
         if (prefs.sandbox_network) setSandboxNetwork(prefs.sandbox_network);
         setSandboxMem(
           prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default",
@@ -292,6 +295,25 @@ export function GeneralPane() {
                 onCheckedChange={(v) => {
                   setBlueprintEnabled(v);
                   void save({ blueprint_enabled: v });
+                }}
+              />
+            </KvRow>
+          </KvListContent>
+        </KvList>
+      </SettingsSection>
+
+      <SettingsSection title="通知">
+        <KvList>
+          <KvListContent>
+            <KvRow
+              label="系统通知"
+              icon={<Bell className="h-4 w-4" />}
+            >
+              <Switch
+                checked={desktopNotify}
+                onCheckedChange={(v) => {
+                  setDesktopNotify(v);
+                  void save({ desktop_notifications: v });
                 }}
               />
             </KvRow>

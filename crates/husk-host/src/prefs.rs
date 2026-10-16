@@ -83,6 +83,11 @@ pub struct DefaultPreferences {
     /// everywhere (prompt index, `blueprint` tool, turn-end check).
     #[serde(default = "default_pref_bool_true")]
     pub blueprint_enabled: bool,
+    /// Desktop (OS) notifications — `false` keeps the notification center
+    /// in-app (bell + badge) and pushes nothing to the system shell. An
+    /// app-level switch, not session-shaping: no session reads it.
+    #[serde(default = "default_pref_bool_true")]
+    pub desktop_notifications: bool,
     /// Row format version. Absent (0) = written before the sandbox default
     /// flipped to off; loading such a row migrates it once.
     #[serde(default)]
@@ -159,6 +164,7 @@ impl Default for DefaultPreferences {
             memory_enabled: true,
             memory_distill: true,
             blueprint_enabled: true,
+            desktop_notifications: true,
             schema_version: DEFAULT_PREFERENCES_VERSION,
         }
     }
@@ -398,6 +404,19 @@ mod tests {
         assert_eq!(p.schema_version, DEFAULT_PREFERENCES_VERSION);
         // Idempotent: a migrated row is left alone.
         assert!(!migrate_default_preferences(&mut p));
+    }
+
+    /// A row written before the notification switch existed stores nothing for
+    /// it — loading such a row must leave the shell's notifications ON, not
+    /// read the missing field as "off".
+    #[test]
+    fn row_without_notification_flag_defaults_to_on() {
+        let p: DefaultPreferences = serde_json::from_value(serde_json::json!({
+            "permission_mode": "acceptEdits",
+            "schema_version": DEFAULT_PREFERENCES_VERSION,
+        }))
+        .unwrap();
+        assert!(p.desktop_notifications);
     }
 
     /// An explicit choice in a v0 row survives the migration.
