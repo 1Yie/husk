@@ -2,14 +2,14 @@
 // a segmented view switch and search on top, a timeline strip showing when
 // each round's input, model and tool time fell, then the event list grouped
 // by round. Rows collapse by default; JSON is highlighted lazily.
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Copy, Check, ChevronRight, Search } from "@keyline-icons/react";
+import { Copy, Check, ChevronLeft, ChevronRight, RefreshCw, Search } from "@keyline-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,8 @@ import { TooltipSimple } from "@/components/ui/tooltip";
 import { highlightCodeToHtml } from "@/lib/syntax-highlight";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types";
+import { toast } from "sonner";
+import { readRawHistoryJson, useRawHistory } from "./use-raw-history";
 
 type View = "time" | "round" | "tool";
 
@@ -41,24 +43,31 @@ interface Round {
   items: { m: ChatMessage; at: number }[];
 }
 
-function groupRounds(messages: ChatMessage[]): Round[] {
-  const rounds: Round[] = [{ index: 0, items: [] }];
+function groupRounds(messages: ChatMessage[], start: number, turnOffset: number): Round[] {
+  const rounds: Round[] = [{ index: turnOffset, items: [] }];
+  let turn = turnOffset;
   messages.forEach((m, at) => {
-    if (m.role === "user" && rounds[rounds.length - 1].items.length > 0) {
-      rounds.push({ index: rounds.length, items: [] });
+    // Match the store's turn index: hidden user messages do not start a turn.
+    if (m.role === "user" && m.notice !== "hidden") {
+      turn += 1;
+      if (rounds[rounds.length - 1].items.length > 0) rounds.push({ index: turn, items: [] });
+      else rounds[rounds.length - 1].index = turn;
     }
-    rounds[rounds.length - 1].items.push({ m, at });
+    rounds[rounds.length - 1].items.push({ m, at: start + at });
   });
   return rounds.filter((r) => r.items.length > 0);
 }
 
 function preview(m: ChatMessage): string {
   if (m.tool_calls?.length) {
-    return m.tool_calls
-      .map((t) => `${t.function.name} ${t.function.arguments}`)
-      .join("  ");
+    let text = "";
+    for (const call of m.tool_calls) {
+      text += `${call.function.name} ${call.function.arguments.slice(0, 280)}  `;
+      if (text.length >= 280) break;
+    }
+    return text.slice(0, 280);
   }
-  return (m.content ?? "").replace(/\s+/g, " ").trim();
+  return (m.content ?? "").slice(0, 560).replace(/\s+/g, " ").trim().slice(0, 280);
 }
 
 function fmtDuration(ms?: number | null): string {
@@ -77,7 +86,7 @@ const LANES: { role: Role; name: string }[] = [
   { role: "tool", name: "工具" },
 ];
 
-function Timeline({ messages }: { messages: ChatMessage[] }) {
+function Timeline({ messages, start }: { messages: ChatMessage[]; start: number }) {
   const stamped = messages.filter((m) => m.ts);
   const t0 = stamped.length ? Math.min(...stamped.map((m) => m.ts!)) : 0;
   const t1 = stamped.length ? Math.max(...stamped.map((m) => m.ts!)) : 0;
@@ -120,7 +129,7 @@ function Timeline({ messages }: { messages: ChatMessage[] }) {
                   content={
                     <span className="flex flex-col gap-0.5">
                       <span className="font-medium">
-                        #{b.key} · {ROLE[role].label}
+                        #{start + b.key} · {ROLE[role].label}
                         {fmtDuration(b.m.duration_ms) && ` · ${fmtDuration(b.m.duration_ms)}`}
                       </span>
                       <span className="max-w-[260px] truncate opacity-80">{preview(b.m) || "（无内容）"}</span>
@@ -173,12 +182,12 @@ const EventRow = memo(function EventRow({
       <button
         type="button"
         onClick={onToggle}
-        className="group flex w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-neutral-100/70 dark:hover:bg-white/[0.04]"
+        className="group flex min-h-9 w-full items-center gap-3 px-4 py-1.5 text-left transition-colors hover:bg-neutral-100/70 dark:hover:bg-white/[0.04]"
       >
-        <span className="w-6 flex-none text-right font-mono text-[10px] tabular-nums text-neutral-400">
+        <span className="w-8 flex-none text-right font-mono text-[10px] tabular-nums text-neutral-400">
           {at}
         </span>
-        <Badge variant="secondary" className={cn("flex-none rounded-md text-[11px] font-medium", ROLE[role].tag)}>
+        <Badge variant="secondary" className={cn("w-12 flex-none justify-center rounded-md px-0 text-[11px] font-medium", ROLE[role].tag)}>
           {ROLE[role].label}
         </Badge>
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-neutral-700">
@@ -218,14 +227,24 @@ const EventRow = memo(function EventRow({
 export function RawHistoryDialog({
   open,
   onOpenChange,
-  messages,
-  loading,
+  sessionId,
+  workspaceRoot,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  messages: ChatMessage[] | null;
-  loading: boolean;
+  sessionId: number | null;
+  workspaceRoot: string;
 }) {
+  const raw = useRawHistory(open, sessionId, workspaceRoot);
+  const { page, loading, error } = raw;
+  const messages = page?.history ?? null;
+  const [copying, setCopying] = useState(false);
+  const [copyProgress, setCopyProgress] = useState("");
+  const copyAbort = useRef<AbortController | null>(null);
+
+  // Row keys are absolute indices; drop expansion when the session changes.
+  useEffect(() => setExpanded(new Set()), [sessionId, workspaceRoot]);
+  useEffect(() => () => copyAbort.current?.abort(), []);
   const [view, setView] = useState<View>("round");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
@@ -244,15 +263,26 @@ export function RawHistoryDialog({
   };
 
   const copyAll = async () => {
-    if (!messages) return;
+    if (sessionId === null || copying) return;
+    const ctrl = new AbortController();
+    copyAbort.current = ctrl;
+    setCopying(true);
     try {
-      await navigator.clipboard.writeText(JSON.stringify(messages, null, 2));
+      const json = await readRawHistoryJson(sessionId, workspaceRoot, ctrl.signal, (read, total) =>
+        setCopyProgress(`${read}/${total}`));
+      await navigator.clipboard.writeText(json);
       setCopiedAll(true);
       setTimeout(() => setCopiedAll(false), 1500);
-    } catch {}
+    } catch (e) {
+      if (!ctrl.signal.aborted) toast.error(String(e));
+    } finally {
+      setCopying(false);
+      setCopyProgress("");
+    }
   };
 
-  const rounds = useMemo(() => (messages ? groupRounds(messages) : []), [messages]);
+  const rounds = useMemo(() => (messages ? groupRounds(messages, page?.history_start ?? 0, page?.turn_offset ?? 0) : []),
+    [messages, page?.history_start, page?.turn_offset]);;
 
   // Search narrows every view to the matching messages.
   const q = query.trim().toLowerCase();
@@ -282,24 +312,50 @@ export function RawHistoryDialog({
       <DialogContent className="flex h-[82vh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="flex-none border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] px-4 pb-3 pt-3">
           <div className="flex items-center justify-between gap-3 pr-8">
-            <div className="flex min-w-0 items-baseline gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <DialogTitle className="flex-none text-[13px] font-semibold text-neutral-800">
                 执行轨迹
               </DialogTitle>
-              {messages && (
-                <Badge variant="secondary" className="flex-none font-mono tabular-nums">
-                  {messages.length}
+              {page && (
+                <Badge variant="secondary" className="h-6 flex-none px-2 font-mono text-[11px] font-normal tabular-nums leading-none">
+                  {page.history_start + 1}–{page.history_end} / {page.history_total}
                 </Badge>
+              )}
+              {page && (
+                <span className="flex flex-none items-center gap-0.5 text-neutral-500">
+                  <TooltipSimple content="更早">
+                    <Button variant="ghost" size="icon-sm" className="h-6 w-6" onClick={raw.older}
+                      disabled={loading || page.history_start === 0}>
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipSimple>
+                  <TooltipSimple content="更新">
+                    <Button variant="ghost" size="icon-sm" className="h-6 w-6" onClick={raw.newer}
+                      disabled={loading || page.history_end >= page.history_total}>
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipSimple>
+                  <TooltipSimple content="刷新到最新">
+                    <Button variant="ghost" size="icon-sm" className="h-6 w-6" onClick={raw.latest} disabled={loading}>
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipSimple>
+                </span>
               )}
             </div>
             <Button
               variant="ghost"
               size="sm"
               onClick={copyAll}
-              disabled={!messages}
-              className="flex-none gap-1.5 text-[11px] font-normal text-neutral-500"
+              disabled={sessionId === null || copying}
+              className="h-7 flex-none gap-1.5 px-2 text-[11px] font-normal text-neutral-500"
             >
-              {copiedAll ? (
+              {copying ? (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  复制中 {copyProgress}
+                </>
+              ) : copiedAll ? (
                 <>
                   <Check className="h-3.5 w-3.5 text-emerald-500" />
                   已复制
@@ -328,14 +384,14 @@ export function RawHistoryDialog({
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜索"
+                placeholder="搜索当前页"
                 className="h-8 pl-8 text-[12px]"
               />
             </div>
           </div>
         </DialogHeader>
 
-        {messages && messages.length > 0 && view === "time" && <Timeline messages={messages} />}
+        {messages && messages.length > 0 && view === "time" && <Timeline messages={messages} start={page?.history_start ?? 0} />}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {!open ? (
@@ -344,6 +400,11 @@ export function RawHistoryDialog({
             <div className="h-full" />
           ) : loading ? (
             <div className="flex h-full items-center justify-center text-[12px] text-neutral-500">正在读取…</div>
+          ) : error ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-[12px] text-neutral-500">
+              <span>{error}</span>
+              <Button variant="outline" size="sm" onClick={raw.retry}>重试</Button>
+            </div>
           ) : !messages || messages.length === 0 ? (
             <div className="flex h-full items-center justify-center text-[12px] text-neutral-500">暂无记录</div>
           ) : view === "round" ? (
@@ -352,11 +413,11 @@ export function RawHistoryDialog({
               if (items.length === 0) return null;
               return (
                 <section key={r.index}>
-                  <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-neutral-100 bg-white px-4 py-1.5 dark:border-[var(--husk-border)] dark:bg-[var(--husk-hover)]">
-                    <Badge variant="outline" className="font-mono text-[10px] font-normal">
+                  <div className="sticky top-0 z-10 flex h-8 items-center gap-2 border-b border-neutral-100 bg-white px-4 py-1.5 dark:border-[var(--husk-border)] dark:bg-[var(--husk-hover)]">
+                    <Badge variant="outline" className="h-5 px-1.5 font-mono text-[10px] font-normal leading-none">
                       第 {r.index + 1} 轮
                     </Badge>
-                    <span className="text-[11px] text-neutral-400">{items.length} 条</span>
+                    <span className="text-[11px] tabular-nums leading-none text-neutral-400">{items.length} 条</span>
                   </div>
                   {items.map(({ m, at }) => (
                     <EventRow key={at} m={m} at={at} open={expanded.has(at)} onToggle={() => toggle(at)} />
@@ -365,7 +426,7 @@ export function RawHistoryDialog({
               );
             })
           ) : (
-            shown(messages.map((m, at) => ({ m, at }))).map(({ m, at }) => (
+            shown(messages.map((m, i) => ({ m, at: (page?.history_start ?? 0) + i }))).map(({ m, at }) => (
               <EventRow key={at} m={m} at={at} open={expanded.has(at)} onToggle={() => toggle(at)} />
             ))
           )}

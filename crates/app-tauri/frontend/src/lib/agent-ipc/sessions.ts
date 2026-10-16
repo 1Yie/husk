@@ -37,18 +37,24 @@ export async function openSession(id: number) {
   return r;
 }
 
-/** Older-history page — `before` is the exclusive end index (the current
- * `loadedStart`); returns the slice just above it plus the full length. */
-/** Full persisted history for the raw-JSON viewer — the complete wire
- * record (roles, tool_calls params, tool results, notices, ts). */
-export async function historyRaw(id: number) {
-  const r = await invoke<{ history: ChatMessage[] }>(
-    "agent_session",
-    { op: "history_raw", id },
-  );
-  return r.history;
+export interface RawHistoryPage {
+  history: ChatMessage[];
+  history_total: number;
+  history_start: number;
+  history_end: number;
+  turn_total: number;
+  turn_offset: number;
 }
 
+/** At most 40 raw trace records. `before` is an exclusive message index;
+ * omitting it reads the newest page. Guard session ids with their workspace. */
+export function historyRawPage(id: number, root: string, before?: number) {
+  return invoke<RawHistoryPage>("agent_session", {
+    op: "history_raw", id, path: root, payload: { before },
+  });
+}
+
+/** Older chat-history page — `before` is an exclusive end index. */
 export async function historyPage(id: number, before: number) {
   return invoke<{ history: ChatMessage[]; history_total: number; turn_total?: number; turn_offset?: number }>(
     "agent_session",

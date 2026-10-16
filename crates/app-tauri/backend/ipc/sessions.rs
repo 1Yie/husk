@@ -9,6 +9,8 @@ use crate::kernel::KernelState;
 /// each `history_page` call — ~5-10 turns worth of stream items, enough
 /// for several viewports without mounting the whole session.
 const HISTORY_PAGE: usize = 80;
+/// Trace rows can contain large tool results; use smaller pages than chat.
+const RAW_HISTORY_PAGE: usize = 40;
 
 #[tauri::command]
 pub async fn agent_session(
@@ -380,15 +382,35 @@ fn agent_session_inner(
                 "queued_prompts": mgr.store_queued(id),
             }))
         }
-        // Older-history page: `payload.before` is the exclusive end index
-        // (the current loadedStart); returns the slice just above it.
         "history_raw" => {
-            // Full persisted history for the raw-JSON viewer — every
-            // message exactly as it rides the wire: roles, tool_calls
-            // (the model's sends + params), tool results, notices, ts.
             let id = id.ok_or("history_raw needs id")?;
-            Ok(serde_json::json!({ "history": mgr.store_history(id).unwrap_or_default() }))
+            if path
+                .as_deref()
+                .is_some_and(|root| std::path::Path::new(root) != mgr.workspace_root)
+            {
+                return Err("工作区已切换，请重新打开执行轨迹".into());
+            }
+            let before = payload
+                .as_ref()
+                .and_then(|p| p.get("before"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            // Read only these journal locations. Loading full history and
+            // slicing afterwards still stalls serialization and IPC.
+            let (history, total, turns, turn_offset) = mgr
+                .store_history_page(id, before, RAW_HISTORY_PAGE)
+                .map_err(|e| e.to_string())?;
+            let end = before.unwrap_or(total).min(total);
+            Ok(serde_json::json!({
+                "history_start": end.saturating_sub(history.len()),
+                "history_end": end,
+                "history": history,
+                "history_total": total,
+                "turn_total": turns,
+                "turn_offset": turn_offset,
+            }))
         }
+        // `before` is the exclusive end index into persisted chat history.
         "history_page" => {
             let id = id.ok_or("history_page needs id")?;
             let before = payload

@@ -6,7 +6,7 @@ import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
 import { viewFromHistory, viewFromHistoryChunked } from "@/features/chat/hooks/view-from-history";
 import { loadReset, loadStamp } from "@/lib/load-probe";
 import { markSessionRead, setSessionTitles } from "@/lib/notifications";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, historyRaw, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
 import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
@@ -230,22 +230,14 @@ export function App() {
   // Changes panel docked right of the chat column; its content reads the
   // active view's `changes`, so it follows the foreground session.
   const [changesOpen, setChangesOpen] = useState(false);
-  // Raw-JSON history viewer — fetches the full persisted record on open.
+  // The trace dialog owns its paged reads.
   const [rawOpen, setRawOpen] = useState(false);
-  const [rawData, setRawData] = useState<import("@/types").ChatMessage[] | null>(null);
-  const [rawLoading, setRawLoading] = useState(false);
-  const handleShowRaw = useCallback(async () => {
-    if (!activeId) return;
+  const handleShowRaw = useCallback(() => {
+    // An empty root means workspace info has not loaded; the backend
+    // would reject it as a workspace switch.
+    if (!activeId || !workspace.root) return;
     setRawOpen(true);
-    setRawLoading(true);
-    try {
-      setRawData(await historyRaw(activeId));
-    } catch {
-      setRawData(null);
-    } finally {
-      setRawLoading(false);
-    }
-  }, [activeId]);
+  }, [activeId, workspace.root]);
 
   useEffect(() => {
     void getWorkspaceInfo().then((ws) => {
@@ -642,8 +634,8 @@ export function App() {
       <RawHistoryDialog
         open={rawOpen}
         onOpenChange={setRawOpen}
-        messages={rawData}
-        loading={rawLoading}
+        sessionId={activeId || null}
+        workspaceRoot={workspace.root}
       />
 
       {/* Fork confirmation — creates a copy of the session's history. */}
