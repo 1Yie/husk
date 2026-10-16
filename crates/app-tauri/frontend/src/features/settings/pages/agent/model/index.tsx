@@ -80,8 +80,10 @@ function Advanced({ label, children }: { label: string; children: React.ReactNod
         <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
         {label}
       </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="flex flex-col gap-3 pt-3">{children}</div>
+      {/* Keep the 3px focus rings inside the animation's clipping boundary.
+          Negative margins preserve alignment with the other form fields. */}
+      <CollapsibleContent className="-mx-1">
+        <div className="flex flex-col gap-3 px-1 pb-1 pt-3">{children}</div>
       </CollapsibleContent>
     </Collapsible>
   );
