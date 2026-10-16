@@ -108,6 +108,8 @@ export interface SettingsCardOption {
   description?: React.ReactNode;
   badge?: React.ReactNode;
   icon?: React.ReactNode;
+  /** Tailwind classes tinting the icon tile; omitted keeps the neutral tile. */
+  iconTone?: string;
   preview?: React.ReactNode;
 }
 
@@ -158,24 +160,30 @@ export function SettingsCards({
   onChange,
   options,
   className,
+  loading = false,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: SettingsCardOption[];
   className?: string;
+  /** The stored value is still loading: every card renders, none shows as
+   *  selected yet, and they can't be clicked (so a click can't be overwritten). */
+  loading?: boolean;
 }) {
   return (
     <div className={cn("grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3", className)}>
       {options.map((opt) => {
-        const isSelected = value === opt.value;
+        const isSelected = !loading && value === opt.value;
         return (
           <button
             key={opt.value}
             type="button"
             aria-pressed={isSelected}
+            disabled={loading}
             onClick={() => onChange(opt.value)}
             className={cn(
               "flex min-w-0 cursor-pointer flex-col gap-3 rounded-2xl border bg-card p-4 text-left shadow-2xs transition-colors select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--husk-white)]",
+              loading && "animate-pulse",
               isSelected
                 ? "border-accent bg-[color-mix(in_srgb,var(--husk-accent)_4%,var(--husk-card))] ring-1 ring-[color-mix(in_srgb,var(--husk-accent)_25%,transparent)]"
                 : "border-hairline hover:border-neutral-300"
@@ -183,7 +191,7 @@ export function SettingsCards({
           >
             {opt.preview}
             <div className="flex w-full items-center gap-3">
-              {opt.icon && <ItemIcon className="mt-0">{opt.icon}</ItemIcon>}
+              {opt.icon && <ItemIcon className={cn("mt-0", opt.iconTone)}>{opt.icon}</ItemIcon>}
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-neutral-900">
                   {opt.label}

@@ -8,12 +8,14 @@ import { cn } from "@/lib/utils";
 export function Skeleton({
   className,
   style,
+  ...rest
 }: {
   className?: string;
   style?: React.CSSProperties;
-}) {
+} & React.AriaAttributes) {
   return (
     <div
+      {...rest}
       style={style}
       className={cn(
         "rounded-md bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]",
@@ -62,5 +64,20 @@ export function SkeletonSection({ rows = 3 }: { rows?: number }) {
       <Skeleton className="h-4 w-24" />
       <SkeletonKvList rows={rows} />
     </div>
+  );
+}
+
+/** Stands in for one settings control while its value loads — same footprint as
+ * the real `SettingSelect` (h-8, min-w-44) or `Switch` (h-5 w-9), so the row
+ * keeps its labels and the control fills in without any layout shift. */
+export function SkeletonControl({ kind = "select" }: { kind?: "select" | "switch" }) {
+  return (
+    <Skeleton
+      aria-hidden="true"
+      className={cn(
+        "animate-pulse shrink-0",
+        kind === "select" ? "h-8 w-44 rounded-xl" : "h-5 w-9 rounded-full",
+      )}
+    />
   );
 }
