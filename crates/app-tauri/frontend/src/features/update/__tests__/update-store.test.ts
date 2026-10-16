@@ -8,7 +8,7 @@ vi.mock("@/lib/agent-ipc/sessions", () => ({
 }));
 
 import { checkUpdate, installUpdate, relaunchApp, type UpdateCheck } from "@/lib/agent-ipc/sessions";
-import { useUpdateStore } from "../update-store";
+import { canInstall, useUpdateStore } from "../update-store";
 
 const NEWER: UpdateCheck = {
   current: "0.3.0",
@@ -27,7 +27,7 @@ describe("update store", () => {
     localStorage.clear();
     vi.resetAllMocks();
     vi.mocked(checkUpdate).mockResolvedValue(NEWER);
-    vi.mocked(installUpdate).mockResolvedValue(undefined);
+    vi.mocked(installUpdate).mockResolvedValue({ mode: "installed" });
     vi.mocked(relaunchApp).mockResolvedValue(undefined);
     useUpdateStore.setState({ state: { status: "idle" }, open: false, snoozed: null, checking: false });
   });
@@ -117,6 +117,44 @@ describe("update store", () => {
     expect(await store().check()).toBeNull();
     expect(checkUpdate).toHaveBeenCalledTimes(1);
     expect(store().state.status).toBe("ready");
+  });
+
+  it("records the install mode and says a staged installer runs on restart", async () => {
+    vi.mocked(installUpdate).mockResolvedValue({ mode: "staged" });
+    await store().check({ silent: true });
+    await store().install();
+    const state = store().state;
+    expect(state.status === "ready" && state.mode).toBe("staged");
+  });
+
+  it("restores a prepared update as ready instead of offering a reinstall", async () => {
+    vi.mocked(checkUpdate).mockResolvedValue({ ...NEWER, prepared_mode: "staged" });
+    await store().check({ silent: true });
+    const state = store().state;
+    expect(state.status).toBe("ready");
+    expect(state.status === "ready" && state.mode).toBe("staged");
+    expect(store().open).toBe(true);
+    expect(installUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a failed relaunch stays ready with the error so the restart can be retried", async () => {
+    await store().check({ silent: true });
+    await store().install();
+    vi.mocked(relaunchApp).mockRejectedValueOnce("无法启动重启程序");
+    await store().relaunch();
+    const failed = store().state;
+    expect(failed.status).toBe("ready");
+    expect(failed.status === "ready" && failed.relaunchError).toContain("无法启动重启程序");
+    // Retrying restart does not reinstall.
+    await store().relaunch();
+    expect(relaunchApp).toHaveBeenCalledTimes(2);
+    expect(installUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("manual_reason turns off the automatic in-app install", () => {
+    expect(canInstall(NEWER)).toBe(true);
+    expect(canInstall({ ...NEWER, manual_reason: "AppImage 版本无法原地更新" })).toBe(false);
+    expect(canInstall({ ...NEWER, asset: null })).toBe(false);
   });
 
   it("progress events only apply while installing", async () => {

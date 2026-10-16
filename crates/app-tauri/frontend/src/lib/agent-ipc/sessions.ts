@@ -564,6 +564,11 @@ export function recentArtifacts() {
   return invoke<RecentArtifact[]>("agent_session", { op: "recent_artifacts" });
 }
 
+/** How an update finished on this platform. `installed` = the package was
+ *  applied in place (Linux/macOS); `staged` = the installer is prepared and
+ *  runs when the app restarts (Windows). */
+export type InstallMode = "installed" | "staged";
+
 /** Result of a real update check against the GitHub Releases API. `latest`
  *  is `null` when the API returned no release (or the check couldn't be
  *  completed) — distinct from "you're up to date". */
@@ -576,6 +581,13 @@ export interface UpdateCheck {
   /** Installer matching this platform; `null` = none published, so the UI can
    *  only link to the release page. */
   asset: { name: string; size: number } | null;
+  /** A previously prepared update restored from disk (Windows staged
+   *  installer), or `null`. */
+  prepared_mode?: InstallMode | null;
+  /** Set when an installer exists but this install is not package-managed
+   *  (AppImage/Flatpak/dev/unmanaged): automatic install is unavailable and
+   *  the value explains why. The UI then offers a manual download. */
+  manual_reason?: string | null;
 }
 
 /** Query GitHub for the newest published release and compare it to the
@@ -587,12 +599,15 @@ export function checkUpdate() {
 
 /** Download, verify and install the update found by the last `checkUpdate`.
  *  Resolves when it is ready — the app keeps running until `relaunchApp`.
- *  Progress arrives as `update-progress` events. */
+ *  `mode: 'staged'` means the installer only runs on restart. Progress arrives
+ *  as `update-progress` events. */
 export function installUpdate() {
-  return invoke<void>("install_update");
+  return invoke<{ mode: InstallMode }>("install_update");
 }
 
-/** Restart into the installed update. Only valid after `installUpdate` resolved. */
+/** Restart into the installed update. Only valid after `installUpdate` resolved.
+ *  The backend only clears the prepared update once the replacement process
+ *  has actually started, so a failed call can be retried. */
 export function relaunchApp() {
   return invoke<void>("relaunch_app");
 }

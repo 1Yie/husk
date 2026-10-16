@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
 import { openUrl } from "@/lib/agent-ipc/sessions";
-import { useUpdateStore, type UpdatePhase } from "./update-store";
+import { canInstall, useUpdateStore, type UpdatePhase } from "./update-store";
 
 const PHASE_LABEL: Record<UpdatePhase, string> = {
   download: "正在下载",
@@ -40,8 +40,9 @@ export function UpdateDialog() {
   const ratio = progress && progress.total > 0 ? Math.min(progress.downloaded / progress.total, 1) : 0;
   const percent = Math.round(ratio * 100);
   const indeterminate = progress !== null && progress.phase !== "download";
-  // No installer for this platform: nothing to install in-app.
-  const canInstall = info.asset !== null;
+  // No installer for this platform, or this install is not package-managed
+  // (AppImage/Flatpak/dev): only a manual download is offered.
+  const autoInstall = canInstall(info);
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? setOpen(true) : onDismiss())}>
@@ -82,15 +83,25 @@ export function UpdateDialog() {
               </div>
             </>
           )}
-          {ready && (
+          {ready && !state.relaunchError && (
             <p className="text-xs text-emerald-600 dark:text-emerald-400" role="status">
-              v{info.latest} 已安装完成，重启后生效
+              {state.mode === "staged"
+                ? `v${info.latest} 已准备就绪，重启后自动安装`
+                : `v${info.latest} 已安装完成，重启后生效`}
+            </p>
+          )}
+          {ready && state.relaunchError && (
+            <p className="line-clamp-2 break-words text-xs text-red-600 dark:text-red-400" role="alert">
+              重启失败：{state.relaunchError}。可重试重启。
             </p>
           )}
           {state.status === "failed" && (
             <p className="line-clamp-2 break-words text-xs text-red-600 dark:text-red-400" role="alert">
               {state.error}
             </p>
+          )}
+          {!installing && !ready && info.manual_reason && (
+            <p className="line-clamp-2 break-words text-xs text-neutral-500">{info.manual_reason}</p>
           )}
         </div>
 
@@ -116,9 +127,9 @@ export function UpdateDialog() {
           )}
           {ready ? (
             <Button size="sm" onClick={onRelaunch}>
-              重启应用
+              {state.relaunchError ? "重试重启" : "重启应用"}
             </Button>
-          ) : canInstall ? (
+          ) : autoInstall ? (
             <Button size="sm" onClick={onInstall} disabled={installing}>
               {installing
                 ? "更新中"

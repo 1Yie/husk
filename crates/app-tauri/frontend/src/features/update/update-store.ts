@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
-import { checkUpdate, installUpdate, relaunchApp, type UpdateCheck } from "@/lib/agent-ipc/sessions";
+import {
+  checkUpdate,
+  installUpdate,
+  relaunchApp,
+  type InstallMode,
+  type UpdateCheck,
+} from "@/lib/agent-ipc/sessions";
 
 export type UpdatePhase = "download" | "verify" | "install";
 
@@ -14,9 +20,16 @@ export type UpdateState =
   | { status: "idle" }
   | { status: "available"; info: UpdateCheck }
   | { status: "installing"; info: UpdateCheck; progress: UpdateProgress }
-  /** Installed; waiting for the user to restart into it. */
-  | { status: "ready"; info: UpdateCheck }
+  /** Ready; waiting for the user to restart into it. `mode: 'staged'` is a
+   *  Windows installer that only runs on restart. A failed restart keeps this
+   *  state (with `relaunchError`) so it can be retried instead of reinstalled. */
+  | { status: "ready"; info: UpdateCheck; mode: InstallMode; relaunchError?: string }
   | { status: "failed"; info: UpdateCheck; error: string };
+
+/** Whether the backend offers an automatic in-app install for this release. */
+export function canInstall(src: UpdateCheck): boolean {
+  return src.asset !== null && !src.manual_reason;
+}
 
 /** The version the user chose to skip: it is never announced automatically
  * again (a manual check from About still shows it), but a newer one is. */
@@ -54,10 +67,16 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
     try {
       const info = await checkUpdate();
       if (info.is_newer && info.latest) {
-        set({ state: { status: "available", info } });
-        const skipped =
-          localStorage.getItem(IGNORED_KEY) === info.latest || get().snoozed === info.latest;
-        if (!silent || !skipped) set({ open: true });
+        if (info.prepared_mode) {
+          // A prepared update survived an app restart (Windows staged
+          // installer): show it as ready instead of offering a reinstall.
+          set({ state: { status: "ready", info, mode: info.prepared_mode }, open: true });
+        } else {
+          set({ state: { status: "available", info } });
+          const skipped =
+            localStorage.getItem(IGNORED_KEY) === info.latest || get().snoozed === info.latest;
+          if (!silent || !skipped) set({ open: true });
+        }
       }
       return info;
     } catch (e) {
@@ -80,8 +99,8 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
       },
     });
     try {
-      await installUpdate();
-      set({ state: { status: "ready", info } });
+      const { mode } = await installUpdate();
+      set({ state: { status: "ready", info, mode } });
     } catch (e) {
       set({ state: { status: "failed", info, error: String(e) } });
     }
@@ -93,7 +112,9 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
     try {
       await relaunchApp();
     } catch (e) {
-      set({ state: { status: "failed", info: state.info, error: String(e) } });
+      // The backend kept the prepared update; stay ready so the user can
+      // retry the restart rather than reinstalling.
+      set({ state: { ...state, relaunchError: String(e) } });
     }
   },
 

@@ -35,8 +35,8 @@ tauri-plugin-single-instance = "2"
 xxhash-rust.workspace = true
 futures.workspace = true
 sha2 = "0.10"
-
-[dev-dependencies]
+# Private per-download staging directories (0700 on Unix) that auto-clean on
+# drop; also the source of the Windows staged-installer cache helper.
 tempfile = "3"
 
 # The desktop notification IPC is shared, with native UNUserNotificationCenter
