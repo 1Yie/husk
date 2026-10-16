@@ -2,26 +2,53 @@
 
 import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { useState } from "react";
-import {
-  Bot,
-  Plus,
-  SquarePen,
-} from "@keyline-icons/react";
-import { Badge } from "@/components/ui/badge";
+import { useMemo, useState } from "react";
+import { Bot, Plus, SquarePen } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
+import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
-import { readSubagent, deleteSubagent, createSubagent, type AgentOverview } from "@/lib/agent-ipc/sessions";
-import { Field } from "@/features/settings/pages/agent/shared/index";
+import {
+  readSubagent,
+  deleteSubagent,
+  createSubagent,
+  type AgentOverview,
+  type SubagentItem,
+} from "@/lib/agent-ipc/sessions";
+import {
+  EmptyState,
+  Field,
+  ItemIcon,
+  ItemRow,
+  PaneToolbar,
+  ScopeTabs,
+  SearchBox,
+  Tag,
+  matchQuery,
+} from "@/features/settings/pages/agent/shared/index";
+
+type Filter = "all" | "builtin" | "custom";
+
+/** Limits a spec carries, as compact tag text. */
+function limits(a: SubagentItem): string[] {
+  return [
+    a.max_tool_rounds != null ? `${a.max_tool_rounds} 轮` : null,
+    a.timeout_secs != null
+      ? a.timeout_secs >= 60 && a.timeout_secs % 60 === 0
+        ? `${a.timeout_secs / 60} 分钟`
+        : `${a.timeout_secs} 秒`
+      : null,
+  ].filter((x): x is string => !!x);
+}
 
 /* ============================ SubAgent ============================ */
 
 export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
+  const [filter, setFilter] = useState<Filter>("all");
+  const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
@@ -31,6 +58,28 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
   /** Editing an existing manifest (createSubagent overwrites it); builtins have
    *  no file, so they stay read-only. */
   const [editName, setEditName] = useState<string | null>(null);
+
+  const agents = ov?.subagents ?? [];
+  const counts: Record<Filter, number> = {
+    all: agents.length,
+    builtin: agents.filter((a) => a.builtin).length,
+    custom: agents.filter((a) => !a.builtin).length,
+  };
+  const filtered = useMemo(
+    () =>
+      agents.filter(
+        (a) =>
+          (filter === "all" || (filter === "builtin" ? a.builtin : !a.builtin)) &&
+          matchQuery(query, a.name, a.description),
+      ),
+    [agents, filter, query],
+  );
+  const startCreate = () => {
+    setEditName(null);
+    setName(""); setDesc(""); setPrompt("");
+    setScope("workspace");
+    setOpen(true);
+  };
 
   const startEditSubagent = async (agentName: string) => {
     try {
@@ -72,7 +121,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
       setName(""); setDesc(""); setPrompt("");
       reload();
     } catch (e) {
-      toast.error("创建失败", { description: String(e) });
+      toast.error(editName ? "保存失败" : "创建失败", { description: String(e) });
     } finally {
       setBusy(false);
     }
@@ -80,76 +129,101 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-end">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs gap-1"
-          onClick={() => {
-            setEditName(null);
-            setName(""); setDesc(""); setPrompt("");
-            setOpen(true);
-          }}
-        >
+      <PaneToolbar>
+        <ScopeTabs
+          value={filter}
+          onChange={setFilter}
+          options={[
+            { value: "all", label: "全部", count: ov ? counts.all : undefined },
+            { value: "builtin", label: "内置", count: ov ? counts.builtin : undefined },
+            { value: "custom", label: "自定义", count: ov ? counts.custom : undefined },
+          ]}
+        />
+        <SearchBox value={query} onChange={setQuery} />
+        <Button size="sm" variant="outline" className="h-7 shrink-0 text-xs gap-1" onClick={startCreate}>
           <Plus className="h-3.5 w-3.5" /> 添加
         </Button>
-      </div>
+      </PaneToolbar>
+
       <KvList>
         <KvListContent>
           {!ov ? (
             <SkeletonKvRows rows={2} />
-          ) : ov.subagents.map((a) => (
-            <KvRow
-              key={a.name}
-              label={a.name}
-              description={a.description || undefined}
+          ) : filtered.length ? (
+            filtered.map((a) => (
+              <ItemRow
+                key={`${a.builtin ? "b" : a.global ? "g" : "w"}:${a.name}`}
+                icon={
+                  <ItemIcon>
+                    <Bot className="h-4 w-4" />
+                  </ItemIcon>
+                }
+                title={a.name}
+                monoTitle
+                tags={
+                  <>
+                    <Tag>{a.builtin ? "内置" : a.global ? "全局" : "工作区"}</Tag>
+                    {limits(a).map((t) => (
+                      <Tag key={t} className="tabular-nums">{t}</Tag>
+                    ))}
+                  </>
+                }
+                description={a.description}
+                emptyDescription="未填写描述"
+                meta={a.path}
+                actions={
+                  !a.builtin && (
+                    <>
+                      <Button variant="ghost" size="icon" className="h-6 w-6" title="编辑"
+                        onClick={() => void startEditSubagent(a.name)}>
+                        <SquarePen className="h-3.5 w-3.5" />
+                      </Button>
+                      <ArmedDeleteButton onConfirm={() => void doDeleteSubagent(a.name)} />
+                    </>
+                  )
+                }
+              />
+            ))
+          ) : (
+            <EmptyState
               icon={<Bot className="h-4 w-4" />}
-            >
-              <div className="flex items-center gap-2">
-                {!a.builtin && (
-                  <>
-                    <Button variant="ghost" size="icon" className="h-6 w-6" title="编辑"
-                      onClick={() => void startEditSubagent(a.name)}>
-                      <SquarePen className="h-3.5 w-3.5" />
-                    </Button>
-                    <ArmedDeleteButton onConfirm={() => void doDeleteSubagent(a.name)} />
-                  </>
-                )}
-                {a.builtin ? (
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                    内置
-                  </Badge>
-                ) : (
-                  <>
-                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                      {a.global ? "全局" : "工作区"}
-                    </Badge>
-                    {a.path && (
-                      <span className="text-[11px] text-neutral-500 font-mono max-w-[200px] truncate">
-                        {a.path}
-                      </span>
-                    )}
-                  </>
-                )}
-
-              </div>
-            </KvRow>
-          ))}
+              title={
+                query.trim()
+                  ? "没有匹配的子代理"
+                  : filter === "custom"
+                    ? "暂无自定义子代理"
+                    : "暂无子代理"
+              }
+              description={
+                query.trim() || filter === "builtin"
+                  ? "调整搜索词或切换范围查看"
+                  : "子代理在独立上下文中执行委派任务，可在此定义专属角色"
+              }
+              action={
+                !query.trim() && filter !== "builtin" && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={startCreate}>
+                    <Plus className="h-3.5 w-3.5" /> 添加子代理
+                  </Button>
+                )
+              }
+            />
+          )}
         </KvListContent>
       </KvList>
 
       <FormDialog
         open={open}
         onOpenChange={setOpen}
+        width="lg"
         title={editName ? "编辑子代理" : "添加子代理"}
         submitLabel={editName ? "保存" : "创建"}
-        busyLabel="创建中…"
+        busyLabel={editName ? "保存中…" : "创建中…"}
         busy={busy}
         disabled={!name.trim() || !prompt.trim()}
         onSubmit={() => void submit()}
       >
           <div className="flex flex-col gap-3 py-1">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
               <Field label="名称（小写 slug）">
                 <Input
                   value={name}
@@ -163,6 +237,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                 <SettingSelect
                   value={scope}
                   onChange={(v) => setScope(v as "workspace" | "global")}
+                  triggerClassName="w-full sm:w-44"
                   options={[
                     { value: "workspace", label: "工作区" },
                     { value: "global", label: "全局" },
@@ -182,9 +257,9 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
               <Textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                rows={7}
+                rows={12}
                 placeholder="你是一个代码审查专家，专注于…"
-                className="font-mono text-[12px] leading-relaxed"
+                className="max-h-[50vh] min-h-[160px] resize-y font-mono text-[12px] leading-relaxed"
               />
             </Field>
           </div>

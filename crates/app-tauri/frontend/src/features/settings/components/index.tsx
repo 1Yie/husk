@@ -1,7 +1,7 @@
 import * as React from "react";
-import { ChevronsUpDown } from "@keyline-icons/react";
+import { Check, ChevronsUpDown } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
-import { Card } from "@/components/ui/card";
+import { ItemIcon } from "./item-list";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -9,6 +9,8 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+export * from "./item-list";
 
 /* ------------------------------------------------------------------ */
 /* Controls                                                            */
@@ -30,6 +32,8 @@ interface SettingSelectProps {
   prefix?: React.ReactNode;
   triggerClassName?: string;
   contentClassName?: string;
+  ariaLabel?: string;
+  disabled?: boolean;
 }
 
 /** The single dropdown control for settings. Backed by DropdownMenu whose
@@ -43,6 +47,8 @@ export function SettingSelect({
   prefix,
   triggerClassName,
   contentClassName,
+  ariaLabel,
+  disabled,
 }: SettingSelectProps) {
   const current = options.find((o) => o.value === value);
   return (
@@ -50,8 +56,10 @@ export function SettingSelect({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          aria-label={ariaLabel}
+          disabled={disabled}
           className={cn(
-            "flex h-8 min-w-44 items-center justify-between gap-2 whitespace-nowrap rounded-xl border border-neutral-200 bg-white px-3 text-xs text-neutral-800 shadow-sm transition-[color,box-shadow] focus:outline-none focus:border-neutral-400 focus:ring-[3px] focus:ring-[color-mix(in_srgb,var(--husk-n950)_12%,transparent)] data-[state=open]:border-neutral-400 data-[state=open]:ring-[3px] data-[state=open]:ring-[color-mix(in_srgb,var(--husk-n950)_12%,transparent)]",
+            "flex h-8 min-w-44 max-w-full items-center justify-between gap-2 whitespace-nowrap rounded-xl border border-neutral-200 bg-white px-3 text-xs text-neutral-800 shadow-sm transition-[color,box-shadow] focus:outline-none focus:border-neutral-400 focus:ring-[3px] focus:ring-[color-mix(in_srgb,var(--husk-n950)_12%,transparent)] data-[state=open]:border-neutral-400 data-[state=open]:ring-[3px] data-[state=open]:ring-[color-mix(in_srgb,var(--husk-n950)_12%,transparent)] disabled:pointer-events-none disabled:opacity-50 dark:border-hairline dark:bg-hover",
             triggerClassName
           )}
         >
@@ -65,7 +73,7 @@ export function SettingSelect({
       <DropdownMenuContent
         align="end"
         className={cn(
-          "min-w-[var(--radix-dropdown-menu-trigger-width)]",
+          "min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[calc(100vw-2rem)]",
           contentClassName
         )}
       >
@@ -100,6 +108,7 @@ export interface SettingsCardOption {
   description?: React.ReactNode;
   badge?: React.ReactNode;
   icon?: React.ReactNode;
+  preview?: React.ReactNode;
 }
 
 /** Section shell — the title/description/actions header every settings
@@ -119,21 +128,21 @@ export function SettingsSection({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-3">
       {(title || description || actions) && (
-        <div className="flex items-center justify-between">
-          <div className="flex flex-col gap-0.5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-col gap-1">
             {title && (
               <span className="text-sm font-semibold text-neutral-900">
                 {title}
               </span>
             )}
             {description && (
-              <span className="text-xs text-neutral-500">{description}</span>
+              <span className="text-xs leading-relaxed text-neutral-500">{description}</span>
             )}
           </div>
           {actions && (
-            <div className="flex items-center gap-2">{actions}</div>
+            <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div>
           )}
         </div>
       )}
@@ -142,7 +151,7 @@ export function SettingsSection({
   );
 }
 
-/** Grid of selectable cards (radio semantics) — usually sits inside a
+/** Grid of selectable cards — usually sits inside a
  * `SettingsSection`. */
 export function SettingsCards({
   value,
@@ -156,51 +165,47 @@ export function SettingsCards({
   className?: string;
 }) {
   return (
-    <div className={cn("grid grid-cols-1 sm:grid-cols-2 gap-3", className)}>
+    <div className={cn("grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3", className)}>
       {options.map((opt) => {
         const isSelected = value === opt.value;
         return (
-          <Card
+          <button
             key={opt.value}
+            type="button"
+            aria-pressed={isSelected}
             onClick={() => onChange(opt.value)}
             className={cn(
-              "p-4 cursor-pointer transition-all duration-150 shadow-none rounded-2xl flex flex-col justify-between select-none",
+              "flex min-w-0 cursor-pointer flex-col gap-3 rounded-2xl border bg-card p-4 text-left shadow-2xs transition-colors select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--husk-white)]",
               isSelected
-                ? "border-accent ring-1 ring-accent/35 bg-[color-mix(in_srgb,var(--husk-accent)_4%,transparent)] shadow-xs"
-                : "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] bg-white hover:border-neutral-300 hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)]"
+                ? "border-accent bg-[color-mix(in_srgb,var(--husk-accent)_4%,var(--husk-card))] ring-1 ring-[color-mix(in_srgb,var(--husk-accent)_25%,transparent)]"
+                : "border-hairline hover:border-neutral-300"
             )}
           >
-            <div>
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  {opt.icon && <div className="shrink-0">{opt.icon}</div>}
-                  <span className="text-sm font-semibold text-neutral-900 truncate">
-                    {opt.label}
-                  </span>
-                  {opt.badge}
-                </div>
-                <div className="shrink-0">
-                  <div
-                    className={cn(
-                      "flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
-                      isSelected
-                        ? "border-accent bg-accent"
-                        : "border-neutral-300 bg-white"
-                    )}
-                  >
-                    {isSelected && (
-                      <div className="h-1.5 w-1.5 rounded-full bg-white" />
-                    )}
-                  </div>
-                </div>
+            {opt.preview}
+            <div className="flex w-full items-center gap-3">
+              {opt.icon && <ItemIcon className="mt-0">{opt.icon}</ItemIcon>}
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-neutral-900">
+                  {opt.label}
+                </span>
+                {opt.badge}
               </div>
-              {opt.description && (
-                <p className="mt-2 text-xs leading-relaxed text-neutral-500">
-                  {opt.description}
-                </p>
-              )}
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors",
+                  isSelected ? "border-accent bg-accent" : "border-neutral-300"
+                )}
+              >
+                {isSelected && <Check className="h-2.5 w-2.5 text-zinc-50" />}
+              </span>
             </div>
-          </Card>
+            {opt.description && (
+              <p className="text-xs leading-relaxed text-neutral-500">
+                {opt.description}
+              </p>
+            )}
+          </button>
         );
       })}
     </div>

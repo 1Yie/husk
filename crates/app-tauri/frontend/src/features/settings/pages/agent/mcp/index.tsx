@@ -9,16 +9,16 @@ import { useState } from "react";
 import {
   Plus,
   RefreshCw,
+  Server,
   SquarePen,
   Wrench,
 } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
+import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
@@ -30,7 +30,22 @@ const entryObj = (p: PluginItem) =>
   p.entry && typeof p.entry === "object" ? p.entry : null;
 import { Switch } from "@/components/ui/switch";
 import { TooltipSimple } from "@/components/ui/tooltip";
-import { Field } from "@/features/settings/pages/agent/shared/index";
+import {
+  Chip,
+  ChipGroup,
+  EmptyState,
+  Field,
+  ItemDetail,
+  ItemIcon,
+  ItemRow,
+  PaneToolbar,
+  ScopeTabs,
+  SearchBox,
+  Tag,
+  matchQuery,
+} from "@/features/settings/pages/agent/shared/index";
+
+type Transport = "all" | "stdio" | "http";
 
 /* ============================ MCP ============================ */
 
@@ -41,6 +56,8 @@ export function McpPane({
   ov: AgentOverview | null;
   onReload: () => void;
 }) {
+  const [filter, setFilter] = useState<Transport>("all");
+  const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   /** Set while the dialog edits an existing plugin — the id names the plugin's
    *  directory, so it stays locked and saving overwrites that manifest. */
@@ -201,24 +218,64 @@ export function McpPane({
     }
   };
 
+  const servers = ov?.plugins.filter((p) => entryObj(p)?.command || entryObj(p)?.url) ?? [];
+  const isHttp = (p: PluginItem) => !!entryObj(p)?.url;
+  const counts: Record<Transport, number> = {
+    all: servers.length,
+    stdio: servers.filter((p) => !isHttp(p)).length,
+    http: servers.filter(isHttp).length,
+  };
+  const endpoint = (p: PluginItem) =>
+    entryObj(p)?.url ??
+    `${entryObj(p)?.command ?? ""} ${(entryObj(p)?.args ?? []).join(" ")}`.trim();
+  const filtered = servers.filter(
+    (p) =>
+      (filter === "all" || (filter === "http") === isHttp(p)) &&
+      matchQuery(query, p.id, p.name, endpoint(p)),
+  );
+
+  const startCreate = () => {
+    setEditId(null);
+    setId(""); setName(""); setCommand(""); setArgs(""); setUrl(""); setHeaders("");
+    setTransport(filter === "http" ? "http" : "stdio");
+    setOpen(true);
+  };
+
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-end">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs gap-1"
-          onClick={() => setOpen(true)}
-        >
+      <PaneToolbar>
+        <ScopeTabs
+          value={filter}
+          onChange={setFilter}
+          options={[
+            { value: "all", label: "全部", count: ov ? counts.all : undefined },
+            { value: "stdio", label: "stdio", count: ov ? counts.stdio : undefined },
+            { value: "http", label: "HTTP", count: ov ? counts.http : undefined },
+          ]}
+        />
+        <SearchBox value={query} onChange={setQuery} placeholder="搜索名称、命令或 URL" />
+        <TooltipSimple content="重新读取全部配置并重连">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 w-7 shrink-0 p-0"
+            aria-label="重新加载"
+            disabled={reloading}
+            onClick={() => void reload()}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", reloading && "animate-spin")} />
+          </Button>
+        </TooltipSimple>
+        <Button size="sm" variant="outline" className="h-7 shrink-0 text-xs gap-1" onClick={startCreate}>
           <Plus className="h-3.5 w-3.5" /> 添加
         </Button>
-      </div>
+      </PaneToolbar>
       <KvList>
         <KvListContent>
           {!ov ? (
             <SkeletonKvRows rows={2} />
-          ) : ov.plugins.filter((p) => entryObj(p)?.command || entryObj(p)?.url).length ? (
-            ov.plugins.filter((p) => entryObj(p)?.command || entryObj(p)?.url).map((p) => {
+          ) : filtered.length ? (
+            filtered.map((p) => {
               // Boot state from the overview; a manual reconnect overrides it.
               const re = reconnected[p.id];
               const live = re
@@ -229,122 +286,135 @@ export function McpPane({
                     tools: p.tools ?? [],
                     error: p.error ?? "",
                   };
+              const enabled = pluginEnabled(p);
+              const pending = p.repoLocal && !p.trusted;
               return (
-              <Collapsible
-                key={p.id}
-                open={expanded === p.id}
-                onOpenChange={(v) => setExpanded(v ? p.id : null)}
-              >
-                <CollapsibleTrigger asChild>
-                  <KvRow
-                label={`${p.name}${live.version ? ` v${live.version}` : ""}`}
-                description={
-                  entryObj(p)?.url ??
-                  (entryObj(p)?.command
-                    ? `${entryObj(p)?.command} ${(entryObj(p)?.args ?? []).join(" ")}`
-                    : p.id)
-                }
-                icon={<Wrench className="h-4 w-4" />}
-              >
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                    {entryObj(p)?.url ? "http" : "stdio"}
-                  </Badge>
-                  {live.ok ? (
-                    <span className="text-[11px] text-neutral-500 tabular-nums">
-                      {live.tools.length} 工具
-                    </span>
-                  ) : (
-                    <TooltipSimple content={live.error}>
-                      <span className="max-w-[240px] truncate text-[11px] text-red-500">
-                        {live.error || "未连接"}
-                      </span>
-                    </TooltipSimple>
-                  )}
-                  {p.repoLocal && !p.trusted && (
-                    <TooltipSimple content="仓库内插件在信任前不会加载">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-2 text-[11px] text-amber-600"
-                        disabled={trusting === p.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void trust(p.id);
-                        }}
-                      >
-                        信任
-                      </Button>
-                    </TooltipSimple>
-                  )}
-                  {!pluginEnabled(p) && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
-                      已禁用
-                    </Badge>
-                  )}
-                  {/* The span is the tooltip anchor — `asChild` would merge
-                      the tooltip's own data-state onto Switch and clobber its
-                      `data-[state=checked]` styling (the white-blob bug). */}
-                  <TooltipSimple content="禁用后该服务的工具不再提供给模型（持久化）">
-                    <span className="inline-flex shrink-0">
-                      <Switch
-                        checked={pluginEnabled(p)}
-                        onClick={(e) => e.stopPropagation()}
-                        onCheckedChange={(v) => void toggle(p.id, v)}
-                      />
-                    </span>
-                  </TooltipSimple>
-                  {!(live.ok && live.tools.length) && (
-                    <TooltipSimple content="重连">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6"
-                        disabled={reconnecting === p.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void reconnect(p.id);
-                        }}
-                      >
-                        <RefreshCw className={cn("h-3.5 w-3.5", reconnecting === p.id && "animate-spin")} />
-                      </Button>
-                    </TooltipSimple>
-                  )}
-                  <TooltipSimple content="编辑">
-                    <Button variant="ghost" size="icon" className="h-6 w-6"
-                      onClick={(e) => { e.stopPropagation(); startEdit(p); }}>
-                      <SquarePen className="h-3.5 w-3.5" />
-                    </Button>
-                  </TooltipSimple>
-                  <ArmedDeleteButton stopPropagation onConfirm={() => void doDelete(p.id)} />
-
-                </div>
-                  </KvRow>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <div className="flex flex-wrap gap-1.5 px-5 pb-3.5">
-                    {live.tools.length ? (
-                      live.tools.map((tool) => (
-                        <Badge
-                          key={tool}
-                          variant="secondary"
-                          className="h-4 px-1.5 font-mono text-[10px]"
+                <Collapsible
+                  key={p.id}
+                  open={expanded === p.id}
+                  onOpenChange={(v) => setExpanded(v ? p.id : null)}
+                >
+                  <CollapsibleTrigger asChild>
+                    <ItemRow
+                      expanded={expanded === p.id}
+                      icon={
+                        <ItemIcon
+                          status={
+                            !enabled ? "idle" : pending ? "warn" : live.ok ? "success" : "danger"
+                          }
                         >
-                          {tool}
-                        </Badge>
-                      ))
-                    ) : (
-                      <span className="text-[11px] text-neutral-500">
-                        {live.ok ? "没有可用工具" : "尚未连接，点右侧重连"}
-                      </span>
-                    )}
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
+                          <Server className="h-4 w-4" />
+                        </ItemIcon>
+                      }
+                      title={p.name}
+                      tags={
+                        <>
+                          <Tag mono>{isHttp(p) ? "http" : "stdio"}</Tag>
+                          {live.version && <Tag mono>v{live.version}</Tag>}
+                          {p.repoLocal && <Tag>仓库内</Tag>}
+                          {!enabled ? (
+                            <Tag>已禁用</Tag>
+                          ) : pending ? (
+                            <Tag tone="warn">待信任</Tag>
+                          ) : live.ok ? (
+                            <Tag tone="success" className="tabular-nums">{live.tools.length} 工具</Tag>
+                          ) : (
+                            <Tag tone="danger">未连接</Tag>
+                          )}
+                        </>
+                      }
+                      description={
+                        enabled && !pending && !live.ok && live.error ? (
+                          <span className="text-red-500" title={live.error}>{live.error}</span>
+                        ) : undefined
+                      }
+                      meta={endpoint(p)}
+                      actions={
+                        <>
+                          {pending && (
+                            <TooltipSimple content="仓库内插件在信任前不会加载">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 px-2 text-[11px] text-amber-600"
+                                disabled={trusting === p.id}
+                                onClick={() => void trust(p.id)}
+                              >
+                                信任
+                              </Button>
+                            </TooltipSimple>
+                          )}
+                          {!(live.ok && live.tools.length) && (
+                            <TooltipSimple content="重连">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                aria-label="重连"
+                                disabled={reconnecting === p.id}
+                                onClick={() => void reconnect(p.id)}
+                              >
+                                <RefreshCw className={cn("h-3.5 w-3.5", reconnecting === p.id && "animate-spin")} />
+                              </Button>
+                            </TooltipSimple>
+                          )}
+                          {/* The span is the tooltip anchor — `asChild` would merge
+                              the tooltip's own data-state onto Switch and clobber its
+                              `data-[state=checked]` styling (the white-blob bug). */}
+                          <TooltipSimple content="禁用后该服务的工具不再提供给模型（持久化）">
+                            <span className="mx-1 inline-flex shrink-0">
+                              <Switch
+                                checked={enabled}
+                                onCheckedChange={(v) => void toggle(p.id, v)}
+                              />
+                            </span>
+                          </TooltipSimple>
+                          <TooltipSimple content="编辑">
+                            <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="编辑"
+                              onClick={() => startEdit(p)}>
+                              <SquarePen className="h-3.5 w-3.5" />
+                            </Button>
+                          </TooltipSimple>
+                          <ArmedDeleteButton onConfirm={() => void doDelete(p.id)} />
+                        </>
+                      }
+                    />
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <ItemDetail>
+                      {live.tools.length ? (
+                        <ChipGroup label="工具">
+                          {live.tools.map((tool) => (
+                            <Chip key={tool} icon={<Wrench className="h-3 w-3" />}>{tool}</Chip>
+                          ))}
+                        </ChipGroup>
+                      ) : (
+                        <span className="text-[11px] text-neutral-500">
+                          {live.ok ? "该服务没有提供工具" : "尚未连接，点右侧重连"}
+                        </span>
+                      )}
+                    </ItemDetail>
+                  </CollapsibleContent>
+                </Collapsible>
               );
             })
           ) : (
-            <KvRow label="暂无 MCP 配置" description="" />
+            <EmptyState
+              icon={<Server className="h-4 w-4" />}
+              title={query.trim() || filter !== "all" ? "没有匹配的 MCP 服务" : "暂无 MCP 服务"}
+              description={
+                query.trim() || filter !== "all"
+                  ? "调整搜索词或切换传输类型查看"
+                  : "接入本地进程或远程端点，把外部工具提供给模型"
+              }
+              action={
+                !query.trim() && filter === "all" && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={startCreate}>
+                    <Plus className="h-3.5 w-3.5" /> 添加 MCP 服务
+                  </Button>
+                )
+              }
+            />
           )}
         </KvListContent>
       </KvList>

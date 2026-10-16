@@ -13,8 +13,8 @@ import { Button } from "@/components/ui/button";
  * footer that is either a single submit button or `secondary` (a destructive
  * action) on the left plus submit on the right.
  *
- * Widths stay per-dialog (`md` default, `sm` for the plugin form) so the
- * extraction changes nothing on screen.
+ * Widths stay per-dialog (`md` default, `sm` for the plugin form, `lg` for
+ * editors that carry a long markdown body).
  */
 export function FormDialog({
   open,
@@ -33,7 +33,7 @@ export function FormDialog({
   onOpenChange: (open: boolean) => void;
   title: ReactNode;
   children: ReactNode;
-  width?: "md" | "sm";
+  width?: "md" | "sm" | "lg";
   /** Left-hand footer slot, e.g. an `ArmedDeleteButton` in `text` variant. */
   secondary?: ReactNode;
   busy?: boolean;
@@ -44,7 +44,7 @@ export function FormDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={width === "sm" ? "max-w-sm" : "max-w-md"}>
+      <DialogContent className={width === "sm" ? "max-w-sm" : width === "lg" ? "max-w-2xl" : "max-w-md"}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
