@@ -31,7 +31,6 @@ import {
   ItemIcon,
   ItemRow,
   SearchBox,
-  Tag,
   matchQuery,
 } from "@/features/settings/pages/agent/shared/index";
 import { timeAgo } from "@/lib/time";
@@ -314,17 +313,17 @@ export function MemoryPane() {
                 <ItemRow
                   key={f.id}
                   icon={
-                    <ItemIcon>
+                    <ItemIcon
+                      badge={{
+                        label: `${Math.round(f.confidence * 100)}%`,
+                        tone: confidenceTone(f.confidence),
+                      }}
+                    >
                       <Database className="h-4 w-4" />
                     </ItemIcon>
                   }
                   title={f.text}
                   wrapTitle
-                  tags={
-                    <Tag tone={confidenceTone(f.confidence)} className="mt-0.5 tabular-nums">
-                      {Math.round(f.confidence * 100)}%
-                    </Tag>
-                  }
                   description={f.created_at ? `记录于 ${timeAgo(f.created_at)}` : undefined}
                   actions={
                     <ArmedDeleteButton

@@ -109,6 +109,15 @@ export function matchQuery(query: string, ...fields: (string | undefined | null)
 
 /* ----------------------------- rows ------------------------------ */
 
+/** Solid fills for a label that sits on the icon corner: the translucent
+ *  `TAG_TONES` would let the icon show through. */
+const BADGE_TONES = {
+  neutral: "bg-neutral-300 text-neutral-700 dark:bg-neutral-300 dark:text-neutral-700",
+  success: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
+  warn: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
+  danger: "bg-red-100 text-red-600 dark:bg-red-900 dark:text-red-300",
+} as const;
+
 const TAG_TONES = {
   neutral: "border-neutral-200 text-neutral-500",
   success:
@@ -154,14 +163,17 @@ const DOT_TONES = {
 } as const;
 
 /** The tinted square that leads every item row; `status` pins a live dot to
- *  its corner (connection state and the like). */
+ *  its corner (connection state and the like), `badge` a small value label
+ *  (a percentage, a count) in the same corner. Use one or the other. */
 export function ItemIcon({
   children,
   status,
+  badge,
   className,
 }: {
   children: ReactNode;
   status?: keyof typeof DOT_TONES;
+  badge?: { label: ReactNode; tone?: keyof typeof BADGE_TONES };
   className?: string;
 }) {
   return (
@@ -174,6 +186,17 @@ export function ItemIcon({
             DOT_TONES[status],
           )}
         />
+      )}
+      {badge && (
+        <span
+          className={cn(
+            "absolute -bottom-1 -right-1 flex h-3.5 items-center rounded-full px-1 text-[9px] font-semibold leading-none tabular-nums ring-2 ring-white dark:ring-[var(--husk-active)]",
+            BADGE_TONES[badge.tone ?? "neutral"],
+          )}
+        >
+          {/* Digits sit high in this font's line box; nudge them to the pill's optical centre. */}
+          <span className="relative top-px">{badge.label}</span>
+        </span>
       )}
     </div>
   );
