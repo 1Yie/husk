@@ -24,6 +24,7 @@ import { aggregate, fmtTokens } from "@/features/settings/usage";
 import { ActivityHeatmap } from "@/features/settings/components/activity-heatmap";
 import { ExtIcon } from "@/features/chat/components/artifacts-panel";
 import { toast } from "sonner";
+import { timeAgo } from "@/lib/time";
 
 export interface RecentWorkspace {
   path: string;
@@ -60,21 +61,6 @@ const CAPABILITIES: { Icon: ComponentType<{ className?: string }>; title: string
   { Icon: Bot, title: "多会话", desc: "切换会话时进行中的任务继续运行" },
   { Icon: Terminal, title: "命令与技能", desc: "`/` 命令、`$` 技能、MCP 插件" },
 ];
-
-/** Relative age of a `last_opened` stamp. Clock skew (a stamp in the future)
- * and pre-epoch zeroes both collapse to 「刚刚」 rather than a negative age. */
-function timeAgo(seconds: number): string {
-  if (!seconds) return "";
-  const elapsed = Date.now() / 1000 - seconds;
-  if (elapsed < 60) return "刚刚";
-  const minutes = elapsed / 60;
-  if (minutes < 60) return `${Math.floor(minutes)} 分钟前`;
-  const hours = minutes / 60;
-  if (hours < 24) return `${Math.floor(hours)} 小时前`;
-  const days = hours / 24;
-  if (days < 30) return `${Math.floor(days)} 天前`;
-  return new Date(seconds * 1000).toLocaleDateString();
-}
 
 export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, office = false, cta }: Props) {
   const { label, tail, Icon, tone } = timeGreeting();
