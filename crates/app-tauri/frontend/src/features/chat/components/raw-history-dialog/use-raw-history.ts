@@ -9,6 +9,7 @@ export function useRawHistory(open: boolean, sessionId: number | null, root: str
   const inFlight = useRef(false);
   const cursor = useRef<number | undefined>();
   const snapshotTotal = useRef<number | null>(null);
+  const snapshotRevision = useRef<string | undefined>();
   const [result, setResult] = useState<{ key: string; page: RawHistoryPage } | null>(null);
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
   const [pending, setPending] = useState(false);
@@ -21,16 +22,19 @@ export function useRawHistory(open: boolean, sessionId: number | null, root: str
     setPending(true);
     setFailure(null);
     try {
-      const next = await historyRawPage(sessionId, root, before);
+      const revision = before === undefined ? undefined : snapshotRevision.current;
+      const next = await historyRawPage(sessionId, root, before, revision);
       if (request.current !== token) return;
-      // Keep page boundaries stable when a running session appends new rows.
-      // Refresh explicitly to include rows written after this dialog opened.
+      // The backend rejects a changed revision, including same-length draft
+      // rewrites. Refresh explicitly to start reading a new snapshot.
       const total = before === undefined ? next.history_total : snapshotTotal.current ?? next.history_total;
-      if (next.history_total < total || next.history_end !== (before ?? total)
+      if ((revision !== undefined && next.history_revision !== revision)
+        || next.history_total !== total || next.history_end !== (before ?? total)
         || next.history_start + next.history.length !== next.history_end) {
         throw new Error("会话记录已变化，请刷新执行轨迹");
       }
       snapshotTotal.current = total;
+      snapshotRevision.current = next.history_revision;
       setResult({ key, page: { ...next, history_total: total } });
     } catch (e) {
       if (request.current === token) setFailure({ key, message: String(e) });
@@ -48,6 +52,7 @@ export function useRawHistory(open: boolean, sessionId: number | null, root: str
     setPending(false);
     inFlight.current = false;
     snapshotTotal.current = null;
+    snapshotRevision.current = undefined;
     if (open && sessionId !== null) void load();
     return () => { request.current += 1; inFlight.current = false; };
   }, [open, sessionId, root, load]);
@@ -79,13 +84,16 @@ export async function readRawHistoryJson(
   const chunks: string[] = [];
   let before: number | undefined;
   let total: number | undefined;
+  let revision: string | undefined;
   let read = 0;
   do {
     signal.throwIfAborted();
-    const page = await historyRawPage(sessionId, root, before);
+    const page = await historyRawPage(sessionId, root, before, revision);
     signal.throwIfAborted();
     total ??= page.history_total;
-    if (page.history_total < total || page.history_end !== (before ?? total)
+    revision ??= page.history_revision;
+    if (page.history_revision !== revision || page.history_total !== total
+      || page.history_end !== (before ?? total)
       || page.history_start + page.history.length !== page.history_end
       || (page.history_start > 0 && page.history.length === 0)) {
       throw new Error("会话记录已变化，请重新复制");

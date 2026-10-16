@@ -384,10 +384,11 @@ fn agent_session_inner(
         }
         "history_raw" => {
             let id = id.ok_or("history_raw needs id")?;
-            if path
+            let root = path
                 .as_deref()
-                .is_some_and(|root| std::path::Path::new(root) != mgr.workspace_root)
-            {
+                .filter(|root| !root.is_empty())
+                .ok_or("执行轨迹需要工作区路径")?;
+            if !workspace_paths_match(root, &mgr.workspace_root) {
                 return Err("工作区已切换，请重新打开执行轨迹".into());
             }
             let before = payload
@@ -395,19 +396,23 @@ fn agent_session_inner(
                 .and_then(|p| p.get("before"))
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
-            // Read only these journal locations. Loading full history and
-            // slicing afterwards still stalls serialization and IPC.
-            let (history, total, turns, turn_offset) = mgr
-                .store_history_page(id, before, RAW_HISTORY_PAGE)
+            let revision = payload
+                .as_ref()
+                .and_then(|p| p.get("revision"))
+                .and_then(|v| v.as_str());
+            // The revision is captured from the same snapshot as the page.
+            let page = mgr
+                .store_history_page_checked(id, before, RAW_HISTORY_PAGE, revision)
                 .map_err(|e| e.to_string())?;
-            let end = before.unwrap_or(total).min(total);
+            let end = before.unwrap_or(page.total).min(page.total);
             Ok(serde_json::json!({
-                "history_start": end.saturating_sub(history.len()),
+                "history_start": end.saturating_sub(page.history.len()),
                 "history_end": end,
-                "history": history,
-                "history_total": total,
-                "turn_total": turns,
-                "turn_offset": turn_offset,
+                "history": page.history,
+                "history_total": page.total,
+                "history_revision": page.revision,
+                "turn_total": page.turns,
+                "turn_offset": page.turn_offset,
             }))
         }
         // `before` is the exclusive end index into persisted chat history.
@@ -2112,8 +2117,52 @@ fn new_mcp_manifest(id: &str, name: &str, entry: serde_json::Value) -> serde_jso
     m
 }
 
+/// Existing workspace paths may be aliases (symlinks or platform spelling).
+/// A missing path fails closed rather than becoming the current directory.
+fn workspace_paths_match(root: &str, expected: &std::path::Path) -> bool {
+    if root.is_empty() {
+        return false;
+    }
+    let requested = std::path::Path::new(root);
+    if requested == expected {
+        return true;
+    }
+    match (requested.canonicalize(), expected.canonicalize()) {
+        (Ok(requested), Ok(expected)) => requested == expected,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn trace_workspace_guard_accepts_normalized_paths_and_rejects_other_workspaces() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let other = directory.path().join("other");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let with_dot = workspace.join(".").to_string_lossy().into_owned();
+        assert!(workspace_paths_match(&with_dot, &workspace));
+        assert!(!workspace_paths_match("", &workspace));
+        assert!(!workspace_paths_match(&other.to_string_lossy(), &workspace));
+        assert!(!workspace_paths_match(
+            &directory.path().join("missing").to_string_lossy(),
+            &workspace
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trace_workspace_guard_accepts_a_symlink_to_the_active_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let alias = directory.path().join("alias");
+        std::fs::create_dir(&workspace).unwrap();
+        std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+        assert!(workspace_paths_match(&alias.to_string_lossy(), &workspace));
+    }
+
     /// A local stdio server is sandboxed by default — the declared block is what
     /// turns the process sandbox on, so its absence re-opens the home directory.
     /// A field of the wrong type must surface as an error, not as an empty

@@ -40,6 +40,7 @@ export async function openSession(id: number) {
 export interface RawHistoryPage {
   history: ChatMessage[];
   history_total: number;
+  history_revision: string;
   history_start: number;
   history_end: number;
   turn_total: number;
@@ -48,9 +49,9 @@ export interface RawHistoryPage {
 
 /** At most 40 raw trace records. `before` is an exclusive message index;
  * omitting it reads the newest page. Guard session ids with their workspace. */
-export function historyRawPage(id: number, root: string, before?: number) {
+export function historyRawPage(id: number, root: string, before?: number, revision?: string) {
   return invoke<RawHistoryPage>("agent_session", {
-    op: "history_raw", id, path: root, payload: { before },
+    op: "history_raw", id, path: root, payload: { before, revision },
   });
 }
 
