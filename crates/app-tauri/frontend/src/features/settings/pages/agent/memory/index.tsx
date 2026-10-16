@@ -4,10 +4,12 @@
 
 import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   Bin,
   Brain,
+  ChevronDown,
+  ChevronUp,
   CircleAlert,
   CircleUser,
   Clock,
@@ -47,6 +49,39 @@ import {
 /** Confidence → tag tone: the distiller's certainty at a glance. */
 const confidenceTone = (c: number) => (c >= 0.8 ? "success" : c >= 0.5 ? "neutral" : "warn");
 
+const PREVIEW_COUNT = 5;
+
+function MemoryListFooter({ label, listId, total, visible, onMore, onCollapse }: {
+  label: string;
+  listId: string;
+  total: number;
+  visible: number;
+  onMore: () => void;
+  onCollapse: () => void;
+}) {
+  if (total <= PREVIEW_COUNT) return null;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline px-5 py-2.5">
+      <span className="text-[11px] tabular-nums text-neutral-500">已显示 {visible} / {total} 条</span>
+      <div className="ml-auto flex items-center gap-1">
+        {visible > PREVIEW_COUNT && (
+          <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs text-neutral-500"
+            aria-label={`收起${label}`} aria-controls={listId} onClick={onCollapse}>
+            <ChevronUp className="h-3.5 w-3.5" /> 收起
+          </Button>
+        )}
+        {visible < total && (
+          <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs text-neutral-600"
+            aria-label={`显示更多${label}`} aria-controls={listId} onClick={onMore}>
+            显示更多 <span className="text-[11px] tabular-nums text-neutral-500">剩余 {total - visible} 条</span>
+            <ChevronDown className="h-3.5 w-3.5" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function MemoryPane() {
   const [ov, setOv] = useState<MemoryOverview | null>(null);
   const [open, setOpen] = useState(false);
@@ -56,6 +91,10 @@ export function MemoryPane() {
   const [newVal, setNewVal] = useState("");
   const [busy, setBusy] = useState(false);
   const [factQuery, setFactQuery] = useState("");
+  const [personaLimit, setPersonaLimit] = useState(PREVIEW_COUNT);
+  const [factLimit, setFactLimit] = useState(PREVIEW_COUNT);
+  const personaListId = useId();
+  const factListId = useId();
 
   const reload = () => {
     void getMemoryOverview()
@@ -113,7 +152,9 @@ export function MemoryPane() {
 
   const persona = ov?.persona ?? [];
   const facts = ov?.facts ?? [];
-  const shownFacts = facts.filter((f) => matchQuery(factQuery, f.text));
+  const shownPersona = persona.slice(0, personaLimit);
+  const filteredFacts = facts.filter((f) => matchQuery(factQuery, f.text));
+  const shownFacts = filteredFacts.slice(0, factLimit);
   /** Lists stay readable while memory is off, just visibly inactive. */
   const inactive = !!ov && !ov.enabled;
 
@@ -191,11 +232,11 @@ export function MemoryPane() {
         }
       >
         <KvList className={cn(inactive && "opacity-60")}>
-          <KvListContent>
+          <KvListContent id={personaListId}>
             {!ov ? (
               <SkeletonKvRows rows={2} />
             ) : persona.length ? (
-              persona.map((p) => (
+              shownPersona.map((p) => (
                 <ItemRow
                   key={p.key}
                   icon={
@@ -239,6 +280,14 @@ export function MemoryPane() {
               />
             )}
           </KvListContent>
+          <MemoryListFooter
+            label="个人偏好"
+            listId={personaListId}
+            total={persona.length}
+            visible={shownPersona.length}
+            onMore={() => setPersonaLimit((n) => n + PREVIEW_COUNT)}
+            onCollapse={() => setPersonaLimit(PREVIEW_COUNT)}
+          />
         </KvList>
       </SettingsSection>
 
@@ -248,13 +297,16 @@ export function MemoryPane() {
         description="当前工作区，由蒸馏或 remember 工具写入"
         actions={count(ov ? facts.length : undefined)}
       >
-        {facts.length > 5 && (
+        {(facts.length > PREVIEW_COUNT || factQuery !== "") && (
           <div className="flex">
-            <SearchBox value={factQuery} onChange={setFactQuery} placeholder="搜索事实" />
+            <SearchBox value={factQuery} onChange={(value) => {
+              setFactQuery(value);
+              setFactLimit(PREVIEW_COUNT);
+            }} placeholder="搜索事实" />
           </div>
         )}
         <KvList className={cn(inactive && "opacity-60")}>
-          <KvListContent>
+          <KvListContent id={factListId}>
             {!ov ? (
               <SkeletonKvRows rows={3} />
             ) : shownFacts.length ? (
@@ -300,6 +352,14 @@ export function MemoryPane() {
               />
             )}
           </KvListContent>
+          <MemoryListFooter
+            label="记忆事实"
+            listId={factListId}
+            total={filteredFacts.length}
+            visible={shownFacts.length}
+            onMore={() => setFactLimit((n) => n + PREVIEW_COUNT)}
+            onCollapse={() => setFactLimit(PREVIEW_COUNT)}
+          />
         </KvList>
       </SettingsSection>
 
