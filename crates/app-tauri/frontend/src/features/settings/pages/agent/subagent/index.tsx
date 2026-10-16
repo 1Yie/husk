@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
-import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
+import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import {
   readSubagent,
@@ -178,7 +178,11 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                         onClick={() => void startEditSubagent(a.name)}>
                         <SquarePen className="h-3.5 w-3.5" />
                       </Button>
-                      <ArmedDeleteButton onConfirm={() => void doDeleteSubagent(a.name)} />
+                      <DeleteButton
+                        confirmTitle="删除子代理"
+                        confirmDescription={`确定要删除子代理「${a.name}」吗？其定义文件将被删除，此操作无法撤销。`}
+                        onConfirm={() => void doDeleteSubagent(a.name)}
+                      />
                     </>
                   )
                 }

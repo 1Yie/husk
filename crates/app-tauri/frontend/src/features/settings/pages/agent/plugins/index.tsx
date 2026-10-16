@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
-import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
+import { DeleteButton } from "@/features/settings/components/delete-button";
 import { reloadMcp, removeMcp, setPluginEnabled, trustMcp, type AgentOverview } from "@/lib/agent-ipc/sessions";
 import { Switch } from "@/components/ui/switch";
 import { TooltipSimple } from "@/components/ui/tooltip";
@@ -237,7 +237,11 @@ export function PluginsPane({
                               />
                             </span>
                           </TooltipSimple>
-                          <ArmedDeleteButton onConfirm={() => void doDelete(p.id)} />
+                          <DeleteButton
+                            confirmTitle="删除插件"
+                            confirmDescription={`确定要删除插件「${p.id}」吗？其钩子与配置将被移除，此操作无法撤销。`}
+                            onConfirm={() => void doDelete(p.id)}
+                          />
                         </>
                       }
                     />

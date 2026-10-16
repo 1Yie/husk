@@ -76,7 +76,7 @@ test("deleting the only search result leaves search available when the total dro
   const row = screen.getByText("fact-6").closest(".group")!;
   const remove = row.querySelector<HTMLButtonElement>('button[title="删除"]')!;
   await user.click(remove);
-  await user.click(screen.getByRole("button", { name: "确认删除？再点一次" }));
+  await user.click(await screen.findByRole("button", { name: "删除" }));
   await waitFor(() => expect(screen.queryByText("fact-6")).not.toBeInTheDocument());
   expect(screen.getByPlaceholderText("搜索事实")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "清除搜索" }));

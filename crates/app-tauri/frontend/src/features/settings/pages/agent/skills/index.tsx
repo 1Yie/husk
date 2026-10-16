@@ -11,7 +11,7 @@ import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { SettingSelect } from "@/features/settings/components/index";
-import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
+import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import {
   createSkill,
@@ -283,7 +283,11 @@ function SkillRow({
             <Button variant="ghost" size="icon" className="h-6 w-6" title="编辑" onClick={onEdit}>
               <SquarePen className="h-3.5 w-3.5" />
             </Button>
-            <ArmedDeleteButton onConfirm={onDelete} />
+            <DeleteButton
+              confirmTitle="删除技能"
+              confirmDescription={`确定要删除技能「${s.name}」吗？技能文件将被删除，此操作无法撤销。`}
+              onConfirm={onDelete}
+            />
           </>
         )
       }

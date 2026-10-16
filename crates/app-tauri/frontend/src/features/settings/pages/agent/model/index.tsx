@@ -11,7 +11,7 @@ import { TooltipSimple } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
-import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
+import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import { getAppConfig, saveAppConfig, type AgentOverview } from "@/lib/agent-ipc/sessions";
 import { EmptyState, Field, ItemIcon, Tag } from "@/features/settings/pages/agent/shared/index";
@@ -92,13 +92,6 @@ function Advanced({ label, children }: { label: string; children: React.ReactNod
 
 /** Scrolls inside the dialog instead of growing it past the window. */
 const FORM = "flex max-h-[60vh] flex-col gap-5 overflow-y-auto p-1";
-
-/** Arm a destructive button for a few seconds.
- *
- *  The label flips to a confirm on the first click; if the second one never
- *  comes the button flips back on its own. Left armed, the row reads as a
- *  broken button and the next click deletes without asking.
- */
 
 export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
   const [cfg, setCfg] = useState<Record<string, any> | null>(null);
@@ -647,9 +640,10 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         busy={busy}
         onSubmit={() => void submitEditProv()}
         secondary={
-          <ArmedDeleteButton
+          <DeleteButton
             variant="text"
             label="删除提供商"
+            confirmDescription={`确定要删除提供商「${editProv ?? ""}」吗？其下所有模型配置会一并移除，此操作无法撤销。`}
             busy={busy}
             onConfirm={() => void deleteProv()}
           />
@@ -713,9 +707,10 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         onSubmit={() => void submitEditModel()}
         secondary={
           isNewModel ? undefined : (
-            <ArmedDeleteButton
+            <DeleteButton
               variant="text"
               label="删除模型"
+              confirmDescription={`确定要删除模型「${mId.trim()}」吗？此操作无法撤销。`}
               busy={busy}
               onConfirm={() => void deleteModel()}
             />

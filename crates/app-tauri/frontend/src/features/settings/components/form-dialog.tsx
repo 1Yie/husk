@@ -34,7 +34,7 @@ export function FormDialog({
   title: ReactNode;
   children: ReactNode;
   width?: "md" | "sm" | "lg";
-  /** Left-hand footer slot, e.g. an `ArmedDeleteButton` in `text` variant. */
+  /** Left-hand footer slot, e.g. a `DeleteButton` in `text` variant. */
   secondary?: ReactNode;
   busy?: boolean;
   disabled?: boolean;

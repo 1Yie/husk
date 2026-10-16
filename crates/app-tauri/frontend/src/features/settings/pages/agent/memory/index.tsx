@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingsSection } from "@/features/settings/components";
-import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
+import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import {
   EmptyState,
@@ -252,7 +252,9 @@ export function MemoryPane() {
                         onClick={() => startEdit(p.key, p.value)}>
                         <SquarePen className="h-3.5 w-3.5" />
                       </Button>
-                      <ArmedDeleteButton
+                      <DeleteButton
+                        confirmTitle="删除偏好"
+                        confirmDescription={`确定要删除偏好「${p.key}」吗？此操作无法撤销。`}
                         onConfirm={() =>
                           void forgetMemory(p.key)
                             .then(() => {
@@ -326,7 +328,9 @@ export function MemoryPane() {
                   wrapTitle
                   description={f.created_at ? `记录于 ${timeAgo(f.created_at)}` : undefined}
                   actions={
-                    <ArmedDeleteButton
+                    <DeleteButton
+                      confirmTitle="删除记忆事实"
+                      confirmDescription="确定要删除这条记忆事实吗？此操作无法撤销。"
                       onConfirm={() =>
                         void removeMemoryFact(f.id)
                           .then(() => {
@@ -375,9 +379,12 @@ export function MemoryPane() {
               title="记忆事实"
               description={`当前工作区 ${ov?.facts.length ?? 0} 条`}
               actions={
-                <ArmedDeleteButton
+                <DeleteButton
                   variant="text"
                   label="清空"
+                  confirmTitle="清空记忆事实"
+                  confirmDescription="确定要清空全部记忆事实吗？此操作无法撤销。"
+                  confirmLabel="清空"
                   onConfirm={() => void clearOne("facts", "记忆事实")}
                 />
               }
@@ -391,9 +398,12 @@ export function MemoryPane() {
               title="轮次经历"
               description={`当前工作区 ${ov?.episodes ?? 0} 条`}
               actions={
-                <ArmedDeleteButton
+                <DeleteButton
                   variant="text"
                   label="清空"
+                  confirmTitle="清空轮次经历"
+                  confirmDescription="确定要清空全部轮次经历吗？此操作无法撤销。"
+                  confirmLabel="清空"
                   onConfirm={() => void clearOne("episodes", "轮次经历")}
                 />
               }
@@ -407,9 +417,12 @@ export function MemoryPane() {
               title="全部记忆"
               description="偏好、事实与经历一并清除，不可恢复"
               actions={
-                <ArmedDeleteButton
+                <DeleteButton
                   variant="text"
                   label="全部清空"
+                  confirmTitle="清空全部记忆"
+                  confirmDescription="确定要清空全部记忆吗？偏好、事实与经历将一并清除，此操作无法撤销。"
+                  confirmLabel="全部清空"
                   onConfirm={() => void clearOne("all", "全部记忆")}
                 />
               }

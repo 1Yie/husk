@@ -20,7 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
-import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
+import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import { addMcp, probeMcp, reloadMcp, removeMcp, setPluginEnabled, trustMcp, type AgentOverview, type McpProbe, type PluginItem } from "@/lib/agent-ipc/sessions";
 
@@ -375,7 +375,11 @@ export function McpPane({
                               <SquarePen className="h-3.5 w-3.5" />
                             </Button>
                           </TooltipSimple>
-                          <ArmedDeleteButton onConfirm={() => void doDelete(p.id)} />
+                          <DeleteButton
+                            confirmTitle="删除 MCP 插件"
+                            confirmDescription={`确定要删除「${p.id}」吗？其配置将被移除，此操作无法撤销。`}
+                            onConfirm={() => void doDelete(p.id)}
+                          />
                         </>
                       }
                     />
