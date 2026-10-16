@@ -3,18 +3,7 @@
 import { SkeletonKvList } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  ChevronRight,
-  Brain,
-  Coins,
-  Cpu,
-  Layers,
-  Plus,
-  SquarePen,
-  X,
-} from "@keyline-icons/react";
+import { ArrowDown, ArrowUp, ChevronRight, Cpu, Plus, SquarePen, X } from "@keyline-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -26,7 +15,7 @@ import { SettingSelect } from "@/features/settings/components/index";
 import { ArmedDeleteButton } from "@/features/settings/components/armed-delete";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import { getAppConfig, saveAppConfig, type AgentOverview } from "@/lib/agent-ipc/sessions";
-import { Field } from "@/features/settings/pages/agent/shared/index";
+import { EmptyState, Field, ItemIcon, Tag } from "@/features/settings/pages/agent/shared/index";
 
 /* ============================ 模型 ============================ */
 
@@ -401,6 +390,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     if (!cfg) return;
     void persist({ ...cfg, [chainKey]: next });
   };
+
   const chainCandidates = Object.keys(cfg?.providers ?? {}).filter((k) => !chain.includes(k));
 
   /* ---------- render ---------- */
@@ -416,9 +406,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   return (
     <div className="flex flex-col gap-4">
       {loadError && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
           <div className="font-medium">配置文件无法解析，已禁止编辑以免覆盖原文件</div>
-          <div className="font-mono break-all">{loadError}</div>
+          <div className="mt-1 font-mono text-[11px] break-all">{loadError}</div>
         </div>
       )}
       <div className="flex items-center justify-between gap-3">
@@ -451,22 +441,30 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
           return (
             <KvList key={pk}>
               {/* provider header — the card owns its title, URL and actions */}
-              <div className="flex items-center justify-between gap-3 border-b border-neutral-100 px-5 py-3 dark:border-white/8">
-                <div className="flex min-w-0 flex-col gap-1">
-                  <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3 border-b border-neutral-100 px-5 py-3.5 dark:border-white/8">
+                <ItemIcon>
+                  <Cpu className="h-4 w-4" />
+                </ItemIcon>
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <div className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate text-sm font-semibold text-neutral-900">{pk}</span>
-                    <Badge variant="outline" className="h-4 shrink-0 rounded-full border-neutral-200 px-2 py-0 font-mono text-[10px] font-medium text-neutral-500">
-                      {p.kind ?? p.type ?? p.api ?? "openai_completions"}
-                    </Badge>
+                    <Tag mono>{p.kind ?? p.type ?? p.api ?? "openai_completions"}</Tag>
+                    {pk === active?.active_provider && <Tag tone="success">使用中</Tag>}
+                    <span className="shrink-0 text-[11px] tabular-nums text-neutral-400">
+                      {models.length} 个模型
+                    </span>
                   </div>
-                  <span className="truncate font-mono text-[11px] text-neutral-500">
-                    {p.base_url ?? p.baseUrl ?? ""}
+                  <span
+                    className="w-fit max-w-full truncate font-mono text-[11px] text-neutral-400"
+                    title={p.base_url ?? p.baseUrl ?? ""}
+                  >
+                    {p.base_url ?? p.baseUrl ?? "未设置 Base URL"}
                   </span>
                 </div>
                 <TooltipSimple content="编辑提供商" side="top">
                   <Button
                     size="sm" variant="ghost" aria-label="编辑提供商"
-                    className="h-7 w-7 shrink-0 rounded-full p-0 text-neutral-500"
+                    className="h-7 w-7 shrink-0 p-0 text-neutral-500"
                     onClick={() => openEditProv(pk)}
                   >
                     <SquarePen className="h-3.5 w-3.5" />
@@ -501,14 +499,12 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                           openEditModel(pk, i);
                         }
                       }}
-                      className="group flex cursor-pointer items-center justify-between gap-3 px-5 py-2.5 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] focus-visible:outline-none"
+                      className="group flex cursor-pointer items-center justify-between gap-3 py-2.5 pl-16 pr-5 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] focus-visible:outline-none"
                     >
                       <div className="flex min-w-0 flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
+                        <div className="flex min-w-0 items-center gap-1.5">
                           <span className="truncate text-sm text-neutral-800">{m.name || m.id}</span>
-                          {isActive && (
-                            <Badge variant="outline" className="h-4 shrink-0 rounded-full border-transparent bg-emerald-500/15 px-2 py-0 text-[10px] font-medium text-emerald-600 dark:border-transparent dark:text-emerald-400">当前</Badge>
-                          )}
+                          {isActive && <Tag tone="success">当前</Tag>}
                         </div>
                         {meta.length > 0 && (
                           <span className="truncate text-[11px] text-neutral-500">
@@ -526,12 +522,12 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                   );
                 })}
                 {models.length === 0 && (
-                  <div className="px-5 py-3 text-xs text-neutral-500">暂无模型</div>
+                  <div className="py-3 pl-16 pr-5 text-xs italic text-neutral-400">尚未添加模型</div>
                 )}
                 <button
                   type="button"
                   onClick={() => openEditModel(pk, models.length)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-5 py-2.5 text-xs text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] hover:text-neutral-800"
+                  className="flex w-full cursor-pointer items-center gap-2 py-2.5 pl-16 pr-5 text-xs text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n50)_40%,transparent)] hover:text-neutral-800"
                 >
                   <Plus className="h-3.5 w-3.5" /> 添加模型
                 </button>
@@ -541,9 +537,22 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         })
       ) : (
         <KvList>
-          <KvListContent>
-            <KvRow label="暂无提供商" description="点右上角「添加 API」创建第一个" />
-          </KvListContent>
+          <EmptyState
+            icon={<Cpu className="h-4 w-4" />}
+            title="暂无模型提供商"
+            description="接入 OpenAI、Anthropic、Gemini 或兼容端点后即可选择模型"
+            action={
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 text-xs"
+                disabled={!!loadError}
+                onClick={() => setProvOpen(true)}
+              >
+                <Plus className="h-3.5 w-3.5" /> 添加 API
+              </Button>
+            }
+          />
         </KvList>
       )}
 
