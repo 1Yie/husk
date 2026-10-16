@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::checkpoint::TurnCheckpoint;
 use crate::command::UiCommand;
 use agent_capabilities::{SandboxCtx, WorkspaceCtx, WorkspacePaths};
 use agent_coding::tracker::WriteTracker;
@@ -385,9 +386,10 @@ pub struct SessionActor {
     ),
     /// Stable session identity — sidebar ordering + persistence file name.
     session_id: i64,
-    /// Per-workspace session store — snapshots history at turn boundaries.
+    /// Per-workspace session store, including recovery points for live turns.
     store: Option<Arc<agent_store::SessionStore>>,
     history_revision: u64,
+    checkpoint: Option<Arc<TurnCheckpoint>>,
     /// Last completed turn's `(prompt, completion)` tokens — persisted
     /// into `SessionMeta` so a reopened session's header meter shows real
     /// numbers before the next `Usage` event.
@@ -450,6 +452,10 @@ impl SessionActor {
         //  3. drop orphan tool rows — a `tool` message whose `tool_call_id`
         //     never appeared on an assistant's `tool_calls` replays as a
         //     `function_call_output` with no matching call → invalid_argument.
+        // Compare future writes with the bytes read from disk, before the
+        // resume sanitizer repairs them. Repairs must not look like a write
+        // from a competing window.
+        let persisted_revision = agent_store::SessionStore::history_revision_of(&history);
         let mut history = history;
         for m in &mut history {
             if m.role == agent_llm::types::Role::Assistant {
@@ -490,8 +496,10 @@ impl SessionActor {
                     for c in m.tool_calls.iter().flatten() {
                         known_call_ids.insert(c.id.clone());
                     }
-                    // keep assistant if it has content OR tool_calls
-                    m.content.is_some() || m.tool_calls.is_some()
+                    // A crash may leave a reasoning-only streamed draft.
+                    m.content.is_some()
+                        || m.tool_calls.is_some()
+                        || m.reasoning.as_ref().is_some_and(|s| !s.is_empty())
                 }
                 agent_llm::types::Role::Tool => m
                     .tool_call_id
@@ -501,7 +509,18 @@ impl SessionActor {
                 _ => true,
             }
         });
-        Self::spawn_inner(cfg, Some(history), session_id)
+        let (mut actor, channels) = Self::spawn_inner(cfg, Some(history), session_id);
+        if actor
+            .store
+            .as_ref()
+            .is_some_and(|s| s.has_history(session_id).ok() == Some(true))
+        {
+            actor.history_revision = persisted_revision;
+            if let Some(checkpoint) = &actor.checkpoint {
+                checkpoint.set_revision(persisted_revision);
+            }
+        }
+        (actor, channels)
     }
 
     /// Shared spawn path — `prior_history` replaces the fresh system-prompt
@@ -635,9 +654,8 @@ impl SessionActor {
             }
         }
 
-        // Session persistence — per-workspace store; the actor snapshots
-        // `history` at turn boundaries so a crashed/killed app resumes mid-
-        // conversation from the last completed turn.
+        // Session persistence — the provider boundary also checkpoints the
+        // current round and streamed draft before the whole turn completes.
         let store = match agent_store::SessionStore::open(&cfg.workspace_root) {
             Ok(store) => Some(Arc::new(store)),
             Err(error) => {
@@ -659,6 +677,18 @@ impl SessionActor {
         {
             history_revision = 0;
         }
+
+        let checkpoint = store.as_ref().map(|store| {
+            let (forward, receiver) = agent_kernel::channels::UiSink::channel();
+            let events = std::mem::replace(&mut channels.event_rx, receiver);
+            TurnCheckpoint::new(
+                store.clone(),
+                history_revision,
+                channels.event_tx.clone(),
+                events,
+                forward,
+            )
+        });
 
         // Cooperative cancel flag — hoisted above `ToolCtx` so delegated
         // subagents inherit it (a user cancel tears down in-flight child
@@ -764,8 +794,12 @@ impl SessionActor {
         tool_ctx.install_ui(channels.event_tx.clone());
         let ctx = Arc::new(tool_ctx);
         let registry = Arc::new(registry);
+        let provider = checkpoint.as_ref().map_or_else(
+            || cfg.provider.clone(),
+            |checkpoint| checkpoint.wrap(cfg.provider.clone()),
+        );
         let mut engine = Engine::new(
-            cfg.provider.clone(),
+            provider,
             registry.clone(),
             ctx.clone(),
             cfg.model.clone(),
@@ -841,6 +875,13 @@ impl SessionActor {
         let ask_channel = engine.ask_channel();
         let permissions_slot = engine.permissions_writer();
         let thinking_slot = engine.thinking_level_shared();
+        if let Some(checkpoint) = &checkpoint {
+            checkpoint.set_settings(
+                permissions_slot.clone(),
+                engine.agent_mode_writer(),
+                thinking_slot.clone(),
+            );
+        }
 
         // Actor keeps the real cmd_rx — `run()` drains it into `handle()`.
         // The `channels.cmd_rx` left for the caller is a dead end; the
@@ -903,6 +944,7 @@ impl SessionActor {
                 session_id,
                 store,
                 history_revision,
+                checkpoint,
                 last_usage: None,
                 queued: Arc::new(std::sync::Mutex::new(cfg.queued_prompts.into())),
                 skills,
@@ -918,6 +960,9 @@ impl SessionActor {
     /// they would block behind the running turn. They arrive via the shared
     /// `decision_slot`, the `EngineIo::cancel` flag and `steer_tx` instead.
     pub async fn run(&mut self) {
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.start();
+        }
         loop {
             let cmd = tokio::select! {
                 biased;
@@ -968,6 +1013,16 @@ impl SessionActor {
         primary: &str,
         chain: Vec<(String, Arc<dyn agent_llm::LlmProvider>)>,
     ) {
+        let chain = chain
+            .into_iter()
+            .map(|(name, provider)| {
+                let provider = self.checkpoint.as_ref().map_or_else(
+                    || provider.clone(),
+                    |checkpoint| checkpoint.wrap(provider.clone()),
+                );
+                (name, provider)
+            })
+            .collect();
         self.engine.set_fallbacks(primary, chain);
     }
 
@@ -1121,6 +1176,9 @@ impl SessionActor {
             }
         }
 
+        if let (Some(checkpoint), Some(meta)) = (&self.checkpoint, self.session_meta(&text)) {
+            checkpoint.begin(&self.history, &text, meta);
+        }
         let outcome_text = text.clone();
         match self
             .engine
@@ -1188,9 +1246,12 @@ impl SessionActor {
             });
         }
 
-        // Persist at the turn boundary — the store's last JSONL line is the
-        // resumable state; sidebar meta updates so the session list reflects
-        // the latest preview even if this session isn't the visible one.
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.drain().await;
+            checkpoint.end();
+        }
+        // Commit the engine's authoritative final history over the recovery
+        // copy, replacing interrupted-tool placeholders and streamed drafts.
         self.persist_turn(&outcome_text);
     }
 
@@ -1199,7 +1260,6 @@ impl SessionActor {
     /// agent reply (or "running…" when mid-turn, per product spec).
     fn persist_turn(&mut self, last_task: &str) {
         let Some(store) = &self.store else { return };
-        let id = self.session_id;
         // Sanitize before persisting — strip any `[call:…]` text-protocol
         // echo a provider leaked into assistant content (the streaming
         // CallStripper catches it live, but this is the last-line defense so
@@ -1220,6 +1280,32 @@ impl SessionActor {
             })
             .collect();
 
+        let Some(meta) = self.session_meta(last_task) else {
+            return;
+        };
+        let expected = self
+            .checkpoint
+            .as_ref()
+            .map_or(self.history_revision, |c| c.revision());
+        match store.commit_turn_checked(&sanitized, meta, expected) {
+            Ok(revision) => {
+                self.history_revision = revision;
+                if let Some(checkpoint) = &self.checkpoint {
+                    checkpoint.set_revision(revision);
+                }
+            }
+            Err(error) => {
+                let _ = self
+                    .io
+                    .ui_tx
+                    .send(UiEvent::SystemMessage(format!("保存会话失败: {error}")));
+            }
+        }
+    }
+
+    fn session_meta(&self, last_task: &str) -> Option<agent_store::SessionMeta> {
+        let store = self.store.as_ref()?;
+        let id = self.session_id;
         // Title = first user prompt (truncated); preview = last agent text.
         let title = self
             .history
@@ -1277,34 +1363,21 @@ impl SessionActor {
         // live slots (updated by `apply_model_switch` mid-session), not the
         // spawn-time snapshot.
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
-        let result = store.commit_turn_checked(
-            &sanitized,
-            agent_store::SessionMeta {
-                id,
-                title,
-                preview,
-                updated_at: now,
-                pinned,
-                usage,
-                model: (!model.is_empty()).then_some(model),
-                provider: (!provider.is_empty()).then_some(provider),
-                permission_mode: Some(self.current_permission_mode()),
-                agent_mode: Some(self.engine.agent_mode()),
-                thinking_level: self.engine.thinking_level(),
-                queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
-                ..Default::default()
-            },
-            self.history_revision,
-        );
-        match result {
-            Ok(revision) => self.history_revision = revision,
-            Err(error) => {
-                let _ = self
-                    .io
-                    .ui_tx
-                    .send(UiEvent::SystemMessage(format!("保存会话失败: {error}")));
-            }
-        }
+        Some(agent_store::SessionMeta {
+            id,
+            title,
+            preview,
+            updated_at: now,
+            pinned,
+            usage,
+            model: (!model.is_empty()).then_some(model),
+            provider: (!provider.is_empty()).then_some(provider),
+            permission_mode: Some(self.current_permission_mode()),
+            agent_mode: Some(self.engine.agent_mode()),
+            thinking_level: self.engine.thinking_level(),
+            queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
+            ..Default::default()
+        })
     }
 
     /// The permission mode the engine is currently dispatching under —
@@ -1515,8 +1588,12 @@ impl SessionActor {
                 // would answer under the new model's limits and thinking map.
                 let (built, _unavailable) =
                     crate::session_manager::choose_session_provider(&cfg, provider);
-                self.engine.set_provider(built.clone());
-                self.engine.set_fallbacks(
+                let parent_provider = self.checkpoint.as_ref().map_or_else(
+                    || built.clone(),
+                    |checkpoint| checkpoint.wrap(built.clone()),
+                );
+                self.engine.set_provider(parent_provider);
+                self.set_fallbacks(
                     provider,
                     crate::session_manager::build_fallback_chain(&cfg, provider),
                 );
@@ -1763,6 +1840,16 @@ impl SessionActor {
     /// lands mid-turn via the engine's drain; the rest are no-ops until their
     /// owning stages land.
     pub async fn handle(&mut self, cmd: UiCommand) {
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.start();
+        }
+        self.handle_command(cmd).await;
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.drain().await;
+        }
+    }
+
+    async fn handle_command(&mut self, cmd: UiCommand) {
         match cmd {
             UiCommand::Prompt { text } => {
                 self.handle_prompt(text).await;
@@ -2043,7 +2130,7 @@ fn chrono_lite_date() -> String {
 /// CallStripper — applied to persisted history on resume so a poisoned
 /// snapshot can't re-teach the model). Drops each `[call:…]` run plus one
 /// leading/trailing newline so no blank-line artifact remains.
-fn strip_call_echo(text: &str) -> String {
+pub(crate) fn strip_call_echo(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("[call:") {

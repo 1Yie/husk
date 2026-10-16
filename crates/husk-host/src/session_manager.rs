@@ -1165,6 +1165,9 @@ impl SessionManager {
         self.metas = self.store.list();
         self.spawn_actor(id);
         self.active_id = id;
+        // Remember it like open/fork do, so a crash while working in a fresh
+        // session restores this one instead of the previously opened session.
+        let _ = self.store.set_last_active(id);
     }
 
     /// Switch to an existing session — spawns its actor (resumed from the

@@ -567,9 +567,7 @@ impl SessionStore {
                 xxhash_rust::xxh3::xxh3_64(&hashes)
             };
             if actual != expected {
-                return Err(io_err(
-                    "会话已被另一个窗口更新，请重新打开此会话；当前结果未覆盖其他窗口的记录",
-                ));
+                return Err(std::io::Error::other(StaleRevision));
             }
             if let Some(old) = &w.index.meta {
                 keep_user_fields(&mut meta, old);
@@ -886,9 +884,11 @@ mod tests {
         store
             .commit_turn_checked(&second, meta.clone(), revision)
             .unwrap();
-        assert!(store
+        let error = store
             .commit_turn_checked(&[ChatMessage::user("stale window")], meta, revision)
-            .is_err());
+            .unwrap_err();
+        assert!(crate::is_stale_revision(&error));
+        assert!(!crate::is_stale_revision(&std::io::Error::other("disk full")));
         assert_eq!(
             store
                 .load_history(1)

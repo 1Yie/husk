@@ -27,6 +27,24 @@ fn io_err(e: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::other(e.to_string())
 }
 
+/// The journal changed under the caller: another window committed first.
+/// Retrying the same write would overwrite that window, so callers must stop.
+#[derive(Debug)]
+struct StaleRevision;
+
+impl std::fmt::Display for StaleRevision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("会话已被另一个窗口更新，请重新打开此会话；当前结果未覆盖其他窗口的记录")
+    }
+}
+
+impl std::error::Error for StaleRevision {}
+
+/// True when `error` is the stale-revision conflict from `commit_turn_checked`.
+pub fn is_stale_revision(error: &std::io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<StaleRevision>())
+}
+
 /// One session's sidebar metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionMeta {

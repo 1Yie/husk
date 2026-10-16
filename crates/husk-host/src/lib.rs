@@ -3,6 +3,7 @@
 //! preferences. Kernel stays a pure engine; everything with product semantics
 //! lives here.
 
+mod checkpoint;
 pub mod command;
 pub mod commands;
 pub mod mode;
