@@ -36,6 +36,7 @@ ignore.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
+fs2 = "0.4"
 agent-testkit = { workspace = true }
 agent-computer = { workspace = true }
 image.workspace = true

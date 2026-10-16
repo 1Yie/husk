@@ -881,6 +881,7 @@ impl SessionActor {
                 engine.agent_mode_writer(),
                 thinking_slot.clone(),
             );
+            engine.set_hooks(checkpoint.hooks(HookChain::new()));
         }
 
         // Actor keeps the real cmd_rx — `run()` drains it into `handle()`.
@@ -997,8 +998,12 @@ impl SessionActor {
     /// already runs under the plugins' hooks. The chain is shared, so a
     /// later `reload_plugins` reaches this session without a restart.
     pub fn set_hooks(&mut self, chain: HookChain) {
-        self.hooks = chain.clone();
-        self.engine.set_hooks(chain);
+        let engine_chain = self.checkpoint.as_ref().map_or_else(
+            || chain.clone(),
+            |checkpoint| checkpoint.hooks(chain.clone()),
+        );
+        self.hooks = chain;
+        self.engine.set_hooks(engine_chain);
     }
 
     /// Resolved provider keys for the egress masker. Installed before the

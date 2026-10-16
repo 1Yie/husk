@@ -6,11 +6,14 @@
 //! on Drop or a cooperative cancellation to save a running task.
 
 use agent_kernel::channels::{UiReceiver, UiSink};
-use agent_llm::types::{now_ms, ChatMessage, Role, StreamChunk, ToolCallAssembler};
+use agent_kernel::hooks::{AgentHook, HookChain};
+use agent_llm::types::{now_ms, ChatMessage, Role, StreamChunk, ToolCall, ToolCallAssembler};
 use agent_llm::{BoxStream, Capabilities, LlmProvider, ModelParams};
 use agent_store::{SessionMeta, SessionStore};
 use futures::Stream;
+use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -26,8 +29,10 @@ pub(crate) struct TurnCheckpoint {
     store: Arc<SessionStore>,
     ui: UiSink,
     state: Mutex<State>,
-    /// Serializes disk writes so `state` is never held across IO.
-    writer: Mutex<()>,
+    /// At most one blocking writer runs; mutations coalesce into its next snapshot.
+    writing: AtomicBool,
+    dirty: AtomicBool,
+    written: tokio::sync::Notify,
     relay: Mutex<Option<(UiReceiver, UiSink)>>,
     barriers: Mutex<std::collections::HashMap<u64, oneshot::Sender<()>>>,
     next_barrier: std::sync::atomic::AtomicU64,
@@ -44,6 +49,8 @@ struct State {
     /// The user has already been told about the current failure streak.
     notified: bool,
     settings: Option<LiveSettings>,
+    /// Exact identities captured at the engine's before-tool boundary.
+    dispatched: VecDeque<ToolCall>,
 }
 
 /// Transient save errors tolerated before the turn stops saving.
@@ -94,7 +101,9 @@ impl TurnCheckpoint {
             relay: Mutex::new(Some((events, forward))),
             barriers: Mutex::new(std::collections::HashMap::new()),
             next_barrier: std::sync::atomic::AtomicU64::new(0),
-            writer: Mutex::new(()),
+            writing: AtomicBool::new(false),
+            dirty: AtomicBool::new(false),
+            written: tokio::sync::Notify::new(),
             state: Mutex::new(State {
                 revision,
                 generation: 0,
@@ -103,6 +112,7 @@ impl TurnCheckpoint {
                 failures: 0,
                 notified: false,
                 settings: None,
+                dispatched: VecDeque::new(),
             }),
         })
     }
@@ -152,6 +162,26 @@ impl TurnCheckpoint {
                         }
                     }
                     checkpoint.observe(&event);
+                    // Once a tool/approval is visible, its preceding draft
+                    // and any completed result must already survive a crash.
+                    // Await the blocking worker here without blocking Tokio;
+                    // token deltas still flow without a disk wait.
+                    if matches!(
+                        event,
+                        agent_ipc::UiEvent::ApprovalRequested { .. }
+                            | agent_ipc::UiEvent::ToolCallStarted {
+                                parent: None,
+                                child_id: None,
+                                ..
+                            }
+                            | agent_ipc::UiEvent::ToolCallFinished {
+                                parent: None,
+                                child_id: None,
+                                ..
+                            }
+                    ) {
+                        checkpoint.flush().await;
+                    }
                 }
                 let _ = forward.send(event);
             }
@@ -185,9 +215,23 @@ impl TurnCheckpoint {
             return;
         }
         let _ = ready.await;
+        self.flush().await;
     }
 
-    fn observe(&self, event: &agent_ipc::UiEvent) {
+    /// Wait only at provider/turn boundaries, never while polling its stream.
+    async fn flush(&self) {
+        loop {
+            let done = self.written.notified();
+            tokio::pin!(done);
+            done.as_mut().enable();
+            if !self.writing.load(Ordering::Acquire) && !self.dirty.load(Ordering::Acquire) {
+                return;
+            }
+            done.await;
+        }
+    }
+
+    fn observe(self: &Arc<Self>, event: &agent_ipc::UiEvent) {
         let agent_ipc::UiEvent::ToolCallFinished {
             name,
             ok,
@@ -200,33 +244,35 @@ impl TurnCheckpoint {
             return;
         };
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // The hook recorded the exact call id before dispatch. The relay is
+        // ordered, including veto/permission failures; nested cards never
+        // consume a top-level dispatch. Do not guess by tool name.
+        let Some(call) = state.dispatched.pop_front() else {
+            tracing::warn!(tool = %name, "tool result has no recorded dispatch; checkpoint skipped it");
+            return;
+        };
         let Some(active) = &mut state.active else {
             return;
         };
-        // The engine dispatches top-level calls sequentially. Parallel batch
-        // and delegated events carry a parent/child marker and are excluded
-        // above. The provider barrier drains this queue before the next
-        // request replaces the round, so this is the current round's FIFO.
-        let outputs: std::collections::HashSet<_> = active
+        if active
             .history
             .iter()
-            .filter(|m| m.role == Role::Tool)
-            .filter_map(|m| m.tool_call_id.as_deref())
-            .collect();
-        let id = active
+            .any(|m| m.tool_call_id.as_deref() == Some(call.id.as_str()))
+        {
+            return;
+        }
+        if !active
             .history
             .iter()
             .flat_map(|m| m.tool_calls.iter().flatten())
-            .find(|call| call.name == *name && !outputs.contains(call.id.as_str()))
-            .map(|call| call.id.clone());
-        if let Some(id) = id {
-            let mut output = ChatMessage::tool_result(id, content.clone());
-            output.is_error = Some(!ok);
-            active.history.push(output);
-            self.save(state);
-        } else {
-            tracing::warn!(tool = %name, "tool result matched no pending call; checkpoint skipped it");
+            .any(|c| c.id == call.id)
+        {
+            return;
         }
+        let mut output = ChatMessage::tool_result(call.id, content.clone());
+        output.is_error = Some(!ok);
+        active.history.push(output);
+        self.save(state);
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -243,13 +289,14 @@ impl TurnCheckpoint {
             .revision = revision;
     }
 
-    pub(crate) fn begin(&self, history: &[ChatMessage], input: &str, meta: SessionMeta) {
+    pub(crate) fn begin(self: &Arc<Self>, history: &[ChatMessage], input: &str, meta: SessionMeta) {
         let mut history = history.to_vec();
         history.push(ChatMessage::user(input));
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.failed = false;
         state.failures = 0;
         state.notified = false;
+        state.dispatched.clear();
         state.active = Some(ActiveTurn {
             request: Vec::new(),
             history,
@@ -262,6 +309,31 @@ impl TurnCheckpoint {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).active = None;
     }
 
+    /// Keep the plugin chain shared for reloads, but make the recovery hook
+    /// private to this engine so another session cannot consume its call ids.
+    pub(crate) fn hooks(self: &Arc<Self>, shared: HookChain) -> HookChain {
+        HookChain::layered(
+            vec![Arc::new(RecoveryHook {
+                checkpoint: Arc::downgrade(self),
+            })],
+            &shared,
+        )
+    }
+
+    fn dispatch(&self, call: &ToolCall) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let known = state.active.as_ref().is_some_and(|active| {
+            active
+                .history
+                .iter()
+                .flat_map(|m| m.tool_calls.iter().flatten())
+                .any(|c| c.id == call.id)
+        });
+        if known {
+            state.dispatched.push_back(call.clone());
+        }
+    }
+
     pub(crate) fn wrap(self: &Arc<Self>, provider: Arc<dyn LlmProvider>) -> Arc<dyn LlmProvider> {
         Arc::new(CheckpointProvider {
             provider,
@@ -269,41 +341,21 @@ impl TurnCheckpoint {
         })
     }
 
-    fn request(&self, messages: &[ChatMessage], native_tools: bool) -> Option<u64> {
+    fn request(self: &Arc<Self>, messages: &[ChatMessage], native_tools: bool) -> Option<u64> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let active = state.active.as_mut()?;
-        // The same sampler also serves compaction. Those requests have their
-        // own system prompt and must never replace the user's conversation.
-        let system_line = |m: &ChatMessage| {
-            m.content
-                .as_deref()
-                .unwrap_or("")
-                .lines()
-                .next()
-                .unwrap_or("")
-                .to_owned()
-        };
-        if messages.first().map(system_line) != active.history.first().map(system_line) {
+        // The kernel preserves the complete system message across rounds and
+        // compaction. A different system context is a different request; never
+        // recognize it by a shared first line or a prompt-text prefix.
+        if messages.first() != active.history.first() {
             return None;
         }
         let mut request = messages.to_vec();
         if !native_tools {
-            // The kernel flattens calls only on its wire copy. Restore known
-            // structured rows so saving that copy cannot erase tool history.
-            let mut flat = active.history.clone();
-            agent_kernel::compaction::flatten_tool_calls_for_wire(&mut flat);
-            for message in &mut request {
-                if let Some((original, _)) =
-                    active.history.iter().zip(&flat).find(|(original, wire)| {
-                        original.tool_calls.is_some()
-                            && wire.role == message.role
-                            && wire.content == message.content
-                    })
-                {
-                    message.content = original.content.clone();
-                    message.tool_calls = original.tool_calls.clone();
-                }
-            }
+            // Flattening preserves the following tool-result ids. Restore a
+            // structured call only from those ids, with an exact wire-copy
+            // check; repeated/truncated text cannot select another call.
+            restore_tool_calls(&mut request, &active.history)?;
         }
         // A retry resends the same context. Preserve the old partial until the
         // replacement attempt actually produces a chunk (establishment may fail).
@@ -317,7 +369,7 @@ impl TurnCheckpoint {
         Some(generation)
     }
 
-    fn draft(&self, generation: u64, message: ChatMessage) {
+    fn draft(self: &Arc<Self>, generation: u64, message: ChatMessage) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.generation != generation {
             return;
@@ -335,20 +387,46 @@ impl TurnCheckpoint {
         self.save(state);
     }
 
-    /// Persist the newest recovery point without holding `state` across IO.
-    /// Callers hand over their guard after mutating; saves are serialized by
-    /// `writer`, and each one re-snapshots, so concurrent updates coalesce.
-    fn save(&self, state: std::sync::MutexGuard<'_, State>) {
+    /// The stream only marks the latest snapshot dirty. A single blocking
+    /// worker performs file locking, serialization and fsync off Tokio workers.
+    fn save(self: &Arc<Self>, state: std::sync::MutexGuard<'_, State>) {
         drop(state);
-        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        self.dirty.store(true, Ordering::Release);
+        self.start_writer();
+    }
+
+    fn start_writer(self: &Arc<Self>) {
+        if self
+            .writing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let checkpoint = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _done = WriterCleanup(checkpoint.clone());
+            while checkpoint.dirty.swap(false, Ordering::AcqRel) {
+                if checkpoint.save_snapshot() {
+                    // Retry even when the model is idle and produces no new
+                    // chunks. This sleeps only on the blocking pool.
+                    std::thread::sleep(CHECKPOINT_INTERVAL);
+                    checkpoint.dirty.store(true, Ordering::Release);
+                }
+            }
+        });
+    }
+
+    /// Returns true for a bounded transient retry.
+    fn save_snapshot(&self) -> bool {
         let (history, meta, expected) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.failed {
-                return;
+                return false;
             }
             let state = &mut *state;
             let Some(active) = &mut state.active else {
-                return;
+                return false;
             };
             active.meta.updated_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -373,7 +451,7 @@ impl TurnCheckpoint {
                 state.revision,
             )
         };
-        let result = self.store.commit_turn_checked(&history, meta, expected);
+        let result = self.store.checkpoint_turn_checked(&history, meta, expected);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         match result {
             Ok(revision) => {
@@ -383,24 +461,95 @@ impl TurnCheckpoint {
                 if state.revision == expected {
                     state.revision = revision;
                 }
+                false
             }
             Err(error) => {
-                // A stale window must never retry by overwriting another
-                // writer. Other IO errors (full disk, a busy lock) are retried
-                // by the next save, a bounded number of times.
+                // A stale window must never overwrite a competing writer.
                 state.failures = state.failures.saturating_add(1);
                 if agent_store::is_stale_revision(&error) || state.failures >= MAX_SAVE_FAILURES {
                     state.failed = true;
                 }
-                if !state.notified || state.failed {
+                if !state.notified {
                     state.notified = true;
                     let _ = self.ui.send(agent_ipc::UiEvent::SystemMessage(format!(
                         "保存运行中的会话失败: {error}"
                     )));
                 }
+                !state.failed
             }
         }
     }
+}
+
+/// Reset the worker flag even if a serializer or file operation panics.
+struct WriterCleanup(Arc<TurnCheckpoint>);
+
+impl Drop for WriterCleanup {
+    fn drop(&mut self) {
+        self.0.writing.store(false, Ordering::Release);
+        self.0.written.notify_waiters();
+        if self.0.dirty.load(Ordering::Acquire) && !std::thread::panicking() {
+            self.0.start_writer();
+        }
+    }
+}
+
+/// Records each top-level call id before user hooks run: vetoes and
+/// permission denials also emit a result. Calls execute in order; nested
+/// tools bypass this hook. It is a private layer of this engine's chain, so
+/// every shared plugin hook keeps its own timeout.
+struct RecoveryHook {
+    checkpoint: std::sync::Weak<TurnCheckpoint>,
+}
+
+#[async_trait::async_trait]
+impl AgentHook for RecoveryHook {
+    fn id(&self) -> &str {
+        "husk.recovery"
+    }
+
+    async fn before_tool_execute(&self, call: &mut ToolCall) -> anyhow::Result<()> {
+        if let Some(checkpoint) = self.checkpoint.upgrade() {
+            checkpoint.dispatch(call);
+        }
+        Ok(())
+    }
+}
+
+/// Restore a flattened assistant only from the exact ids on its following
+/// result rows. Unknown/ambiguous wire changes leave the previous recovery
+/// point intact until the engine supplies its authoritative final history.
+fn restore_tool_calls(request: &mut [ChatMessage], known: &[ChatMessage]) -> Option<()> {
+    for index in 0..request.len() {
+        if request[index].role != Role::Assistant || request[index].tool_calls.is_some() {
+            continue;
+        }
+        let ids: Vec<_> = request[index + 1..]
+            .iter()
+            .take_while(|m| m.role == Role::Tool)
+            .filter_map(|m| m.tool_call_id.as_deref())
+            .collect();
+        if ids.is_empty() {
+            continue;
+        }
+        let mut candidates = known.iter().filter(|message| {
+            message.tool_calls.as_ref().is_some_and(|calls| {
+                calls.len() == ids.len() && calls.iter().all(|call| ids.contains(&call.id.as_str()))
+            })
+        });
+        let original = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        let mut flat = vec![original.clone()];
+        agent_kernel::compaction::flatten_tool_calls_for_wire(&mut flat);
+        if flat[0] != request[index] {
+            return None;
+        }
+        request[index].content = original.content.clone();
+        request[index].tool_calls = original.tool_calls.clone();
+    }
+    Some(())
 }
 
 impl Drop for TurnCheckpoint {
@@ -473,6 +622,7 @@ impl LlmProvider for CheckpointProvider {
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         self.checkpoint.drain().await;
         let generation = self.checkpoint.request(messages, self.native_tool_calls());
+        self.checkpoint.flush().await;
         let stream = self
             .provider
             .chat_stream(
@@ -589,3 +739,7 @@ impl Drop for CheckpointStream {
         self.flush();
     }
 }
+
+#[cfg(test)]
+#[path = "checkpoint_tests.rs"]
+mod tests;

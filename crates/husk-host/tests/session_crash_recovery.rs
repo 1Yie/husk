@@ -472,7 +472,11 @@ async fn another_window_commit_stops_saving_and_reports_once() {
     let mut other = saved.clone();
     other.push(ChatMessage::assistant("written by another window"));
     store
-        .commit_turn_checked(&other, meta, agent_store::SessionStore::history_revision_of(&saved))
+        .commit_turn_checked(
+            &other,
+            meta,
+            agent_store::SessionStore::history_revision_of(&saved),
+        )
         .unwrap();
 
     // Later progress would overwrite that window, so it must never land.

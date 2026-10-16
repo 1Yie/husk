@@ -1872,6 +1872,22 @@ impl SessionManager {
         self.store.load_history_page(id, before, count)
     }
 
+    /// Trace pagination must use one immutable history revision, including
+    /// recovery snapshots whose last message can change without growing.
+    pub fn store_history_page_checked(
+        &self,
+        id: i64,
+        before: Option<usize>,
+        count: usize,
+        expected_revision: Option<&str>,
+    ) -> std::io::Result<agent_store::HistoryPageSnapshot> {
+        if !self.workspace_active {
+            return Err(std::io::Error::other("请先选择工作区"));
+        }
+        self.store
+            .load_history_page_checked(id, before, count, expected_revision)
+    }
+
     /// A session's persisted last-turn usage — seeds the header meter when
     /// the webview rebuilds a closed view (before any new `Usage` event).
     /// Reads the store fresh: `self.metas` only refreshes on structural ops
