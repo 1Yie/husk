@@ -1776,12 +1776,19 @@ fn mask_config_keys(config: &mut serde_json::Value) {
 }
 
 /// Undo [`mask_config_keys`] on an incoming payload: a provider whose key is
-/// the mask keeps the key already stored for that provider id.
+/// the mask keeps the key already stored for that provider id — or, for a
+/// renamed provider, under the id named by its one-shot `renamed_from`
+/// marker. The marker is stripped here, so it never reaches the file.
 fn unmask_config_keys(payload: &mut serde_json::Value, stored: &agent_llm::AppConfig) {
     let Some(providers) = payload.get_mut("providers").and_then(|p| p.as_object_mut()) else {
         return;
     };
     for (id, provider) in providers.iter_mut() {
+        let source = provider
+            .as_object_mut()
+            .and_then(|o| o.remove("renamed_from"))
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| id.clone());
         let is_mask = provider
             .get("api_key")
             .and_then(|k| k.as_str())
@@ -1790,7 +1797,7 @@ fn unmask_config_keys(payload: &mut serde_json::Value, stored: &agent_llm::AppCo
         if is_mask {
             let kept = stored
                 .providers
-                .get(id)
+                .get(&source)
                 .map(|p| p.api_key.clone())
                 .unwrap_or_default();
             provider["api_key"] = serde_json::Value::String(kept);
@@ -1925,6 +1932,28 @@ mod tests {
         unmask_config_keys(&mut payload, &stored);
         assert_eq!(payload["providers"]["plain"]["api_key"], "sk-stored-123");
         assert_eq!(payload["providers"]["other"]["api_key"], "sk-typed-new");
+    }
+
+    /// A renamed provider still sends the mask; its key is stored under the
+    /// OLD id, which the one-shot `renamed_from` marker names. The marker
+    /// itself must not survive into the payload that gets written.
+    #[test]
+    fn renamed_provider_keeps_its_stored_key() {
+        let stored: agent_llm::AppConfig = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "deepseek": { "kind": "openai_completions", "base_url": "https://x", "api_key": "sk-renamed-original" }
+            }
+        }))
+        .unwrap();
+        let mut payload = serde_json::json!({
+            "providers": {
+                "DeepSeek": { "api_key": KEY_MASK, "renamed_from": "deepseek" }
+            }
+        });
+        unmask_config_keys(&mut payload, &stored);
+        let p = &payload["providers"]["DeepSeek"];
+        assert_eq!(p["api_key"], "sk-renamed-original");
+        assert!(p.get("renamed_from").is_none());
     }
 
     #[test]

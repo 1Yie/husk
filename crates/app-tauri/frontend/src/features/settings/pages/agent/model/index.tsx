@@ -189,8 +189,10 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   /* ---------- provider: add ---------- */
   const submitAddProvider = async () => {
     if (!provKey.trim() || !provBase.trim() || !cfg) return;
-    const k = provKey.trim().toLowerCase();
-    if (cfg.providers?.[k]) {
+    const k = provKey.trim();
+    // Names keep the case they were typed in; only the clash check ignores it,
+    // so `DeepSeek` and `deepseek` cannot both exist.
+    if (Object.keys(cfg.providers ?? {}).some((x) => x.toLowerCase() === k.toLowerCase())) {
       toast.error("该提供商已存在");
       return;
     }
@@ -243,12 +245,12 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   const submitEditProv = async () => {
     if (!editProv || !cfg) return;
     const oldKey = editProv;
-    const newKey = eName.trim().toLowerCase();
+    const newKey = eName.trim();
     if (!newKey) { toast.error("名称不能为空"); return; }
-    // Keys are case-sensitive in config.toml but the add flow lowercases them,
-    // so compare normalized against every other key — not just an exact hit.
+    // Case-only renames (`deepseek` → `DeepSeek`) are allowed; any OTHER key
+    // that differs only by case is a clash.
     const clash = Object.keys(cfg.providers ?? {}).some(
-      (k) => k !== oldKey && k.toLowerCase() === newKey,
+      (k) => k !== oldKey && k.toLowerCase() === newKey.toLowerCase(),
     );
     if (clash) { toast.error("该名称已存在"); return; }
     const p = { ...cfg.providers[oldKey] };
@@ -280,6 +282,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     for (const [k, v] of Object.entries(cfg.providers ?? {})) {
       providers[k === oldKey ? newKey : k] = k === oldKey ? p : v;
     }
+    // The api_key comes back masked; the backend restores it by id, so a
+    // renamed provider has to name the id its key is stored under.
+    if (newKey !== oldKey) p.renamed_from = oldKey;
     const renameRef = (k: string) => (k === oldKey ? newKey : k);
     const next: Record<string, any> = { ...cfg, providers };
     if (typeof cfg.active_provider === "string") next.active_provider = renameRef(cfg.active_provider);
@@ -293,6 +298,8 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     if (await persist(next)) {
       toast.success("已保存");
       setEditProv(null);
+      // Re-read so the one-shot `renamed_from` marker never rides a later save.
+      if (newKey !== oldKey) loadCfg();
     }
   };
 
