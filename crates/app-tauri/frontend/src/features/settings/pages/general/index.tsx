@@ -27,10 +27,12 @@ import {
   type SettingsCardOption,
 } from "@/features/settings/components";
 import { THINKING_LEVELS } from "@/lib/thinking";
+import { cn } from "@/lib/utils";
 import {
   getDefaultPrefs,
   setDefaultPrefs,
   getAppConfig,
+  type DefaultPrefs,
 } from "@/lib/agent-ipc/sessions";
 
 const PERMISSION_OPTIONS: SettingsCardOption[] = [
@@ -115,55 +117,89 @@ const SANDBOX_PROCS_OPTIONS = [
   { value: "1024", label: "1024" },
 ];
 
+/** Control values derived from stored prefs — absent fields fall back to
+ * the same defaults the backend applies. */
+function prefsToState(prefs: DefaultPrefs) {
+  return {
+    permission: prefs.permission_mode || "auto",
+    activeModelKey:
+      prefs.active_provider && prefs.active_model
+        ? `${prefs.active_provider}/${prefs.active_model}`
+        : "__config__",
+    thinking: prefs.thinking_level || "medium",
+    agentMode: prefs.agent_mode || "build",
+    workspaceMode: prefs.default_workspace_mode || "last",
+    compactAt: prefs.compact_at ? String(Math.round(prefs.compact_at * 100)) : "80",
+    // absent = default-off — only an explicit true turns it on.
+    sandboxEnabled: prefs.sandbox_enabled === true,
+    blueprintEnabled: prefs.blueprint_enabled !== false,
+    desktopNotify: prefs.desktop_notifications !== false,
+    sandboxNetwork: (prefs.sandbox_network || "auto") as string,
+    sandboxMem: prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default",
+    sandboxProcs: prefs.sandbox_max_processes ? String(prefs.sandbox_max_processes) : "default",
+  };
+}
+
+/** Last loaded prefs + providers, kept across pane mounts so reopening the
+ * pane renders real values at once instead of defaults that then jump. */
+let cached: { prefs: DefaultPrefs; providers: Record<string, any> } | null = null;
+
 export function GeneralPane() {
-  const [permission, setPermission] = useState("auto");
-  const [activeModelKey, setActiveModelKey] = useState("__config__");
-  const [thinking, setThinking] = useState("medium");
-  const [agentMode, setAgentMode] = useState("build");
-  const [workspaceMode, setWorkspaceMode] = useState("last");
-  const [compactAt, setCompactAt] = useState("80");
-  const [providers, setProviders] = useState<Record<string, any>>({});
-  const [sandboxEnabled, setSandboxEnabled] = useState(false);
-  const [blueprintEnabled, setBlueprintEnabled] = useState(true);
-  const [desktopNotify, setDesktopNotify] = useState(true);
-  const [sandboxNetwork, setSandboxNetwork] = useState("auto");
-  const [sandboxMem, setSandboxMem] = useState("default");
-  const [sandboxProcs, setSandboxProcs] = useState("default");
+  const [init] = useState(() => prefsToState(cached?.prefs ?? {}));
+  const [ready, setReady] = useState(cached !== null);
+  const [permission, setPermission] = useState(init.permission);
+  const [activeModelKey, setActiveModelKey] = useState(init.activeModelKey);
+  const [thinking, setThinking] = useState(init.thinking);
+  const [agentMode, setAgentMode] = useState(init.agentMode);
+  const [workspaceMode, setWorkspaceMode] = useState(init.workspaceMode);
+  const [compactAt, setCompactAt] = useState(init.compactAt);
+  const [providers, setProviders] = useState<Record<string, any>>(cached?.providers ?? {});
+  const [sandboxEnabled, setSandboxEnabled] = useState(init.sandboxEnabled);
+  const [blueprintEnabled, setBlueprintEnabled] = useState(init.blueprintEnabled);
+  const [desktopNotify, setDesktopNotify] = useState(init.desktopNotify);
+  const [sandboxNetwork, setSandboxNetwork] = useState(init.sandboxNetwork);
+  const [sandboxMem, setSandboxMem] = useState(init.sandboxMem);
+  const [sandboxProcs, setSandboxProcs] = useState(init.sandboxProcs);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const prefs = await getDefaultPrefs();
-        if (prefs.permission_mode) setPermission(prefs.permission_mode);
-        if (prefs.active_provider && prefs.active_model) {
-          setActiveModelKey(`${prefs.active_provider}/${prefs.active_model}`);
-        }
-        if (prefs.thinking_level) setThinking(prefs.thinking_level);
-        if (prefs.agent_mode) setAgentMode(prefs.agent_mode);
-        if (prefs.default_workspace_mode) setWorkspaceMode(prefs.default_workspace_mode);
-        if (prefs.compact_at) setCompactAt(String(Math.round(prefs.compact_at * 100)));
-        // absent = default-off — only an explicit true turns it on.
-        setSandboxEnabled(prefs.sandbox_enabled === true);
-        setBlueprintEnabled(prefs.blueprint_enabled !== false);
-        setDesktopNotify(prefs.desktop_notifications !== false);
-        if (prefs.sandbox_network) setSandboxNetwork(prefs.sandbox_network);
-        setSandboxMem(
-          prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default",
-        );
-        setSandboxProcs(
-          prefs.sandbox_max_processes ? String(prefs.sandbox_max_processes) : "default",
-        );
-        void getAppConfig()
-          .then((r) => setProviders((r.config as any)?.providers ?? {}))
-          .catch(() => {});
-      } catch (e) {
-        console.error("load settings error:", e);
-      }
-    })();
+    let alive = true;
+    // Both requests settle before any state is applied: prefs alone would
+    // show the stored model as "已不存在" until the provider list arrives.
+    void Promise.all([
+      getDefaultPrefs(),
+      getAppConfig()
+        .then((r) => ((r.config as any)?.providers ?? {}) as Record<string, any>)
+        .catch(() => cached?.providers ?? {}),
+    ])
+      .then(([prefs, provs]) => {
+        cached = { prefs, providers: provs };
+        if (!alive) return;
+        const s = prefsToState(prefs);
+        setPermission(s.permission);
+        setActiveModelKey(s.activeModelKey);
+        setThinking(s.thinking);
+        setAgentMode(s.agentMode);
+        setWorkspaceMode(s.workspaceMode);
+        setCompactAt(s.compactAt);
+        setSandboxEnabled(s.sandboxEnabled);
+        setBlueprintEnabled(s.blueprintEnabled);
+        setDesktopNotify(s.desktopNotify);
+        setSandboxNetwork(s.sandboxNetwork);
+        setSandboxMem(s.sandboxMem);
+        setSandboxProcs(s.sandboxProcs);
+        setProviders(provs);
+      })
+      .catch((e) => console.error("load settings error:", e))
+      .finally(() => alive && setReady(true));
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  const save = (patch: Parameters<typeof setDefaultPrefs>[0]) =>
-    setDefaultPrefs(patch).catch((e) => console.error("save prefs failed:", e));
+  const save = (patch: Parameters<typeof setDefaultPrefs>[0]) => {
+    if (cached) cached = { ...cached, prefs: { ...cached.prefs, ...patch } };
+    return setDefaultPrefs(patch).catch((e) => console.error("save prefs failed:", e));
+  };
 
   // Flatten every provider's model list into one select — the value key
   // doubles as a lookup into `modelPairs` (model ids can contain `/`,
@@ -195,7 +231,15 @@ export function GeneralPane() {
   }, [providers, activeModelKey]);
 
   return (
-    <div className="flex flex-col gap-8 w-full">
+    // First-ever load: keep the layout but hide the controls until real
+    // values land, so nothing visibly swaps from its default.
+    <div
+      className={cn(
+        "flex flex-col gap-8 w-full transition-opacity duration-150",
+        ready ? "opacity-100" : "opacity-0",
+      )}
+      aria-busy={!ready}
+    >
       <SettingsSection title="默认权限模式">
         <SettingsCards
           value={permission}
