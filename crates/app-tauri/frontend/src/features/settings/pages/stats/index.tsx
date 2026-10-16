@@ -1,271 +1,280 @@
-// 「统计」pane — what the agent has cost and when it was busy.
-//
-// The kernel hands back raw per-session records (`usage_stats`); every bucket
-// here is computed in `features/settings/usage.ts` so the rules are testable and
-// the timezone is the reader's. Charts are plain divs/SVG — a charting
-// dependency would outweigh the three shapes actually needed.
-
+// Charts use the existing local-time usage aggregation and theme palette.
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Activity, Calendar, ChartColumn, Coins, Cpu, Folder, Layers } from "@keyline-icons/react";
+import { Button } from "@/components/ui/button";
+import { KvList } from "@/components/ui/kv-list";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useEffect, useMemo, useState } from "react";
-import { Activity, Coins, Layers, Sparkles } from "@keyline-icons/react";
-import { cn } from "@/lib/utils";
-import { getUsageStats, type UsageRecord } from "@/lib/agent-ipc/sessions";
-import { aggregate, fmtTokens, type UsageStats } from "@/features/settings/usage";
+import { EmptyState, ItemIcon, SettingsSection, Tag } from "@/features/settings/components";
 import { ActivityHeatmap } from "@/features/settings/components/activity-heatmap";
+import { aggregate, fmtTokens } from "@/features/settings/usage";
+import { getUsageStats, type UsageRecord } from "@/lib/agent-ipc/sessions";
+import { SURFACE_ACTIVITY_EMPTY } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+
+const INPUT_COLOR = "bg-[color-mix(in_srgb,var(--husk-activity)_85%,transparent)]";
+const OUTPUT_COLOR = "bg-[color-mix(in_srgb,var(--husk-accent)_70%,transparent)]";
 
 export function StatsPane() {
   const [records, setRecords] = useState<UsageRecord[] | null>(null);
   const [error, setError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     let alive = true;
+    setError("");
     void getUsageStats()
-      .then((r) => alive && setRecords(r.sessions ?? []))
-      .catch((e) => alive && setError(String(e)));
-    return () => {
-      alive = false;
-    };
-  }, []);
+      .then((r) => { if (alive) setRecords(r.sessions ?? []); })
+      .catch((e) => { if (alive) setError(String(e)); });
+    return () => { alive = false; };
+  }, [loadAttempt]);
 
-  const stats: UsageStats | null = useMemo(
-    () => (records ? aggregate(records) : null),
-    [records]
-  );
+  const stats = useMemo(() => records ? aggregate(records) : null, [records]);
 
-  if (error) return <p className="text-xs text-red-500">读取统计失败：{error}</p>;
-  if (!stats) return <StatsSkeleton />;
-  if (records && records.length === 0)
+  if (error) {
     return (
-      <p className="text-xs text-neutral-500">
-        还没有用量记录 —— 完成一轮对话后这里会显示 token 与活跃度。
-      </p>
+      <KvList>
+        <EmptyState
+          icon={<ChartColumn className="h-4 w-4" />}
+          title="无法读取统计"
+          description={<span className="break-all">{error}</span>}
+          action={<Button size="sm" variant="outline" onClick={() => setLoadAttempt((n) => n + 1)}>重试</Button>}
+        />
+      </KvList>
     );
+  }
+  if (!stats) return <StatsSkeleton />;
+  if (!records?.length) {
+    return (
+      <KvList>
+        <EmptyState
+          icon={<ChartColumn className="h-4 w-4" />}
+          title="暂无用量记录"
+          description="完成对话后，可在这里查看 Token 用量与活跃度"
+        />
+      </KvList>
+    );
+  }
 
   const { totals, daily, byModel, byWorkspace, streak, busiest } = stats;
   const last30 = daily.slice(-30);
-  const peak30 = last30.reduce((m, d) => Math.max(m, d.tokens), 0) || 1;
-  const modelMax =
-    byModel.reduce((m, x) => Math.max(m, x.prompt + x.completion), 0) || 1;
-  const wsMax =
-    byWorkspace.reduce((m, x) => Math.max(m, x.prompt + x.completion), 0) || 1;
+  const peak30 = Math.max(0, ...last30.map((d) => d.tokens));
+  const modelMax = Math.max(1, ...byModel.map((m) => m.prompt + m.completion));
+  const wsMax = Math.max(1, ...byWorkspace.map((w) => w.prompt + w.completion));
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* KPI 行 */}
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <Kpi
-          Icon={Coins}
-          label="总 token"
-          value={fmtTokens(totals.prompt + totals.completion)}
-          hint={`输入 ${fmtTokens(totals.prompt)} · 输出 ${fmtTokens(totals.completion)}`}
-        />
-        <Kpi
-          Icon={Layers}
-          label="会话"
-          value={String(totals.sessions)}
-          hint={`活跃 ${totals.activeDays} 天 · 连续 ${streak} 天`}
-        />
-        <Kpi
-          Icon={Activity}
-          label="缓存命中"
-          value={
-            totals.prompt + totals.cached > 0
-              ? `${Math.round((totals.cached / (totals.prompt + totals.cached)) * 100)}%`
-              : "—"
-          }
-          hint={`${fmtTokens(totals.cached)} tokens 走缓存`}
-        />
-        <Kpi
-          Icon={Sparkles}
-          label="最忙的一天"
-          value={busiest ? busiest.date.slice(5) : "—"}
-          hint={busiest ? `${busiest.sessions} 个会话 · ${fmtTokens(busiest.tokens)} tokens` : ""}
-        />
-      </div>
+    <div className="flex min-w-0 flex-col gap-8">
+      <SettingsSection title="用量概览">
+        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <Kpi
+            icon={<Coins className="h-4 w-4" />}
+            label="总 Token"
+            value={fmtTokens(totals.prompt + totals.completion)}
+            hint={`输入 ${fmtTokens(totals.prompt)} · 输出 ${fmtTokens(totals.completion)}`}
+          />
+          <Kpi
+            icon={<Layers className="h-4 w-4" />}
+            label="会话数"
+            value={String(totals.sessions)}
+            hint={`活跃 ${totals.activeDays} 天 · 最长连续 ${streak} 天`}
+          />
+          <Kpi
+            icon={<Activity className="h-4 w-4" />}
+            label="缓存命中"
+            value={totals.prompt + totals.cached > 0
+              ? `${Math.round(totals.cached / (totals.prompt + totals.cached) * 100)}%`
+              : "—"}
+            hint={`${fmtTokens(totals.cached)} Token 命中缓存`}
+          />
+          <Kpi
+            icon={<Calendar className="h-4 w-4" />}
+            label="最忙的一天"
+            value={busiest ? busiest.date.slice(5) : "—"}
+            hint={busiest ? `${busiest.sessions} 个会话 · ${fmtTokens(busiest.tokens)} Token` : "暂无活跃记录"}
+          />
+        </div>
+      </SettingsSection>
 
-      {/* 热力图 */}
-      <section className="rounded-[14px] border border-hairline bg-card px-4 py-3.5">
-        <header className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-[13px] font-medium text-neutral-800">活跃对话</h2>
-          <span className="text-[11px] text-neutral-500">每日 · 会话数</span>
-        </header>
-        <ActivityHeatmap daily={daily} />
-      </section>
+      <StatsCard icon={<Activity className="h-4 w-4" />} title="活跃对话" detail="近一年">
+        <div className="overflow-x-auto pb-1">
+          <div className="min-w-[480px]"><ActivityHeatmap daily={daily} /></div>
+        </div>
+      </StatsCard>
 
-      {/* 近 30 天 token 趋势 */}
-      <section className="rounded-[14px] border border-hairline bg-card px-4 py-3.5">
-        <header className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-[13px] font-medium text-neutral-800">近 30 天 token</h2>
-          <span className="text-[11px] text-neutral-500">峰值 {fmtTokens(peak30)}/天</span>
-        </header>
-        <div className="flex h-[72px] items-end gap-[3px]">
+      <StatsCard icon={<ChartColumn className="h-4 w-4" />} title="Token 趋势" detail="近 30 天">
+        <div className="mb-5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="text-2xl font-semibold tabular-nums tracking-tight text-neutral-900">
+            {fmtTokens(last30.reduce((sum, d) => sum + d.tokens, 0))}
+          </span>
+          <span className="text-xs text-neutral-500">Token</span>
+          <span className="ml-auto text-[11px] tabular-nums text-neutral-500">峰值 {fmtTokens(peak30)} / 天</span>
+        </div>
+        <div className="flex h-24 items-end gap-1" role="img" aria-label="近 30 天每日 Token 用量">
           {last30.map((d) => (
             <span
               key={d.date}
-              title={`${d.date} · ${fmtTokens(d.tokens)} tokens`}
+              title={`${d.date} · ${fmtTokens(d.tokens)} Token`}
               className={cn(
-                "min-h-[2px] flex-1 rounded-[2px] bg-[color-mix(in_srgb,var(--husk-activity)_70%,transparent)]",
-                d.tokens === 0 && "bg-[var(--husk-n100)] dark:bg-[var(--husk-n800)]"
+                "min-w-0 flex-1 rounded-t-sm transition-opacity hover:opacity-70",
+                d.tokens ? INPUT_COLOR : SURFACE_ACTIVITY_EMPTY,
               )}
-              style={{ height: `${Math.max(2, (d.tokens / peak30) * 72)}px` }}
+              style={{ height: `${Math.max(3, d.tokens / (peak30 || 1) * 96)}px` }}
             />
           ))}
         </div>
-      </section>
+        <div className="mt-2 flex justify-between text-[10px] tabular-nums text-neutral-500">
+          <span>{last30[0]?.date.slice(5)}</span>
+          <span>今天</span>
+        </div>
+      </StatsCard>
 
-      {/* 逐工作区 — which PROJECTS spent the tokens. Same two-share bar as the
-          model breakdown, sorted by volume, newest activity as the hint. */}
       {byWorkspace.length > 0 && (
-        <section className="rounded-[14px] border border-hairline bg-card px-4 py-3.5">
-          <header className="mb-3 flex items-baseline justify-between">
-            <h2 className="text-[13px] font-medium text-neutral-800">工作区用量</h2>
-            <span className="text-[11px] text-neutral-500">{byWorkspace.length} 个工作区</span>
-          </header>
-          <div className="flex flex-col gap-2.5">
-            {byWorkspace.map((w) => {
-              const total = w.prompt + w.completion;
-              return (
-                <div key={w.workspace} className="flex flex-col gap-1">
-                  <div className="flex items-baseline justify-between text-[12px]">
-                    <span className="truncate text-neutral-800" title={w.workspace}>
-                      {w.workspace}
-                    </span>
-                    <span className="shrink-0 tabular-nums text-neutral-500">
-                      {fmtTokens(total)} · {w.sessions} 会话 · {dayAgo(w.lastTs)}
-                    </span>
-                  </div>
-                  <div className="flex h-[6px] overflow-hidden rounded-full bg-[var(--husk-n100)] dark:bg-[var(--husk-n800)]">
-                    <span
-                      className="bg-[color-mix(in_srgb,var(--husk-activity)_85%,transparent)]"
-                      style={{ width: `${(w.prompt / wsMax) * 100}%` }}
-                      title={`输入 ${w.prompt}`}
-                    />
-                    <span
-                      className="bg-[color-mix(in_srgb,var(--husk-accent)_70%,transparent)]"
-                      style={{ width: `${(w.completion / wsMax) * 100}%` }}
-                      title={`输出 ${w.completion}`}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+        <StatsCard icon={<Folder className="h-4 w-4" />} title="工作区用量" detail={`${byWorkspace.length} 个工作区`}>
+          <div className="flex flex-col gap-5">
+            {byWorkspace.map((w) => (
+              <UsageRow
+                key={w.workspace}
+                title={workspaceName(w.workspace)}
+                description={w.workspace}
+                prompt={w.prompt}
+                completion={w.completion}
+                max={wsMax}
+                hint={`${w.sessions} 个会话 · ${dayAgo(w.lastTs)}`}
+              />
+            ))}
           </div>
-          <div className="mt-3 flex items-center gap-4 text-[11px] text-neutral-500">
-            <Legend className="bg-[color-mix(in_srgb,var(--husk-activity)_85%,transparent)]" label="输入" />
-            <Legend className="bg-[color-mix(in_srgb,var(--husk-accent)_70%,transparent)]" label="输出" />
-          </div>
-        </section>
+          <UsageLegend />
+        </StatsCard>
       )}
 
-      {/* 逐模型 */}
       {byModel.length > 0 && (
-        <section className="rounded-[14px] border border-hairline bg-card px-4 py-3.5">
-          <header className="mb-3 flex items-baseline justify-between">
-            <h2 className="text-[13px] font-medium text-neutral-800">模型用量</h2>
-            <span className="text-[11px] text-neutral-500">{byModel.length} 个模型</span>
-          </header>
-          <div className="flex flex-col gap-2.5">
-            {byModel.map((m) => {
-              const total = m.prompt + m.completion;
-              return (
-                <div key={`${m.provider}:${m.model}`} className="flex flex-col gap-1">
-                  <div className="flex items-baseline justify-between text-[12px]">
-                    <span className="truncate font-mono text-neutral-800">
-                      {m.model}
-                      {m.provider && (
-                        <span className="ml-2 font-sans text-[11px] text-neutral-500">
-                          {m.provider}
-                        </span>
-                      )}
-                    </span>
-                    <span className="shrink-0 tabular-nums text-neutral-500">
-                      {fmtTokens(total)} · {m.sessions} 会话
-                    </span>
-                  </div>
-                  {/* 输入/输出分段条 — one bar, two shares. */}
-                  <div className="flex h-[6px] overflow-hidden rounded-full bg-[var(--husk-n100)] dark:bg-[var(--husk-n800)]">
-                    <span
-                      className="bg-[color-mix(in_srgb,var(--husk-activity)_85%,transparent)]"
-                      style={{ width: `${(m.prompt / modelMax) * 100}%` }}
-                      title={`输入 ${m.prompt}`}
-                    />
-                    <span
-                      className="bg-[color-mix(in_srgb,var(--husk-accent)_70%,transparent)]"
-                      style={{ width: `${(m.completion / modelMax) * 100}%` }}
-                      title={`输出 ${m.completion}`}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+        <StatsCard icon={<Cpu className="h-4 w-4" />} title="模型用量" detail={`${byModel.length} 个模型`}>
+          <div className="flex flex-col gap-5">
+            {byModel.map((m) => (
+              <UsageRow
+                key={`${m.provider}:${m.model}`}
+                title={m.model}
+                provider={m.provider}
+                prompt={m.prompt}
+                completion={m.completion}
+                max={modelMax}
+                hint={`${m.sessions} 个会话`}
+              />
+            ))}
           </div>
-          <div className="mt-3 flex items-center gap-4 text-[11px] text-neutral-500">
-            <Legend className="bg-[color-mix(in_srgb,var(--husk-activity)_85%,transparent)]" label="输入" />
-            <Legend className="bg-[color-mix(in_srgb,var(--husk-accent)_70%,transparent)]" label="输出" />
-          </div>
-        </section>
+          <UsageLegend />
+        </StatsCard>
       )}
     </div>
   );
 }
 
-/** Loading placeholder with the real page's shape — the same four KPI cells,
- * heatmap card, 30-day strip and two bar lists — so the content lands in place
- * instead of the page jumping when the numbers arrive. Same `animate-pulse`
- * + `--husk-n200` idiom as the chat skeleton. */
-function StatsSkeleton() {
-  const card = "rounded-[14px] border border-hairline bg-card px-4 py-3.5";
+function StatsCard({ icon, title, detail, children }: {
+  icon: ReactNode;
+  title: string;
+  detail: string;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex flex-col gap-6 animate-pulse" aria-hidden="true">
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="rounded-[14px] border border-hairline bg-card px-3.5 py-3">
-            <Skeleton className="h-3 w-16" />
-            <Skeleton className="mt-2 h-5 w-20" />
-            <Skeleton className="mt-1.5 h-2.5 w-28" />
-          </div>
-        ))}
+    <KvList>
+      <header className="flex flex-wrap items-center gap-3 border-b border-hairline px-5 py-4">
+        <ItemIcon className="mt-0">{icon}</ItemIcon>
+        <h2 className="text-sm font-medium text-neutral-900">{title}</h2>
+        <span className="ml-auto text-[11px] text-neutral-500">{detail}</span>
+      </header>
+      <div className="p-5">{children}</div>
+    </KvList>
+  );
+}
+
+function Kpi({ icon, label, value, hint }: { icon: ReactNode; label: string; value: string; hint: string }) {
+  return (
+    <KvList className="min-w-0 p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <ItemIcon className="mt-0 h-7 w-7 rounded-md">{icon}</ItemIcon>
+        <span className="text-[11px] text-neutral-500">{label}</span>
       </div>
+      <span className="block break-all text-2xl font-semibold tabular-nums tracking-tight text-neutral-900">{value}</span>
+      <span className="mt-1 block text-[11px] leading-relaxed text-neutral-500">{hint}</span>
+    </KvList>
+  );
+}
 
-      <section className={card}>
-        <Skeleton className="mb-3 h-3.5 w-20" />
-        <Skeleton className="h-[92px] w-full" />
-      </section>
+function UsageRow({ title, description, provider, prompt, completion, max, hint }: {
+  title: string;
+  description?: string;
+  provider?: string;
+  prompt: number;
+  completion: number;
+  max: number;
+  hint: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1.5">
+        <div className="min-w-0 flex-[1_1_180px]">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[13px] text-neutral-800" title={title}>{title}</span>
+            {provider && <Tag className="max-w-[45%] [&>span]:truncate"><span>{provider}</span></Tag>}
+          </div>
+          {description && (
+            <span title={description} className="mt-1 block truncate font-mono text-[10px] text-neutral-500 select-text">{description}</span>
+          )}
+        </div>
+        <div className="ml-auto text-right">
+          <span className="text-[13px] font-medium tabular-nums text-neutral-800">{fmtTokens(prompt + completion)}</span>
+          <span className="ml-1 text-[10px] text-neutral-500">Token</span>
+          <span className="mt-0.5 block text-[10px] tabular-nums text-neutral-500">{hint}</span>
+        </div>
+      </div>
+      <div className={cn("flex h-1.5 overflow-hidden rounded-full", SURFACE_ACTIVITY_EMPTY)}>
+        <span className={INPUT_COLOR} style={{ width: `${prompt / max * 100}%` }} title={`输入 ${prompt}`} />
+        <span className={OUTPUT_COLOR} style={{ width: `${completion / max * 100}%` }} title={`输出 ${completion}`} />
+      </div>
+    </div>
+  );
+}
 
-      <section className={card}>
-        <Skeleton className="mb-3 h-3.5 w-24" />
-        <div className="flex h-[72px] items-end gap-[3px]">
-          {Array.from({ length: 30 }, (_, i) => (
-            <Skeleton
-              key={i}
-              className="flex-1 rounded-[2px]"
-              style={{ height: `${30 + ((i * 37) % 60)}%` }}
-            />
+function UsageLegend() {
+  return (
+    <div className="mt-5 flex items-center gap-4 text-[11px] text-neutral-500">
+      <span className="flex items-center gap-1.5"><span className={cn("h-1.5 w-3 rounded-full", INPUT_COLOR)} />输入</span>
+      <span className="flex items-center gap-1.5"><span className={cn("h-1.5 w-3 rounded-full", OUTPUT_COLOR)} />输出</span>
+    </div>
+  );
+}
+
+function StatsSkeleton() {
+  return (
+    <div className="flex flex-col gap-8 animate-pulse" aria-busy="true" aria-label="正在加载统计">
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-4 w-20" />
+        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <KvList key={i} className="min-w-0 p-4">
+              <Skeleton className="mb-3 h-7 w-7" />
+              <Skeleton className="h-6 w-16" />
+              <Skeleton className="mt-2 h-3 w-full max-w-28" />
+            </KvList>
           ))}
         </div>
-      </section>
-
-      {[0, 1].map((k) => (
-        <section key={k} className={card}>
-          <Skeleton className="mb-3 h-3.5 w-20" />
-          <div className="flex flex-col gap-2.5">
-            {[0, 1].map((i) => (
-              <div key={i} className="flex flex-col gap-1">
-                <div className="flex items-baseline justify-between">
-                  <Skeleton className="h-3 w-40" />
-                  <Skeleton className="h-3 w-24" />
-                </div>
-                <Skeleton className="h-[6px] w-full rounded-full" />
-              </div>
-            ))}
+      </div>
+      {[0, 1, 2, 3].map((i) => (
+        <KvList key={i}>
+          <div className="flex items-center gap-3 border-b border-hairline px-5 py-4">
+            <Skeleton className="h-8 w-8" />
+            <Skeleton className="h-4 w-20" />
           </div>
-        </section>
+          <div className="p-5"><Skeleton className="h-28 w-full rounded-xl" /></div>
+        </KvList>
       ))}
     </div>
   );
 }
 
-/** `3 天前`-style hint for a workspace's newest activity. */
+function workspaceName(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
+}
+
 function dayAgo(ts: number): string {
   if (!ts) return "";
   const days = Math.floor((Date.now() / 1000 - ts) / 86400);
@@ -273,38 +282,4 @@ function dayAgo(ts: number): string {
   if (days === 1) return "昨天";
   if (days < 30) return `${days} 天前`;
   return `${Math.floor(days / 30)} 个月前`;
-}
-
-function Kpi({
-  Icon,
-  label,
-  value,
-  hint,
-}: {
-  Icon: (p: { className?: string }) => JSX.Element;
-  label: string;
-  value: string;
-  hint: string;
-}) {
-  return (
-    <div className="rounded-[14px] border border-hairline bg-card px-3.5 py-3">
-      <span className="flex items-center gap-1.5 text-[11px] text-neutral-500">
-        <Icon className="h-3.5 w-3.5" />
-        {label}
-      </span>
-      <span className="mt-1 block text-[18px] font-semibold tabular-nums tracking-tight text-neutral-900">
-        {value}
-      </span>
-      {hint && <span className="mt-0.5 block text-[11px] text-neutral-500">{hint}</span>}
-    </div>
-  );
-}
-
-function Legend({ className, label }: { className: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <span className={cn("h-[6px] w-[14px] rounded-full", className)} />
-      {label}
-    </span>
-  );
 }

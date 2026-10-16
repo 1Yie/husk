@@ -1,225 +1,171 @@
-import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useRef, useState } from "react";
-import { cn } from "@/lib/utils";
+import { Coins, Monitor, Moon, Sun } from "@keyline-icons/react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { Button } from "@/components/ui/button";
-import { SettingsSection } from "@/features/settings/components";
+import {
+  EmptyState,
+  SettingRow,
+  SettingSelect,
+  SettingsCards,
+  SettingsSection,
+} from "@/features/settings/components";
 import { getAppearance, setAppearance, type AppearanceConfig } from "@/lib/agent-ipc/sessions";
 import { applyAppearance, broadcastAppearance } from "@/lib/appearance";
+import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
-/** Appearance settings — just the light/dark/system mode cards. The full
- *  config still round-trips through `cfgRef` (applyAppearance needs the
- *  stored colors/fonts/contrast); only `theme_mode` is user-editable. */
+type ThemeMode = "system" | "light" | "dark";
+
+const THEMES = [
+  { value: "system", label: "跟随系统", Icon: Monitor },
+  { value: "light", label: "浅色", Icon: Sun },
+  { value: "dark", label: "深色", Icon: Moon },
+] as const;
+
+/** Literal zinc colours depict each theme independently of the current one. */
+function PreviewWindow({ dark }: { dark: boolean }) {
+  return (
+    <div className={cn("flex h-full min-w-0 flex-1 p-2.5 pb-0", dark ? "bg-zinc-800" : "bg-zinc-100")}>
+      <div className={cn(
+        "flex w-full overflow-hidden rounded-t-lg border border-b-0 shadow-sm",
+        dark ? "border-zinc-600/50 bg-zinc-900" : "border-zinc-300/70 bg-[#ffffff]",
+      )}>
+        <div className={cn("flex w-[28%] flex-col gap-1.5 border-r p-2", dark ? "border-zinc-700 bg-zinc-800" : "border-zinc-200 bg-zinc-50")}>
+          <span className={cn("mb-1 h-1 w-3/4 rounded-full", dark ? "bg-zinc-500" : "bg-zinc-300")} />
+          <span className={cn("h-1 w-full rounded-full", dark ? "bg-zinc-600" : "bg-zinc-200")} />
+          <span className={cn("h-1 w-2/3 rounded-full", dark ? "bg-zinc-600" : "bg-zinc-200")} />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-2 p-2.5">
+          <span className={cn("h-1 w-1/2 rounded-full", dark ? "bg-zinc-500" : "bg-zinc-300")} />
+          <span className={cn("h-3 w-3/4 self-end rounded-md", dark ? "bg-zinc-700" : "bg-zinc-100")} />
+          <div className="flex flex-col gap-1">
+            <span className={cn("h-1 w-full rounded-full", dark ? "bg-zinc-700" : "bg-zinc-200")} />
+            <span className={cn("h-1 w-2/3 rounded-full", dark ? "bg-zinc-700" : "bg-zinc-200")} />
+          </div>
+          <span className={cn("mt-auto h-4 w-full rounded-md border", dark ? "border-zinc-700 bg-zinc-800" : "border-zinc-200 bg-zinc-50")} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ThemePreview({ mode }: { mode: ThemeMode }) {
+  return (
+    <div aria-hidden="true" className="flex h-28 w-full overflow-hidden rounded-xl border border-hairline">
+      {mode === "system" ? (
+        <>
+          <PreviewWindow dark={false} />
+          <PreviewWindow dark />
+        </>
+      ) : <PreviewWindow dark={mode === "dark"} />}
+    </div>
+  );
+}
+
 export function AppearanceSettings() {
-  const [themeMode, setThemeModeState] = useState<"system" | "light" | "dark">("system");
+  const [themeMode, setThemeModeState] = useState<ThemeMode>("system");
   const [currency, setCurrency] = useState<"usd" | "cny">("usd");
-  // Until the stored config is read, the controls would show the defaults
-  // ("system", "usd") and then jump to the saved choice — hold the shape instead.
   const [loaded, setLoaded] = useState(false);
-  // First-load flag: applying the fetched config must not echo back a
-  // `set_appearance` write.
-  const hydrated = useRef(false);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  // Preserve the complete config when applying a theme preview.
   const cfgRef = useRef<AppearanceConfig | null>(null);
 
-  // Load the persisted config once, then apply it so the settings window
-  // itself renders in the user's theme (it's a separate webview — no
-  // shared state with the main window).
   useEffect(() => {
+    let alive = true;
+    setLoadError("");
     void getAppearance()
       .then((cfg) => {
+        if (!alive) return;
         cfgRef.current = cfg;
         setThemeModeState(cfg.theme_mode);
         setCurrency(cfg.currency === "cny" ? "cny" : "usd");
         applyAppearance(cfg);
-        hydrated.current = true;
         setLoaded(true);
       })
-      .catch(() => {});
-  }, []);
+      .catch((e) => { if (alive) setLoadError(String(e)); });
+    return () => { alive = false; };
+  }, [loadAttempt]);
 
-  const setThemeMode = (v: "system" | "light" | "dark") => {
+  const setThemeMode = (v: ThemeMode) => {
+    if (!cfgRef.current) return;
     setThemeModeState(v);
-    if (cfgRef.current) {
-      const cfg = { ...cfgRef.current, theme_mode: v };
-      cfgRef.current = cfg;
-      applyAppearance(cfg);
-    }
-    if (hydrated.current) {
-      void setAppearance({ theme_mode: v })
-        .then(() => broadcastAppearance())
-        .catch((e) => console.error("save appearance:", e));
-    }
+    const cfg = { ...cfgRef.current, theme_mode: v };
+    cfgRef.current = cfg;
+    applyAppearance(cfg);
+    void setAppearance({ theme_mode: v })
+      .then(() => broadcastAppearance())
+      .catch((e) => toast.error("保存外观失败", { description: String(e) }));
   };
 
   const setCurrencyMode = (v: "usd" | "cny") => {
+    if (!cfgRef.current) return;
     setCurrency(v);
-    if (cfgRef.current) cfgRef.current = { ...cfgRef.current, currency: v };
-    if (hydrated.current) {
-      void setAppearance({ currency: v })
-        .then(() => broadcastAppearance())
-        .catch((e) => console.error("save appearance:", e));
-    }
+    cfgRef.current = { ...cfgRef.current, currency: v };
+    void setAppearance({ currency: v })
+      .then(() => broadcastAppearance())
+      .catch((e) => toast.error("保存货币单位失败", { description: String(e) }));
   };
 
+  if (loadError) {
+    return (
+      <KvList>
+        <EmptyState
+          icon={<Monitor className="h-4 w-4" />}
+          title="无法读取外观设置"
+          description={<span className="break-all">{loadError}</span>}
+          action={<Button size="sm" variant="outline" onClick={() => setLoadAttempt((n) => n + 1)}>重试</Button>}
+        />
+      </KvList>
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-8 w-full">
-      <SettingsSection title="外观模式">
+    <div className="flex w-full min-w-0 flex-col gap-8">
+      <SettingsSection title="主题">
         {!loaded ? (
-          <div className="grid grid-cols-3 gap-3">
-            {[0, 1, 2].map((i) => (
-              <Skeleton key={i} className="h-[92px] rounded-xl" />
-            ))}
+          <div className="grid animate-pulse grid-cols-[repeat(auto-fit,minmax(min(100%,160px),1fr))] gap-3" aria-busy="true">
+            {THEMES.map(({ value }) => <Skeleton key={value} className="h-[178px] rounded-2xl" />)}
           </div>
         ) : (
-        <div className="grid grid-cols-3 gap-3">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setThemeMode("system")}
-            className="flex flex-col items-center cursor-pointer group select-none text-left p-0 h-auto w-full border-0 bg-transparent hover:bg-transparent focus-visible:outline-none focus-visible:ring-0"
-          >
-            <div
-              className={cn(
-                "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex items-end justify-center",
-                themeMode === "system"
-                  ? "border-2 border-accent ring-2 ring-accent/25 shadow-xs"
-                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300",
-              )}
-            >
-              <div className="absolute inset-0 flex">
-                <div className="w-1/2 h-full bg-[#627181]" />
-                <div className="w-1/2 h-full bg-[#272a2e]" />
-              </div>
-
-              <div className="relative w-[86%] h-[82px] rounded-t-xl overflow-hidden flex shadow-md border-t border-x border-[#09090b]/15">
-                <div className="w-1/2 h-full bg-[#ffffff] p-3 flex flex-col gap-2">
-                  <div className="h-1.5 w-10 bg-[#d4d4d8] rounded-full" />
-                  <div className="flex flex-col gap-1.5 mt-0.5">
-                    <div className="h-1.5 w-12 bg-[#e4e4e7] rounded-full" />
-                    <div className="h-1.5 w-16 bg-[#e4e4e7] rounded-full" />
-                    <div className="h-1.5 w-10 bg-[#e4e4e7] rounded-full" />
-                  </div>
-                </div>
-
-                <div className="w-1/2 h-full bg-[#2f3338] p-3 flex flex-col gap-2 border-l border-[#3f3f46]/60">
-                  <div className="h-1.5 w-10 bg-[#52525b] rounded-full" />
-                  <div className="flex flex-col gap-1.5 mt-0.5">
-                    <div className="h-1.5 w-12 bg-[#52525b] rounded-full" />
-                    <div className="h-1.5 w-16 bg-[#52525b] rounded-full" />
-                    <div className="h-1.5 w-10 bg-[#52525b] rounded-full" />
-                  </div>
-                </div>
-              </div>
-            </div>
-            <span
-              className={cn(
-                "text-xs mt-2.5 transition-colors",
-                themeMode === "system" ? "text-neutral-900" : "text-neutral-600",
-              )}
-            >
-              系统
-            </span>
-          </Button>
-
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setThemeMode("light")}
-            className="flex flex-col items-center cursor-pointer group select-none text-left p-0 h-auto w-full border-0 bg-transparent hover:bg-transparent focus-visible:outline-none focus-visible:ring-0"
-          >
-            <div
-              className={cn(
-                "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex flex-col justify-between items-center pt-3.5 bg-[#f2f4f6]",
-                themeMode === "light"
-                  ? "border-2 border-accent ring-2 ring-accent/25 shadow-xs"
-                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300",
-              )}
-            >
-              <div className="h-1.5 w-24 bg-[#d4d4d8]/80 rounded-full" />
-
-              <div className="w-[86%] h-[82px] rounded-t-xl bg-[#ffffff] border-t border-x border-[#e4e4e7]/80 p-3 flex flex-col gap-1.5 shadow-sm">
-                <div className="h-1.5 w-14 bg-[#e4e4e7] rounded-full" />
-                <div className="h-1.5 w-20 bg-[#e4e4e7] rounded-full" />
-                <div className="h-1.5 w-12 bg-[#e4e4e7] rounded-full" />
-              </div>
-            </div>
-            <span
-              className={cn(
-                "text-xs mt-2.5 transition-colors",
-                themeMode === "light" ? "text-neutral-900" : "text-neutral-600",
-              )}
-            >
-              浅色
-            </span>
-          </Button>
-
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setThemeMode("dark")}
-            className="flex flex-col items-center cursor-pointer group select-none text-left p-0 h-auto w-full border-0 bg-transparent hover:bg-transparent focus-visible:outline-none focus-visible:ring-0"
-          >
-            <div
-              className={cn(
-                "w-full h-[126px] rounded-2xl overflow-hidden transition-colors relative flex flex-col justify-between items-center pt-3.5 bg-[#43474d]",
-                themeMode === "dark"
-                  ? "border-2 border-accent ring-2 ring-accent/25 shadow-xs"
-                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] hover:border-neutral-300",
-              )}
-            >
-              <div className="h-1.5 w-24 bg-[#71717a]/80 rounded-full" />
-
-              <div className="w-[86%] h-[82px] rounded-t-xl bg-[#1c1c1f] border-t border-x border-[#3f3f46]/80 p-3 flex flex-col gap-1.5 shadow-sm">
-                <div className="h-1.5 w-14 bg-[#3f3f46] rounded-full" />
-                <div className="h-1.5 w-20 bg-[#3f3f46] rounded-full" />
-                <div className="h-1.5 w-12 bg-[#3f3f46] rounded-full" />
-              </div>
-            </div>
-            <span
-              className={cn(
-                "text-xs mt-2.5 transition-colors",
-                themeMode === "dark" ? "text-neutral-900" : "text-neutral-600",
-              )}
-            >
-              深色
-            </span>
-          </Button>
-        </div>
+          <SettingsCards
+            value={themeMode}
+            onChange={(v) => setThemeMode(v as ThemeMode)}
+            className="grid-cols-[repeat(auto-fit,minmax(min(100%,160px),1fr))]"
+            options={THEMES.map(({ value, label, Icon }) => ({
+              value,
+              label,
+              icon: <Icon className="h-4 w-4" />,
+              preview: <ThemePreview mode={value} />,
+            }))}
+          />
         )}
       </SettingsSection>
 
-      <SettingsSection
-        title="货币单位"
-        description="标题栏会话花费的显示符号，仅切换标识不做汇率换算"
-      >
-        {!loaded ? (
-          <div className="flex gap-2">
-            <Skeleton className="h-8 w-24 rounded-lg" />
-            <Skeleton className="h-8 w-24 rounded-lg" />
-          </div>
-        ) : (
-        <div className="flex gap-2">
-          {(
-            [
-              { v: "usd", label: "$ 美元" },
-              { v: "cny", label: "¥ 人民币" },
-            ] as const
-          ).map(({ v, label }) => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => setCurrencyMode(v)}
-              className={cn(
-                "h-8 px-4 rounded-lg text-xs font-medium transition-colors cursor-pointer select-none",
-                currency === v
-                  ? "border-2 border-accent text-neutral-900 bg-accent/5"
-                  : "border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] text-neutral-600 hover:border-neutral-300",
-              )}
+      <SettingsSection title="显示">
+        <KvList>
+          <KvListContent>
+            <SettingRow
+              title="货币单位"
+              description="仅更改金额符号，不进行汇率换算"
+              icon={<Coins className="h-4 w-4" />}
+              wideControl
             >
-              {label}
-            </button>
-          ))}
-        </div>
-        )}
+              {!loaded ? <Skeleton className="h-8 w-full rounded-xl" /> : (
+                <SettingSelect
+                  value={currency}
+                  onChange={(v) => setCurrencyMode(v as "usd" | "cny")}
+                  ariaLabel="货币单位"
+                  options={[
+                    { value: "usd", label: "$ 美元" },
+                    { value: "cny", label: "¥ 人民币" },
+                  ]}
+                />
+              )}
+            </SettingRow>
+          </KvListContent>
+        </KvList>
       </SettingsSection>
     </div>
   );

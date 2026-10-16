@@ -17,17 +17,18 @@ import {
   TriangleAlert,
   Zap,
 } from "@keyline-icons/react";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
+import { KvList, KvListContent } from "@/components/ui/kv-list";
+import { SkeletonSection } from "@/components/ui/skeleton";
 import {
   SettingSelect,
+  SettingRow,
   SettingsCards,
   SettingsSection,
+  Tag,
   type SettingsCardOption,
 } from "@/features/settings/components";
 import { THINKING_LEVELS } from "@/lib/thinking";
-import { cn } from "@/lib/utils";
 import {
   getDefaultPrefs,
   setDefaultPrefs,
@@ -39,39 +40,27 @@ const PERMISSION_OPTIONS: SettingsCardOption[] = [
   {
     value: "auto",
     label: "自动",
-    badge: (
-      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-medium h-4">
-        推荐
-      </Badge>
-    ),
-    description: "自动执行文件修改与常规命令，仅在遇到高危指令（如删除、外网访问）时弹窗确认。",
-    icon: <Zap className="h-4 w-4 text-amber-500 dark:text-amber-400 shrink-0" />,
+    badge: <Tag>推荐</Tag>,
+    description: "自动执行常规操作，高风险操作需要确认",
+    icon: <Zap className="h-4 w-4" />,
   },
   {
     value: "bypassPermissions",
     label: "全部权限",
-    badge: (
-      <Badge
-        variant="default"
-        className="text-[10px] px-1.5 py-0 font-medium h-4 bg-emerald-600 hover:bg-emerald-600 text-zinc-50"
-      >
-        完全信任
-      </Badge>
-    ),
-    description: "全自动自主执行，跳过所有修改和命令的确认弹窗，实现最高执行效率。",
-    icon: <TriangleAlert className="h-4 w-4 text-emerald-500 dark:text-emerald-400 shrink-0" />,
+    description: "文件修改和终端命令均自动执行",
+    icon: <TriangleAlert className="h-4 w-4" />,
   },
   {
     value: "acceptEdits",
     label: "仅接受编辑",
-    description: "自动允许代码与文件修改，但在执行终端命令前仍需手动批准。",
-    icon: <SquarePen className="h-4 w-4 text-blue-500 dark:text-blue-400 shrink-0" />,
+    description: "自动修改文件，终端命令需要确认",
+    icon: <SquarePen className="h-4 w-4" />,
   },
   {
     value: "default",
     label: "每次确认",
-    description: "最严格的安全模式，凡是涉及修改文件或运行终端命令前均需手动批准。",
-    icon: <ShieldCheck className="h-4 w-4 text-neutral-500 shrink-0" />,
+    description: "文件修改和终端命令均需确认",
+    icon: <ShieldCheck className="h-4 w-4" />,
   },
 ];
 
@@ -230,17 +219,19 @@ export function GeneralPane() {
     return { modelOptions: opts, modelPairs: pairs };
   }, [providers, activeModelKey]);
 
+  if (!ready) {
+    return (
+      <div className="flex flex-col gap-8" aria-label="正在加载常规设置" aria-busy="true">
+        <SkeletonSection rows={2} />
+        <SkeletonSection rows={4} />
+        <SkeletonSection rows={2} />
+      </div>
+    );
+  }
+
   return (
-    // First-ever load: keep the layout but hide the controls until real
-    // values land, so nothing visibly swaps from its default.
-    <div
-      className={cn(
-        "flex flex-col gap-8 w-full transition-opacity duration-150",
-        ready ? "opacity-100" : "opacity-0",
-      )}
-      aria-busy={!ready}
-    >
-      <SettingsSection title="默认权限模式">
+    <div className="flex w-full min-w-0 flex-col gap-8">
+      <SettingsSection title="默认权限模式" description="用于新建会话">
         <SettingsCards
           value={permission}
           onChange={(v) => {
@@ -251,43 +242,32 @@ export function GeneralPane() {
         />
       </SettingsSection>
 
-      <SettingsSection
-        title="Agent 偏好"
-      >
+      <SettingsSection title="启动与会话">
         <KvList>
           <KvListContent>
-            <KvRow
-              label="默认进入"
-              icon={<FileText className="h-4 w-4" />}
-            >
+            <SettingRow title="启动模式" icon={<FileText className="h-4 w-4" />} wideControl>
               <SettingSelect
                 value={workspaceMode}
                 onChange={(v) => {
                   setWorkspaceMode(v);
                   void save({ default_workspace_mode: v });
                 }}
-                placeholder="选择启动模式"
                 options={WORKSPACE_MODE_OPTIONS}
+                ariaLabel="启动模式"
               />
-            </KvRow>
-            <KvRow
-              label="默认代理模式"
-              icon={<Bot className="h-4 w-4" />}
-            >
+            </SettingRow>
+            <SettingRow title="代理模式" icon={<Bot className="h-4 w-4" />} wideControl>
               <SettingSelect
                 value={agentMode}
                 onChange={(v) => {
                   setAgentMode(v);
                   void save({ agent_mode: v });
                 }}
-                placeholder="选择代理模式"
                 options={AGENT_MODE_OPTIONS}
+                ariaLabel="代理模式"
               />
-            </KvRow>
-            <KvRow
-              label="默认模型"
-              icon={<Cpu className="h-4 w-4" />}
-            >
+            </SettingRow>
+            <SettingRow title="默认模型" icon={<Cpu className="h-4 w-4" />} wideControl>
               <SettingSelect
                 value={activeModelKey}
                 onChange={(v) => {
@@ -298,27 +278,33 @@ export function GeneralPane() {
                     active_model: pair?.model ?? "",
                   });
                 }}
-                placeholder="选择默认模型"
                 options={modelOptions}
+                ariaLabel="默认模型"
               />
-            </KvRow>
-            <KvRow
-              label="默认思考深度"
-              icon={<Sparkles className="h-4 w-4" />}
-            >
+            </SettingRow>
+            <SettingRow title="思考深度" icon={<Sparkles className="h-4 w-4" />} wideControl>
               <SettingSelect
                 value={thinking}
                 onChange={(v) => {
                   setThinking(v);
                   void save({ thinking_level: v });
                 }}
-                placeholder="选择思考深度"
                 options={THINKING_OPTIONS}
+                ariaLabel="思考深度"
               />
-            </KvRow>
-            <KvRow
-              label="上下文压缩阈值"
+            </SettingRow>
+          </KvListContent>
+        </KvList>
+      </SettingsSection>
+
+      <SettingsSection title="上下文">
+        <KvList>
+          <KvListContent>
+            <SettingRow
+              title="自动压缩"
+              description="上下文达到此比例时压缩历史消息"
               icon={<Archive className="h-4 w-4" />}
+              wideControl
             >
               <SettingSelect
                 value={compactAt}
@@ -326,22 +312,24 @@ export function GeneralPane() {
                   setCompactAt(v);
                   void save({ compact_at: Number(v) / 100 });
                 }}
-                placeholder="选择阈值"
                 options={COMPACT_AT_OPTIONS}
+                ariaLabel="自动压缩阈值"
               />
-            </KvRow>
-            <KvRow
-              label="架构蓝图"
+            </SettingRow>
+            <SettingRow
+              title="架构蓝图"
+              description="向智能体提供项目的模块与依赖信息"
               icon={<Layers className="h-4 w-4" />}
             >
               <Switch
                 checked={blueprintEnabled}
+                aria-label="架构蓝图"
                 onCheckedChange={(v) => {
                   setBlueprintEnabled(v);
                   void save({ blueprint_enabled: v });
                 }}
               />
-            </KvRow>
+            </SettingRow>
           </KvListContent>
         </KvList>
       </SettingsSection>
@@ -349,79 +337,74 @@ export function GeneralPane() {
       <SettingsSection title="通知">
         <KvList>
           <KvListContent>
-            <KvRow
-              label="系统通知"
+            <SettingRow
+              title="系统通知"
+              description="在桌面显示任务进度与待处理提醒"
               icon={<Bell className="h-4 w-4" />}
             >
               <Switch
                 checked={desktopNotify}
+                aria-label="系统通知"
                 onCheckedChange={(v) => {
                   setDesktopNotify(v);
                   void save({ desktop_notifications: v });
                 }}
               />
-            </KvRow>
+            </SettingRow>
           </KvListContent>
         </KvList>
       </SettingsSection>
 
-      <SettingsSection title="沙盒设置">
+      <SettingsSection title="沙盒">
         <KvList>
           <KvListContent>
-            <KvRow
-              label="启用沙盒"
+            <SettingRow
+              title="启用沙盒"
+              description="隔离命令执行环境"
               icon={<ShieldCheck className="h-4 w-4" />}
             >
               <Switch
                 checked={sandboxEnabled}
+                aria-label="启用沙盒"
                 onCheckedChange={(v) => {
                   setSandboxEnabled(v);
                   void save({ sandbox_enabled: v });
                 }}
               />
-            </KvRow>
-            <KvRow
-              label="网络访问"
-              icon={<Globe className="h-4 w-4" />}
-            >
+            </SettingRow>
+            <SettingRow title="网络访问" icon={<Globe className="h-4 w-4" />} wideControl>
               <SettingSelect
                 value={sandboxNetwork}
                 onChange={(v) => {
                   setSandboxNetwork(v);
                   void save({ sandbox_network: v as "auto" | "allow" | "deny" });
                 }}
-                placeholder="选择网络策略"
                 options={SANDBOX_NETWORK_OPTIONS}
+                ariaLabel="沙盒网络访问"
               />
-            </KvRow>
-            <KvRow
-              label="内存上限"
-              icon={<Cpu className="h-4 w-4" />}
-            >
+            </SettingRow>
+            <SettingRow title="内存上限" icon={<Cpu className="h-4 w-4" />} wideControl>
               <SettingSelect
                 value={sandboxMem}
                 onChange={(v) => {
                   setSandboxMem(v);
                   void save({ sandbox_max_memory_mb: v === "default" ? null : Number(v) });
                 }}
-                placeholder="选择内存上限"
                 options={SANDBOX_MEMORY_OPTIONS}
+                ariaLabel="沙盒内存上限"
               />
-            </KvRow>
-            <KvRow
-              label="进程数上限"
-              icon={<Activity className="h-4 w-4" />}
-            >
+            </SettingRow>
+            <SettingRow title="进程数上限" icon={<Activity className="h-4 w-4" />} wideControl>
               <SettingSelect
                 value={sandboxProcs}
                 onChange={(v) => {
                   setSandboxProcs(v);
                   void save({ sandbox_max_processes: v === "default" ? null : Number(v) });
                 }}
-                placeholder="选择进程数上限"
                 options={SANDBOX_PROCS_OPTIONS}
+                ariaLabel="沙盒进程数上限"
               />
-            </KvRow>
+            </SettingRow>
           </KvListContent>
         </KvList>
       </SettingsSection>

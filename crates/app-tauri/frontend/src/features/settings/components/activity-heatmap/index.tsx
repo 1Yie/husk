@@ -145,13 +145,13 @@ export function ActivityHeatmap({ daily, metric = "sessions" }: Props) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between text-[11px] text-neutral-500">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-[11px] text-neutral-500">
         <span className="tabular-nums">
           {hover
             ? `${hover.date} · ${hover.sessions} 个会话 · ${hover.tokens} tokens`
             : `近一年 ${total} ${unit}`}
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex shrink-0 items-center gap-1">
           少
           {LEVELS.map((c, i) => (
             <span key={i} className={cn("h-[9px] w-[9px] rounded-[2px]", c)} />
