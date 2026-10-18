@@ -2022,8 +2022,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     if (el.scrollTop < 480) {
       // Locally trimmed turns come back first; history pages only once
       // everything loaded is mounted again.
+      // Same `landed` gate as paging: before the landing snap, the skeleton's
+      // scrollTop 0 is not the reader scrolling up. Never while pinned either
+      // — the trim owns that state, and a short column would trade turns
+      // back and forth between the two.
       if (hidden > 0) {
-        if (revealRestoreRef.current === null) revealTrimmed(hidden - REVEAL_CHUNK);
+        if (landed && !pinnedRef.current && revealRestoreRef.current === null) {
+          revealTrimmed(hidden - REVEAL_CHUNK);
+        }
       } else void maybeLoadOlder();
     }
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
