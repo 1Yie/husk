@@ -341,6 +341,55 @@ fn parse_hex_color(hex: &str) -> Option<tauri::webview::Color> {
     Some(tauri::webview::Color(r, g, b, 0xff))
 }
 
+/// Hand the frameless main window's edges to the page.
+///
+/// `tauri-runtime-wry` attaches GTK handlers to the WebView that claim a
+/// `5px × scale` inset on every edge: a left press there starts a resize
+/// drag and is swallowed before WebKit sees it, and motion sets a resize
+/// cursor it never hands back. Under a fractional KDE/Wayland scale that
+/// inset outgrows the 6px scrollbars, so a scrollbar flush with the right
+/// edge (the changes panel) could only ever resize the window. The page
+/// owns the edges instead (`WindowResizeEdges`: CSS cursors,
+/// `startResizeDragging`, stepping aside over scrollbars), so block every
+/// handler connected to these signals so far — WebKit's own handling is a
+/// class handler and keeps working. wry's back/forward mouse-button
+/// synthesis rides `button-press-event` too and goes with it; the app has no
+/// page history for it to drive.
+#[cfg(target_os = "linux")]
+fn release_webview_edges(win: &tauri::WebviewWindow) {
+    let _ = win.with_webview(|webview| {
+        use gtk::glib::{gobject_ffi, prelude::*, translate::IntoGlib, translate::ToGlibPtr};
+        let view = webview.inner();
+        let object: &gtk::glib::Object = view.upcast_ref();
+        let itype = object.type_().into_glib();
+        let ptr: *mut gobject_ffi::GObject = object.to_glib_none().0;
+        for name in [
+            c"motion-notify-event",
+            c"button-press-event",
+            c"touch-event",
+        ] {
+            // SAFETY: `ptr` is a live WebKitWebView for the duration of this
+            // main-thread callback, and `name` is a NUL-terminated signal
+            // name looked up on the instance's own type.
+            unsafe {
+                let id = gobject_ffi::g_signal_lookup(name.as_ptr(), itype);
+                if id == 0 {
+                    continue;
+                }
+                gobject_ffi::g_signal_handlers_block_matched(
+                    ptr,
+                    gobject_ffi::G_SIGNAL_MATCH_ID,
+                    id,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+            }
+        }
+    });
+}
+
 fn fit_main_window(app: &tauri::App) {
     const BASE_W: f64 = 1280.0;
     const BASE_H: f64 = 840.0;
@@ -350,6 +399,8 @@ fn fit_main_window(app: &tauri::App) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(target_os = "linux")]
+    release_webview_edges(&win);
     let reveal = |win: &tauri::WebviewWindow| {
         // Paint the saved theme before the first frame — see `main_window_ground`.
         let _ = win.set_background_color(Some(main_window_ground(win)));
