@@ -121,7 +121,7 @@ export function ChangesPanel({
 
   return (
     <aside className="flex h-full w-[300px] flex-none flex-col overflow-hidden border-l border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none">
-      <div className="flex h-9 w-[300px] flex-none items-center gap-2 border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] px-3">
+      <div className="flex h-9 w-full flex-none items-center gap-2 border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] px-3">
         <span className="text-[12px] font-medium text-neutral-700">
           改动
         </span>
@@ -151,7 +151,7 @@ export function ChangesPanel({
 
       {/* No overflow-x-hidden — it would clip each DiffView's own
           horizontal scroll. Long paths truncate at the row instead. */}
-      <div className="w-[300px] flex-1 min-h-0 overflow-y-auto px-1.5 py-1.5">
+      <div className="w-full flex-1 min-h-0 overflow-y-auto px-1.5 py-1.5">
         {changes.length === 0 ? (
           <div className="px-3 py-8 text-center text-[12px] text-neutral-400">
             暂无文件改动
