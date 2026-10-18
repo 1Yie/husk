@@ -13,7 +13,13 @@ import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
 import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
-import { getAppConfig, saveAppConfig, type AgentOverview } from "@/lib/agent-ipc/sessions";
+import {
+  getAppConfig,
+  getDefaultPrefs,
+  saveAppConfig,
+  setDefaultPrefs,
+  type AgentOverview,
+} from "@/lib/agent-ipc/sessions";
 import { EmptyState, Field, ItemIcon, Tag } from "@/features/settings/pages/agent/shared/index";
 import { ApiKeyInput } from "./api-key-input";
 import { FallbackChain } from "./fallback-chain";
@@ -48,6 +54,26 @@ function setAliased(obj: Record<string, any>, keys: string[], value: any) {
  * editor always writes a rich entry. */
 function normModel(m: any): Record<string, any> {
   return typeof m === "string" ? { id: m } : (m ?? {});
+}
+
+/** The 常规 default-model pair names a model by `provider/id`. A rename has to
+ *  carry it along, or the pane loses the pick the user just made. Only a pair
+ *  that actually pointed at the renamed entry is rewritten. */
+async function followDefaultModelRename(
+  from: { provider: string; model?: string },
+  to: { provider: string; model?: string },
+) {
+  try {
+    const prefs = await getDefaultPrefs();
+    if (prefs.active_provider !== from.provider) return;
+    if (from.model !== undefined && prefs.active_model !== from.model) return;
+    await setDefaultPrefs({
+      active_provider: to.provider,
+      active_model: to.model ?? prefs.active_model ?? "",
+    });
+  } catch (e) {
+    console.error("follow default model rename failed:", e);
+  }
 }
 
 const numOr = (v: string) => {
@@ -283,8 +309,11 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     if (await persist(next)) {
       toast.success("已保存");
       setEditProv(null);
-      // Re-read so the one-shot `renamed_from` marker never rides a later save.
-      if (newKey !== oldKey) loadCfg();
+      if (newKey !== oldKey) {
+        await followDefaultModelRename({ provider: oldKey }, { provider: newKey });
+        // Re-read so the one-shot `renamed_from` marker never rides a later save.
+        loadCfg();
+      }
     }
   };
 
@@ -322,6 +351,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     const p = { ...cfg.providers[editModel.provider] };
     const models = [...(p.models ?? [])];
     const m = { ...normModel(models[editModel.index]) };
+    const oldId: string | undefined = m.id;
     const id = mId.trim();
     if (!id) return;
     m.id = id;
@@ -348,6 +378,12 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     models[editModel.index] = m;
     const next = { ...cfg, providers: { ...cfg.providers, [editModel.provider]: { ...p, models } } };
     if (await persist(next)) {
+      if (oldId && oldId !== id) {
+        await followDefaultModelRename(
+          { provider: editModel.provider, model: oldId },
+          { provider: editModel.provider, model: id },
+        );
+      }
       toast.success("已保存");
       setEditModel(null);
     }

@@ -157,7 +157,7 @@ export function GeneralPane() {
   useEffect(() => {
     let alive = true;
     // Both requests settle before any state is applied: prefs alone would
-    // show the stored model as "已不存在" until the provider list arrives.
+    // show the stored model as the config default until providers arrive.
     void Promise.all([
       getDefaultPrefs(),
       getAppConfig()
@@ -215,13 +215,12 @@ export function GeneralPane() {
         opts.push({ value: key, label, description: pname });
       }
     }
-    // A stored pair whose model was since deleted still needs a row so the
-    // select doesn't render an empty value.
-    if (!pairs.has(activeModelKey) && activeModelKey !== "__config__") {
-      opts.push({ value: activeModelKey, label: activeModelKey, description: "已不存在" });
-    }
     return { modelOptions: opts, modelPairs: pairs };
-  }, [providers, activeModelKey]);
+  }, [providers]);
+  // The list mirrors the provider config as it is now. A stored pair that no
+  // longer names a configured model gets no row of its own — the select
+  // reads as the config default.
+  const shownModelKey = modelPairs.has(activeModelKey) ? activeModelKey : "__config__";
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-8" aria-busy={!ready}>
@@ -273,7 +272,7 @@ export function GeneralPane() {
             <SettingRow title="默认模型" icon={<Cpu className="h-4 w-4" />} wideControl>
               {ready ? (
                 <SettingSelect
-                  value={activeModelKey}
+                  value={shownModelKey}
                   onChange={(v) => {
                     setActiveModelKey(v);
                     const pair = modelPairs.get(v);
