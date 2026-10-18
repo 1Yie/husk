@@ -100,4 +100,38 @@ describe("conversation lifecycle through the event subscription", () => {
     // top handle, system notice, user, answer, bottom handle — no fake dot
     expect(marks).toHaveLength(5);
   });
+
+  test("a long live session keeps a bounded number of turns mounted", async () => {
+    const { container } = renderWithProviders(<Conversation />);
+    await act(async () => { await Promise.resolve(); });
+    for (let i = 0; i < 60; i++) {
+      await deliver(
+        { UserPrompt: `问题${i}` }, { StateChanged: "Reasoning" },
+        { AssistantMessage: `回答${i}` }, { StateChanged: "Finished" },
+      );
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    const mounted = container.querySelectorAll('[id^="chat-turn-"][id$="-user"]').length;
+    expect(mounted).toBeLessThanOrEqual(40);
+    expect(screen.getByText("回答59")).toBeInTheDocument();
+    expect(screen.queryByText("回答0")).not.toBeInTheDocument();
+  });
+
+  test("a long agentic answer folds into a bounded run of rail dashes", async () => {
+    const items: import("@/features/chat/hooks/stream-view").StreamItem[] = [
+      { kind: "user", text: "做任务", hi: 0, ts: 1 },
+    ];
+    for (let i = 0; i < 20; i++) {
+      items.push({ kind: "thinking", text: `想${i}`, done: true, hi: items.length });
+      items.push({ kind: "tool", name: "read", args: `f${i}`, content: "ok", ok: true, hi: items.length } as never);
+    }
+    items.push({ kind: "assistant", text: "完成", streaming: false, hi: items.length });
+    act(() => useAgentStore.getState().loadView("/project", 1, {
+      ...emptyView(), historyStart: 0, historyTotal: items.length, turnTotal: 1, turnOffset: 0, items,
+    }));
+    const { container } = renderWithProviders(<Conversation />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    // top handle, prompt, at most 6 answer dashes, bottom handle
+    expect(container.querySelectorAll(".group\\/item").length).toBe(9);
+  });
 });

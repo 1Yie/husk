@@ -1,5 +1,5 @@
 
-import { memo, useEffect, useRef, useState, useCallback, useMemo, startTransition, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, startTransition, type ReactNode } from "react";
 import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
 import type { SessionView, StreamItem } from "@/features/chat/hooks/stream-view";
 import {
@@ -893,6 +893,49 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
   flush(end);
 }
 
+/** Structural equality over fold output (plain objects, arrays, primitives).
+ * Strings shared with the items compare by reference, so this is cheap. */
+function sameShape(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!sameShape(a[i], b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) {
+    if (!sameShape((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false;
+  }
+  return true;
+}
+
+/** A refolded tail turn is built from fresh objects on every flush. Hand back
+ * the previous fold's step objects (and the previous turn itself) wherever the
+ * content is unchanged, so a long running turn re-renders only the step that
+ * is actually growing instead of every step it has accumulated. */
+function reuseTurn(prev: Turn | undefined, next: Turn): Turn {
+  if (!prev || prev.id !== next.id) return next;
+  let allSame = prev.steps.length === next.steps.length;
+  for (let i = 0; i < next.steps.length; i++) {
+    const old = prev.steps[i];
+    if (old && sameShape(old, next.steps[i])) next.steps[i] = old;
+    else allSame = false;
+  }
+  if (
+    allSame &&
+    prev.userText === next.userText &&
+    prev.ts === next.ts &&
+    prev.assistantTs === next.assistantTs &&
+    prev.hi === next.hi
+  ) {
+    return prev;
+  }
+  return next;
+}
+
 /** Turns mount all at once, behind the loading veil; `content-visibility: auto` then
  *  skips offscreen layout and paint, so scrolling costs nothing per turn. */
 
@@ -919,6 +962,22 @@ const STEP_LABEL: Record<AssistantStep["type"], string> = {
   system: "提示",
   plan: "计划",
 };
+
+/** Rail preview + weight per step — WeakMap'd on the step object, which the
+ * tail reconcile keeps stable, so a flush only recomputes the growing step. */
+/** Rail dashes per answer — longer answers fold step runs into one dash. */
+const MAX_STEP_MARKS = 6;
+
+const stepMarkCache = new WeakMap<AssistantStep, { preview: string; weight: number }>();
+
+function stepMarkInfo(step: AssistantStep): { preview: string; weight: number } {
+  let info = stepMarkCache.get(step);
+  if (!info) {
+    info = { preview: stepPreview(step), weight: stepWeight(step) };
+    stepMarkCache.set(step, info);
+  }
+  return info;
+}
 
 /** One-line rail preview; clipped before the whitespace collapse. */
 function stepPreview(step: AssistantStep): string {
@@ -991,6 +1050,153 @@ function CappedAssistantText({ text, animating }: { text: string; animating?: bo
     </>
   );
 }
+
+/** One assistant step. `memo` + the tail reconcile in `turns` keep a settled
+ * step's object stable, so a delta in a long running turn re-renders only the
+ * step that is growing — not every tool row and trace the turn has collected.
+ * `streaming` only matters to the last step, so earlier steps ignore it. */
+const TurnStep = memo(
+  function TurnStep({
+    step,
+    turnId,
+    stepIdx,
+    isLastStep,
+    streaming,
+  }: {
+    step: AssistantStep;
+    turnId: string;
+    stepIdx: number;
+    isLastStep: boolean;
+    streaming: boolean;
+  }) {
+    if (step.type === "thinking") {
+      const thinkingText = step.text.trim();
+      if (!step.done && !thinkingText) return null;
+      return (
+        <div
+          id={`chat-turn-${turnId}-step-${stepIdx}`}
+          className="w-full"
+        >
+          <AssistantStatus
+            mode={step.done ? "thought" : "thinking"}
+            thinkingText={thinkingText}
+            startedAt={step.startedAt}
+            elapsedMs={step.elapsedMs}
+          />
+        </div>
+      );
+    }
+
+    if (step.type === "text") {
+      const isAnimating = streaming && isLastStep;
+
+      return (
+        <div
+          id={`chat-turn-${turnId}-step-${stepIdx}`}
+          className="w-full min-w-0 text-[14px] text-neutral-900 [&_p]:max-w-none"
+        >
+          <CappedAssistantText text={step.text} animating={isAnimating} />
+        </div>
+      );
+    }
+
+    if (step.type === "tools") {
+      // The tools phase is CONTINUOUS — call 1, call 2, call 3 with
+      // model-wait gaps between them. Gating the orb on an in-flight
+      // row flashed settled between calls; instead the step stays
+      // live while it's the turn's tail (same model as thinking:
+      // "live until the next phase's item lands").
+      const toolsLive = streaming && isLastStep;
+      // Settled span — replayed rows carry ts + rewound startedAt;
+      // live rows bank startedAt and stamp ts on finish.
+      const elapsedMs =
+        !toolsLive && step.startedAt != null && (step.phaseEnd ?? step.endedAt) != null
+          ? (step.phaseEnd ?? step.endedAt)! - step.startedAt
+          : undefined;
+      return (
+        <div
+          id={`chat-turn-${turnId}-step-${stepIdx}`}
+          className="flex w-full min-w-0 flex-col items-start gap-2"
+        >
+          {/* ONE row across the whole phase — mode flips tools →
+           *  tools_done only when the next step lands (or the turn
+           *  ends), so the orb rides through consecutive calls. The
+           *  settled label carries the count and the row IS the
+           *  collapse toggle — expanding reveals the chip list. */}
+          <AssistantStatus
+            mode={toolsLive ? "tools" : "tools_done"}
+            thinkingText=""
+            startedAt={step.startedAt}
+            elapsedMs={elapsedMs}
+            doneLabel={`${step.rows.length} 次工具调用`}
+            preview={toolActivityPreview(step.rows)}
+          >
+            <ToolChips
+              rows={step.rows}
+              renderProse={(text) => (
+                <MemoStreamdown text={text} animating={toolsLive} />
+              )}
+            />
+          </AssistantStatus>
+        </div>
+      );
+    }
+
+    if (step.type === "system") {
+      return (
+        <div
+          id={`chat-turn-${turnId}-step-${stepIdx}`}
+          // `w-full` + `min-w-0` + `overflow-wrap:anywhere` — an
+          // upstream error carries a compact JSON blob whose
+          // unbreakable tail (the whole `)","param":null,...}` run)
+          // otherwise becomes this row's min-content width, pushing
+          // it past the column and clipping the tail of every
+          // wrapped line. Same fix as the user bubble above.
+          className="w-full min-w-0 text-xs text-neutral-500 font-mono py-1 select-none [overflow-wrap:anywhere] break-words"
+        >
+          {step.text}
+        </div>
+      );
+    }
+
+    if (step.type === "compaction") {
+      return (
+        <div
+          id={`chat-turn-${turnId}-step-${stepIdx}`}
+          className="w-full min-w-0"
+        >
+          <CompactionCard
+            before={step.before}
+            after={step.after}
+            removed={step.removed}
+            note={step.note}
+            pending={step.pending}
+            manual={step.manual}
+          />
+        </div>
+      );
+    }
+
+    if (step.type === "plan") {
+      return (
+        <div
+          id={`chat-turn-${turnId}-step-${stepIdx}`}
+          className="w-full min-w-0"
+        >
+          <PlanCard plan={step.plan} />
+        </div>
+      );
+    }
+
+    return null;
+  },
+  (a, b) =>
+    a.step === b.step &&
+    a.turnId === b.turnId &&
+    a.stepIdx === b.stepIdx &&
+    a.isLastStep === b.isLastStep &&
+    (!a.isLastStep || a.streaming === b.streaming),
+);
 
 /** One turn's full row — user bubble, assistant steps, turn-end footer.
  * `memo` + the incremental parse cache mean a settled turn's `turn`
@@ -1066,136 +1272,16 @@ const ChatTurn = memo(function ChatTurn({
           id={`chat-turn-${turn.id}-assistant`}
           className="flex w-full flex-col items-start gap-2"
         >
-          {turn.steps.map((step, stepIdx) => {
-            if (step.type === "thinking") {
-              const thinkingText = step.text.trim();
-              if (!step.done && !thinkingText) return null;
-              return (
-                <div
-                  key={`step-${stepIdx}`}
-                  id={`chat-turn-${turn.id}-step-${stepIdx}`}
-                  className="w-full"
-                >
-                  <AssistantStatus
-                    mode={step.done ? "thought" : "thinking"}
-                    thinkingText={thinkingText}
-                    startedAt={step.startedAt}
-                    elapsedMs={step.elapsedMs}
-                  />
-                </div>
-              );
-            }
-
-            if (step.type === "text") {
-              const isLastStep = stepIdx === turn.steps.length - 1;
-              const isAnimating = streaming && isLastStep;
-
-              return (
-                <div
-                  id={`chat-turn-${turn.id}-step-${stepIdx}`}
-                  className="w-full min-w-0 text-[14px] text-neutral-900 [&_p]:max-w-none"
-                  key={`step-${stepIdx}`}
-                >
-                  <CappedAssistantText text={step.text} animating={isAnimating} />
-                </div>
-              );
-            }
-
-            if (step.type === "tools") {
-              const isLastStep = stepIdx === turn.steps.length - 1;
-              // The tools phase is CONTINUOUS — call 1, call 2, call 3 with
-              // model-wait gaps between them. Gating the orb on an in-flight
-              // row flashed settled between calls; instead the step stays
-              // live while it's the turn's tail (same model as thinking:
-              // "live until the next phase's item lands").
-              const toolsLive = streaming && isLastStep;
-              // Settled span — replayed rows carry ts + rewound startedAt;
-              // live rows bank startedAt and stamp ts on finish.
-              const elapsedMs =
-                !toolsLive && step.startedAt != null && (step.phaseEnd ?? step.endedAt) != null
-                  ? (step.phaseEnd ?? step.endedAt)! - step.startedAt
-                  : undefined;
-              return (
-                <div
-                  id={`chat-turn-${turn.id}-step-${stepIdx}`}
-                  className="flex w-full min-w-0 flex-col items-start gap-2"
-                  key={`step-${stepIdx}`}
-                >
-                  {/* ONE row across the whole phase — mode flips tools →
-                   *  tools_done only when the next step lands (or the turn
-                   *  ends), so the orb rides through consecutive calls. The
-                   *  settled label carries the count and the row IS the
-                   *  collapse toggle — expanding reveals the chip list. */}
-                  <AssistantStatus
-                    mode={toolsLive ? "tools" : "tools_done"}
-                    thinkingText=""
-                    startedAt={step.startedAt}
-                    elapsedMs={elapsedMs}
-                    doneLabel={`${step.rows.length} 次工具调用`}
-                    preview={toolActivityPreview(step.rows)}
-                  >
-                    <ToolChips
-                      rows={step.rows}
-                      renderProse={(text) => (
-                        <MemoStreamdown text={text} animating={toolsLive} />
-                      )}
-                    />
-                  </AssistantStatus>
-                </div>
-              );
-            }
-
-            if (step.type === "system") {
-              return (
-                <div
-                  key={`step-${stepIdx}`}
-                  id={`chat-turn-${turn.id}-step-${stepIdx}`}
-                  // `w-full` + `min-w-0` + `overflow-wrap:anywhere` — an
-                  // upstream error carries a compact JSON blob whose
-                  // unbreakable tail (the whole `)","param":null,...}` run)
-                  // otherwise becomes this row's min-content width, pushing
-                  // it past the column and clipping the tail of every
-                  // wrapped line. Same fix as the user bubble above.
-                  className="w-full min-w-0 text-xs text-neutral-500 font-mono py-1 select-none [overflow-wrap:anywhere] break-words"
-                >
-                  {step.text}
-                </div>
-              );
-            }
-
-            if (step.type === "compaction") {
-              return (
-                <div
-                  key={`step-${stepIdx}`}
-                  id={`chat-turn-${turn.id}-step-${stepIdx}`}
-                  className="w-full min-w-0"
-                >
-                  <CompactionCard
-                    before={step.before}
-                    after={step.after}
-                    removed={step.removed}
-                    note={step.note}
-                    pending={step.pending}
-                    manual={step.manual}
-                  />
-                </div>
-              );
-            }
-
-            if (step.type === "plan") {
-              return (
-                <div
-                  key={`step-${stepIdx}`}
-                  id={`chat-turn-${turn.id}-step-${stepIdx}`}
-                  className="w-full min-w-0"
-                >
-                  <PlanCard plan={step.plan} />
-                </div>
-              );
-            }
-
-            return null;
-          })}
+          {turn.steps.map((step, stepIdx) => (
+            <TurnStep
+              key={`step-${stepIdx}`}
+              step={step}
+              turnId={turn.id}
+              stepIdx={stepIdx}
+              isLastStep={stepIdx === turn.steps.length - 1}
+              streaming={streaming}
+            />
+          ))}
         </div>
       )}
       {/* ts falls back to the prompt's for text-less turns;
@@ -1409,7 +1495,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         cursor += s.span.length;
       }
     }
+    const firstNew = spans.length;
     foldTurnSpans(items, cursor, items.length, spans);
+    // The refolded tail is the running turn: keep its unchanged steps (and
+    // the turn itself when nothing moved) so only the growing step renders.
+    const prevTail = prev?.spans[prev.spans.length - 1]?.turn;
+    for (let i = firstNew; i < spans.length; i++) {
+      spans[i] = { ...spans[i], turn: reuseTurn(prevTail, spans[i].turn) };
+    }
     parseCacheRef.current = { items, spans };
     return spans.map((s) => s.turn);
   }, [view.items]);
@@ -1422,6 +1515,16 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // ≈ <300ms in dev, where StrictMode double-renders.
   const MOUNT_CHUNK = 6;
   const BACKFILL_CHUNK = 4;
+  // Mount budget while following the bottom. A running session only ever
+  // appended turns and kept every one mounted, so layout, the ResizeObserver
+  // re-pin and mark measurement all grew with the session's lifetime —
+  // where a reopened page (one history page) stayed smooth. Past
+  // MAX_MOUNTED + TRIM_SLACK the leading turns unmount again (only while
+  // pinned: the loss is above the viewport, and the pin re-snaps the bottom);
+  // scrolling up reveals them in REVEAL_CHUNK slices before paging history.
+  const MAX_MOUNTED = 30;
+  const TRIM_SLACK = 10;
+  const REVEAL_CHUNK = 8;
   // Leading turns kept unmounted — decremented by backfill ticks to 0.
   // `hiddenTop` only ever SHRINKS: the old tail-anchored `mounted` count
   // let a newly appended turn push the oldest mounted turn out of the
@@ -1429,10 +1532,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // remounted one tick later (height back), which is exactly the
   // jump-to-bottom-then-fling-upward the mount window was causing.
   const [hiddenTop, setHiddenTop] = useState<number | null>(null);
+  // Initial tail-first backfill — off once it reaches the mount budget or
+  // the reader takes over (a trim, a reveal), so it never undoes a trim.
+  const [backfilling, setBackfilling] = useState(true);
   const [mountedKey, setMountedKey] = useState(sessionKey);
   if (sessionKey !== mountedKey) {
     setMountedKey(sessionKey);
     setHiddenTop(null);
+    setBackfilling(true);
   }
   const lastStartRef = useRef(view.historyStart);
   if (view.historyStart !== lastStartRef.current) {
@@ -1449,8 +1556,16 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     if (!loading) loadStamp("content-mounted");
   }, [loading]);
 
+  // Backfill stops at the mount budget: a session kept live in memory can
+  // hold hundreds of turns, and re-mounting all of them on every switch back
+  // is exactly the cost the budget exists to avoid.
+  const backfillFloor = Math.max(0, turns.length - MAX_MOUNTED);
   useEffect(() => {
-    if (hidden <= 0) return;
+    if (!backfilling) return;
+    if (hidden <= backfillFloor) {
+      setBackfilling(false);
+      return;
+    }
     // Idle + transition: each chunk's mount is a Streamdown/highlighter-heavy
     // commit — run it in idle time AND as an interruptible transition so
     // a long session's backfill storm never holds the main thread hostage
@@ -1462,11 +1577,39 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       window.cancelIdleCallback ?? ((id: number) => window.clearTimeout(id));
     const id = schedule(() =>
       startTransition(() =>
-        setHiddenTop((h) => Math.max(0, (h ?? hidden) - BACKFILL_CHUNK)),
+        setHiddenTop((h) => Math.max(backfillFloor, (h ?? hidden) - BACKFILL_CHUNK)),
       ),
     );
-    if (hidden - BACKFILL_CHUNK <= 0) loadStamp("backfill-done");
+    if (hidden - BACKFILL_CHUNK <= backfillFloor) loadStamp("backfill-done");
     return () => cancel(id as number);
+  }, [hidden, backfilling, backfillFloor]);
+
+  // Trim while following the bottom. Runs after each commit; the hysteresis
+  // (TRIM_SLACK) keeps it to one unmount burst per ~10 turns.
+  useEffect(() => {
+    if (backfilling || loading || !pinnedRef.current) return;
+    if (turns.length - hidden <= MAX_MOUNTED + TRIM_SLACK) return;
+    startTransition(() => setHiddenTop(turns.length - MAX_MOUNTED));
+  }, [turns.length, hidden, backfilling, loading]);
+
+  // Reveal trimmed turns above the viewport, keeping the reader's position:
+  // the geometry is captured before the state change and the height the
+  // revealed turns add is given back to scrollTop in the same commit.
+  const revealRestoreRef = useRef<{ top: number; height: number } | null>(null);
+  const revealTrimmed = useCallback((to: number) => {
+    const el = scrollRef.current;
+    if (el && revealRestoreRef.current === null) {
+      revealRestoreRef.current = { top: el.scrollTop, height: el.scrollHeight };
+    }
+    setBackfilling(false);
+    setHiddenTop((h) => Math.min(h ?? to, Math.max(0, to)));
+  }, []);
+  useLayoutEffect(() => {
+    const r = revealRestoreRef.current;
+    const el = scrollRef.current;
+    revealRestoreRef.current = null;
+    if (!r || !el) return;
+    el.scrollTop = r.top + (el.scrollHeight - r.height);
   }, [hidden]);
 
   const visibleTurns = hidden > 0 ? turns.slice(hidden) : turns;
@@ -1599,32 +1742,42 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
       if (turn.steps.length > 0) {
         const isLastTurn = idx === turns.length - 1;
-        // One mark per step, not per turn: a turn is the prompt plus every block
-        // the answer arrived in (thinking / tools / prose), and a single dash per
-        // turn flattened agentic turns into stubs.
-        turn.steps.forEach((step, stepIdx) => {
-          const isStreaming =
-            view.streaming && isLastTurn && stepIdx === turn.steps.length - 1;
+        // One mark per block, not per turn: a turn is the prompt plus every
+        // block the answer arrived in (thinking / tools / prose), and a single
+        // dash per turn flattened agentic turns into stubs. A long agentic
+        // answer, though, ran to dozens of identical dashes between two
+        // prompts, so past MAX_STEP_MARKS consecutive steps share one dash
+        // (it lands on the first step of its run).
+        const n = turn.steps.length;
+        const groups = Math.min(n, MAX_STEP_MARKS);
+        for (let g = 0; g < groups; g++) {
+          const from = Math.floor((g * n) / groups);
+          const to = Math.floor(((g + 1) * n) / groups);
+          const step = turn.steps[from];
+          const isStreaming = view.streaming && isLastTurn && to === n;
+          let len = 0;
+          for (let k = from; k < to; k++) len += stepMarkInfo(turn.steps[k]).weight;
+          const extra = to - from - 1;
           list.push({
-            id: `mark-${turn.id}-step-${stepIdx}`,
+            id: `mark-${turn.id}-step-${from}`,
             type: "assistant",
             turnId: turn.id,
-            targetId: `chat-turn-${turn.id}-step-${stepIdx}`,
+            targetId: `chat-turn-${turn.id}-step-${from}`,
             previewTitle:
-              step.type === "compaction"
+              (step.type === "compaction"
                 ? `上下文压缩${step.manual ? "（手动）" : "（自动）"}${
                     step.pending ? " · 进行中" : ""
                   }`
                 : step.type === "system"
                   ? "系统提醒"
-                  : `助手回复 #${turnNum} · ${STEP_LABEL[step.type]}${
-                    isStreaming ? " (生成中)" : ""
-                  }`,
-            previewSnippet: stepPreview(step),
-            len: stepWeight(step),
+                  : `助手回复 #${turnNum} · ${STEP_LABEL[step.type]}`) +
+              (extra > 0 ? ` 等 ${extra + 1} 段` : "") +
+              (isStreaming ? " (生成中)" : ""),
+            previewSnippet: stepMarkInfo(step).preview,
+            len,
             isStreaming,
           });
-        });
+        }
       } else if (idx === turns.length - 1 && (view.streaming || showReplyWait)) {
         list.push({
           id: `mark-${turn.id}-assistant-waiting`,
@@ -1860,7 +2013,13 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    if (el.scrollTop < 480) void maybeLoadOlder();
+    if (el.scrollTop < 480) {
+      // Locally trimmed turns come back first; history pages only once
+      // everything loaded is mounted again.
+      if (hidden > 0) {
+        if (revealRestoreRef.current === null) revealTrimmed(hidden - REVEAL_CHUNK);
+      } else void maybeLoadOlder();
+    }
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     // Programmatic smooth scrolls emit intermediate events far from the
     // bottom — letting them rewrite pinnedRef kills follow-mode mid-
@@ -2017,6 +2176,21 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       setTimeout(() => {
         isSmoothScrollingRef.current = false;
       }, 500);
+      return;
+    }
+    // Trimmed off the mounted window — mount down to its turn, then land.
+    const turnIdx = mark.turnId ? turns.findIndex((t) => t.id === mark.turnId) : -1;
+    if (turnIdx >= 0 && turnIdx < hidden) {
+      revealTrimmed(turnIdx);
+      requestAnimationFrame(() => {
+        const target = document.getElementById(mark.targetId);
+        if (!target) return;
+        isSmoothScrollingRef.current = true;
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+        setTimeout(() => {
+          isSmoothScrollingRef.current = false;
+        }, 500);
+      });
       return;
     }
     // Windowed out — scroll to the shell's measured position; the IO
