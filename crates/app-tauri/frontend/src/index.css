@@ -863,3 +863,14 @@ img.emoji {
   background: #16161a;
   color: #e4e4e7;
 }
+
+/* Live window resize (`WindowResizeEdges` sets the flag until the size has
+   settled): every frame re-lays out the whole shell, so drop the work that
+   only animates or blurs on top of it. */
+:root[data-window-resizing] *,
+:root[data-window-resizing] *::before,
+:root[data-window-resizing] *::after {
+  transition: none !important;
+  animation-play-state: paused !important;
+  backdrop-filter: none !important;
+}

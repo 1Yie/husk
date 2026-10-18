@@ -74,9 +74,21 @@ export function ChatTurnRail({
   const browseShiftRef = useRef(0);
 
   useEffect(() => {
-    const onResize = () => setRowBudget(rowsThatFit());
+    // A window drag fires `resize` faster than frames; the row budget only
+    // needs one read per frame (and an unchanged count bails out of render).
+    let frame = 0;
+    const onResize = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setRowBudget(rowsThatFit());
+      });
+    };
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", onResize);
+    };
   }, []);
 
   useEffect(() => {

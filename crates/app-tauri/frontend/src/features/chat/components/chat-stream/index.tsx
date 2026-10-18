@@ -1960,12 +1960,17 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const col = el?.firstElementChild;
     if (!el || !col) return;
     let debounce = 0;
+    let pinFrame = 0;
     const ro = new ResizeObserver(() => {
       // Growth below the viewport → re-anchor the bottom while following.
       // The pin's own scroll events can't clear follow-mode anymore (only
-      // a real gesture can), so the landing converges frame by frame.
-      if (pinnedRef.current) {
-        el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+      // a real gesture can), so the landing converges frame by frame. One
+      // re-pin per frame: a window drag reflows the column on every event.
+      if (pinnedRef.current && !pinFrame) {
+        pinFrame = requestAnimationFrame(() => {
+          pinFrame = 0;
+          if (pinnedRef.current) el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+        });
       }
       // A layout change moves every mark below it: re-measure AND re-derive
       // the highlight, otherwise the rail keeps pointing at offsets that no
@@ -1979,6 +1984,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     ro.observe(col);
     return () => {
       window.clearTimeout(debounce);
+      cancelAnimationFrame(pinFrame);
       ro.disconnect();
     };
   }, [measureMarks, updateActiveMark]);

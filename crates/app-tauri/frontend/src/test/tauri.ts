@@ -37,7 +37,8 @@ export const tauri = {
     return () => group.delete(handler);
   }),
   window: {
-    startDragging: vi.fn(async () => {}), toggleMaximize: vi.fn(async () => {}),
+    startDragging: vi.fn(async () => {}), startResizeDragging: vi.fn(async () => {}),
+    toggleMaximize: vi.fn(async () => {}),
     minimize: vi.fn(async () => {}), close: vi.fn(async () => {}),
     isMaximized: vi.fn(async () => false), onResized: vi.fn(async () => () => {}),
     onFocusChanged: vi.fn(async (handler: (e: { payload: boolean }) => void) => {

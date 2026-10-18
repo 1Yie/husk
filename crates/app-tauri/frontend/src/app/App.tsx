@@ -27,6 +27,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { WindowResizeEdges } from "@/components/window-resize-edges";
 
 /** Whether `e.target` is a native-editing surface that keeps its browser
  * context menu (cut/copy/paste/select-all). Text areas and inputs rely on
@@ -828,6 +829,7 @@ export function App() {
           if its stylesheet ever fails to apply the unstyled element lands
           below the shell instead of shoving it down from the top. */}
       <Toaster />
+      <WindowResizeEdges />
     </>
   );
 }
