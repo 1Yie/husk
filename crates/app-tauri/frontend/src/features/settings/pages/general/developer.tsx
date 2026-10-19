@@ -4,7 +4,7 @@
 
 import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { useEffect, useState } from "react";
-import { Activity, Bug, Monitor, TriangleAlert, Zap } from "@keyline-icons/react";
+import { Activity, Bug, Cpu, Monitor, TriangleAlert, Zap } from "@keyline-icons/react";
 import { KvList, KvListContent, KvRow } from "@/components/ui/kv-list";
 import { Switch } from "@/components/ui/switch";
 import { SettingSelect, SettingsSection } from "@/features/settings/components";
@@ -56,16 +56,17 @@ export function DeveloperPane() {
               <KvList>
                 <KvListContent>
                   {!loaded ? (
-                    <SkeletonKvRows rows={2} />
+                    <SkeletonKvRows rows={3} />
                   ) : (
                   <>
                   <KvRow label="渲染后端" icon={<Monitor className="h-4 w-4" />}>
                     <SettingSelect
-                      value={cfg.renderer ?? "x11"}
+                      value={cfg.renderer ?? "auto"}
                       onChange={(v) =>
-                        update({ renderer: v === "x11" ? null : (v as "x11" | "wayland") })
+                        update({ renderer: v === "auto" ? null : (v as "x11" | "wayland") })
                       }
                       options={[
+                        { value: "auto", label: "自动" },
                         { value: "x11", label: "X11" },
                         { value: "wayland", label: "Wayland" },
                       ]}
@@ -84,6 +85,25 @@ export function DeveloperPane() {
                         update({
                           gpu_acceleration: v === "off" ? false : v === "on" ? true : null,
                         })
+                      }
+                      options={[
+                        { value: "default", label: "默认" },
+                        { value: "on", label: "启用" },
+                        { value: "off", label: "关闭" },
+                      ]}
+                    />
+                  </KvRow>
+                  <KvRow
+                    label="CPU 光栅化"
+                    description="GPU 仍负责合成;NVIDIA 默认开启以规避驱动崩溃"
+                    icon={<Cpu className="h-4 w-4" />}
+                  >
+                    <SettingSelect
+                      value={
+                        cfg.cpu_raster === true ? "on" : cfg.cpu_raster === false ? "off" : "default"
+                      }
+                      onChange={(v) =>
+                        update({ cpu_raster: v === "on" ? true : v === "off" ? false : null })
                       }
                       options={[
                         { value: "default", label: "默认" },

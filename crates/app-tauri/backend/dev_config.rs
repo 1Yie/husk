@@ -24,10 +24,16 @@ pub struct DevConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renderer: Option<String>,
     /// `false` → software GL: `WEBKIT_DISABLE_DMABUF_RENDERER=1` and
-    /// `LIBGL_ALWAYS_SOFTWARE=1`. `true` → opt into the dmabuf GPU
-    /// renderer. `None` → compiled NVIDIA-safe default.
+    /// `LIBGL_ALWAYS_SOFTWARE=1`. `true` / `None` → hardware acceleration
+    /// on (dmabuf renderer, GPU compositing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_acceleration: Option<bool>,
+    /// `true` → Skia rasterises tiles on the CPU while compositing stays on
+    /// the GPU (`WEBKIT_SKIA_ENABLE_CPU_RENDERING=1`). `None` → on for
+    /// NVIDIA, whose EGL driver segfaults in Skia's GL teardown; off
+    /// elsewhere. Written by the renderer-crash recovery as its first step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_raster: Option<bool>,
     /// `true` → the Shift+Ctrl+P monitor overlay is enabled (the window's
     /// keyboard shortcut hook is wired only when this is set).
     #[serde(default, skip_serializing_if = "Option::is_none")]
