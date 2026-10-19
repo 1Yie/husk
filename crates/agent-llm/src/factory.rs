@@ -39,6 +39,16 @@ impl ProviderFactory {
     /// Build a provider from config. Resolves `env:`/`keyring:` indirections;
     /// plaintext keys warn but still build.
     pub fn build(cfg: &ProviderConfig) -> Result<Arc<dyn LlmProvider>, FactoryError> {
+        Self::build_with_observer(cfg, None)
+    }
+
+    /// Build with a per-session cache-write sink. Only the host's foreground
+    /// session provider needs one; background providers (distiller, child
+    /// engines) pass `None`.
+    pub fn build_with_observer(
+        cfg: &ProviderConfig,
+        observer: Option<Arc<crate::usage::UsageObserver>>,
+    ) -> Result<Arc<dyn LlmProvider>, FactoryError> {
         let key = match crate::config::AppConfig::resolve_secret(cfg) {
             SecretResolution::Resolved(s) | SecretResolution::Plaintext(s) => s,
             SecretResolution::Unavailable(why) => {
@@ -55,7 +65,7 @@ impl ProviderFactory {
                 "api_key is plaintext in config.toml — prefer env: or keyring: indirection"
             );
         }
-        RigProvider::new(cfg, key, http_client())
+        RigProvider::new(cfg, key, http_client(), observer)
             .map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
             .map_err(FactoryError::Build)
     }

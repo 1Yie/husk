@@ -4,9 +4,11 @@
 //! speaks the normalized `StreamChunk` protocol, so adding a provider means adding
 //! one wire entry in the rig bridge.
 
+pub mod cache_warm;
 pub mod config;
 pub mod factory;
 mod rig_bridge;
+pub mod usage;
 
 // The contract lives in `agent-llm-core`; re-exported so the module paths
 // (`agent_llm::types`, `agent_llm::provider`, …) keep resolving.
@@ -17,6 +19,7 @@ pub use agent_llm_core::{
     UnavailableProvider,
 };
 pub use agent_llm_core::{ChatMessage, Role, StreamChunk, ToolCall};
+pub use cache_warm::{WarmingControl, WarmingProvider};
 pub use config::{
     AppConfig, ConfigWarning, CostTier, ImageLimits, ImageResize, InputLimits, ModelConfig,
     ModelCost, ModelEntry, ModelOverride, PromptCache, ProviderConfig, ProviderKind,
@@ -24,3 +27,4 @@ pub use config::{
 };
 pub use factory::ProviderFactory;
 pub use rig_bridge::RigProvider;
+pub use usage::UsageObserver;

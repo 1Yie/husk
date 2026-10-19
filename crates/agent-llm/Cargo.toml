@@ -26,7 +26,8 @@ tempfile = "3"
 
 [dependencies.tokio]
 workspace = true
-features = ["time"]
+features = ["time", "rt"]
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
 

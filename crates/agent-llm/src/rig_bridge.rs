@@ -29,6 +29,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -55,9 +56,70 @@ use crate::compat::ProviderCompat;
 use crate::config::{ProviderConfig, ProviderKind};
 use crate::provider::{BoxStream, Capabilities, LlmProvider, ModelParams};
 use crate::types::{ChatMessage, HarmonyStripper, ImageRef, NoticeKind, Role, StreamChunk};
+use crate::usage::UsageObserver;
 
 /// Anthropic rejects a request without `max_tokens`; adapters defaulted 32768.
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 32_768;
+
+/// Prompt-cache retention for every request this process sends, from
+/// `HUSK_CACHE_RETENTION` (`none` | `short` | `long`; default `short`) —
+/// pi's `PI_CACHE_RETENTION`. `long` asks for the extended TTL (1h markers,
+/// 24h OpenAI retention) only where the deployment declares
+/// `supportsLongCacheRetention`; `none` sends no cache hints at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheRetention {
+    None,
+    Short,
+    Long,
+}
+
+impl CacheRetention {
+    fn from_env() -> Self {
+        Self::parse(std::env::var("HUSK_CACHE_RETENTION").ok().as_deref())
+    }
+
+    fn parse(v: Option<&str>) -> Self {
+        match v.map(str::trim) {
+            Some(v) if v.eq_ignore_ascii_case("none") => Self::None,
+            Some(v) if v.eq_ignore_ascii_case("long") => Self::Long,
+            _ => Self::Short,
+        }
+    }
+
+    /// Long retention is honoured only where the deployment supports it.
+    fn long(self, compat: &ProviderCompat) -> bool {
+        self == Self::Long && compat.supports_long_cache_retention.unwrap_or(false)
+    }
+}
+
+/// A fresh opaque routing key — `husk-` plus 64 random bits. Unique per
+/// provider instance; well under OpenAI's 64-char `prompt_cache_key` cap.
+fn new_cache_key() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    );
+    format!("husk-{:016x}", h.finish())
+}
+
+/// Session-affinity header names for `sendSessionAffinityHeaders` deployments,
+/// by `sessionAffinityFormat` (pi semantics): `openrouter` → `x-session-id`;
+/// `openai` → `session_id` plus the generic pair; anything else
+/// (`openai-nosession`) → `x-client-request-id` + `x-session-affinity`.
+fn session_affinity_headers(compat: &ProviderCompat) -> Vec<&'static str> {
+    if !compat.send_session_affinity_headers.unwrap_or(false) {
+        return Vec::new();
+    }
+    match compat.session_affinity_format.as_deref() {
+        Some("openrouter") => vec!["x-session-id"],
+        Some("openai") => vec!["session_id", "x-client-request-id", "x-session-affinity"],
+        _ => vec!["x-client-request-id", "x-session-affinity"],
+    }
+}
 
 // ================================================================
 // OpenAI-compatible provider extension carrying `ProviderCompat`
@@ -66,9 +128,19 @@ const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 32_768;
 /// Extension type for the generic OpenAI chat-completions client. Carries the
 /// per-provider `ProviderCompat` so dialect hooks (`finalize_request_body`)
 /// can apply deployment-specific wire mutations rig knows nothing about.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct CompatExt {
     compat: Option<ProviderCompat>,
+    retention: CacheRetention,
+}
+
+impl Default for CompatExt {
+    fn default() -> Self {
+        Self {
+            compat: None,
+            retention: CacheRetention::Short,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -114,7 +186,7 @@ impl openai::completion::OpenAICompatibleProvider for CompatExt {
     /// Wire-level dialect surgery: runs on the fully serialized request body
     /// after rig merges streaming params, immediately before send.
     fn finalize_request_body(&self, body: &mut Value) -> Result<(), CompletionError> {
-        compat_body_patches(body, self.compat.as_ref());
+        compat_body_patches(body, self.compat.as_ref(), self.retention);
         Ok(())
     }
 }
@@ -373,6 +445,12 @@ enum RigModel {
 /// request.
 pub struct RigProvider {
     id: &'static str,
+    /// Optional per-session cache-write sink (host UI/cost accounting).
+    usage_observer: Option<Arc<UsageObserver>>,
+    /// Per-instance prompt-cache routing key (`prompt_cache_key`, affinity
+    /// headers). The host builds one provider per session, so this is a
+    /// conversation identity without threading the session id through.
+    cache_key: String,
     base_url: String,
     api_key: String,
     auth_header: bool,
@@ -391,6 +469,7 @@ impl RigProvider {
         cfg: &ProviderConfig,
         api_key: String,
         http: reqwest::Client,
+        usage_observer: Option<Arc<UsageObserver>>,
     ) -> anyhow::Result<Self> {
         let kind = WireKind::from(cfg.kind);
         let caps = match kind {
@@ -409,6 +488,8 @@ impl RigProvider {
             },
         };
         Ok(Self {
+            usage_observer,
+            cache_key: new_cache_key(),
             id: match kind {
                 WireKind::Compat => "openai_completions",
                 WireKind::Responses => "openai_responses",
@@ -426,11 +507,48 @@ impl RigProvider {
         })
     }
 
+    /// OpenAI prompt-cache routing (`prompt_cache_key`) and extended retention
+    /// (`prompt_cache_retention: "24h"`). Sent to OpenAI itself, and to any
+    /// deployment that declares `supportsLongCacheRetention` when long
+    /// retention is requested — other shims may reject unknown fields.
+    fn apply_prompt_cache_params(
+        &self,
+        additional: &mut Map<String, Value>,
+        compat: &ProviderCompat,
+        retention: CacheRetention,
+    ) {
+        if retention == CacheRetention::None {
+            return;
+        }
+        let long = retention.long(compat);
+        if self.base_url.contains("api.openai.com") || long {
+            additional.insert("prompt_cache_key".into(), json!(self.cache_key));
+        }
+        if long {
+            additional.insert("prompt_cache_retention".into(), json!("24h"));
+        }
+    }
+
     /// Provider-level `ProviderCompat` is on the ext that goes through
     /// `with_ext`, so dialect hooks see the model-merged values only if we
     /// rebuild — which we do per call anyway.
-    fn build_model(&self, model: &str, compat: &ProviderCompat) -> anyhow::Result<RigModel> {
+    fn build_model(
+        &self,
+        model: &str,
+        compat: &ProviderCompat,
+        retention: CacheRetention,
+    ) -> anyhow::Result<RigModel> {
         let mut headers = HeaderMap::new();
+        // Sticky routing so a multi-node gateway serves this conversation from
+        // the node that already holds its prompt cache.
+        if retention != CacheRetention::None {
+            if let Ok(value) = HeaderValue::from_str(&self.cache_key) {
+                for name in session_affinity_headers(compat) {
+                    headers.insert(HeaderName::from_static(name), value.clone());
+                }
+            }
+        }
+        // Configured headers last so they can override the defaults.
         for (k, v) in &self.headers {
             if let (Ok(name), Ok(value)) = (
                 HeaderName::from_bytes(k.as_bytes()),
@@ -457,6 +575,7 @@ impl RigProvider {
                     .map_err(|e| anyhow::anyhow!("openai-compatible client: {e}"))?
                     .with_ext(CompatExt {
                         compat: Some(compat.clone()),
+                        retention,
                     });
                 let model = client.completion_model(model.to_string());
                 RigModel::Compat(model)
@@ -500,7 +619,20 @@ impl RigProvider {
                 let client = b
                     .build()
                     .map_err(|e| anyhow::anyhow!("anthropic client: {e}"))?;
-                let model = client.completion_model(model.to_string());
+                let mut model = client.completion_model(model.to_string());
+                // Block-level breakpoints on the last tool, the system prompt
+                // and the conversation tail. Explicit markers rather than the
+                // top-level automatic field: Anthropic-shaped proxies accept
+                // them far more widely.
+                if retention != CacheRetention::None {
+                    model = model.with_prompt_caching();
+                    if retention.long(compat) {
+                        // The tools + system prefix outlives a coffee break;
+                        // the tail keeps the cheaper 5-minute write.
+                        model = model
+                            .with_static_prefix_cache_ttl(anthropic::completion::CacheTtl::OneHour);
+                    }
+                }
                 RigModel::Anthropic(model)
             }
             WireKind::Gemini => {
@@ -546,6 +678,7 @@ impl LlmProvider for RigProvider {
         // and `supportsReasoningEffort` are commonly declared per model.
         let compat = params.compat_with(self.compat.as_ref());
         let effort = reasoning_effort.filter(|_| compat.supports_reasoning_effort.unwrap_or(true));
+        let retention = CacheRetention::from_env();
 
         // ---------- messages ----------
         let chat_history = to_rig_messages(messages, self.kind, &compat);
@@ -584,6 +717,7 @@ impl LlmProvider for RigProvider {
                 if let Some(v) = &compat.vercel_gateway_routing {
                     additional.insert("gateway".into(), v.clone());
                 }
+                self.apply_prompt_cache_params(&mut additional, &compat, retention);
             }
             WireKind::Responses => {
                 // Responses API caps at `max_output_tokens`.
@@ -593,6 +727,7 @@ impl LlmProvider for RigProvider {
                 if let Some(eff) = effort {
                     additional.insert("reasoning".into(), json!({ "effort": eff }));
                 }
+                self.apply_prompt_cache_params(&mut additional, &compat, retention);
             }
             WireKind::Anthropic => {
                 let cap = max_tokens
@@ -635,7 +770,10 @@ impl LlmProvider for RigProvider {
             record_telemetry_content: false,
         };
 
-        let rig_model = self.build_model(model, &compat)?;
+        if let Some(observer) = &self.usage_observer {
+            observer.reset();
+        }
+        let rig_model = self.build_model(model, &compat, retention)?;
         let rig_stream: StreamingCompletionResponse = match &rig_model {
             RigModel::Compat(m) => m.stream(request).await,
             RigModel::Responses(m) => m.stream(request).await,
@@ -644,7 +782,11 @@ impl LlmProvider for RigProvider {
         }
         .map_err(|e| anyhow::anyhow!("{}", map_completion_error(&e)))?;
 
-        Ok(map_rig_stream(rig_stream, self.kind))
+        Ok(map_rig_stream(
+            rig_stream,
+            self.kind,
+            self.usage_observer.clone(),
+        ))
     }
 }
 
@@ -779,7 +921,11 @@ fn gemini_thinking_budget(effort: &str) -> Option<i64> {
 /// Body-level dialect surgery for OpenAI-compatible wires — the mutations
 /// that `additional_params` cannot express because they rewrite fields rig
 /// already serialized.
-fn compat_body_patches(body: &mut Value, compat: Option<&ProviderCompat>) {
+fn compat_body_patches(
+    body: &mut Value,
+    compat: Option<&ProviderCompat>,
+    retention: CacheRetention,
+) {
     let Some(compat) = compat else {
         return;
     };
@@ -795,13 +941,14 @@ fn compat_body_patches(body: &mut Value, compat: Option<&ProviderCompat>) {
     }
 
     // Anthropic-flavoured prompt caching markers on an OpenAI wire.
-    if compat
-        .cache_control_format
-        .as_deref()
-        .map(|f| f.eq_ignore_ascii_case("anthropic"))
-        .unwrap_or(false)
+    if retention != CacheRetention::None
+        && compat
+            .cache_control_format
+            .as_deref()
+            .map(|f| f.eq_ignore_ascii_case("anthropic"))
+            .unwrap_or(false)
     {
-        apply_cache_control_markers(map);
+        apply_cache_control_markers(map, compat, retention.long(compat));
     }
 
     let developer_role = compat.developer_role();
@@ -877,50 +1024,86 @@ fn compat_body_patches(body: &mut Value, compat: Option<&ProviderCompat>) {
     }
 }
 
-/// Insert `cache_control: {"type": "ephemeral"}` on the last content part of
-/// the last system and last user message — the Anthropic cache-breakpoint
-/// convention ported onto compatible wires.
-fn apply_cache_control_markers(map: &mut Map<String, Value>) {
+/// Anthropic-style cache breakpoints on an OpenAI-shaped body (pi
+/// `applyAnthropicCacheControl`), at most three of Anthropic's four:
+///
+/// - the first system/developer message — the fixed instruction prefix;
+/// - the last tool definition — unless `supportsCacheControlOnTools: false`;
+/// - the last user/assistant/tool message carrying text — the moving tail,
+///   so every round of a tool loop reads the previous round from cache
+///   (marking only the last *user* message left each loop's tool results
+///   uncached).
+///
+/// `long` adds `ttl: "1h"` to every marker. The TTLs stay uniform so
+/// Anthropic's "1h markers before 5m markers" rule always holds.
+fn apply_cache_control_markers(map: &mut Map<String, Value>, compat: &ProviderCompat, long: bool) {
+    let mark = if long {
+        json!({ "type": "ephemeral", "ttl": "1h" })
+    } else {
+        json!({ "type": "ephemeral" })
+    };
+    if compat.supports_cache_control_on_tools.unwrap_or(true) {
+        if let Some(Value::Object(tool)) = map
+            .get_mut("tools")
+            .and_then(Value::as_array_mut)
+            .and_then(|t| t.last_mut())
+        {
+            tool.entry("cache_control").or_insert_with(|| mark.clone());
+        }
+    }
     let Some(messages) = map.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
-    let mark = json!({ "type": "ephemeral" });
-    let mut last_system: Option<usize> = None;
-    let mut last_user: Option<usize> = None;
-    for (i, m) in messages.iter().enumerate() {
-        match m.get("role").and_then(Value::as_str) {
-            Some("system") | Some("developer") => last_system = Some(i),
-            Some("user") => last_user = Some(i),
-            _ => {}
+    if let Some(m) = messages.iter_mut().find(|m| {
+        matches!(
+            m.get("role").and_then(Value::as_str),
+            Some("system") | Some("developer")
+        )
+    }) {
+        mark_text_content(m, &mark);
+    }
+    for m in messages.iter_mut().rev() {
+        if matches!(
+            m.get("role").and_then(Value::as_str),
+            Some("user") | Some("assistant") | Some("tool")
+        ) && mark_text_content(m, &mark)
+        {
+            break;
         }
     }
-    for idx in [last_system, last_user].into_iter().flatten() {
-        let Some(m) = messages.get_mut(idx).and_then(Value::as_object_mut) else {
-            continue;
-        };
-        match m.get_mut("content") {
-            Some(Value::Array(parts)) => {
-                if let Some(Value::Object(part)) = parts.last_mut() {
-                    part.entry("cache_control").or_insert_with(|| mark.clone());
+}
+
+/// Put `mark` on a message's last text part, wrapping string content into
+/// parts. `false` when the message has no text to carry it (an assistant
+/// row that is only `tool_calls`, an empty string).
+fn mark_text_content(m: &mut Value, mark: &Value) -> bool {
+    let Some(msg) = m.as_object_mut() else {
+        return false;
+    };
+    match msg.get_mut("content") {
+        Some(Value::String(text)) => {
+            if text.is_empty() {
+                return false;
+            }
+            let text = std::mem::take(text);
+            msg.insert(
+                "content".into(),
+                json!([{ "type": "text", "text": text, "cache_control": mark }]),
+            );
+            true
+        }
+        Some(Value::Array(parts)) => {
+            for part in parts.iter_mut().rev() {
+                if let Some(part) = part.as_object_mut() {
+                    if part.get("type").and_then(Value::as_str) == Some("text") {
+                        part.entry("cache_control").or_insert_with(|| mark.clone());
+                        return true;
+                    }
                 }
             }
-            Some(Value::Object(part)) => {
-                part.entry("cache_control").or_insert_with(|| mark.clone());
-            }
-            Some(Value::String(_)) => {
-                // String content can't carry the marker — wrap into parts.
-                let text = m
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                m.insert(
-                    "content".into(),
-                    json!([{ "type": "text", "text": text, "cache_control": mark }]),
-                );
-            }
-            _ => {}
+            false
         }
+        _ => false,
     }
 }
 
@@ -1239,6 +1422,12 @@ fn tool_defs(raw: Option<Value>) -> Vec<ToolDefinition> {
 /// Per-stream mapping state: stripper pipelines and the rig `internal_call_id`
 /// → slot-index ledger the assembler counts on.
 struct MapState {
+    /// Wire dialect — usage normalization differs (Anthropic reports cache
+    /// reads/writes beside `input_tokens`; OpenAI folds them into it).
+    kind: WireKind,
+    /// Optional cache-write sink; the host shows/costs Anthropic cache writes
+    /// that the shared `StreamChunk::Done` cannot carry.
+    usage_observer: Option<Arc<UsageObserver>>,
     text: HarmonyStripper,
     reasoning: HarmonyStripper,
     /// `[call: …]` text-protocol recovery (OpenAI wires only).
@@ -1260,8 +1449,15 @@ struct MapState {
 }
 
 impl MapState {
+    #[cfg(test)]
     fn new(kind: WireKind) -> Self {
+        Self::with_observer(kind, None)
+    }
+
+    fn with_observer(kind: WireKind, usage_observer: Option<Arc<UsageObserver>>) -> Self {
         Self {
+            kind,
+            usage_observer,
             text: HarmonyStripper::new(),
             reasoning: HarmonyStripper::new(),
             call_stripper: matches!(kind, WireKind::Compat | WireKind::Responses)
@@ -1397,12 +1593,35 @@ impl MapState {
                 if !self.done {
                     self.done = true;
                     let u = f.usage;
-                    out.push(StreamChunk::Done {
-                        prompt_tokens: Some(u.input_tokens as u32),
-                        completion_tokens: Some(u.output_tokens as u32),
-                        cached_tokens: Some(
-                            (u.cached_input_tokens + u.cache_creation_input_tokens) as u32,
+                    // Anthropic reports cache reads/writes *beside*
+                    // `input_tokens` (which is uncached input only). The
+                    // meter's `prompt_tokens` is the whole context and
+                    // `cached_tokens` is cache *hits*, so fold reads/writes
+                    // into the prompt and keep only reads as cached. OpenAI
+                    // wires already include cached tokens in input_tokens;
+                    // adding them again would double-count.
+                    let (prompt_tokens, cached_tokens) = match self.kind {
+                        WireKind::Anthropic => (
+                            u.input_tokens + u.cached_input_tokens + u.cache_creation_input_tokens,
+                            u.cached_input_tokens,
                         ),
+                        _ => (u.input_tokens, u.cached_input_tokens),
+                    };
+                    // Cache *writes* have no slot in the shared Done chunk;
+                    // publish them to the host's per-session observer. A
+                    // non-Anthropic round records 0 so a provider switch
+                    // cannot inherit the previous count.
+                    let cache_write = match self.kind {
+                        WireKind::Anthropic => u.cache_creation_input_tokens as u32,
+                        _ => 0,
+                    };
+                    if let Some(observer) = &self.usage_observer {
+                        observer.set_cache_write(cache_write);
+                    }
+                    out.push(StreamChunk::Done {
+                        prompt_tokens: Some(prompt_tokens as u32),
+                        completion_tokens: Some(u.output_tokens as u32),
+                        cached_tokens: Some(cached_tokens as u32),
                     });
                 }
             }
@@ -1467,7 +1686,11 @@ impl MapState {
 }
 
 /// rig `StreamingCompletionResponse` → our `StreamChunk` stream.
-fn map_rig_stream(stream: StreamingCompletionResponse, kind: WireKind) -> BoxStream<StreamChunk> {
+fn map_rig_stream(
+    stream: StreamingCompletionResponse,
+    kind: WireKind,
+    usage_observer: Option<Arc<UsageObserver>>,
+) -> BoxStream<StreamChunk> {
     struct S {
         inner: StreamingCompletionResponse,
         map: MapState,
@@ -1476,7 +1699,7 @@ fn map_rig_stream(stream: StreamingCompletionResponse, kind: WireKind) -> BoxStr
     }
     let init = S {
         inner: stream,
-        map: MapState::new(kind),
+        map: MapState::with_observer(kind, usage_observer),
         pending: std::collections::VecDeque::new(),
         drained: false,
     };
@@ -1746,15 +1969,10 @@ mod tests {
         }
     }
 
-    fn rig_final(input: u64, output: u64) -> StreamedAssistantContent {
+    fn rig_final_usage(usage: Usage) -> StreamedAssistantContent {
         StreamedAssistantContent::Final(StreamFinal {
             kind: StreamFinalKind::Final,
-            usage: Usage {
-                input_tokens: input,
-                output_tokens: output,
-                total_tokens: input + output,
-                ..Usage::default()
-            },
+            usage,
             finish_reason: Some(rig_core::completion::FinishReason::Stop),
             message_id: None,
             response_id: None,
@@ -1762,6 +1980,15 @@ mod tests {
             provider: "test".into(),
             model: None,
             raw: Value::Null,
+        })
+    }
+
+    fn rig_final(input: u64, output: u64) -> StreamedAssistantContent {
+        rig_final_usage(Usage {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input + output,
+            ..Usage::default()
         })
     }
 
@@ -1835,6 +2062,55 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_usage_adds_cache_counters_to_prompt_but_only_reads_to_hits() {
+        // Anthropic: input_tokens is uncached input only; cache reads and
+        // writes sit beside it. The context meter needs all three, while the
+        // cache-hit chip must count reads only (writes are not hits).
+        let observer = Arc::new(UsageObserver::default());
+        let mut m = MapState::with_observer(WireKind::Anthropic, Some(observer.clone()));
+        let seen = m.map_one(Ok(rig_final_usage(Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 1070,
+            cached_input_tokens: 900,
+            cache_creation_input_tokens: 50,
+            ..Usage::default()
+        })));
+        assert!(matches!(
+            &seen[0],
+            StreamChunk::Done {
+                prompt_tokens: Some(1050),
+                completion_tokens: Some(20),
+                cached_tokens: Some(900),
+            }
+        ));
+
+        assert_eq!(observer.cache_write(), 50);
+
+        // OpenAI-compatible wires already include cached tokens in
+        // input_tokens — adding the counters again would double-count, and
+        // they report no cache writes.
+        observer.set_cache_write(999);
+        let mut m = MapState::with_observer(WireKind::Compat, Some(observer.clone()));
+        let seen = m.map_one(Ok(rig_final_usage(Usage {
+            input_tokens: 1000,
+            output_tokens: 20,
+            total_tokens: 1920,
+            cached_input_tokens: 900,
+            ..Usage::default()
+        })));
+        assert!(matches!(
+            &seen[0],
+            StreamChunk::Done {
+                prompt_tokens: Some(1000),
+                completion_tokens: Some(20),
+                cached_tokens: Some(900),
+            }
+        ));
+        assert_eq!(observer.cache_write(), 0);
+    }
+
+    #[test]
     fn map_state_whole_call_emits_args_when_no_deltas() {
         let mut m = MapState::new(WireKind::Responses);
         let seen = m.map_one(Ok(StreamedAssistantContent::ToolCall {
@@ -1903,11 +2179,101 @@ mod tests {
         });
         let mut compat = ProviderCompat::default();
         compat.supports_developer_role = Some(true);
-        compat_body_patches(&mut body, Some(&compat));
+        compat_body_patches(&mut body, Some(&compat), CacheRetention::Short);
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs[0]["role"], "developer");
         // stream_options removed when usage-in-streaming is unsupported
         assert!(body.get("stream_options").is_none());
+    }
+
+    fn anthropic_markers() -> ProviderCompat {
+        let mut compat = ProviderCompat::default();
+        compat.cache_control_format = Some("anthropic".into());
+        compat
+    }
+
+    /// Breakpoints land on the system prompt, the last tool and the last
+    /// text-bearing conversation row — a tool result in the middle of a
+    /// loop, not the stale user message before it.
+    #[test]
+    fn cache_markers_cover_system_tools_and_moving_tail() {
+        let mut body = json!({
+            "tools": [{"type": "function", "function": {"name": "a"}},
+                      {"type": "function", "function": {"name": "b"}}],
+            "messages": [
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "", "tool_calls": []},
+                {"role": "tool", "tool_call_id": "t", "content": "out"},
+            ],
+        });
+        compat_body_patches(&mut body, Some(&anthropic_markers()), CacheRetention::Short);
+        let mark = json!({"type": "ephemeral"});
+        assert_eq!(body["tools"][1]["cache_control"], mark);
+        assert!(body["tools"][0].get("cache_control").is_none());
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["content"][0]["cache_control"], mark);
+        assert_eq!(msgs[3]["content"][0]["cache_control"], mark);
+        assert_eq!(msgs[1]["content"], "q", "only one tail breakpoint");
+    }
+
+    #[test]
+    fn cache_markers_honour_tool_opt_out_long_ttl_and_none() {
+        let mut compat = anthropic_markers();
+        compat.supports_cache_control_on_tools = Some(false);
+        compat.supports_long_cache_retention = Some(true);
+        let body = || {
+            json!({
+                "tools": [{"type": "function", "function": {"name": "a"}}],
+                "messages": [{"role": "system", "content": "s"},
+                             {"role": "user", "content": "q"}],
+            })
+        };
+        let mut long = body();
+        compat_body_patches(&mut long, Some(&compat), CacheRetention::Long);
+        assert!(long["tools"][0].get("cache_control").is_none());
+        assert_eq!(
+            long["messages"][1]["content"][0]["cache_control"]["ttl"],
+            "1h"
+        );
+
+        let mut none = body();
+        compat_body_patches(&mut none, Some(&compat), CacheRetention::None);
+        assert_eq!(none["messages"][1]["content"], "q");
+    }
+
+    #[test]
+    fn cache_retention_parses_env_values() {
+        assert_eq!(CacheRetention::parse(None), CacheRetention::Short);
+        assert_eq!(CacheRetention::parse(Some("LONG")), CacheRetention::Long);
+        assert_eq!(CacheRetention::parse(Some(" none ")), CacheRetention::None);
+        assert_eq!(CacheRetention::parse(Some("bogus")), CacheRetention::Short);
+        let mut compat = ProviderCompat::default();
+        assert!(
+            !CacheRetention::Long.long(&compat),
+            "long needs declared support"
+        );
+        compat.supports_long_cache_retention = Some(true);
+        assert!(CacheRetention::Long.long(&compat));
+    }
+
+    #[test]
+    fn session_affinity_headers_follow_the_declared_format() {
+        let mut compat = ProviderCompat::default();
+        assert!(session_affinity_headers(&compat).is_empty());
+        compat.send_session_affinity_headers = Some(true);
+        compat.session_affinity_format = Some("openrouter".into());
+        assert_eq!(session_affinity_headers(&compat), vec!["x-session-id"]);
+        compat.session_affinity_format = Some("openai".into());
+        assert!(session_affinity_headers(&compat).contains(&"session_id"));
+        compat.session_affinity_format = None;
+        assert_eq!(
+            session_affinity_headers(&compat),
+            vec!["x-client-request-id", "x-session-affinity"]
+        );
+        let key = new_cache_key();
+        assert!(key.starts_with("husk-") && key.len() <= 64, "{key}");
+        assert_ne!(key, new_cache_key());
     }
 
     #[test]
@@ -1924,7 +2290,7 @@ mod tests {
                 {"role": "tool", "tool_call_id": "t1", "content": "ok"},
             ],
         });
-        compat_body_patches(&mut body, Some(&compat));
+        compat_body_patches(&mut body, Some(&compat), CacheRetention::Short);
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs[0]["reasoning_content"], "");
         assert_eq!(msgs[1]["name"], "bash");
