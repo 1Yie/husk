@@ -136,7 +136,9 @@ export function App() {
   useEffect(() => setSessionTitles(projects), [projects]);
   // True while a session/workspace switch is fetching history + rebuilding
   // the view — the stream renders a skeleton instead of a stale/empty pane.
-  const [viewLoading, setViewLoading] = useState(false);
+  // Starts true: before the boot load raises it, an unloaded view would paint
+  // the empty-greeting (a greeting flash) for a session that does have turns.
+  const [viewLoading, setViewLoading] = useState(true);
   // The full-layout switch veil — only workspace/session switches raise it.
   // Delete, fork and boot keep their in-pane skeleton (boot already has the
   // home splash), so a small action never blanks the whole window.
@@ -383,6 +385,8 @@ export function App() {
   const openSessionRef = useRef(handleOpenSession);
   openSessionRef.current = handleOpenSession;
   const bootLoaded = useRef(false);
+  // Boot resolved with an empty workspace — see the boot effect's empty arm.
+  const bootEmpty = useRef(false);
   const bootSessionLoad = useRef<Promise<unknown>>(Promise.resolve());
   useEffect(() => {
     if (!wsReady || !sessionsLoaded) return;
@@ -400,10 +404,15 @@ export function App() {
   }, [wsReady, sessionsLoaded]);
 
   const handleNewSession = async () => {
+    // A brand-new session has no history to mount, but `viewLoading` may still
+    // be up — it starts true at boot and only the boot effect lowers it. That
+    // effect is one-shot (`bootLoaded`), so a second session created later
+    // would otherwise sit on the skeleton forever.
     const newId = await newSession();
     if (typeof newId === "number") {
       setActiveId(newId);
     }
+    releaseLoading();
   };
 
   const handleDeleteSession = (id: number) => {
@@ -450,12 +459,29 @@ export function App() {
   // persisted snapshot so the resumed session isn't blank. `openSession`
   // is idempotent for a live actor; it only re-reads the store here.
   useEffect(() => {
-    if (bootLoaded.current || sessions.length === 0) return;
-    bootLoaded.current = true;
+    if (bootLoaded.current) return;
+    if (sessions.length === 0) {
+      // Nothing to resume. `viewLoading` starts true so an unloaded view can
+      // never paint the empty greeting for a session that does have turns;
+      // with zero sessions the welcome page mounts instead and there is
+      // nothing to wait for. Guarded by its own ref so a sidebar refresh
+      // while the workspace is empty does not re-run the release (which
+      // re-reads the header chips).
+      if (sessionsLoaded && !bootEmpty.current) {
+        bootEmpty.current = true;
+        releaseLoading();
+      }
+      return;
+    }
     const current = sessions.find((s) => s.active) ?? sessions[0];
-    // The canonical root from the project tree — `workspace.root` state
-    // may still be empty this early in the boot sequence.
-    const currentRoot = projects.find((p) => p.current)?.root ?? "";
+    // The canonical root from the project tree — `workspace.root` state may
+    // still be empty this early in the boot sequence. Wait for it: the view is
+    // filed under `root:id`, and if the reader's root differs (even empty) the
+    // pane resolves to an empty view and flashes the greeting before the real
+    // history lands. This effect re-runs when the root arrives.
+    const currentRoot = workspace.root || projects.find((p) => p.current)?.root || "";
+    if (!currentRoot) return;
+    bootLoaded.current = true;
     setViewLoading(true);
     bootSessionLoad.current = openSession(current.id).then(async (r) => {
       if (r && r.history.length > 0)
@@ -464,7 +490,7 @@ export function App() {
     }).catch(() => releaseLoading());
     setActiveId(current.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions]);
+  }, [sessions, workspace.root, projects, sessionsLoaded, releaseLoading]);
 
   const activeSession =
     sessions.find((s) => (activeId ? s.id === activeId : s.active)) || sessions[0];
@@ -625,8 +651,12 @@ export function App() {
       </MainLayout>
 
       {/* Switch veil — same look as the boot splash, over sidebar and chat
-          together so the two appear as one. Driven by the view-loading flag. */}
-      <WorkspaceLoadingVeil visible={switchVeil} />
+          together so the two appear as one. Driven by the view-loading flag.
+          Also stays up until the workspace info lands (`!wsReady`): the boot
+          splash in index.html fades two frames after mount, and without this
+          cover the fade exposed the still-blank pane (white flash) before the
+          skeleton could mount. */}
+      <WorkspaceLoadingVeil visible={switchVeil || !wsReady} />
 
       {/* Settings overlay — floats above the workspace, which keeps its
           DOM (and the expensive stream tree) mounted the whole time.
