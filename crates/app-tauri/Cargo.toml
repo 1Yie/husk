@@ -35,6 +35,8 @@ tauri-plugin-single-instance = "2"
 xxhash-rust.workspace = true
 futures.workspace = true
 sha2 = "0.10"
+tracing.workspace = true
+tracing-subscriber = "0.3"
 # Private per-download staging directories (0700 on Unix) that auto-clean on
 # drop; also the source of the Windows staged-installer cache helper.
 tempfile = "3"
@@ -57,6 +59,9 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 # the shell opens on right click.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# WebKitWebView handle (via Tauri's `with_webview`) for `web-process-terminated`
+# recovery. Same pinned version/features wry builds against; features are additive.
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 # Wayland overlay placement (computer-use HUD/glow): GTK3 layer-shell, system lib.
 # FFI only: the safe 0.8 wrapper keeps its functions crate-private (see
 # backend/ipc/layer_shell.rs). System lib is 0.10.0.

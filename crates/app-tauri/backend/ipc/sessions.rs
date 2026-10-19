@@ -686,32 +686,23 @@ fn agent_session_inner(
                 "plugins": mgr.plugin_overview(),
                 // The `delegate` TOOL is the driver, not an agent — it's
                 // never listed. Rows = built-in agents + `*.md` manifests.
-                "subagents": husk_host::subagents::BUILTIN_SUBAGENTS
-                    .iter()
-                    .map(|(n, d, p)| serde_json::json!({
-                        "name": n,
-                        "description": d,
-                        "prompt": p,
-                        "builtin": true,
-                    }))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .chain(
-                    husk_host::subagents::discover_subagents(
-                        &mgr.workspace_root,
-                        &crate::kernel::app_paths(),
-                    )
-                        .into_iter()
-                        .map(|a| serde_json::json!({
-                            "name": a.name,
-                            "description": a.description,
-                            "prompt": a.prompt,
-                            "path": a.path,
-                            "global": a.global,
-                            "builtin": false,
-                        })),
+                // One row per name: an override manifest replaces the
+                // built-in row it shadows, matching what `delegate` resolves.
+                "subagents": husk_host::subagents::agent_rows(
+                    &mgr.workspace_root,
+                    &crate::kernel::app_paths(),
                 )
-                .collect::<Vec<_>>(),
+                    .into_iter()
+                    .map(|a| serde_json::json!({
+                        "name": a.name,
+                        "description": a.description,
+                        "prompt": a.prompt,
+                        "path": a.path,
+                        "global": a.global,
+                        "model": a.model,
+                        "builtin": a.path.is_empty(),
+                    }))
+                    .collect::<Vec<_>>(),
             }))
         }
         // ---- editable agent surfaces (settings "智能体" panes) ----
@@ -829,14 +820,29 @@ fn agent_session_inner(
                 .unwrap_or("")
                 .trim()
                 .to_lowercase();
-            let path = subagent_file(&mgr.workspace_root, &name)
-                .ok_or_else(|| format!("找不到子代理 {name}"))?;
+            // A builtin has no file — the editor opens it from its spec and
+            // saving writes an override manifest that shadows it.
+            let Some(path) = subagent_file(&mgr.workspace_root, &name) else {
+                let (n, d, p) = husk_host::subagents::builtin_subagent(&name)
+                    .ok_or_else(|| format!("找不到子代理 {name}"))?;
+                return Ok(serde_json::json!({
+                    "name": n,
+                    "description": d,
+                    "prompt": p,
+                    "model": null,
+                    "builtin": true,
+                    "scope": "global",
+                }));
+            };
             let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
             let (_, desc, body) = husk_host::subagents::split_agent(&text);
+            let fm = husk_host::subagents::agent_frontmatter(&text);
             Ok(serde_json::json!({
                 "name": name,
                 "description": desc.unwrap_or_default(),
                 "prompt": body,
+                "model": fm.model,
+                "builtin": false,
                 "scope": if path.starts_with(mgr.workspace_root.join(".husk/agents")) { "workspace" } else { "global" },
             }))
         }
@@ -958,6 +964,10 @@ fn agent_session_inner(
                 .and_then(|p| p.get("prompt"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let model = payload
+                .as_ref()
+                .and_then(|p| p.get("model"))
+                .and_then(|v| v.as_str());
             let global = payload
                 .as_ref()
                 .and_then(|p| p.get("scope"))
@@ -977,9 +987,16 @@ fn agent_session_inner(
             };
             std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
             let path = base.join(format!("{name}.md"));
+            let existing = std::fs::read_to_string(&path).ok();
             std::fs::write(
                 &path,
-                format!("---\nname: {name}\ndescription: {desc}\n---\n\n{prompt}\n"),
+                husk_host::subagents::render_manifest(
+                    existing.as_deref(),
+                    &name,
+                    desc,
+                    model,
+                    prompt,
+                ),
             )
             .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true, "path": path.to_string_lossy() }))
@@ -992,6 +1009,7 @@ fn agent_session_inner(
             let (permission_mode, thinking_level, agent_mode, compact_at) = mgr.default_prefs();
             let (memory_enabled, memory_distill) = mgr.memory_prefs();
             let (active_provider, active_model) = mgr.default_model();
+            let subagent = mgr.subagent_model();
             let lim = husk_host::sandbox_prefs::current();
             Ok(serde_json::json!({
                 "permission_mode": permission_mode,
@@ -1001,6 +1019,8 @@ fn agent_session_inner(
                 "compact_at": compact_at,
                 "active_provider": active_provider,
                 "active_model": active_model,
+                "subagent_provider": subagent.as_ref().map(|(p, _)| p),
+                "subagent_model": subagent.as_ref().map(|(_, m)| m),
                 "memory_enabled": memory_enabled,
                 "memory_distill": memory_distill,
                 "blueprint_enabled": mgr.blueprint_pref(),
@@ -1094,6 +1114,13 @@ fn agent_session_inner(
                     .filter(|s| !s.is_empty())
                     .map(String::from);
                 mgr.set_default_model(ap, am);
+            }
+            // Subagent default model — same pair rule as the default model;
+            // the manager pushes it into every live session's child route.
+            if p.get("subagent_provider").is_some() || p.get("subagent_model").is_some() {
+                let field = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let pair = (field("subagent_provider"), field("subagent_model"));
+                mgr.set_subagent_model(Some(pair));
             }
             // Memory switches ride the same payload — separate setter so the
             // save lands in one `default_preferences` write.

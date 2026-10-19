@@ -9,6 +9,9 @@
 mod dev_config;
 mod ipc;
 mod kernel;
+mod logging;
+#[cfg(target_os = "linux")]
+mod webview_recovery;
 
 use kernel::KernelState;
 #[cfg(not(target_os = "linux"))]
@@ -151,39 +154,42 @@ fn exempt_self_from_proxy() {
 
 /// Pin the GTK/WebKitGTK rendering env before GTK init reads it.
 ///
-/// Under Wayland + the proprietary NVIDIA driver, WebKitGTK's dmabuf
-/// renderer hits a presentation-protocol conflict and the compositor
-/// floods the log with `Failed to create GBM buffer` while the webview
-/// renders broken or blank — and on some setups the process dies at
-/// startup. Forcing the X11 backend (XWayland) plus disabling the dmabuf
-/// renderer sidesteps the conflict without giving up GPU acceleration,
-/// and `__GLX_VENDOR_LIBRARY_NAME` keeps GLX on the NVIDIA vendor library.
-///
 /// **Auto-detection:** every launch probes the session type and the GPU
 /// vendor, then picks the whole env set in one shot — no restart, no
 /// config needed:
 ///
-/// | session | GPU     | backend  | dmabuf | extra env                      |
-/// |---------|---------|----------|--------|--------------------------------|
-/// | wayland | NVIDIA  | wayland  | on     | `__NV_DISABLE_EXPLICIT_SYNC=1` |
-/// | wayland | other   | wayland  | on     | —                              |
-/// | x11     | NVIDIA  | x11      | off    | GLX vendor pin                 |
-/// | x11     | other   | x11      | on     | —                              |
+/// | session | GPU     | backend  | presentation | extra env                          |
+/// |---------|---------|----------|--------------|------------------------------------|
+/// | wayland | NVIDIA  | wayland  | dmabuf       | no explicit sync, CPU raster, GLX pin |
+/// | x11     | NVIDIA  | x11      | dmabuf (SHM) | CPU raster, GLX pin                |
+/// | any     | other   | detected | dmabuf       | —                                  |
 ///
-/// `__NV_DISABLE_EXPLICIT_SYNC` works around WebKitGTK bug 324551: under
-/// Wayland, egl-wayland enables linux-drm-syncobj on the toplevel surface
-/// and WebKit then commits a wl_shm buffer with no acquire point, so KWin
-/// kills the client ("Error 71 (protocol error)"). Under X11 the dmabuf
-/// renderer's GBM allocation fails EINVAL on NVIDIA, so auto mode keeps
-/// dmabuf off there (WebKitGTK falls back to its non-dmabuf GPU path).
+/// Every auto row keeps WebKitGTK's hardware acceleration on. On 2.52,
+/// `WEBKIT_DISABLE_DMABUF_RENDERER=1` drops the acceleration policy to
+/// `never` (everything painted on the CPU, ~3 fps on a composited
+/// animation versus 60), so only `gpu_acceleration = false` sets it.
+///
+/// NVIDIA specifics (driver 615, WebKitGTK 2.52.1, KWin 6.7):
+/// - `__NV_DISABLE_EXPLICIT_SYNC=1` on Wayland is the WebKitGTK bug 324551
+///   workaround: egl-wayland enables linux-drm-syncobj on the toplevel
+///   surface and WebKit commits a wl_shm buffer with no acquire point, so
+///   the compositor kills the client ("Error 71 (protocol error)").
+/// - `WEBKIT_SKIA_ENABLE_CPU_RENDERING=1` moves Skia's tile rasterisation
+///   to the CPU while layer compositing stays on the GPU. The
+///   `libnvidia-eglcore` segfaults this driver produces come from Skia's
+///   GL context teardown (`GrDirectContext::~GrDirectContext`) and the
+///   WebProcess's GL context cleanup on exit; with CPU raster the probe
+///   stopped crashing.
+/// - Under X11 the dmabuf renderer's GBM allocation fails EINVAL on NVIDIA,
+///   so presentation uses shared-memory dmabuf
+///   (`WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`) — still hardware accelerated.
 ///
 /// **Override path:** `~/.config/husk/settings.toml` — user-level config
 /// the user can flip even when the GUI is dead (edit the file, relaunch).
 /// Explicit `renderer = "wayland" | "x11"` wins over session detection;
-/// `gpu_acceleration = true` forces the dmabuf renderer on (pairing it
-/// with `WEBKIT_DMABUF_RENDERER_DISABLE_GBM=1` under X11, where NVIDIA's
-/// GBM backend rejects WebKitGTK's buffer flags); `false` forces pure
-/// software rendering as a debugging floor.
+/// `cpu_raster = true | false` overrides the per-GPU raster default;
+/// `gpu_acceleration = false` forces pure software rendering as a
+/// debugging floor (`true` is the same as unset — GPU on).
 ///
 /// **Window alpha:** the main window is created OPAQUE on Linux
 /// (`tauri.linux.conf.json` flips the config's `transparent: true`). WebKitGTK
@@ -230,48 +236,49 @@ fn pin_linux_rendering_env() {
         Some("x11") => false,
         None => linux_wayland_session(),
         Some(other) => {
-            eprintln!("husk: unknown dev.renderer {other:?} — auto-detecting");
+            tracing::warn!(renderer = other, "unknown dev.renderer; auto-detecting");
             linux_wayland_session()
         }
     };
     std::env::set_var("GDK_BACKEND", if wayland { "wayland" } else { "x11" });
 
-    // Hardware acceleration. `false` is the software floor for driver
-    // debugging. `true` and the auto default both want the dmabuf renderer;
-    // the only exception is auto mode on X11+NVIDIA, where dmabuf's GBM
-    // allocation fails EINVAL and the non-dmabuf GLX path is healthier.
-    match dev.gpu_acceleration {
-        Some(false) => {
-            // Software rendering — the safest floor, useful when debugging
-            // driver-level GPU issues.
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-            std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
-        }
-        Some(true) | None => {
-            if nvidia && !wayland && dev.gpu_acceleration.is_none() {
-                // Auto mode on X11+NVIDIA: keep the classic non-dmabuf
-                // GLX path; dmabuf-under-X11 floods `Failed to create GBM
-                // buffer` (EINVAL) on this driver.
-                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-                std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
-                return;
-            }
-            // dmabuf renderer on.
-            std::env::remove_var("WEBKIT_DISABLE_DMABUF_RENDERER");
-            std::env::remove_var("LIBGL_ALWAYS_SOFTWARE");
-            if !nvidia {
-                return;
-            }
+    let gpu = dev.gpu_acceleration != Some(false);
+    let cpu_raster = gpu && dev.cpu_raster.unwrap_or(nvidia);
+    if gpu {
+        std::env::remove_var("WEBKIT_DISABLE_DMABUF_RENDERER");
+        std::env::remove_var("LIBGL_ALWAYS_SOFTWARE");
+        if nvidia {
             std::env::set_var("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
             if wayland {
                 std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
             } else {
-                // Explicit opt-in under X11: non-GBM dmabuf buffers avoid
-                // NVIDIA GBM's EINVAL flood.
-                std::env::set_var("WEBKIT_DMABUF_RENDERER_DISABLE_GBM", "1");
+                std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
             }
         }
+        if cpu_raster {
+            std::env::set_var(crate::webview_recovery::CPU_RASTER_ENV, "1");
+        } else {
+            std::env::remove_var(crate::webview_recovery::CPU_RASTER_ENV);
+        }
+    } else {
+        // Software rendering — the safest floor, useful when debugging
+        // driver-level GPU issues. WebKitGTK paints everything on the CPU.
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
     }
+
+    tracing::info!(
+        wayland,
+        nvidia,
+        gpu,
+        cpu_raster,
+        gpu_acceleration = ?dev.gpu_acceleration,
+        renderer = ?dev.renderer,
+        cpu_raster_setting = ?dev.cpu_raster,
+        display = ?std::env::var_os("DISPLAY"),
+        wayland_display = ?std::env::var_os("WAYLAND_DISPLAY"),
+        "linux renderer environment"
+    );
 }
 
 /// Size the main window to the monitor it opens on and center it.
@@ -445,6 +452,11 @@ fn fit_main_window(app: &tauri::App) {
 }
 
 fn main() {
+    // Before anything that can panic or block: a packaged GUI has no terminal,
+    // so the file sink is the only record of a renderer/actor failure.
+    logging::init();
+    logging::install_panic_hook();
+
     // Must run before GTK/WebKitGTK/libsoup init reads the env.
     #[cfg(target_os = "linux")]
     {
@@ -569,6 +581,11 @@ fn main() {
             // Adapt the configured 1280×840 to the monitor that actually
             // opened the window — see `fit_main_window`.
             fit_main_window(app);
+            // WebKitGTK's WebContent process can die independently of this
+            // process; without a listener the window stays white until the
+            // app is killed. Install the recovery hook once the window exists.
+            #[cfg(target_os = "linux")]
+            webview_recovery::install(app);
             Ok(())
         })
         // Close (title-bar X, Alt+F4) hides to the tray instead of destroying
