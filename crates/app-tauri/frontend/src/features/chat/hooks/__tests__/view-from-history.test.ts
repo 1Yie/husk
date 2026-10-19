@@ -44,8 +44,34 @@ describe("persisted history replay", () => {
   });
 
   test("persisted usage seeds the visible context meter", () => {
-    const view = viewFromHistory([], { prompt: 120, completion: 30, context_window: 8000, cached: 40 });
-    expect(view.usage).toEqual({ prompt: 120, completion: 30, contextWindow: 8000, cachedTokens: 40 });
+    const view = viewFromHistory([], {
+      prompt: 120,
+      completion: 30,
+      context_window: 8000,
+      cached: 40,
+      cache_write: 12,
+    });
+    expect(view.usage).toEqual({
+      prompt: 120,
+      completion: 30,
+      contextWindow: 8000,
+      cachedTokens: 40,
+      cacheWriteTokens: 12,
+    });
+  });
+
+  test("persisted usage restores the context breakdown", async () => {
+    const breakdown = {
+      system: 10, tools: 5, user: 3, memory: 0, assistant: 4,
+      reasoning: 6, tool_calls: 2, tool_results: 20, other: 0,
+    };
+    const usage = { prompt: 120, completion: 30, context_window: 8000, breakdown };
+    expect(viewFromHistory([], usage).contextBreakdown).toEqual(breakdown);
+    vi.useFakeTimers();
+    const task = viewFromHistoryChunked([], usage);
+    await vi.runAllTimersAsync();
+    expect((await task).contextBreakdown).toEqual(breakdown);
+    vi.useRealTimers();
   });
 
   test("time-sliced rebuild matches sync replay across multiple pages", async () => {

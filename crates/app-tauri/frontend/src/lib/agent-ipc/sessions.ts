@@ -22,6 +22,10 @@ export interface SessionUsage {
   context_window: number;
   /** Prompt tokens served from the provider cache (absent on older rows). */
   cached?: number;
+  /** Prompt tokens written to the provider cache (Anthropic; absent on older rows). */
+  cache_write?: number;
+  /** Estimated prompt composition of the same request (absent on older rows). */
+  breakdown?: import("@/features/chat/hooks/stream-view").ContextBreakdown | null;
 }
 
 /** Switch to an existing session — returns the active id plus the
@@ -286,6 +290,9 @@ export interface SubagentItem {
   /** Manifest path — custom agents only. */
   path?: string;
   global?: boolean;
+  /** Manifest `model:` — `provider/model` (or a bare id under the parent's
+   *  provider). Absent → the subagent default, then the parent's model. */
+  model?: string | null;
 }
 
 /** The agent's configuration surfaces for the settings "智能体" pane —
@@ -345,6 +352,8 @@ export interface UsageRecord {
   prompt: number;
   completion: number;
   cached: number;
+  /** Cache-write tokens (Anthropic); absent on rows from older builds. */
+  cache_write?: number;
   context_window: number;
   model?: string | null;
   provider?: string | null;
@@ -419,6 +428,8 @@ export function createSubagent(p: {
   description: string;
   scope: "workspace" | "global";
   prompt: string;
+  /** `provider/model`; "" or absent writes no `model:` line. */
+  model?: string;
 }) {
   return invoke<{ success: boolean; path: string }>("agent_session", {
     op: "create_subagent",
@@ -439,6 +450,12 @@ export interface DefaultPrefs {
    * both or neither; "" clears. */
   active_provider?: string | null;
   active_model?: string | null;
+  /** Global subagent default model — delegated children without a manifest
+   *  `model:` run on it instead of the parent's model. Same pair rule as
+   *  `active_*`: send both; "" clears (children follow the parent). Applied
+   *  to live sessions from their next `delegate` call. */
+  subagent_provider?: string | null;
+  subagent_model?: string | null;
   /** Fraction of the context window that triggers compaction — 0.7/0.8/0.9. */
   compact_at?: number;
   /** Sandbox master switch — absent/true = sandboxed; false = every process
@@ -719,11 +736,14 @@ export function clearMemory(table: string) {
  *  it, `gpu_acceleration = false` on a stack that needs hardware GL) —
  *  the recovery path is a single obvious file beside `config.toml`. */
 export interface DevConfig {
-  /** "x11" | "wayland" — GTK/WebKitGTK backend. Default compiled: "x11". */
+  /** "x11" | "wayland" — GTK/WebKitGTK backend. null = follow the session. */
   renderer?: "x11" | "wayland" | null;
-  /** false = software GL (dmabuf off + LIBGL_ALWAYS_SOFTWARE); true = opt
-   *  into the dmabuf GPU renderer; null = compiled NVIDIA-safe default. */
+  /** false = software GL (dmabuf off + LIBGL_ALWAYS_SOFTWARE); true / null =
+   *  hardware acceleration on. */
   gpu_acceleration?: boolean | null;
+  /** true = Skia rasterises on the CPU, GPU still composites; null = on for
+   *  NVIDIA, off elsewhere. */
+  cpu_raster?: boolean | null;
   /** Shift+Ctrl+P HUD toggle — `true` enables it, `null` falls back to
    *  dev-build default. */
   monitor_panel?: boolean | null;
@@ -820,6 +840,10 @@ export interface SubagentDetail {
   description: string;
   prompt: string;
   scope: "workspace" | "global";
+  model?: string | null;
+  /** No manifest file behind this profile — saving an edit writes an
+   *  override that shadows the built-in. */
+  builtin?: boolean;
 }
 
 /** `*.md` body + scope for the edit dialog. */

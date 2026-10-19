@@ -77,6 +77,31 @@ describe("composer streaming boundary", () => {
   });
 });
 
+test("cache writes ride the product event after their Usage", () => {
+  const usage: UiEvent = {
+    Usage: {
+      prompt_tokens: 1050,
+      completion_tokens: 20,
+      context_window: 1_000_000,
+      cached_tokens: 900,
+    },
+  };
+  const withUsage = applyEvents(emptyView(), [usage]);
+  expect(withUsage.usage).toMatchObject({
+    prompt: 1050,
+    cachedTokens: 900,
+    cacheWriteTokens: 0,
+  });
+  const withWrite = applyEvents(withUsage, [
+    { Custom: { kind: "husk:usage_cache_write", payload: 50 } },
+  ]);
+  expect(withWrite.usage.cacheWriteTokens).toBe(50);
+
+  // A later round without a write event must not inherit the old count.
+  const next = applyEvents(withWrite, [usage]);
+  expect(next.usage.cacheWriteTokens).toBe(0);
+});
+
 test("batched reasoning preserves control order and immutable snapshots", () => {
   vi.spyOn(Date, "now").mockReturnValue(10000);
   const events: UiEvent[] = [

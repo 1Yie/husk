@@ -262,7 +262,9 @@ export function viewFromHistory(
       completion: usage.completion,
       contextWindow: usage.context_window,
       cachedTokens: usage.cached ?? 0,
+      cacheWriteTokens: usage.cache_write ?? 0,
     };
+    if (usage.breakdown) v.contextBreakdown = usage.breakdown;
   }
   // call_id → tool name and args: resolve from the preceding assistant `tool_calls`.
   const idToTool = new Map<string, { name: string; args: string; raw: string }>();
@@ -286,7 +288,9 @@ export async function viewFromHistoryChunked(
       completion: usage.completion,
       contextWindow: usage.context_window,
       cachedTokens: usage.cached ?? 0,
+      cacheWriteTokens: usage.cache_write ?? 0,
     };
+    if (usage.breakdown) v.contextBreakdown = usage.breakdown;
   }
   const idToTool = new Map<string, { name: string; args: string; raw: string }>();
   for (const m of history) indexToolCalls(idToTool, m);

@@ -6,6 +6,7 @@ import type { AgentEventEnvelope } from "@/types";
 import type {
   Artifact,
   ChangeKind,
+  ContextBreakdown,
   ChangePatch,
   FileChange,
   SessionView,
@@ -606,6 +607,10 @@ function applyEventInto(
         completion: ev.Usage.completion_tokens,
         contextWindow: ev.Usage.context_window,
         cachedTokens: ev.Usage.cached_tokens,
+        // Cache writes ride the product event that follows this Usage; clear
+        // the previous round's reading first so a provider switch cannot
+        // inherit it.
+        cacheWriteTokens: 0,
       },
     };
   }
@@ -641,6 +646,8 @@ function applyEventInto(
     return {
       ...v,
       items,
+      // The split described the pre-compaction request, like the cache figures.
+      contextBreakdown: undefined,
       usage: {
         ...v.usage,
         prompt: c.after_tokens,
@@ -648,6 +655,7 @@ function applyEventInto(
         // longer exists — leaving it would make the uncached chip under-read
         // until the next `Usage` lands.
         cachedTokens: 0,
+        cacheWriteTokens: 0,
         ...(c.context_window > 0 ? { contextWindow: c.context_window } : {}),
       },
     };
@@ -656,6 +664,22 @@ function applyEventInto(
     closeOpenThinking(items);
     items.push({ kind: "system", text: `⚠ ${ev.Error}`, standalone: !v.turnOpen, ts: Date.now() });
     return { ...v, items, streaming: false };
+  }
+  if ("Custom" in ev && ev.Custom.kind === "husk:usage_cache_write") {
+    // Product extension accompanying the preceding `Usage`: the shared Usage
+    // shape has no cache-write slot. Payload is the round's token count.
+    const payload = ev.Custom.payload;
+    const tokens = typeof payload === "number" ? payload : Number(payload) || 0;
+    return { ...v, usage: { ...v.usage, cacheWriteTokens: tokens } };
+  }
+  if ("Custom" in ev && ev.Custom.kind === "husk:context_breakdown") {
+    // Product extension accompanying the preceding `Usage`: the request's
+    // estimated prompt composition.
+    const p = ev.Custom.payload;
+    if (p && typeof p === "object") {
+      return { ...v, contextBreakdown: p as ContextBreakdown };
+    }
+    return v;
   }
   if ("Custom" in ev && ev.Custom.kind === "plan_submitted") {
     // The plan card IS the deliverable — it lands after the turn's final

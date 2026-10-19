@@ -80,10 +80,10 @@ export function StatsPane() {
           <Kpi
             icon={<Activity className="h-4 w-4" />}
             label="缓存命中"
-            value={totals.prompt + totals.cached > 0
-              ? `${Math.round(totals.cached / (totals.prompt + totals.cached) * 100)}%`
+            value={totals.prompt > 0
+              ? `${Math.round(Math.min(1, totals.cached / totals.prompt) * 100)}%`
               : "—"}
-            hint={`${fmtTokens(totals.cached)} Token 命中缓存`}
+            hint={`${fmtTokens(totals.cached)} 命中 · ${fmtTokens(totals.cacheWrite)} 写入`}
           />
           <Kpi
             icon={<Calendar className="h-4 w-4" />}

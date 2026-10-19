@@ -40,7 +40,14 @@ export interface UsageStats {
   daily: DayBucket[];
   byModel: ModelBucket[];
   byWorkspace: WorkspaceBucket[];
-  totals: { prompt: number; completion: number; cached: number; sessions: number; activeDays: number };
+  totals: {
+    prompt: number;
+    completion: number;
+    cached: number;
+    cacheWrite: number;
+    sessions: number;
+    activeDays: number;
+  };
   /** Longest run of consecutive active days. */
   streak: number;
   busiest: DayBucket | null;
@@ -61,12 +68,13 @@ export function aggregate(records: UsageRecord[], now = Date.now()): UsageStats 
   const byDay = new Map<string, { sessions: number; tokens: number }>();
   const models = new Map<string, ModelBucket>();
   const workspaces = new Map<string, WorkspaceBucket>();
-  const totals = { prompt: 0, completion: 0, cached: 0, sessions: 0, activeDays: 0 };
+  const totals = { prompt: 0, completion: 0, cached: 0, cacheWrite: 0, sessions: 0, activeDays: 0 };
 
   for (const r of records) {
     totals.prompt += r.prompt;
     totals.completion += r.completion;
     totals.cached += r.cached;
+    totals.cacheWrite += r.cache_write ?? 0;
     totals.sessions += 1;
 
     const key = dayKey(r.ts);

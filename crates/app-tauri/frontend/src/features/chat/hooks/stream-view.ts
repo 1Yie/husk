@@ -165,6 +165,19 @@ export interface Artifact {
   updatedAt: number;
 }
 
+/** Prompt composition by category, in estimated tokens. */
+export interface ContextBreakdown {
+  system: number;
+  tools: number;
+  user: number;
+  memory: number;
+  assistant: number;
+  reasoning: number;
+  tool_calls: number;
+  tool_results: number;
+  other: number;
+}
+
 export interface SessionView {
   /** An unresolved `QuestionAsked` — the composer renders it in the same
    * slot as an approval strip. Cleared when answered (locally), when the
@@ -202,10 +215,18 @@ export interface SessionView {
     prompt: number;
     completion: number;
     contextWindow: number;
-    /** Prompt tokens served from the provider cache — `prompt -
-     * cachedTokens` is the uncached share billed at full rate. */
+    /** Prompt tokens served from the provider cache (cache hits) —
+     * `prompt - cachedTokens - cacheWriteTokens` is the uncached share billed
+     * at full input rate. */
     cachedTokens: number;
+    /** Prompt tokens written to the provider cache this round (Anthropic);
+     * 0 when the wire does not report writes. */
+    cacheWriteTokens: number;
   };
+  /** Estimated composition of the last request's prompt (backend
+   * heuristic, `husk:context_breakdown`). Proportions only — the card
+   * scales them to `usage.prompt`. Absent until the first live round. */
+  contextBreakdown?: ContextBreakdown;
   /** Assistant output rate (tok/s) — a live estimate while deltas flow
    * (chars/4 over active stream time), finalized from the real
    * `completion_tokens` when the `Usage` event lands. Resets each turn. */
@@ -235,7 +256,13 @@ export const emptyView = (): SessionView => ({
   state: null,
   streaming: false,
   turnOpen: false,
-  usage: { prompt: 0, completion: 0, contextWindow: 0, cachedTokens: 0 },
+  usage: {
+    prompt: 0,
+    completion: 0,
+    contextWindow: 0,
+    cachedTokens: 0,
+    cacheWriteTokens: 0,
+  },
   toksPerSec: 0,
   rate: { chars: 0, activeMs: 0, lastAt: null },
 });
