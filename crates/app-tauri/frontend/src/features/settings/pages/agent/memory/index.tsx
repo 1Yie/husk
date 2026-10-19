@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
+import { AnimatedHeight } from "@/components/ui/animated-height";
 import { SettingsSection } from "@/features/settings/components";
 import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
@@ -49,6 +50,16 @@ import {
 const confidenceTone = (c: number) => (c >= 0.8 ? "success" : c >= 0.5 ? "neutral" : "warn");
 
 const PREVIEW_COUNT = 5;
+
+/** Rows past the preview fade in as the list grows, staggered within their
+ *  batch; preview rows render plain so the first paint never animates. */
+const revealClass = (index: number) =>
+  index < PREVIEW_COUNT
+    ? undefined
+    : cn(
+        "animate-in fade-in-0 slide-in-from-top-1 fill-mode-both duration-300 motion-reduce:animate-none",
+        ["delay-0", "delay-[40ms]", "delay-[80ms]", "delay-[120ms]", "delay-[160ms]"][index % PREVIEW_COUNT],
+      );
 
 function MemoryListFooter({ label, listId, total, visible, onMore, onCollapse }: {
   label: string;
@@ -231,13 +242,15 @@ export function MemoryPane() {
         }
       >
         <KvList className={cn(inactive && "opacity-60")}>
+          <AnimatedHeight>
           <KvListContent id={personaListId}>
             {!ov ? (
               <SkeletonKvRows rows={2} />
             ) : persona.length ? (
-              shownPersona.map((p) => (
+              shownPersona.map((p, i) => (
                 <ItemRow
                   key={p.key}
+                  className={revealClass(i)}
                   icon={
                     <ItemIcon>
                       <CircleUser className="h-4 w-4" />
@@ -281,6 +294,7 @@ export function MemoryPane() {
               />
             )}
           </KvListContent>
+          </AnimatedHeight>
           <MemoryListFooter
             label="个人偏好"
             listId={personaListId}
@@ -296,24 +310,30 @@ export function MemoryPane() {
       <SettingsSection
         title="记忆事实"
         description="当前工作区，由蒸馏或 remember 工具写入"
-        actions={count(ov ? facts.length : undefined)}
+        actions={
+          <>
+            {count(ov ? facts.length : undefined)}
+            {/* Search shares the header row — a row of its own left a band of
+             *  empty space between the description and the list. */}
+            {(facts.length > PREVIEW_COUNT || factQuery !== "") && (
+              <SearchBox value={factQuery} onChange={(value) => {
+                setFactQuery(value);
+                setFactLimit(PREVIEW_COUNT);
+              }} placeholder="搜索事实" />
+            )}
+          </>
+        }
       >
-        {(facts.length > PREVIEW_COUNT || factQuery !== "") && (
-          <div className="flex">
-            <SearchBox value={factQuery} onChange={(value) => {
-              setFactQuery(value);
-              setFactLimit(PREVIEW_COUNT);
-            }} placeholder="搜索事实" />
-          </div>
-        )}
         <KvList className={cn(inactive && "opacity-60")}>
+          <AnimatedHeight>
           <KvListContent id={factListId}>
             {!ov ? (
               <SkeletonKvRows rows={3} />
             ) : shownFacts.length ? (
-              shownFacts.map((f) => (
+              shownFacts.map((f, i) => (
                 <ItemRow
                   key={f.id}
+                  className={revealClass(i)}
                   icon={
                     <ItemIcon
                       badge={{
@@ -355,6 +375,7 @@ export function MemoryPane() {
               />
             )}
           </KvListContent>
+          </AnimatedHeight>
           <MemoryListFooter
             label="记忆事实"
             listId={factListId}
