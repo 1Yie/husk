@@ -16,6 +16,7 @@ function viewWith() {
     { kind: "user", text: "hi" },
     { kind: "tool", name: "read", args: "{}", ok: true },
     { kind: "tool", name: "bash", args: "{}", ok: false },
+    { kind: "assistant", text: "done", streaming: false },
   ];
   return v;
 }
@@ -43,6 +44,15 @@ describe("TitleBar stat chips", () => {
     fireEvent.click(screen.getByRole("button", { name: "Token 用量" }));
     expect(await screen.findByText("未缓存输入")).toBeTruthy();
     expect(screen.getByText("90,000 tok")).toBeTruthy();
+  });
+
+  it("keeps a sub-100% cache rate from rounding up to 100%", () => {
+    const v = viewWith();
+    v.usage = { ...v.usage, prompt: 100_000, cachedTokens: 99_999 };
+    renderBar(v);
+    expect(screen.getByRole("button", { name: "Token 用量" }).textContent).toContain("缓存 99.99%");
+    fireEvent.click(screen.getByRole("button", { name: "Token 用量" }));
+    expect(screen.getByText("99.99%")).toBeTruthy();
   });
 
   it("lists failed tool calls in the activity card", async () => {

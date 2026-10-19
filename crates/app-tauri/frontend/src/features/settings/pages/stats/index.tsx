@@ -8,6 +8,7 @@ import { EmptyState, ItemIcon, SettingsSection, Tag } from "@/features/settings/
 import { ActivityHeatmap } from "@/features/settings/components/activity-heatmap";
 import { aggregate, fmtTokens } from "@/features/settings/usage";
 import { getUsageStats, type UsageRecord } from "@/lib/agent-ipc/sessions";
+import { formatCacheRate } from "@/lib/cache-rate";
 import { SURFACE_ACTIVITY_EMPTY } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -80,9 +81,7 @@ export function StatsPane() {
           <Kpi
             icon={<Activity className="h-4 w-4" />}
             label="缓存命中"
-            value={totals.prompt > 0
-              ? `${Math.round(Math.min(1, totals.cached / totals.prompt) * 100)}%`
-              : "—"}
+            value={formatCacheRate(totals.cached, totals.prompt) ?? "—"}
             hint={`${fmtTokens(totals.cached)} 命中 · ${fmtTokens(totals.cacheWrite)} 写入`}
           />
           <Kpi

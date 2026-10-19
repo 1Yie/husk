@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { WindowControls } from "@/components/window-controls";
 import { useCurrencySymbol } from "@/lib/appearance";
+import { formatCacheRate } from "@/lib/cache-rate";
 import { GitBranch, Zap, BarChartHorizontalStart, Database } from "@keyline-icons/react";
-import { FileDiff } from "lucide-react";
 import { CardBody, CardDivider, CardHeader, CardRow, StatPopover } from "./stat-popover";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { StreamHealth } from "@/features/chat/components/stream-health";
@@ -21,13 +21,6 @@ interface TitleBarProps {
   modelCost?: ModelItem["cost"];
   /** Opens the raw-JSON history viewer for the active session. */
   onShowRaw?: () => void;
-  /** Changes panel toggle — only rendered when provided. */
-  changesOpen?: boolean;
-  changesCount?: number;
-  /** Word the toggle's labels are built from —「改动」for the diff dock,
-   * 「产物」for the office artifacts dock. */
-  changesLabel?: string;
-  onToggleChanges?: () => void;
   /** No workspace open — hide title, raw button and the stats cluster. */
   noWorkspace?: boolean;
   /** No ACTIVE session (workspace open, zero sessions) — git stays, the
@@ -173,14 +166,15 @@ function turnCost(
   );
 }
 
-export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, changesOpen, changesCount = 0, changesLabel = "改动", onToggleChanges, noWorkspace = false, noSession = false }: TitleBarProps) {
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, noWorkspace = false, noSession = false }: TitleBarProps) {
   const prompt = view?.usage.prompt ?? 0;
   const completion = view?.usage.completion ?? 0;
   const cached = view?.usage.cachedTokens ?? 0;
   const cacheWrite = view?.usage.cacheWriteTokens ?? 0;
   const uncached = Math.max(0, prompt - cached - cacheWrite);
-  // Share of this request's prompt served from the provider cache.
-  const hitPct = prompt > 0 ? Math.round((Math.min(cached, prompt) / prompt) * 100) : null;
+  // Share of this request's prompt served from the provider cache. Kept as a
+  // truncated decimal string: 99.9x% must not round up to 100%.
+  const cacheRate = formatCacheRate(cached, prompt);
   // The hint (active model's window) wins over the turn-level usage: usage
   // remembers whatever model produced the LAST turn, so after a mid-session
   // model switch it would keep showing the old window until the next turn.
@@ -215,13 +209,23 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   let toolSteps = 0;
   let toolFailed = 0;
   let userTurns = 0;
+  let assistantRuns = 0;
   for (const it of items) {
     if (it.kind === "tool") {
       toolSteps += 1;
       if (it.ok === false) toolFailed += 1;
     } else if (it.kind === "user") userTurns += 1;
+    else if (it.kind === "assistant") assistantRuns += 1;
   }
+  // Real execution counts, not "user sent a prompt": one prompt can run the
+  // model/tool loop many times. Old snapshots have no totals; fall back to the
+  // loaded slice rather than the user-turn count.
   const turns = view?.turnTotal ?? userTurns;
+  // The totals are authoritative (persisted, then advanced by live events and
+  // re-based by `husk:session_counts`), so they can go DOWN after /clear or
+  // compaction. Only snapshots older than the counts fall back to the slice.
+  const runs = view?.runTotal ?? assistantRuns;
+  const tasks = view?.taskTotal ?? toolSteps;
   const breakdown = view?.contextBreakdown;
   const composition = contextComposition(breakdown, prompt, cached, cacheWrite, uncached);
   const totalTokens = prompt + completion;
@@ -231,7 +235,10 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   const statsChips = (compact: boolean) => (
     <>
       {!noSession && <StreamHealth />}
-      {gitInfo?.branch && (
+      {/* Only while there is something to act on. A clean branch — everything
+          committed — is not news, and a permanently lit chip in a 36px bar
+          costs more than the branch name is worth. */}
+      {gitInfo?.branch && gitInfo.dirty > 0 && (
         <StatPopover
           label={`Git 分支 ${gitInfo.branch}`}
           className="w-64"
@@ -265,7 +272,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
             <Zap className={CHIP_ICON} />
             {!compact && (
               <span>
-                {turns} 轮 · {toolSteps} 步<span className="mx-1 text-neutral-400">·</span>
+                {runs} 轮 · {tasks} 步<span className="mx-1 text-neutral-400">·</span>
                 {fmtRate(toks)} tok/s
               </span>
             )}
@@ -275,8 +282,9 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
         <CardHeader icon={<Zap className="h-4 w-4" />} title="生成活动" value={`${fmtRate(toks)} tok/s`} />
         <CardDivider />
         <CardBody>
-          <CardRow label="对话轮数" value={turns} />
-          <CardRow label="工具调用" value={toolSteps} />
+          <CardRow label="用户轮次" value={turns} />
+          <CardRow label="模型轮次" value={runs} />
+          <CardRow label="工具调用" value={tasks} />
           {toolFailed > 0 && <CardRow label="工具失败" value={<span className="text-red-500">{toolFailed}</span>} />}
           <CardRow label="本轮生成" value={`${fmtNum(completion)} tok`} />
         </CardBody>
@@ -287,8 +295,8 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
           <>
             <Database className={CHIP_ICON} />
             {!compact && <span>{fmtCompact(totalTokens)} tok</span>}
-            {!compact && hitPct !== null && (
-              <span className="text-neutral-500">缓存 {hitPct}%</span>
+            {!compact && cacheRate !== null && (
+              <span className="text-neutral-500">缓存 {cacheRate}</span>
             )}
             {!compact && cost !== null && (
               <span className="text-neutral-500">{fmtCost(cost, sym)}</span>
@@ -303,7 +311,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
         />
         <CardDivider />
         <CardBody>
-          <CardRow label="缓存命中" value={hitPct !== null ? `${hitPct}%` : "—"} />
+          <CardRow label="缓存命中" value={cacheRate ?? "—"} />
           <CardRow label="缓存读取" value={`${fmtNum(cached)} tok`} swatch="bg-emerald-500" />
           {cacheWrite > 0 && (
             <CardRow label="缓存写入" value={`${fmtNum(cacheWrite)} tok`} swatch="bg-amber-500" />
@@ -363,7 +371,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
         </CardBody>
         <CardDivider />
         <CardBody>
-          <CardRow label="缓存命中" value={hitPct !== null ? `${hitPct}% · ~${fmtCompact(cached)}` : "—"} muted />
+          <CardRow label="缓存命中" value={cacheRate !== null ? `${cacheRate} · ~${fmtCompact(cached)}` : "—"} muted />
         </CardBody>
         {breakdown && (
           <p className="px-3.5 pb-3 text-[11px] text-neutral-400">各项为按字符估算后按实际用量缩放</p>
@@ -411,34 +419,13 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
        * its detail card on hover; a click pins it. Below the collapse
        * threshold the chips shrink to icon + meter. */}
       {!noWorkspace && (
-        <div className="flex items-center gap-0.5 flex-none mr-2 min-w-0">
+        // Optical nudge, not layout: these chips are 11px text sitting next to
+        // 18–20px window glyphs, so a box-perfect centre still reads a touch
+        // high. 1px down puts the row's visual mass on the same line as the
+        // minimise/maximise/close icons.
+        <div className="flex items-center gap-0.5 flex-none mr-2 min-w-0 translate-y-[1px]">
           {statsChips(narrow)}
         </div>
-      )}
-
-      {/* Changes-panel toggle stays on the bar in BOTH states — it's an
-       * action, not a stat, so it never folds into the "…" overflow menu. */}
-      {onToggleChanges && changesCount > 0 && (
-        <TooltipSimple
-          content={changesOpen ? `关闭${changesLabel}面板` : `查看${changesLabel}${changesCount > 0 ? ` (${changesCount} 个文件)` : ""}`}
-          side="bottom"
-        >
-          <button
-            type="button"
-            data-tauri-drag-region="false"
-            onClick={onToggleChanges}
-            aria-label={`${changesLabel}面板`}
-            aria-pressed={changesOpen}
-            className={`relative mr-2 flex-none flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors cursor-pointer text-[11px] font-mono ${
-              changesOpen
-                ? "bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)] text-neutral-800"
-                : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-800"
-            }`}
-          >
-            <FileDiff className="h-3.5 w-3.5" />
-            <span className="tabular-nums">{changesCount}</span>
-          </button>
-        </TooltipSimple>
       )}
 
       <WindowControls />
