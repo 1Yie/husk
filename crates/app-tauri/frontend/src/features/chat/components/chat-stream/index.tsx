@@ -1,5 +1,5 @@
 
-import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, startTransition, type ReactNode } from "react";
+import { memo, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, startTransition, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
 import type { SessionView, StreamItem } from "@/features/chat/hooks/stream-view";
 import {
@@ -43,6 +43,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { requestQuote, selectionWithin } from "@/lib/selection-bus";
 import { cn } from "@/lib/utils";
+import { FileDiff, Package, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { loadStamp } from "@/lib/load-probe";
 import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "@/lib/agent-ipc/sessions";
@@ -337,6 +338,18 @@ interface Props {
   sessionKey?: string;
   /** Older-history pages exist above the loaded slice. */
   hasMore?: boolean;
+  /** Right dock (改动 + 产物) — its toggle shares this centered floating row
+   *  with 回到底部, so both sit on the same axis above the composer. */
+  dockOpen?: boolean;
+  /** Files in the dock's active view. */
+  dockCount?: number;
+  /** Which view the dock is showing — the pill names it, so the sidebar's
+   *  state is readable without looking right. */
+  dockTab?: "changes" | "artifacts" | null;
+  /** Line totals of the 改动 view — the pill shows the diff's own numbers. */
+  dockAdds?: number;
+  dockDels?: number;
+  onToggleDock?: () => void;
   /** Fetch + prepend the next older page (scroll-top trigger). */
   /** Fetch + prepend the next older page. Resolves `true` when a
    * page actually landed — `false` (empty/end) clears the pending
@@ -380,6 +393,20 @@ type AssistantStep =
     }
   | { type: "system"; text: string }
   | { type: "plan"; plan: PlanPayload };
+
+/** Mounted-step window: only steps intersecting (plus overscan) this scroll
+ *  root get their real TurnStep. Placeholders carry the rail target ids. */
+interface VirtualStepApi {
+  observe: (el: Element, onChange: (visible: boolean) => void) => () => void;
+  /** Synchronous "is this inside the window the reader will see?" — read in
+   *  a step's first layout pass so the steps on screen mount BEFORE the
+   *  first paint. The observer's first report only arrives after a frame,
+   *  which painted every visible text block as a blank placeholder (the
+   *  white flash when the skeleton lifted). */
+  isNear: (el: Element) => boolean;
+}
+
+const VirtualStepContext = createContext<VirtualStepApi | null>(null);
 
 interface Turn {
   id: string;
@@ -1051,6 +1078,12 @@ function CappedAssistantText({ text, animating }: { text: string; animating?: bo
   );
 }
 
+/** Anything Streamdown renders differently from plain text: inline markup,
+ *  headings/quotes/lists (bulleted and numbered), tables, HTML, links and
+ *  autolinks, `$…$` inline math (the renderer enables single-dollar), and
+ *  backslash escapes. `\` last in the class — JS regex needs it doubled. */
+const PLAIN_MARKUP = /[`*_#[\]|<>~$\\]|https?:\/\/|^\s*(?:[-+>]|\d+[.)])\s/m;
+
 /** One assistant step. `memo` + the tail reconcile in `turns` keep a settled
  * step's object stable, so a delta in a long running turn re-renders only the
  * step that is growing — not every tool row and trace the turn has collected.
@@ -1062,19 +1095,22 @@ const TurnStep = memo(
     stepIdx,
     isLastStep,
     streaming,
+    allowPlain = true,
   }: {
     step: AssistantStep;
     turnId: string;
     stepIdx: number;
     isLastStep: boolean;
     streaming: boolean;
+    /** The plain-text fast path may be used — false for a step that mounted
+     *  as the live tail (see the text branch). */
+    allowPlain?: boolean;
   }) {
     if (step.type === "thinking") {
       const thinkingText = step.text.trim();
       if (!step.done && !thinkingText) return null;
       return (
         <div
-          id={`chat-turn-${turnId}-step-${stepIdx}`}
           className="w-full"
         >
           <AssistantStatus
@@ -1089,13 +1125,28 @@ const TurnStep = memo(
 
     if (step.type === "text") {
       const isAnimating = streaming && isLastStep;
+      // A tool round usually opens with a one-line preamble ("Let me check
+      // …"). Those short, markup-free non-final blocks don't need a full
+      // Streamdown pipeline; mounting dozens of them while scrolling was a
+      // large part of the jank. Final answers always use Streamdown. The
+      // choice is fixed when the step mounts (`allowPlain`): a block mounted
+      // while it was the live tail must not swap renderers — and reflow —
+      // the moment a tool call makes it "non-last".
+      const plain =
+        allowPlain &&
+        !isLastStep &&
+        step.text.length <= 280 &&
+        !PLAIN_MARKUP.test(step.text);
 
       return (
         <div
-          id={`chat-turn-${turnId}-step-${stepIdx}`}
           className="w-full min-w-0 text-[14px] text-neutral-900 [&_p]:max-w-none"
         >
-          <CappedAssistantText text={step.text} animating={isAnimating} />
+          {plain ? (
+            <div className="whitespace-pre-wrap leading-relaxed break-words">{step.text}</div>
+          ) : (
+            <CappedAssistantText text={step.text} animating={isAnimating} />
+          )}
         </div>
       );
     }
@@ -1115,7 +1166,6 @@ const TurnStep = memo(
           : undefined;
       return (
         <div
-          id={`chat-turn-${turnId}-step-${stepIdx}`}
           className="flex w-full min-w-0 flex-col items-start gap-2"
         >
           {/* ONE row across the whole phase — mode flips tools →
@@ -1145,7 +1195,6 @@ const TurnStep = memo(
     if (step.type === "system") {
       return (
         <div
-          id={`chat-turn-${turnId}-step-${stepIdx}`}
           // `w-full` + `min-w-0` + `overflow-wrap:anywhere` — an
           // upstream error carries a compact JSON blob whose
           // unbreakable tail (the whole `)","param":null,...}` run)
@@ -1162,7 +1211,6 @@ const TurnStep = memo(
     if (step.type === "compaction") {
       return (
         <div
-          id={`chat-turn-${turnId}-step-${stepIdx}`}
           className="w-full min-w-0"
         >
           <CompactionCard
@@ -1180,7 +1228,6 @@ const TurnStep = memo(
     if (step.type === "plan") {
       return (
         <div
-          id={`chat-turn-${turnId}-step-${stepIdx}`}
           className="w-full min-w-0"
         >
           <PlanCard plan={step.plan} />
@@ -1195,8 +1242,245 @@ const TurnStep = memo(
     a.turnId === b.turnId &&
     a.stepIdx === b.stepIdx &&
     a.isLastStep === b.isLastStep &&
+    a.allowPlain === b.allowPlain &&
     (!a.isLastStep || a.streaming === b.streaming),
 );
+
+/** Real step heights, outliving the VirtualStep instance: a turn trimmed and
+ *  revealed again, or a session switched away and back, remounts its steps —
+ *  an instance-local ref fell back to the length estimate every time, and
+ *  each estimate→real correction moved the content above the reader.
+ *
+ *  Keyed session-first: turn ids are `t{hi}` — an index into ONE history — so
+ *  a flat key let session B's `t12` placeholder inherit session A's height
+ *  and land the scroll at the wrong offset. The inner map is plain
+ *  `stepId → height` (the last measurement, whatever width it was taken at —
+ *  a stale-width height still beats the length estimate), so the seed lookup
+ *  is O(1) instead of a scan over every cached step.
+ *
+ *  Bounded: sessions evict oldest-first, and touching a session moves it to
+ *  the young end of the outer map (insertion order). */
+const stepHeights = new Map<string, Map<string, number>>();
+const STEP_HEIGHT_CACHE_MAX = 4000;
+let stepHeightEntries = 0;
+
+/** Last measured height for one step in one session, if any. An empty scope
+ *  is the unscoped bucket — callers that do not identify a session (tests,
+ *  a bare `<ChatStream>` with no `sessionKey`) share it, which is what the
+ *  cache did before it was scoped. */
+function recallStepHeight(scope: string, id: string): number | undefined {
+  return stepHeights.get(scope)?.get(id);
+}
+
+function rememberStepHeight(scope: string, id: string, height: number) {
+  if (height <= 0) return;
+  let bucket = stepHeights.get(scope);
+  if (bucket) stepHeights.delete(scope); // re-insert below: touch = youngest
+  else bucket = new Map();
+  stepHeights.set(scope, bucket);
+  if (!bucket.has(id)) stepHeightEntries += 1;
+  bucket.set(id, height);
+  while (stepHeightEntries > STEP_HEIGHT_CACHE_MAX && stepHeights.size > 1) {
+    const oldest = stepHeights.entries().next().value;
+    if (oldest === undefined) break;
+    stepHeights.delete(oldest[0]);
+    stepHeightEntries -= oldest[1].size;
+  }
+}
+
+/** Keys that scroll the stream — a reader gesture, same as a wheel. */
+const SCROLL_KEYS = new Set([
+  "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ",
+]);
+
+/** The dock pill's glyph pair. At rest it shows what the sidebar HOLDS (a
+ *  diff marker, a document box); on hover it swaps to the toggle glyph, so
+ *  the button says “you have changes” until the pointer asks “what does
+ *  clicking do”. Both live in the same box so nothing shifts. */
+function DockGlyph({
+  open,
+  tab,
+}: {
+  open: boolean;
+  tab?: "changes" | "artifacts" | null;
+}) {
+  const cls = "h-4 w-4";
+  const Content = tab === "artifacts" ? Package : FileDiff;
+  const Action = open ? PanelRightClose : PanelRightOpen;
+  return (
+    <span className="relative flex h-4 w-4 flex-none items-center justify-center">
+      <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover:opacity-0">
+        <Content className={cls} />
+      </span>
+      <span className="absolute inset-0 flex items-center justify-center opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+        <Action className={cls} />
+      </span>
+    </span>
+  );
+}
+
+/** Overscan around the viewport inside which steps are mounted. */
+const STEP_OVERSCAN = 600;
+
+/** Placeholder height before a step has been measured. Text blocks get a
+ *  length-based estimate; status rows are ~one collapsed header. The first
+ *  mount measures and caches the real height. */
+function estimateStepHeight(step: AssistantStep): number {
+  switch (step.type) {
+    case "text":
+      return Math.max(28, Math.min(520, 28 + Math.ceil(step.text.length / 72) * 22));
+    case "plan":
+      return 104;
+    case "compaction":
+      return 76;
+    case "system":
+      return 28;
+    case "thinking":
+    case "tools":
+      return 36;
+  }
+}
+
+/** A step in the mounted window. Off-window it is a fixed-height placeholder
+ *  that still carries the DOM id (rail anchors work); IntersectionObserver
+ *  mounts the real TurnStep before it scrolls in and unmounts it after it
+ *  leaves the overscan. Expanded tool/thinking state is local to TurnStep,
+ *  so leaving the window drops it — the same tradeoff a virtual list makes.
+ */
+const VirtualStep = memo(function VirtualStep({
+  step,
+  turnId,
+  stepIdx,
+  isLastStep,
+  streaming,
+  scope,
+}: {
+  step: AssistantStep;
+  turnId: string;
+  stepIdx: number;
+  isLastStep: boolean;
+  streaming: boolean;
+  /** Session key — the height cache's scope. */
+  scope: string;
+}) {
+  const api = useContext(VirtualStepContext);
+  const [mounted, setMounted] = useState(() => typeof IntersectionObserver === "undefined");
+  const id = `chat-turn-${turnId}-step-${stepIdx}`;
+  const [height, setHeight] = useState(
+    () => recallStepHeight(scope, id) ?? estimateStepHeight(step),
+  );
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const measuredRef = useRef(height);
+  const unmountTimerRef = useRef<number | null>(null);
+  // The live tail never unmounts: a reader scrolled away from a streaming
+  // step would otherwise freeze it at a stale height, and the jump back to
+  // the bottom lands short.
+  const liveRef = useRef(false);
+  liveRef.current = streaming && isLastStep;
+  // Renderer choice fixed at mount (see TurnStep's text branch).
+  const allowPlainRef = useRef(!(streaming && isLastStep));
+  if (!mounted) allowPlainRef.current = !(streaming && isLastStep);
+
+  // First layout pass: a step already inside the (final) viewport mounts in
+  // this commit, before paint — no blank-placeholder frame. Steps further
+  // away keep waiting for the observer, exactly as before.
+  const firstCheckRef = useRef(false);
+  useLayoutEffect(() => {
+    if (mounted || firstCheckRef.current || !api || !wrapRef.current) return;
+    firstCheckRef.current = true;
+    if (api.isNear(wrapRef.current)) setMounted(true);
+  }, [api, mounted]);
+
+  useEffect(() => {
+    if (!api || !wrapRef.current) return;
+    return api.observe(wrapRef.current, (visible) => {
+      if (visible) {
+        if (unmountTimerRef.current != null) {
+          window.clearTimeout(unmountTimerRef.current);
+          unmountTimerRef.current = null;
+        }
+        setMounted(true);
+        return;
+      }
+      // Hysteresis: a fast scroll must not mount/unmount the same step on
+      // every frame. Keep it until it has been out of the overscan for a
+      // moment; a re-entry cancels the pending unmount.
+      if (unmountTimerRef.current != null) return;
+      unmountTimerRef.current = window.setTimeout(() => {
+        unmountTimerRef.current = null;
+        if (liveRef.current) return;
+        // Flush the measured height in the SAME commit as the unmount so
+        // swapping the real node for its placeholder cannot move the scroll.
+        const measured = wrapRef.current?.offsetHeight ?? 0;
+        if (measured > 0) {
+          measuredRef.current = measured;
+          setHeight(measured);
+        }
+        setMounted(false);
+      }, 1200);
+    });
+  }, [api]);
+
+  useEffect(
+    () => () => {
+      if (unmountTimerRef.current != null) window.clearTimeout(unmountTimerRef.current);
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    if (!mounted) return;
+    const el = wrapRef.current;
+    if (!el) return;
+    const actual = el.offsetHeight;
+    measuredRef.current = actual;
+    rememberStepHeight(scope, id, actual);
+    const ro = new ResizeObserver(() => {
+      const el2 = wrapRef.current;
+      if (!el2) return;
+      measuredRef.current = el2.offsetHeight;
+      rememberStepHeight(scope, id, el2.offsetHeight);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [mounted, id, scope]);
+
+  useEffect(() => {
+    if (mounted) return;
+    // Freeze the placeholder at the last measured height so unmounting a
+    // visible step cannot change the scroll height.
+    if (height !== measuredRef.current) setHeight(measuredRef.current);
+  }, [mounted, height]);
+
+  return (
+    <div
+      ref={wrapRef}
+      id={id}
+      data-step-placeholder={mounted ? undefined : ""}
+      data-step-mounted={mounted ? "" : undefined}
+      style={mounted ? undefined : { height }}
+      className="w-full"
+    >
+      {mounted && (
+        <TurnStep
+          step={step}
+          turnId={turnId}
+          stepIdx={stepIdx}
+          isLastStep={isLastStep}
+          streaming={streaming}
+          allowPlain={allowPlainRef.current}
+        />
+      )}
+    </div>
+  );
+});
+
+/** Blocks a turn contributes to the mounted budget. A plain user/assistant
+ *  turn counts its prompt bubble; a tool-heavy turn counts every step (a
+ *  single turn is never split by the cross-turn budget). */
+function turnBlockWeight(turn: Turn): number {
+  return turn.steps.length + (turn.userText ? 1 : 0);
+}
 
 /** One turn's full row — user bubble, assistant steps, turn-end footer.
  * `memo` + the incremental parse cache mean a settled turn's `turn`
@@ -1209,6 +1493,7 @@ const ChatTurn = memo(function ChatTurn({
   isLast,
   retryable,
   streaming,
+  scope,
 }: {
   turn: Turn;
   isLast: boolean;
@@ -1216,6 +1501,11 @@ const ChatTurn = memo(function ChatTurn({
    *  the structurally last one (a manual-compaction block sits after it). */
   retryable: boolean;
   streaming: boolean;
+  /** Session key — the height cache's scope, handed down as a prop rather
+   *  than read from context: the stream's first render has no context value
+   *  yet, and a placeholder seeded under the wrong scope fell back to the
+   *  length estimate on every remount. */
+  scope: string;
 }) {
   // Undo only reverts the turn's file writes (`undo_last_turn`), so offer it
   // only when a tool row carried a diff — a turn that touched no files has
@@ -1273,13 +1563,14 @@ const ChatTurn = memo(function ChatTurn({
           className="flex w-full flex-col items-start gap-2"
         >
           {turn.steps.map((step, stepIdx) => (
-            <TurnStep
+            <VirtualStep
               key={`step-${stepIdx}`}
               step={step}
               turnId={turn.id}
               stepIdx={stepIdx}
               isLastStep={stepIdx === turn.steps.length - 1}
               streaming={streaming}
+              scope={scope}
             />
           ))}
         </div>
@@ -1308,14 +1599,62 @@ const ChatTurn = memo(function ChatTurn({
   );
 });
 
-export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder }: Props) {
+export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const [virtualApi, setVirtualApi] = useState<VirtualStepApi | null>(null);
   const pinnedRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
   // Index of the last user item seen — a newly appended one means the
   // user just submitted, which always re-pins to the bottom.
   const lastUserIdxRef = useRef<unknown>(null);
+
+  // One observer for every step wrapper. Placeholders keep their DOM id, so
+  // the rail's existing target lookup keeps working even before the real
+  // TurnStep mounts. Created during the FIRST layout pass (not a passive
+  // effect): steps run their own layout effects right after, and the API
+  // must already exist for their before-paint `isNear` check.
+  useLayoutEffect(() => {
+    const root = scrollRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const callbacks = new Map<Element, (visible: boolean) => void>();
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) callbacks.get(entry.target)?.(entry.isIntersecting);
+      },
+      { root, rootMargin: `${STEP_OVERSCAN}px 0px ${STEP_OVERSCAN}px 0px` },
+    );
+    setVirtualApi({
+      observe: (el, onChange) => {
+        callbacks.set(el, onChange);
+        io.observe(el);
+        return () => {
+          callbacks.delete(el);
+          io.unobserve(el);
+        };
+      },
+      isNear: (el) => {
+        // Content-space offset of the step vs the window the reader WILL
+        // see: while following the bottom (every open/switch lands there),
+        // that is the bottom of the column, not the pre-snap scrollTop.
+        const rootRect = root.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        const top = r.top - rootRect.top + root.scrollTop;
+        const bottom = top + r.height;
+        const viewTop = pinnedRef.current
+          ? Math.max(0, root.scrollHeight - root.clientHeight)
+          : root.scrollTop;
+        return (
+          bottom >= viewTop - STEP_OVERSCAN &&
+          top <= viewTop + root.clientHeight + STEP_OVERSCAN
+        );
+      },
+    });
+    return () => {
+      io.disconnect();
+      callbacks.clear();
+    };
+  }, []);
 
   // Last real scroll gesture (wheel/touch). A snap's own scroll event can
   // be dispatched AFTER more content grew the column — `content-visibility`
@@ -1329,6 +1668,26 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const noteUserScroll = useCallback(() => {
     gestureAtRef.current = performance.now();
   }, []);
+  // Keyboard paging (PgUp/arrows/Home/space) scrolls the stream whenever
+  // focus is not in a text field — the scroller itself is not focusable, so
+  // listen on the document. Without it the bottom pin dragged a keyboard
+  // reader back down on the next growth.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!SCROLL_KEYS.has(e.key)) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest("input, textarea, select, [contenteditable='true'], [role='textbox']")) return;
+      noteUserScroll();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [noteUserScroll]);
+  const noteMiddleClick = useCallback(
+    (e: ReactPointerEvent) => {
+      if (e.button === 1) noteUserScroll();
+    },
+    [noteUserScroll],
+  );
   const snapBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1363,7 +1722,12 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // is laid out for real by then, so the snap lands on true heights (the
   // column RO re-pins afterwards for growth added above).
   const [landed, setLanded] = useState(false);
-  useEffect(() => {
+  // Layout effect on purpose: the turns mount with the container at scrollTop
+  // 0, and a passive effect runs AFTER the browser has already painted that
+  // first frame — the reader sees the top of the transcript (or an empty
+  // stretch above the tail) for one frame, then the snap jerks to the newest
+  // message. Landing before paint removes that flash.
+  useLayoutEffect(() => {
     if (landed || loading || view.items.length === 0) return;
     setLanded(true);
     pinnedRef.current = true;
@@ -1518,13 +1882,34 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // Mount budget while following the bottom. A running session only ever
   // appended turns and kept every one mounted, so layout, the ResizeObserver
   // re-pin and mark measurement all grew with the session's lifetime —
-  // where a reopened page (one history page) stayed smooth. Past
-  // MAX_MOUNTED + TRIM_SLACK the leading turns unmount again (only while
-  // pinned: the loss is above the viewport, and the pin re-snaps the bottom);
-  // scrolling up reveals them in REVEAL_CHUNK slices before paging history.
+  // where a reopened page (one history page) stayed smooth. The leading
+  // turns unmount again (only while pinned: the loss is above the viewport,
+  // and the pin re-snaps the bottom); scrolling up reveals them in
+  // REVEAL_CHUNK slices before paging history.
+  //
+  // Turns alone are the wrong unit: a tool-heavy GPT/Claude turn folds a
+  // text preamble + tools row per round, so 30 turns can mean 300+ mounted
+  // Streamdown/Collapsible subtrees. Keep the newest blocks under a second
+  // budget; the turn cap still protects pure Q&A.
   const MAX_MOUNTED = 30;
-  const TRIM_SLACK = 10;
+  const MAX_MOUNTED_BLOCKS = 120;
   const REVEAL_CHUNK = 8;
+  /** Leading turns hidden to stay within the block/turn budget. */
+  const hiddenByBudget = useMemo(() => {
+    let hidden = turns.length;
+    let blocks = 0;
+    while (hidden > 0) {
+      const weight = turnBlockWeight(turns[hidden - 1]);
+      // Always mount the newest turn; a single turn is never split by the
+      // cross-turn budget. Otherwise stop before this turn would exceed it.
+      if (hidden < turns.length && blocks + weight > MAX_MOUNTED_BLOCKS) break;
+      blocks += weight;
+      hidden--;
+    }
+    // Never mount more turns than the old cap, even when every one is tiny.
+    return Math.max(hidden, turns.length - MAX_MOUNTED);
+  }, [turns]);
+  const lastTurnCountRef = useRef(turns.length);
   // Leading turns kept unmounted — decremented by backfill ticks to 0.
   // `hiddenTop` only ever SHRINKS: the old tail-anchored `mounted` count
   // let a newly appended turn push the oldest mounted turn out of the
@@ -1540,6 +1925,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     setMountedKey(sessionKey);
     setHiddenTop(null);
     setBackfilling(true);
+    lastTurnCountRef.current = turns.length;
   }
   const lastStartRef = useRef(view.historyStart);
   if (view.historyStart !== lastStartRef.current) {
@@ -1547,22 +1933,31 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     // Prepended page mounts in full — the scroll-restore delta must
     // measure the real added height.
     setHiddenTop(0);
+    lastTurnCountRef.current = turns.length;
   }
+  // Start at the tail-first chunk, but never lower than the block budget
+  // (a huge turn/short history can need more leading turns hidden than 6).
+  const tailStart = Math.max(0, turns.length - MOUNT_CHUNK);
   if (hiddenTop === null && turns.length > 0) {
-    setHiddenTop(Math.max(0, turns.length - MOUNT_CHUNK));
+    setHiddenTop(Math.max(tailStart, hiddenByBudget));
   }
-  const hidden = hiddenTop ?? Math.max(0, turns.length - MOUNT_CHUNK);
+  const hidden = hiddenTop ?? Math.max(tailStart, hiddenByBudget);
   useEffect(() => {
     if (!loading) loadStamp("content-mounted");
   }, [loading]);
 
-  // Backfill stops at the mount budget: a session kept live in memory can
-  // hold hundreds of turns, and re-mounting all of them on every switch back
-  // is exactly the cost the budget exists to avoid.
-  const backfillFloor = Math.max(0, turns.length - MAX_MOUNTED);
+  // Backfill stops at the block/turn budget: a session kept live in memory
+  // can hold hundreds of turns, and re-mounting all of them on every switch
+  // back is exactly the cost the budget exists to avoid.
+  const backfillFloor = hiddenByBudget;
   useEffect(() => {
     if (!backfilling) return;
-    if (hidden <= backfillFloor) {
+    // Backfill mounts turns ABOVE the viewport with no scroll compensation —
+    // that is only invisible while the bottom pin re-anchors the column. Once
+    // the reader has scrolled away, each chunk would push what they are
+    // reading down; stop and leave the rest to the scroll-up reveal, which
+    // compensates.
+    if (hidden <= backfillFloor || (landed && !pinnedRef.current)) {
       setBackfilling(false);
       return;
     }
@@ -1582,15 +1977,19 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     );
     if (hidden - BACKFILL_CHUNK <= backfillFloor) loadStamp("backfill-done");
     return () => cancel(id as number);
-  }, [hidden, backfilling, backfillFloor]);
+  }, [hidden, backfilling, backfillFloor, landed, isAtBottom]);
 
-  // Trim while following the bottom. Runs after each commit; the hysteresis
-  // (TRIM_SLACK) keeps it to one unmount burst per ~10 turns.
+  // Trim while following the bottom. Only a NEW turn can grow the settled
+  // block total; a live turn's own steps must not evict older turns
+  // mid-stream. The turn count guard also keeps a prepend/reveal from being
+  // undone.
   useEffect(() => {
-    if (backfilling || loading || !pinnedRef.current) return;
-    if (turns.length - hidden <= MAX_MOUNTED + TRIM_SLACK) return;
-    startTransition(() => setHiddenTop(turns.length - MAX_MOUNTED));
-  }, [turns.length, hidden, backfilling, loading]);
+    const countChanged = turns.length !== lastTurnCountRef.current;
+    if (countChanged) lastTurnCountRef.current = turns.length;
+    if (!countChanged || backfilling || loading || !pinnedRef.current) return;
+    if (hidden >= hiddenByBudget) return;
+    startTransition(() => setHiddenTop(hiddenByBudget));
+  }, [turns.length, hidden, hiddenByBudget, backfilling, loading]);
 
   // Reveal trimmed turns above the viewport, keeping the reader's position:
   // the geometry is captured before the state change and the height the
@@ -1723,6 +2122,10 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     turns.forEach((turn, idx) => {
       if (turn.userText) ordinal += 1;
       const turnNum = ordinal;
+      // Keep marks for locally trimmed turns too: the rail is the session
+      // overview, and handleSelectMark reveals the turn before landing on a
+      // step. Skipping them made the left rail lose anchors past the mount
+      // budget.
       if (turn.userText) {
         // Length from the COLLAPSED preview, not the raw text: a `/skill` or
         // `@file` mention expands into a multi-kilobyte preamble that the
@@ -1837,7 +2240,10 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   }, []);
 
   const appliedStartRef = useRef(view.historyStart);
-  useEffect(() => {
+  // Layout effect, like the trimmed-turn reveal: the prepend commits inside a
+  // transition, whose passive effects run AFTER paint — one frame showed the
+  // new page's top before the restore pulled the reader back.
+  useLayoutEffect(() => {
     // Consume the restore geometry ONLY when a page actually prepended
     // (historyStart moved). Before this guard, any streaming delta that
     // landed while the page IPC was in flight ate the restore — the real
@@ -1996,11 +2402,28 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     }
     return null;
   }, [view.items]);
+  // `historyStart` / session the last key was read against — tells a page
+  // prepended above from a prompt appended below.
+  const keyStartRef = useRef({ start: view.historyStart, session: sessionKey });
   useEffect(() => {
     // A fresh prompt re-pins; history prepends preserve the existing key.
     // Stream growth follows through ResizeObserver instead of forcing
     // scrollIntoView (and layout) on every reasoning delta.
-    if (lastUserKey !== null && lastUserKey !== lastUserIdxRef.current) {
+    //
+    // Except when the loaded slice had NO user row yet: a tool-heavy last
+    // turn can fill the whole first page, so the key starts null and the
+    // first older page brings that turn's prompt in. That key change comes
+    // from ABOVE (same session, historyStart moved back) — not a new prompt;
+    // re-pinning there yanked the reader to the bottom on the first scroll
+    // up after launch.
+    const prev = keyStartRef.current;
+    const prepended =
+      prev.session === sessionKey &&
+      prev.start != null &&
+      view.historyStart != null &&
+      view.historyStart < prev.start;
+    keyStartRef.current = { start: view.historyStart, session: sessionKey };
+    if (lastUserKey !== null && lastUserKey !== lastUserIdxRef.current && !prepended) {
       pinnedRef.current = true;
       endRef.current?.scrollIntoView({ block: "end" });
     }
@@ -2013,7 +2436,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         setActiveMarkId(marks[marks.length - 1].id);
       }
     }
-  }, [lastUserKey, markTargets, sessionKey, loading]);
+  }, [lastUserKey, markTargets, sessionKey, loading, view.historyStart]);
 
   const markRafRef = useRef(0);
   const onScroll = () => {
@@ -2183,10 +2606,15 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
     const el = document.getElementById(mark.targetId);
     if (el) {
+      const targetId = mark.targetId;
       isSmoothScrollingRef.current = true;
       el.scrollIntoView({ behavior: "smooth", block: "start" });
       setTimeout(() => {
         isSmoothScrollingRef.current = false;
+        // Virtualized steps mount below the anchor while the smooth scroll
+        // runs; snap once at the end so the mark lands on the step, not on
+        // the pre-mount placeholder offset.
+        document.getElementById(targetId)?.scrollIntoView({ block: "start" });
       }, 500);
       return;
     }
@@ -2300,6 +2728,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         onScroll={onScroll}
         onWheel={noteUserScroll}
         onTouchStart={noteUserScroll}
+        // Middle-click autoscroll is a reader scroll too (keyboard paging
+        // is caught at document level — see the SCROLL_KEYS effect).
+        onPointerDown={noteMiddleClick}
       >
         {/* pl-11 reserves the rail lane — only once the rail renders
             (content or loading); an empty session keeps symmetric
@@ -2333,18 +2764,21 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                   </div>
                 ))}
 
-              {visibleTurns.map((turn, turnIdx) => {
-                const isLast = turnIdx === visibleTurns.length - 1;
-                return (
-                  <ChatTurn
-                    key={turn.id}
-                    turn={turn}
-                    isLast={isLast}
-                    retryable={turnIdx === lastAnswerIdx}
-                    streaming={view.streaming && isLast}
-                  />
-                );
-              })}
+              <VirtualStepContext.Provider value={virtualApi}>
+                {visibleTurns.map((turn, turnIdx) => {
+                  const isLast = turnIdx === visibleTurns.length - 1;
+                  return (
+                    <ChatTurn
+                      key={turn.id}
+                      turn={turn}
+                      isLast={isLast}
+                      retryable={turnIdx === lastAnswerIdx}
+                      streaming={view.streaming && isLast}
+                      scope={sessionKey ?? ""}
+                    />
+                  );
+                })}
+              </VirtualStepContext.Provider>
 
             {/* Turn-running clock — visible for the WHOLE streaming turn, not
                 just the pre-first-delta wait. Anchored on `view.turnStartedAt`
@@ -2374,25 +2808,87 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         </div>
       </div>
 
+      {/* One centered floating row above the composer. With no jump-to-bottom
+          arrow the dock pill sits dead centre (the arrow contributes no
+          width); when the arrow appears the row grows to the right and the
+          pill slides left to make room. `width`/`margin` are what animate —
+          an opacity-only swap would leave a 40px hole beside a centred pill. */}
       <div
         style={{ bottom: `${(composerH ?? (bottomPad ? bottomPad - 24 : 140)) + 12}px` }}
-        className={cn(
-          "absolute left-1/2 -translate-x-1/2 z-30 transition-all duration-200 ease-out",
-          !isAtBottom
-            ? "opacity-100 translate-y-0 pointer-events-auto"
-            : "opacity-0 translate-y-2 pointer-events-none"
-        )}
+        className="absolute left-1/2 z-30 flex -translate-x-1/2 items-center"
       >
-        <TooltipSimple content="回到底部" side="top">
-          <button
-            type="button"
-            onClick={scrollToBottom}
-            aria-label="回到底部"
-            className="w-8 h-8 rounded-full bg-white dark:bg-[var(--husk-active)] hover:bg-neutral-50 dark:hover:bg-[var(--husk-hover)] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+        {onToggleDock && dockCount > 0 && (
+          <TooltipSimple
+            content={
+              dockOpen
+                ? `关闭侧栏（${dockTab === "artifacts" ? "产物" : "改动"} ${dockCount}）`
+                : `打开侧栏 · ${dockTab === "artifacts" ? "产物" : "改动"} ${dockCount}`
+            }
+            side="top"
           >
-            <ArrowDown className="h-4 w-4" />
-          </button>
-        </TooltipSimple>
+            <button
+              type="button"
+              onClick={onToggleDock}
+              aria-label="侧栏"
+              aria-pressed={dockOpen}
+              data-dock-state={dockOpen ? "open" : "closed"}
+              data-dock-tab={dockTab ?? undefined}
+              className={cn(
+                "flex h-8 items-center gap-1.5 rounded-full border pl-2.5 pr-3 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer group",
+                "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
+                // One look whether the sidebar is open or closed — an open
+                // card is not a selected tab, and the grey "active" fill read
+                // as exactly that. Hover is the only state change.
+                "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
+              )}
+            >
+              {/* The sidebar's state, not just a badge: the glyph follows
+                  what the pill would show — a diff marker while 改动 is up, a
+                  box while 产物 is, and an “open the sidebar” arrow when it is
+                  closed. */}
+              <DockGlyph open={!!dockOpen} tab={dockTab} />
+              {/* The numbers are the view's own: a diff reads as its line
+                  counts (+/−), a document list as its file count. A generic
+                  "3" told the reader nothing. */}
+              {dockTab === "changes" ? (
+                <>
+                  <span className="flex-none font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                    +{dockAdds}
+                  </span>
+                  <span className="flex-none font-mono tabular-nums text-rose-600 dark:text-rose-400">
+                    −{dockDels}
+                  </span>
+                </>
+              ) : (
+                <span className="flex-none font-mono tabular-nums opacity-70">
+                  {dockCount} 个文件
+                </span>
+              )}
+            </button>
+          </TooltipSimple>
+        )}
+        <div
+          className={cn(
+            // No `overflow-hidden`: it would clip the round button's shadow.
+            // The button fades out as the box collapses, so it never shows
+            // outside the reserved space.
+            "flex-none transition-all duration-200 ease-out",
+            !isAtBottom
+              ? "ml-2 w-8 opacity-100"
+              : "pointer-events-none ml-0 w-0 opacity-0",
+          )}
+        >
+          <TooltipSimple content="回到底部" side="top">
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              aria-label="回到底部"
+              className="w-8 h-8 rounded-full bg-white dark:bg-[var(--husk-active)] hover:bg-neutral-50 dark:hover:bg-[var(--husk-hover)] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+            >
+              <ArrowDown className="h-4 w-4" />
+            </button>
+          </TooltipSimple>
+        </div>
       </div>
         </div>
       </ContextMenuTrigger>

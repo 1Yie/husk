@@ -234,9 +234,10 @@ export function App() {
   // mounted underneath, so closing it costs nothing (the old takeover
   // unmounted ChatPage and remounted the whole stream on return).
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Changes panel docked right of the chat column; its content reads the
-  // active view's `changes`, so it follows the foreground session.
-  const [changesOpen, setChangesOpen] = useState(false);
+  // Changes/artifacts sidebar: open state, active tab and width all live in
+  // `useDockStore` (see `features/chat/components/dock/state.ts`) — the page
+  // reads it directly, so there is nothing to lift into the shell. The veil
+  // and settings layers still sit above it here.
   // Silent startup update check — starts only once the sessions are on screen,
   // so the network call never competes with first load.
   useStartupUpdateCheck(sessionsLoaded);
@@ -620,8 +621,6 @@ export function App() {
           recents={workspace.recents}
           onOpenRecent={(path) => void handleSwitchWorkspace(path)}
           workspaceReady={wsReady}
-          changesOpen={changesOpen}
-          onToggleChanges={() => setChangesOpen((o) => !o)}
         />
       </MainLayout>
 

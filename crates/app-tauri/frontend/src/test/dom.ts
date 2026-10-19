@@ -22,7 +22,12 @@ export class TestIntersectionObserver implements IntersectionObserver {
   readonly rootMargin = "0px";
   readonly thresholds = [0];
   constructor(private callback: IntersectionObserverCallback) { TestIntersectionObserver.instances.add(this); }
-  observe(target: Element) { this.targets.add(target); }
+  observe(target: Element) {
+    this.targets.add(target);
+    // Layout-free jsdom treats everything as visible; virtualization tests
+    // that need placeholders install their own observer.
+    this.callback([{ target, isIntersecting: true } as IntersectionObserverEntry], this);
+  }
   unobserve(target: Element) { this.targets.delete(target); }
   disconnect() { this.targets.clear(); TestIntersectionObserver.instances.delete(this); }
   takeRecords() { return []; }

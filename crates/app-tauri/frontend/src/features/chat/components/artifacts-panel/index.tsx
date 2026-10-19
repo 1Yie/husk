@@ -1,9 +1,9 @@
-// ArtifactsPanel — the office-mode right-side dock: every file the session
-// produced (office docs, downloaded assets), with open / save-as / reveal
-// actions per row. Fed by `SessionView.artifacts` (applyEvent live,
-// viewFromHistory on open) — the office counterpart of `changes`.
+// ArtifactsList — the 产物 tab body of the unified session dock: every file
+// the session produced (office docs, downloaded assets), with open / save-as
+// / reveal actions per row. Fed by `SessionView.artifacts` (applyEvent live,
+// viewFromHistory on open). The dock owns the frame; this renders rows.
 
-import { FileText, FileSpreadsheet, FileImage, FileArchive, File, ExternalLink, Download, FolderOpen, X } from "lucide-react";
+import { FileText, FileSpreadsheet, FileImage, FileArchive, File, ExternalLink, Download, FolderOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { openPath, revealPath, saveArtifact } from "@/lib/agent-ipc/index";
@@ -131,44 +131,13 @@ function ArtifactRow({ artifact }: { artifact: Artifact }) {
   );
 }
 
-export function ArtifactsPanel({
-  artifacts,
-  onClose,
-}: {
-  artifacts: Artifact[];
-  onClose?: () => void;
-}) {
+/** The 产物 view's body — one row per file. The dock owns the frame. */
+export function ArtifactsList({ artifacts }: { artifacts: Artifact[] }) {
   return (
-    <aside className="flex h-full w-[300px] flex-none flex-col overflow-hidden border-l border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none">
-      <div className="flex h-9 w-full flex-none items-center gap-2 border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] px-3">
-        <span className="text-[12px] font-medium text-neutral-700">
-          产物
-        </span>
-        <span className="text-[10.5px] text-neutral-400">
-          {artifacts.length} 个文件
-        </span>
-        <span className="flex-1" />
-        {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="关闭产物面板"
-            className="flex-none rounded p-1 text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-700"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-
-      <div className="w-full flex-1 min-h-0 overflow-y-auto px-1.5 py-1.5">
-        {artifacts.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[12px] text-neutral-400">
-            暂无产物
-          </div>
-        ) : (
-          artifacts.map((a) => <ArtifactRow key={a.path} artifact={a} />)
-        )}
-      </div>
-    </aside>
+    <div className="w-full">
+      {artifacts.map((a) => (
+        <ArtifactRow key={a.path} artifact={a} />
+      ))}
+    </div>
   );
 }

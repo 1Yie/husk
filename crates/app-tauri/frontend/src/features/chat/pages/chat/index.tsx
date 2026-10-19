@@ -5,13 +5,12 @@ import { Plus } from "@keyline-icons/react";
 import { toast } from "sonner";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/features/chat/components/chat-stream";
-import { ChangesPanel } from "@/features/chat/components/changes-panel";
-import { ArtifactsPanel } from "@/features/chat/components/artifacts-panel";
+import { SessionDock } from "@/features/chat/components/dock";
+import { useDockStore } from "@/features/chat/components/dock/state";
 import { ComposerBar } from "@/features/chat/components/composer-bar";
 import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/components/workspace-welcome";
 import { useActiveView, useAgentChips, useHasMoreHistory } from "@/stores/agent-store";
 import { openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
-import { cn } from "@/lib/utils";
 
 /** Document extensions that pop the ready-toast — the office deliverable.
  *  Downloaded assets (images etc.) register silently in the dock. */
@@ -45,12 +44,9 @@ interface ChatPageProps {
   sessionsEmpty?: boolean;
   /** The empty state's CTA — creates the workspace's next session. */
   onNewSession?: () => void;
-  /** Changes panel open state + toggle, owned by the app shell. */
-  changesOpen?: boolean;
-  onToggleChanges?: () => void;
 }
 
-export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true, sessionsEmpty = false, onNewSession, changesOpen, onToggleChanges }: ChatPageProps) {
+export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true, sessionsEmpty = false, onNewSession }: ChatPageProps) {
   // The conversation's live data comes from the store, not from props: the
   // shell must not be a subscriber of the 60 fps stream (it used to re-render —
   // and drag the sidebar with it — for a whole turn).
@@ -122,11 +118,39 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     [view.artifacts, missingArtifacts],
   );
 
-  // Auto-open the panel once per session on the first file change; a
-  // manual close (dismissedRef) suppresses the auto-open afterwards.
-  const panelCount = officeMode ? artifacts.length : view.changes.length;
-  // `changesOpen` alone isn't enough — an empty list hides the panel too.
-  const changesVisible = !!changesOpen && panelCount > 0;
+  // The dock is one sidebar for both lists, so "has content" is the sum —
+  // and which view to reveal follows whatever actually appeared.
+  const dockOpen = useDockStore((s) => s.open);
+  const dockTab = useDockStore((s) => s.tab);
+  const setDockOpen = useDockStore((s) => s.setOpen);
+  const setDockTab = useDockStore((s) => s.setTab);
+  const panelCount = view.changes.length + artifacts.length;
+  // The dock's own open flag AND its content — an empty sidebar hides itself,
+  // so a fresh session never lands on 「本会话还没有文件产出」 just because the
+  // previous one left the dock open (the flag is persisted).
+  const dockVisible = dockOpen && panelCount > 0;
+  // Which view the pill should name: the stored one if it still has content,
+  // otherwise whichever list does (a session that only writes files, or only
+  // produces documents).
+  const activeDockTab: "changes" | "artifacts" | null =
+    dockTab === "artifacts" && artifacts.length > 0
+      ? "artifacts"
+      : view.changes.length > 0
+        ? "changes"
+        : artifacts.length > 0
+          ? "artifacts"
+          : null;
+  const activeDockCount =
+    activeDockTab === "artifacts" ? artifacts.length : view.changes.length;
+  // The 改动 view's own numbers for the pill — same figures its header shows.
+  const dockAdds = useMemo(
+    () => view.changes.reduce((n, c) => n + c.adds, 0),
+    [view.changes],
+  );
+  const dockDels = useMemo(
+    () => view.changes.reduce((n, c) => n + c.dels, 0),
+    [view.changes],
+  );
   const dismissedRef = useRef(false);
   const autoOpenedRef = useRef(false);
   useEffect(() => {
@@ -134,16 +158,23 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     autoOpenedRef.current = false;
   }, [sessionKey]);
   useEffect(() => {
-    if (panelCount > 0 && !autoOpenedRef.current && !dismissedRef.current && !changesOpen) {
-      autoOpenedRef.current = true;
-      onToggleChanges?.();
-    }
-  }, [panelCount, changesOpen, onToggleChanges]);
-  const handleToggleChanges = useCallback(() => {
-    if (changesOpen) dismissedRef.current = true;
-    else dismissedRef.current = false;
-    onToggleChanges?.();
-  }, [changesOpen, onToggleChanges]);
+    if (panelCount === 0 || autoOpenedRef.current || dismissedRef.current || dockOpen) return;
+    autoOpenedRef.current = true;
+    // Show the list that just got its first item — a turn that writes files
+    // and a turn that generates documents both land here.
+    setDockTab(view.changes.length > 0 ? "changes" : "artifacts");
+    setDockOpen(true);
+  }, [panelCount, dockOpen, setDockOpen, setDockTab, view.changes.length]);
+  const handleToggleDock = useCallback(() => {
+    // Closing by hand is a decision, not a pause: it silences the auto-open.
+    if (dockOpen) dismissedRef.current = true;
+    setDockOpen(!dockOpen);
+  }, [dockOpen, setDockOpen]);
+  // The dock's own close button already flipped the flag — only the dismissal
+  // bookkeeping is left here (toggling again would flip it straight back open).
+  const handleDockClosed = useCallback(() => {
+    dismissedRef.current = true;
+  }, []);
 
   const seenArtifactsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -192,10 +223,6 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
         // Zero sessions — session-scoped chips (ctx/tokens/cost/rate) would
         // only show config defaults; git is workspace-level and stays.
         noSession={sessionsEmpty}
-        changesOpen={changesVisible}
-        changesCount={panelCount}
-        changesLabel={officeMode ? "产物" : "改动"}
-        onToggleChanges={workspaceRoot ? handleToggleChanges : undefined}
       />
       {!workspaceRoot ? (
         workspaceReady ? (
@@ -243,6 +270,12 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               sessionKey={sessionKey}
               hasMore={hasMore}
               onLoadOlder={onLoadOlder}
+              dockOpen={dockVisible}
+              dockCount={activeDockCount}
+              dockTab={activeDockTab}
+              dockAdds={dockAdds}
+              dockDels={dockDels}
+              onToggleDock={workspaceRoot ? handleToggleDock : undefined}
             />
 
             {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
@@ -257,28 +290,15 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
             </div>
           </div>
 
-          {/* Dock wrapper animates its width so the stream gives way
-              smoothly; the inner panel slides in from the right edge. */}
-          <div
-            className={cn(
-              "flex-none overflow-hidden transition-[width] duration-300 ease-out",
-              changesVisible ? "w-[300px]" : "w-0",
-            )}
-            aria-hidden={!changesVisible}
-          >
-            <div
-              className={cn(
-                "h-full w-[300px] transition-transform duration-300 ease-out",
-                changesVisible ? "translate-x-0" : "translate-x-full",
-              )}
-            >
-              {officeMode ? (
-                <ArtifactsPanel artifacts={view.artifacts} onClose={handleToggleChanges} />
-              ) : (
-                <ChangesPanel changes={view.changes} onClose={handleToggleChanges} />
-              )}
-            </div>
-          </div>
+          {/* The unified dock: 改动 + 产物 in one sidebar, either mode. It reads
+              its own open/tab/width from the dock store; the page only feeds
+              content and the manual-close dismissal. */}
+          <SessionDock
+            changes={view.changes}
+            artifacts={artifacts}
+            open={dockVisible}
+            onClose={handleDockClosed}
+          />
         </div>
       )}
     </>

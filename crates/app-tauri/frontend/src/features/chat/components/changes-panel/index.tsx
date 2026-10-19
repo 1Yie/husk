@@ -1,9 +1,10 @@
-// ChangesPanel — the right-side dock: every file the agent touched,
-// grouped by path, with each patch's diff stacked under it. Fed by
-// `SessionView.changes` (applyEvent live, viewFromHistory on open).
+// ChangesList — the 改动 tab body of the unified session dock: every file the
+// agent touched, grouped by path, with each patch's diff stacked under it.
+// Fed by `SessionView.changes` (applyEvent live, viewFromHistory on open).
+// The dock owns the frame (title, tabs, close, width); this renders rows.
 
-import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, FilePlus2, FileDiff, FileX2, X } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, FilePlus2, FileDiff, FileX2 } from "lucide-react";
 import { DiffView } from "@/features/chat/components/diff-view";
 import { cn } from "@/lib/utils";
 import type { FileChange } from "@/features/chat/hooks/stream-view";
@@ -88,7 +89,7 @@ function FileRow({
                   {p.tool} · 第 {p.n} 次修改
                 </div>
               )}
-              <DiffView diff={p.diff} maxHeight={340} />
+              <DiffView diff={p.diff} maxHeight={340} reserveScrollbar />
             </div>
           ))}
           {change.fuzzy && (
@@ -102,78 +103,61 @@ function FileRow({
   );
 }
 
-export function ChangesPanel({
-  changes,
-  onClose,
-}: {
-  changes: FileChange[];
-  onClose?: () => void;
-}) {
-  // Files start expanded — a first open answers "what changed" directly.
+/** The 改动 view's body — file rows with their patches. The dock owns the
+ *  frame (title, tabs, scrolling), so this renders rows only. */
+export function ChangesList({ changes }: { changes: FileChange[] }) {
+  // Files start expanded — a first open answers "what changed" directly —
+  // but a long agentic turn can produce dozens of patches. Mounting every
+  // DiffView for all of them put thousands of nodes in the dock (the dock
+  // auto-opens on the first change), so above a small threshold rows start
+  // collapsed and expand on click.
   const [closed, setClosed] = useState<Set<string>>(new Set());
+  const [opened, setOpened] = useState<Set<string>>(new Set());
   const total = useMemo(
     () => ({
       adds: changes.reduce((n, c) => n + c.adds, 0),
       dels: changes.reduce((n, c) => n + c.dels, 0),
+      patches: changes.reduce((n, c) => n + c.patches.length, 0),
     }),
     [changes],
   );
+  const crossed = changes.length > 4 || total.patches > 8;
+  // Sticky and one-way: the threshold is crossed mid-turn as changes stream
+  // in, and flipping the whole list to collapsed at that instant folded away
+  // the diff the reader was looking at. On the crossing only the rows that
+  // were ALREADY open stay open (they are mounted either way); files that
+  // arrive in the same flush or later come in collapsed, which is where the
+  // node budget actually went. Sticky also keeps a shrinking list from
+  // flip-flopping back to expanded and remounting every DiffView.
+  const prevPathsRef = useRef<string[]>([]);
+  const [dense, setDense] = useState(crossed);
+  if (crossed && !dense) {
+    setDense(true);
+    setOpened(new Set(prevPathsRef.current));
+    setClosed(new Set());
+  }
+  prevPathsRef.current = changes.map((c) => c.path);
+  const toggle = (path: string) => {
+    const flip = (prev: Set<string>) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    };
+    if (dense) setOpened(flip);
+    else setClosed(flip);
+  };
 
   return (
-    <aside className="flex h-full w-[300px] flex-none flex-col overflow-hidden border-l border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none">
-      <div className="flex h-9 w-full flex-none items-center gap-2 border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] px-3">
-        <span className="text-[12px] font-medium text-neutral-700">
-          改动
-        </span>
-        <span className="text-[10.5px] text-neutral-400">
-          {changes.length} 个文件
-        </span>
-        <span className="font-mono text-[10.5px] tabular-nums">
-          {total.adds > 0 && (
-            <span className="text-emerald-600 dark:text-emerald-400">+{total.adds}</span>
-          )}
-          {total.dels > 0 && (
-            <span className="ml-1 text-rose-600 dark:text-rose-400">-{total.dels}</span>
-          )}
-        </span>
-        <span className="flex-1" />
-        {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="关闭改动面板"
-            className="flex-none rounded p-1 text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-700"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-
-      {/* No overflow-x-hidden — it would clip each DiffView's own
-          horizontal scroll. Long paths truncate at the row instead. */}
-      <div className="w-full flex-1 min-h-0 overflow-y-auto px-1.5 py-1.5">
-        {changes.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[12px] text-neutral-400">
-            暂无文件改动
-          </div>
-        ) : (
-          changes.map((c) => (
-            <FileRow
-              key={c.path}
-              change={c}
-              open={!closed.has(c.path)}
-              onToggle={() =>
-                setClosed((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(c.path)) next.delete(c.path);
-                  else next.add(c.path);
-                  return next;
-                })
-              }
-            />
-          ))
-        )}
-      </div>
-    </aside>
+    <div className="w-full">
+      {changes.map((c) => (
+        <FileRow
+          key={c.path}
+          change={c}
+          open={dense ? opened.has(c.path) : !closed.has(c.path)}
+          onToggle={() => toggle(c.path)}
+        />
+      ))}
+    </div>
   );
 }

@@ -2,10 +2,20 @@
 // multi-file patch header awareness, hunk styling, and scrollable container.
 
 import { useMemo, useState } from "react";
+import { cn } from "@/lib/utils";
 
 interface Props {
   diff: string;
   maxHeight?: number;
+  /** Lay out the horizontal scrollbar track unconditionally.
+   *
+   *  WebKit only recomputes an `auto` scrollbar on a layout pass, so a diff
+   *  that mounts while its containing panel animates open can sit there with
+   *  no horizontal bar until something else forces a re-layout. A `scroll`
+   *  track is laid out from the first frame; the thumb still only shows when
+   *  the content overflows. Opt-in because it costs a permanent 6px gutter —
+   *  worth it in a resizable dock, needless in a chat bubble. */
+  reserveScrollbar?: boolean;
 }
 
 type LineKind = "add" | "del" | "context" | "hunk" | "file_header" | "meta";
@@ -16,7 +26,7 @@ interface DLine {
   path?: string;
 }
 
-export function DiffView({ diff, maxHeight = 500 }: Props) {
+export function DiffView({ diff, maxHeight = 500, reserveScrollbar = false }: Props) {
   const [expanded, setExpanded] = useState(false);
   const lines = useMemo(() => parseDiff(diff), [diff]);
   // Same contract as the tool-detail cap: the scroll box clips the
@@ -29,9 +39,12 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
   if (!diff || lines.length === 0) return null;
 
   return (
-    <div className="w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs font-mono text-[12px] leading-relaxed select-text">
+    <div className="w-full min-w-0 rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs font-mono text-[12px] leading-relaxed select-text">
       <div
-        className="w-full overflow-x-auto overflow-y-auto"
+        className={cn(
+          "w-full max-w-full overflow-y-auto",
+          reserveScrollbar ? "overflow-x-scroll" : "overflow-x-auto",
+        )}
         style={{ maxHeight }}
       >
         <div className="min-w-full w-max py-1">
