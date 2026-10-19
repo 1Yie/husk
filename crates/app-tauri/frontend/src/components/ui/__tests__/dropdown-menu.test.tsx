@@ -85,3 +85,24 @@ describe("dropdown trigger focus", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "false");
   });
 });
+
+describe("dropdown inside a modal dialog", () => {
+  test("wheel over the portalled menu is not cancelled by the dialog's scroll lock", async () => {
+    const user = userEvent.setup();
+    render(
+      <Dialog defaultOpen>
+        <DialogContent aria-describedby={undefined}>
+          <DialogTitle>Subagent</DialogTitle>
+          <Menu name="model" />
+        </DialogContent>
+      </Dialog>,
+    );
+    await user.click(screen.getByRole("button", { name: "model" }));
+    const item = await screen.findByText("model option");
+    const wheel = new WheelEvent("wheel", { deltaY: 40, bubbles: true, cancelable: true });
+    act(() => {
+      item.dispatchEvent(wheel);
+    });
+    expect(wheel.defaultPrevented).toBe(false);
+  });
+});

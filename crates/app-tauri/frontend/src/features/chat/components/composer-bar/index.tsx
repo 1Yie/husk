@@ -106,6 +106,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, TooltipSimple } from "@/components/ui/tooltip";
+import { TruncatedText } from "@/components/ui/truncated-text";
+import { groupOptions } from "@/lib/group-options";
 import { cn } from "@/lib/utils";
 import { INK_MUTED, SURFACE_OVERLAY } from "@/lib/theme";
 
@@ -115,59 +117,12 @@ function modelLabel(m: agent.ModelItem): string {
   return m.name?.trim() || m.model;
 }
 
-/** The picker's small second line — provider first, then the raw model id
- *  (what actually goes on the wire, and what `/model` expects). The id is
- *  dropped when it equals the label, so a nameless model never prints its own
- *  name twice. */
+/** The picker's small second line — the raw model id, what actually goes on
+ *  the wire and what `/model` expects. Empty when the id IS the label, so a
+ *  nameless model never prints its own name twice; the provider is the row's
+ *  section heading, not a sub-label. */
 function modelSubLabel(m: agent.ModelItem): string {
-  const parts = m.provider ? [m.provider] : [];
-  if (modelLabel(m) !== m.model) parts.push(m.model);
-  return parts.join(" · ");
-}
-
-/** A `truncate`d line that reveals the full text in a tooltip ONLY when it is
- *  actually clipped — a row whose text fits stays quiet. The observer attaches
- *  from a callback ref, not `useRef` + an effect, because React recreates the
- *  span when it swaps between the bare and the tooltip-wrapped return.
- *
- *  Radix Tooltip, not a native `title`: the bubble appears only when the row is
- *  actually clipped, and Radix can position it against the row. */
-function TruncatedText({ text, className }: { text: string; className?: string }) {
-  const [clipped, setClipped] = useState(false);
-  const roRef = useRef<ResizeObserver | null>(null);
-  // Keyed to `text`: a rename arrives through a config re-fetch and swaps the
-  // string WITHOUT changing the box, which the observer below cannot see. A
-  // changed ref identity makes React detach/reattach, re-running `check`.
-  const measure = useCallback(
-    (el: HTMLSpanElement | null) => {
-      roRef.current?.disconnect();
-      roRef.current = null;
-      if (!el) return;
-      // `truncate` (overflow:hidden + nowrap) makes scrollWidth the full text
-      // width and clientWidth the visible box — +1 absorbs subpixel rounding.
-      const check = () => setClipped(el.scrollWidth > el.clientWidth + 1);
-      check();
-      const ro = new ResizeObserver(check);
-      ro.observe(el);
-      roRef.current = ro;
-    },
-    [text],
-  );
-
-  const line = (
-    <span ref={measure} className={className}>
-      {text}
-    </span>
-  );
-  if (!clipped) return line;
-  // `side="left"` aims the bubble sideways so it never covers the rows below
-  // the pointer. Radix flips it automatically (avoidCollisions defaults true)
-  // when the left edge runs out of room.
-  return (
-    <TooltipSimple content={text} side="left">
-      {line}
-    </TooltipSimple>
-  );
+  return modelLabel(m) !== m.model ? m.model : "";
 }
 
 /** Tool name → icon for the approval strip. */
@@ -1231,7 +1186,8 @@ function ComposerBarContent({
                             }
                           }}
                           onBlur={() => commitEditQueued(i)}
-                          className="font-mono text-[11px] text-neutral-700 min-h-0 min-w-0 flex-1 px-2 py-0.5 rounded-md resize-none leading-snug"
+                          shellClassName="flex-1 min-w-0 rounded-md"
+                          className="min-h-0 px-2 py-0.5 font-mono text-[11px] leading-snug text-neutral-700"
                         />
                       ) : (
                         <span
@@ -1774,7 +1730,8 @@ function ComposerTextarea({
           rows={1}
           // `dark:bg-transparent` is load-bearing: the base Textarea carries an opaque
           // dark surface, and a plain `bg-transparent` cannot cancel a `dark:` variant.
-          className="relative min-h-[42px] max-h-[180px] resize-none border-0 shadow-none focus-visible:ring-0 px-2 pt-1 text-[14px] leading-relaxed bg-transparent dark:bg-transparent text-transparent caret-neutral-800 selection:bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)]"
+          chrome="none"
+          className="relative min-h-[42px] max-h-[180px] resize-none px-2 pt-1 text-[14px] leading-relaxed bg-transparent dark:bg-transparent text-transparent caret-neutral-800 selection:bg-[color-mix(in_srgb,var(--husk-n300)_70%,transparent)]"
         />
       {menuPoint && (
         <ComposerMenu
@@ -1929,6 +1886,15 @@ function ComposerToolbar({
   const activeItem = models.find((model) =>
     model.model === activeModel && model.provider === activeProvider,
   );
+  const modelSections = useMemo(
+    () =>
+      groupOptions(
+        models,
+        (m) => m.provider || undefined,
+        (a, b) => modelLabel(a).localeCompare(modelLabel(b)),
+      ),
+    [models],
+  );
   /** The wire value the active tier rewrites to, when the model remaps it
    *  (e.g. picking Low sends `max`) — shown so the slider never lies. */
   const thinkingOverride =
@@ -2043,31 +2009,46 @@ function ComposerToolbar({
             <DropdownMenuSeparator />
 
             {models.length > 0 ? (
-              <DropdownMenuGroup className="min-h-0 flex-1 overflow-y-auto">
-                {[...models]
-                  .sort((a, b) => modelLabel(a).localeCompare(modelLabel(b)))
-                  .map((item) => {
-                  const active = item.model === activeModel && item.provider === activeProvider;
-                  return (
-                    <DropdownMenuItem
-                      key={`${item.provider}-${item.model}`}
-                      onClick={() => void onSelectModel(item.provider, item.model)}
-                      className="flex items-center justify-between text-xs py-2 cursor-pointer"
-                    >
-                      <div className="flex flex-col min-w-0 pr-2">
-                        <TruncatedText
-                          text={modelLabel(item)}
-                          className="font-medium truncate text-neutral-900"
-                        />
-                        <TruncatedText
-                          text={modelSubLabel(item)}
-                          className="text-[10px] font-mono text-neutral-500 truncate"
-                        />
-                      </div>
-                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                    </DropdownMenuItem>
-                  );
-                })}
+              <DropdownMenuGroup className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+                {/* One section per provider, alphabetical — the provider map
+                    upstream carries no order of its own. */}
+                {modelSections.map((section, i) => (
+                  <div key={section.group ?? "__ungrouped"}>
+                    {i > 0 && <DropdownMenuSeparator />}
+                    {section.group && (
+                      <DropdownMenuLabel className="truncate text-[11px] font-medium text-neutral-700">
+                        {section.group}
+                      </DropdownMenuLabel>
+                    )}
+                    {section.items.map((item) => {
+                      const active =
+                        item.model === activeModel && item.provider === activeProvider;
+                      return (
+                        <DropdownMenuItem
+                          key={`${item.provider}/${item.model}`}
+                          onClick={() => void onSelectModel(item.provider, item.model)}
+                          className="flex min-w-0 items-center justify-between overflow-hidden text-xs py-2 cursor-pointer"
+                        >
+                          <div className="flex min-w-0 flex-1 flex-col pr-2">
+                            <TruncatedText
+                              text={modelLabel(item)}
+                              className="truncate font-medium text-neutral-900"
+                            />
+                            {modelSubLabel(item) && (
+                              <TruncatedText
+                                text={modelSubLabel(item)}
+                                className="truncate font-mono text-[10px] text-neutral-500"
+                              />
+                            )}
+                          </div>
+                          {active && (
+                            <Check className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                          )}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </div>
+                ))}
               </DropdownMenuGroup>
             ) : (
               <div className="px-3 py-3 text-xs text-neutral-500 text-center">未检测到模型</div>

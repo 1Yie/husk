@@ -233,7 +233,7 @@ export function SkillsPane({ ov, reload }: { ov: AgentOverview | null; reload: (
               onChange={(e) => setBody(e.target.value)}
               rows={12}
               placeholder="# 技能说明与步骤…"
-              className="max-h-[50vh] min-h-[160px] resize-y font-mono text-[12px] leading-relaxed"
+              className="max-h-[50vh] min-h-[160px] font-mono text-[12px] leading-relaxed"
             />
           </Field>
         </div>

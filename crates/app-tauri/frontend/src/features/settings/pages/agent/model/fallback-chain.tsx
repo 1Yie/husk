@@ -117,7 +117,6 @@ export function FallbackChain({
               prefix={<Plus className="h-3.5 w-3.5 shrink-0" />}
               disabled={locked}
               triggerClassName="w-full min-w-0 shadow-none"
-              contentClassName="max-h-60 overflow-y-auto"
               options={candidates.map((name) => ({ value: name, label: name }))}
               onChange={(name) => {
                 if (!locked && candidates.includes(name)) onChange([...chain, name]);

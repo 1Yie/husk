@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "@/app/App";
 import { AppProviders } from "@/app/provider";
+import { ErrorBoundary } from "@/app/error-boundary";
 import "@/lib/frame-probe";
 import "@/index.css";
 // Boot splash handoff — #husk-splash is a SIBLING of #root (never inside it),
@@ -32,7 +33,9 @@ function AppBootstrap() {
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AppProviders>
-      <AppBootstrap />
+      <ErrorBoundary>
+        <AppBootstrap />
+      </ErrorBoundary>
     </AppProviders>
   </React.StrictMode>,
 );

@@ -241,37 +241,51 @@ export function initAgentStore(): () => void {
     timer = null;
     if (queue.length === 0) return;
     const batch = queue.splice(0, queue.length);
-    const s = useAgentStore.getState();
-    const next = new Map(s.views);
-    // Group by session so each view copies its history once per batch.
-    const byView = new Map<string, AgentEventEnvelope["event"][]>();
-    for (const { session, event, root } of batch) {
-      const k = viewKey(root ?? "", session);
-      const g = byView.get(k);
-      if (g) g.push(event);
-      else byView.set(k, [event]);
+    try {
+      const s = useAgentStore.getState();
+      const next = new Map(s.views);
+      // Group by session so each view copies its history once per batch.
+      const byView = new Map<string, AgentEventEnvelope["event"][]>();
+      for (const { session, event, root } of batch) {
+        const k = viewKey(root ?? "", session);
+        const g = byView.get(k);
+        if (g) g.push(event);
+        else byView.set(k, [event]);
+      }
+      for (const [k, events] of byView) {
+        next.set(k, applyEvents(next.get(k) ?? emptyView(), events));
+      }
+      // NOTE: `activeId` is deliberately NOT driven by events — otherwise a
+      // background session's traffic yanks the visible session, and the
+      // frontend's pointer diverges from the backend's `active_id`.
+      useAgentStore.setState({ views: next, runningKeys: (() => {
+        const keys = runningKeysOf(next);
+        return sameKeys(s.runningKeys, keys) ? s.runningKeys : keys;
+      })() });
+    } catch (error) {
+      // One malformed event must not kill the pump: the next batch still runs
+      // and the rest of the kernel stream keeps folding.
+      console.error("agent event batch failed:", error);
     }
-    for (const [k, events] of byView) {
-      next.set(k, applyEvents(next.get(k) ?? emptyView(), events));
-    }
-    // NOTE: `activeId` is deliberately NOT driven by events — otherwise a
-    // background session's traffic yanks the visible session, and the
-    // frontend's pointer diverges from the backend's `active_id`.
-    useAgentStore.setState({ views: next, runningKeys: (() => {
-      const keys = runningKeysOf(next);
-      return sameKeys(s.runningKeys, keys) ? s.runningKeys : keys;
-    })() });
   };
 
   void agent.onAgentEvent((env) => {
     if (disposed) return;
     queue.push(env);
-    // The notification rule reads the pointer NOW rather than from the batch
-    // below — "can the user see this" is about this instant, and a background
-    // session finishing is exactly what the bell exists for.
-    const s = useAgentStore.getState();
-    notifyForEvent(env, { root: s.workspaceRoot, id: s.activeId });
-    if (timer == null) timer = setTimeout(flush, 16);
+    try {
+      // The notification rule reads the pointer NOW rather than from the batch
+      // below — "can the user see this" is about this instant, and a background
+      // session finishing is exactly what the bell exists for.
+      const s = useAgentStore.getState();
+      notifyForEvent(env, { root: s.workspaceRoot, id: s.activeId });
+    } catch (error) {
+      console.error("agent event notification failed:", error);
+    } finally {
+      // `finally` is load-bearing: without it a throwing notification leaves
+      // `timer` null forever, so every later event only grows `queue` and the
+      // stream freezes while memory climbs.
+      if (timer == null) timer = setTimeout(flush, 16);
+    }
   }).then((stop) => {
     if (disposed) stop();
     else unlisten = stop;

@@ -68,7 +68,8 @@ function InstructionsBlock({
               }
             }}
             rows={9}
-            className="min-h-44 max-h-[60vh] resize-y font-mono text-xs leading-6 shadow-none dark:bg-panel"
+            shellClassName="shadow-none"
+            className="min-h-44 max-h-[60vh] font-mono text-xs leading-6"
             placeholder={global ? "回复语言、代码风格等通用偏好…" : "项目约定、开发流程、测试命令…"}
             spellCheck={false}
           />

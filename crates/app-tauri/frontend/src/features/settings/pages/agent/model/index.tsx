@@ -661,7 +661,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
               </div>
               <Field label="请求头 JSON（可选）">
                 <Textarea value={nHeaders} onChange={(e) => setNHeaders(e.target.value)}
-                  rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono resize-y max-h-40" />
+                  rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono max-h-40" />
               </Field>
             </Advanced>
           </div>
@@ -726,7 +726,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
               </div>
               <Field label="请求头 JSON（可选，留空清除）">
                 <Textarea value={eHeaders} onChange={(e) => setEHeaders(e.target.value)}
-                  rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono resize-y max-h-40" />
+                  rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono max-h-40" />
               </Field>
             </Advanced>
           </div>

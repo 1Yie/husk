@@ -82,17 +82,19 @@ export function DiffView({ diff, maxHeight = 500 }: Props) {
               </div>
             );
           })}
-          {capped && (
-            <button
-              type="button"
-              onClick={() => setExpanded(true)}
-              className="w-full text-center font-mono text-[11px] text-neutral-500 hover:text-neutral-600 pt-1.5 mt-1 border-t border-neutral-200 select-none"
-            >
-              … 还有 {lines.length - MAX_DIFF_LINES} 行，点击展开全部
-            </button>
-          )}
         </div>
       </div>
+      {/* Outside the scroll box: inside the `w-max` layer it spanned the
+          longest line, so its centred label scrolled out of view. */}
+      {capped && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="w-full text-center font-mono text-[11px] text-neutral-500 hover:text-neutral-600 py-1.5 border-t border-neutral-200 select-none"
+        >
+          … 还有 {lines.length - MAX_DIFF_LINES} 行，点击展开全部
+        </button>
+      )}
     </div>
   );
 }

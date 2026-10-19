@@ -105,7 +105,7 @@ DropdownMenuSubContent.displayName =
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, onCloseAutoFocus, onInteractOutside, ...props }, ref) => {
+>(({ className, sideOffset = 4, onCloseAutoFocus, onInteractOutside, onWheel, onTouchMove, ...props }, ref) => {
   const { placed, setRef } = usePopperPlacedRef(ref);
   // The portalled content does not contain its trigger. Exempt BOTH pointer
   // and focus events: focusin delivered after pointerdown can otherwise
@@ -126,6 +126,19 @@ const DropdownMenuContent = React.forwardRef<
       onCloseAutoFocus={(e) => {
         e.preventDefault();
         onCloseAutoFocus?.(e);
+      }}
+      // An open modal Dialog scroll-locks everything outside itself: its
+      // document-level wheel/touch guard cancels any scroll whose target is
+      // not inside the dialog, and this menu is portalled to <body>. Stopping
+      // the event here keeps it from reaching that guard, so a menu opened
+      // from a dialog still scrolls.
+      onWheel={(e) => {
+        e.stopPropagation();
+        onWheel?.(e);
+      }}
+      onTouchMove={(e) => {
+        e.stopPropagation();
+        onTouchMove?.(e);
       }}
       className={cn(
         "z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1",

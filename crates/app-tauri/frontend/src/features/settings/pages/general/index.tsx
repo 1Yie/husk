@@ -27,6 +27,7 @@ import {
   SettingsSection,
   Tag,
   type SettingsCardOption,
+  type SettingSelectOption,
 } from "@/features/settings/components";
 import { THINKING_LEVELS } from "@/lib/thinking";
 import {
@@ -119,6 +120,10 @@ function prefsToState(prefs: DefaultPrefs) {
       prefs.active_provider && prefs.active_model
         ? `${prefs.active_provider}/${prefs.active_model}`
         : "__config__",
+    subagentModelKey:
+      prefs.subagent_provider && prefs.subagent_model
+        ? `${prefs.subagent_provider}/${prefs.subagent_model}`
+        : "__parent__",
     thinking: prefs.thinking_level || "medium",
     agentMode: prefs.agent_mode || "build",
     workspaceMode: prefs.default_workspace_mode || "last",
@@ -142,6 +147,7 @@ export function GeneralPane() {
   const [ready, setReady] = useState(cached !== null);
   const [permission, setPermission] = useState(init.permission);
   const [activeModelKey, setActiveModelKey] = useState(init.activeModelKey);
+  const [subagentModelKey, setSubagentModelKey] = useState(init.subagentModelKey);
   const [thinking, setThinking] = useState(init.thinking);
   const [agentMode, setAgentMode] = useState(init.agentMode);
   const [workspaceMode, setWorkspaceMode] = useState(init.workspaceMode);
@@ -170,6 +176,7 @@ export function GeneralPane() {
         const s = prefsToState(prefs);
         setPermission(s.permission);
         setActiveModelKey(s.activeModelKey);
+        setSubagentModelKey(s.subagentModelKey);
         setThinking(s.thinking);
         setAgentMode(s.agentMode);
         setWorkspaceMode(s.workspaceMode);
@@ -198,7 +205,7 @@ export function GeneralPane() {
   // doubles as a lookup into `modelPairs` (model ids can contain `/`,
   // so never split the key back apart).
   const { modelOptions, modelPairs } = useMemo(() => {
-    const opts: { value: string; label: string; description?: string }[] = [
+    const opts: SettingSelectOption[] = [
       {
         value: "__config__",
         label: "跟随配置默认",
@@ -212,7 +219,7 @@ export function GeneralPane() {
         const key = `${pname}/${id}`;
         const label = typeof raw === "object" && raw?.name ? raw.name : id;
         pairs.set(key, { provider: pname, model: id });
-        opts.push({ value: key, label, description: pname });
+        opts.push({ value: key, label, group: pname });
       }
     }
     return { modelOptions: opts, modelPairs: pairs };
@@ -221,6 +228,13 @@ export function GeneralPane() {
   // longer names a configured model gets no row of its own — the select
   // reads as the config default.
   const shownModelKey = modelPairs.has(activeModelKey) ? activeModelKey : "__config__";
+  // Same list for delegated children; the empty choice means "the parent's
+  // model", not the config default.
+  const subagentOptions = useMemo(
+    () => [{ value: "__parent__", label: "跟随主代理" }, ...modelOptions.slice(1)],
+    [modelOptions],
+  );
+  const shownSubagentKey = modelPairs.has(subagentModelKey) ? subagentModelKey : "__parent__";
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-8" aria-busy={!ready}>
@@ -283,6 +297,30 @@ export function GeneralPane() {
                   }}
                   options={modelOptions}
                   ariaLabel="默认模型"
+                />
+              ) : (
+                <SkeletonControl />
+              )}
+            </SettingRow>
+            <SettingRow
+              title="子代理模型"
+              description="委派任务默认使用的模型，子代理自身指定的模型优先"
+              icon={<Bot className="h-4 w-4" />}
+              wideControl
+            >
+              {ready ? (
+                <SettingSelect
+                  value={shownSubagentKey}
+                  onChange={(v) => {
+                    setSubagentModelKey(v);
+                    const pair = modelPairs.get(v);
+                    void save({
+                      subagent_provider: pair?.provider ?? "",
+                      subagent_model: pair?.model ?? "",
+                    });
+                  }}
+                  options={subagentOptions}
+                  ariaLabel="子代理模型"
                 />
               ) : (
                 <SkeletonControl />

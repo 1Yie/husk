@@ -2,11 +2,15 @@ import * as React from "react";
 import { Check, ChevronsUpDown } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 import { ItemIcon } from "./item-list";
+import { groupOptions } from "@/lib/group-options";
+import { TruncatedText } from "@/components/ui/truncated-text";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -21,6 +25,9 @@ export interface SettingSelectOption {
   label: React.ReactNode;
   /** muted trailing text after the label, e.g. "— 不使用额外推理" */
   description?: React.ReactNode;
+  /** Section heading — options sharing a group render together under it,
+   *  in first-seen order; ungrouped options stay on top. */
+  group?: string;
 }
 
 interface SettingSelectProps {
@@ -51,6 +58,10 @@ export function SettingSelect({
   disabled,
 }: SettingSelectProps) {
   const current = options.find((o) => o.value === value);
+  const sections = React.useMemo(
+    () => groupOptions(options, (o) => o.group),
+    [options],
+  );
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -73,26 +84,52 @@ export function SettingSelect({
       <DropdownMenuContent
         align="end"
         className={cn(
-          "min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[calc(100vw-2rem)]",
+          "min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(24rem,calc(100vw-2rem))]",
           contentClassName
         )}
       >
-        <DropdownMenuRadioGroup value={value} onValueChange={onChange}>
-          {options.map((o) => (
-            <DropdownMenuRadioItem
-              key={o.value}
-              value={o.value}
-              className="text-xs py-2 cursor-pointer"
-            >
-              <span className="font-medium text-neutral-900">{o.label}</span>
-              {o.description && (
-                <span className="text-neutral-500 text-xs ml-2">
-                  — {o.description}
-                </span>
-              )}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
+        {/* Long lists (every provider's models) scroll inside the space Radix
+            measured. The inner box scrolls, not the rounded surface, so the
+            scrollbar stays inside the padding instead of riding its border. */}
+        <div className="max-h-[min(24rem,calc(var(--radix-dropdown-menu-content-available-height)-0.5rem))] overflow-y-auto overflow-x-hidden overscroll-contain">
+          <DropdownMenuRadioGroup value={value} onValueChange={onChange}>
+            {sections.map((section, i) => (
+              <React.Fragment key={section.group ?? ""}>
+                {i > 0 && <DropdownMenuSeparator />}
+                {section.group && (
+                  <DropdownMenuLabel className="truncate text-[11px] font-medium text-neutral-700">
+                    {section.group}
+                  </DropdownMenuLabel>
+                )}
+                {section.items.map((o) => (
+                  <DropdownMenuRadioItem
+                    key={o.value}
+                    value={o.value}
+                    className="text-xs py-2 cursor-pointer"
+                  >
+                    <span className="flex min-w-0 flex-1 items-baseline">
+                      {typeof o.label === "string" ? (
+                        <TruncatedText
+                          text={o.label}
+                          className="min-w-0 shrink truncate font-medium text-neutral-900"
+                        />
+                      ) : (
+                        <span className="min-w-0 shrink truncate font-medium text-neutral-900">
+                          {o.label}
+                        </span>
+                      )}
+                      {o.description && (
+                        <span className="ml-2 min-w-0 shrink-[2] truncate text-xs text-neutral-500">
+                          — {o.description}
+                        </span>
+                      )}
+                    </span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </React.Fragment>
+            ))}
+          </DropdownMenuRadioGroup>
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -122,3 +122,30 @@ describe("composer message lifecycle", () => {
     expect(screen.queryByText("选择范围")).not.toBeInTheDocument();
   });
 });
+
+describe("composer model picker sections", () => {
+  test("models are grouped under their provider, sections in alphabetical order", async () => {
+    const user = userEvent.setup();
+    const info = modelInfo();
+    // Providers come out of a backend map, so the picker imposes the order.
+    info.models.push(
+      { provider: "zeta", model: "z-1", name: "Zeta One" },
+      { provider: "alpha", model: "a-1", name: "Alpha One" },
+    );
+    mockCommand("agent_session", () => info, "model_info");
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    await user.click(modelButton());
+    const menu = (await screen.findAllByRole("menu")).at(-1)!;
+    // `getAllBy*` returns document order, which is exactly what is under test.
+    const inMenu = (text: RegExp) =>
+      screen.getAllByText(text).filter((el) => menu.contains(el)).map((el) => el.textContent);
+    expect(inMenu(/^(alpha|test|zeta)$/)).toEqual(["alpha", "test", "zeta"]);
+    expect(inMenu(/^(Alpha One|Model A|Model B|Zeta One)$/)).toEqual([
+      "Alpha One",
+      "Model A",
+      "Model B",
+      "Zeta One",
+    ]);
+  });
+});

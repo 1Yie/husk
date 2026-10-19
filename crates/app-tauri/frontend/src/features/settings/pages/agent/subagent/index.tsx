@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
-import { SettingSelect } from "@/features/settings/components/index";
+import { SettingSelect, type SettingSelectOption } from "@/features/settings/components/index";
 import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import {
@@ -54,12 +54,29 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
   const [desc, setDesc] = useState("");
   const [scope, setScope] = useState<"workspace" | "global">("workspace");
   const [prompt, setPrompt] = useState("");
+  /** Manifest `model:` as `provider/model`; "" = follow the subagent default. */
+  const [model, setModel] = useState("");
   const [busy, setBusy] = useState(false);
-  /** Editing an existing manifest (createSubagent overwrites it); builtins have
-   *  no file, so they stay read-only. */
+  /** Editing an existing manifest (createSubagent overwrites it). */
   const [editName, setEditName] = useState<string | null>(null);
+  /** The name being edited has no file of its own — saving writes an override
+   *  manifest, which shadows the built-in. */
+  const [editBuiltin, setEditBuiltin] = useState(false);
 
   const agents = ov?.subagents ?? [];
+  // Written qualified, so the manifest names the same model whichever
+  // provider the parent session runs on.
+  const modelOptions = useMemo(() => {
+    const opts: SettingSelectOption[] = [{ value: "", label: "跟随子代理默认模型" }];
+    for (const m of ov?.model.models ?? []) {
+      opts.push({ value: `${m.provider}/${m.model}`, label: m.name || m.model, group: m.provider });
+    }
+    // A hand-written `model:` outside the list still shows as itself.
+    if (model && !opts.some((o) => o.value === model)) {
+      opts.push({ value: model, label: model, group: "自定义" });
+    }
+    return opts;
+  }, [ov, model]);
   const counts: Record<Filter, number> = {
     all: agents.length,
     builtin: agents.filter((a) => a.builtin).length,
@@ -76,7 +93,8 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
   );
   const startCreate = () => {
     setEditName(null);
-    setName(""); setDesc(""); setPrompt("");
+    setEditBuiltin(false);
+    setName(""); setDesc(""); setPrompt(""); setModel("");
     setScope("workspace");
     setOpen(true);
   };
@@ -85,9 +103,11 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
     try {
       const detail = await readSubagent(agentName);
       setEditName(agentName);
+      setEditBuiltin(detail.builtin === true);
       setName(agentName);
       setDesc(detail.description);
       setPrompt(detail.prompt);
+      setModel(detail.model ?? "");
       setScope(detail.scope);
       setOpen(true);
     } catch (e) {
@@ -114,11 +134,15 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
         description: desc.trim(),
         scope,
         prompt: prompt.trim(),
+        model,
       });
-      toast.success(editName ? "已更新子代理" : "已创建子代理");
+      toast.success(
+        editBuiltin ? "已生成内置子代理的覆盖配置" : editName ? "已更新子代理" : "已创建子代理",
+      );
       setOpen(false);
       setEditName(null);
-      setName(""); setDesc(""); setPrompt("");
+      setEditBuiltin(false);
+      setName(""); setDesc(""); setPrompt(""); setModel("");
       reload();
     } catch (e) {
       toast.error(editName ? "保存失败" : "创建失败", { description: String(e) });
@@ -163,6 +187,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                 tags={
                   <>
                     <Tag>{a.builtin ? "内置" : a.global ? "全局" : "工作区"}</Tag>
+                    {a.model && <Tag className="font-mono">{a.model}</Tag>}
                     {limits(a).map((t) => (
                       <Tag key={t} className="tabular-nums">{t}</Tag>
                     ))}
@@ -172,19 +197,24 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                 emptyDescription="未填写描述"
                 meta={a.path}
                 actions={
-                  !a.builtin && (
-                    <>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" title="编辑"
-                        onClick={() => void startEditSubagent(a.name)}>
-                        <SquarePen className="h-3.5 w-3.5" />
-                      </Button>
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      title={a.builtin ? "编辑（生成覆盖配置）" : "编辑"}
+                      onClick={() => void startEditSubagent(a.name)}
+                    >
+                      <SquarePen className="h-3.5 w-3.5" />
+                    </Button>
+                    {!a.builtin && (
                       <DeleteButton
                         confirmTitle="删除子代理"
                         confirmDescription={`确定要删除子代理「${a.name}」吗？其定义文件将被删除，此操作无法撤销。`}
                         onConfirm={() => void doDeleteSubagent(a.name)}
                       />
-                    </>
-                  )
+                    )}
+                  </>
                 }
               />
             ))
@@ -219,7 +249,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
         open={open}
         onOpenChange={setOpen}
         width="lg"
-        title={editName ? "编辑子代理" : "添加子代理"}
+        title={editName ? (editBuiltin ? "编辑内置子代理" : "编辑子代理") : "添加子代理"}
         submitLabel={editName ? "保存" : "创建"}
         busyLabel={editName ? "保存中…" : "创建中…"}
         busy={busy}
@@ -227,6 +257,11 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
         onSubmit={() => void submit()}
       >
           <div className="flex flex-col gap-3 py-1">
+            {editBuiltin && (
+              <p className="rounded-lg bg-neutral-100 px-3 py-2 text-[11px] leading-relaxed text-neutral-600">
+                内置子代理没有定义文件，保存会生成一份同名覆盖配置来替代它，工作区与全局各有一份时以工作区为准
+              </p>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
               <Field label="名称（小写 slug）">
                 <Input
@@ -249,21 +284,32 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                 />
               </Field>
             </div>
-            <Field label="描述">
-              <Input
-                value={desc}
-                onChange={(e) => setDesc(e.target.value)}
-                placeholder="这个子代理擅长什么"
-                className="h-8 text-xs"
-              />
-            </Field>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+              <Field label="描述">
+                <Input
+                  value={desc}
+                  onChange={(e) => setDesc(e.target.value)}
+                  placeholder="这个子代理擅长什么"
+                  className="h-8 text-xs"
+                />
+              </Field>
+              <Field label="模型">
+                <SettingSelect
+                  value={model}
+                  onChange={setModel}
+                  triggerClassName="w-full sm:w-44"
+                  options={modelOptions}
+                  ariaLabel="子代理模型"
+                />
+              </Field>
+            </div>
             <Field label="系统提示词（子代理的行为指令）">
               <Textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 rows={12}
                 placeholder="你是一个代码审查专家，专注于…"
-                className="max-h-[50vh] min-h-[160px] resize-y font-mono text-[12px] leading-relaxed"
+                className="max-h-[50vh] min-h-[160px] font-mono text-[12px] leading-relaxed"
               />
             </Field>
           </div>
