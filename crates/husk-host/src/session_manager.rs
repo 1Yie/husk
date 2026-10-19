@@ -209,6 +209,9 @@ pub struct SessionManager {
     /// own `active_*`. `None` → resolve_provider's config default.
     pub default_provider: Option<String>,
     pub default_model: Option<String>,
+    /// Global subagent default `(provider, model)` — pushed into every actor
+    /// so `delegate` children run on it. `None` → children follow the parent.
+    pub subagent_model: Option<(String, String)>,
     /// Active thinking intensity level across sessions (e.g. "medium", "high").
     pub active_thinking_level: Option<String>,
     /// Active permission mode across sessions (e.g. "default", "acceptEdits", "auto").
@@ -391,6 +394,7 @@ impl SessionManager {
                 model_name: empty_model,
                 default_provider: defaults.as_ref().and_then(|d| d.active_provider.clone()),
                 default_model: defaults.as_ref().and_then(|d| d.active_model.clone()),
+                subagent_model: defaults.as_ref().and_then(|d| d.subagent_pair()),
                 active_thinking_level: defaults.as_ref().and_then(|d| d.thinking_level.clone()),
                 permission_mode: defaults
                     .as_ref()
@@ -498,6 +502,7 @@ impl SessionManager {
             model_name,
             default_provider: defaults.as_ref().and_then(|d| d.active_provider.clone()),
             default_model: defaults.as_ref().and_then(|d| d.active_model.clone()),
+            subagent_model: defaults.as_ref().and_then(|d| d.subagent_pair()),
             active_thinking_level,
             permission_mode,
             agent_mode,
@@ -859,6 +864,7 @@ impl SessionManager {
                     "prompt": u.prompt,
                     "completion": u.completion,
                     "cached": u.cached,
+                    "cache_write": u.cache_write,
                     "context_window": u.context_window,
                     "model": m.model,
                     "provider": m.provider,
@@ -936,9 +942,14 @@ impl SessionManager {
             .and_then(|m| m.thinking_level.clone())
             .or_else(|| self.active_thinking_level.clone());
 
+        // Per-session cache-write accounting. The provider publishes
+        // Anthropic's cache_creation tokens here; the checkpoint relay and the
+        // turn-end persistence read the same counter.
+        let usage_observer = Arc::new(agent_llm::UsageObserver::default());
         // Never substitute another vendor here: an unbuildable session provider
         // fails its turns with the reason instead (see `choose_session_provider`).
-        let (provider, unavailable) = choose_session_provider(&self.provider_cfg, &sess_provider);
+        let (provider, unavailable) =
+            choose_session_provider(&self.provider_cfg, &sess_provider, Some(&usage_observer));
         let model = sess_model.clone();
         let mentry = self
             .provider_cfg
@@ -997,6 +1008,7 @@ impl SessionManager {
             // Fresh session — caller-assigned id so store + sidebar agree.
             None => SessionActor::spawn_with_id(cfg, id),
         };
+        actor.set_usage_observer(usage_observer.clone());
 
         // Say WHY the session cannot answer, once, before the first turn. The
         // turn itself fails with the same reason, so this is the early notice.
@@ -1025,7 +1037,7 @@ impl SessionManager {
         actor.set_secrets(self.provider_cfg.resolved_secrets());
         actor.set_fallbacks(
             &sess_provider,
-            build_fallback_chain(&self.provider_cfg, &sess_provider),
+            build_fallback_chain(&self.provider_cfg, &sess_provider, Some(&usage_observer)),
         );
         actor.set_blueprint_enabled(self.blueprint_enabled);
 
@@ -2360,6 +2372,8 @@ impl SessionManager {
             compact_at: self.compact_at,
             active_provider: self.default_provider.clone(),
             active_model: self.default_model.clone(),
+            subagent_provider: self.subagent_model.as_ref().map(|(p, _)| p.clone()),
+            subagent_model: self.subagent_model.as_ref().map(|(_, m)| m.clone()),
             sandbox_enabled: lim.enabled,
             sandbox_network: Some(lim.network_label().into()),
             sandbox_max_memory_mb: lim.max_memory_mb,
@@ -2488,6 +2502,32 @@ impl SessionManager {
             let _ = self.store.save_prefs(&prefs);
         }
         self.restore_workspace_default_settings();
+    }
+
+    /// The global subagent default `(provider, model)` — `None` means
+    /// children follow their parent session's model.
+    pub fn subagent_model(&self) -> Option<(String, String)> {
+        self.subagent_model.clone()
+    }
+
+    /// Update + persist the subagent default and push it into every live and
+    /// parked actor, so the next `delegate` anywhere uses it. `None` clears it.
+    pub fn set_subagent_model(&mut self, pair: Option<(String, String)>) {
+        self.subagent_model = pair.filter(|(p, m)| !p.is_empty() && !m.is_empty());
+        let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
+        let (provider, model) = self.subagent_model.clone().unwrap_or_default();
+        let live = self
+            .handles
+            .values()
+            .chain(self.parked.values().flat_map(|m| m.values()));
+        for h in live {
+            let _ = h
+                .cmd_tx
+                .try_send(crate::command::UiCommand::SetSubagentModel {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                });
+        }
     }
 
     /// Update + persist the blueprint switch. It becomes the default for new
@@ -2755,13 +2795,14 @@ fn boot_workspace(
 pub(crate) fn build_fallback_chain(
     cfg: &AppConfig,
     primary: &str,
+    observer: Option<&Arc<agent_llm::UsageObserver>>,
 ) -> Vec<(String, Arc<dyn agent_llm::LlmProvider>)> {
     cfg.fallback_chain
         .iter()
         .filter(|name| name.as_str() != primary)
         .filter_map(|name| {
             let pcfg = cfg.providers.get(name)?;
-            let p = ProviderFactory::build(pcfg).ok()?;
+            let p = ProviderFactory::build_with_observer(pcfg, observer.cloned()).ok()?;
             Some((name.clone(), p))
         })
         .collect()
@@ -2777,6 +2818,7 @@ pub(crate) fn build_fallback_chain(
 pub(crate) fn choose_session_provider(
     cfg: &AppConfig,
     session_provider: &str,
+    observer: Option<&Arc<agent_llm::UsageObserver>>,
 ) -> (Arc<dyn agent_llm::LlmProvider>, Option<String>) {
     let Some(pcfg) = cfg.providers.get(session_provider) else {
         let reason = format!("provider `{session_provider}` is not in the config");
@@ -2785,7 +2827,7 @@ pub(crate) fn choose_session_provider(
             Some(reason),
         );
     };
-    match ProviderFactory::build(pcfg) {
+    match ProviderFactory::build_with_observer(pcfg, observer.cloned()) {
         Ok(p) => (p, None),
         Err(e) => {
             let reason = format!("provider `{session_provider}`: {e}");
@@ -3036,7 +3078,7 @@ max = "max"
             ..Default::default()
         };
 
-        let (provider, reason) = choose_session_provider(&cfg, "openai");
+        let (provider, reason) = choose_session_provider(&cfg, "openai", None);
         assert_eq!(
             provider.id(),
             "unavailable",
@@ -3064,7 +3106,7 @@ max = "max"
             providers,
             ..Default::default()
         };
-        let (provider, reason) = choose_session_provider(&cfg, "gone");
+        let (provider, reason) = choose_session_provider(&cfg, "gone", None);
         assert_eq!(provider.id(), "unavailable");
         assert!(reason.expect("reason").contains("gone"));
     }
@@ -3097,7 +3139,7 @@ max = "max"
             ..Default::default()
         };
 
-        let chain = build_fallback_chain(&cfg, "primary");
+        let chain = build_fallback_chain(&cfg, "primary", None);
         let names: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["third", "second"]);
     }

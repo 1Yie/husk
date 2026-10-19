@@ -31,6 +31,12 @@ use agent_kernel::tools::{ToolCtx, ToolRegistry};
 /// skill's canonical source (single source of truth, never hand-edited here).
 pub const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../assets/kernel-system-prompt.md");
 
+/// Opening tag of the hidden per-message recall row — facts the memory store
+/// matched to one user message, sent just before it instead of inside the
+/// system prompt (see `run_prompt`).
+const MEMORY_CONTEXT_OPEN: &str =
+    "<memory-context>\nRecalled for the next message — guidance only; live workspace files take precedence.";
+
 /// Append one instructions file to the rendered prompt as a `## User
 /// instructions` section — empty/missing files are no-ops.
 /// Replace the region between `<!-- name -->` and `<!-- /name -->` in the
@@ -50,8 +56,9 @@ fn replace_block(content: &str, name: &str, block: &str) -> String {
 /// Swap the recalled-memory region of a system prompt.
 ///
 /// New prompts carry `<!-- memory -->` / `<!-- /memory -->` markers, so the
-/// region is replaced verbatim at spawn AND on every turn (`run_prompt`) —
-/// the store keeps changing while the session lives. Prompts persisted before
+/// region is replaced verbatim at spawn and on resume. It is deliberately not
+/// touched per turn: the system prompt heads the provider's prompt cache.
+/// Prompts persisted before
 /// the markers existed fall back to the old literal swap, which only fires
 /// when the store-failure string is present, i.e. the pre-marker behaviour.
 fn set_memory_block(content: &str, block: &str) -> String {
@@ -59,6 +66,15 @@ fn set_memory_block(content: &str, block: &str) -> String {
         return replace_block(content, "memory", block);
     }
     content.replace("(no memory)", block)
+}
+
+/// The hidden recall row `run_prompt` sends ahead of a user message.
+pub(crate) fn is_memory_context(m: &ChatMessage) -> bool {
+    m.role == agent_llm::Role::User
+        && m.notice == Some(agent_llm::types::NoticeKind::Hidden)
+        && m.content
+            .as_deref()
+            .is_some_and(|c| c.starts_with(MEMORY_CONTEXT_OPEN))
 }
 
 /// Join a turn's injected steers into the single correction string the
@@ -144,41 +160,32 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
     ));
 }
 
+/// The children's route for one parent: `base` widened to every configured
+/// provider, with the subagent default applied (see `child_route`).
+fn routed_child(
+    base: &agent_kernel::tools::delegate::ChildRoute,
+    config_dir: &Path,
+    parent_name: &str,
+    default: Option<&(String, String)>,
+) -> agent_kernel::tools::delegate::ChildRoute {
+    let cfg = agent_llm::AppConfig::load(config_dir, None).unwrap_or_default();
+    let mut route = base.clone();
+    crate::child_route::install(
+        &mut route,
+        &cfg,
+        parent_name,
+        base.provider.clone(),
+        default,
+    );
+    route
+}
+
 /// Open the workspace-keyed memory store — `memory.db` under the app's
 /// data dir. Test builds redirect to a per-process temp file so spawned
 /// sessions don't write into the user's real db (nor contend on its
 /// cross-process redb lock while the app is running). The same `deps/`
 /// marker the session store uses covers `tests/` binaries too —
 /// `#[cfg(test)]` alone only reaches unit tests inside this lib.
-/// Every model the named provider declares, resolved the same way a hot-swap
-/// resolves one. A manifest `model:` may only name an id from this table, so
-/// the child can never run on a model the config does not describe.
-fn child_models(
-    provider_name: &str,
-    config_dir: &std::path::Path,
-) -> std::collections::HashMap<String, agent_kernel::tools::delegate::ChildModel> {
-    let mut out = std::collections::HashMap::new();
-    let Ok(cfg) = agent_llm::AppConfig::load(config_dir, None) else {
-        return out;
-    };
-    let Some(pcfg) = cfg.providers.get(provider_name) else {
-        return out;
-    };
-    for id in pcfg.model_ids() {
-        let d = pcfg.model_opts(&id);
-        out.insert(
-            id,
-            agent_kernel::tools::delegate::ChildModel {
-                context_window: d.context_window.unwrap_or(256_000) as usize,
-                thinking_level_map: d.thinking_level_map.clone(),
-                model_params: agent_llm::ProviderFactory::model_params_from(&d),
-                model_input: d.input.clone(),
-            },
-        );
-    }
-    out
-}
-
 fn open_memory_store(workspace_root: &Path) -> Option<MemoryStore> {
     let db_dir = if agent_store::is_test_binary() {
         Some(std::env::temp_dir().join(format!("husk-test-{}", std::process::id())))
@@ -343,6 +350,12 @@ pub struct SessionActor {
     /// Child-engine configuration shared with `delegate` — rewritten on
     /// hot-swap so a live session's children track its current model.
     child_route: Arc<std::sync::RwLock<agent_kernel::tools::delegate::ChildRoute>>,
+    /// The parent's own model settings, before `child_route` widens them —
+    /// kept so clearing the subagent default restores the parent's model.
+    child_base: agent_kernel::tools::delegate::ChildRoute,
+    /// Global subagent default `(provider, model)`; `None` = children follow
+    /// the parent's model.
+    subagent_model: Option<(String, String)>,
     /// Engine's thinking-level slot — read by the manager to report the
     /// session's live level (defaults may differ once prefs change).
     thinking_slot: Arc<std::sync::RwLock<Option<String>>>,
@@ -390,10 +403,18 @@ pub struct SessionActor {
     store: Option<Arc<agent_store::SessionStore>>,
     history_revision: u64,
     checkpoint: Option<Arc<TurnCheckpoint>>,
-    /// Last completed turn's `(prompt, completion)` tokens — persisted
-    /// into `SessionMeta` so a reopened session's header meter shows real
-    /// numbers before the next `Usage` event.
-    last_usage: Option<(u32, u32, u32)>,
+    /// Per-session cache-write sink shared with the provider and the
+    /// checkpoint relay (the shared `StreamChunk::Done` has no write slot).
+    usage_observer: Option<Arc<agent_llm::UsageObserver>>,
+    /// Turn-settle / history-rewrite signals for prompt-cache warming.
+    warming: agent_llm::WarmingControl,
+    /// Last completed turn's `(prompt, completion, cached, cache_write)`
+    /// tokens — persisted into `SessionMeta` so a reopened session's header
+    /// meter shows real numbers before the next `Usage` event.
+    last_usage: Option<(u32, u32, u32, u32)>,
+    /// Estimated composition of the request behind `last_usage`; cleared
+    /// whenever `last_usage` stops describing a real request (compaction).
+    last_breakdown: Option<agent_store::ContextBreakdown>,
     /// Parked follow-up prompts — the composer's queue. Lives here (not
     /// in the webview) so it survives session switches: the actor stays
     /// alive in `handles`/`parked`, drains at turn end no matter which
@@ -406,6 +427,45 @@ pub struct SessionActor {
     /// Skill backend — owns the cached prompt catalog and its change stamp, so
     /// a large tree is not re-read on every prompt.
     skills: agent_skills::SkillManager,
+}
+
+/// A provider instance without the session's usage observer. Background work
+/// (distiller, child engines) must not overwrite the foreground counter.
+fn unobserved_provider(cfg: &SessionConfig) -> Option<Arc<dyn agent_llm::LlmProvider>> {
+    let app = agent_llm::AppConfig::load(&cfg.paths.config_dir, None).ok()?;
+    let provider = app.providers.get(&cfg.provider_name)?;
+    agent_llm::ProviderFactory::build(provider).ok()
+}
+
+/// Wrap the foreground session provider in prompt-cache warming when the
+/// model declares a `promptCache` lifetime and prices to weigh refreshes by.
+/// Anything else (unknown model, no lifetime, warming off) passes `provider`
+/// through unchanged.
+fn warmed_provider(
+    provider: Arc<dyn agent_llm::LlmProvider>,
+    model: &str,
+    resolved: Option<&agent_llm::ModelConfig>,
+    control: &agent_llm::WarmingControl,
+) -> Arc<dyn agent_llm::LlmProvider> {
+    let Some(d) = resolved else {
+        return provider;
+    };
+    agent_llm::WarmingProvider::wrap(
+        provider,
+        model,
+        d.prompt_cache.as_ref(),
+        d.cost.as_ref(),
+        control,
+    )
+}
+
+/// The session model's resolved config (overrides folded in), when the
+/// provider config describes it.
+fn resolved_model(cfg: &SessionConfig) -> Option<agent_llm::ModelConfig> {
+    let app = agent_llm::AppConfig::load(&cfg.paths.config_dir, None).ok()?;
+    let pcfg = app.providers.get(&cfg.provider_name)?;
+    pcfg.find_model(&cfg.model)?;
+    Some(pcfg.model_opts(&cfg.model))
 }
 
 impl SessionActor {
@@ -559,9 +619,11 @@ impl SessionActor {
             .replace("{{GIT_STATUS}}", &git_status);
 
         // `memory.db` lives in the host's data dir, partitioned by
-        // `hash(canonical_root)`. `{{MEMORY_BLOCK}}` is refreshed per-turn
-        // (recall happens in `run_prompt`, not once at spawn — the block
-        // must track the evolving store).
+        // `hash(canonical_root)`. `{{MEMORY_BLOCK}}` holds only the stable
+        // half (persona + recent episodes) and is rendered once per spawn or
+        // resume — refreshing it every turn would rewrite the system prompt
+        // and miss the provider's prompt cache. Per-message facts are
+        // recalled in `run_prompt` and sent beside the user message.
         // `memory_enabled` (default prefs) is the master switch: no store
         // handle → no block refresh and no distill writes. `memory_distill`
         // gates only the per-turn summarizer call — deterministic
@@ -586,7 +648,7 @@ impl SessionActor {
                     } else {
                         d
                     };
-                    let block = s.memory_block("workspace").unwrap_or_default();
+                    let block = s.stable_block().unwrap_or_default();
                     (Some(s.clone()), Some(Arc::new(d)), block)
                 }
                 None => (None, None, "(no memory)".to_string()),
@@ -760,21 +822,36 @@ impl SessionActor {
         let memory_handle = agent_coding::remember::MemoryHandle::default();
         memory_handle.set(memory.clone());
         memory_handle.install(&mut tool_ctx);
+        // Background work (distiller, child engines) must not write into the
+        // foreground session's cache-write counter: a distill pass overlapping
+        // the next turn would otherwise overwrite the parent's value. Build a
+        // second provider instance without the observer.
+        let background_provider = unobserved_provider(&cfg).unwrap_or_else(|| cfg.provider.clone());
         // The child route starts from the session's own settings and is
         // rewritten by `apply_model_switch`, so children follow a hot-swap.
-        let child_route = Arc::new(std::sync::RwLock::new(
-            agent_kernel::tools::delegate::ChildRoute {
-                provider: cfg.provider.clone(),
-                model: cfg.model.clone(),
-                temperature: cfg.temperature,
-                context_window: cfg.context_window.unwrap_or(256_000) as usize,
-                thinking_level: cfg.thinking_level.clone(),
-                thinking_level_map: cfg.thinking_level_map.clone(),
-                model_params: cfg.model_params.clone().unwrap_or_default(),
-                model_input: cfg.model_input.clone(),
-                models: child_models(&cfg.provider_name, &cfg.paths.config_dir),
-            },
-        ));
+        // `child_base` is the parent's own model; the shared route widens it to
+        // every configured provider and applies the subagent default on top.
+        let child_base = agent_kernel::tools::delegate::ChildRoute {
+            provider: background_provider.clone(),
+            model: cfg.model.clone(),
+            temperature: cfg.temperature,
+            context_window: cfg.context_window.unwrap_or(256_000) as usize,
+            thinking_level: cfg.thinking_level.clone(),
+            thinking_level_map: cfg.thinking_level_map.clone(),
+            model_params: cfg.model_params.clone().unwrap_or_default(),
+            model_input: cfg.model_input.clone(),
+            models: std::collections::HashMap::new(),
+        };
+        // Every frontend spawns through here, so the stored default is read
+        // once at birth; `SetSubagentModel` carries later changes.
+        let subagent_model =
+            crate::prefs::try_load_default_preferences().and_then(|d| d.subagent_pair());
+        let child_route = Arc::new(std::sync::RwLock::new(routed_child(
+            &child_base,
+            &cfg.paths.config_dir,
+            &cfg.provider_name,
+            subagent_model.as_ref(),
+        )));
         tool_ctx.install_subagent(
             agent_kernel::tools::delegate::SubagentSpawner::new(
                 child_route.clone(),
@@ -794,9 +871,16 @@ impl SessionActor {
         tool_ctx.install_ui(channels.event_tx.clone());
         let ctx = Arc::new(tool_ctx);
         let registry = Arc::new(registry);
+        let warming = agent_llm::WarmingControl::default();
+        let warmed = warmed_provider(
+            cfg.provider.clone(),
+            &cfg.model,
+            resolved_model(&cfg).as_ref(),
+            &warming,
+        );
         let provider = checkpoint.as_ref().map_or_else(
-            || cfg.provider.clone(),
-            |checkpoint| checkpoint.wrap(cfg.provider.clone()),
+            || warmed.clone(),
+            |checkpoint| checkpoint.wrap(warmed.clone()),
         );
         let mut engine = Engine::new(
             provider,
@@ -924,6 +1008,8 @@ impl SessionActor {
                     cfg.model.clone(),
                 ))),
                 child_route,
+                child_base,
+                subagent_model,
                 steer_tx,
                 cancel,
                 cmd_rx,
@@ -938,7 +1024,7 @@ impl SessionActor {
                 memory_handle,
                 distiller,
                 distill_ctx: (
-                    cfg.provider.clone(),
+                    background_provider,
                     cfg.model.clone(),
                     cfg.model_params.clone().unwrap_or_default(),
                 ),
@@ -946,7 +1032,10 @@ impl SessionActor {
                 store,
                 history_revision,
                 checkpoint,
+                usage_observer: None,
+                warming,
                 last_usage: None,
+                last_breakdown: None,
                 queued: Arc::new(std::sync::Mutex::new(cfg.queued_prompts.into())),
                 skills,
             },
@@ -980,11 +1069,24 @@ impl SessionActor {
             }
             self.handle(cmd).await;
         }
+        // A closed or deleted session must not keep paying for refreshes.
+        self.warming.cancel();
         self.io.ui_tx.close();
     }
 
     pub fn shutdown_writer(&self) -> Arc<tokio::sync::Notify> {
         self.shutdown.clone()
+    }
+
+    /// Attach the host's cache-write sink after construction. The provider was
+    /// built with the same `Arc`, and the checkpoint relay reads it when a
+    /// `Usage` event passes through (so the live top bar can price/write-count
+    /// Anthropic cache writes without changing the shared wire types).
+    pub fn set_usage_observer(&mut self, observer: Arc<agent_llm::UsageObserver>) {
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.set_usage_observer(observer.clone());
+        }
+        self.usage_observer = Some(observer);
     }
 
     /// The frontend's command sender — the bridge clones this.
@@ -1167,16 +1269,18 @@ impl SessionActor {
             }
         }
 
-        // Refresh the `<memory>` block before the turn — it lives in the
-        // system message (history[0]); swap its placeholder region.
+        // Facts recalled for THIS message ride a hidden user row right before
+        // it, never the system prompt: the system message is the head of the
+        // provider's prompt cache, and a per-question block there would turn
+        // every request into a full cache miss. Persisted with the turn, so
+        // later requests replay the same bytes and keep the prefix warm.
         if let Some(m) = &self.memory {
-            if let Ok(block) = m.memory_block(&text) {
+            if let Ok(block) = m.facts_block(&text) {
                 if !block.trim().is_empty() {
-                    if let Some(sys) = self.history.get_mut(0) {
-                        if let Some(c) = &sys.content {
-                            sys.content = Some(set_memory_block(c, &block));
-                        }
-                    }
+                    self.history.push(ChatMessage::user_hidden(format!(
+                        "{MEMORY_CONTEXT_OPEN}\n{}\n</memory-context>",
+                        block.trim_end()
+                    )));
                 }
             }
         }
@@ -1185,11 +1289,14 @@ impl SessionActor {
             checkpoint.begin(&self.history, &text, meta);
         }
         let outcome_text = text.clone();
-        match self
+        let result = self
             .engine
             .run_turn(&mut self.io, &mut self.history, text)
-            .await
-        {
+            .await;
+        // The turn is over either way: `streaming` warming stops, `idle`
+        // switches to the idle horizon.
+        self.warming.settle();
+        match result {
             // `run_turn` already emitted the terminal `StateChanged` on every
             // exit path (Finished at the assistant-message boundary, Failed at
             // each early return) — re-emitting here doubles the event and the
@@ -1197,7 +1304,20 @@ impl SessionActor {
             Ok(outcome) => {
                 self.state = AgentState::Finished;
                 self.hooks.observe(&self.state).await;
-                self.last_usage = outcome.usage;
+                // The provider published cache *writes* for the final round;
+                // the shared turn outcome only carries prompt/completion/cached.
+                let cache_write = self
+                    .usage_observer
+                    .as_ref()
+                    .map(|observer| observer.cache_write())
+                    .unwrap_or(0);
+                self.last_usage = outcome
+                    .usage
+                    .map(|(prompt, completion, cached)| (prompt, completion, cached, cache_write));
+                self.last_breakdown = self
+                    .checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| checkpoint.last_breakdown());
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
                 let turn_files = self.turn_files(turn);
                 self.queue_distill(TurnRecord {
@@ -1315,7 +1435,7 @@ impl SessionActor {
         let title = self
             .history
             .iter()
-            .find(|m| m.role == agent_llm::types::Role::User)
+            .find(|m| m.role == agent_llm::types::Role::User && m.notice.is_none())
             .and_then(|m| m.content.clone())
             .map(|c| c.chars().take(40).collect())
             .unwrap_or_else(|| last_task.chars().take(40).collect());
@@ -1341,12 +1461,16 @@ impl SessionActor {
         // actor's `last_usage` starts empty until its first turn lands).
         let usage = self
             .last_usage
-            .map(|(prompt, completion, cached)| agent_store::SessionUsage {
-                prompt,
-                completion,
-                context_window: self.engine.context_window() as u32,
-                cached,
-            })
+            .map(
+                |(prompt, completion, cached, cache_write)| agent_store::SessionUsage {
+                    prompt,
+                    completion,
+                    context_window: self.engine.context_window() as u32,
+                    cached,
+                    cache_write,
+                    breakdown: self.last_breakdown,
+                },
+            )
             .or_else(|| {
                 store
                     .list()
@@ -1512,6 +1636,7 @@ impl SessionActor {
     /// Reverse-apply the last turn's writes via the write tracker — restores
     /// each touched file to its pre-turn state (or deletes it if created).
     async fn undo_last_turn(&mut self) {
+        self.warming.cancel();
         // The tracker lock is held only while planning — never across an await.
         let (last, ops, skipped) = {
             let mut hunks = self.hunks.lock();
@@ -1591,26 +1716,38 @@ impl SessionActor {
                 // Same rule as spawn: an unbuildable provider is replaced by one
                 // that fails with the reason. Keeping the previous provider here
                 // would answer under the new model's limits and thinking map.
-                let (built, _unavailable) =
-                    crate::session_manager::choose_session_provider(&cfg, provider);
-                let parent_provider = self.checkpoint.as_ref().map_or_else(
-                    || built.clone(),
-                    |checkpoint| checkpoint.wrap(built.clone()),
-                );
-                self.engine.set_provider(parent_provider);
-                self.set_fallbacks(
+                let (built, _unavailable) = crate::session_manager::choose_session_provider(
+                    &cfg,
                     provider,
-                    crate::session_manager::build_fallback_chain(&cfg, provider),
+                    self.usage_observer.as_ref(),
                 );
+                // The old model's warm entry is no use to the new one.
+                self.warming.cancel();
                 let resolved = pcfg
                     .find_model(model)
                     .is_some()
                     .then(|| pcfg.model_opts(model));
-                // Children read this route, so it must match what the parent just got.
-                let mut route = self.child_route.write().expect("child route lock poisoned");
-                route.provider = built;
-                // The model table belongs to the provider, so it moves with it.
-                route.models = child_models(provider, &self.paths.config_dir);
+                let warmed =
+                    warmed_provider(built.clone(), model, resolved.as_ref(), &self.warming);
+                let parent_provider = self.checkpoint.as_ref().map_or_else(
+                    || warmed.clone(),
+                    |checkpoint| checkpoint.wrap(warmed.clone()),
+                );
+                self.engine.set_provider(parent_provider);
+                self.set_fallbacks(
+                    provider,
+                    crate::session_manager::build_fallback_chain(
+                        &cfg,
+                        provider,
+                        self.usage_observer.as_ref(),
+                    ),
+                );
+                // Children are routed from this base, so it must match what the
+                // parent just got — but without the foreground usage observer.
+                let child_provider =
+                    agent_llm::ProviderFactory::build(pcfg).unwrap_or_else(|_| built.clone());
+                let route = &mut self.child_base;
+                route.provider = child_provider;
                 match resolved {
                     Some(d) => {
                         let map = d.thinking_level_map.clone();
@@ -1639,11 +1776,8 @@ impl SessionActor {
                 }
             }
         }
-        // The parent's model changes unconditionally, so the children's must too.
-        self.child_route
-            .write()
-            .expect("child route lock poisoned")
-            .model = model.to_string();
+        // The parent's model changes unconditionally, so the children's base must too.
+        self.child_base.model = model.to_string();
         self.engine.set_model(model.to_string());
         // Keep the actor's own identity fields in step — they feed both the
         // usage attribution on `persist_turn` and the `SessionMeta` row a
@@ -1654,6 +1788,27 @@ impl SessionActor {
         if let Ok(mut slot) = self.model_slot.write() {
             *slot = (provider.to_string(), model.to_string());
         }
+        self.refresh_child_route();
+    }
+
+    /// Set the global subagent default `(provider, model)` — `None` lets
+    /// children follow this session's model again. Applies from the next
+    /// `delegate` call; a child already running keeps its model.
+    pub fn set_subagent_model(&mut self, model: Option<(String, String)>) {
+        self.subagent_model = model;
+        self.refresh_child_route();
+    }
+
+    /// Rebuild the shared child route from the parent's base, the current
+    /// config and the subagent default.
+    fn refresh_child_route(&mut self) {
+        let route = routed_child(
+            &self.child_base,
+            &self.paths.config_dir,
+            &self.provider_name,
+            self.subagent_model.as_ref(),
+        );
+        *self.child_route.write().expect("child route lock poisoned") = route;
     }
 
     /// Execute a `ControlOp` from a slash command — session state changes
@@ -1662,6 +1817,7 @@ impl SessionActor {
         match op {
             ControlOp::ClearHistory => {
                 self.history.truncate(1); // keep the system prompt
+                self.warming.cancel();
                 let line = "会话历史已清空".to_string();
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
@@ -1682,6 +1838,8 @@ impl SessionActor {
                     .io
                     .ui_tx
                     .send(UiEvent::StateChanged(AgentState::Compacting));
+                // The summary rewrites the history the warm entry was keyed on.
+                self.warming.cancel();
                 let result = self
                     .engine
                     .compact_now(&mut self.io, &mut self.history)
@@ -1701,11 +1859,13 @@ impl SessionActor {
                         // meter shows a cache reading for a context that no
                         // longer exists.
                         self.last_usage = Some(match self.last_usage {
-                            Some((_, completion, _)) => {
-                                (outcome.after_tokens as u32, completion, 0)
+                            Some((_, completion, _, _)) => {
+                                (outcome.after_tokens as u32, completion, 0, 0)
                             }
-                            None => (outcome.after_tokens as u32, 0, 0),
+                            None => (outcome.after_tokens as u32, 0, 0, 0),
                         });
+                        // The split described the pre-compaction request.
+                        self.last_breakdown = None;
                         self.persist_turn("已压缩上下文");
                     }
                     Ok(agent_kernel::engine::CompactOutcome::NothingToDo) => {
@@ -1894,7 +2054,15 @@ impl SessionActor {
                         return;
                     }
                     info!(history_idx = idx, "retry — rewinding to last user prompt");
+                    // The prompt's recall row goes with it — the resend
+                    // recalls afresh, and two rows would both reach the model.
+                    let idx = if idx > 0 && is_memory_context(&self.history[idx - 1]) {
+                        idx - 1
+                    } else {
+                        idx
+                    };
                     self.history.truncate(idx);
+                    self.warming.cancel();
                     let _ = self.io.ui_tx.send(UiEvent::TurnRetry);
                     self.handle_prompt(text).await;
                     self.drain_queue().await;
@@ -1956,6 +2124,10 @@ impl SessionActor {
                 info!(%provider, %model, "model config reload");
                 self.apply_model_switch(&provider, &model);
                 self.persist_settings();
+            }
+            UiCommand::SetSubagentModel { provider, model } => {
+                let pair = (!provider.is_empty() && !model.is_empty()).then_some((provider, model));
+                self.set_subagent_model(pair);
             }
             UiCommand::SetThinkingLevel { level } => {
                 info!(%level, "thinking level change requested");
@@ -2195,6 +2367,42 @@ mod tests {
     fn template_carries_the_memory_markers() {
         assert!(SYSTEM_PROMPT_TEMPLATE.contains("<!-- memory -->"));
         assert!(SYSTEM_PROMPT_TEMPLATE.contains("<!-- /memory -->"));
+    }
+
+    /// Prompt-cache layout: every session- or turn-dependent placeholder sits
+    /// after the fixed instructions, so the instructions stay a byte-stable
+    /// prefix across sessions and across mode/permission changes.
+    #[test]
+    fn template_keeps_volatile_regions_after_the_fixed_prefix() {
+        let split = SYSTEM_PROMPT_TEMPLATE
+            .find("## Session context")
+            .expect("session context section");
+        let (fixed, session) = SYSTEM_PROMPT_TEMPLATE.split_at(split);
+        assert!(!fixed.contains("{{"), "placeholder in the fixed prefix");
+        for ph in [
+            "{{DATE}}",
+            "{{WORKSPACE_ROOT}}",
+            "{{PERMISSION_MODE}}",
+            "{{WORKSPACE_TREE}}",
+            "{{GIT_STATUS}}",
+            "{{SKILLS_BLOCK}}",
+            "{{SUBAGENTS_BLOCK}}",
+            "{{BLUEPRINT_BLOCK}}",
+            "{{MEMORY_BLOCK}}",
+            "{{AGENT_MODE}}",
+        ] {
+            assert!(session.contains(ph), "{ph} missing");
+        }
+        // The mode block is the one region a live session rewrites — last.
+        assert!(session.trim_end().ends_with("{{AGENT_MODE}}"));
+    }
+
+    #[test]
+    fn memory_context_rows_are_recognised() {
+        let row =
+            ChatMessage::user_hidden(format!("{MEMORY_CONTEXT_OPEN}\nfact\n</memory-context>"));
+        assert!(is_memory_context(&row));
+        assert!(!is_memory_context(&ChatMessage::user("<memory-context>")));
     }
 
     /// Spawn and per-turn both route through this: the region is swapped

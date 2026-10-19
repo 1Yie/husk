@@ -35,6 +35,71 @@ fn call(id: &str, arguments: &str) -> ToolCall {
     }
 }
 
+#[tokio::test]
+async fn live_display_hides_recovery_only_rows_until_the_turn_commits() {
+    let (_dir, store, checkpoint, _output) = setup();
+    let mut assistant = ChatMessage::assistant("");
+    assistant.tool_calls = Some(vec![call("pending", "{}")]);
+    checkpoint.begin(&[ChatMessage::system("system"), assistant], "task", meta());
+    checkpoint.drain().await;
+
+    // The resumed engine needs a paired result and the interrupted notice.
+    let stored = store.load_history(1).unwrap();
+    assert!(stored
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("pending") && m.is_error == Some(true)));
+    assert!(stored
+        .iter()
+        .any(|m| m.content.as_deref() == Some(INTERRUPTED_TURN)));
+
+    // The live trace must show only the draft — no synthetic recovery rows.
+    let (page, total, _, _) = store.load_history_page(1, None, 50).unwrap();
+    // system + assistant + the prompt `begin` appended; the placeholder and
+    // the interrupted notice are recovery-only.
+    assert_eq!(total, 3);
+    assert!(page
+        .iter()
+        .all(|m| m.tool_call_id.as_deref() != Some("pending")));
+    assert!(page
+        .iter()
+        .all(|m| m.content.as_deref() != Some(INTERRUPTED_TURN)));
+}
+
+#[tokio::test]
+async fn usage_events_forward_the_cache_write_counter() {
+    let (_dir, _store, checkpoint, mut output) = setup();
+    let observer = Arc::new(agent_llm::UsageObserver::default());
+    observer.set_cache_write(42);
+    checkpoint.set_usage_observer(observer);
+
+    checkpoint
+        .ui
+        .send(agent_ipc::UiEvent::Usage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            context_window: 1000,
+            cached_tokens: 30,
+        })
+        .unwrap();
+
+    let forwarded = tokio::time::timeout(Duration::from_secs(2), output.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(forwarded, agent_ipc::UiEvent::Usage { .. }));
+    let extra = tokio::time::timeout(Duration::from_secs(2), output.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match extra {
+        agent_ipc::UiEvent::Custom { kind, payload } => {
+            assert_eq!(kind, USAGE_CACHE_WRITE);
+            assert_eq!(payload.as_u64(), Some(42));
+        }
+        other => panic!("expected a cache-write custom event, got {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_busy_file_lock_does_not_block_the_async_thread() {
     let (dir, store, checkpoint, _output) = setup();

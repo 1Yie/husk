@@ -536,6 +536,8 @@ fn commit_history(app: &mut App, history: &[agent_llm::ChatMessage], session_id:
     )));
     for m in history {
         match m.role {
+            // Hidden rows (engine nudges, recalled memory) were never drawn live.
+            Role::User if m.notice.is_some() => {}
             Role::User => {
                 if let Some(text) = &m.content {
                     if !text.trim().is_empty() {

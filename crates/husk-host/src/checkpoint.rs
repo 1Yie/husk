@@ -5,6 +5,7 @@
 //! draft that has not entered that history yet. Keep both on disk; never depend
 //! on Drop or a cooperative cancellation to save a running task.
 
+use crate::context_breakdown::CONTEXT_BREAKDOWN;
 use agent_kernel::channels::{UiReceiver, UiSink};
 use agent_kernel::hooks::{AgentHook, HookChain};
 use agent_llm::types::{now_ms, ChatMessage, Role, StreamChunk, ToolCall, ToolCallAssembler};
@@ -21,9 +22,20 @@ use tokio::sync::oneshot;
 
 const BARRIER: &str = "husk:checkpoint_barrier";
 
-const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(250);
+/// How often a streaming draft is persisted. A larger window trades a little
+/// crash-recovery detail for far less serialization + page-cache churn: a
+/// multi-megabyte history was being copied and rewritten four times a second.
+/// Tool/approval boundaries still flush explicitly.
+const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(1000);
+/// Retry cadence after a transient snapshot-write failure. Kept short and
+/// separate from the draft cadence: a deleted/locked session must fail out
+/// quickly instead of delaying shutdown by the streaming interval.
+const CHECKPOINT_RETRY_DELAY: Duration = Duration::from_millis(250);
 const INTERRUPTED_TURN: &str = "上次任务因会话意外中断而停止，已恢复到最后保存的进度。";
 const INTERRUPTED_TOOL: &str = "会话在工具结果保存前中断，执行结果未知。继续前请检查实际状态，不要假定操作未执行，也不要直接重复有副作用的操作。";
+/// UI-only extension accompanying a `Usage` event: the round's cache *write*
+/// tokens, which the shared `UiEvent::Usage` shape cannot carry.
+pub(crate) const USAGE_CACHE_WRITE: &str = "husk:usage_cache_write";
 
 pub(crate) struct TurnCheckpoint {
     store: Arc<SessionStore>,
@@ -36,6 +48,11 @@ pub(crate) struct TurnCheckpoint {
     relay: Mutex<Option<(UiReceiver, UiSink)>>,
     barriers: Mutex<std::collections::HashMap<u64, oneshot::Sender<()>>>,
     next_barrier: std::sync::atomic::AtomicU64,
+    /// Provider-side cache-write counter for the current session.
+    usage: Mutex<Option<Arc<agent_llm::UsageObserver>>>,
+    /// Estimated composition of the latest request — relayed after the
+    /// `Usage` event that request produced.
+    breakdown: Mutex<Option<agent_store::ContextBreakdown>>,
 }
 
 struct State {
@@ -101,6 +118,8 @@ impl TurnCheckpoint {
             relay: Mutex::new(Some((events, forward))),
             barriers: Mutex::new(std::collections::HashMap::new()),
             next_barrier: std::sync::atomic::AtomicU64::new(0),
+            usage: Mutex::new(None),
+            breakdown: Mutex::new(None),
             writing: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             written: tokio::sync::Notify::new(),
@@ -133,6 +152,25 @@ impl TurnCheckpoint {
         });
     }
 
+    /// Share the provider's cache-write counter with the relay.
+    pub(crate) fn set_usage_observer(&self, observer: Arc<agent_llm::UsageObserver>) {
+        *self.usage.lock().unwrap_or_else(|e| e.into_inner()) = Some(observer);
+    }
+
+    /// Composition of the latest request — persisted beside its usage so a
+    /// reopened session's context card keeps the split.
+    pub(crate) fn last_breakdown(&self) -> Option<agent_store::ContextBreakdown> {
+        *self.breakdown.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn usage_cache_write(&self) -> Option<u32> {
+        self.usage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|observer| observer.cache_write())
+    }
+
     pub(crate) fn start(self: &Arc<Self>) {
         let relay = self.relay.lock().unwrap_or_else(|e| e.into_inner()).take();
         let Some((mut events, forward)) = relay else {
@@ -145,6 +183,8 @@ impl TurnCheckpoint {
                 forward: forward.clone(),
             };
             while let Some(event) = events.recv().await {
+                let mut cache_write = None;
+                let mut breakdown = None;
                 if let Some(checkpoint) = checkpoint.upgrade() {
                     if let agent_ipc::UiEvent::Custom { kind, payload } = &event {
                         if kind == BARRIER {
@@ -167,7 +207,7 @@ impl TurnCheckpoint {
                     // Await the blocking worker here without blocking Tokio;
                     // token deltas still flow without a disk wait.
                     if matches!(
-                        event,
+                        &event,
                         agent_ipc::UiEvent::ApprovalRequested { .. }
                             | agent_ipc::UiEvent::ToolCallStarted {
                                 parent: None,
@@ -182,8 +222,28 @@ impl TurnCheckpoint {
                     ) {
                         checkpoint.flush().await;
                     }
+                    if matches!(&event, agent_ipc::UiEvent::Usage { .. }) {
+                        cache_write = checkpoint.usage_cache_write();
+                        breakdown = checkpoint.last_breakdown();
+                    }
                 }
                 let _ = forward.send(event);
+                // The shared Usage shape has no cache-write slot; the UI gets
+                // it as a product event immediately after the Usage it belongs
+                // to. Persistence reads the same observer at turn end.
+                if let Some(tokens) = cache_write {
+                    let _ = forward.send(agent_ipc::UiEvent::Custom {
+                        kind: USAGE_CACHE_WRITE.into(),
+                        payload: tokens.into(),
+                    });
+                }
+                // Same pattern for the request's estimated composition.
+                if let Some(breakdown) = breakdown {
+                    let _ = forward.send(agent_ipc::UiEvent::Custom {
+                        kind: CONTEXT_BREAKDOWN.into(),
+                        payload: serde_json::to_value(breakdown).unwrap_or_default(),
+                    });
+                }
             }
         });
     }
@@ -388,7 +448,7 @@ impl TurnCheckpoint {
     }
 
     /// The stream only marks the latest snapshot dirty. A single blocking
-    /// worker performs file locking, serialization and fsync off Tokio workers.
+    /// worker performs file locking and serialization off Tokio workers.
     fn save(self: &Arc<Self>, state: std::sync::MutexGuard<'_, State>) {
         drop(state);
         self.dirty.store(true, Ordering::Release);
@@ -410,7 +470,7 @@ impl TurnCheckpoint {
                 if checkpoint.save_snapshot() {
                     // Retry even when the model is idle and produces no new
                     // chunks. This sleeps only on the blocking pool.
-                    std::thread::sleep(CHECKPOINT_INTERVAL);
+                    std::thread::sleep(CHECKPOINT_RETRY_DELAY);
                     checkpoint.dirty.store(true, Ordering::Release);
                 }
             }
@@ -419,7 +479,7 @@ impl TurnCheckpoint {
 
     /// Returns true for a bounded transient retry.
     fn save_snapshot(&self) -> bool {
-        let (history, meta, expected) = {
+        let (history, recovery_rows, meta, expected) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.failed {
                 return false;
@@ -445,13 +505,12 @@ impl TurnCheckpoint {
                     .ok()
                     .and_then(|level| level.clone());
             }
-            (
-                recovery_history(&active.history),
-                active.meta.clone(),
-                state.revision,
-            )
+            let (history, recovery_rows) = recovery_history(&active.history);
+            (history, recovery_rows, active.meta.clone(), state.revision)
         };
-        let result = self.store.checkpoint_turn_checked(&history, meta, expected);
+        let result =
+            self.store
+                .checkpoint_turn_checked_with_rows(&history, meta, expected, &recovery_rows);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         match result {
             Ok(revision) => {
@@ -558,13 +617,18 @@ impl Drop for TurnCheckpoint {
     }
 }
 
-fn recovery_history(history: &[ChatMessage]) -> Vec<ChatMessage> {
+/// Build the snapshot the resumed engine needs: unknown tool outcomes are
+/// paired explicitly and the turn is marked interrupted. Also returns the
+/// indices of those synthetic rows so display pages can hide them — the live
+/// turn has not been interrupted and must not tell the user it was.
+fn recovery_history(history: &[ChatMessage]) -> (Vec<ChatMessage>, Vec<usize>) {
     let outputs: std::collections::HashSet<_> = history
         .iter()
         .filter(|m| m.role == Role::Tool)
         .filter_map(|m| m.tool_call_id.as_deref())
         .collect();
     let mut recovered = Vec::with_capacity(history.len());
+    let mut recovery_rows = Vec::new();
     for message in history {
         let mut message = message.clone();
         if message.role == Role::Assistant {
@@ -586,10 +650,14 @@ fn recovery_history(history: &[ChatMessage]) -> Vec<ChatMessage> {
             .map(|call| ChatMessage::tool_result_err(call.id.clone(), INTERRUPTED_TOOL))
             .collect();
         recovered.push(message);
-        recovered.extend(pending);
+        for placeholder in pending {
+            recovered.push(placeholder);
+            recovery_rows.push(recovered.len() - 1);
+        }
     }
     recovered.push(ChatMessage::notice(INTERRUPTED_TURN));
-    recovered
+    recovery_rows.push(recovered.len() - 1);
+    (recovered, recovery_rows)
 }
 
 struct CheckpointProvider {
@@ -621,6 +689,15 @@ impl LlmProvider for CheckpointProvider {
         params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         self.checkpoint.drain().await;
+        *self
+            .checkpoint
+            .breakdown
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(crate::context_breakdown::estimate(
+            messages,
+            tools.as_ref(),
+            crate::session::is_memory_context,
+        ));
         let generation = self.checkpoint.request(messages, self.native_tool_calls());
         self.checkpoint.flush().await;
         let stream = self
