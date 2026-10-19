@@ -158,6 +158,8 @@ pub struct App {
 
     pub queued: Vec<String>,
     pub usage: Option<(u32, u32, u32)>,
+    /// Last request's prompt-cache hit share, percent (`cached / prompt`).
+    pub cache_hit: Option<u32>,
 
     pub provider_name: String,
     pub model: String,
@@ -236,6 +238,7 @@ impl App {
             turn_started: None,
             queued: Vec::new(),
             usage: None,
+            cache_hit: None,
             provider_name,
             model,
             sandbox_id,

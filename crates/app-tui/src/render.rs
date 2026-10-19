@@ -59,7 +59,7 @@ fn border_left(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Right half: `provider/model (thinking) · ctx%`.
+/// Right half: `provider/model (thinking) · ctx% · cache hit%`.
 fn border_right(app: &App) -> Line<'static> {
     // Always show a level — unset = provider default, "(默认)" is honest.
     let level = app.thinking_level.as_deref().unwrap_or("默认");
@@ -70,6 +70,9 @@ fn border_right(app: &App) -> Line<'static> {
             let pct = (used as f64 / window as f64 * 100.0) as u32;
             s = format!(" {model} · ctx {}%", pct.min(100));
         }
+    }
+    if let Some(hit) = app.cache_hit {
+        s.push_str(&format!(" · cache {hit}%"));
     }
     Line::from(dim(format!("{s} "))).right_aligned()
 }

@@ -285,6 +285,9 @@ impl App {
         if let Some((_, used, window)) = self.usage {
             out.push(row("context", format!("{used}/{window} tok")));
         }
+        if let Some(hit) = self.cache_hit {
+            out.push(row("cache hit", format!("{hit}%")));
+        }
         Cell::Lines(out)
     }
 }

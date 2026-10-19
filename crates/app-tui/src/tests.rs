@@ -394,3 +394,11 @@ fn app_and_dir() -> (tempfile::TempDir, App) {
     let app = app_for(&seed);
     (dir, app)
 }
+
+#[test]
+fn cache_hit_share_is_a_clamped_percentage() {
+    use crate::events::cache_hit_pct;
+    assert_eq!(cache_hit_pct(0, 0), None);
+    assert_eq!(cache_hit_pct(1000, 750), Some(75));
+    assert_eq!(cache_hit_pct(100, 400), Some(100));
+}

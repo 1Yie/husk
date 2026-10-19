@@ -230,8 +230,9 @@ impl App {
                 prompt_tokens,
                 completion_tokens,
                 context_window,
-                ..
+                cached_tokens,
             } => {
+                self.cache_hit = cache_hit_pct(prompt_tokens, cached_tokens);
                 self.usage = Some((
                     prompt_tokens + completion_tokens,
                     prompt_tokens + completion_tokens,
@@ -624,4 +625,10 @@ pub fn hm_now() -> String {
         };
         format!("{h12}:{m:02} {ap}")
     }
+}
+
+/// Prompt-cache hit share for one request, percent. `None` before any prompt
+/// was counted, so a fresh session shows nothing rather than "0%".
+pub(crate) fn cache_hit_pct(prompt: u32, cached: u32) -> Option<u32> {
+    (prompt > 0).then(|| ((cached.min(prompt) as u64 * 100) / prompt as u64) as u32)
 }
