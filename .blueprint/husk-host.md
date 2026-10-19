@@ -11,7 +11,9 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - `SessionActor` / `SessionConfig` / `SessionManager`（session.rs / session_manager.rs）：装配 provider、registry、ctx、plugins、skills、sandbox、memory
 - 命令面（command.rs 的 `UiCommand`、commands.rs 的斜杠命令）与模式表（mode.rs 的 `AgentMode`）
 - 沙盒偏好（sandbox_prefs.rs）、插件适配（plugins.rs）、子代理宿主（subagents.rs）
+- 子代理模型路由（child_route.rs）：把所有已配置 provider 的模型并入内核 `ChildRoute` 的模型表（父 provider 用裸 id，全部 provider 用 `provider/model`），经 `RoutedProvider` 按键分发；全局子代理默认模型写入路由的 `model`，优先级为 manifest `model:` > 全局子代理默认 > 父会话模型
 - 系统提示词资产（assets/kernel-system-prompt.md）、办公根目录（office.rs）、待办存储（todo_store.rs）、全局偏好（prefs.rs）
+- 提示词缓存布局：系统提示固定指令在前、会话上下文在后且会话中不改写（模式块除外），每条消息相关的记忆作为隐藏 user 行随消息发送；会话在回合结束与历史改写时通知保活（`WarmingControl`）
 
 ## 不做
 - 不复制内核逻辑；行为变更先落在 kernel 或 agent-coding

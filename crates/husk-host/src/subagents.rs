@@ -49,7 +49,7 @@ impl SubagentHost for HuskSubagents {
 /// One user-defined subagent — a `*.md` manifest under an agents dir.
 /// The file's frontmatter carries `name`/`description`; the body IS the
 /// child's system prompt (appended to the kernel's delegation contract).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SubagentInfo {
     pub name: String,
     pub description: String,
@@ -210,6 +210,46 @@ pub fn discover_subagents(root: &Path, paths: &agent_paths::AppPaths) -> Vec<Sub
     out
 }
 
+/// One settings row per agent: a discovered manifest where it shadows a
+/// built-in name, the built-in itself everywhere else. The same rule
+/// [`find_subagent`] spawns by, so the list can never show two rows for one
+/// name — nor a row that `delegate` would resolve to someone else.
+pub fn agent_rows(root: &Path, paths: &agent_paths::AppPaths) -> Vec<SubagentInfo> {
+    let discovered = discover_subagents(root, paths);
+    let mut taken = vec![false; discovered.len()];
+    let mut rows: Vec<SubagentInfo> = Vec::new();
+    for (name, description, prompt) in BUILTIN_SUBAGENTS {
+        match discovered
+            .iter()
+            .position(|d| d.name.eq_ignore_ascii_case(name))
+        {
+            Some(i) => {
+                taken[i] = true;
+                rows.push(discovered[i].clone());
+            }
+            None => rows.push(SubagentInfo {
+                name: (*name).to_string(),
+                description: (*description).to_string(),
+                prompt: (*prompt).to_string(),
+                path: String::new(),
+                global: true,
+                tools: None,
+                readonly: BUILTIN_READONLY.contains(name),
+                model: None,
+                thinking: None,
+                context_files: None,
+            }),
+        }
+    }
+    for (i, sub) in discovered.into_iter().enumerate() {
+        if !taken[i] {
+            rows.push(sub);
+        }
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
 /// The prompt's agent catalog: discovered manifests first (they shadow same-named
 /// builtins), then the builtins nothing shadows. Without it the model can only
 /// pick names it happens to remember from the tool description, which makes a
@@ -269,6 +309,16 @@ fn find_subagent(root: &Path, name: &str, paths: &agent_paths::AppPaths) -> Opti
                     context_files: None,
                 })
         })
+}
+
+/// One built-in spec by name — how the settings editor opens a profile that
+/// has no manifest file. Saving from there writes an override manifest, which
+/// then shadows this entry like any other same-named file.
+pub fn builtin_subagent(name: &str) -> Option<(String, String, String)> {
+    BUILTIN_SUBAGENTS
+        .iter()
+        .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
+        .map(|(n, d, p)| ((*n).to_string(), (*d).to_string(), (*p).to_string()))
 }
 
 /// Builtins that must never write. Their prompts say 不修改任何文件, but a
@@ -367,6 +417,42 @@ pub fn agent_frontmatter(content: &str) -> AgentFrontmatter {
     out
 }
 
+/// Render a manifest for the settings editor. Frontmatter keys the editor
+/// does not own (`tools:`, `readonly:`, `thinking:`, …) are carried over from
+/// `existing`, so saving from the dialog never drops a hand-written limit.
+/// `model` empty or `None` = no `model:` line (the child follows the
+/// subagent default, then the parent).
+pub fn render_manifest(
+    existing: Option<&str>,
+    name: &str,
+    description: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    let mut out = format!("---\nname: {name}\ndescription: {description}\n");
+    if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        out.push_str(&format!("model: {m}\n"));
+    }
+    let kept = existing
+        .and_then(|c| c.trim_start().strip_prefix("---"))
+        .and_then(|fm| fm.find("\n---").map(|end| &fm[..end]))
+        .unwrap_or("");
+    for line in kept.lines() {
+        let key = line.trim_start();
+        if key.is_empty()
+            || ["name:", "description:", "model:"]
+                .iter()
+                .any(|k| key.starts_with(k))
+        {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!("---\n\n{prompt}\n"));
+    out
+}
+
 /// `name`/`description` frontmatter split — same `---` convention skills use.
 /// Split a `*.md` subagent manifest into `(name, description, prompt)`.
 /// Public so the settings page can hand the body back to its edit dialog.
@@ -410,6 +496,54 @@ mod tests {
 
         let no_fm = agent_frontmatter("just a body");
         assert_eq!(no_fm, AgentFrontmatter::default());
+    }
+
+    #[test]
+    fn render_manifest_sets_model_and_keeps_foreign_keys() {
+        let old =
+            "---\nname: x\ndescription: d\nmodel: big\ntools: [read]\nreadonly: true\n---\nold";
+        let out = render_manifest(Some(old), "x", "new", Some("cheap/small"), "body");
+        let fm = agent_frontmatter(&out);
+        assert_eq!(fm.model.as_deref(), Some("cheap/small"));
+        assert_eq!(fm.tools, Some(vec!["read".to_string()]));
+        assert!(fm.readonly);
+        assert_eq!(
+            split_agent(&out),
+            (Some("x".into()), Some("new".into()), "body".into())
+        );
+
+        let cleared = render_manifest(Some(old), "x", "d", None, "body");
+        assert_eq!(agent_frontmatter(&cleared).model, None);
+    }
+
+    /// An override manifest replaces its built-in row instead of sitting
+    /// beside it — one name, one row, and it is the one `delegate` resolves.
+    #[test]
+    fn override_manifest_replaces_the_builtin_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = agent_paths::AppPaths::new(dir.path().join("husk"), dir.path(), ".husk");
+        let before = agent_rows(dir.path(), &paths);
+        assert_eq!(
+            before.iter().filter(|r| r.name == "review").count(),
+            1,
+            "{before:?}"
+        );
+
+        let ws = workspace_agent_dir(dir.path(), &paths);
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("review.md"),
+            "---\nname: review\ndescription: ours\nmodel: cheap/small\n---\n\nHUNT\n",
+        )
+        .unwrap();
+
+        let after = agent_rows(dir.path(), &paths);
+        let hits: Vec<&SubagentInfo> = after.iter().filter(|r| r.name == "review").collect();
+        assert_eq!(hits.len(), 1, "{after:?}");
+        assert!(!hits[0].path.is_empty());
+        assert_eq!(hits[0].model.as_deref(), Some("cheap/small"));
+        // The built-ins nothing shadows are still listed.
+        assert!(after.iter().any(|r| r.name == "test" && r.path.is_empty()));
     }
 
     #[test]

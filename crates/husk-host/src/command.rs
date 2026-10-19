@@ -63,6 +63,11 @@ pub enum UiCommand {
     SetAgentMode { mode: String },
     /// Set the thinking/reasoning effort level (e.g. "off", "low", "medium", "high", "max").
     SetThinkingLevel { level: String },
+    /// Set the global subagent default model — `delegate` children without a
+    /// manifest `model:` run on it instead of the session's model. Empty
+    /// `provider`/`model` clears it. Broadcast by `SessionManager` when the
+    /// settings default changes; never persisted per session.
+    SetSubagentModel { provider: String, model: String },
     /// Turn the `.blueprint/` architecture layer on or off for this session.
     SetBlueprintEnabled { enabled: bool },
     /// Undo/rewind the last turn's hunk set.

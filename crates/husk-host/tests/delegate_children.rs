@@ -609,3 +609,57 @@ async fn child_transcript_is_saved_as_jsonl() {
     let last = lines.last().unwrap();
     assert!(last.to_string().contains("the transcript answer"), "{last}");
 }
+
+/// Two providers: `main` (the parent's, serving `model-a` and `model-b`) and
+/// `cheap`. Children see the parent's bare ids and every `provider/model`.
+fn two_provider_config() -> agent_llm::AppConfig {
+    toml::from_str(
+        r#"
+        [providers.main]
+        kind = "anthropic"
+        base_url = "https://example.invalid"
+        models = ["model-a", { id = "model-b", context_window = 8000 }]
+
+        [providers.cheap]
+        kind = "openai_completions"
+        base_url = "https://example.invalid"
+        models = ["small"]
+        "#,
+    )
+    .unwrap()
+}
+
+/// The global subagent default replaces the parent's model for an unnamed
+/// child, and a manifest `model:` still wins over the default.
+#[tokio::test]
+async fn subagent_default_model_applies_and_manifest_model_wins() {
+    let _serial = DELEGATE_SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    manifest(dir.path(), "pinned", "model: main/model-a\n");
+    let provider = Arc::new(ScriptedProvider::new());
+    provider.script_text("default ran");
+    provider.script_text("pinned ran");
+    let (spawner, route) = spawner_with_route(provider.clone());
+    husk_host::child_route::install(
+        &mut route.write().unwrap(),
+        &two_provider_config(),
+        "main",
+        provider.clone(),
+        Some(&("main".to_string(), "model-b".to_string())),
+    );
+    assert!(route.read().unwrap().models.contains_key("cheap/small"));
+    let ctx = ctx_with(dir.path(), spawner);
+    let spec = registry().spec("delegate").unwrap();
+
+    (spec.exec)(serde_json::json!({"task": "scan"}), ctx.clone())
+        .await
+        .expect("default model must run");
+    (spec.exec)(serde_json::json!({"task": "scan", "agent": "pinned"}), ctx)
+        .await
+        .expect("qualified manifest model must run");
+
+    let calls = provider.calls.lock().unwrap();
+    // The parent's provider receives its own bare ids, never the qualified key.
+    assert_eq!(calls[0].0, "model-b");
+    assert_eq!(calls[1].0, "model-a");
+}

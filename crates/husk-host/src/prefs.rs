@@ -32,6 +32,14 @@ pub struct DefaultPreferences {
     /// See `active_provider`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_model: Option<String>,
+    /// Global default model for delegated subagents — a (provider, model)
+    /// pair. Children whose manifest names no `model:` run on it instead of
+    /// the parent session's model; absent → children follow the parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_provider: Option<String>,
+    /// See `subagent_provider`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_model: Option<String>,
     #[serde(default = "default_pref_permission_mode")]
     pub permission_mode: String,
     #[serde(default = "default_pref_thinking_level")]
@@ -94,6 +102,16 @@ pub struct DefaultPreferences {
     pub schema_version: u32,
 }
 
+impl DefaultPreferences {
+    /// The subagent default as a whole pair — half a pair means nothing.
+    pub fn subagent_pair(&self) -> Option<(String, String)> {
+        match (&self.subagent_provider, &self.subagent_model) {
+            (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => Some((p.clone(), m.clone())),
+            _ => None,
+        }
+    }
+}
+
 /// Current `DefaultPreferences::schema_version`.
 pub const DEFAULT_PREFERENCES_VERSION: u32 = 1;
 
@@ -148,6 +166,8 @@ impl Default for DefaultPreferences {
         Self {
             active_provider: None,
             active_model: None,
+            subagent_provider: None,
+            subagent_model: None,
             permission_mode: default_pref_permission_mode(),
             // No row = no level: the spawn resolvers fall back to `None`,
             // and the settings echo must report the same thing.
@@ -434,6 +454,17 @@ mod tests {
         let mut p = DefaultPreferences::default();
         assert!(!migrate_default_preferences(&mut p));
         assert_eq!(p.sandbox_enabled, None);
+    }
+
+    /// A row written before the subagent default existed leaves children on
+    /// the parent's model.
+    #[test]
+    fn row_without_subagent_model_follows_the_parent() {
+        let p: DefaultPreferences = serde_json::from_value(serde_json::json!({
+            "schema_version": DEFAULT_PREFERENCES_VERSION,
+        }))
+        .unwrap();
+        assert_eq!(p.subagent_pair(), None);
     }
 
     /// The settings echo for an untouched install must match what a new
