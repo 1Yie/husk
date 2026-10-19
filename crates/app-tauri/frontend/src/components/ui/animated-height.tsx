@@ -31,7 +31,7 @@ export function AnimatedHeight({
   return (
     <div
       className={cn(
-        "overflow-hidden transition-[height] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none",
+        "overflow-hidden transition-[height] [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none",
         className,
       )}
       style={{ height, transitionDuration: `${duration}ms` }}

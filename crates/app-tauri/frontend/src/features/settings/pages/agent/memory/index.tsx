@@ -58,7 +58,13 @@ const revealClass = (index: number) =>
     ? undefined
     : cn(
         "animate-in fade-in-0 slide-in-from-top-1 fill-mode-both duration-300 motion-reduce:animate-none",
-        ["delay-0", "delay-[40ms]", "delay-[80ms]", "delay-[120ms]", "delay-[160ms]"][index % PREVIEW_COUNT],
+        [
+          "[animation-delay:0ms]",
+          "[animation-delay:40ms]",
+          "[animation-delay:80ms]",
+          "[animation-delay:120ms]",
+          "[animation-delay:160ms]",
+        ][index % PREVIEW_COUNT],
       );
 
 function MemoryListFooter({ label, listId, total, visible, onMore, onCollapse }: {
