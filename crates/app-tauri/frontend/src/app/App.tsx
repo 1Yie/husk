@@ -180,6 +180,8 @@ export function App() {
         history_total?: number;
         turn_total?: number;
         turn_offset?: number;
+        run_total?: number;
+        task_total?: number;
         usage?: Parameters<typeof viewFromHistory>[1];
         queued_prompts?: string[];
       },
@@ -207,6 +209,8 @@ export function App() {
         historyTotal: r.history_total,
         turnTotal: r.turn_total,
         turnOffset: r.turn_offset,
+        runTotal: r.run_total,
+        taskTotal: r.task_total,
       });
       releaseLoading();
     },

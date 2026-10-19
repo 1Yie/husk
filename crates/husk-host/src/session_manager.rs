@@ -1344,6 +1344,7 @@ impl SessionManager {
         // new actor must already see the forked history when it starts.
         self.store.snapshot(new_id, &hist).ok()?;
         let src = self.metas.iter().find(|m| m.id == id).cloned();
+        let (runs, tasks) = crate::session::history_counts(&hist);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -1370,8 +1371,11 @@ impl SessionManager {
             agent_mode: src.as_ref().and_then(|m| m.agent_mode.clone()),
             thinking_level: src.as_ref().and_then(|m| m.thinking_level.clone()),
             // The fork copies history, not pending intent — parked prompts
-            // stay with the source session.
+            // stay with the source session. Run/task counts describe that
+            // copied history.
             queued_prompts: Vec::new(),
+            runs: Some(runs),
+            tasks: Some(tasks),
             ..Default::default()
         });
         self.metas = self.store.list();
@@ -1900,34 +1904,15 @@ impl SessionManager {
             .load_history_page_checked(id, before, count, expected_revision)
     }
 
-    /// A session's persisted last-turn usage — seeds the header meter when
-    /// the webview rebuilds a closed view (before any new `Usage` event).
-    /// Reads the store fresh: `self.metas` only refreshes on structural ops
-    /// and goes stale the moment an actor persists a turn.
-    pub fn store_usage(&self, id: i64) -> Option<agent_store::SessionUsage> {
+    /// A session's persisted meta — usage meter, run/task counts and parked
+    /// prompts seed a rebuilt view (before any new event). Reads the store
+    /// fresh: `self.metas` only refreshes on structural ops and goes stale
+    /// the moment an actor persists a turn. One per-id read, not a scan.
+    pub fn store_meta(&self, id: i64) -> Option<SessionMeta> {
         if !self.workspace_active {
             return None;
         }
-        self.store
-            .list()
-            .into_iter()
-            .find(|m| m.id == id)
-            .and_then(|m| m.usage)
-    }
-
-    /// A session's persisted queued prompts — seeds the composer's parked
-    /// list when the webview rebuilds a closed view. Reads the store fresh
-    /// for the same reason `store_usage` does.
-    pub fn store_queued(&self, id: i64) -> Vec<String> {
-        if !self.workspace_active {
-            return Vec::new();
-        }
-        self.store
-            .list()
-            .into_iter()
-            .find(|m| m.id == id)
-            .map(|m| m.queued_prompts)
-            .unwrap_or_default()
+        self.store.meta(id)
     }
 
     /// Persist a session's queued-prompt list into its `SessionMeta` — used

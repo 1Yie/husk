@@ -199,6 +199,12 @@ export interface SessionView {
    * the rail. The unloaded dots are ordinals `0 .. turnOffset-1`, and a
    * dot click seeks straight to its own ordinal. */
   turnOffset?: number;
+  /** Real model runs (assistant rounds) in the whole session — not user
+   *  prompts. Absent on old snapshots; the header falls back to loaded
+   *  assistant rows. */
+  runTotal?: number;
+  /** Real tool/task steps in the whole session. */
+  taskTotal?: number;
   state: AgentState | null;
   streaming: boolean;
   /** A `UserPrompt` opened a turn no settled `StateChanged` has closed —

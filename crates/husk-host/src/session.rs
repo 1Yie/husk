@@ -37,6 +37,42 @@ pub const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../assets/kernel-system-p
 const MEMORY_CONTEXT_OPEN: &str =
     "<memory-context>\nRecalled for the next message — guidance only; live workspace files take precedence.";
 
+/// Product event carrying the persisted run/task counts after each commit.
+pub(crate) const SESSION_COUNTS: &str = "husk:session_counts";
+
+/// Real execution counts, not user-turn counts: one prompt can run the
+/// model/tool loop many times. Assistant rows are model runs; tool result
+/// rows are task steps. Counts the CURRENT history, so `/clear`, compaction
+/// and retry move them down with it.
+///
+/// This is the AUTHORITATIVE figure — the frontend's live tick is an upper
+/// bound (see the `Usage` arm in `apply-event.ts`), and every commit re-bases
+/// the header on this. Rows are the only definition the store can rebuild from
+/// a snapshot, so this is the one the persisted number has to mean.
+pub(crate) fn history_counts(history: &[ChatMessage]) -> (u32, u32) {
+    let mut runs = 0u32;
+    let mut tasks = 0u32;
+    for m in history {
+        match m.role {
+            agent_llm::types::Role::Assistant => runs += 1,
+            agent_llm::types::Role::Tool => tasks += 1,
+            _ => {}
+        }
+    }
+    (runs, tasks)
+}
+
+/// A round's usage as a persistable meter reading, or `None` when the wire
+/// reported nothing real (missing, or all-zero on a degraded/failed round).
+pub(crate) fn measured_usage(
+    usage: Option<(u32, u32, u32)>,
+    cache_write: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let (prompt, completion, cached) = usage?;
+    let real = prompt > 0 || completion > 0 || cached > 0 || cache_write > 0;
+    real.then_some((prompt, completion, cached, cache_write))
+}
+
 /// Append one instructions file to the rendered prompt as a `## User
 /// instructions` section — empty/missing files are no-ops.
 /// Replace the region between `<!-- name -->` and `<!-- /name -->` in the
@@ -1311,13 +1347,17 @@ impl SessionActor {
                     .as_ref()
                     .map(|observer| observer.cache_write())
                     .unwrap_or(0);
-                self.last_usage = outcome
-                    .usage
-                    .map(|(prompt, completion, cached)| (prompt, completion, cached, cache_write));
-                self.last_breakdown = self
-                    .checkpoint
-                    .as_ref()
-                    .and_then(|checkpoint| checkpoint.last_breakdown());
+                // Some wires report an all-zero Usage on a degraded/failed
+                // round. Persisting that would erase the last real meter and
+                // the reopened header would read 0; keep the last good reading
+                // until a round actually reports tokens.
+                if let Some(reading) = measured_usage(outcome.usage, cache_write) {
+                    self.last_usage = Some(reading);
+                    self.last_breakdown = self
+                        .checkpoint
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.last_breakdown());
+                }
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
                 let turn_files = self.turn_files(turn);
                 self.queue_distill(TurnRecord {
@@ -1418,6 +1458,7 @@ impl SessionActor {
                 if let Some(checkpoint) = &self.checkpoint {
                     checkpoint.set_revision(revision);
                 }
+                self.emit_counts();
             }
             Err(error) => {
                 let _ = self
@@ -1455,6 +1496,7 @@ impl SessionActor {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let old = store.meta(id);
         // Usage rides along in the sidebar meta: fresh value when this turn
         // produced one, otherwise the previously persisted value survives
         // (a failed turn must not erase the last good reading; a resumed
@@ -1471,21 +1513,11 @@ impl SessionActor {
                     breakdown: self.last_breakdown,
                 },
             )
-            .or_else(|| {
-                store
-                    .list()
-                    .into_iter()
-                    .find(|m| m.id == id)
-                    .and_then(|m| m.usage)
-            });
-        // Re-read the existing meta for the pin flag — a turn-boundary
-        // upsert must not clobber a pin the user set mid-turn.
-        let pinned = store
-            .list()
-            .into_iter()
-            .find(|m| m.id == id)
-            .map(|m| m.pinned)
-            .unwrap_or(false);
+            .or_else(|| old.as_ref().and_then(|m| m.usage));
+        // The existing meta's pin flag — a turn-boundary upsert must not
+        // clobber a pin the user set mid-turn.
+        let pinned = old.as_ref().map(|m| m.pinned).unwrap_or(false);
+        let (runs, tasks) = history_counts(&self.history);
         // Stamp the live composer settings alongside the usage — the model a
         // turn ran under is the spend's attribution, and the same fields are
         // what `spawn_actor` restores on reopen. These come from the engine's
@@ -1505,6 +1537,8 @@ impl SessionActor {
             agent_mode: Some(self.engine.agent_mode()),
             thinking_level: self.engine.thinking_level(),
             queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
+            runs: Some(runs),
+            tasks: Some(tasks),
             ..Default::default()
         })
     }
@@ -1516,6 +1550,17 @@ impl SessionActor {
             .read()
             .map(|g| g.mode().as_str().to_string())
             .unwrap_or_else(|_| "default".into())
+    }
+
+    /// Broadcast the persisted run/task counts. The header treats this as
+    /// authoritative — a `/clear`, compaction or retry shrinks the history,
+    /// and the view must follow it down, not keep a stale maximum.
+    fn emit_counts(&self) {
+        let (runs, tasks) = history_counts(&self.history);
+        let _ = self.io.ui_tx.send(UiEvent::Custom {
+            kind: SESSION_COUNTS.into(),
+            payload: serde_json::json!({ "runs": runs, "tasks": tasks }),
+        });
     }
 
     /// Broadcast the current queue to the session's view + mirror it into
@@ -1573,7 +1618,7 @@ impl SessionActor {
     fn persist_settings(&mut self) {
         let Some(store) = &self.store else { return };
         let id = self.session_id;
-        let old = store.list().into_iter().find(|m| m.id == id);
+        let old = store.meta(id);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -1595,6 +1640,8 @@ impl SessionActor {
             agent_mode: Some(self.engine.agent_mode()),
             thinking_level: self.engine.thinking_level(),
             queued_prompts: self.queued.lock().unwrap().iter().cloned().collect(),
+            runs: old.as_ref().and_then(|m| m.runs),
+            tasks: old.as_ref().and_then(|m| m.tasks),
             ..Default::default()
         });
         if let Err(error) = result {
@@ -2330,6 +2377,33 @@ pub(crate) fn strip_call_echo(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Header counts follow the CURRENT history: assistant rows are model
+    /// runs, tool rows are task steps; notices and user rows count as neither.
+    #[test]
+    fn history_counts_tally_assistant_and_tool_rows() {
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("go"),
+            ChatMessage::assistant("calling"),
+            ChatMessage::tool_result("c1", "ok"),
+            ChatMessage::tool_result("c2", "ok"),
+            ChatMessage::assistant("done"),
+            ChatMessage::notice("note"),
+        ];
+        assert_eq!(history_counts(&history), (2, 2));
+        assert_eq!(history_counts(&history[..2]), (0, 0));
+    }
+
+    /// An all-zero Usage is not a measurement and must not replace the last
+    /// real meter; any non-zero field (cache write included) is.
+    #[test]
+    fn all_zero_usage_is_not_a_reading() {
+        assert_eq!(measured_usage(None, 0), None);
+        assert_eq!(measured_usage(Some((0, 0, 0)), 0), None);
+        assert_eq!(measured_usage(Some((0, 0, 0)), 5), Some((0, 0, 0, 5)));
+        assert_eq!(measured_usage(Some((10, 2, 8)), 0), Some((10, 2, 8, 0)));
+    }
 
     /// Parent and child bases share the host tools; the child only differs by
     /// the parent's restricted capabilities. Guards against a host tool landing

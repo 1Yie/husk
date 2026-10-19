@@ -500,7 +500,12 @@ function applyEventInto(
         break;
       }
     }
-    return { ...v, items, changes, artifacts };
+    // A top-level result is one history Tool row — advance the live count
+    // (re-based by `husk:session_counts` when the turn commits). Delegate
+    // children run in their own history and do not count.
+    const taskTotal =
+      v.taskTotal != null && !t.parent && t.child_id == null ? v.taskTotal + 1 : v.taskTotal;
+    return { ...v, items, changes, artifacts, taskTotal };
   }
   if ("ApprovalRequested" in ev) {
     closeOpenThinking(items);
@@ -592,6 +597,43 @@ function applyEventInto(
     return { ...v, items };
   }
   if ("Usage" in ev) {
+    // Some wires emit an all-zero Usage on a degraded/failed round. That is
+    // not a measurement; letting it replace the last real one blanked the
+    // header until the next successful turn. (Cache writes are not on this
+    // event — they follow as `husk:usage_cache_write`.)
+    const u = ev.Usage;
+    // One Usage per top-level model request (delegate children don't forward
+    // theirs) — the live stand-in for "one more assistant row". Re-based by
+    // `husk:session_counts` when the turn commits.
+    //
+    // It is an UPPER BOUND, on purpose. The engine pushes exactly one
+    // assistant row per round, tool-only rounds included (a round with no
+    // text still lands `{role: assistant, tool_calls: …}`), so `Usage` is
+    // 1:1 with rows for every normal round. The exception is a quiet round
+    // whose `final_text` came back empty — the turn policy nudges and loops
+    // instead of pushing a row, and that round's `Usage` has no row behind
+    // it. There is no per-round "a row landed" signal on the wire, and
+    // counting assistant *items* instead would under-count every text-less
+    // tool round (the common case in agentic work), which is far worse.
+    // So: tick up per round, let the commit's `husk:session_counts` snap the
+    // figure down to the rows actually persisted. The header can step down by
+    // one at turn end; it never shows a stale maximum after `/clear`.
+    const runTotal = v.runTotal != null ? v.runTotal + 1 : v.runTotal;
+    if (
+      u.prompt_tokens === 0 &&
+      u.completion_tokens === 0 &&
+      u.cached_tokens === 0 &&
+      v.usage.prompt > 0
+    ) {
+      return {
+        ...v,
+        runTotal,
+        usage: {
+          ...v.usage,
+          contextWindow: u.context_window || v.usage.contextWindow,
+        },
+      };
+    }
     // Replace the chars/4 estimate with the exact decode rate now that
     // real completion_tokens exist.
     const secs = v.rate.activeMs / 1000;
@@ -602,6 +644,7 @@ function applyEventInto(
     return {
       ...v,
       toksPerSec,
+      runTotal,
       usage: {
         prompt: ev.Usage.prompt_tokens,
         completion: ev.Usage.completion_tokens,
@@ -664,6 +707,12 @@ function applyEventInto(
     closeOpenThinking(items);
     items.push({ kind: "system", text: `⚠ ${ev.Error}`, standalone: !v.turnOpen, ts: Date.now() });
     return { ...v, items, streaming: false };
+  }
+  if ("Custom" in ev && ev.Custom.kind === "husk:session_counts") {
+    // Authoritative counts of the just-persisted history.
+    const p = ev.Custom.payload as { runs?: number; tasks?: number } | null;
+    if (typeof p?.runs !== "number" || typeof p?.tasks !== "number") return v;
+    return { ...v, runTotal: p.runs, taskTotal: p.tasks };
   }
   if ("Custom" in ev && ev.Custom.kind === "husk:usage_cache_write") {
     // Product extension accompanying the preceding `Usage`: the shared Usage

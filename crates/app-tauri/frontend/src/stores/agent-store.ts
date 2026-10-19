@@ -63,13 +63,20 @@ interface AgentStore {
   setWorkspaceRoot: (root: string) => void;
   setActiveId: (id: number) => void;
   /** Install a rebuilt view for `id` — used when a session has no live buffer.
-   *  Never overwrites an existing one: a live buffer is newer than the last
-   *  persisted snapshot. */
+   *  An existing live buffer keeps its rows/state; only missing meter and
+   *  pagination metadata are seeded from the persisted snapshot. */
   loadView: (
     root: string,
     id: number,
     view: SessionView,
-    meta?: { historyStart?: number; historyTotal?: number; turnTotal?: number; turnOffset?: number }
+    meta?: {
+      historyStart?: number;
+      historyTotal?: number;
+      turnTotal?: number;
+      turnOffset?: number;
+      runTotal?: number;
+      taskTotal?: number;
+    }
   ) => void;
   /** Prepend an older-history page — `items` are folded StreamItems already
    *  stamped with global `hi`s. Idempotent: a stale `before` resolves to a page
@@ -105,7 +112,68 @@ export const useAgentStore = create<AgentStore>((set) => ({
   loadView: (root, id, view, meta) =>
     set((s) => {
       const k = viewKey(root, id);
-      if (s.views.has(k)) return s;
+      const existing = s.views.get(k);
+      if (existing) {
+        // A live buffer can predate the open response. Never replace its
+        // rows/state, but fill a missing meter/breakdown from the persisted
+        // snapshot — otherwise a session opened while events were already
+        // flowing shows 0 tokens/context until its next Usage event.
+        const cur = existing.usage;
+        const inc = view.usage;
+        const hasReading =
+          cur.prompt > 0 || cur.completion > 0 || cur.cachedTokens > 0 ||
+          cur.cacheWriteTokens > 0 || cur.contextWindow > 0;
+        const incomingReading =
+          inc.prompt > 0 || inc.completion > 0 || inc.cachedTokens > 0 ||
+          inc.cacheWriteTokens > 0 || inc.contextWindow > 0;
+        const usage = !hasReading && incomingReading ? inc : cur;
+        const contextBreakdown = existing.contextBreakdown ?? view.contextBreakdown;
+        // Pagination is deliberately NOT seeded here. `historyStart` says
+        // "items[0] is row historyStart of the full log", and a live buffer
+        // built from events cannot promise that: its rows are whatever
+        // streamed in since the webview attached, which may start, end or
+        // overlap anywhere relative to the page `open` returned. Writing the
+        // page's start anyway made `useHasMoreHistory` light up with phantom
+        // rail dots and let `prependItems` splice in a page that duplicated
+        // or skipped rows. A live buffer keeps its own value (undefined when
+        // it has none), exactly as it did before this branch existed.
+        const historyStart = existing.historyStart ?? view.historyStart;
+        const historyTotal = existing.historyTotal ?? view.historyTotal;
+        const turnTotal = existing.turnTotal ?? view.turnTotal;
+        const turnOffset = existing.turnOffset ?? view.turnOffset;
+        // Counts, unlike pagination, are absolute — the persisted snapshot is
+        // the base a live buffer may be missing. A buffer that already tracks
+        // them keeps its own figure: `husk:session_counts` re-bases it to the
+        // committed history at every turn end, so it is never behind for long
+        // and is exact after /clear or compaction.
+        const runTotal = existing.runTotal ?? meta?.runTotal ?? view.runTotal;
+        const taskTotal = existing.taskTotal ?? meta?.taskTotal ?? view.taskTotal;
+        if (
+          usage === existing.usage &&
+          contextBreakdown === existing.contextBreakdown &&
+          historyStart === existing.historyStart &&
+          historyTotal === existing.historyTotal &&
+          turnTotal === existing.turnTotal &&
+          turnOffset === existing.turnOffset &&
+          runTotal === existing.runTotal &&
+          taskTotal === existing.taskTotal
+        ) {
+          return s;
+        }
+        const next = new Map(s.views);
+        next.set(k, {
+          ...existing,
+          usage,
+          contextBreakdown,
+          historyStart,
+          historyTotal,
+          turnTotal,
+          turnOffset,
+          runTotal,
+          taskTotal,
+        });
+        return { views: next };
+      }
       const next = new Map(s.views);
       next.set(k, meta ? { ...view, ...meta } : view);
       const keys = runningKeysOf(next);

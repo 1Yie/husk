@@ -123,6 +123,16 @@ pub struct SessionMeta {
     /// by `spawn_actor`.
     #[serde(default)]
     pub queued_prompts: Vec<String>,
+    /// Model rounds (assistant messages) in the current history. The header
+    /// calls this "运行" — one user prompt can contain many of them, unlike
+    /// the user-turn count the rail uses.
+    /// `None` on snapshots written before counts existed — the UI then falls
+    /// back to the loaded rows instead of showing a false 0.
+    #[serde(default)]
+    pub runs: Option<u32>,
+    /// Tool results (task steps) in the current history.
+    #[serde(default)]
+    pub tasks: Option<u32>,
 }
 
 /// One checked page of a session's *effective* history — the recovery draft
@@ -686,5 +696,20 @@ mod tests {
         assert!(data.join("recent_workspaces.json").exists());
         assert!(!data.join("recent_workspaces.json.bak").exists());
         assert!(!data.join("appearance.json.bak").exists());
+    }
+
+    /// Snapshots written before run/task counts existed must read back as
+    /// "unknown", not 0 — the UI falls back to loaded rows for them.
+    #[test]
+    fn legacy_meta_without_counts_reads_as_unknown() {
+        let legacy: SessionMeta =
+            serde_json::from_str(r#"{"id":1,"title":"t","preview":"","updated_at":0}"#).unwrap();
+        assert_eq!((legacy.runs, legacy.tasks), (None, None));
+        let mut current = meta(2, 0);
+        current.runs = Some(0);
+        current.tasks = Some(4);
+        let back: SessionMeta =
+            serde_json::from_str(&serde_json::to_string(&current).unwrap()).unwrap();
+        assert_eq!((back.runs, back.tasks), (Some(0), Some(4)));
     }
 }

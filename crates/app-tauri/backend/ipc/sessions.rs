@@ -12,6 +12,34 @@ const HISTORY_PAGE: usize = 80;
 /// Trace rows can contain large tool results; use smaller pages than chat.
 const RAW_HISTORY_PAGE: usize = 40;
 
+/// Persisted meta fields that seed a rebuilt view — read once per response
+/// instead of one full workspace scan per field.
+struct PersistedSeed {
+    usage: Option<agent_store::SessionUsage>,
+    runs: Option<u32>,
+    tasks: Option<u32>,
+    queued: Vec<String>,
+}
+
+impl PersistedSeed {
+    fn of(mgr: &husk_host::session_manager::SessionManager, id: i64) -> Self {
+        match mgr.store_meta(id) {
+            Some(m) => Self {
+                usage: m.usage,
+                runs: m.runs,
+                tasks: m.tasks,
+                queued: m.queued_prompts,
+            },
+            None => Self {
+                usage: None,
+                runs: None,
+                tasks: None,
+                queued: Vec::new(),
+            },
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn agent_session(
     app: tauri::AppHandle,
@@ -126,6 +154,7 @@ fn agent_session_inner(
         let (history, total, turns, turn_from) = mgr
             .store_history_page(mgr.active_id, None, HISTORY_PAGE)
             .map_err(|e| e.to_string())?;
+        let persisted = PersistedSeed::of(&mgr, mgr.active_id);
         return Ok(serde_json::json!({
             "root": mgr.workspace_root.to_string_lossy(),
             "name": name,
@@ -134,8 +163,10 @@ fn agent_session_inner(
             "history_total": total,
             "turn_total": turns,
             "turn_offset": turn_from,
-            "usage": mgr.store_usage(mgr.active_id),
-            "queued_prompts": mgr.store_queued(mgr.active_id),
+            "run_total": persisted.runs,
+            "task_total": persisted.tasks,
+            "usage": persisted.usage,
+            "queued_prompts": persisted.queued,
             "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
                 serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
             }).collect::<Vec<_>>(),
@@ -367,6 +398,7 @@ fn agent_session_inner(
             let (history, total, turns, turn_from) = mgr
                 .store_history_page(id, None, HISTORY_PAGE)
                 .map_err(|e| e.to_string())?;
+            let persisted = PersistedSeed::of(&mgr, id);
             // `usage` is the persisted last-turn meter — seeds the header
             // stats so a reopened session doesn't read 0/… until the next
             // turn's `Usage` event.
@@ -376,10 +408,12 @@ fn agent_session_inner(
                 "history_total": total,
                 "turn_total": turns,
                 "turn_offset": turn_from,
-                "usage": mgr.store_usage(id),
+                "run_total": persisted.runs,
+                "task_total": persisted.tasks,
+                "usage": persisted.usage,
                 // The composer's parked queue is session state — a rebuilt
                 // view seeds it from here; live updates ride `QueuedPrompts`.
-                "queued_prompts": mgr.store_queued(id),
+                "queued_prompts": persisted.queued,
             }))
         }
         "history_raw" => {
@@ -439,10 +473,11 @@ fn agent_session_inner(
             let (history, total, turns, turn_from) = mgr
                 .store_history_page(mgr.active_id, None, HISTORY_PAGE)
                 .map_err(|e| e.to_string())?;
-            let usage = mgr.store_usage(mgr.active_id);
+            let persisted = PersistedSeed::of(&mgr, mgr.active_id);
             Ok(
                 serde_json::json!({"active": mgr.active_id, "history": history, "history_total": total, "turn_total": turns,
-                "turn_offset": turn_from, "usage": usage, "queued_prompts": mgr.store_queued(mgr.active_id)}),
+                "turn_offset": turn_from, "run_total": persisted.runs, "task_total": persisted.tasks, "usage": persisted.usage,
+                "queued_prompts": persisted.queued}),
             )
         }
         // `fork` copies the source session's latest snapshot into a new
@@ -454,6 +489,7 @@ fn agent_session_inner(
                     let (history, total, turns, turn_from) = mgr
                         .store_history_page(new_id, None, HISTORY_PAGE)
                         .map_err(|e| e.to_string())?;
+                    let persisted = PersistedSeed::of(&mgr, new_id);
                     Ok(serde_json::json!({
                             "active": mgr.active_id,
                             "id": new_id,
@@ -461,8 +497,10 @@ fn agent_session_inner(
                             "history_total": total,
                             "turn_total": turns,
                     "turn_offset": turn_from,
-                            "usage": mgr.store_usage(new_id),
-                            "queued_prompts": mgr.store_queued(new_id),
+                            "run_total": persisted.runs,
+                            "task_total": persisted.tasks,
+                            "usage": persisted.usage,
+                            "queued_prompts": persisted.queued,
                         }))
                 }
                 None => Err("session has no history to fork yet".into()),
@@ -586,6 +624,7 @@ fn agent_session_inner(
             let (history, total, turns, turn_from) = mgr
                 .store_history_page(mgr.active_id, None, HISTORY_PAGE)
                 .map_err(|e| e.to_string())?;
+            let persisted = PersistedSeed::of(&mgr, mgr.active_id);
             Ok(serde_json::json!({
                 "root": mgr.workspace_root.to_string_lossy(),
                 "name": name,
@@ -594,8 +633,10 @@ fn agent_session_inner(
                 "history_total": total,
                 "turn_total": turns,
                 "turn_offset": turn_from,
-                "usage": mgr.store_usage(mgr.active_id),
-                "queued_prompts": mgr.store_queued(mgr.active_id),
+                "run_total": persisted.runs,
+                "task_total": persisted.tasks,
+                "usage": persisted.usage,
+                "queued_prompts": persisted.queued,
                 "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
                     serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
                 }).collect::<Vec<_>>(),

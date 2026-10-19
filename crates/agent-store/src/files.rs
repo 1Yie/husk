@@ -636,22 +636,7 @@ impl SessionStore {
             .session_ids()
             .into_iter()
             .filter(|id| seen.insert(*id))
-            .filter_map(|id| {
-                let (snapshot, index) = self.recovery_and_index(id).ok()?;
-                if index.deleted {
-                    return None;
-                }
-                match snapshot {
-                    Some(snapshot) => {
-                        let mut meta = snapshot.meta;
-                        if let Some(old) = &index.meta {
-                            preserve_canonical(&mut meta, old);
-                        }
-                        Some(meta)
-                    }
-                    _ => index.meta,
-                }
-            })
+            .filter_map(|id| self.meta(id))
             .collect();
         metas.sort_by(|a, b| {
             b.pinned
@@ -659,6 +644,24 @@ impl SessionStore {
                 .then(b.updated_at.cmp(&a.updated_at))
         });
         metas
+    }
+    /// One session's meta, resolved exactly like its `list()` row — without
+    /// scanning every session in the workspace.
+    pub fn meta(&self, id: i64) -> Option<SessionMeta> {
+        let (snapshot, index) = self.recovery_and_index(id).ok()?;
+        if index.deleted {
+            return None;
+        }
+        match snapshot {
+            Some(snapshot) => {
+                let mut meta = snapshot.meta;
+                if let Some(old) = &index.meta {
+                    preserve_canonical(&mut meta, old);
+                }
+                Some(meta)
+            }
+            _ => index.meta,
+        }
     }
     pub fn set_pinned(&self, id: i64, pinned: bool) -> std::io::Result<bool> {
         self.edit_meta(id, |m| m.pinned = pinned)
@@ -1238,6 +1241,25 @@ mod tests {
             store.load_history(1).unwrap()[0].content.as_deref(),
             Some("cleared")
         );
+    }
+
+    #[test]
+    fn meta_reads_one_session_like_its_list_row() {
+        let (_dir, store) = store();
+        let mut meta = empty_meta(1);
+        meta.runs = Some(3);
+        meta.tasks = Some(2);
+        store.upsert_meta(meta).unwrap();
+        store.upsert_meta(empty_meta(2)).unwrap();
+        store.set_pinned(1, true).unwrap();
+        let one = store.meta(1).unwrap();
+        assert_eq!(one.id, 1);
+        assert!(one.pinned);
+        assert_eq!((one.runs, one.tasks), (Some(3), Some(2)));
+        assert_eq!(store.meta(2).unwrap().runs, None);
+        assert!(store.meta(9).is_none());
+        store.remove(2).unwrap();
+        assert!(store.meta(2).is_none());
     }
 
     #[test]

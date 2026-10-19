@@ -161,6 +161,80 @@ describe("persisted history and live state", () => {
     expect(activeViewNow().historyStart).toBe(4);
   });
 
+  test("seeds persisted usage and run counts into a live view", () => {
+    const live = {
+      ...emptyView(),
+      items: [{ kind: "assistant" as const, text: "实时内容", streaming: false }],
+      historyStart: 4,
+    };
+    useAgentStore.getState().loadView("/project", 1, live, { historyStart: 4 });
+    const seeded = {
+      ...emptyView(),
+      usage: {
+        prompt: 123,
+        completion: 4,
+        contextWindow: 100_000,
+        cachedTokens: 100,
+        cacheWriteTokens: 10,
+      },
+      contextBreakdown: {
+        system: 1, tools: 5, user: 2, memory: 0, assistant: 3,
+        reasoning: 4, tool_calls: 5, tool_results: 6, other: 0,
+      },
+    };
+    useAgentStore.getState().loadView("/project", 1, seeded, {
+      historyStart: 0,
+      historyTotal: 10,
+      turnTotal: 2,
+      runTotal: 7,
+      taskTotal: 3,
+    });
+    const v = activeViewNow();
+    expect(v.items[0]).toMatchObject({ text: "实时内容" });
+    expect(v.usage.prompt).toBe(123);
+    expect(v.contextBreakdown?.tools).toBe(5);
+    expect(v.historyStart).toBe(4);
+    expect(v.runTotal).toBe(7);
+    expect(v.taskTotal).toBe(3);
+
+    // A later reopen after /clear carries smaller persisted counts; the live
+    // figure (already re-based by events) wins over a stale maximum.
+    useAgentStore.getState().loadView("/project", 1, seeded, { runTotal: 1, taskTotal: 0 });
+    expect(activeViewNow().runTotal).toBe(7);
+  });
+
+  test("a fresh view takes the persisted counts verbatim, even when smaller", () => {
+    useAgentStore.getState().loadView("/project", 2, emptyView(), { runTotal: 0, taskTotal: 0 });
+    useAgentStore.getState().setActiveId(2);
+    expect(activeViewNow().runTotal).toBe(0);
+    expect(activeViewNow().taskTotal).toBe(0);
+  });
+
+  test("a live buffer never adopts the open page's pagination", () => {
+    // A buffer built purely from events has no `historyStart`: its rows are
+    // whatever streamed in since the webview attached, which is not
+    // necessarily the page `open` returned. Adopting that page's start made
+    // the rail claim unloaded history it had never seen and let the next
+    // prepend splice in rows that duplicated or skipped real ones.
+    useAgentStore.getState().loadView("/project", 1, {
+      ...emptyView(),
+      items: [{ kind: "assistant" as const, text: "实时", streaming: false }],
+    });
+    expect(activeViewNow().historyStart).toBeUndefined();
+    useAgentStore.getState().loadView("/project", 1, emptyView(), {
+      historyStart: 60,
+      historyTotal: 140,
+      turnOffset: 20,
+      runTotal: 9,
+    });
+    const v = activeViewNow();
+    expect(v.items).toHaveLength(1);
+    expect(v.historyStart).toBeUndefined();
+    expect(v.turnOffset).toBeUndefined();
+    // The counts, unlike pagination, are absolute and do seed.
+    expect(v.runTotal).toBe(9);
+  });
+
   test("older pages prepend once, keep live rows, and update history availability", () => {
     const live = { kind: "assistant" as const, text: "最新内容", streaming: true, hi: 5 };
     useAgentStore.getState().loadView("/project", 1, { ...emptyView(), items: [live] }, { historyStart: 5, turnOffset: 2 });

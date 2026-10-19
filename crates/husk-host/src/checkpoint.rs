@@ -506,6 +506,15 @@ impl TurnCheckpoint {
                     .and_then(|level| level.clone());
             }
             let (history, recovery_rows) = recovery_history(&active.history);
+            // The draft's run/task counters describe the history it is about to
+            // write, not the one the turn started on: a crash mid-turn would
+            // otherwise reopen the session on the pre-turn totals until the
+            // next commit re-based them. `recovery_history` is what actually
+            // lands in the snapshot (dropped drafts, synthetic rows), so it is
+            // also what the counts must describe.
+            let (runs, tasks) = crate::session::history_counts(&history);
+            active.meta.runs = Some(runs);
+            active.meta.tasks = Some(tasks);
             (history, recovery_rows, active.meta.clone(), state.revision)
         };
         let result =

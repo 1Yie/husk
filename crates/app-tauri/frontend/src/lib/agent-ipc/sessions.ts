@@ -33,8 +33,8 @@ export interface SessionUsage {
  * has no in-memory events for that session yet. */
 export async function openSession(id: number) {
   const r = await invoke<{ active: number; history: ChatMessage[]; history_total?: number;
-  turn_total?: number; turn_offset?: number; usage?: SessionUsage | null;
-  queued_prompts?: string[] }>(
+  turn_total?: number; turn_offset?: number; run_total?: number; task_total?: number;
+  usage?: SessionUsage | null; queued_prompts?: string[] }>(
     "agent_session",
     { op: "open", id },
   );
@@ -71,8 +71,8 @@ export async function historyPage(id: number, before: number) {
  * active one) — returns the new id + the copied history. */
 export async function forkSession(id: number) {
   return invoke<{ active: number; id: number; history: ChatMessage[]; history_total?: number;
-  turn_total?: number; turn_offset?: number; usage?: SessionUsage | null;
-  queued_prompts?: string[] }>(
+  turn_total?: number; turn_offset?: number; run_total?: number; task_total?: number;
+  usage?: SessionUsage | null; queued_prompts?: string[] }>(
     "agent_session",
     { op: "fork", id },
   );
@@ -82,8 +82,8 @@ export async function forkSession(id: number) {
  * the backend auto-switches when the deleted session was on screen. */
 export async function deleteSession(id: number) {
   return invoke<{ active: number; history: ChatMessage[]; history_total?: number;
-  turn_total?: number; turn_offset?: number; usage?: SessionUsage | null;
-  queued_prompts?: string[] }>(
+  turn_total?: number; turn_offset?: number; run_total?: number; task_total?: number;
+  usage?: SessionUsage | null; queued_prompts?: string[] }>(
     "agent_session",
     { op: "delete", id },
   );
@@ -160,6 +160,7 @@ export interface WorkspaceSwitchResult {
   history: ChatMessage[];
   history_total?: number;
   turn_total?: number; turn_offset?: number;
+  run_total?: number; task_total?: number;
   usage?: SessionUsage | null;
   queued_prompts?: string[];
   sessions: SessionRow[];

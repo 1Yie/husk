@@ -97,6 +97,14 @@ test("cache writes ride the product event after their Usage", () => {
   ]);
   expect(withWrite.usage.cacheWriteTokens).toBe(50);
 
+  // A degraded/dead round can report all-zero usage; it must not wipe the
+  // last real meter.
+  const zero = applyEvents(withWrite, [
+    { Usage: { prompt_tokens: 0, completion_tokens: 0, context_window: 1_000_000, cached_tokens: 0 } },
+  ]);
+  expect(zero.usage.prompt).toBe(1050);
+  expect(zero.usage.cachedTokens).toBe(900);
+
   // A later round without a write event must not inherit the old count.
   const next = applyEvents(withWrite, [usage]);
   expect(next.usage.cacheWriteTokens).toBe(0);
@@ -120,4 +128,52 @@ test("batched reasoning preserves control order and immutable snapshots", () => 
     expect(first).toEqual(snapshot);
     expect(result).toEqual(sequential);
   }
+});
+
+test("run/task counts advance live and re-base on the committed figure", () => {
+  const base = { ...emptyView(), runTotal: 4, taskTotal: 2 };
+  const usage: UiEvent = {
+    Usage: { prompt_tokens: 10, completion_tokens: 2, context_window: 1000, cached_tokens: 0 },
+  };
+  const live = applyEvents(base, [
+    { ToolCallStarted: { name: "read", args_preview: "{}", parent: null } },
+    { ToolCallFinished: { name: "read", ok: true, content: "x", parent: null } },
+    // Delegate children run in their own history.
+    { ToolCallFinished: { name: "grep", ok: true, content: "y", parent: "delegate", child_id: 1 } },
+    usage,
+  ] as UiEvent[]);
+  expect(live.taskTotal).toBe(3);
+  expect(live.runTotal).toBe(5);
+
+  // `/clear` or compaction shrinks the persisted history — the header must
+  // follow it down instead of keeping a stale maximum.
+  const committed = applyEvents(live, [
+    { Custom: { kind: "husk:session_counts", payload: { runs: 1, tasks: 0 } } },
+  ]);
+  expect(committed.runTotal).toBe(1);
+  expect(committed.taskTotal).toBe(0);
+
+  // Snapshots without counts stay unknown (the header falls back to rows).
+  const legacy = applyEvents(emptyView(), [usage]);
+  expect(legacy.runTotal).toBeUndefined();
+});
+
+test("the live run tick is an upper bound; the commit snaps it to real rows", () => {
+  // A quiet round whose `final_text` came back empty loops instead of pushing
+  // an assistant row, but its `Usage` still lands. There is no per-round
+  // "a row was written" event, so the live figure over-counts by those rounds
+  // and the commit's authoritative `husk:session_counts` corrects it.
+  const usage: UiEvent = {
+    Usage: { prompt_tokens: 10, completion_tokens: 0, context_window: 1000, cached_tokens: 0 },
+  };
+  const view = applyEvents(
+    { ...emptyView(), runTotal: 10, taskTotal: 0 },
+    [usage, usage] as UiEvent[],
+  );
+  expect(view.runTotal).toBe(12);
+  // Two rounds, one row.
+  const committed = applyEvents(view, [
+    { Custom: { kind: "husk:session_counts", payload: { runs: 11, tasks: 0 } } },
+  ]);
+  expect(committed.runTotal).toBe(11);
 });
