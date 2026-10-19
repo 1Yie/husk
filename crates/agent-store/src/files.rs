@@ -42,6 +42,22 @@ pub(super) fn atomic_json(path: &Path, value: &impl Serialize) -> std::io::Resul
     Ok(())
 }
 
+/// Atomic replace without `fsync`. Only the live-turn recovery snapshot uses
+/// this: losing the newest draft on a power cut is acceptable, while a process
+/// crash already leaves the written pages in the kernel cache. Canonical
+/// journal/index writes still go through `atomic_json`.
+fn atomic_json_checkpoint(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io_err("missing parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer(tmp.as_file_mut(), value)?;
+    tmp.as_file_mut().flush()?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
 pub(super) fn locked<T>(path: &Path, f: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
     std::fs::create_dir_all(path.parent().ok_or_else(|| io_err("missing lock parent"))?)?;
     let file = OpenOptions::new()
@@ -119,6 +135,13 @@ struct RecoverySnapshot {
     #[serde(default)]
     base_generation: u64,
     history: Vec<ChatMessage>,
+    /// Indices into `history` that exist only for crash recovery: the
+    /// "interrupted" notice and the unknown-outcome placeholders for calls
+    /// that never produced a result. `load_history` keeps them (the resumed
+    /// engine needs the paired results), while `history_page` hides them so a
+    /// live turn's trace does not claim it was interrupted. Sorted ascending.
+    #[serde(default)]
+    recovery_rows: Vec<usize>,
     meta: SessionMeta,
 }
 #[derive(Serialize, Deserialize)]
@@ -128,6 +151,15 @@ enum Record {
         from: usize,
     },
     Message {
+        message: ChatMessage,
+    },
+    /// Replace one already-committed message in place. The system prompt at
+    /// index 0 is re-rendered every turn (memory/skills/mode), so rewriting
+    /// the whole journal just because it changed made the file grow
+    /// O(turns × history). The superseded record stays in the file; the index
+    /// points at this one.
+    Replace {
+        index: usize,
         message: ChatMessage,
     },
     Metadata {
@@ -144,6 +176,12 @@ enum Record {
 fn is_turn(message: &ChatMessage) -> bool {
     message.role == agent_llm_core::Role::User
         && message.notice != Some(agent_llm_core::types::NoticeKind::Hidden)
+}
+
+/// Content hash for the journal index — the same construction as
+/// `SessionStore::history_revision_of`, one message at a time.
+fn message_hash(message: &ChatMessage) -> std::io::Result<u64> {
+    Ok(xxhash_rust::xxh3::xxh3_64(&serde_json::to_vec(message)?))
 }
 fn journal_index(journal: &Path, index: &Path) -> std::io::Result<JournalIndex> {
     let file = match File::open(journal) {
@@ -176,9 +214,17 @@ fn journal_index(journal: &Path, index: &Path) -> std::io::Result<JournalIndex> 
             }
             Record::Message { message } => pending.messages.push(Location {
                 offset,
-                hash: xxhash_rust::xxh3::xxh3_64(&serde_json::to_vec(&message)?),
+                hash: message_hash(&message)?,
                 turn: is_turn(&message),
             }),
+            Record::Replace { index, message } => {
+                let Some(location) = pending.messages.get_mut(index) else {
+                    return Err(io_err("replace journal has an invalid index"));
+                };
+                location.offset = offset;
+                location.hash = message_hash(&message)?;
+                location.turn = is_turn(&message);
+            }
             Record::Metadata { meta } => pending.meta = Some(meta),
             Record::Deleted => {
                 pending.deleted = true;
@@ -213,7 +259,7 @@ impl JournalWriter {
         if let Record::Message { message } = &record {
             self.index.messages.push(Location {
                 offset,
-                hash: xxhash_rust::xxh3::xxh3_64(&serde_json::to_vec(message)?),
+                hash: message_hash(message)?,
                 turn: is_turn(message),
             });
         }
@@ -221,15 +267,58 @@ impl JournalWriter {
         self.file.write_all(b"\n")?;
         Ok(())
     }
+    /// Point an existing index entry at a new `Replace` record.
+    fn replace(&mut self, index: usize, message: &ChatMessage) -> std::io::Result<()> {
+        if index >= self.index.messages.len() {
+            return Err(io_err("replace index out of range"));
+        }
+        let offset = self.file.stream_position()?;
+        self.record(Record::Replace {
+            index,
+            message: message.clone(),
+        })?;
+        let location = &mut self.index.messages[index];
+        location.offset = offset;
+        location.hash = message_hash(message)?;
+        location.turn = is_turn(message);
+        Ok(())
+    }
     fn history(&mut self, history: &[ChatMessage]) -> std::io::Result<()> {
         let mut first = 0;
         while first < history.len() && first < self.index.messages.len() {
-            if xxhash_rust::xxh3::xxh3_64(&serde_json::to_vec(&history[first])?)
-                != self.index.messages[first].hash
-            {
+            if message_hash(&history[first])? != self.index.messages[first].hash {
                 break;
             }
             first += 1;
+        }
+        // The leading system prompt is rebuilt every turn (memory, skills,
+        // mode). Replacing that one entry and appending the turn's new tail
+        // keeps the journal linear in new turns instead of appending the whole
+        // history each time.
+        if first == 0 && !history.is_empty() && !self.index.messages.is_empty() {
+            let old_len = self.index.messages.len();
+            let common = history.len().min(old_len);
+            let mut tail_matches = true;
+            for index in 1..common {
+                if message_hash(&history[index])? != self.index.messages[index].hash {
+                    tail_matches = false;
+                    break;
+                }
+            }
+            if tail_matches && history.len() >= old_len {
+                self.replace(0, &history[0])?;
+                for message in &history[old_len..] {
+                    self.record(Record::Message {
+                        message: message.clone(),
+                    })?;
+                }
+                self.index.has_history = true;
+                // Every history write advances the epoch so an earlier
+                // recovery snapshot can never match again. Metadata-only
+                // writes don't reach here and keep the epoch.
+                self.index.history_generation = self.index.history_generation.saturating_add(1);
+                return Ok(());
+            }
         }
         if first != history.len() || first != self.index.messages.len() {
             self.record(Record::History { from: first })?;
@@ -674,7 +763,9 @@ impl SessionStore {
             line.clear();
             reader.read_until(b'\n', &mut line)?;
             match serde_json::from_slice::<Record>(&line)? {
-                Record::Message { message } => messages.push(message),
+                Record::Message { message } | Record::Replace { message, .. } => {
+                    messages.push(message)
+                }
                 _ => return Err(io_err("invalid message offset")),
             }
         }
@@ -698,17 +789,34 @@ impl SessionStore {
             });
         }
         if let Some(snapshot) = snapshot {
+            // The recovery draft carries synthetic rows (the interrupted
+            // notice and unknown-outcome tool results) that only the resumed
+            // engine should see. A live trace must not claim the running turn
+            // was interrupted, so slice the *visible* history instead. The
+            // revision still describes the full draft, matching the checkpoint
+            // revision the writer validates against.
             let revision = Self::history_revision_of(&snapshot.history);
-            let total = snapshot.history.len();
+            let visible: Vec<&ChatMessage> = if snapshot.recovery_rows.is_empty() {
+                snapshot.history.iter().collect()
+            } else {
+                snapshot
+                    .history
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| snapshot.recovery_rows.binary_search(index).is_err())
+                    .map(|(_, message)| message)
+                    .collect()
+            };
+            let total = visible.len();
             let end = before.unwrap_or(total).min(total);
             let start = end.saturating_sub(count);
-            let turns = snapshot.history.iter().filter(|m| is_turn(m)).count();
-            let turn_offset = snapshot.history[..start]
-                .iter()
-                .filter(|m| is_turn(m))
-                .count();
+            let turns = visible.iter().filter(|m| is_turn(m)).count();
+            let turn_offset = visible[..start].iter().filter(|m| is_turn(m)).count();
             return Ok(HistoryPageSnapshot {
-                history: snapshot.history[start..end].to_vec(),
+                history: visible[start..end]
+                    .iter()
+                    .map(|message| (*message).clone())
+                    .collect(),
                 total,
                 turns,
                 turn_offset,
@@ -823,15 +931,28 @@ impl SessionStore {
 
     /// Persist a running turn's newest recovery point without touching the
     /// journal. The snapshot replaces the previous one atomically, so a turn
-    /// that checkpoints every 250 ms keeps the journal O(commits), not
+    /// that checkpoints once a second keeps the journal O(commits), not
     /// O(checkpoints). `expected` is validated against the *effective*
     /// revision — the live snapshot when it is still valid, the canonical
     /// journal otherwise — and the returned hash is the new effective one.
     pub fn checkpoint_turn_checked(
         &self,
         history: &[ChatMessage],
+        meta: SessionMeta,
+        expected: u64,
+    ) -> std::io::Result<u64> {
+        self.checkpoint_turn_checked_with_rows(history, meta, expected, &[])
+    }
+
+    /// `recovery_rows` are indices of synthetic rows that exist only for
+    /// crash recovery (interrupted notice / unknown tool results). They stay
+    /// in `load_history` but are hidden from `history_page`.
+    pub fn checkpoint_turn_checked_with_rows(
+        &self,
+        history: &[ChatMessage],
         mut meta: SessionMeta,
         expected: u64,
+        recovery_rows: &[usize],
     ) -> std::io::Result<u64> {
         let id = meta.id;
         let revision = Self::history_revision_of(history);
@@ -851,12 +972,16 @@ impl SessionStore {
             if let Some(old) = &index.meta {
                 preserve_canonical(&mut meta, old);
             }
-            atomic_json(
+            // Draft writes intentionally skip fsync: a process crash keeps
+            // the page cache, and a power loss only costs this recovery point
+            // (the canonical journal is still synced on commit).
+            atomic_json_checkpoint(
                 &self.recovery_path(id),
                 &RecoverySnapshot {
                     base_revision: Self::index_revision(&index),
                     base_generation: index.history_generation,
                     history: history.to_vec(),
+                    recovery_rows: recovery_rows.to_vec(),
                     meta,
                 },
             )?;
@@ -1278,6 +1403,72 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_system_prompt_replaces_one_record_instead_of_rewriting_the_journal() {
+        let (_dir, store) = store();
+        let meta = empty_meta(1);
+        let mut history = vec![ChatMessage::system("system prompt v1")];
+        history.extend((0..80).map(|i| ChatMessage::user(format!("message {i}"))));
+        store.commit_turn(&history, meta.clone()).unwrap();
+        let before = std::fs::metadata(store.journal(1)).unwrap().len();
+
+        let mut changed = history.clone();
+        changed[0] = ChatMessage::system("system prompt v2");
+        // A real turn also appends its new messages.
+        changed.push(ChatMessage::assistant("new answer"));
+        store.commit_turn(&changed, meta).unwrap();
+        let after = std::fs::metadata(store.journal(1)).unwrap().len();
+        assert!(
+            after - before < 1024,
+            "a system-prompt update appended {} bytes",
+            after - before
+        );
+
+        let loaded = store.load_history(1).unwrap();
+        assert_eq!(loaded[0].content.as_deref(), Some("system prompt v2"));
+        assert_eq!(loaded.len(), changed.len());
+
+        // The index cache is an optimization: replaying the journal from
+        // scratch must apply the replacement too.
+        std::fs::remove_file(store.index(1)).unwrap();
+        let replayed = store.load_history(1).unwrap();
+        assert_eq!(replayed[0].content.as_deref(), Some("system prompt v2"));
+        assert_eq!(replayed.len(), changed.len());
+    }
+
+    #[test]
+    fn recovery_only_rows_are_hidden_from_history_pages_but_kept_for_resume() {
+        let (_dir, store) = store();
+        let meta = empty_meta(1);
+        let mut history = vec![ChatMessage::system("sys"), ChatMessage::user("q")];
+        let hidden = history.len();
+        history.push(ChatMessage::notice("interrupted"));
+        let revision = store
+            .checkpoint_turn_checked_with_rows(&history, meta.clone(), 0, &[hidden])
+            .unwrap();
+
+        // Recovery readers keep the synthetic row for the resumed engine.
+        assert_eq!(store.load_history(1).unwrap().len(), 3);
+        // Display readers hide it and page within the visible history.
+        let (page, total, turns, _) = store.load_history_page(1, None, 10).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(turns, 1);
+        assert!(page
+            .iter()
+            .all(|m| m.content.as_deref() != Some("interrupted")));
+        let (older, _, _, _) = store.load_history_page(1, Some(1), 10).unwrap();
+        assert_eq!(older.len(), 1);
+        assert_eq!(older[0].content.as_deref(), Some("sys"));
+
+        // Once the turn commits, the notice is real history and is shown.
+        store.commit_turn_checked(&history, meta, revision).unwrap();
+        let (page, total, _, _) = store.load_history_page(1, None, 10).unwrap();
+        assert_eq!(total, 3);
+        assert!(page
+            .iter()
+            .any(|m| m.content.as_deref() == Some("interrupted")));
+    }
+
+    #[test]
     fn competing_commit_invalidates_the_snapshot_and_rejects_a_stale_writer() {
         let (dir, store) = store();
         let other = SessionStore::open_at(dir.path(), &dir.path().join("conversations")).unwrap();
@@ -1372,6 +1563,12 @@ mod tests {
             completion: 6,
             context_window: 100,
             cached: 2,
+            cache_write: 3,
+            breakdown: Some(crate::ContextBreakdown {
+                system: 7,
+                tool_results: 9,
+                ..Default::default()
+            }),
         });
         store.upsert_meta(with_usage).unwrap();
 
@@ -1396,6 +1593,17 @@ mod tests {
         assert_eq!(current.title, "我的标题");
         assert_eq!(current.queued_prompts, ["queued"]);
         assert_eq!(current.usage.map(|u| u.prompt), Some(5));
+        let breakdown = current.usage.and_then(|u| u.breakdown).unwrap();
+        assert_eq!((breakdown.system, breakdown.tool_results), (7, 9));
+    }
+
+    #[test]
+    fn usage_rows_without_a_breakdown_still_load() {
+        let usage: crate::SessionUsage = serde_json::from_str(
+            r#"{"prompt":1,"completion":2,"context_window":3,"cached":0,"cache_write":0}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.breakdown, None);
     }
 
     #[test]

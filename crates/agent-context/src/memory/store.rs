@@ -640,6 +640,16 @@ impl MemoryStore {
     /// The `<memory>` prompt block: top-k facts + last-3 episodes + persona,
     /// capped 2 KB (capability-roadmap.md §Read path).
     pub fn memory_block(&self, prompt: &str) -> Result<String, String> {
+        let mut out = self.facts_block(prompt)?;
+        out.push_str(&self.stable_block()?);
+        Ok(cap_block(out))
+    }
+
+    /// The prompt-dependent half of [`memory_block`](Self::memory_block):
+    /// stored facts that relate to `prompt`, empty when none clears the
+    /// relevance floor. It changes with every question, so callers keep it
+    /// out of the cached system prompt and send it beside the user turn.
+    pub fn facts_block(&self, prompt: &str) -> Result<String, String> {
         let mut out = String::new();
         // Only facts that actually relate to the prompt. Without a floor the
         // block always carried the 8 nearest facts, even at similarity 0.
@@ -655,6 +665,14 @@ impl MemoryStore {
                 out.push_str(&format!("• {} (confidence {:.2})\n", f.text, f.confidence));
             }
         }
+        Ok(cap_block(out))
+    }
+
+    /// The prompt-independent half: last-3 episodes + persona. It only moves
+    /// when the store is written, so it can live in the system prompt
+    /// without invalidating the provider's prompt cache every turn.
+    pub fn stable_block(&self) -> Result<String, String> {
+        let mut out = String::new();
         let eps = self.recent_episodes(3)?;
         if !eps.is_empty() {
             out.push_str("── recent episodes ──\n");
@@ -669,17 +687,21 @@ impl MemoryStore {
                 out.push_str(&format!("{}: {}\n", p.key, p.value));
             }
         }
-        // UTF-8-safe 2 KB cap: round down to a char boundary — cutting inside
-        // a multi-byte char would panic.
-        if out.len() > 2048 {
-            let mut n = 2048;
-            while n > 0 && !out.is_char_boundary(n) {
-                n -= 1;
-            }
-            out.truncate(n);
-        }
-        Ok(out)
+        Ok(cap_block(out))
     }
+}
+
+/// UTF-8-safe 2 KB cap: round down to a char boundary — cutting inside a
+/// multi-byte char would panic.
+fn cap_block(mut out: String) -> String {
+    if out.len() > 2048 {
+        let mut n = 2048;
+        while n > 0 && !out.is_char_boundary(n) {
+            n -= 1;
+        }
+        out.truncate(n);
+    }
+    out
 }
 
 /// Hashing features for one text. ASCII runs split on whitespace, as before.
@@ -1197,5 +1219,24 @@ mod relevance_tests {
             .unwrap();
         let block = s.memory_block("怎么安装依赖").unwrap();
         assert!(block.contains("pnpm"), "related fact dropped: {block:?}");
+    }
+
+    /// The stable half never depends on the question — it is what the
+    /// system prompt carries, so a varying prompt must not move it.
+    #[test]
+    fn stable_block_ignores_the_prompt_and_facts_block_tracks_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.upsert_fact("项目使用 pnpm 而不是 npm 安装依赖", 0.6)
+            .unwrap();
+        s.set_persona("lang", "zh").unwrap();
+        let stable = s.stable_block().unwrap();
+        assert!(stable.contains("lang: zh"), "{stable:?}");
+        assert!(
+            !stable.contains("pnpm"),
+            "facts leaked into stable: {stable:?}"
+        );
+        assert!(s.facts_block("怎么安装依赖").unwrap().contains("pnpm"));
+        assert!(s.facts_block("zebra topic").unwrap().is_empty());
     }
 }

@@ -150,10 +150,43 @@ pub struct SessionUsage {
     pub prompt: u32,
     pub completion: u32,
     pub context_window: u32,
-    /// Prompt tokens served from the provider cache — `prompt - cached`
-    /// is the uncached/billed share. `default` keeps old meta files valid.
+    /// Prompt tokens served from the provider cache (cache hits) —
+    /// `prompt - cached - cache_write` is the fresh share. `default` keeps
+    /// old meta files valid.
     #[serde(default)]
     pub cached: u32,
+    /// Prompt tokens written to the provider's cache on this turn (Anthropic's
+    /// `cache_creation_input_tokens`). Zero for wires that do not report it.
+    #[serde(default)]
+    pub cache_write: u32,
+    /// Estimated prompt composition of the same request — the title bar's
+    /// context card. `None` on rows written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breakdown: Option<ContextBreakdown>,
+}
+
+/// A request's prompt split by source, in estimated tokens (character
+/// heuristic — the UI scales the shares to the reported prompt total).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextBreakdown {
+    /// System prompt(s): instructions, workspace context, skills, memory.
+    pub system: u32,
+    /// Tool schemas sent alongside the messages.
+    pub tools: u32,
+    /// Visible user messages, including attached images.
+    pub user: u32,
+    /// Hidden recall rows the memory store injects before a user message.
+    pub memory: u32,
+    /// Assistant reply text.
+    pub assistant: u32,
+    /// Assistant reasoning replayed on the wire.
+    pub reasoning: u32,
+    /// Tool-call names and arguments the assistant emitted.
+    pub tool_calls: u32,
+    /// Tool results, including returned screenshots.
+    pub tool_results: u32,
+    /// Other hidden rows (steers, notices, compaction summaries).
+    pub other: u32,
 }
 
 /// The legacy on-disk session index (`sessions/<ws>/index.json`) — kept as
