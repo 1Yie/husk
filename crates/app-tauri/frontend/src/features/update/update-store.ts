@@ -100,7 +100,9 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
     });
     try {
       const { mode } = await installUpdate();
-      set({ state: { status: "ready", info, mode } });
+      // Ready is the restart prompt: bring the dialog back even when the user
+      // closed it mid-download — the new version only starts through it.
+      set({ state: { status: "ready", info, mode }, open: true });
     } catch (e) {
       set({ state: { status: "failed", info, error: String(e) } });
     }
@@ -120,7 +122,11 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
 
   dismiss: () => {
     const { state } = get();
-    if (state.status === "installing") return;
+    // A download is background work — closing only hides the progress. Verify,
+    // install and the ready-to-restart prompt are not: there is nothing to do
+    // while they run, and ready is the one door back into the new version.
+    if (state.status === "ready") return;
+    if (state.status === "installing" && state.progress.phase !== "download") return;
     // "稍后": only this session. An installed update stays installed; the new
     // version simply starts on the next launch.
     set({ open: false, snoozed: "info" in state ? state.info.latest : get().snoozed });

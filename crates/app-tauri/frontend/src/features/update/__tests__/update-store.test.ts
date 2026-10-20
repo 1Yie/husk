@@ -7,7 +7,7 @@ vi.mock("@/lib/agent-ipc/sessions", () => ({
   relaunchApp: vi.fn(),
 }));
 
-import { checkUpdate, installUpdate, relaunchApp, type UpdateCheck } from "@/lib/agent-ipc/sessions";
+import { checkUpdate, installUpdate, relaunchApp, type InstallMode, type UpdateCheck } from "@/lib/agent-ipc/sessions";
 import { canInstall, useUpdateStore } from "../update-store";
 
 const NEWER: UpdateCheck = {
@@ -89,6 +89,44 @@ describe("update store", () => {
     expect(installUpdate).toHaveBeenCalledTimes(1);
     expect(relaunchApp).not.toHaveBeenCalled();
     expect(store().state.status).toBe("ready");
+    expect(store().open).toBe(true);
+  });
+
+  it("a download can be closed and the restart prompt comes back", async () => {
+    await store().check({ silent: true });
+    let finish!: (value: { mode: InstallMode }) => void;
+    vi.mocked(installUpdate).mockImplementation(
+      () => new Promise<{ mode: InstallMode }>((resolve) => { finish = resolve; }),
+    );
+    const running = store().install();
+    expect(store().state.status).toBe("installing");
+    store().dismiss();
+    expect(store().open).toBe(false);
+    finish({ mode: "installed" });
+    await running;
+    expect(store().state.status).toBe("ready");
+    expect(store().open).toBe(true);
+  });
+
+  it("verify and install are not dismissible", async () => {
+    await store().check({ silent: true });
+    vi.mocked(installUpdate).mockImplementation(() => new Promise<{ mode: InstallMode }>(() => {}));
+    void store().install();
+    for (const phase of ["verify", "install"] as const) {
+      useUpdateStore.setState((s) =>
+        s.state.status === "installing"
+          ? { state: { ...s.state, progress: { ...s.state.progress, phase } } }
+          : s,
+      );
+      store().dismiss();
+      expect(store().open).toBe(true);
+    }
+  });
+
+  it("a ready update stays open until the restart", async () => {
+    await store().check({ silent: true });
+    await store().install();
+    store().dismiss();
     expect(store().open).toBe(true);
   });
 

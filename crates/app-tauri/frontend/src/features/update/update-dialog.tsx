@@ -36,6 +36,12 @@ export function UpdateDialog() {
   const { info } = state;
   const installing = state.status === "installing";
   const ready = state.status === "ready";
+  // Downloading is background work: the window may close and the update keeps
+  // going. Verifying, installing, and the "restart to finish" prompt are not —
+  // there is nothing else to do with them, and the ready state is the only way
+  // back into the restarted app.
+  const settled = installing && state.progress.phase !== "download";
+  const dismissible = !ready && !settled;
   const progress = installing ? state.progress : null;
   const ratio = progress && progress.total > 0 ? Math.min(progress.downloaded / progress.total, 1) : 0;
   const percent = Math.round(ratio * 100);
@@ -45,13 +51,14 @@ export function UpdateDialog() {
   const autoInstall = canInstall(info);
 
   return (
-    <Dialog open={open} onOpenChange={(next) => (next ? setOpen(true) : onDismiss())}>
+    <Dialog open={open} onOpenChange={(next) => (next ? setOpen(true) : dismissible && onDismiss())}>
       <DialogContent
         // Fixed size: the notes scroll inside, so a long (or still-rendering)
         // changelog never resizes the dialog mid-open.
         className="grid h-[min(560px,85vh)] max-w-lg grid-rows-[auto_minmax(0,1fr)_auto_auto] gap-4"
-        onInteractOutside={(e) => installing && e.preventDefault()}
-        onEscapeKeyDown={(e) => installing && e.preventDefault()}
+        hideClose={!dismissible}
+        onInteractOutside={(e) => !dismissible && e.preventDefault()}
+        onEscapeKeyDown={(e) => !dismissible && e.preventDefault()}
       >
         <DialogHeader>
           <DialogTitle className="text-base">发现新版本 v{info.latest}</DialogTitle>
@@ -120,7 +127,7 @@ export function UpdateDialog() {
               忽略此版本
             </Button>
           )}
-          {!installing && (
+          {dismissible && (
             <Button variant="outline" size="sm" onClick={onDismiss}>
               稍后
             </Button>
