@@ -5,6 +5,7 @@
 //! `generate_handler![ipc::commands::agent_cmd, ipc::sessions::agent_session]`.
 
 pub mod commands;
+pub mod cue;
 pub mod forwarder;
 #[cfg(target_os = "linux")]
 pub mod layer_shell;

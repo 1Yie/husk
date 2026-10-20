@@ -116,6 +116,21 @@ fn agent_session_inner(
     if op == "notify" {
         return notify_desktop(&app, payload);
     }
+    // Cue tones are played by the shell for the same reason, and one more: the
+    // webview's audio goes quiet exactly when the window is hidden, which is
+    // when the cue matters most. `play` hands off to its own thread, so the
+    // reply never waits for the tone.
+    if op == "play_cue" {
+        if let Some(cue) = payload
+            .as_ref()
+            .and_then(|p| p.get("cue"))
+            .and_then(|v| v.as_str())
+            .and_then(super::cue::Cue::parse)
+        {
+            super::cue::play(cue);
+        }
+        return Ok(serde_json::json!({ "ok": true }));
+    }
     if op == "peek_notification_click" {
         let clicks = NOTIFICATION_CLICKS.lock().map_err(|e| e.to_string())?;
         return serde_json::to_value(clicks.front()).map_err(|e| e.to_string());
