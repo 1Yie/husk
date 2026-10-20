@@ -273,7 +273,14 @@ export function SessionSidebar({
           row: s,
         })),
     );
-    all.sort((a, b) => b.row.updated_at - a.row.updated_at);
+    // Same-second stamps fall back to project, then id — a tie must not
+    // reorder between polls.
+    all.sort(
+      (a, b) =>
+        b.row.updated_at - a.row.updated_at ||
+        a.root.localeCompare(b.root) ||
+        b.row.id - a.row.id,
+    );
     const pinned = all.filter((e) => e.row.pinned_global);
     const rest = all.filter((e) => !e.row.pinned_global).slice(0, RECENT_LIMIT);
     return [...pinned, ...rest];

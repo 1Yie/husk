@@ -734,10 +734,14 @@ impl SessionStore {
             .filter(|id| seen.insert(*id))
             .filter_map(|id| self.meta(id))
             .collect();
+        // `id` breaks ties: stamps are whole seconds, and two sessions that
+        // started in the same second must not trade places between reads
+        // (`read_dir` order is not stable).
         metas.sort_by(|a, b| {
             b.pinned
                 .cmp(&a.pinned)
                 .then(b.updated_at.cmp(&a.updated_at))
+                .then(b.id.cmp(&a.id))
         });
         metas
     }
@@ -1746,6 +1750,23 @@ mod tests {
         std::fs::remove_file(store.recovery_meta_path(1)).unwrap();
         assert_eq!(store.meta(1).unwrap().title, "running");
         assert!(store.recovery_meta_path(1).exists());
+    }
+
+    /// Same-second stamps must not leave the order to `read_dir`: the sidebar
+    /// re-reads the list every poll, and an unstable tie made rows swap.
+    #[test]
+    fn list_breaks_same_second_ties_by_id() {
+        let (_dir, store) = store();
+        for id in [3, 1, 2] {
+            let mut meta = empty_meta(id);
+            meta.updated_at = 100;
+            store.upsert_meta(meta).unwrap();
+        }
+        let mut newer = empty_meta(4);
+        newer.updated_at = 50;
+        store.upsert_meta(newer).unwrap();
+        let ids: Vec<i64> = store.list().iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![3, 2, 1, 4]);
     }
 
     #[test]
