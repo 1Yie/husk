@@ -6,6 +6,7 @@ import { activeViewNow, initAgentStore, useActiveView, useAgentStore } from "@/s
 import { emptyView } from "@/features/chat/hooks/stream-view";
 import { viewFromHistory } from "@/features/chat/hooks/view-from-history";
 import { renderWithProviders } from "@/test/render";
+import { TestResizeObserver } from "@/test/dom";
 import { emitAgentEvent, tauri } from "@/test/tauri";
 import type { ChatMessage, UiEvent } from "@/types";
 
@@ -450,6 +451,119 @@ describe("conversation lifecycle through the event subscription", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(500); });
     // Nothing more was mounted above the reader.
     expect(turnsMounted()).toBe(before);
+  });
+
+  /** A session whose loaded window is one 2-turn page at `historyStart` 40,
+   *  with older pages served by `onLoadOlder`. Each turn measures 60px; the
+   *  viewport height and how many fetches fail first are set before mount,
+   *  because the fill rule already runs in the first layout effect. */
+  function mountPagedSession({ viewport: initialViewport = 800, failures: initialFailures = 0 } = {}) {
+    const page = (from: number): ChatMessage[] => [
+      { role: "user", content: `问${from}` },
+      { role: "assistant", content: `答${from}` },
+      { role: "user", content: `问${from + 1}` },
+      { role: "assistant", content: `答${from + 1}` },
+    ];
+    act(() =>
+      useAgentStore
+        .getState()
+        .loadView("/project", 1, { ...viewFromHistory(page(100), null, 40), historyStart: 40 }),
+    );
+    const loads: number[] = [];
+    let start = 40;
+    let viewport = initialViewport;
+    let failures = initialFailures;
+    const onLoadOlder = async () => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("ipc down");
+      }
+      if (start === 0) return false;
+      start -= 4;
+      loads.push(start);
+      useAgentStore
+        .getState()
+        .prependItems("/project", 1, viewFromHistory(page(start), null, start).items, start);
+      return true;
+    };
+    function PagedConversation() {
+      const view = useActiveView();
+      return (
+        <ChatStream
+          view={view}
+          sessionKey="/project:1"
+          hasMore={start > 0}
+          loading={false}
+          onLoadOlder={onLoadOlder}
+        />
+      );
+    }
+    const mountedTurns = () => document.querySelectorAll('[id^="chat-turn-"][id$="-user"]').length;
+    // Installed on the prototype (before render) because the fill rule runs in
+    // a layout effect, before any post-render spy could see the scroller.
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("stream-scroll") ? mountedTurns() * 60 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("stream-scroll") ? viewport : 0;
+    });
+    const { container } = renderWithProviders(<PagedConversation />);
+    return {
+      loads,
+      mountedTurns,
+      scroller: () => container.querySelector<HTMLElement>(".stream-scroll")!,
+      setViewport: (h: number) => { viewport = h; },
+    };
+  }
+  const settle = async (ms: number) => {
+    for (let t = 0; t < ms; t += 100) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    }
+  };
+
+  test("a short column pages history on its own — no scroll, no rail click", async () => {
+    // The reported stranding: the loaded window ends up shorter than the
+    // viewport, so the stream has no scroll range and emits no scroll event.
+    // Both routes to older content hang off that event — the trimmed-turn
+    // reveal and the `scrollTop < 480` history fetch — so the session froze on
+    // its last few blocks, and only the rail could page up.
+    const { loads, mountedTurns, scroller } = mountPagedSession();
+    await act(async () => { await Promise.resolve(); });
+    expect(scroller()).toBeTruthy();
+    // No wheel and no rail click — just let the fill effect run.
+    await settle(1200);
+    expect(loads.length).toBeGreaterThan(1);
+    // Enough pages landed for the wheel to bite again…
+    expect(mountedTurns() * 60 - 800).toBeGreaterThanOrEqual(240);
+    // …and paging stopped there rather than draining the session.
+    expect(screen.getByText("答100")).toBeInTheDocument();
+    expect(loads.length).toBeLessThan(10);
+  });
+
+  test("a viewport that gains height without a window resize still fills", async () => {
+    // First layout after a hidden window: the scroller had no height, so the
+    // rule stood aside; when it gains one, only the ResizeObserver sees it.
+    const { loads, mountedTurns, scroller, setViewport } = mountPagedSession({ viewport: 0 });
+    await act(async () => { await Promise.resolve(); });
+    await settle(500);
+    expect(loads).toHaveLength(0);
+
+    setViewport(800);
+    act(() => TestResizeObserver.resize(scroller()));
+    await settle(1200);
+    expect(loads.length).toBeGreaterThan(1);
+    expect(mountedTurns() * 60 - 800).toBeGreaterThanOrEqual(240);
+  });
+
+  test("a page that fails to load is retried, not taken for the end of history", async () => {
+    const { loads, mountedTurns } = mountPagedSession({ failures: 1 });
+    await act(async () => { await Promise.resolve(); });
+    await settle(500);
+    // The failure landed and nothing paged yet — but nothing gave up either.
+    expect(loads).toHaveLength(0);
+    await settle(3000);
+    expect(loads.length).toBeGreaterThan(1);
+    expect(mountedTurns() * 60 - 800).toBeGreaterThanOrEqual(240);
   });
 
   test("keyboard paging counts as a reader gesture; typing in the composer does not", async () => {

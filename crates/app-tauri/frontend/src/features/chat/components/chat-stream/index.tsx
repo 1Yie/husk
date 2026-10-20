@@ -1486,6 +1486,24 @@ function turnBlockWeight(turn: Turn): number {
   return turn.steps.length + (turn.userText ? 1 : 0);
 }
 
+/** Scroll range a column needs before the wheel is worth grabbing. Below it
+ *  the stream never emits a scroll event a reader can produce, and the
+ *  scroll-up reveal — the only way trimmed turns come back — never fires. */
+const MIN_SCROLL_TRAVEL = 240;
+
+/** Back-off before a short column asks again after a page failed to load.
+ *  A failure is not "no more history" — but the column emits no scroll
+ *  event, so without a timed retry nothing would ever ask again. */
+const FILL_RETRY_MS = 2000;
+
+/** Pixels of scroll range, or `null` when the element has no layout at all
+ *  (jsdom, a collapsed pane). `null` is not "short": without a real viewport
+ *  the trim and reveal rules must stay out of the way rather than guess. */
+function scrollTravel(el: HTMLElement): number | null {
+  if (el.clientHeight === 0) return null;
+  return el.scrollHeight - el.clientHeight;
+}
+
 /** One turn's full row — user bubble, assistant steps, turn-end footer.
  * `memo` + the incremental parse cache mean a settled turn's `turn`
  * object survives unchanged across flushes, so a streaming delta only
@@ -1751,6 +1769,11 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const fetchingRef = useRef(false);
   const [fetching, setFetching] = useState(false);
   const restoreRef = useRef<{ top: number; height: number } | null>(null);
+  /** `historyStart` at which the backend answered "no more history" — stops
+   *  the short-column fill from re-asking while `hasMore` catches up. */
+  const stalledRef = useRef<number | null>(null);
+  /** Pending retry after a page failed — see `FILL_RETRY_MS`. */
+  const fillRetryRef = useRef(0);
 
   const maybeLoadOlder = useCallback(async (): Promise<boolean> => {
     const el = scrollRef.current;
@@ -1992,6 +2015,12 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     if (countChanged) lastTurnCountRef.current = turns.length;
     if (!countChanged || backfilling || loading || !pinnedRef.current) return;
     if (hidden >= hiddenByBudget) return;
+    // Trimming never takes the last of the scroll range: a column shorter
+    // than the viewport cannot be scrolled, and every route back to older
+    // content hangs off a scroll event. `ensureScrollable` owns that case.
+    const el = scrollRef.current;
+    const travel = el ? scrollTravel(el) : null;
+    if (travel !== null && travel < MIN_SCROLL_TRAVEL) return;
     startTransition(() => setHiddenTop(hiddenByBudget));
   }, [turns.length, hidden, hiddenByBudget, backfilling, loading]);
 
@@ -2014,6 +2043,74 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     if (!r || !el) return;
     el.scrollTop = r.top + (el.scrollHeight - r.height);
   }, [hidden]);
+
+  // The stream must always leave the reader something to scroll with. A column
+  // with no scroll range emits no scroll event at all, and BOTH ways older
+  // content arrives hang off that event: the trimmed-turn reveal, and the
+  // `scrollTop < 480` history fetch. A short column therefore stranded a
+  // session on the handful of blocks still mounted — the only escape was the
+  // rail, which pages up from a click instead of a scroll.
+  const ensureScrollable = useCallback(() => {
+    if (loading || !landed || backfilling) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const travel = scrollTravel(el);
+    if (travel === null || travel >= MIN_SCROLL_TRAVEL) return;
+    if (hidden > 0) {
+      // Locally trimmed turns first: they are already in memory, so this is
+      // the cheap way back to a scrollable column.
+      revealTrimmed(hidden - REVEAL_CHUNK);
+      return;
+    }
+    if (!hasMore || fetching || fetchingRef.current) return;
+    // A page that resolved `false` means the history is drained from this
+    // offset. The parent's `hasMore` catches up a render later; until it does
+    // the rule must not re-ask, or a drained session would spin on IPC.
+    if (stalledRef.current === (view.historyStart ?? 0)) return;
+    if (fillRetryRef.current !== 0) return;
+    const asked = view.historyStart ?? 0;
+    maybeLoadOlder().then(
+      (loaded) => {
+        if (!loaded) stalledRef.current = asked;
+      },
+      () => {
+        fillRetryRef.current = window.setTimeout(() => {
+          fillRetryRef.current = 0;
+          ensureScrollableRef.current();
+        }, FILL_RETRY_MS);
+      },
+    );
+  }, [
+    loading,
+    landed,
+    backfilling,
+    hidden,
+    hasMore,
+    fetching,
+    view.historyStart,
+    maybeLoadOlder,
+    revealTrimmed,
+  ]);
+  // The column ResizeObserver is set up once; it reaches the current rule
+  // through this ref rather than re-subscribing on every dep change.
+  const ensureScrollableRef = useRef(ensureScrollable);
+  ensureScrollableRef.current = ensureScrollable;
+  useEffect(() => () => window.clearTimeout(fillRetryRef.current), []);
+  // A new page (or another session) makes the drain probe meaningful again.
+  useEffect(() => {
+    stalledRef.current = null;
+  }, [view.historyStart, sessionKey]);
+  // Runs on every input the rule reads (a trim, a landing, a page arriving),
+  // and on the geometry changes those deps cannot see — a window resize, a
+  // first layout after the window was hidden, the dock opening. `resize` and
+  // the column ResizeObserver below both call it for that half.
+  useLayoutEffect(() => {
+    ensureScrollable();
+  }, [ensureScrollable]);
+  useEffect(() => {
+    window.addEventListener("resize", ensureScrollable);
+    return () => window.removeEventListener("resize", ensureScrollable);
+  }, [ensureScrollable]);
 
   const visibleTurns = hidden > 0 ? turns.slice(hidden) : turns;
 
@@ -2372,6 +2469,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     if (!el || !col) return;
     let debounce = 0;
     let pinFrame = 0;
+    let fillFrame = 0;
     const ro = new ResizeObserver(() => {
       // Growth below the viewport → re-anchor the bottom while following.
       // The pin's own scroll events can't clear follow-mode anymore (only
@@ -2381,6 +2479,15 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         pinFrame = requestAnimationFrame(() => {
           pinFrame = 0;
           if (pinnedRef.current) el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+        });
+      }
+      // A column or viewport that changed height without the window resizing
+      // (first layout after a hidden window, the dock opening) may have
+      // dropped under the scroll range the reader needs.
+      if (!fillFrame) {
+        fillFrame = requestAnimationFrame(() => {
+          fillFrame = 0;
+          ensureScrollableRef.current();
         });
       }
       // A layout change moves every mark below it: re-measure AND re-derive
@@ -2393,9 +2500,12 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       }, 250);
     });
     ro.observe(col);
+    // The viewport too: the dock shrinks the scroller, not the column.
+    ro.observe(el);
     return () => {
       window.clearTimeout(debounce);
       cancelAnimationFrame(pinFrame);
+      cancelAnimationFrame(fillFrame);
       ro.disconnect();
     };
   }, [measureMarks, updateActiveMark]);
