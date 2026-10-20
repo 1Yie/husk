@@ -456,6 +456,8 @@ fn main() {
     // so the file sink is the only record of a renderer/actor failure.
     logging::init();
     logging::install_panic_hook();
+    // Every provider request names this build, not the LLM crate's version.
+    agent_llm::factory::set_client_user_agent(concat!("husk/", env!("CARGO_PKG_VERSION")));
 
     // Must run before GTK/WebKitGTK/libsoup init reads the env.
     #[cfg(target_os = "linux")]
