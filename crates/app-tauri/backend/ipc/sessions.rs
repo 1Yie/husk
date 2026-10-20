@@ -362,6 +362,15 @@ fn agent_session_inner(
             configured_provider_api_key(&cfg, provider)?.to_string(),
         ));
     }
+    // The project tree reads every recent project's session index — half a
+    // second on a long-lived install. Only the snapshot is taken under the
+    // kernel lock; the event forwarder needs that lock for every state change,
+    // and holding it through the disk reads delayed every running session's
+    // events (an approval looked ignored until the backlog drained).
+    if op == "projects" {
+        let snapshot = state.lock().map_err(|e| e.to_string())?.projects_snapshot();
+        return serde_json::to_value(snapshot.build()).map_err(|e| e.to_string());
+    }
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
     // keyed by the active workspace root, same path as the session actor's.
@@ -376,11 +385,6 @@ fn agent_session_inner(
             serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
         }).collect::<Vec<_>>()),
         ),
-        // Sidebar project tree — every recent workspace with its full
-        // conversation list. The active workspace comes first (`current: true`)
-        // and carries the live running/active overlay; other projects are
-        // store-only snapshots (one workspace has actors at a time).
-        "projects" => Ok(serde_json::to_value(mgr.projects_overview()).map_err(|e| e.to_string())?),
         "new" => {
             mgr.new_session();
             Ok(serde_json::json!({"active": mgr.active_id}))

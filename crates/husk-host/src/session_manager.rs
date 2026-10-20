@@ -123,6 +123,101 @@ fn project_name(root: &std::path::Path) -> String {
         .unwrap_or_else(|| root.to_string_lossy().into_owned())
 }
 
+/// What the project tree needs from the manager, copied out under its lock:
+/// which store backs each project and the live overlay of every actor. Reading
+/// the stores (`build`) parses every session index on disk — half a second on
+/// a long-lived install — so it runs after the lock is released. Holding the
+/// manager for that long stalled the event forwarder behind it, and every
+/// event of every running session arrived late.
+pub struct ProjectsSnapshot {
+    projects: Vec<SnapshotProject>,
+}
+
+struct SnapshotProject {
+    root: String,
+    name: String,
+    last_opened: u64,
+    current: bool,
+    office: bool,
+    store: StoreRef,
+    /// `(preview, running)` per live actor, keyed by session id.
+    live: HashMap<i64, (String, bool)>,
+    /// The active session of the current project — `0` everywhere else.
+    active_id: i64,
+}
+
+/// Which store backs a project. Opening one reads its workspace row from disk,
+/// so the snapshot keeps the path and `build` opens it.
+enum StoreRef {
+    /// The active workspace's store, already open on the manager.
+    Open(Arc<SessionStore>),
+    /// Any other project — opened only if it has session data.
+    Existing(std::path::PathBuf),
+}
+
+impl StoreRef {
+    fn open(self) -> Option<Arc<SessionStore>> {
+        match self {
+            Self::Open(store) => Some(store),
+            Self::Existing(root) => SessionStore::open_existing(&root).map(Arc::new),
+        }
+    }
+}
+
+impl ProjectsSnapshot {
+    /// Read every project's session list from disk. No manager state is
+    /// touched, so this must run without the manager lock.
+    pub fn build(self) -> Vec<ProjectOverview> {
+        self.projects
+            .into_iter()
+            .map(|p| {
+                let sessions = p
+                    .store
+                    .open()
+                    .map(|store| {
+                        store
+                            .list()
+                            .into_iter()
+                            .map(|m| {
+                                let live = p.live.get(&m.id);
+                                ProjectSessionRow {
+                                    id: m.id,
+                                    title: m.title,
+                                    preview: live
+                                        .map(|(preview, _)| preview.clone())
+                                        .unwrap_or(m.preview),
+                                    updated_at: m.updated_at,
+                                    active: p.current && m.id == p.active_id,
+                                    running: live.is_some_and(|(_, running)| *running),
+                                    pinned: m.pinned,
+                                    pinned_global: m.pinned_global,
+                                    archived: m.archived,
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ProjectOverview {
+                    root: p.root,
+                    name: p.name,
+                    last_opened: p.last_opened,
+                    current: p.current,
+                    office: p.office,
+                    sessions,
+                }
+            })
+            .collect()
+    }
+}
+
+fn live_overlay(handles: Option<&HashMap<i64, SessionHandle>>) -> HashMap<i64, (String, bool)> {
+    handles
+        .into_iter()
+        .flatten()
+        .map(|(id, h)| (*id, (h.preview.clone(), h.running)))
+        .collect()
+}
+
 /// A session's live handles — the actor runs on its own thread; these are
 /// the UI's write endpoints into it.
 pub struct SessionHandle {
@@ -693,6 +788,14 @@ impl SessionManager {
     /// `running`/`active` flags from the handles. Other workspaces are
     /// store-only snapshots: only one workspace has live actors at a time.
     pub fn projects_overview(&self) -> Vec<ProjectOverview> {
+        self.projects_snapshot().build()
+    }
+
+    /// The manager-side half of [`Self::projects_overview`]: paths, recency
+    /// and the live actor overlay — no session index is read here. A shell
+    /// that holds the manager behind a lock takes this under it and calls
+    /// [`ProjectsSnapshot::build`] after letting go.
+    pub fn projects_snapshot(&self) -> ProjectsSnapshot {
         let canon = self
             .workspace_root
             .canonicalize()
@@ -700,16 +803,19 @@ impl SessionManager {
         let office_root = crate::office::office_root().map(|p| p.canonicalize().unwrap_or(p));
         let office_is_current =
             self.workspace_active && office_root.as_ref().is_some_and(|o| *o == canon);
+        let recents = self.recent_workspaces();
 
         let mut out = Vec::new();
         if self.workspace_active {
-            out.push(ProjectOverview {
+            out.push(SnapshotProject {
                 root: canon.to_string_lossy().into_owned(),
                 name: project_name(&canon),
                 last_opened: 0,
                 current: true,
                 office: office_is_current,
-                sessions: self.current_workspace_rows(),
+                store: StoreRef::Open(self.store.clone()),
+                live: live_overlay(Some(&self.handles)),
+                active_id: self.active_id,
             });
         }
 
@@ -719,49 +825,25 @@ impl SessionManager {
         if !office_is_current {
             if let Some(o) = office_root.as_ref() {
                 let key = o.to_string_lossy().into_owned();
-                let parked_handles = self.parked.get(&key);
-                let sessions = SessionStore::open_existing(o)
-                    .map(|store| {
-                        store
-                            .list()
-                            .into_iter()
-                            .map(|m| {
-                                let live = parked_handles.and_then(|h| h.get(&m.id));
-                                ProjectSessionRow {
-                                    id: m.id,
-                                    title: m.title,
-                                    preview: live
-                                        .map(|h| h.preview.clone())
-                                        .unwrap_or_else(|| m.preview.clone()),
-                                    updated_at: m.updated_at,
-                                    active: false,
-                                    running: live.map(|h| h.running).unwrap_or(false),
-                                    pinned: m.pinned,
-                                    pinned_global: m.pinned_global,
-                                    archived: m.archived,
-                                }
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let last_opened = self
-                    .recent_workspaces()
+                let last_opened = recents
                     .iter()
                     .find(|w| w.path.canonicalize().unwrap_or_else(|_| w.path.clone()) == *o)
                     .map(|w| w.last_opened)
                     .unwrap_or(0);
-                out.push(ProjectOverview {
+                out.push(SnapshotProject {
+                    live: live_overlay(self.parked.get(&key)),
                     root: key,
                     name: project_name(o),
                     last_opened,
                     current: false,
                     office: true,
-                    sessions,
+                    store: StoreRef::Existing(o.clone()),
+                    active_id: 0,
                 });
             }
         }
 
-        for w in self.recent_workspaces() {
+        for w in recents {
             let w_canon = w.path.canonicalize().unwrap_or_else(|_| w.path.clone());
             // Office came out as its own entry above — a recents row for the
             // same path would double-list it as a regular project.
@@ -777,41 +859,19 @@ impl SessionManager {
             // Parked handles = this workspace's actors are still live —
             // overlay their real running/preview so the sidebar orb stays
             // on a turn the user switched away from mid-flight.
-            let parked_handles = self.parked.get(&w_canon.to_string_lossy().into_owned());
-            let sessions = SessionStore::open_existing(&w_canon)
-                .map(|store| {
-                    store
-                        .list()
-                        .into_iter()
-                        .map(|m| {
-                            let live = parked_handles.and_then(|h| h.get(&m.id));
-                            ProjectSessionRow {
-                                id: m.id,
-                                title: m.title,
-                                preview: live
-                                    .map(|h| h.preview.clone())
-                                    .unwrap_or_else(|| m.preview.clone()),
-                                updated_at: m.updated_at,
-                                active: false,
-                                running: live.map(|h| h.running).unwrap_or(false),
-                                pinned: m.pinned,
-                                pinned_global: m.pinned_global,
-                                archived: m.archived,
-                            }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            out.push(ProjectOverview {
-                root: w_canon.to_string_lossy().into_owned(),
+            let root = w_canon.to_string_lossy().into_owned();
+            out.push(SnapshotProject {
+                live: live_overlay(self.parked.get(&root)),
+                root,
                 name: w.name,
                 last_opened: w.last_opened,
                 current: false,
                 office: false,
-                sessions,
+                store: StoreRef::Existing(w_canon),
+                active_id: 0,
             });
         }
-        out
+        ProjectsSnapshot { projects: out }
     }
 
     /// Per-session usage records across every known workspace — the settings
@@ -879,31 +939,6 @@ impl SessionManager {
             }
         }
         out
-    }
-
-    /// The active workspace's rows, newest first — persisted meta overlaid
-    /// with the live preview / running / active flags.
-    fn current_workspace_rows(&self) -> Vec<ProjectSessionRow> {
-        self.store
-            .list()
-            .into_iter()
-            .map(|m| {
-                let live = self.handles.get(&m.id);
-                ProjectSessionRow {
-                    id: m.id,
-                    title: m.title,
-                    preview: live
-                        .map(|h| h.preview.clone())
-                        .unwrap_or_else(|| m.preview.clone()),
-                    updated_at: m.updated_at,
-                    active: m.id == self.active_id,
-                    running: live.map(|h| h.running).unwrap_or(false),
-                    pinned: m.pinned,
-                    pinned_global: m.pinned_global,
-                    archived: m.archived,
-                }
-            })
-            .collect()
     }
 
     /// Spawn an actor for `id` (resume from store if a snapshot exists).
@@ -3765,5 +3800,37 @@ max = "max"
         // Nothing to open → empty state.
         assert_eq!(boot_workspace(None, &[]), None);
         assert_eq!(boot_workspace(Some(&prefs("build")), &[]), None);
+    }
+
+    /// `build` reads the rows from the store and overlays the live actor state
+    /// the snapshot carried out of the manager.
+    #[test]
+    fn the_projects_snapshot_builds_rows_with_the_live_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Arc::new(SessionStore::open_at(dir.path(), &dir.path().join("conversations")).unwrap());
+        let mut meta = SessionMeta {
+            id: 1,
+            title: "t".into(),
+            ..Default::default()
+        };
+        meta.updated_at = 1;
+        store.upsert_meta(meta).unwrap();
+        let snapshot = ProjectsSnapshot {
+            projects: vec![SnapshotProject {
+                root: "r".into(),
+                name: "r".into(),
+                last_opened: 0,
+                current: true,
+                office: false,
+                store: StoreRef::Open(store),
+                live: HashMap::from([(1, ("live".to_string(), true))]),
+                active_id: 1,
+            }],
+        };
+        let tree = snapshot.build();
+        let row = &tree[0].sessions[0];
+        assert_eq!(row.preview, "live");
+        assert!(row.running && row.active);
     }
 }
