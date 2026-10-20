@@ -149,12 +149,21 @@ test("run/task counts advance live and re-base on the committed figure", () => {
   expect(live.runTotal).toBe(5);
 
   // `/clear` or compaction shrinks the persisted history — the header must
-  // follow it down instead of keeping a stale maximum.
+  // follow it down instead of keeping a stale maximum. `turns` rides along so
+  // the card's 用户轮次 moves at every commit, not only on reopen.
   const committed = applyEvents(live, [
-    { Custom: { kind: "husk:session_counts", payload: { runs: 1, tasks: 0 } } },
+    { Custom: { kind: "husk:session_counts", payload: { runs: 1, tasks: 0, turns: 2 } } },
   ]);
   expect(committed.runTotal).toBe(1);
   expect(committed.taskTotal).toBe(0);
+  expect(committed.turnTotal).toBe(2);
+
+  // A payload without `turns` leaves the figure alone.
+  const withoutTurns = applyEvents(live, [
+    { Custom: { kind: "husk:session_counts", payload: { runs: 1, tasks: 0 } } },
+  ]);
+  expect(withoutTurns.runTotal).toBe(1);
+  expect(withoutTurns.turnTotal).toBe(live.turnTotal);
 
   // Snapshots without counts stay unknown (the header falls back to rows).
   const legacy = applyEvents(emptyView(), [usage]);
@@ -179,6 +188,50 @@ test("the live run tick is an upper bound; the commit snaps it to real rows", ()
     { Custom: { kind: "husk:session_counts", payload: { runs: 11, tasks: 0 } } },
   ]);
   expect(committed.runTotal).toBe(11);
+});
+
+test("a steer is its own event, and retry rewinds past it", () => {
+  const live = applyEvents(emptyView(), [
+    { UserPrompt: "检查边界条件" },
+    { StateChanged: "Reasoning" },
+    { UserSteer: "先别改 config" },
+  ]);
+  const users = live.items.filter((it) => it.kind === "user");
+  expect(users).toMatchObject([{ text: "检查边界条件" }, { text: "先别改 config", steer: true }]);
+  expect(users[0]).not.toHaveProperty("steer", true);
+
+  // After the turn settles, the next prompt opens a new turn.
+  const next = applyEvents(live, [{ StateChanged: "Finished" }, { UserPrompt: "下一步" }]);
+  expect(next.items.at(-1)).not.toHaveProperty("steer", true);
+
+  // Retry drops the whole turn — steer included — back to its opening prompt.
+  const retried = applyEvents(live, ["TurnRetry"]);
+  expect(retried.items.filter((it) => it.kind === "user")).toEqual([]);
+});
+
+test("a steer joins the running turn without restarting its clock or draft", () => {
+  const before = applyEvents(emptyView(), [
+    { UserPrompt: "检查边界条件" },
+    { StateChanged: "Reasoning" },
+    { TextDelta: { text: "正在看", parent: null } },
+  ]);
+  const after = applyEvents(before, [{ UserSteer: "先别改 config" }]);
+  expect(after.turnStartedAt).toBe(before.turnStartedAt);
+  expect(after.turnOpen).toBe(true);
+  expect(after.rate).toEqual(before.rate);
+});
+
+test("a prompt is a prompt even while a turn is open", () => {
+  // Nothing about the open turn makes a `UserPrompt` a steer: the kernel says
+  // so with `UserSteer`, so a queued prompt echoed mid-run still opens its turn.
+  const live = applyEvents(emptyView(), [
+    { UserPrompt: "第一个" },
+    { StateChanged: "Reasoning" },
+    { UserPrompt: "排队的第二个" },
+  ]);
+  const users = live.items.filter((it) => it.kind === "user");
+  expect(users).toHaveLength(2);
+  expect(users[1]).not.toHaveProperty("steer", true);
 });
 
 test("a card the turn left behind never becomes the click target", () => {

@@ -1601,9 +1601,17 @@ impl SessionActor {
     /// and the view must follow it down, not keep a stale maximum.
     fn emit_counts(&self) {
         let (runs, tasks) = history_counts(&self.history);
+        // The turn count rides along: it is the one figure the view cannot
+        // derive from live events, since a prompt echo and a steer echo look
+        // the same on the wire.
+        let turns = self
+            .history
+            .iter()
+            .filter(|m| agent_store::counts_as_turn(m))
+            .count();
         let _ = self.io.ui_tx.send(UiEvent::Custom {
             kind: SESSION_COUNTS.into(),
-            payload: serde_json::json!({ "runs": runs, "tasks": tasks }),
+            payload: serde_json::json!({ "runs": runs, "tasks": tasks, "turns": turns }),
         });
     }
 
@@ -2135,16 +2143,10 @@ impl SessionActor {
                     return;
                 }
                 let idx = self.history.iter().rposition(|m| {
-                    if m.role != agent_llm::Role::User || m.notice.is_some() {
-                        return false;
-                    }
-                    // Mid-turn steering persists as a user message carrying
-                    // this fixed prefix — it belongs to the turn being
-                    // retried, so it can't be the rewind target itself.
-                    !m.content
-                        .as_deref()
-                        .unwrap_or("")
-                        .starts_with("The user interrupted:")
+                    // Same rule the store counts turns by: a hidden recall row
+                    // and a mid-turn steer are the turn's furniture, not its
+                    // opening prompt, so neither can be the rewind target.
+                    agent_store::counts_as_turn(m)
                 });
                 if let Some(idx) = idx {
                     let text = self.history[idx].content.clone().unwrap_or_default();

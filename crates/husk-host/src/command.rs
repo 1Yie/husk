@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 pub enum UiCommand {
     /// A fresh user prompt.
     Prompt { text: String },
-    /// Mid-turn steering text (delivered as a user turn marked "The user
-    /// interrupted:").
+    /// Mid-turn steering text, injected into the running turn as a tagged
+    /// steer row (`ChatMessage::user_steer`), never as a new turn.
     Steer { text: String },
     /// Mid-run steering for one delegated subagent, addressed by the
     /// `child_id` its card carries. Only that child's owning session accepts it;

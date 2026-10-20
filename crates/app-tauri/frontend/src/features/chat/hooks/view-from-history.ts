@@ -353,6 +353,31 @@ function indexToolCalls(idToTool: Map<string, ToolInfo>, m: ChatMessage) {
 
 /** Fold one persisted message into the view's item list — shared by the
  * sync and time-sliced builders. */
+/** Text the model reads in front of a mid-turn steer. The kernel writes it;
+ *  it is matched here only for rows persisted before the `steer` tag existed. */
+const STEER_PREFIX = "The user interrupted: ";
+
+/** The steer's own words, or `null` when the row is not a steer. A row the
+ *  kernel tagged is judged by its tag alone; an untagged user row is a steer
+ *  only if it carries the prefix (history written before the tag). */
+export function steerTextOf(m: ChatMessage): string | null {
+  if (m.role !== "user") return null;
+  const text = m.content ?? "";
+  if (m.notice === "steer") {
+    return (text.startsWith(STEER_PREFIX) ? text.slice(STEER_PREFIX.length) : text).trim();
+  }
+  if (m.notice == null && text.startsWith(STEER_PREFIX)) {
+    return text.slice(STEER_PREFIX.length).trim();
+  }
+  return null;
+}
+
+/** Whether a persisted row opens a user turn — the store's `counts_as_turn`
+ *  on this side: a real prompt, not a hidden row and not a steer. */
+export function opensUserTurn(m: ChatMessage): boolean {
+  return m.role === "user" && m.notice !== "hidden" && steerTextOf(m) === null;
+}
+
 function foldMessage(
   v: SessionView,
   idToTool: Map<string, ToolInfo>,
@@ -439,6 +464,7 @@ function foldMessage(
     let text =
       m.role === "assistant" ? stripCallEcho(m.content ?? "") : (m.content ?? "");
     let markerLine: string | null = null;
+    let isSteer = false;
     if (m.role === "assistant") {
       for (const { re, line } of SALVAGE_MARKERS) {
         const hit = text.match(re);
@@ -454,10 +480,13 @@ function foldMessage(
       // synthesis prompt) — the provider sees them but the live stream
       // never drew a bubble, so replay must skip them too.
       if (m.notice === "hidden") return;
-      // Mid-turn steering persists as "The user interrupted: X" — the
-      // live stream echoes the bare text, so strip the annotation.
-      const steer = text.match(/^The user interrupted: ([\s\S]*)$/);
-      if (steer) text = steer[1].trim();
+      // The live stream echoes a steer as its bare words, so strip the prefix
+      // the model reads.
+      const steerText = steerTextOf(m);
+      if (steerText !== null) {
+        text = steerText;
+        isSteer = true;
+      }
     }
     // The round's reasoning trace, if it had one — drawn BEFORE its text and
     // tool capsules, which is the order the live stream produced. Emitted
@@ -488,7 +517,7 @@ function foldMessage(
       return;
     }
     if (m.role === "user") {
-      v.items.push({ kind: "user", text, ts: m.ts ?? undefined, hi });
+      v.items.push({ kind: "user", text, ts: m.ts ?? undefined, hi, ...(isSteer ? { steer: true } : {}) });
     } else {
       v.items.push({
         kind: "assistant",

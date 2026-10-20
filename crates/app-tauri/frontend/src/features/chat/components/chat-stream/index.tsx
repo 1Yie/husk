@@ -23,7 +23,7 @@ import {
 import { chatMarkdownComponents } from "@/features/chat/components/chat-stream/markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { ChatTurnRail, type RailMark } from "@/features/chat/components/chat-stream/chat-turn-rail";
-import { railHistoryBoundary } from "./rail-history";
+import { opensTurn, railHistoryBoundary } from "./rail-history";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -414,6 +414,9 @@ interface Turn {
    * click-seek target the right turn after its page loads. */
   hi?: number;
   userText?: string;
+  /** The bubble is a mid-turn steer: drawn like a prompt, but not a turn of
+   * its own — it never advances a global turn ordinal. */
+  steer?: boolean;
   /** Epoch ms of the user message — footer timestamp on the bubble. */
   ts?: number;
   /** Epoch ms of the last assistant item — the turn-end stamp under the
@@ -666,6 +669,7 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
         id: turnId(item, idx),
         hi: item.hi,
         userText: item.text,
+        steer: item.steer,
         ts: item.ts,
         steps: [],
       };
@@ -2117,10 +2121,11 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     // when the page cut it in half — so "#1" was naming a turn the reader
     // was not looking at. Only a turn WITH a prompt advances the ordinal:
     // the page-boundary half-turn and a manual-compaction block have no user
-    // turn of their own, and counting them shifted every later "#N".
+    // turn of their own, and counting them shifted every later "#N". A steer
+    // bubble keeps its mark but stays inside the turn it interrupted.
     let ordinal = unloaded;
     turns.forEach((turn, idx) => {
-      if (turn.userText) ordinal += 1;
+      if (opensTurn(turn)) ordinal += 1;
       const turnNum = ordinal;
       // Keep marks for locally trimmed turns too: the rail is the session
       // overview, and handleSelectMark reveals the turn before landing on a
@@ -2137,7 +2142,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           type: "user",
           turnId: turn.id,
           targetId: `chat-turn-${turn.id}-user`,
-          previewTitle: `用户提问 #${turnNum}`,
+          previewTitle: turn.steer ? `用户插话 · 第 ${Math.max(1, turnNum)} 轮` : `用户提问 #${turnNum}`,
           previewSnippet: clipPreview(userPreview),
           len: userPreview.length,
         });
@@ -2523,7 +2528,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       // field (a view built before it existed) this falls back to
       // estimating a message index from the average turn length.
       const ordinal = mark.phIndex ?? 0;
-      const loadedUser = turnsRef.current.reduce((n, t) => n + (t.userText ? 1 : 0), 0);
+      const loadedUser = turnsRef.current.reduce((n, t) => n + (opensTurn(t) ? 1 : 0), 0);
       const unloadedNow = Math.max(0, (viewRef.current.turnTotal ?? loadedUser) - loadedUser);
       const start = viewRef.current.historyStart ?? 0;
       const approx = Math.round((ordinal + 0.5) * (start / Math.max(1, unloadedNow)));
@@ -2564,7 +2569,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         let target: (typeof loaded)[number] | undefined;
         const off = viewRef.current.turnOffset;
         if (off != null) {
-          const userTurns = loaded.filter((t) => t.userText);
+          const userTurns = loaded.filter(opensTurn);
           const idx = Math.min(Math.max(ordinal - off, 0), userTurns.length - 1);
           target = userTurns[idx] ?? loaded[0];
         } else {

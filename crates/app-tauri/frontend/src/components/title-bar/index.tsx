@@ -214,12 +214,19 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
     if (it.kind === "tool") {
       toolSteps += 1;
       if (it.ok === false) toolFailed += 1;
-    } else if (it.kind === "user") userTurns += 1;
-    else if (it.kind === "assistant") assistantRuns += 1;
+    } else if (it.kind === "user") {
+      // A steer joins the running turn; it is not a turn of its own.
+      if (!it.steer) userTurns += 1;
+    } else if (it.kind === "assistant") assistantRuns += 1;
   }
   // Real execution counts, not "user sent a prompt": one prompt can run the
   // model/tool loop many times. Old snapshots have no totals; fall back to the
   // loaded slice rather than the user-turn count.
+  //
+  // The vocabulary follows the lifecycle the kernel implements: a **turn** is
+  // one accepted prompt drained to completion, a **step** is one model request
+  // plus the tool calls it triggered, and a **call** is one of those tool
+  // executions (several per step is the normal case).
   const turns = view?.turnTotal ?? userTurns;
   // The totals are authoritative (persisted, then advanced by live events and
   // re-based by `husk:session_counts`), so they can go DOWN after /clear or

@@ -553,6 +553,15 @@ fn commit_history(app: &mut App, history: &[agent_llm::ChatMessage], session_id:
     )));
     for m in history {
         match m.role {
+            // A steer was drawn live as the user's own words, prefix stripped.
+            Role::User if m.is_steer() => {
+                if let Some(text) = m.steer_text().filter(|t| !t.trim().is_empty()) {
+                    app.commit(crate::cells::Cell::User {
+                        text: text.to_string(),
+                        time: ts_hm(m.ts),
+                    });
+                }
+            }
             // Hidden rows (engine nudges, recalled memory) were never drawn live.
             Role::User if m.notice.is_some() => {}
             Role::User => {

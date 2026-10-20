@@ -317,8 +317,11 @@ function applyEventInto(
     // The session rewound to before the last turn's user prompt — drop
     // that turn's items (user bubble included; the fresh `UserPrompt`
     // echo re-adds it). Any pending question/approval dies with the turn.
+    // A steer bubble is not the turn's prompt — the backend rewinds past it
+    // to the prompt that opened the turn, so the view must too.
     for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].kind === "user") {
+      const it = items[i];
+      if (it.kind === "user" && !it.steer) {
         items.splice(i);
         break;
       }
@@ -380,6 +383,11 @@ function applyEventInto(
         },
       ],
     };
+  }
+  if ("UserSteer" in ev) {
+    // A steer joins the running turn: a bubble, but no new turn, clock or draft.
+    items.push({ kind: "user", text: ev.UserSteer, ts: Date.now(), steer: true });
+    return { ...v, items };
   }
   if ("UserPrompt" in ev) {
     items.push({ kind: "user", text: ev.UserPrompt, ts: Date.now() });
@@ -740,9 +748,16 @@ function applyEventInto(
   }
   if ("Custom" in ev && ev.Custom.kind === "husk:session_counts") {
     // Authoritative counts of the just-persisted history.
-    const p = ev.Custom.payload as { runs?: number; tasks?: number } | null;
+    const p = ev.Custom.payload as { runs?: number; tasks?: number; turns?: number } | null;
     if (typeof p?.runs !== "number" || typeof p?.tasks !== "number") return v;
-    return { ...v, runTotal: p.runs, taskTotal: p.tasks };
+    return {
+      ...v,
+      runTotal: p.runs,
+      taskTotal: p.tasks,
+      // `turns` is optional: a payload without it leaves the opening
+      // snapshot's figure alone.
+      ...(typeof p.turns === "number" ? { turnTotal: p.turns } : {}),
+    };
   }
   if ("Custom" in ev && ev.Custom.kind === "husk:usage_cache_write") {
     // Product extension accompanying the preceding `Usage`: the shared Usage

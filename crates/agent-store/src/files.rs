@@ -115,6 +115,11 @@ struct JournalIndex {
     meta: Option<SessionMeta>,
     has_history: bool,
     deleted: bool,
+    /// Which turn rule produced [`Location::turn`]. Bumped whenever that rule
+    /// changes: the cached flags are the only copy of the answer, so an index
+    /// built under a different rule is re-read from the journal, not trusted.
+    #[serde(default)]
+    turn_rule: u32,
     /// Monotonic count of committed *history* writes. Metadata-only commits do
     /// not bump it, so a live checkpoint survives a pin/queue edit. It is
     /// replayed from the journal's `Commit` records, so it survives losing the
@@ -124,6 +129,10 @@ struct JournalIndex {
     #[serde(default)]
     history_generation: u64,
 }
+
+/// Current turn rule — see [`crate::counts_as_turn`].
+const TURN_RULE: u32 = 2;
+
 /// A running turn's newest history, stored outside the journal so frequent
 /// checkpoints replace one small file instead of appending full drafts.
 /// `base_generation` + `base_revision` identify the exact canonical journal
@@ -174,8 +183,7 @@ enum Record {
 }
 
 fn is_turn(message: &ChatMessage) -> bool {
-    message.role == agent_llm_core::Role::User
-        && message.notice != Some(agent_llm_core::types::NoticeKind::Hidden)
+    crate::counts_as_turn(message)
 }
 
 /// Content hash for the journal index — the same construction as
@@ -191,7 +199,12 @@ fn journal_index(journal: &Path, index: &Path) -> std::io::Result<JournalIndex> 
     };
     let length = file.metadata()?.len();
     let cached: Option<JournalIndex> = read_json(index).unwrap_or(None);
-    let mut committed = cached.filter(|c| c.bytes <= length).unwrap_or_default();
+    // An index from another turn rule caches flags this rule would not set;
+    // drop it and re-read the journal.
+    let mut committed = cached
+        .filter(|c| c.bytes <= length && c.turn_rule == TURN_RULE)
+        .unwrap_or_default();
+    committed.turn_rule = TURN_RULE;
     let mut pending = committed.clone();
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(committed.bytes))?;

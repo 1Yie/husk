@@ -13,7 +13,7 @@ use crate::modals::{Modal, ModalOutcome};
 impl App {
     pub fn on_ui_event(&mut self, ev: UiEvent) {
         match ev {
-            UiEvent::UserPrompt(t) => self.commit(Cell::User {
+            UiEvent::UserPrompt(t) | UiEvent::UserSteer(t) => self.commit(Cell::User {
                 text: t,
                 time: hm_now(),
             }),

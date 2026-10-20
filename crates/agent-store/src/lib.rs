@@ -32,6 +32,19 @@ fn io_err(e: impl std::fmt::Display) -> std::io::Error {
 #[derive(Debug)]
 struct StaleRevision;
 
+/// Whether a row opens a user turn: a real prompt, not a hidden recall row
+/// (`NoticeKind::Hidden`) and not a mid-turn steer. A steer rides in as a `user`
+/// row so the model reads it as one, but it belongs to the turn already running
+/// and never opens a new one, so it does not advance the turn count (rail
+/// ordinal, `/raw` page numbers, the header card). The kernel decides what a
+/// steer is ([`ChatMessage::is_steer`]); this is the one definition the store,
+/// the index and the callers that count turns all share.
+pub fn counts_as_turn(message: &ChatMessage) -> bool {
+    message.role == agent_llm_core::Role::User
+        && message.notice != Some(agent_llm_core::types::NoticeKind::Hidden)
+        && !message.is_steer()
+}
+
 impl std::fmt::Display for StaleRevision {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("会话已被另一个窗口更新，请重新打开此会话；当前结果未覆盖其他窗口的记录")
@@ -473,6 +486,25 @@ fn last_intact_jsonl_line(path: &Path) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use agent_llm_core::types::ChatMessage;
+
+    /// A steer rides in as a `user` row but stays inside the running turn; the
+    /// hidden recall row above a prompt is not a turn either. A steer written
+    /// before the kernel tagged them carries only its prefix and still matches.
+    #[test]
+    fn only_real_prompts_open_a_turn() {
+        let mut hidden = ChatMessage::user("recalled facts");
+        hidden.notice = Some(agent_llm_core::types::NoticeKind::Hidden);
+        let mut untagged_steer = ChatMessage::user("The user interrupted: 先别改 config");
+        untagged_steer.notice = None;
+
+        assert!(counts_as_turn(&ChatMessage::user("do the thing")));
+        assert!(!counts_as_turn(&ChatMessage::user_steer("先别改 config")));
+        assert!(!counts_as_turn(&untagged_steer));
+        assert!(!counts_as_turn(&hidden));
+        assert!(!counts_as_turn(&ChatMessage::assistant("ok")));
+        assert!(!counts_as_turn(&ChatMessage::tool_result("c1", "ok")));
+        assert!(!counts_as_turn(&ChatMessage::notice("已被用户中断")));
+    }
 
     /// An isolated store: temp db file + the tempdir as the workspace root.
     fn test_store(dir: &tempfile::TempDir) -> SessionStore {

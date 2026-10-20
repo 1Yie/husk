@@ -15,6 +15,7 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 系统提示词资产（assets/kernel-system-prompt.md）、办公根目录（office.rs）、待办存储（todo_store.rs）、全局偏好（prefs.rs）
 - 提示词缓存布局：系统提示固定指令在前、会话上下文在后且会话中不改写（模式块除外），每条消息相关的记忆作为隐藏 user 行随消息发送；会话在回合结束与历史改写时通知保活（`WarmingControl`）
 - 会话身份：`conversation_key`（本机随机盐 + 持久化会话 id + 工作区；盐存在全局行里，存储不可用时退化为进程内随机）传给本会话的每个 provider 构建点——会话 provider、降级链、后台 provider、子代理路由，重建时路由键不变
+- 计数广播（`history_counts` / `emit_counts`）：assistant 行 = 步（一次模型请求及其工具），tool 行 = 调用；轮次取 store 的 `counts_as_turn`，随每次提交与 runs/tasks 一起下发，前端据此重定基准
 
 ## 不做
 - 不复制内核逻辑；行为变更先落在 kernel 或 agent-coding

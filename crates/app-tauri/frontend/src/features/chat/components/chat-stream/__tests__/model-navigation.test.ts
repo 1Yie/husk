@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { normalizeThinkingLevel } from "@/lib/thinking";
-import { railHistoryBoundary } from "../rail-history";
+import { opensTurn, railHistoryBoundary } from "../rail-history";
 
 describe("model-bound thinking levels", () => {
   test("unsupported restored levels use this model's fallback", () => {
@@ -42,6 +42,15 @@ describe("history boundary markers", () => {
     const boundary = railHistoryBoundary([answer, user], { historyStart: 5, turnOffset: 2, turnTotal: 3 });
     expect(boundary.unloaded).toBe(2);
     expect(boundary.boundaryTurn).toBe(answer);
+  });
+  test("a steer bubble is not a turn of its own", () => {
+    const steer = { userText: "插话", steer: true, steps: [{ type: "text" }] };
+    expect(opensTurn(user)).toBe(true);
+    expect(opensTurn(steer)).toBe(false);
+    // Two prompts and one steer loaded, three turns in total: one unloaded —
+    // counting the steer would have claimed none.
+    const boundary = railHistoryBoundary([user, steer, user], { historyStart: 5, turnTotal: 3 });
+    expect(boundary.unloaded).toBe(1);
   });
   test.each(["thinking", "tools", "plan"])("a page cut in %s preserves its missing prompt", (type) => {
     const fragment = { steps: [{ type }] };

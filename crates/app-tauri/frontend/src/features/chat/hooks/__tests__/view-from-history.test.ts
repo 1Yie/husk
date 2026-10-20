@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { viewFromHistory, viewFromHistoryChunked } from "../view-from-history";
+import { opensUserTurn, steerTextOf, viewFromHistory, viewFromHistoryChunked } from "../view-from-history";
 import type { ChatMessage } from "@/types";
 
 const history: ChatMessage[] = [
@@ -37,10 +37,38 @@ describe("persisted history replay", () => {
       { role: "assistant", content: "[call: smart_read {}]\n已读", reasoning: "推导" },
     ]);
     expect(view.items).toMatchObject([
-      { kind: "user", text: "先停止修改" },
+      { kind: "user", text: "先停止修改", steer: true },
       { kind: "thinking", text: "推导", done: true },
       { kind: "assistant", text: "已读", streaming: false },
     ]);
+  });
+
+  test("a real prompt is not marked as a steer", () => {
+    const view = viewFromHistory([{ role: "user", content: "检查文件" }]);
+    expect(view.items[0]).not.toHaveProperty("steer");
+  });
+
+  test("a tagged steer is read from its tag, and the prefix is stripped", () => {
+    const view = viewFromHistory([
+      { role: "user", content: "The user interrupted: 先别改 config", notice: "steer" },
+    ]);
+    expect(view.items).toMatchObject([{ kind: "user", text: "先别改 config", steer: true }]);
+  });
+
+  test("a hidden row that quotes the prefix stays hidden and is not a steer", () => {
+    const view = viewFromHistory([
+      { role: "user", content: "The user interrupted: nudge", notice: "hidden" },
+    ]);
+    expect(view.items).toEqual([]);
+    expect(steerTextOf({ role: "user", content: "The user interrupted: x", notice: "hidden" })).toBeNull();
+  });
+
+  test("only prompts open a user turn", () => {
+    expect(opensUserTurn({ role: "user", content: "检查文件" })).toBe(true);
+    expect(opensUserTurn({ role: "user", content: "The user interrupted: x", notice: "steer" })).toBe(false);
+    expect(opensUserTurn({ role: "user", content: "The user interrupted: x" })).toBe(false);
+    expect(opensUserTurn({ role: "user", content: "nudge", notice: "hidden" })).toBe(false);
+    expect(opensUserTurn({ role: "assistant", content: "ok" })).toBe(false);
   });
 
   test("persisted usage seeds the visible context meter", () => {

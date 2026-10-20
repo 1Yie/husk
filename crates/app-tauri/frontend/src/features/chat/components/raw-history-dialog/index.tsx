@@ -17,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { highlightCodeToHtml } from "@/lib/syntax-highlight";
 import { cn } from "@/lib/utils";
+import { opensUserTurn } from "@/features/chat/hooks/view-from-history";
 import type { ChatMessage } from "@/types";
 import { toast } from "sonner";
 import { readRawHistoryJson, useRawHistory } from "./use-raw-history";
@@ -47,8 +48,8 @@ function groupRounds(messages: ChatMessage[], start: number, turnOffset: number)
   const rounds: Round[] = [{ index: turnOffset, items: [] }];
   let turn = turnOffset;
   messages.forEach((m, at) => {
-    // Match the store's turn index: hidden user messages do not start a turn.
-    if (m.role === "user" && m.notice !== "hidden") {
+    // Match the store's turn index: hidden rows and steers do not start a turn.
+    if (opensUserTurn(m)) {
       turn += 1;
       if (rounds[rounds.length - 1].items.length > 0) rounds.push({ index: turn, items: [] });
       else rounds[rounds.length - 1].index = turn;

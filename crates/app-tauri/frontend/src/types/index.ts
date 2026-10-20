@@ -60,6 +60,7 @@ export type UiEvent =
     }
   | { QuestionAnswered: { request_id: number } }
   | { UserPrompt: string }
+  | { UserSteer: string }
   | { TextDelta: { text: string; parent?: string | null } }
   | { ReasoningDelta: { text: string; parent?: string | null } }
   | {
@@ -196,9 +197,11 @@ export interface ChatMessage {
    * renders as a plain line, `error` with a `⚠` prefix. `compacted`
    * carries the JSON card payload (`before/after/removed/note`), and
    * `compacted_memory` is the model-facing summary note (hidden).
+   * `steer` is a mid-turn user correction: drawn as a user bubble inside the
+   * running turn, never as a turn of its own.
    * Absent means internal context (system prompt, hook injections) —
    * stays hidden. */
-  notice?: "system" | "error" | "hidden" | "compacted_memory" | "compacted" | "plan";
+  notice?: "system" | "error" | "hidden" | "compacted_memory" | "compacted" | "plan" | "steer";
   /** Creation time (epoch ms) — drives the `—— time ——` turn divider. */
   ts?: number | null;
   /** Reasoning trace of this assistant round — replays as the same 思考过程

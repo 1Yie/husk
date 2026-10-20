@@ -15,8 +15,12 @@ export type ChildSegment =
 export type StreamItem =
   /** `hi` = global history index — stamped by `viewFromHistory` for
    * persisted messages; live items leave it undefined. It makes turn
-   * keys stable when older pages prepend above. */
-  | { kind: "user"; text: string; ts?: number; hi?: number }
+   * keys stable when older pages prepend above.
+   *
+   * `steer` marks a mid-turn interjection: drawn as a bubble, but it belongs
+   * to the turn already running, so it never advances a turn ordinal — the
+   * same rule as the store's `counts_as_turn`. */
+  | { kind: "user"; text: string; ts?: number; hi?: number; steer?: boolean }
   | {
       kind: "assistant";
       text: string;
