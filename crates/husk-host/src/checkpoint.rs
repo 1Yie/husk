@@ -488,10 +488,9 @@ impl TurnCheckpoint {
             let Some(active) = &mut state.active else {
                 return false;
             };
-            active.meta.updated_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            // `meta.updated_at` stays the turn-start stamp `begin` was given:
+            // the sidebar orders by it, and re-stamping on every streamed
+            // write made concurrently running sessions overtake each other.
             if let Some(settings) = &state.settings {
                 active.meta.permission_mode = settings
                     .permissions

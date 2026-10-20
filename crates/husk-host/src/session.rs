@@ -451,6 +451,11 @@ pub struct SessionActor {
     /// Per-workspace session store, including recovery points for live turns.
     store: Option<Arc<agent_store::SessionStore>>,
     history_revision: u64,
+    /// Unix seconds the running turn was submitted — its meta's `updated_at`
+    /// until the turn ends. The sidebar orders sessions by that stamp; one
+    /// taken per write would let concurrently running sessions trade places
+    /// on every flush.
+    turn_started_at: Option<u64>,
     checkpoint: Option<Arc<TurnCheckpoint>>,
     /// Per-session cache-write sink shared with the provider and the
     /// checkpoint relay (the shared `StreamChunk::Done` has no write slot).
@@ -1111,6 +1116,7 @@ impl SessionActor {
                 conversation,
                 store,
                 history_revision,
+                turn_started_at: None,
                 checkpoint,
                 usage_observer: None,
                 warming,
@@ -1365,6 +1371,7 @@ impl SessionActor {
             }
         }
 
+        self.turn_started_at = Some(unix_now());
         if let (Some(checkpoint), Some(meta)) = (&self.checkpoint, self.session_meta(&text)) {
             checkpoint.begin(&self.history, &text, meta);
         }
@@ -1462,6 +1469,7 @@ impl SessionActor {
         // Commit the engine's authoritative final history over the recovery
         // copy, replacing interrupted-tool placeholders and streamed drafts.
         self.persist_turn(&outcome_text);
+        self.turn_started_at = None;
     }
 
     /// Snapshot `history` to the session store + update sidebar metadata.
@@ -1536,11 +1544,12 @@ impl SessionActor {
                 .map(|c| c.chars().take(60).collect())
                 .unwrap_or_else(|| "(no reply)".into())
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         let old = store.meta(id);
+        // A turn's whole life carries one stamp — its submission — so the
+        // sidebar order a turn sets never shifts while it streams or when it
+        // settles. Outside a turn (`/clear`, `/compact`) the write itself is
+        // the activity.
+        let updated_at = self.turn_started_at.unwrap_or_else(unix_now);
         // Usage rides along in the sidebar meta: fresh value when this turn
         // produced one, otherwise the previously persisted value survives
         // (a failed turn must not erase the last good reading; a resumed
@@ -1572,7 +1581,7 @@ impl SessionActor {
             id,
             title,
             preview,
-            updated_at: now,
+            updated_at,
             pinned,
             usage,
             model: (!model.is_empty()).then_some(model),
@@ -1671,10 +1680,10 @@ impl SessionActor {
         let Some(store) = &self.store else { return };
         let id = self.session_id;
         let old = store.meta(id);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        // A settings change is not conversation activity: a config reload
+        // reaches every live actor at once, and stamping them all "now" would
+        // reshuffle the sidebar by whichever actor wrote last.
+        let now = old.as_ref().map(|m| m.updated_at).unwrap_or_else(unix_now);
         let (model, provider) = (self.model.clone(), self.provider_name.clone());
         let result = store.update_settings(agent_store::SessionMeta {
             id,
@@ -2379,6 +2388,14 @@ impl SessionActor {
             }
         }
     }
+}
+
+/// Unix seconds, 0 when the clock reads before the epoch.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// `chrono`-free date stamp for the prompt — good enough for "today" context

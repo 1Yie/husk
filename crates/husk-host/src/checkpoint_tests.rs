@@ -323,3 +323,16 @@ async fn slow_plugins_cannot_push_a_later_veto_past_a_shared_timeout() {
         "vetoed"
     );
 }
+
+/// A streamed write keeps the turn-start stamp `begin` was given. The sidebar
+/// orders sessions by it; re-stamping per write made two running sessions
+/// overtake each other on every flush.
+#[tokio::test]
+async fn streamed_writes_keep_the_turn_start_stamp() {
+    let (_dir, store, checkpoint, _output) = setup();
+    let mut started = meta();
+    started.updated_at = 42;
+    checkpoint.begin(&[ChatMessage::system("system")], "task", started);
+    checkpoint.drain().await;
+    assert_eq!(store.meta(1).unwrap().updated_at, 42);
+}

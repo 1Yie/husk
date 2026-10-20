@@ -194,3 +194,32 @@ async fn approval_still_applies_when_file_is_unchanged() {
     approve_after(dir.path(), patch, || {}).await;
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "two\n");
 }
+
+/// A settings write is not conversation activity. A config reload reaches
+/// every live actor at once; stamping each "now" reordered the sidebar by
+/// whichever actor wrote last.
+#[tokio::test]
+async fn a_settings_change_keeps_the_session_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::open(dir.path()).unwrap();
+    let id = store.next_id();
+    let provider = Arc::new(ScriptedProvider::new());
+    provider.script_text("answer");
+    let (mut actor, _) = SessionActor::spawn_with_id(cfg(dir.path(), provider), id);
+    actor
+        .handle(UiCommand::Prompt {
+            text: "prompt".into(),
+        })
+        .await;
+    let mut meta = store.meta(id).unwrap();
+    meta.updated_at = 5;
+    store.upsert_meta(meta).unwrap();
+
+    actor.handle(UiCommand::ReloadModel).await;
+    actor
+        .handle(UiCommand::SetThinkingLevel {
+            level: "high".into(),
+        })
+        .await;
+    assert_eq!(store.meta(id).unwrap().updated_at, 5);
+}
