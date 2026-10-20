@@ -309,27 +309,25 @@ impl TurnPolicy for CodingPolicy {
 }
 
 impl CodingPolicy {
-    /// Run the architecture check over this turn's files. The baseline is
-    /// taken lazily by [`TurnPolicy::before_dispatch`] before the first write,
-    /// so it is the state the turn started from. A turn with no touched files
-    /// and no baseline skips the check.
-    async fn check_blueprint(&self, touched: Vec<PathBuf>) -> Option<crate::blueprint::Report> {
+    /// Run the architecture check over this turn's changes. `written` is what
+    /// the file tools reported; the baseline diff adds the paths a tool that
+    /// bypasses the tracker (`bash`) rewrote. The baseline is taken lazily by
+    /// [`TurnPolicy::before_dispatch`] before the first write, so it is the
+    /// state the turn started from. A turn with no writes and no baseline
+    /// skips the check.
+    async fn check_blueprint(&self, written: Vec<PathBuf>) -> Option<crate::blueprint::Report> {
         let root = self.workspace_root.clone();
         let enabled = self.architecture.get();
-        let mut touched = touched;
         let baseline = self.state.lock().unwrap().architecture_baseline.clone();
-        if touched.is_empty() && baseline.is_none() {
+        if written.is_empty() && baseline.is_none() {
             return None;
         }
         tokio::task::spawn_blocking(move || {
-            if let Some(before) = &baseline {
-                for p in crate::blueprint::changed_since(&root, before) {
-                    if !touched.contains(&p) {
-                        touched.push(p);
-                    }
-                }
-            }
-            crate::blueprint::check_turn(&root, enabled, &touched, baseline.as_ref())
+            let external = baseline
+                .as_ref()
+                .map(|before| crate::blueprint::changed_since(&root, before))
+                .unwrap_or_default();
+            crate::blueprint::check_turn(&root, enabled, &written, &external, baseline.as_ref())
         })
         .await
         .ok()

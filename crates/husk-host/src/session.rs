@@ -290,8 +290,10 @@ fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
     vec![
         agent_kernel::tools::batch::spec_with(batch_profile()),
         agent_tools_fs::fs_read::spec(),
-        agent_tools_fs::fs_patch::spec(),
-        agent_tools_fs::apply_patch::spec(),
+        // The patch tools cannot write `.blueprint/`: a node file has one
+        // writer, `blueprint_edit`, which validates the fields first.
+        agent_coding::blueprint::guard_patch(agent_tools_fs::fs_patch::spec()),
+        agent_coding::blueprint::guard_patch(agent_tools_fs::apply_patch::spec()),
         agent_tools_fs::list_dir::spec(),
         agent_tools_fs::grep::spec(),
         agent_tools_shell::test_runner::spec(),
@@ -302,8 +304,11 @@ fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
         agent_tools_computer::screenshot::spec(),
         agent_tools_computer::computer::spec(),
         agent_coding::blueprint_tool::spec(),
+        agent_coding::blueprint::edit::spec(),
         agent_coding::skill::spec(),
-        agent_tools_serena::spec(),
+        // Serena's own file ops write too, and its target sits inside
+        // `arguments` — the guard reads through the dispatcher.
+        agent_coding::blueprint::guard_patch(agent_tools_serena::spec()),
     ]
 }
 

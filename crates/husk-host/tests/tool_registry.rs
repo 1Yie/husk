@@ -43,7 +43,7 @@ fn staged_flag_matches_the_registry() {
         .collect();
     let mut staged: Vec<_> = specs.iter().filter(|s| s.staged).map(|s| s.name).collect();
     staged.sort();
-    assert_eq!(staged, ["apply_patch", "fuzzy_patch"]);
+    assert_eq!(staged, ["apply_patch", "blueprint_edit", "fuzzy_patch"]);
     for name in staged {
         let spec = reg.spec(name).unwrap();
         assert!(!spec.readonly, "staged writer {name} must not be readonly");
@@ -52,6 +52,51 @@ fn staged_flag_matches_the_registry() {
     let serena = reg.spec("serena").unwrap();
     assert_eq!(serena.class, ToolClass::WorkspaceMutation);
     assert!(!serena.staged, "serena must not write before approval");
+}
+
+/// A node file has one writer. The patch tools refuse `.blueprint/` paths and
+/// name `blueprint_edit`, so a model cannot hand-edit a frontmatter block the
+/// loader would then reject.
+#[tokio::test]
+async fn patch_tools_refuse_blueprint_paths() {
+    let reg = base_registries().0;
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = Arc::new(ToolCtx::new().with_workspace(dir.path()));
+
+    let err = reg
+        .dispatch(
+            "apply_patch",
+            serde_json::json!({"patch": "*** Begin Patch\n*** Update File: .blueprint/core.md\n@@\n-a\n+b\n*** End Patch\n"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("blueprint_edit"), "{err}");
+
+    let err = reg
+        .dispatch(
+            "fuzzy_patch",
+            serde_json::json!({"path": ".blueprint/core.md", "search": "a", "replace": "b"}),
+            ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("blueprint_edit"), "{err}");
+
+    // Everything else still reaches the wrapped tool: the refusal is scoped to
+    // the blueprint directory, not a blanket ban on patching.
+    let dir2 = tempfile::tempdir().unwrap();
+    std::fs::write(dir2.path().join("a.rs"), "fn a() {}\n").unwrap();
+    let ctx2 = Arc::new(ToolCtx::new().with_workspace(dir2.path()));
+    let out = reg
+        .dispatch(
+            "fuzzy_patch",
+            serde_json::json!({"path": "a.rs", "search": "fn a()", "replace": "fn b()"}),
+            ctx2,
+        )
+        .await
+        .unwrap();
+    assert!(out.content.contains("patched a.rs"), "{}", out.content);
 }
 
 #[test]

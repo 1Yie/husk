@@ -209,8 +209,9 @@ async fn rule_violation_buys_one_rework_round_then_reports() {
     );
 }
 
-/// A rework that fixes the violation (here: claiming the path in the node
-/// file) ends the turn cleanly — no report.
+/// A rework that fixes the violation (here: claiming the path in the node)
+/// ends the turn cleanly — no report. The fix goes through `blueprint_edit`:
+/// the patch tools refuse `.blueprint/` paths.
 #[tokio::test]
 async fn fixed_violation_ends_clean() {
     let dir = tempfile::tempdir().unwrap();
@@ -225,8 +226,8 @@ async fn fixed_violation_ends_clean() {
     )));
     stub.script_text("added it");
     stub.push_script(tool_call(
-        "apply_patch",
-        serde_json::json!({"patch": "*** Begin Patch\n*** Update File: .blueprint/core.md\n@@\n-owns = [\"src/**\"]\n+owns = [\"src/**\", \"loose/**\"]\n*** End Patch\n"}),
+        "blueprint_edit",
+        serde_json::json!({"action": "update", "node": "core", "owns": ["src/**", "loose/**"], "reason": "claim loose/"}),
     ));
     stub.script_text("claimed loose/ in core");
     let (mut actor, mut ch) = spawn(dir.path(), stub.clone(), "build");
@@ -238,6 +239,12 @@ async fn fixed_violation_ends_clean() {
         .await;
 
     assert_eq!(stub.calls.lock().unwrap().len(), 4);
+    assert!(
+        std::fs::read_to_string(dir.path().join(".blueprint/core.md"))
+            .unwrap()
+            .contains("loose/**"),
+        "the staged edit committed"
+    );
     ch.event_rx.close();
     while let Some(ev) = ch.event_rx.recv().await {
         assert!(
@@ -441,4 +448,41 @@ async fn switch_on_renders_index_immediately() {
         .handle(UiCommand::SetBlueprintEnabled { enabled: true })
         .await;
     assert!(system_prompt(&actor).contains("- core — Core engine. [src/**]"));
+}
+
+/// A patch against a node file is refused and the tool result names
+/// `blueprint_edit` — the model is redirected, and the file is untouched, so
+/// the turn needs no rework round.
+#[tokio::test]
+async fn a_patch_on_a_node_file_is_refused_and_redirected() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = "+++\nowns = [\"src/**\"]\n+++\nCore engine.\n";
+    write(dir.path(), ".blueprint/core.md", node);
+    let stub = Arc::new(ScriptedProvider::new().with_script(tool_call(
+        "apply_patch",
+        serde_json::json!({"patch": "*** Begin Patch\n*** Update File: .blueprint/core.md\n@@\n-owns = [\"src/**\"]\n+owns = [\"src/**\", \"loose/**\"]\n*** End Patch\n"}),
+    )));
+    stub.script_text("understood");
+    let (mut actor, _ch) = spawn(dir.path(), stub.clone(), "build");
+
+    actor
+        .handle(UiCommand::Prompt {
+            text: "claim loose/".into(),
+        })
+        .await;
+
+    assert_eq!(stub.calls.lock().unwrap().len(), 2, "no rework round");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".blueprint/core.md")).unwrap(),
+        node,
+        "the node file is untouched"
+    );
+    assert!(
+        actor.history().iter().any(|m| m
+            .content
+            .as_deref()
+            .is_some_and(|c| c.contains("blueprint_edit"))),
+        "the refusal teaches the alternative"
+    );
+    assert!(hidden_texts(&actor).is_empty());
 }

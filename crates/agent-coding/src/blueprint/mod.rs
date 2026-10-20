@@ -20,6 +20,11 @@
 //! edges, source imports for edges inside one package — so it cannot drift:
 //! [`Blueprint::check`] narrows "drift detection" to "rule violations".
 //!
+//! Node files are written through [`edit`] (`blueprint_edit`), never through
+//! the generic patch tools — [`guard`] refuses those paths. An architecture
+//! change is a structured edit whose rendered file the loader must accept,
+//! not a text diff against a Markdown file.
+//!
 //! Markdown files without a frontmatter block (a `README.md` in the directory)
 //! are prose, not nodes, and are skipped.
 //!
@@ -30,10 +35,13 @@
 //! imports. A manifest that cannot be read or parsed is reported as a warning,
 //! and its dependencies go unchecked until it is fixed.
 
+pub mod edit;
+pub mod guard;
 pub mod imports;
 pub mod manifest;
 mod runtime;
 
+pub use guard::guard_patch;
 pub use runtime::{changed_since, check_turn, command, nudge, prompt_block, snapshot, Baseline};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -68,17 +76,19 @@ pub struct Node {
     pub body: String,
 }
 
-#[derive(Debug, Deserialize)]
+/// A node file's frontmatter — one type for both directions, so what
+/// [`edit`] renders is by construction what the loader reads back.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct Frontmatter {
-    #[serde(default)]
-    node: Option<String>,
-    #[serde(default)]
-    owns: Vec<String>,
-    #[serde(default)]
-    forbidden_deps: Vec<String>,
-    #[serde(default)]
-    invariants: Vec<String>,
+pub(crate) struct Frontmatter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) node: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) owns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) forbidden_deps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) invariants: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -234,23 +244,15 @@ impl Blueprint {
                     continue;
                 }
             };
-            let Some((front, body)) = split_frontmatter(&text) else {
-                if looks_like_node(&path, &text) {
-                    load_errors.push((
-                        rel,
-                        "frontmatter fence malformed — a node file opens with `+++` on its own line and closes with another `+++`".into(),
-                    ));
-                }
-                continue; // otherwise prose, not a node
-            };
-            let fm: Frontmatter = match toml::from_str(front) {
-                Ok(fm) => fm,
-                Err(e) => {
-                    load_errors.push((rel, e.message().to_string()));
+            let (fm, body) = match parse_node_file(&path, &text) {
+                NodeParse::Node(fm, body) => (fm, body),
+                NodeParse::Prose => continue,
+                NodeParse::Malformed(msg) => {
+                    load_errors.push((rel, msg));
                     continue;
                 }
             };
-            let name = fm.node.unwrap_or_else(|| {
+            let name = fm.node.clone().unwrap_or_else(|| {
                 path.file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default()
@@ -277,8 +279,8 @@ impl Blueprint {
                 owns: fm.owns,
                 forbidden_deps: fm.forbidden_deps,
                 invariants: fm.invariants,
-                summary: summary_of(body),
-                body: body.trim().to_string(),
+                summary: summary_of(&body),
+                body,
             });
         }
         Some(Self {
@@ -713,6 +715,13 @@ impl Blueprint {
                 }
             }
             let Ok(forbidden) = set.build() else { continue };
+            if forbidden.is_match(&n.name) {
+                r.push(
+                    Severity::Error,
+                    Some(&n.name),
+                    "its own `forbidden_deps` matches the node itself".into(),
+                );
+            }
             let reqs = graph.requires.get(&n.name);
             for dep in reqs.into_iter().flatten() {
                 if forbidden.is_match(dep) {
@@ -812,7 +821,7 @@ pub fn render_node(n: &Node, graph: &Graph) -> String {
     out
 }
 
-fn glob(pat: &str) -> Result<Glob, globset::Error> {
+pub(crate) fn glob(pat: &str) -> Result<Glob, globset::Error> {
     // `*` stays within one path segment; `**` crosses them.
     GlobBuilder::new(pat.trim_start_matches("./"))
         .literal_separator(true)
@@ -849,6 +858,53 @@ fn summary_of(body: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+/// What reading one `.blueprint/*.md` file yielded.
+pub(crate) enum NodeParse {
+    /// A node: its frontmatter and the trimmed body after it.
+    Node(Frontmatter, String),
+    /// Markdown that never claimed to be a node — a `README.md`, or a file
+    /// with no `+++` fence at all.
+    Prose,
+    /// It claimed to be a node and failed; the message says why.
+    Malformed(String),
+}
+
+/// Read one node file's text. The loader and [`edit`] share this, so an edit
+/// cannot produce something the loader would then refuse.
+pub(crate) fn parse_node_file(path: &Path, text: &str) -> NodeParse {
+    let Some((front, body)) = split_frontmatter(text) else {
+        return if looks_like_node(path, text) {
+            NodeParse::Malformed(
+                "frontmatter fence malformed — a node file opens with `+++` on its own line and closes with another `+++`".into(),
+            )
+        } else {
+            NodeParse::Prose
+        };
+    };
+    match toml::from_str::<Frontmatter>(front) {
+        Ok(fm) => NodeParse::Node(fm, body.trim().to_string()),
+        Err(e) => NodeParse::Malformed(e.message().to_string()),
+    }
+}
+
+/// The file text for a node: the `+++` frontmatter block, a blank line, then
+/// the prose. Empty fields are omitted so a node file states only what it
+/// rules.
+pub(crate) fn render_node_file(fm: &Frontmatter, body: &str) -> String {
+    let front = toml::to_string(fm).unwrap_or_default();
+    let body = body.trim();
+    let mut out = String::with_capacity(front.len() + body.len() + 16);
+    out.push_str("+++\n");
+    out.push_str(&front);
+    out.push_str("+++\n");
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(body);
+        out.push('\n');
+    }
+    out
 }
 
 fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -906,7 +962,7 @@ fn normalize(p: &str) -> String {
     p.trim_start_matches("./").replace('\\', "/")
 }
 
-fn rel_path(p: &Path) -> String {
+pub(crate) fn rel_path(p: &Path) -> String {
     p.components()
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
@@ -915,6 +971,26 @@ fn rel_path(p: &Path) -> String {
 
 fn rel_str(root: &Path, p: &Path) -> String {
     rel_path(p.strip_prefix(root).unwrap_or(p))
+}
+
+/// Every workspace-relative path the architecture layer watches: the ones the
+/// workspace walk indexes, plus the node files it cannot see. `.blueprint/` is
+/// hidden, so `build_file_index` skips it — a node rewritten by `bash` would be
+/// invisible to the turn-end diff without this union.
+///
+/// `None` when the walk fails, which is also when a baseline is impossible:
+/// reporting every file as changed would be worse than no baseline at all.
+pub(crate) fn watched_files(root: &Path) -> Option<Vec<String>> {
+    let mut files = agent_context::WorkspaceScanner::build_file_index(root, 0).ok()?;
+    let dir = root.join(BLUEPRINT_DIR);
+    if dir.is_dir() {
+        let mut nodes = Vec::new();
+        collect_md(&dir, &mut nodes);
+        files.extend(nodes.iter().map(|p| rel_str(root, p)));
+    }
+    files.sort();
+    files.dedup();
+    Some(files)
 }
 
 #[cfg(test)]

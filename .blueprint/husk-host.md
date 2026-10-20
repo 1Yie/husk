@@ -20,4 +20,4 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 不被任何前端反向依赖（前端依赖它）
 
 ## 对外契约
-- `SessionManager` / `SessionActor` 以 `UiCommand` 驱动、`UiEvent` 回流；`base_registries()` 组装完整工具集
+- `SessionManager` / `SessionActor` 以 `UiCommand` 驱动、`UiEvent` 回流；`base_registries()` 组装完整工具集（patch 工具与 `serena` 元工具在此经 `agent_coding::blueprint::guard_patch` 包装，`.blueprint/` 只能由 `blueprint_edit` 写入）
