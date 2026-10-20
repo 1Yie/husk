@@ -42,6 +42,23 @@ const DEFAULT_BASES: Record<string, string> = {
   // rig appends `/v1beta/models/...` itself; a `/v1beta` suffix here doubles it.
   gemini: "https://generativelanguage.googleapis.com",
 };
+/** Session-affinity header dialect (`sessionAffinityFormat`) — the header names
+ * a multi-node gateway expects for one conversation's routing key. */
+const AFFINITY_FORMAT_OPTIONS = [
+  { value: "default", label: "默认（通用组）" },
+  { value: "openai", label: "openai（含 session_id）" },
+  { value: "openai-nosession", label: "openai-nosession" },
+  { value: "openrouter", label: "openrouter（x-session-id）" },
+  { value: "opencode", label: "opencode（x-opencode-session）" },
+  { value: "custom", label: "自定义…" },
+];
+/** The session-affinity switch. Unset sends to a gateway and not to a vendor's
+ * own endpoint, so the default label says that instead of promising "send". */
+const AFFINITY_SEND_OPTIONS = [
+  { value: "default", label: "默认（网关发送，官方端点不发）" },
+  { value: "true", label: "发送" },
+  { value: "false", label: "不发送" },
+];
 
 /** Write `value` into `obj` under whichever of `keys` already exists
  * (config files mix snake_case and camelCase aliases) — else canonical. */
@@ -75,6 +92,13 @@ async function followDefaultModelRename(
     console.error("follow default model rename failed:", e);
   }
 }
+
+/** Split the custom header field — commas and whitespace both separate. */
+const splitHeaderNames = (v: string) =>
+  v
+    .split(/[,\s]+/)
+    .map((n) => n.trim())
+    .filter(Boolean);
 
 const numOr = (v: string) => {
   const n = Number(v);
@@ -141,6 +165,10 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   const [nDev, setNDev] = useState("default");
   const [nEff, setNEff] = useState("default");
   const [nTok, setNTok] = useState("");
+  const [nAffinity, setNAffinity] = useState("default");
+  const [nAffinityFmt, setNAffinityFmt] = useState("default");
+  const [nAffinityCustom, setNAffinityCustom] = useState("");
+  const [nUa, setNUa] = useState("");
   const [nHeaders, setNHeaders] = useState("");
   const [eHeaders, setEHeaders] = useState("");
   const [editProv, setEditProv] = useState<string | null>(null);
@@ -153,6 +181,10 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   const [eDevRole, setEDevRole] = useState("default");
   const [eEffort, setEEffort] = useState("default");
   const [eMaxTok, setEMaxTok] = useState("");
+  const [eAffinity, setEAffinity] = useState("default");
+  const [eAffinityFmt, setEAffinityFmt] = useState("default");
+  const [eAffinityCustom, setEAffinityCustom] = useState("");
+  const [eUa, setEUa] = useState("");
 
   // ---- edit-model dialog ----
   const [editModel, setEditModel] = useState<{ provider: string; index: number } | null>(null);
@@ -215,11 +247,20 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
       models,
     };
     if (provDefault.trim()) p.default_model = provDefault.trim();
+    if (nUa.trim()) p.user_agent = nUa.trim();
+    const customNames = splitHeaderNames(nAffinityCustom);
+    if (nAffinityFmt === "custom" && customNames.length) {
+      p.session_affinity_headers = customNames;
+    }
     const c: Record<string, unknown> = {};
     if (nStore !== "default") c.supports_store = nStore === "true";
     if (nDev !== "default") c.supports_developer_role = nDev === "true";
     if (nEff !== "default") c.supports_reasoning_effort = nEff === "true";
     if (nTok.trim()) c.max_tokens_field = nTok.trim();
+    if (nAffinity !== "default") c.send_session_affinity_headers = nAffinity === "true";
+    if (nAffinityFmt !== "default" && nAffinityFmt !== "custom") {
+      c.session_affinity_format = nAffinityFmt;
+    }
     if (Object.keys(c).length) p.compat = c;
     if (nHeaders.trim()) {
       try { p.headers = JSON.parse(nHeaders); }
@@ -230,7 +271,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
       toast.success("已添加 API");
       setProvOpen(false);
       setProvKey(""); setProvBase(""); setProvKey_(""); setProvModels(""); setProvDefault("");
-      setNStore("default"); setNDev("default"); setNEff("default"); setNTok(""); setNHeaders("");
+      setNStore("default"); setNDev("default"); setNEff("default"); setNTok("");
+      setNAffinity("default"); setNAffinityFmt("default"); setNAffinityCustom(""); setNUa("");
+      setNHeaders("");
     }
   };
 
@@ -250,6 +293,17 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     setEDevRole(tri(c.supports_developer_role ?? c.supportsDeveloperRole));
     setEEffort(tri(c.supports_reasoning_effort ?? c.supportsReasoningEffort));
     setEMaxTok(c.max_tokens_field ?? c.maxTokensField ?? "");
+    setEAffinity(tri(c.send_session_affinity_headers ?? c.sendSessionAffinityHeaders));
+    // A provider that named its own headers gets the 自定义 row, however its
+    // `sessionAffinityFormat` reads.
+    const customNames: string[] = p.session_affinity_headers ?? p.sessionAffinityHeaders ?? [];
+    setEAffinityFmt(
+      customNames.length
+        ? "custom"
+        : c.session_affinity_format ?? c.sessionAffinityFormat ?? "default",
+    );
+    setEAffinityCustom(customNames.join(", "));
+    setEUa(p.user_agent ?? p.userAgent ?? "");
     setEHeaders(p.headers ? JSON.stringify(p.headers) : "");
   };
 
@@ -271,16 +325,39 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     setAliased(p, ["default_model", "defaultModel"], eDefault.trim() || null);
     const compat = { ...(p.compat ?? {}) };
     const put = (k: string, ck: string, v: string) => {
+      // Drop both spellings first: leaving the alias behind writes the same
+      // compat key twice, and the loader rejects the duplicate.
+      delete compat[k];
+      delete compat[ck];
       const t = triOr(v);
-      if (t === undefined) { delete compat[k]; delete compat[ck]; }
-      else compat[k] = t;
+      if (t !== undefined) compat[k] = t;
     };
     put("supports_store", "supportsStore", eStore);
     put("supports_developer_role", "supportsDeveloperRole", eDevRole);
     put("supports_reasoning_effort", "supportsReasoningEffort", eEffort);
+    put(
+      "send_session_affinity_headers",
+      "sendSessionAffinityHeaders",
+      eAffinity,
+    );
     const mt = eMaxTok.trim();
-    if (mt) compat.max_tokens_field = mt; else { delete compat.max_tokens_field; delete compat.maxTokensField; }
+    delete compat.max_tokens_field;
+    delete compat.maxTokensField;
+    if (mt) compat.max_tokens_field = mt;
+    const fmt = eAffinityFmt.trim();
+    delete compat.session_affinity_format;
+    delete compat.sessionAffinityFormat;
+    if (fmt && fmt !== "default" && fmt !== "custom") {
+      compat.session_affinity_format = fmt;
+    }
     if (Object.keys(compat).length) p.compat = compat; else delete p.compat;
+    setAliased(p, ["user_agent", "userAgent"], eUa.trim() || null);
+    delete p.session_affinity_headers;
+    delete p.sessionAffinityHeaders;
+    const customNames = splitHeaderNames(eAffinityCustom);
+    if (fmt === "custom" && customNames.length) {
+      p.session_affinity_headers = customNames;
+    }
     if (eHeaders.trim()) {
       try { p.headers = JSON.parse(eHeaders); }
       catch { toast.error("headers JSON 解析失败 — 已忽略"); }
@@ -658,7 +735,32 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                   <Input value={nTok} onChange={(e) => setNTok(e.target.value)}
                     placeholder="max_tokens" className="h-8 text-xs font-mono" />
                 </Field>
+                <Field label="send_session_affinity_headers">
+                  <SettingSelect
+                    value={nAffinity}
+                    onChange={setNAffinity}
+                    options={AFFINITY_SEND_OPTIONS}
+                  />
+                </Field>
+                <Field label="session_affinity_format">
+                  <SettingSelect
+                    value={nAffinityFmt}
+                    onChange={setNAffinityFmt}
+                    options={AFFINITY_FORMAT_OPTIONS}
+                  />
+                </Field>
               </div>
+              {nAffinityFmt === "custom" && (
+                <Field label="自定义请求头名（逗号或空格分隔）">
+                  <Input value={nAffinityCustom} onChange={(e) => setNAffinityCustom(e.target.value)}
+                    placeholder="x-acme-session, x-acme-conv"
+                    className="h-8 text-xs font-mono" />
+                </Field>
+              )}
+              <Field label="User-Agent（可选，默认 husk/版本）">
+                <Input value={nUa} onChange={(e) => setNUa(e.target.value)}
+                  placeholder="my-coding-agent/1.0" className="h-8 text-xs font-mono" />
+              </Field>
               <Field label="请求头 JSON（可选）">
                 <Textarea value={nHeaders} onChange={(e) => setNHeaders(e.target.value)}
                   rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono max-h-40" />
@@ -723,7 +825,32 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                   <Input value={eMaxTok} onChange={(e) => setEMaxTok(e.target.value)}
                     placeholder="max_tokens" className="h-8 text-xs font-mono" />
                 </Field>
+                <Field label="send_session_affinity_headers">
+                  <SettingSelect
+                    value={eAffinity}
+                    onChange={setEAffinity}
+                    options={AFFINITY_SEND_OPTIONS}
+                  />
+                </Field>
+                <Field label="session_affinity_format">
+                  <SettingSelect
+                    value={eAffinityFmt}
+                    onChange={setEAffinityFmt}
+                    options={AFFINITY_FORMAT_OPTIONS}
+                  />
+                </Field>
               </div>
+              {eAffinityFmt === "custom" && (
+                <Field label="自定义请求头名（逗号或空格分隔）">
+                  <Input value={eAffinityCustom} onChange={(e) => setEAffinityCustom(e.target.value)}
+                    placeholder="x-acme-session, x-acme-conv"
+                    className="h-8 text-xs font-mono" />
+                </Field>
+              )}
+              <Field label="User-Agent（可选，留空沿用 husk/版本）">
+                <Input value={eUa} onChange={(e) => setEUa(e.target.value)}
+                  placeholder="my-coding-agent/1.0" className="h-8 text-xs font-mono" />
+              </Field>
               <Field label="请求头 JSON（可选，留空清除）">
                 <Textarea value={eHeaders} onChange={(e) => setEHeaders(e.target.value)}
                   rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono max-h-40" />
