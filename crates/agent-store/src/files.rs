@@ -153,6 +153,22 @@ struct RecoverySnapshot {
     recovery_rows: Vec<usize>,
     meta: SessionMeta,
 }
+
+/// The cheap half of a recovery snapshot: its identity plus the meta. Listing
+/// sessions needs only this, while the snapshot's `history` can be hundreds of
+/// kilobytes of message bodies that no list row ever shows.
+///
+/// Written beside the snapshot at every checkpoint, so a missing sidecar
+/// (an install that predates it, or a lost file) is rebuilt from the snapshot
+/// the first time it is needed — no data surgery, ever.
+#[derive(Serialize, Deserialize)]
+struct RecoveryMeta {
+    base_revision: u64,
+    #[serde(default)]
+    base_generation: u64,
+    meta: SessionMeta,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Record {
@@ -192,9 +208,18 @@ fn message_hash(message: &ChatMessage) -> std::io::Result<u64> {
     Ok(xxhash_rust::xxh3::xxh3_64(&serde_json::to_vec(message)?))
 }
 fn journal_index(journal: &Path, index: &Path) -> std::io::Result<JournalIndex> {
+    journal_index_rebuilt(journal, index).map(|(index, _)| index)
+}
+
+/// [`journal_index`], plus whether committed records had to be replayed past
+/// the cached index — `true` means the cache on disk is behind and worth
+/// rewriting.
+fn journal_index_rebuilt(journal: &Path, index: &Path) -> std::io::Result<(JournalIndex, bool)> {
     let file = match File::open(journal) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(JournalIndex::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((JournalIndex::default(), false))
+        }
         Err(e) => return Err(e),
     };
     let length = file.metadata()?.len();
@@ -205,6 +230,7 @@ fn journal_index(journal: &Path, index: &Path) -> std::io::Result<JournalIndex> 
         .filter(|c| c.bytes <= length && c.turn_rule == TURN_RULE)
         .unwrap_or_default();
     committed.turn_rule = TURN_RULE;
+    let cached_bytes = committed.bytes;
     let mut pending = committed.clone();
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(committed.bytes))?;
@@ -256,7 +282,8 @@ fn journal_index(journal: &Path, index: &Path) -> std::io::Result<JournalIndex> 
         }
         offset += len as u64;
     }
-    Ok(committed)
+    let rebuilt = committed.bytes > cached_bytes;
+    Ok((committed, rebuilt))
 }
 
 struct JournalWriter {
@@ -264,6 +291,9 @@ struct JournalWriter {
     index: JournalIndex,
     index_path: PathBuf,
     recovery_path: PathBuf,
+    /// The snapshot's meta sidecar — dropped with it, so a list never reads a
+    /// draft whose snapshot is gone.
+    recovery_meta_path: PathBuf,
     clear_recovery: bool,
 }
 impl JournalWriter {
@@ -374,6 +404,7 @@ impl JournalWriter {
             // reporting failure here would leave the caller's CAS revision
             // behind the history that was actually committed.
             let _ = remove_file_if_exists(&self.recovery_path);
+            let _ = remove_file_if_exists(&self.recovery_meta_path);
         }
         Ok(())
     }
@@ -392,6 +423,9 @@ impl SessionStore {
     fn recovery_path(&self, id: i64) -> PathBuf {
         self.directory().join(format!("{id}.recovery.json"))
     }
+    fn recovery_meta_path(&self, id: i64) -> PathBuf {
+        self.directory().join(format!("{id}.recovery.meta.json"))
+    }
     fn lock(&self, id: i64) -> PathBuf {
         self.directory().join(format!("{id}.lock"))
     }
@@ -406,6 +440,26 @@ impl SessionStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
+    }
+    /// The snapshot's identity and meta, without its history. `None` when the
+    /// sidecar is absent or torn — the caller then reads the snapshot itself
+    /// and rewrites this one.
+    fn read_recovery_meta(&self, id: i64) -> Option<RecoveryMeta> {
+        read_json(&self.recovery_meta_path(id)).ok().flatten()
+    }
+    /// Cache the meta half of a snapshot whose sidecar was missing.
+    fn store_recovery_meta(&self, id: i64, snapshot: &RecoverySnapshot) {
+        let _ = atomic_json_checkpoint(
+            &self.recovery_meta_path(id),
+            &RecoveryMeta {
+                base_revision: snapshot.base_revision,
+                base_generation: snapshot.base_generation,
+                meta: snapshot.meta.clone(),
+            },
+        );
+    }
+    fn clear_recovery_meta(&self, id: i64) {
+        let _ = remove_file_if_exists(&self.recovery_meta_path(id));
     }
     /// Revision of a canonical journal from its cached per-message hashes —
     /// the same construction as `history_revision_of`, without loading any
@@ -455,10 +509,38 @@ impl SessionStore {
     }
     fn clear_recovery(&self, id: i64) -> std::io::Result<()> {
         let path = self.recovery_path(id);
+        self.clear_recovery_meta(id);
         locked(&self.lock(id), || remove_file_if_exists(&path))
     }
-    fn read_index(&self, id: i64) -> std::io::Result<JournalIndex> {
+    /// The index for a caller already holding the session lock — a writer,
+    /// whose own commit rewrites the cache anyway.
+    fn read_index_locked(&self, id: i64) -> std::io::Result<JournalIndex> {
         journal_index(&self.journal(id), &self.index(id))
+    }
+    fn read_index(&self, id: i64) -> std::io::Result<JournalIndex> {
+        let (index, rebuilt) = journal_index_rebuilt(&self.journal(id), &self.index(id))?;
+        if rebuilt {
+            self.store_index(id, &index);
+        }
+        Ok(index)
+    }
+    /// Cache an index a read rebuilt from the journal. Without this an index
+    /// the current rule rejects (one written before `turn_rule` existed, or a
+    /// lost cache) is re-derived from the whole journal on every read — and
+    /// `list()` reads every session, so the sidebar and each session open paid
+    /// for every journal on disk, tens of megabytes, every time.
+    ///
+    /// Best effort and lock-guarded: the index is re-read under the session
+    /// lock and written only if no writer committed meanwhile, so a cache
+    /// write never races a journal append.
+    fn store_index(&self, id: i64, rebuilt: &JournalIndex) {
+        let _ = locked(&self.lock(id), || {
+            let (current, still_stale) = journal_index_rebuilt(&self.journal(id), &self.index(id))?;
+            if still_stale && current.bytes == rebuilt.bytes {
+                atomic_json(&self.index(id), &current)?;
+            }
+            Ok(())
+        });
     }
     /// Metadata-only transactions keep any live recovery draft; history
     /// transactions clear it after their commit (see `JournalWriter::commit`).
@@ -476,7 +558,7 @@ impl SessionStore {
         f: impl FnOnce(&mut JournalWriter) -> std::io::Result<T>,
     ) -> std::io::Result<T> {
         locked(&self.lock(id), || {
-            let index = self.read_index(id)?;
+            let index = self.read_index_locked(id)?;
             if index.deleted {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -496,6 +578,7 @@ impl SessionStore {
                 index,
                 index_path: self.index(id),
                 recovery_path: self.recovery_path(id),
+                recovery_meta_path: self.recovery_meta_path(id),
                 clear_recovery,
             };
             let result = f(&mut writer)?;
@@ -661,20 +744,51 @@ impl SessionStore {
     /// One session's meta, resolved exactly like its `list()` row — without
     /// scanning every session in the workspace.
     pub fn meta(&self, id: i64) -> Option<SessionMeta> {
-        let (snapshot, index) = self.recovery_and_index(id).ok()?;
+        let index = self.read_index(id).ok()?;
         if index.deleted {
             return None;
         }
-        match snapshot {
-            Some(snapshot) => {
-                let mut meta = snapshot.meta;
-                if let Some(old) = &index.meta {
-                    preserve_canonical(&mut meta, old);
-                }
-                Some(meta)
-            }
-            _ => index.meta,
+        // A live turn's draft carries the freshest meta. Read the sidecar
+        // rather than the snapshot: the snapshot holds the turn's whole
+        // history, and parsing it per session made every `list()` (the
+        // sidebar, and each session open) cost hundreds of milliseconds.
+        let Some(draft) = self.recovery_meta_for(id, &index) else {
+            return index.meta;
+        };
+        let mut meta = draft.meta;
+        if let Some(old) = &index.meta {
+            preserve_canonical(&mut meta, old);
         }
+        Some(meta)
+    }
+
+    /// The recovery snapshot's identity + meta, if it still describes this
+    /// index. Falls back to the full snapshot when the sidecar is missing and
+    /// writes it back, so an install that predates the sidecar heals itself on
+    /// the first read instead of paying the parse forever.
+    fn recovery_meta_for(&self, id: i64, index: &JournalIndex) -> Option<RecoveryMeta> {
+        let matches = |revision: u64, generation: u64| {
+            generation == index.history_generation && revision == Self::index_revision(index)
+        };
+        // A sidecar that still describes this index is all a list row needs.
+        if let Some(meta) = self.read_recovery_meta(id) {
+            if matches(meta.base_revision, meta.base_generation) {
+                return Some(meta);
+            }
+        }
+        // Missing, torn, or written against an older snapshot (a crash between
+        // the two writes): read the snapshot itself and rewrite the sidecar, so
+        // an install that predates it heals on the first read.
+        let snapshot = self.read_recovery(id).ok().flatten()?;
+        if !Self::recovery_matches(&snapshot, index) {
+            return None;
+        }
+        self.store_recovery_meta(id, &snapshot);
+        Some(RecoveryMeta {
+            base_revision: snapshot.base_revision,
+            base_generation: snapshot.base_generation,
+            meta: snapshot.meta,
+        })
     }
     pub fn set_pinned(&self, id: i64, pinned: bool) -> std::io::Result<bool> {
         self.edit_meta(id, |m| m.pinned = pinned)
@@ -973,7 +1087,7 @@ impl SessionStore {
         let id = meta.id;
         let revision = Self::history_revision_of(history);
         locked(&self.lock(id), || {
-            let index = self.read_index(id)?;
+            let index = self.read_index_locked(id)?;
             if index.deleted {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -991,14 +1105,22 @@ impl SessionStore {
             // Draft writes intentionally skip fsync: a process crash keeps
             // the page cache, and a power loss only costs this recovery point
             // (the canonical journal is still synced on commit).
+            let snapshot = RecoverySnapshot {
+                base_revision: Self::index_revision(&index),
+                base_generation: index.history_generation,
+                history: history.to_vec(),
+                recovery_rows: recovery_rows.to_vec(),
+                meta,
+            };
+            atomic_json_checkpoint(&self.recovery_path(id), &snapshot)?;
+            // The sidecar is what `list()` reads; write it with the snapshot so
+            // the two never disagree about which snapshot is live.
             atomic_json_checkpoint(
-                &self.recovery_path(id),
-                &RecoverySnapshot {
-                    base_revision: Self::index_revision(&index),
-                    base_generation: index.history_generation,
-                    history: history.to_vec(),
-                    recovery_rows: recovery_rows.to_vec(),
-                    meta,
+                &self.recovery_meta_path(id),
+                &RecoveryMeta {
+                    base_revision: snapshot.base_revision,
+                    base_generation: snapshot.base_generation,
+                    meta: snapshot.meta.clone(),
                 },
             )?;
             Ok(revision)
@@ -1187,6 +1309,30 @@ mod tests {
         file.write_all(b"!invalid!").unwrap();
         assert_eq!(store.load_history_page(1, None, 10).unwrap().0.len(), 10);
         assert!(store.load_history(1).is_none());
+    }
+
+    /// An index the current rule rejects (written before `turn_rule` existed)
+    /// is rebuilt once and cached. Before, the rebuild was thrown away and
+    /// every `list()` re-parsed every journal in full.
+    #[test]
+    fn an_outdated_index_is_rebuilt_once_and_cached() {
+        let (_dir, store) = store();
+        store
+            .snapshot(1, &[ChatMessage::user("q"), ChatMessage::assistant("a")])
+            .unwrap();
+        let mut old: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(store.index(1)).unwrap()).unwrap();
+        old.as_object_mut().unwrap().remove("turn_rule");
+        std::fs::write(store.index(1), serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let rebuilt = store.read_index(1).unwrap();
+        let cached: JournalIndex =
+            serde_json::from_slice(&std::fs::read(store.index(1)).unwrap()).unwrap();
+        assert_eq!(cached.turn_rule, TURN_RULE);
+        assert_eq!(cached.bytes, rebuilt.bytes);
+        // The next read starts at the cached end: nothing left to replay.
+        let (_, replayed) = journal_index_rebuilt(&store.journal(1), &store.index(1)).unwrap();
+        assert!(!replayed);
     }
 
     #[test]
@@ -1580,6 +1726,26 @@ mod tests {
         assert_eq!(store.list()[0].title, "新会话");
         assert_eq!(store.load_history(7).unwrap().len(), 1);
         assert_eq!(store.next_id(), 8);
+    }
+
+    /// A live turn's meta comes from the sidecar, and a missing one is rebuilt
+    /// from the snapshot instead of forcing the whole history to be parsed on
+    /// every list.
+    #[test]
+    fn a_missing_recovery_sidecar_is_rebuilt_from_the_snapshot() {
+        let (_dir, store) = store();
+        let mut live = empty_meta(1);
+        live.title = "running".into();
+        store
+            .checkpoint_turn_checked(&[ChatMessage::user("q")], live, 0)
+            .unwrap();
+        assert!(store.recovery_meta_path(1).exists());
+        assert_eq!(store.meta(1).unwrap().title, "running");
+
+        // An install from before the sidecar existed.
+        std::fs::remove_file(store.recovery_meta_path(1)).unwrap();
+        assert_eq!(store.meta(1).unwrap().title, "running");
+        assert!(store.recovery_meta_path(1).exists());
     }
 
     #[test]
