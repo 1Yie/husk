@@ -21,10 +21,13 @@ function viewWith() {
   return v;
 }
 
-function renderBar(view = viewWith()) {
+function renderBar(
+  view = viewWith(),
+  gitInfo: { branch: string | null; dirty: number } | null = { branch: "main", dirty: 2 },
+) {
   return render(
     <TooltipProvider>
-      <TitleBar title="t" view={view} contextWindowHint={200_000} gitInfo={{ branch: "main", dirty: 2 }} />
+      <TitleBar title="t" view={view} contextWindowHint={200_000} gitInfo={gitInfo} />
     </TooltipProvider>,
   );
 }
@@ -59,6 +62,23 @@ describe("TitleBar stat chips", () => {
     renderBar();
     fireEvent.click(screen.getByRole("button", { name: "生成活动" }));
     expect(await screen.findByText("工具失败")).toBeTruthy();
+  });
+});
+
+describe("Git chip", () => {
+  it("keeps the branch up while the tree is clean", async () => {
+    renderBar(viewWith(), { branch: "main", dirty: 0 });
+    const chip = screen.getByRole("button", { name: "Git 分支 main" });
+    expect(chip.textContent).toContain("main");
+    // The cleanliness is detail, not a display gate.
+    fireEvent.click(chip);
+    expect(await screen.findByText("未提交修改")).toBeTruthy();
+    expect(screen.getByText("无")).toBeTruthy();
+  });
+
+  it("stays off outside a repository", () => {
+    renderBar(viewWith(), { branch: null, dirty: 0 });
+    expect(screen.queryByRole("button", { name: /Git 分支/ })).toBeNull();
   });
 });
 

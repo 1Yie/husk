@@ -2824,7 +2824,11 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
   // Whether the floating row above the composer carries the dock pill — the
   // jump-to-bottom arrow lays itself out differently in the two cases.
-  const dockPillVisible = !!onToggleDock && (dockCount ?? 0) > 0;
+  //
+  // The pill speaks for THIS session: it exists because the session produced
+  // files, never because the surrounding repository happens to be dirty. The
+  // working tree's own state is the title bar chip's business.
+  const dockPillVisible = !!onToggleDock && dockCount > 0;
 
   return (
     <ContextMenu>

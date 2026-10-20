@@ -242,10 +242,11 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   const statsChips = (compact: boolean) => (
     <>
       {!noSession && <StreamHealth />}
-      {/* Only while there is something to act on. A clean branch — everything
-          committed — is not news, and a permanently lit chip in a 36px bar
-          costs more than the branch name is worth. */}
-      {gitInfo?.branch && gitInfo.dirty > 0 && (
+      {/* The branch is workspace identity, not news: it stays up whether the
+          tree is clean or dirty, and the uncommitted count stays detail in the
+          card. Gating the chip on the working-tree state made the branch
+          vanish exactly when the reader wanted to know where they were. */}
+      {gitInfo?.branch && (
         <StatPopover
           label={`Git 分支 ${gitInfo.branch}`}
           className="w-64"
