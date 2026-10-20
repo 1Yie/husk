@@ -77,6 +77,7 @@ export function resetTauri() {
   mockCommand("agent_session", () => [], "plugin_commands");
   mockCommand("agent_session", () => ({ desktop_notifications: true }), "get_default_prefs");
   mockCommand("agent_session", () => ({ success: true }), "notify");
+  mockCommand("agent_session", () => ({ ok: true }), "play_cue");
   mockCommand("agent_session", () => null, "peek_notification_click");
   mockCommand("agent_session", () => null, "ack_notification_click");
   mockCommand("paste_clipboard", () => null);

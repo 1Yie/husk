@@ -527,6 +527,16 @@ export function notifyDesktop(
   });
 }
 
+/** Ask the shell for one cue tone. The webview owns the rule (which event,
+ *  whether the switch is on, the anti-drumbeat throttle); the shell owns
+ *  playback, so the tone does not depend on the window being in front. */
+export function playCueSound(cue: "turn" | "attention" | "error") {
+  return invoke<{ ok: boolean }>("agent_session", {
+    op: "play_cue",
+    payload: { cue },
+  });
+}
+
 /** Open an external link in the system browser (xdg-open / open / start). */
 export function openUrl(url: string) {
   return invoke<{ success: boolean }>("agent_session", {
