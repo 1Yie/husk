@@ -19,6 +19,13 @@
 //!   whose results never landed (a killed stream) or orphaned results — both
 //!   are hard 400s on strict backends, so the converter drops orphans and
 //!   synthesizes placeholder results for dangling calls.
+//! - **Responses reasoning replay**: rig drops a reasoning item that carries no
+//!   provider id, and strict thinking-mode backends (DeepSeek behind its own
+//!   API or a forwarding gateway) answer a history whose tool-using steps have
+//!   none with 400 "The `reasoning_text` in the thinking mode must be passed
+//!   back to the API". [`REASONING_ID_PREFIX`] gives the item an id rig will
+//!   serialize; [`patch_responses_body`] strips it again and makes every step
+//!   that calls a tool or follows a tool result lead with reasoning.
 //! - **Stream-layer shims**: `HarmonyStripper` (harmony/gpt-oss control
 //!   tokens leaking into text/reasoning) and `CallStripper` (`[call: …]`
 //!   text-protocol escape hatch) run on rig's normalized deltas, unchanged.
@@ -369,13 +376,39 @@ impl WireKind {
 #[derive(Clone, Debug)]
 struct SsePatchClient {
     inner: reqwest::Client,
+    /// Outbound body repair for the Responses wire — see
+    /// [`patch_responses_body`]. Off unless the provider's compat asks for
+    /// reasoning replay: a backend that resolves item ids server-side (OpenAI
+    /// itself) treats a synthesized item as an error rather than a hint.
+    reasoning_replay: bool,
 }
 
 impl Default for SsePatchClient {
     fn default() -> Self {
         Self {
             inner: reqwest::Client::new(),
+            reasoning_replay: false,
         }
+    }
+}
+
+impl SsePatchClient {
+    /// Materialize the body and apply the outbound repair when it is on. A
+    /// `Bytes` payload also keeps the returned futures `'static` without a
+    /// bound the trait does not declare.
+    fn repair<T: Into<bytes::Bytes>>(
+        &self,
+        req: http_client::Request<T>,
+    ) -> http_client::Request<bytes::Bytes> {
+        let (parts, body) = req.into_parts();
+        let body: bytes::Bytes = body.into();
+        let body = match self.reasoning_replay {
+            true => patch_responses_body(&body)
+                .map(bytes::Bytes::from)
+                .unwrap_or(body),
+            false => body,
+        };
+        http_client::Request::from_parts(parts, body)
     }
 }
 
@@ -393,7 +426,9 @@ impl HttpClientExt for SsePatchClient {
         U: From<bytes::Bytes>,
         U: WasmCompatSend + 'static,
     {
-        HttpClientExt::send(&self.inner, req)
+        let req = self.repair(req);
+        let inner = self.inner.clone();
+        async move { HttpClientExt::send(&inner, req).await }
     }
 
     fn send_multipart<U>(
@@ -419,6 +454,9 @@ impl HttpClientExt for SsePatchClient {
         T: Into<bytes::Bytes>,
         T: WasmCompatSend,
     {
+        // The inference path — rig opens the SSE connection through this
+        // method, so the reasoning repair has to run here as well as on `send`.
+        let req = self.repair(req);
         let inner = self.inner.clone();
         async move {
             HttpClientExt::send_streaming(&inner, req)
@@ -433,6 +471,227 @@ fn patch_streaming_response(
 ) -> http_client::StreamingResponse {
     let (parts, body) = resp.into_parts();
     http_client::Response::from_parts(parts, patch_sse_stream(body))
+}
+
+// ================================================================
+// Responses outbound body — reasoning replay
+// ================================================================
+
+/// Sentinel id for a replayed reasoning item.
+///
+/// rig's Responses serializer emits a reasoning item only when it carries a
+/// provider id — `openai_reasoning_from_core` returns `None` for an id-less one
+/// and the item silently disappears from `input`. Our history keeps reasoning
+/// as text (there is no provider id to keep), so the converter mints this one
+/// and [`patch_responses_body`] strips it again before the request leaves: no
+/// fabricated id ever reaches a backend that resolves item ids server-side.
+const REASONING_ID_PREFIX: &str = "husk-reasoning-";
+
+/// The `reasoning_text` a step gets when it has no thinking of its own. A
+/// single space, not an empty string — thinking-mode backends reject the empty
+/// one, and a gateway that drops empty fields would drop it too.
+const REASONING_PLACEHOLDER: &str = " ";
+
+/// Whether this request's history gets the reasoning replay. The compat switch
+/// that makes the Chat Completions wire send `reasoning_content` back drives
+/// it here too, so one declaration covers a backend on either wire. The rule
+/// only exists in thinking mode: a request with no effort, or with thinking
+/// turned off, goes out as rig wrote it.
+fn needs_reasoning_replay(compat: &ProviderCompat, effort: Option<&str>) -> bool {
+    let thinking =
+        effort.is_some_and(|e| !e.eq_ignore_ascii_case("none") && !e.eq_ignore_ascii_case("off"));
+    thinking
+        && compat
+            .requires_reasoning_content_on_assistant_messages
+            .unwrap_or(false)
+}
+
+/// Rewrite one outbound Responses request body in place:
+///
+/// 1. drop the sentinel reasoning ids the converter minted;
+/// 2. give a summary-only reasoning item the `reasoning_text` it lacks;
+/// 3. make every step of the turn being continued that calls a tool, or that
+///    follows a tool result, lead with a reasoning item.
+///
+/// Step 3 is the thinking-mode rule as DeepSeek enforces it (verified against
+/// `api.deepseek.com` and OpenCode Go): a step reads as one assistant message
+/// whose thinking is the reasoning item it starts with, and a step that calls
+/// or answers a tool without one is refused with 400 "The `reasoning_text` in
+/// the thinking mode must be passed back to the API". `None` means the body is
+/// already acceptable and must be sent byte for byte.
+fn patch_responses_body(body: &[u8]) -> Option<Vec<u8>> {
+    let mut root: Value = serde_json::from_slice(body).ok()?;
+    let items = root.get_mut("input")?.as_array_mut()?;
+    let mut changed = strip_reasoning_ids(items);
+    changed |= promote_reasoning_text(items);
+    changed |= lead_steps_with_reasoning(items);
+    if !changed {
+        return None;
+    }
+    serde_json::to_vec(&root).ok()
+}
+
+fn item_str<'a>(item: &'a Value, key: &str) -> &'a str {
+    item.get(key).and_then(Value::as_str).unwrap_or_default()
+}
+
+fn is_reasoning(item: &Value) -> bool {
+    item_str(item, "type") == "reasoning"
+}
+
+/// Client-executed calls only. A server-side tool item (`web_search_call`,
+/// `file_search_call`, …) runs inside the backend's own step and is outside
+/// the reasoning replay rule.
+fn is_tool_call(item: &Value) -> bool {
+    matches!(item_str(item, "type"), "function_call" | "custom_tool_call")
+}
+
+fn is_tool_output(item: &Value) -> bool {
+    matches!(
+        item_str(item, "type"),
+        "function_call_output" | "custom_tool_call_output"
+    )
+}
+
+fn is_assistant_message(item: &Value) -> bool {
+    matches!(item_str(item, "type"), "" | "message") && item_str(item, "role") == "assistant"
+}
+
+fn is_user_message(item: &Value) -> bool {
+    matches!(item_str(item, "type"), "" | "message") && item_str(item, "role") == "user"
+}
+
+/// One member of a step: something the model produced — its thinking, what it
+/// said, or a call it made.
+fn is_step_member(item: &Value) -> bool {
+    is_reasoning(item) || is_tool_call(item) || is_assistant_message(item)
+}
+
+/// The item's `reasoning_text`, joined when it carries several blocks.
+fn reasoning_text(item: &Value) -> Option<String> {
+    let parts: Vec<&str> = item
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|part| item_str(part, "type") == "reasoning_text")
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+/// The item's summary text, joined. A reasoning item translated from another
+/// wire carries only this.
+fn summary_text(item: &Value) -> Option<String> {
+    let parts: Vec<&str> = item
+        .get("summary")?
+        .as_array()?
+        .iter()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn strip_reasoning_ids(items: &mut [Value]) -> bool {
+    let mut changed = false;
+    for item in items.iter_mut() {
+        if !is_reasoning(item) {
+            continue;
+        }
+        let sentinel = item
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with(REASONING_ID_PREFIX));
+        if sentinel {
+            item.as_object_mut().map(|obj| obj.remove("id"));
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// A reasoning item that kept only its summary gets that summary as its
+/// `reasoning_text` — the backend reads the text, not the summary.
+fn promote_reasoning_text(items: &mut [Value]) -> bool {
+    let mut changed = false;
+    for item in items.iter_mut() {
+        if !is_reasoning(item) || reasoning_text(item).is_some() {
+            continue;
+        }
+        let Some(summary) = summary_text(item) else {
+            continue;
+        };
+        item["content"] = json!([{ "type": "reasoning_text", "text": summary }]);
+        changed = true;
+    }
+    changed
+}
+
+fn placeholder_reasoning() -> Value {
+    json!({
+        "type": "reasoning",
+        "summary": [],
+        "content": [{ "type": "reasoning_text", "text": REASONING_PLACEHOLDER }],
+    })
+}
+
+/// Give every step of the continued turn that needs one a leading reasoning
+/// item. Steps before the last user message are left as written — the backend
+/// only validates the turn it is being asked to continue.
+fn lead_steps_with_reasoning(items: &mut Vec<Value>) -> bool {
+    let turn_start = items
+        .iter()
+        .rposition(is_user_message)
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let original = std::mem::take(items);
+    let mut out: Vec<Value> = Vec::with_capacity(original.len() + 4);
+    let mut changed = false;
+    let mut after_tool_output = false;
+    let mut rest = original.into_iter().peekable();
+
+    while let Some(item) = rest.next() {
+        if !is_step_member(&item) {
+            after_tool_output = is_tool_output(&item);
+            out.push(item);
+            continue;
+        }
+        // The whole step: contiguous items the model produced.
+        let step_start = out.len();
+        let starts_after_a_tool_result = after_tool_output;
+        let mut step = vec![item];
+        while rest.peek().is_some_and(is_step_member) {
+            step.push(rest.next().expect("peeked"));
+        }
+        after_tool_output = false;
+        // Only the turn being continued is validated, and only a step that
+        // calls a tool or answers one needs the item in front.
+        let needs_lead = step_start >= turn_start
+            && (starts_after_a_tool_result || step.iter().any(is_tool_call));
+        if needs_lead && reasoning_text(&step[0]).is_none() {
+            match step
+                .iter()
+                .position(|it| is_reasoning(it) && reasoning_text(it).is_some())
+            {
+                Some(lead) => {
+                    let reasoning = step.remove(lead);
+                    step.insert(0, reasoning);
+                }
+                // Nothing to move: fill the step's own empty reasoning, or
+                // put one in front of it.
+                None if is_reasoning(&step[0]) => {
+                    step[0]["content"] =
+                        json!([{ "type": "reasoning_text", "text": REASONING_PLACEHOLDER }]);
+                }
+                None => step.insert(0, placeholder_reasoning()),
+            }
+            changed = true;
+        }
+        out.extend(step);
+    }
+    *items = out;
+    changed
 }
 
 /// One line at a time: complete lines are patched as they arrive, a partial
@@ -660,6 +919,7 @@ impl RigProvider {
         model: &str,
         compat: &ProviderCompat,
         retention: CacheRetention,
+        reasoning_replay: bool,
     ) -> anyhow::Result<RigModel> {
         let mut headers = HeaderMap::new();
         // Sticky routing so a multi-node gateway serves this conversation from
@@ -717,7 +977,10 @@ impl RigProvider {
                     // `SsePatchClient` repairs out-of-contract terminal frames
                     // on the byte stream before rig's SSE decoder sees them —
                     // see its docs. `send`/`send_multipart` delegate as-is.
-                    .http_client(SsePatchClient { inner: http });
+                    .http_client(SsePatchClient {
+                        inner: http,
+                        reasoning_replay,
+                    });
                 let client = if self.auth_header && !self.api_key.is_empty() {
                     b.api_key(BearerAuth::from(self.api_key.clone())).build()
                 } else {
@@ -811,7 +1074,12 @@ impl LlmProvider for RigProvider {
         let retention = CacheRetention::from_env();
 
         // ---------- messages ----------
-        let chat_history = to_rig_messages(messages, self.kind, &compat);
+        // A thinking-mode backend that declares reasoning replay wants each
+        // tool-using step's reasoning back; one that resolves reasoning items
+        // itself must not receive a synthesized one.
+        let reasoning_replay =
+            self.kind == WireKind::Responses && needs_reasoning_replay(&compat, effort);
+        let chat_history = to_rig_messages(messages, self.kind, &compat, reasoning_replay);
 
         // ---------- request ----------
         // Temperature is optional: several backends reject extreme values
@@ -903,7 +1171,7 @@ impl LlmProvider for RigProvider {
         if let Some(observer) = &self.usage_observer {
             observer.reset();
         }
-        let rig_model = self.build_model(model, &compat, retention)?;
+        let rig_model = self.build_model(model, &compat, retention, reasoning_replay)?;
         let rig_stream: StreamingCompletionResponse = match &rig_model {
             RigModel::Compat(m) => m.stream(request).await,
             RigModel::Responses(m) => m.stream(request).await,
@@ -1248,6 +1516,7 @@ fn to_rig_messages(
     messages: &[ChatMessage],
     kind: WireKind,
     compat: &ProviderCompat,
+    reasoning_replay: bool,
 ) -> Vec<RigMessage> {
     // Pairing ledger — assistant call ids that still need results. Orphan
     // results are dropped; dangling calls get a placeholder at the end.
@@ -1338,8 +1607,18 @@ fn to_rig_messages(
                                         reasoning.clone(),
                                     )));
                                 } else {
+                                    // rig's Responses serializer drops an
+                                    // id-less reasoning item; the sentinel id
+                                    // keeps it (and is stripped again on the
+                                    // way out — see `patch_responses_body`).
+                                    let id = if kind == WireKind::Responses && reasoning_replay {
+                                        synth_seq += 1;
+                                        Some(format!("{REASONING_ID_PREFIX}{synth_seq}"))
+                                    } else {
+                                        None
+                                    };
                                     content.push(AssistantContent::Reasoning(Reasoning {
-                                        id: None,
+                                        id,
                                         content: vec![ReasoningContent::Text {
                                             text: reasoning.clone(),
                                             signature: None,
@@ -2284,7 +2563,7 @@ mod tests {
             a2,
             chat(Role::User, "next"),
         ];
-        let messages = to_rig_messages(&msgs, WireKind::Compat, &ProviderCompat::default());
+        let messages = to_rig_messages(&msgs, WireKind::Compat, &ProviderCompat::default(), false);
         let serialized: Vec<Value> = messages
             .iter()
             .map(|m| serde_json::to_value(m).unwrap())
@@ -2578,6 +2857,204 @@ mod tests {
         assert!(p.ends_with('…'));
         // 1999 bytes of text + the 3-byte ellipsis.
         assert_eq!(p.len(), 2002);
+    }
+
+    // --- Responses reasoning replay (DeepSeek thinking mode) ---
+
+    /// The rule is DeepSeek's: a step of the continued turn that calls a tool
+    /// or follows a tool result must lead with reasoning. Nothing else gets a
+    /// synthesized item.
+    #[test]
+    fn patch_responses_body_leads_tool_steps_with_reasoning() {
+        // The reporter's history: a step that said something before its call,
+        // with its reasoning between the sentence and the call.
+        let body = json!({
+            "model": "deepseek-v4.1-flash",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "run the tests"}]},
+                {"type": "reasoning", "summary": [],
+                 "content": [{"type": "reasoning_text", "text": "check the suite"}]},
+                {"type": "function_call", "call_id": "c1", "name": "bash", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "Now I will fix it."}]},
+                {"type": "reasoning", "summary": [],
+                 "content": [{"type": "reasoning_text", "text": "read the failure"}]},
+                {"type": "function_call", "call_id": "c2", "name": "bash", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c2", "output": "ok"}
+            ]
+        });
+        let patched = patch_responses_body(body.to_string().as_bytes()).expect("rewritten");
+        let v: Value = serde_json::from_slice(&patched).unwrap();
+        let items = v["input"].as_array().unwrap();
+        // The second step now opens with its reasoning, then the sentence,
+        // then the call.
+        let types: Vec<&str> = items.iter().map(|i| i["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            types,
+            vec![
+                "message",
+                "reasoning",
+                "function_call",
+                "function_call_output",
+                "reasoning",
+                "message",
+                "function_call",
+                "function_call_output"
+            ]
+        );
+        // Every tool result is still paired with its call.
+        let calls: Vec<_> = items
+            .iter()
+            .filter(|i| i["type"] == "function_call")
+            .map(|i| i["call_id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(calls, vec!["c1", "c2"]);
+    }
+
+    /// A reply that follows a tool result gets a placeholder in front of it —
+    /// a single space, never an empty string.
+    #[test]
+    fn patch_responses_body_places_a_space_in_front_of_a_reply() {
+        let body = json!({
+            "input": [
+                {"type": "message", "role": "user", "content": []},
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "Done."}]}
+            ]
+        });
+        let patched = patch_responses_body(body.to_string().as_bytes()).expect("rewritten");
+        let v: Value = serde_json::from_slice(&patched).unwrap();
+        let items = v["input"].as_array().unwrap();
+        let types: Vec<&str> = items.iter().map(|i| i["type"].as_str().unwrap()).collect();
+        // The thinking sits between the tool result and the reply that
+        // answered it.
+        assert_eq!(
+            types,
+            vec!["message", "function_call_output", "reasoning", "message"]
+        );
+        assert_eq!(items[2]["content"][0]["text"], " ");
+    }
+
+    /// A summary-only reasoning item (translated from another wire) gets its
+    /// summary as `reasoning_text`; a compliant body comes back untouched.
+    #[test]
+    fn patch_responses_body_promotes_summary_and_leaves_compliant_bodies_alone() {
+        let body = json!({
+            "input": [
+                {"type": "message", "role": "user", "content": []},
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Run the tests."}],
+                    "content": []
+                },
+                {"type": "function_call", "call_id": "c1", "name": "bash", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"}
+            ]
+        });
+        let patched = patch_responses_body(body.to_string().as_bytes()).expect("rewritten");
+        let v: Value = serde_json::from_slice(&patched).unwrap();
+        assert_eq!(v["input"][1]["content"][0]["text"], "Run the tests.");
+
+        let compliant = json!({
+            "input": [
+                {"type": "message", "role": "user", "content": []},
+                {"type": "reasoning", "summary": [],
+                 "content": [{"type": "reasoning_text", "text": "think"}]},
+                {"type": "function_call", "call_id": "c1", "name": "bash", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"}
+            ]
+        });
+        let text = compliant.to_string();
+        assert!(patch_responses_body(text.as_bytes()).is_none(), "{text}");
+    }
+
+    /// The converter mints a sentinel id only where rig needs one, so the
+    /// serializer emits the reasoning item; the patch strips it back off.
+    #[test]
+    fn sentinel_reasoning_ids_survive_serialization_and_are_stripped() {
+        let mut a = chat(Role::Assistant, "");
+        a.reasoning = Some("look at the file".into());
+        a.tool_calls = Some(vec![crate::types::ToolCall {
+            id: "c1".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+        }]);
+        let mut t = chat(Role::Tool, "contents");
+        t.tool_call_id = Some("c1".into());
+        let msgs = vec![chat(Role::User, "go"), a, t];
+
+        let render = |on: bool| -> Vec<Value> {
+            to_rig_messages(&msgs, WireKind::Responses, &ProviderCompat::default(), on)
+                .iter()
+                .map(|m| serde_json::to_value(m).unwrap())
+                .collect()
+        };
+        let parts = |rendered: &[Value]| -> Vec<Value> {
+            rendered
+                .iter()
+                .flat_map(|m| m["content"].as_array().cloned().unwrap_or_default())
+                .collect()
+        };
+
+        let with_ids = parts(&render(true));
+        let reasoning = with_ids
+            .iter()
+            .find(|part| part["type"] == "reasoning")
+            .expect("reasoning item must reach the rig message");
+        let id = reasoning["id"].as_str().expect("sentinel id");
+        assert!(id.starts_with(REASONING_ID_PREFIX), "{id}");
+
+        // Without the replay the item is id-less (rig would drop it).
+        assert!(parts(&render(false))
+            .iter()
+            .filter(|part| part["type"] == "reasoning")
+            .all(|part| part["id"].is_null()));
+
+        // And the outbound patch takes the sentinel back off.
+        let body =
+            json!({"input": [{"type": "reasoning", "id": id, "summary": [], "content": []}]});
+        let patched = patch_responses_body(body.to_string().as_bytes()).expect("rewritten");
+        let v: Value = serde_json::from_slice(&patched).unwrap();
+        assert!(v["input"][0].get("id").is_none(), "{v}");
+    }
+
+    #[test]
+    fn reasoning_replay_follows_compat_and_thinking() {
+        let declared = |on: bool| ProviderCompat {
+            requires_reasoning_content_on_assistant_messages: Some(on),
+            ..Default::default()
+        };
+        let on = declared(true);
+        assert!(needs_reasoning_replay(&on, Some("high")));
+        // Thinking off: there is no rule to satisfy.
+        assert!(!needs_reasoning_replay(&on, None));
+        assert!(!needs_reasoning_replay(&on, Some("none")));
+        assert!(!needs_reasoning_replay(&on, Some("OFF")));
+        // Undeclared or declared off: the body goes out as rig wrote it,
+        // whatever the model is called.
+        assert!(!needs_reasoning_replay(
+            &ProviderCompat::default(),
+            Some("high")
+        ));
+        assert!(!needs_reasoning_replay(&declared(false), Some("high")));
+    }
+
+    /// A server-side tool item is not a client step: it gets no reasoning in
+    /// front, and the body comes back untouched.
+    #[test]
+    fn patch_responses_body_leaves_server_side_tools_alone() {
+        let body = json!({
+            "input": [
+                {"type": "message", "role": "user", "content": []},
+                {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "Found it."}]}
+            ]
+        });
+        assert!(patch_responses_body(body.to_string().as_bytes()).is_none());
     }
 
     // --- SsePatchClient wire repair ---
