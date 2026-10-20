@@ -55,7 +55,7 @@ const AFFINITY_FORMAT_OPTIONS = [
 /** The session-affinity switch. Unset sends to a gateway and not to a vendor's
  * own endpoint, so the default label says that instead of promising "send". */
 const AFFINITY_SEND_OPTIONS = [
-  { value: "default", label: "默认（网关发送，官方端点不发）" },
+  { value: "default", label: "默认（网关发送，官方端点忽略）" },
   { value: "true", label: "发送" },
   { value: "false", label: "不发送" },
 ];
@@ -164,6 +164,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   const [nStore, setNStore] = useState("default");
   const [nDev, setNDev] = useState("default");
   const [nEff, setNEff] = useState("default");
+  const [nReplay, setNReplay] = useState("default");
   const [nTok, setNTok] = useState("");
   const [nAffinity, setNAffinity] = useState("default");
   const [nAffinityFmt, setNAffinityFmt] = useState("default");
@@ -180,6 +181,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   const [eStore, setEStore] = useState("default");
   const [eDevRole, setEDevRole] = useState("default");
   const [eEffort, setEEffort] = useState("default");
+  const [eReplay, setEReplay] = useState("default");
   const [eMaxTok, setEMaxTok] = useState("");
   const [eAffinity, setEAffinity] = useState("default");
   const [eAffinityFmt, setEAffinityFmt] = useState("default");
@@ -256,6 +258,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     if (nStore !== "default") c.supports_store = nStore === "true";
     if (nDev !== "default") c.supports_developer_role = nDev === "true";
     if (nEff !== "default") c.supports_reasoning_effort = nEff === "true";
+    if (nReplay !== "default") {
+      c.requires_reasoning_content_on_assistant_messages = nReplay === "true";
+    }
     if (nTok.trim()) c.max_tokens_field = nTok.trim();
     if (nAffinity !== "default") c.send_session_affinity_headers = nAffinity === "true";
     if (nAffinityFmt !== "default" && nAffinityFmt !== "custom") {
@@ -271,7 +276,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
       toast.success("已添加 API");
       setProvOpen(false);
       setProvKey(""); setProvBase(""); setProvKey_(""); setProvModels(""); setProvDefault("");
-      setNStore("default"); setNDev("default"); setNEff("default"); setNTok("");
+      setNStore("default"); setNDev("default"); setNEff("default"); setNReplay("default"); setNTok("");
       setNAffinity("default"); setNAffinityFmt("default"); setNAffinityCustom(""); setNUa("");
       setNHeaders("");
     }
@@ -292,6 +297,12 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     setEStore(tri(c.supports_store ?? c.supportsStore));
     setEDevRole(tri(c.supports_developer_role ?? c.supportsDeveloperRole));
     setEEffort(tri(c.supports_reasoning_effort ?? c.supportsReasoningEffort));
+    setEReplay(
+      tri(
+        c.requires_reasoning_content_on_assistant_messages ??
+          c.requiresReasoningContentOnAssistantMessages,
+      ),
+    );
     setEMaxTok(c.max_tokens_field ?? c.maxTokensField ?? "");
     setEAffinity(tri(c.send_session_affinity_headers ?? c.sendSessionAffinityHeaders));
     // A provider that named its own headers gets the 自定义 row, however its
@@ -335,6 +346,11 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     put("supports_store", "supportsStore", eStore);
     put("supports_developer_role", "supportsDeveloperRole", eDevRole);
     put("supports_reasoning_effort", "supportsReasoningEffort", eEffort);
+    put(
+      "requires_reasoning_content_on_assistant_messages",
+      "requiresReasoningContentOnAssistantMessages",
+      eReplay,
+    );
     put(
       "send_session_affinity_headers",
       "sendSessionAffinityHeaders",
@@ -731,6 +747,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 <Field label="supports_reasoning_effort">
                   <SettingSelect value={nEff} onChange={setNEff} options={TRI_OPTS} />
                 </Field>
+                <Field label="requires_reasoning_content_on_assistant_messages">
+                  <SettingSelect value={nReplay} onChange={setNReplay} options={TRI_OPTS} />
+                </Field>
                 <Field label="max_tokens_field">
                   <Input value={nTok} onChange={(e) => setNTok(e.target.value)}
                     placeholder="max_tokens" className="h-8 text-xs font-mono" />
@@ -820,6 +839,9 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 </Field>
                 <Field label="supports_reasoning_effort">
                   <SettingSelect value={eEffort} onChange={setEEffort} options={TRI_OPTS} />
+                </Field>
+                <Field label="requires_reasoning_content_on_assistant_messages">
+                  <SettingSelect value={eReplay} onChange={setEReplay} options={TRI_OPTS} />
                 </Field>
                 <Field label="max_tokens_field">
                   <Input value={eMaxTok} onChange={(e) => setEMaxTok(e.target.value)}

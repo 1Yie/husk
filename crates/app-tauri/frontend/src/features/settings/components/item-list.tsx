@@ -2,8 +2,8 @@
 import * as React from "react";
 import type { ReactNode } from "react";
 import { ChevronRight, Search, X } from "@keyline-icons/react";
-import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { TruncatedText } from "@/components/ui/truncated-text";
 import { cn } from "@/lib/utils";
 
 export function Field({
@@ -14,8 +14,14 @@ export function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <Label className="text-xs text-neutral-600">{label}</Label>
+    <div className="flex min-w-0 flex-col gap-1.5">
+      {/* A compat flag's name overflows the column, so the label truncates and
+          the tooltip carries the whole spelling — only while it is clipped. */}
+      <TruncatedText
+        text={label}
+        side="top"
+        className="block min-w-0 truncate text-xs text-neutral-600"
+      />
       {children}
     </div>
   );
