@@ -4,6 +4,7 @@ import { TooltipProvider, GlobalTooltip } from "@/components/ui/tooltip";
 import { getAppearance } from "@/lib/agent-ipc";
 import { initAppearance } from "@/lib/appearance";
 import { initDesktopNotify } from "@/lib/desktop-notify";
+import { initNotificationSound } from "@/lib/notification-sound";
 import { installDownloadBridge } from "@/lib/download-bridge";
 import { initAgentStore } from "@/stores/agent-store";
 
@@ -19,6 +20,10 @@ initAgentStore();
 // Desktop notifications ride that same stream — read the stored switch now so
 // the first turn end already knows whether the shell should be told.
 initDesktopNotify();
+
+// …and its audible half: the cue for a finished / blocked / failed loop reads
+// its own switch the same way.
+initNotificationSound();
 
 // Apply the stored appearance before first paint — the shell reads the `dark`
 // class + CSS vars off <html>, so waiting for React to mount would flash the

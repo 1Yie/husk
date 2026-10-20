@@ -1067,6 +1067,8 @@ fn agent_session_inner(
                 "blueprint_enabled": mgr.blueprint_pref(),
                 "desktop_notifications": husk_host::prefs::load_default_preferences()
                     .desktop_notifications,
+                "notification_sound": husk_host::prefs::load_default_preferences()
+                    .notification_sound,
                 "sandbox_enabled": lim.enabled(),
                 "sandbox_network": lim.network_label(),
                 "sandbox_max_memory_mb": lim.max_memory_mb,
@@ -1183,6 +1185,11 @@ fn agent_session_inner(
             if let Some(v) = p.get("desktop_notifications").and_then(|v| v.as_bool()) {
                 let mut prefs = husk_host::prefs::load_default_preferences();
                 prefs.desktop_notifications = v;
+                let _ = husk_host::prefs::save_default_preferences(&prefs);
+            }
+            if let Some(v) = p.get("notification_sound").and_then(|v| v.as_bool()) {
+                let mut prefs = husk_host::prefs::load_default_preferences();
+                prefs.notification_sound = v;
                 let _ = husk_host::prefs::save_default_preferences(&prefs);
             }
             Ok(serde_json::json!({ "success": true }))

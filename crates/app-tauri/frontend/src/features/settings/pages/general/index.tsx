@@ -15,6 +15,7 @@ import {
   Sparkles,
   SquarePen,
   TriangleAlert,
+  Volume,
   Zap,
 } from "@keyline-icons/react";
 import { Switch } from "@/components/ui/switch";
@@ -132,6 +133,7 @@ function prefsToState(prefs: DefaultPrefs) {
     sandboxEnabled: prefs.sandbox_enabled === true,
     blueprintEnabled: prefs.blueprint_enabled !== false,
     desktopNotify: prefs.desktop_notifications !== false,
+    notificationSound: prefs.notification_sound !== false,
     sandboxNetwork: (prefs.sandbox_network || "auto") as string,
     sandboxMem: prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default",
     sandboxProcs: prefs.sandbox_max_processes ? String(prefs.sandbox_max_processes) : "default",
@@ -156,6 +158,7 @@ export function GeneralPane() {
   const [sandboxEnabled, setSandboxEnabled] = useState(init.sandboxEnabled);
   const [blueprintEnabled, setBlueprintEnabled] = useState(init.blueprintEnabled);
   const [desktopNotify, setDesktopNotify] = useState(init.desktopNotify);
+  const [notificationSound, setNotificationSound] = useState(init.notificationSound);
   const [sandboxNetwork, setSandboxNetwork] = useState(init.sandboxNetwork);
   const [sandboxMem, setSandboxMem] = useState(init.sandboxMem);
   const [sandboxProcs, setSandboxProcs] = useState(init.sandboxProcs);
@@ -184,6 +187,7 @@ export function GeneralPane() {
         setSandboxEnabled(s.sandboxEnabled);
         setBlueprintEnabled(s.blueprintEnabled);
         setDesktopNotify(s.desktopNotify);
+        setNotificationSound(s.notificationSound);
         setSandboxNetwork(s.sandboxNetwork);
         setSandboxMem(s.sandboxMem);
         setSandboxProcs(s.sandboxProcs);
@@ -405,6 +409,24 @@ export function GeneralPane() {
                   onCheckedChange={(v) => {
                     setDesktopNotify(v);
                     void save({ desktop_notifications: v });
+                  }}
+                />
+              ) : (
+                <SkeletonControl kind="switch" />
+              )}
+            </SettingRow>
+            <SettingRow
+              title="提示音"
+              description="任务结束、等待确认或出错时播放提示音"
+              icon={<Volume className="h-4 w-4" />}
+            >
+              {ready ? (
+                <Switch
+                  checked={notificationSound}
+                  aria-label="提示音"
+                  onCheckedChange={(v) => {
+                    setNotificationSound(v);
+                    void save({ notification_sound: v });
                   }}
                 />
               ) : (

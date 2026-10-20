@@ -10,8 +10,13 @@ import {
   setSessionTitles,
 } from "../notifications";
 import { initDesktopNotify, sendDesktopNotification } from "../desktop-notify";
+import { playCue } from "../notification-sound";
 import { emitWindowFocus, mockCommand, tauri } from "@/test/tauri";
 import type { AgentEventEnvelope, UiEvent } from "@/types";
+
+// The cue is the point of the next tests; synthesising it needs Web Audio,
+// which jsdom has no implementation of.
+vi.mock("@/lib/notification-sound", () => ({ playCue: vi.fn(), initNotificationSound: vi.fn() }));
 
 const env = (event: UiEvent, root = "/project", session = 1): AgentEventEnvelope => ({
   root,
@@ -65,6 +70,46 @@ describe("notification rules", () => {
     expect(notificationFor({ StateChanged: "Reasoning" })).toBeNull();
     expect(notificationFor({ TextDelta: { text: "嗯" } })).toBeNull();
     expect(notificationFor({ ToolCallStarted: { name: "read", args_preview: "" } })).toBeNull();
+  });
+});
+
+describe("cue sound", () => {
+  const cue = vi.mocked(playCue);
+  beforeEach(() => cue.mockClear());
+
+  test("every state that stops the loop is audible, focused window or not", () => {
+    // The foreground session in the window the user is looking at produces no
+    // notification row — but the cue is about the loop stopping, not about
+    // whether the user can see the row.
+    for (const [event, expected] of [
+      [{ StateChanged: "Finished" }, "turn"],
+      [
+        { StateChanged: { AwaitingToolConfirmation: { tool_name: "shell", diff_summary: "" } } },
+        "attention",
+      ],
+      [{ QuestionAsked: { request_id: 7, question: "选哪个？", options: [] } }, "attention"],
+      [{ StateChanged: { Failed: "连接超时" } }, "error"],
+    ] as [UiEvent, string][]) {
+      cue.mockClear();
+      notifyForEvent(env(event), foreground);
+      expect(cue).toHaveBeenCalledWith(expected);
+    }
+  });
+
+  test("work in flight and the user's own cancel stay quiet", () => {
+    for (const event of [
+      { StateChanged: "Reasoning" },
+      { TextDelta: { text: "嗯" } },
+      { StateChanged: { Failed: "turn cancelled by user" } },
+    ] satisfies UiEvent[]) {
+      notifyForEvent(env(event), foreground);
+    }
+    expect(cue).not.toHaveBeenCalled();
+  });
+
+  test("a session the user cannot see still rings", () => {
+    notifyForEvent(env({ StateChanged: "Finished" }, "/project", 9), foreground);
+    expect(cue).toHaveBeenCalledWith("turn");
   });
 });
 

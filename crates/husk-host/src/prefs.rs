@@ -96,6 +96,12 @@ pub struct DefaultPreferences {
     /// app-level switch, not session-shaping: no session reads it.
     #[serde(default = "default_pref_bool_true")]
     pub desktop_notifications: bool,
+    /// Cue sound for the states that stop the agent loop — a finished turn, a
+    /// tool approval or a question waiting on the user, a failure. Separate
+    /// from `desktop_notifications`: a window that never leaves the screen
+    /// still wants the tone, and a muted desktop may still want it too.
+    #[serde(default = "default_pref_bool_true")]
+    pub notification_sound: bool,
     /// Row format version. Absent (0) = written before the sandbox default
     /// flipped to off; loading such a row migrates it once.
     #[serde(default)]
@@ -185,6 +191,7 @@ impl Default for DefaultPreferences {
             memory_distill: true,
             blueprint_enabled: true,
             desktop_notifications: true,
+            notification_sound: true,
             schema_version: DEFAULT_PREFERENCES_VERSION,
         }
     }

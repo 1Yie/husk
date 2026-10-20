@@ -477,6 +477,9 @@ export interface DefaultPrefs {
   /** Desktop (OS) notifications — off = the notification center stays in-app
    *  (bell + badge), nothing is pushed to the system shell. Absent/true = on. */
   desktop_notifications?: boolean;
+  /** Cue sound for the states that stop the agent loop — a finished turn, a
+   *  pending approval or question, a failure. Absent/true = on. */
+  notification_sound?: boolean;
 }
 
 /** The stored default preferences — what NEWLY created sessions spawn with.

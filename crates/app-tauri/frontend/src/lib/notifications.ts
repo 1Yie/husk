@@ -8,6 +8,7 @@
 import { useSyncExternalStore } from "react";
 import type { AgentEventEnvelope, AgentState, UiEvent } from "@/types";
 import { isAppInFront, sendDesktopNotification } from "@/lib/desktop-notify";
+import { playCue } from "@/lib/notification-sound";
 
 /** `turn` — a turn ended on its own. `attention` — the agent is blocked on
  *  the user. `error` — it gave up. Drives the row's dot colour. */
@@ -210,17 +211,23 @@ function resolvesAttention(ev: UiEvent): boolean {
  *  closes to the tray, so the window is routinely off screen — "is it the
  *  foreground session" alone under-notifies, while the foreground session's
  *  own turn end is already on screen. Resolving a prompt is not gated on
- *  visibility: the stale row goes wherever the answer came from. */
+ *  visibility: the stale row goes wherever the answer came from.
+ *
+ *  The cue is NOT gated on that: what it announces is the agent loop stopping
+ *  (finished, blocked on an approval or a question, failed), and that is worth
+ *  hearing whether or not the window happens to be in front. The store's own
+ *  throttle keeps a busy session from turning it into a drumbeat. */
 export function notifyForEvent(
   env: AgentEventEnvelope,
   foreground: { root: string; id: number }
 ): AppNotification | null {
   const root = env.root ?? "";
   if (resolvesAttention(env.event)) dismissAttention(root, env.session);
+  const input = notificationFor(env.event);
+  if (input) playCue(input.kind);
   if (root === foreground.root && env.session === foreground.id && isAppInFront()) {
     return null;
   }
-  const input = notificationFor(env.event);
   if (!input) return null;
   const n = notify({ ...input, root, session: env.session });
   sendDesktopNotification({

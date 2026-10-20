@@ -2385,6 +2385,7 @@ impl SessionManager {
             // Not the manager's to own — the notification switch belongs to
             // the shell, so a save from here carries the stored value over.
             desktop_notifications: stored.desktop_notifications,
+            notification_sound: stored.notification_sound,
             schema_version: crate::prefs::DEFAULT_PREFERENCES_VERSION,
         }
     }
