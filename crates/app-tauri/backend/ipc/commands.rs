@@ -96,7 +96,19 @@ fn agent_cmd_inner(
     cmd: UiCommand,
 ) -> Result<(), String> {
     let mut mgr = kernel.lock().map_err(|e| e.to_string())?;
-    let (cancel, steer_tx, decision, ask, permissions, agent_mode, model, ui, cmd_tx, queue) = {
+    let (
+        cancel,
+        steer_tx,
+        decision,
+        pending_approval,
+        ask,
+        permissions,
+        agent_mode,
+        model,
+        ui,
+        cmd_tx,
+        queue,
+    ) = {
         let Some(handle) = mgr.active() else {
             return Err("no active session".into());
         };
@@ -104,6 +116,7 @@ fn agent_cmd_inner(
             handle.cancel.clone(),
             handle.steer_tx.clone(),
             handle.decision.clone(),
+            handle.pending_approval.clone(),
             handle.ask.clone(),
             handle.permissions.clone(),
             handle.agent_mode.clone(),
@@ -135,6 +148,19 @@ fn agent_cmd_inner(
         approved,
     } = &cmd
     {
+        // A verdict is written into the ACTIVE session's slot, so one meant for
+        // a different conversation (the user switched away, or clicked a card
+        // whose turn already ended) lands where nothing is waiting and is then
+        // discarded as stale — silently, leaving the real approval parked until
+        // the engine's 300 s timeout. Say so instead: the UI turns the error
+        // into a visible retry. `0` means the shell has not seen the request
+        // yet, which must not block a fast click.
+        let waiting = pending_approval.load(std::sync::atomic::Ordering::Relaxed);
+        if waiting != 0 && waiting != *request_id {
+            return Err(format!(
+                "审批 #{request_id} 已失效，当前等待的请求是 #{waiting}"
+            ));
+        }
         *decision.lock().map_err(|e| e.to_string())? = Some((*request_id, *approved));
         return Ok(());
     }

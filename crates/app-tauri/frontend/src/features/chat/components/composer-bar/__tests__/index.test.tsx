@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { ComposerBar } from "../index";
 import { applyEvents } from "@/features/chat/hooks/apply-event";
-import { emptyView } from "@/features/chat/hooks/stream-view";
+import { emptyView, pendingApprovalOf } from "@/features/chat/hooks/stream-view";
 import { useAgentStore } from "@/stores/agent-store";
 import { renderWithProviders } from "@/test/render";
 import { deferred, mockCommand, modelInfo, tauri } from "@/test/tauri";
@@ -104,6 +104,7 @@ describe("composer message lifecycle", () => {
     expect(screen.getByRole("textbox")).toHaveValue("正在编辑的跟进");
     view = applyEvents(view, [{ QueuedPrompts: { items: ["排队的消息"] } },
       { ToolCallStarted: { name: "fuzzy_patch", args_preview: "a.ts" } },
+      { StateChanged: { AwaitingToolConfirmation: { tool_name: "fuzzy_patch", diff_summary: "patch preview" } } },
       { ApprovalRequested: { request_id: 12, tool_name: "fuzzy_patch", diff: "patch preview", fuzzy: false } }]);
     rerender(<ComposerBar view={view} sessionKey="/ws:1" />);
     expect(screen.getByText("排队的消息")).toBeInTheDocument();
@@ -120,6 +121,39 @@ describe("composer message lifecycle", () => {
     await user.click(screen.getByRole("button", { name: /当前项目/ }));
     expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", { cmd: { AnswerQuestion: { request_id: 4, answer: "当前项目" } } });
     expect(screen.queryByText("选择范围")).not.toBeInTheDocument();
+  });
+
+  test("an approved card leaves at once and cannot be answered twice", async () => {
+    const user = userEvent.setup();
+    const asked = applyEvents(emptyView(), [
+      { UserPrompt: "改文件" },
+      { ToolCallStarted: { name: "fuzzy_patch", args_preview: "a.ts" } },
+      { StateChanged: { AwaitingToolConfirmation: { tool_name: "fuzzy_patch", diff_summary: "patch preview" } } },
+      { ApprovalRequested: { request_id: 21, tool_name: "fuzzy_patch", diff: "patch preview", fuzzy: false } },
+    ]);
+    const { rerender } = renderWithProviders(<ComposerBar view={asked} sessionKey="/ws:1" />);
+    await loaded();
+    expect(pendingApprovalOf(asked)?.requestId).toBe(21);
+    const allow = screen.getByRole("button", { name: "允许" });
+    await user.click(allow);
+    expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", { cmd: { ToolDecision: { request_id: 21, approved: true } } });
+    // A second click on the still-mounted button cannot send the verdict
+    // again — a duplicate would overwrite the first one in the engine's slot.
+    await user.click(allow);
+    expect(
+      tauri.invoke.mock.calls.filter(([cmd, args]) =>
+        cmd === "agent_cmd" && "ToolDecision" in ((args as { cmd?: object })?.cmd ?? {})),
+    ).toHaveLength(1);
+
+    // The kernel answers a verdict by entering the tool, not by echoing it
+    // back — the strip must not sit there offering a second click.
+    rerender(
+      <ComposerBar
+        view={applyEvents(asked, [{ StateChanged: { ExecutingTool: { tool_name: "fuzzy_patch" } } }])}
+        sessionKey="/ws:1"
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "允许" })).not.toBeInTheDocument();
   });
 });
 

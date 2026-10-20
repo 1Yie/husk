@@ -745,7 +745,49 @@ function ComposerBarContent({
     }
   };
 
-  const pending = pendingApprovalOf(view);
+  const pendingRequest = pendingApprovalOf(view);
+  // The request this composer already answered. Request ids are per engine —
+  // every actor (a new session, a reopened one) counts from 1 again — so the
+  // marker must not outlive the approval it answered, or a leftover `1` would
+  // swallow the next session's first click and leave the turn to the kernel's
+  // 300 s timeout. It clears when the approval leaves the view or the session
+  // changes.
+  //
+  // The ref is the authority, the state only drives the render: closing the
+  // computer-use dialog fires `onOpenChange` from a closure that still sees
+  // `pending`, and a deny dispatched there would overwrite the approval the
+  // click just sent.
+  const [decidedId, setDecidedId] = useState<number | null>(null);
+  const decidedRef = useRef<number | null>(null);
+  const remember = useCallback((id: number | null) => {
+    decidedRef.current = id;
+    setDecidedId(id);
+  }, []);
+  const pendingRequestId = pendingRequest?.requestId ?? null;
+  useEffect(() => {
+    if (pendingRequestId === null) remember(null);
+  }, [pendingRequestId, remember]);
+  useEffect(() => {
+    remember(null);
+  }, [sessionKey, remember]);
+  // An answered request leaves the strip at once: the kernel has moved on,
+  // and buttons left standing through a long tool run read as a dead click.
+  const pending =
+    pendingRequest && pendingRequest.requestId !== decidedId ? pendingRequest : null;
+  // …but a verdict can fail to land without the invoke failing (another
+  // window answered first, the actor was replaced mid-approval, the engine's
+  // slot was taken by a stale id). The kernel leaves `AwaitingToolConfirmation`
+  // the moment it accepts one, so a request still waiting after a beat means
+  // ours never arrived: put the card back instead of leaving the turn parked
+  // until its 300 s fail-closed timeout.
+  useEffect(() => {
+    if (decidedId === null || pendingRequestId !== decidedId) return;
+    const timer = window.setTimeout(() => {
+      remember(null);
+      toast.error("审批没有生效，请再试一次");
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [decidedId, pendingRequestId, remember]);
   const question =
     view.pendingQuestion && view.pendingQuestion.requestId !== answeredId
       ? view.pendingQuestion
@@ -766,16 +808,22 @@ function ComposerBarContent({
   const latestTodos = useMemo(() => extractLatestTodos(view), [view.items]);
   const hasActiveTodos = Boolean(latestTodos && latestTodos.totalCount > 0 && !latestTodos.allDone);
 
-  const [decidedId, setDecidedId] = useState<number | null>(null);
   const decide = async (approved: boolean) => {
-    if (!pending || decidedId === pending.requestId) return;
-    const reqId = pending.requestId;
-    setDecidedId(reqId);
+    const req = pending;
+    // The ref guards re-entry from a stale closure (the dialog's own close
+    // handler); `pending` alone would let a deny overwrite the click's verdict.
+    if (!req || decidedRef.current === req.requestId) return;
+    remember(req.requestId);
     try {
-      await agent.decideTool(reqId, approved);
+      await agent.decideTool(req.requestId, approved);
     } catch (e) {
       console.error("decideTool failed:", e);
-      setDecidedId(null);
+      remember(null);
+      // A verdict that never reached the kernel leaves the turn parked until
+      // its 300 s timeout — say so instead of looking like a dead button. The
+      // shell names the real cause when it has one (the request was already
+      // answered, or another session is the one waiting), so relay it.
+      toast.error(typeof e === "string" && e ? e : "审批未送达，请重试");
     }
   };
 
@@ -787,18 +835,19 @@ function ComposerBarContent({
   // does, and `launch` is never covered by it.
   const isComputerApproval = pending?.toolName === "computer";
   const decideComputerSession = async () => {
-    if (!pending || decidedId === pending.requestId) return;
-    const reqId = pending.requestId;
-    setDecidedId(reqId);
+    const req = pending;
+    if (!req || decidedRef.current === req.requestId) return;
+    remember(req.requestId);
     try {
       // Whitelist first, then resolve — if the gate write loses, the
       // pending card still closes and the next call re-asks (same UX as
       // a once-only approval, not a stuck modal).
       await agent.approveSessionTool("computer");
-      await agent.decideTool(reqId, true);
+      await agent.decideTool(req.requestId, true);
     } catch (e) {
       console.error("approveSessionTool/decideTool failed:", e);
-      setDecidedId(null);
+      remember(null);
+      toast.error("审批未送达，请重试");
     }
   };
 

@@ -127,6 +127,27 @@ function dropPendingChanges(changes: FileChange[], tool: string) {
   }
 }
 
+/** Close every approval card still waiting for a verdict. The kernel parks in
+ * `AwaitingToolConfirmation` for exactly one request, so a settled turn cannot
+ * still be waiting: any card left open is one it abandoned (a cancel between
+ * the request and the decision). A card left open would read "待批准" and the
+ * strip would send its dead request id, which the engine discards as stale. */
+function settleOpenApprovals(items: StreamItem[]): StreamItem[] {
+  let changed = false;
+  const next = items.map((it) => {
+    if (it.kind === "tool" && it.approval && !it.approval.resolved) {
+      changed = true;
+      return { ...it, approval: { ...it.approval, resolved: true, approved: false } };
+    }
+    if (it.kind === "approval" && !it.resolved) {
+      changed = true;
+      return { ...it, resolved: true, approved: false };
+    }
+    return it;
+  });
+  return changed ? next : items;
+}
+
 // ---------------------------------------------------------------- artifacts
 // Office mode's counterpart to `changes`: document/asset tools write whole
 // files, never diffs. The call's args locator (`args_preview` live,
@@ -324,9 +345,11 @@ function applyEventInto(
     const next = compacting
       ? items
       : items.filter((it) => !(it.kind === "compaction" && it.pending));
+    // A settled turn is not waiting on anything — see `settleOpenApprovals`.
+    const settledItems = settled ? settleOpenApprovals(next) : next;
     return {
       ...v,
-      items: next,
+      items: settledItems,
       state: s,
       streaming,
       ...(settled

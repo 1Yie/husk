@@ -130,6 +130,13 @@ pub struct SessionHandle {
     pub id: i64,
     pub cmd_tx: tokio::sync::mpsc::Sender<crate::command::UiCommand>,
     pub decision: Arc<Mutex<Option<(u64, bool)>>>,
+    /// The approval this session is parked on right now (`0` = none), kept
+    /// from the event stream by the shell's forwarder. `ToolDecision` is
+    /// written into the ACTIVE session's slot, and the engine discards a stale
+    /// id, so a verdict for a request that is not the one waiting must be
+    /// refused up front: checking the id here turns it into an error the UI can
+    /// show, instead of an approval that waits out the engine's 300 s timeout.
+    pub pending_approval: Arc<std::sync::atomic::AtomicU64>,
     /// `AnswerQuestion` resolves the parked ask_question oneshot — same
     /// bypass-the-pump channel as `decision`.
     pub ask: Arc<agent_kernel::tools::registry::AskChannel>,
@@ -1136,6 +1143,7 @@ impl SessionManager {
                 id,
                 cmd_tx,
                 decision,
+                pending_approval: Default::default(),
                 ask,
                 permissions,
                 agent_mode,
@@ -2949,6 +2957,7 @@ max = "max"
                 id: i64::MAX,
                 cmd_tx,
                 decision: Arc::new(Mutex::new(None)),
+                pending_approval: Default::default(),
                 ask: Arc::new(agent_kernel::tools::registry::AskChannel::new(None)),
                 permissions: Arc::new(std::sync::RwLock::new(
                     agent_kernel::permissions::PermissionGate::from_mode_str("default"),
@@ -3302,6 +3311,7 @@ max = "max"
                     id,
                     cmd_tx,
                     decision: Arc::new(Mutex::new(None)),
+                    pending_approval: Default::default(),
                     ask: Arc::new(agent_kernel::tools::registry::AskChannel::new(None)),
                     permissions: Arc::new(std::sync::RwLock::new(
                         agent_kernel::permissions::PermissionGate::from_mode_str("default"),
@@ -3381,6 +3391,7 @@ max = "max"
                     id,
                     cmd_tx,
                     decision: Arc::new(Mutex::new(None)),
+                    pending_approval: Default::default(),
                     ask: Arc::new(agent_kernel::tools::registry::AskChannel::new(None)),
                     permissions: Arc::new(std::sync::RwLock::new(
                         agent_kernel::permissions::PermissionGate::from_mode_str("default"),
@@ -3476,6 +3487,7 @@ max = "max"
                 id: 7,
                 cmd_tx,
                 decision: Arc::new(Mutex::new(None)),
+                pending_approval: Default::default(),
                 ask: Arc::new(agent_kernel::tools::registry::AskChannel::new(None)),
                 permissions: Arc::new(std::sync::RwLock::new(
                     agent_kernel::permissions::PermissionGate::from_mode_str("auto"),

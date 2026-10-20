@@ -106,6 +106,7 @@ describe("conversation lifecycle through the event subscription", () => {
     await deliver(
       { UserPrompt: "修改文件" }, { StateChanged: "Reasoning" },
       { ToolCallStarted: { name: "fuzzy_patch", args_preview: "a.ts" } },
+      { StateChanged: { AwaitingToolConfirmation: { tool_name: "fuzzy_patch", diff_summary: "preview" } } },
       { ApprovalRequested: { request_id: 6, tool_name: "fuzzy_patch", diff: "preview", fuzzy: false } },
     );
     fireEvent.click(screen.getByRole("button", { name: "允许" }));

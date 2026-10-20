@@ -33,8 +33,12 @@ pub fn spawn(
                 // manager mutex for every streamed delta made the stream queue
                 // behind any slow IPC op holding it (plugin reload, session
                 // switch), which is what stalled output.
-                let needs_handle =
-                    matches!(&ev, UiEvent::StateChanged(_) | UiEvent::AssistantMessage(_));
+                let needs_handle = matches!(
+                    &ev,
+                    UiEvent::StateChanged(_)
+                        | UiEvent::AssistantMessage(_)
+                        | UiEvent::ApprovalRequested { .. }
+                );
                 if let Some(mut m) = needs_handle.then(|| mgr.lock().ok()).flatten() {
                     // `handle_mut_at` resolves the handle in whichever
                     // workspace owns it — a parked workspace's actor keeps
@@ -42,7 +46,24 @@ pub fn spawn(
                     // keep the running flag.
                     if let Some(h) = m.handle_mut_at(&root, session_id) {
                         match &ev {
-                            UiEvent::StateChanged(s) => h.running = s.is_active(),
+                            UiEvent::StateChanged(s) => {
+                                h.running = s.is_active();
+                                // The engine parks in `AwaitingToolConfirmation`
+                                // for one request and nowhere else, so leaving
+                                // that state means nothing is waiting.
+                                if !matches!(
+                                    s,
+                                    agent_ipc::AgentState::AwaitingToolConfirmation { .. }
+                                ) {
+                                    h.pending_approval
+                                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                            // Remember which request holds this session, so a
+                            // verdict sent later can be checked against it.
+                            UiEvent::ApprovalRequested { request_id, .. } => h
+                                .pending_approval
+                                .store(*request_id, std::sync::atomic::Ordering::Relaxed),
                             UiEvent::AssistantMessage(t) => {
                                 h.preview = t.chars().take(60).collect()
                             }

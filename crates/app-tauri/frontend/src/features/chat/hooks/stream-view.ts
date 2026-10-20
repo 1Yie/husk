@@ -273,16 +273,33 @@ export const emptyView = (): SessionView => ({
   rate: { chars: 0, activeMs: 0, lastAt: null },
 });
 
+/** Whether the kernel is parked on a tool approval. It pauses in exactly this
+ *  state and nowhere else, so it is the authoritative answer to "is anything
+ *  waiting for a verdict right now" — a card's own `resolved` flag is not,
+ *  because it depends on a `ToolCallFinished` that a cancelled or superseded
+ *  call may never emit. */
+export function isAwaitingApproval(state: AgentState | null): boolean {
+  return typeof state === "object" && state !== null && "AwaitingToolConfirmation" in state;
+}
+
 /** The pending approval a composer permission strip should surface —
- * the most recent unresolved `ApprovalRequested`. `ToolCallStarted`
- * marks it resolved/approved, `ToolDecision` (deny) resolves via state
- * transitions. Returns null when nothing is awaiting a verdict. */
+ *  the most recent unresolved `ApprovalRequested`. `ToolCallStarted`
+ *  marks it resolved/approved, `ToolDecision` (deny) resolves via state
+ *  transitions. Returns null when nothing is awaiting a verdict.
+ *
+ *  Gated on the kernel state, not just on the card: once the turn leaves
+ *  `AwaitingToolConfirmation` nothing is waiting, and a leftover card would
+ *  send a verdict for a request the engine has already left behind. The
+ *  engine discards such a stale id by design, which would strand the approval
+ *  that IS pending until the 300 s fail-closed timeout. `null` state is a
+ *  rebuilt historical view, which has no live request to respect. */
 export function pendingApprovalOf(view: SessionView): {
   requestId: number;
   toolName: string;
   args?: string;
   diff: string;
 } | null {
+  if (view.state !== null && !isAwaitingApproval(view.state)) return null;
   for (let i = view.items.length - 1; i >= 0; i--) {
     const it = view.items[i];
     if (it.kind === "tool" && it.approval && !it.approval.resolved) {

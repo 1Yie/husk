@@ -44,6 +44,9 @@ describe("composer streaming boundary", () => {
   test("an earlier tool approval is updated while later reasoning streams", () => {
     const before = applyEvents(thinkingView(), [
       { ToolCallStarted: { name: "fuzzy_patch", args_preview: "修改文件" } },
+      // The engine parks in this state before it asks — `pendingApprovalOf`
+      // reads it as the "something is waiting" signal.
+      { StateChanged: { AwaitingToolConfirmation: { tool_name: "fuzzy_patch", diff_summary: "patch preview" } } },
       delta("继续检查"),
     ]);
     const requested = applyEvents(before, [
@@ -176,4 +179,38 @@ test("the live run tick is an upper bound; the commit snaps it to real rows", ()
     { Custom: { kind: "husk:session_counts", payload: { runs: 11, tasks: 0 } } },
   ]);
   expect(committed.runTotal).toBe(11);
+});
+
+test("a card the turn left behind never becomes the click target", () => {
+  // Approval requested, then the turn settles with no `ToolCallFinished` —
+  // what a cancel between the request and the verdict does. The engine
+  // discards a verdict for a request it is not waiting on, so the strip must
+  // not offer the abandoned card as the next click target.
+  const asked = applyEvents(emptyView(), [
+    { UserPrompt: "改文件" },
+    { ToolCallStarted: { name: "fuzzy_patch", args_preview: "a.ts" } },
+    { StateChanged: { AwaitingToolConfirmation: { tool_name: "fuzzy_patch", diff_summary: "preview" } } },
+    { ApprovalRequested: { request_id: 3, tool_name: "fuzzy_patch", diff: "preview", fuzzy: false } },
+  ]);
+  expect(pendingApprovalOf(asked)?.requestId).toBe(3);
+
+  const settled = applyEvents(asked, [{ StateChanged: "Finished" }]);
+  expect(pendingApprovalOf(settled)).toBeNull();
+  // Closed for good, not merely hidden behind the state gate.
+  expect(settled.items.find((it) => it.kind === "tool" && it.approval)).toMatchObject({
+    approval: { resolved: true, approved: false },
+  });
+});
+
+test("a verdict is only asked for while the engine is actually waiting", () => {
+  // Same buffer, moved on to `ExecutingTool`: the click already landed and
+  // the strip must not offer a second one.
+  const executing = applyEvents(emptyView(), [
+    { UserPrompt: "改文件" },
+    { ToolCallStarted: { name: "fuzzy_patch", args_preview: "a.ts" } },
+    { StateChanged: { AwaitingToolConfirmation: { tool_name: "fuzzy_patch", diff_summary: "preview" } } },
+    { ApprovalRequested: { request_id: 4, tool_name: "fuzzy_patch", diff: "preview", fuzzy: false } },
+    { StateChanged: { ExecutingTool: { tool_name: "fuzzy_patch" } } },
+  ]);
+  expect(pendingApprovalOf(executing)).toBeNull();
 });
