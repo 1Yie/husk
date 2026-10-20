@@ -409,9 +409,15 @@ function applyEventInto(
   if ("TextDelta" in ev) {
     closeOpenThinking(items);
     const rate = bumpRate(v, ev.TextDelta.text);
-    const l = last();
-    if (l?.kind === "assistant")
-      items[items.length - 1] = { ...l, text: l.text + ev.TextDelta.text, streaming: true };
+    // The answer row is normally the tail. Auto-compaction mid-turn lands its
+    // card in the MIDDLE of a streamed answer, right behind the draft; skip it
+    // so the rest of the answer extends the same row instead of opening a
+    // second bubble.
+    let tail = items.length - 1;
+    while (tail >= 0 && items[tail].kind === "compaction") tail--;
+    const row = tail >= 0 ? items[tail] : undefined;
+    if (row?.kind === "assistant")
+      items[tail] = { ...row, text: row.text + ev.TextDelta.text, streaming: true };
     else items.push({ kind: "assistant", text: ev.TextDelta.text, streaming: true, startedAt: Date.now() });
     return { ...v, items, rate, toksPerSec: rateEstimate(rate) };
   }
@@ -502,6 +508,7 @@ function applyEventInto(
       // row, not the batch capsule itself (and vice versa).
       if (
         it.kind === "tool" &&
+        it.name === t.name &&
         it.content === undefined &&
         (it.parent ?? undefined) === (t.parent ?? undefined)
       ) {

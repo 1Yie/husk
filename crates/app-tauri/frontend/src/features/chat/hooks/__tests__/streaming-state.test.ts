@@ -214,3 +214,36 @@ test("a verdict is only asked for while the engine is actually waiting", () => {
   ]);
   expect(pendingApprovalOf(executing)).toBeNull();
 });
+
+test("a tool result cannot land on a sibling call that is still running", () => {
+  // Two calls open at once: a result is matched by name as well as position,
+  // so it closes its own row and leaves the sibling open.
+  const view = applyEvents(emptyView(), [
+    { ToolCallStarted: { name: "smart_read", args_preview: "a.ts" } },
+    { ToolCallStarted: { name: "grep", args_preview: "TODO" } },
+    { ToolCallFinished: { name: "smart_read", ok: true, content: "a" } },
+  ]);
+  const tools = view.items.filter((it) => it.kind === "tool");
+  expect(tools[0]).toMatchObject({ name: "smart_read", content: "a" });
+  expect(tools[1]).toMatchObject({ name: "grep" });
+  expect(tools[1]).not.toHaveProperty("content");
+});
+
+test("a mid-turn compaction does not split the answer into two bubbles", () => {
+  // Auto-compaction folds its card into the RUNNING turn, right behind the
+  // draft it interrupted. Text must extend the draft, not the card, or one
+  // reply would read as two bubbles.
+  const view = applyEvents(emptyView(), [
+    { UserPrompt: "解释一下" },
+    { StateChanged: "Reasoning" },
+    { TextDelta: { text: "前半段", parent: null } },
+    { CompactionStarted: { manual: false } },
+    { Compacted: { before_tokens: 900, after_tokens: 100, removed_messages: 3, note: "n", manual: false, context_window: 1000 } },
+    { TextDelta: { text: "，后半段。", parent: null } },
+  ]);
+  const answers = view.items.filter((it) => it.kind === "assistant");
+  expect(answers).toHaveLength(1);
+  expect(answers[0]).toMatchObject({ text: "前半段，后半段。", streaming: true });
+  // The card keeps the position it happened in, between the two halves.
+  expect(view.items.map((it) => it.kind)).toEqual(["user", "assistant", "compaction"]);
+});

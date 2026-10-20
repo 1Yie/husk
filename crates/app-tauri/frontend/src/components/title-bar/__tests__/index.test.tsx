@@ -32,7 +32,7 @@ function renderBar(view = viewWith()) {
 describe("TitleBar stat chips", () => {
   it("summarises activity, tokens and context on the bar", () => {
     renderBar();
-    expect(screen.getByRole("button", { name: "生成活动" }).textContent).toContain("1 轮 · 2 步");
+    expect(screen.getByRole("button", { name: "生成活动" }).textContent).toContain("1 步 · 2 调用");
     const tokens = screen.getByRole("button", { name: "Token 用量" }).textContent;
     expect(tokens).toContain("102K tok");
     expect(tokens).toContain("缓存 90%");

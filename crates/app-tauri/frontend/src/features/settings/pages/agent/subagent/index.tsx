@@ -32,10 +32,11 @@ import {
 
 type Filter = "all" | "builtin" | "custom";
 
-/** Limits a spec carries, as compact tag text. */
+/** Limits a spec carries, as compact tag text. `max_tool_rounds` bounds the
+ * model/tool loop, so it caps **steps** (one model request each), not turns. */
 function limits(a: SubagentItem): string[] {
   return [
-    a.max_tool_rounds != null ? `${a.max_tool_rounds} 轮` : null,
+    a.max_tool_rounds != null ? `${a.max_tool_rounds} 步` : null,
     a.timeout_secs != null
       ? a.timeout_secs >= 60 && a.timeout_secs % 60 === 0
         ? `${a.timeout_secs / 60} 分钟`

@@ -2707,6 +2707,10 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // at-bottom toggles during scroll then skip the entire subtree
   // instead of re-rendering hundreds of turn divs per crossing.
 
+  // Whether the floating row above the composer carries the dock pill — the
+  // jump-to-bottom arrow lays itself out differently in the two cases.
+  const dockPillVisible = !!onToggleDock && (dockCount ?? 0) > 0;
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -2808,16 +2812,19 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         </div>
       </div>
 
-      {/* One centered floating row above the composer. With no jump-to-bottom
-          arrow the dock pill sits dead centre (the arrow contributes no
-          width); when the arrow appears the row grows to the right and the
-          pill slides left to make room. `width`/`margin` are what animate —
-          an opacity-only swap would leave a 40px hole beside a centred pill. */}
+      {/* One centered floating row above the composer, two behaviours:
+          · with the dock pill up, `width`/`margin` animate — the row grows to
+            the right and the pill slides left to make room for the arrow,
+            which fades in on the right (an opacity-only swap would leave a
+            40px hole beside a centred pill);
+          · with no pill, the arrow IS the row, so it keeps its own width and
+            only fades, rising out of the composer's edge; a growing margin
+            would make a lone button drift in from the right. */}
       <div
         style={{ bottom: `${(composerH ?? (bottomPad ? bottomPad - 24 : 140)) + 12}px` }}
         className="absolute left-1/2 z-30 flex -translate-x-1/2 items-center"
       >
-        {onToggleDock && dockCount > 0 && (
+        {dockPillVisible && (
           <TooltipSimple
             content={
               dockOpen
@@ -2873,9 +2880,20 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             // The button fades out as the box collapses, so it never shows
             // outside the reserved space.
             "flex-none transition-all duration-200 ease-out",
-            !isAtBottom
-              ? "ml-2 w-8 opacity-100"
-              : "pointer-events-none ml-0 w-0 opacity-0",
+            dockPillVisible
+              ? // Beside the pill: the slot grows from zero, the pill yields
+                // to the right edge it just opened up.
+                !isAtBottom
+                ? "ml-2 w-8 opacity-100"
+                : "pointer-events-none ml-0 w-0 opacity-0"
+              : // Alone: the button keeps its width so the row's centre never
+                // moves — it only fades, rising from the composer's edge.
+                cn(
+                  "ml-0 w-8",
+                  isAtBottom
+                    ? "pointer-events-none translate-y-2 opacity-0"
+                    : "translate-y-0 opacity-100",
+                ),
           )}
         >
           <TooltipSimple content="回到底部" side="top">

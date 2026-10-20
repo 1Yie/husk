@@ -2178,7 +2178,7 @@ function ComposerToolbar({
                 aria-label="中断回复"
               >
                 <Orb
-                  variant="B3"
+                  variant="B5"
                   size={16}
                   className="text-neutral-800 group-hover:opacity-0 transition-opacity duration-150"
                 />

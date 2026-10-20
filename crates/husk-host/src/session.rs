@@ -41,9 +41,11 @@ const MEMORY_CONTEXT_OPEN: &str =
 pub(crate) const SESSION_COUNTS: &str = "husk:session_counts";
 
 /// Real execution counts, not user-turn counts: one prompt can run the
-/// model/tool loop many times. Assistant rows are model runs; tool result
-/// rows are task steps. Counts the CURRENT history, so `/clear`, compaction
-/// and retry move them down with it.
+/// model/tool loop many times. One assistant row is one **step** — one model
+/// request plus the tool calls it triggered — and one tool row is one **call**
+/// inside a step, of which a step usually has several. A **turn** is one
+/// accepted prompt drained to completion. Counts the CURRENT history, so
+/// `/clear`, compaction and retry move them down with it.
 ///
 /// This is the AUTHORITATIVE figure — the frontend's live tick is an upper
 /// bound (see the `Usage` arm in `apply-event.ts`), and every commit re-bases

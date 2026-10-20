@@ -52,11 +52,17 @@ function traceMs(trace: Trace, now: number): number {
 /** Move a row's clock onto a new mode. Entering a live mode opens a pass;
  *  leaving one banks it. Returns null for a row that was never live — a
  *  thinking block replayed into an already-settled view measured nothing, so
- *  it must render no duration rather than a fake "· 0s". */
+ *  it must render no duration rather than a fake "· 0s".
+ *
+ *  Every flip banks the pass it leaves FIRST, including a live → live one: a
+ *  mid-turn compaction hands "正在回复" over to "正在压缩上下文", both live, and
+ *  the elapsed part of the first must carry into the second. */
 function advanceClock(prev: Trace | null, live: boolean, now: number): Trace | null {
-  if (live) return { banked: prev?.banked ?? 0, since: now };
-  if (!prev || prev.since == null) return prev;
-  return { banked: prev.banked + (now - prev.since), since: null };
+  if (!prev) return live ? { banked: 0, since: now } : null;
+  const banked = prev.banked + (prev.since == null ? 0 : now - prev.since);
+  if (live) return { banked, since: now };
+  if (prev.since == null) return prev;
+  return { banked, since: null };
 }
 
 /** The ticking `· 20s` suffix. Owns the 1s re-render so the header's orbs and
@@ -261,7 +267,16 @@ export function AssistantStatus({
                       key={item}
                       className="absolute inset-0 flex items-center justify-center animate-in fade-in duration-300"
                     >
-                      <Orb label={label} variant={variant} size={14} className="text-neutral-800" />
+                      {/* `translate-y-[1px]` is optical, not layout: the row
+                       *  centres boxes, and a Chinese glyph's ink sits about
+                       *  a pixel below its line-box centre — measured against
+                       *  the chevron, which shares the slot, the orb read high. */}
+                      <Orb
+                        label={label}
+                        variant={variant}
+                        size={14}
+                        className="text-neutral-800 translate-y-[1px]"
+                      />
                     </span>
                   ))}
               <span

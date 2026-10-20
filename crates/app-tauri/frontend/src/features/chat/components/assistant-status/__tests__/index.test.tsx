@@ -56,6 +56,33 @@ describe("thinking status interactions", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  test("a mid-turn compaction continues the clock instead of restarting it", () => {
+    // The turn-running row stays LIVE through a compaction — "正在回复" hands
+    // over to "正在压缩上下文", both live modes. The elapsed part of the first
+    // pass is banked, so the figure keeps counting up instead of restarting.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2025-01-01T00:00:00Z"));
+    const turnStartedAt = Date.now();
+    const { rerender, unmount } = renderWithProviders(
+      <AssistantStatus mode="reply" thinkingText="" startedAt={turnStartedAt} />,
+    );
+    act(() => vi.advanceTimersByTime(40_000));
+    expect(screen.getByText("· 40s")).toBeInTheDocument();
+
+    // Compaction starts: the caller re-anchors on the pass, the clock must not.
+    rerender(<AssistantStatus mode="compacting" thinkingText="" startedAt={Date.now()} />);
+    expect(screen.getByText("· 40s")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(screen.getByText("· 45s")).toBeInTheDocument();
+
+    // …and the turn resumes on the same figure.
+    rerender(<AssistantStatus mode="reply" thinkingText="" startedAt={turnStartedAt} />);
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(screen.getByText("· 46s")).toBeInTheDocument();
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   test("replayed durations are static and tool details toggle independently", () => {
     renderWithProviders(<AssistantStatus mode="tools_done" thinkingText="" doneLabel="3 次工具调用" elapsedMs={62000}>
       <div>工具结果</div>

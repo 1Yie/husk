@@ -461,12 +461,13 @@ describe("conversation lifecycle through the event subscription", () => {
     const scroller = container.querySelector<HTMLElement>(".stream-scroll")!;
     vi.spyOn(scroller, "scrollHeight", "get").mockReturnValue(5000);
     vi.spyOn(scroller, "clientHeight", "get").mockReturnValue(800);
-    // The jump-to-bottom arrow's own wrapper collapses to zero width (and
-    // stops taking pointers) while the follow pin is on — that is also what
-    // keeps the dock pill dead centre.
+    // The jump-to-bottom arrow fades out and stops taking pointers while the
+    // follow pin is on. (Its layout differs with the dock pill up — collapse
+    // beside the pill, hold width and sink alone — so the shared truth is the
+    // visibility pair.) That is also what keeps the dock pill dead centre.
     const following = () => {
       const wrap = screen.getByRole("button", { name: "回到底部" }).parentElement!;
-      return wrap.classList.contains("pointer-events-none") && wrap.classList.contains("w-0");
+      return wrap.classList.contains("pointer-events-none") && wrap.classList.contains("opacity-0");
     };
     // Move the fake clock well past any landing-time stamp.
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });

@@ -272,7 +272,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
             <Zap className={CHIP_ICON} />
             {!compact && (
               <span>
-                {runs} 轮 · {tasks} 步<span className="mx-1 text-neutral-400">·</span>
+                {runs} 步 · {tasks} 调用<span className="mx-1 text-neutral-400">·</span>
                 {fmtRate(toks)} tok/s
               </span>
             )}
@@ -283,7 +283,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
         <CardDivider />
         <CardBody>
           <CardRow label="用户轮次" value={turns} />
-          <CardRow label="模型轮次" value={runs} />
+          <CardRow label="模型步数" value={runs} />
           <CardRow label="工具调用" value={tasks} />
           {toolFailed > 0 && <CardRow label="工具失败" value={<span className="text-red-500">{toolFailed}</span>} />}
           <CardRow label="本轮生成" value={`${fmtNum(completion)} tok`} />
