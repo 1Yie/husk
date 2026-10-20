@@ -218,6 +218,44 @@ fn live_overlay(handles: Option<&HashMap<i64, SessionHandle>>) -> HashMap<i64, (
         .collect()
 }
 
+/// How long [`deliver_decision`] waits for the engine to take a verdict. The
+/// engine polls its slot every 50 ms while it waits, so a live wait takes the
+/// verdict within one or two ticks; anything past this means nothing is
+/// waiting for it.
+const DECISION_PICKUP: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Hand a tool verdict to a session's engine and confirm it was taken.
+///
+/// The slot only says "written", not "accepted": a verdict for a request the
+/// engine has moved past sits there until the next poll drops it as stale. So
+/// the write is followed by a short wait for the engine to empty the slot. A
+/// verdict still in place after that is withdrawn (it must not approve a later
+/// request) and reported, which is the only definite failure. The tool's own
+/// run time plays no part: the engine takes the verdict before it dispatches.
+///
+/// Blocking — call it without holding any lock the engine's event path needs.
+pub fn deliver_decision(
+    slot: &Mutex<Option<(u64, bool)>>,
+    request_id: u64,
+    approved: bool,
+) -> Result<(), String> {
+    *slot.lock().map_err(|e| e.to_string())? = Some((request_id, approved));
+    let deadline = std::time::Instant::now() + DECISION_PICKUP;
+    loop {
+        {
+            let mut current = slot.lock().map_err(|e| e.to_string())?;
+            if *current != Some((request_id, approved)) {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                *current = None;
+                return Err(format!("审批 #{request_id} 没有送达，当前没有等待中的审批"));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// A session's live handles — the actor runs on its own thread; these are
 /// the UI's write endpoints into it.
 pub struct SessionHandle {
@@ -3800,6 +3838,38 @@ max = "max"
         // Nothing to open → empty state.
         assert_eq!(boot_workspace(None, &[]), None);
         assert_eq!(boot_workspace(Some(&prefs("build")), &[]), None);
+    }
+
+    /// The engine empties its slot when it takes a verdict; delivery reports
+    /// success as soon as it sees that, without waiting out the pickup window.
+    #[test]
+    fn a_verdict_the_engine_takes_is_delivered() {
+        let slot = Arc::new(Mutex::new(None));
+        let engine = {
+            let slot = slot.clone();
+            std::thread::spawn(move || loop {
+                let mut s = slot.lock().unwrap();
+                if *s == Some((7, true)) {
+                    *s = None;
+                    return;
+                }
+                drop(s);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            })
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(deliver_decision(&slot, 7, true), Ok(()));
+        assert!(started.elapsed() < DECISION_PICKUP);
+        engine.join().unwrap();
+    }
+
+    /// Nothing waiting: the verdict is withdrawn, so it cannot approve a later
+    /// request that happens to reuse the slot, and the caller hears about it.
+    #[test]
+    fn a_verdict_nobody_takes_is_withdrawn_and_reported() {
+        let slot = Mutex::new(None);
+        assert!(deliver_decision(&slot, 3, true).is_err());
+        assert_eq!(*slot.lock().unwrap(), None);
     }
 
     /// `build` reads the rows from the store and overlays the live actor state

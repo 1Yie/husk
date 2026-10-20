@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { ComposerBar } from "../index";
@@ -154,6 +154,42 @@ describe("composer message lifecycle", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "允许" })).not.toBeInTheDocument();
+  });
+
+  const awaitingBash = () =>
+    applyEvents(emptyView(), [
+      { UserPrompt: "跑脚本" },
+      { ToolCallStarted: { name: "bash", args_preview: "cargo test" } },
+      { StateChanged: { AwaitingToolConfirmation: { tool_name: "bash", diff_summary: "cargo test" } } },
+      { ApprovalRequested: { request_id: 31, tool_name: "bash", diff: "", fuzzy: false } },
+    ]);
+
+  test("a delivered approval stays answered however long its events take", async () => {
+    // The reported bug: the shell delivered the verdict and the script ran,
+    // but the state change trailed behind a busy event path, and a timer on
+    // the stream declared the approval failed and put the card back.
+    renderWithProviders(<ComposerBar view={awaitingBash()} sessionKey="/ws:1" />);
+    await loaded();
+    vi.useFakeTimers();
+    try {
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "允许" })); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "允许" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a verdict the shell could not deliver brings the card back with the reason", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockCommand("agent_cmd", () => { throw "审批 #31 没有送达，当前没有等待中的审批"; });
+    renderWithProviders(<ComposerBar view={awaitingBash()} sessionKey="/ws:1" />);
+    await loaded();
+    await user.click(screen.getByRole("button", { name: "允许" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("审批 #31 没有送达，当前没有等待中的审批"));
+    expect(screen.getByRole("button", { name: "允许" })).toBeInTheDocument();
   });
 });
 

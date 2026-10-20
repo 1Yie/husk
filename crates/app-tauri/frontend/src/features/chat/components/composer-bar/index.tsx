@@ -772,22 +772,13 @@ function ComposerBarContent({
   }, [sessionKey, remember]);
   // An answered request leaves the strip at once: the kernel has moved on,
   // and buttons left standing through a long tool run read as a dead click.
+  // Whether the verdict landed is the invoke's answer, not the event stream's:
+  // the shell resolves it only once the engine has taken the verdict and
+  // rejects it when nothing did. Events can trail far behind on a busy
+  // machine, so a timer on the stream reported failures for approvals that
+  // had already run.
   const pending =
     pendingRequest && pendingRequest.requestId !== decidedId ? pendingRequest : null;
-  // …but a verdict can fail to land without the invoke failing (another
-  // window answered first, the actor was replaced mid-approval, the engine's
-  // slot was taken by a stale id). The kernel leaves `AwaitingToolConfirmation`
-  // the moment it accepts one, so a request still waiting after a beat means
-  // ours never arrived: put the card back instead of leaving the turn parked
-  // until its 300 s fail-closed timeout.
-  useEffect(() => {
-    if (decidedId === null || pendingRequestId !== decidedId) return;
-    const timer = window.setTimeout(() => {
-      remember(null);
-      toast.error("审批没有生效，请再试一次");
-    }, 3000);
-    return () => window.clearTimeout(timer);
-  }, [decidedId, pendingRequestId, remember]);
   const question =
     view.pendingQuestion && view.pendingQuestion.requestId !== answeredId
       ? view.pendingQuestion

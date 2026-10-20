@@ -161,8 +161,11 @@ fn agent_cmd_inner(
                 "审批 #{request_id} 已失效，当前等待的请求是 #{waiting}"
             ));
         }
-        *decision.lock().map_err(|e| e.to_string())? = Some((*request_id, *approved));
-        return Ok(());
+        // The pickup wait must not hold the kernel lock: the event forwarder
+        // takes it on every state change, so this very approval's transition
+        // would queue behind it.
+        drop(mgr);
+        return husk_host::session_manager::deliver_decision(&decision, *request_id, *approved);
     }
     if let UiCommand::AnswerQuestion { request_id, answer } = &cmd {
         // Only a matched answer resolves the parked card — `answer()` returns
