@@ -86,13 +86,17 @@ fn model_table(
 ///
 /// `parent` is the parent session's own provider instance (unwrapped), and
 /// the route's model fields must already describe the parent's model — they
-/// stay as they are when no default applies.
+/// stay as they are when no default applies. `conversation` is the parent
+/// session's routing identity: providers built here on first use advertise it
+/// too, so a delegated child's requests stay in the same conversation for the
+/// gateway's routing and prompt cache.
 pub fn install(
     route: &mut ChildRoute,
     cfg: &AppConfig,
     parent_name: &str,
     parent: Arc<dyn LlmProvider>,
     default: Option<&(String, String)>,
+    conversation: &str,
 ) {
     let (models, targets) = model_table(cfg, parent_name);
     let providers = cfg
@@ -105,6 +109,7 @@ pub fn install(
         parent_name: parent_name.to_string(),
         targets,
         providers,
+        conversation: conversation.to_string(),
         built: Mutex::new(HashMap::new()),
     });
     route.models = models;
@@ -134,6 +139,9 @@ pub struct RoutedProvider {
     parent_name: String,
     targets: HashMap<String, (String, String)>,
     providers: HashMap<String, ProviderConfig>,
+    /// The parent session's routing identity, handed to every provider this
+    /// route builds so a child never starts its own cache line.
+    conversation: String,
     /// Other providers, built on first use — a session that never delegates
     /// to them never resolves their keys.
     built: Mutex<HashMap<String, Arc<dyn LlmProvider>>>,
@@ -155,7 +163,7 @@ impl RoutedProvider {
             .providers
             .get(pname)
             .ok_or_else(|| anyhow::anyhow!("provider `{pname}` is not in the config"))?;
-        let p = ProviderFactory::build(pcfg)
+        let p = ProviderFactory::build_with_conversation(pcfg, None, Some(&self.conversation))
             .map_err(|e| anyhow::anyhow!("provider unavailable: `{pname}`: {e}"))?;
         built.insert(pname.clone(), p.clone());
         Ok((p, real.clone()))
@@ -256,6 +264,7 @@ mod tests {
             "main",
             Arc::new(agent_llm::provider::UnconfiguredProvider),
             Some(&default),
+            "1:/tmp/workspace",
         );
         assert_eq!(r.model, "cheap/small");
         assert_eq!(r.context_window, 64_000);
@@ -272,6 +281,7 @@ mod tests {
             "main",
             Arc::new(agent_llm::provider::UnconfiguredProvider),
             Some(&default),
+            "1:/tmp/workspace",
         );
         assert_eq!(r.model, "big");
     }
@@ -286,6 +296,7 @@ mod tests {
             "main",
             Arc::new(agent_llm::provider::UnconfiguredProvider),
             Some(&default),
+            "1:/tmp/workspace",
         );
         assert_eq!(r.model, "big");
         assert_eq!(r.context_window, 200_000);

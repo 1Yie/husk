@@ -106,19 +106,114 @@ fn new_cache_key() -> String {
     format!("husk-{:016x}", h.finish())
 }
 
-/// Session-affinity header names for `sendSessionAffinityHeaders` deployments,
-/// by `sessionAffinityFormat` (pi semantics): `openrouter` → `x-session-id`;
-/// `openai` → `session_id` plus the generic pair; anything else
-/// (`openai-nosession`) → `x-client-request-id` + `x-session-affinity`.
+/// The routing key of one conversation — `husk-` plus 64 bits of the SHA-256 of
+/// the caller's opaque identity. Stable across a rebuild, so a provider rebuilt
+/// mid-conversation keeps routing to the node that holds the prompt cache. The
+/// key travels as `prompt_cache_key` and the session-affinity headers, so it
+/// must not be invertible: the identity is expected to carry a per-install
+/// secret, and the digest keeps that secret and the session id off the wire.
+/// 64 bits stay well under OpenAI's 64-character cap.
+fn conversation_key(conversation: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(conversation.as_bytes());
+    let head = u64::from_be_bytes(digest[..8].try_into().expect("sha-256 is 32 bytes"));
+    format!("husk-{head:016x}")
+}
+
+/// Session-affinity header names, by the deployment's declared dialect
+/// (`sessionAffinityFormat`, pi semantics): `openrouter` → `x-session-id`;
+/// `opencode` → the gateway's own `x-opencode-session`; `openai` →
+/// `session_id` plus the request-id pair; `openai-nosession` → that pair only.
+///
+/// With no dialect declared the safe generic trio goes out:
+/// `x-session-affinity` (purpose-built), `x-session-id` (OpenRouter's, read for
+/// provider stickiness) and `x-opencode-session` (OpenCode-style gateways).
+/// All three are namespaced and ignored where unknown, which is why a gateway
+/// gets them by default: without them a multi-node gateway silently drops the
+/// conversation's prompt cache.
+///
+/// `x-client-request-id` and a bare `session_id` are deliberately NOT in that
+/// trio — both name a single request, and a conversation-stable value under
+/// such a name can be taken for an idempotency key. They stay behind the
+/// explicit `openai` / `openai-nosession` dialects.
+///
+/// Whether they go out at all is [`affinity_header_names`]'s call.
 fn session_affinity_headers(compat: &ProviderCompat) -> Vec<&'static str> {
-    if !compat.send_session_affinity_headers.unwrap_or(false) {
+    if compat.send_session_affinity_headers == Some(false) {
         return Vec::new();
     }
     match compat.session_affinity_format.as_deref() {
         Some("openrouter") => vec!["x-session-id"],
+        Some("opencode") => vec!["x-opencode-session"],
         Some("openai") => vec!["session_id", "x-client-request-id", "x-session-affinity"],
-        _ => vec!["x-client-request-id", "x-session-affinity"],
+        Some("openai-nosession") => vec!["x-client-request-id", "x-session-affinity"],
+        _ => vec!["x-session-affinity", "x-session-id", "x-opencode-session"],
     }
+}
+
+/// Hosts of the vendors' own APIs. Their gateways do not read affinity headers,
+/// and a strict front door is the one place an unknown `x-` header is a risk
+/// rather than a no-op, so a first-party endpoint sends none unless told to.
+const FIRST_PARTY_HOSTS: [&str; 3] = [
+    "api.openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+];
+
+fn is_first_party(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| FIRST_PARTY_HOSTS.contains(&host.as_str()))
+}
+
+/// The header names one request actually carries.
+///
+/// - `sendSessionAffinityHeaders = false` sends none, whatever else is set.
+/// - A provider may name its own headers (`sessionAffinityHeaders`, for a
+///   gateway whose dialect nobody has heard of); those win over the dialect and
+///   count as a declaration, so they go out on any endpoint.
+/// - `sendSessionAffinityHeaders = true` sends the dialect's set on any endpoint.
+/// - Unset sends the dialect's set to a gateway, and nothing to a first-party
+///   endpoint.
+///
+/// `custom` is resolved once at build ([`custom_affinity_headers`]) — this runs
+/// per request.
+fn affinity_header_names(
+    compat: &ProviderCompat,
+    custom: &[HeaderName],
+    first_party: bool,
+) -> Vec<HeaderName> {
+    match compat.send_session_affinity_headers {
+        Some(false) => return Vec::new(),
+        None if first_party && custom.is_empty() => return Vec::new(),
+        _ => {}
+    }
+    if custom.is_empty() {
+        return session_affinity_headers(compat)
+            .into_iter()
+            .map(HeaderName::from_static)
+            .collect();
+    }
+    custom.to_vec()
+}
+
+/// Resolve the deployment's own header names once, when the provider is built.
+/// A name the wire cannot carry is a config mistake, not a per-request event,
+/// and `build_model` runs on every call — warning there would repeat forever.
+fn custom_affinity_headers(names: &[String]) -> Vec<HeaderName> {
+    names
+        .iter()
+        .filter_map(
+            |name| match HeaderName::from_bytes(name.trim().as_bytes()) {
+                Ok(header) => Some(header),
+                Err(_) => {
+                    tracing::warn!(header = %name, "session-affinity header name is invalid — skipped");
+                    None
+                }
+            },
+        )
+        .collect()
 }
 
 // ================================================================
@@ -447,10 +542,21 @@ pub struct RigProvider {
     id: &'static str,
     /// Optional per-session cache-write sink (host UI/cost accounting).
     usage_observer: Option<Arc<UsageObserver>>,
-    /// Per-instance prompt-cache routing key (`prompt_cache_key`, affinity
-    /// headers). The host builds one provider per session, so this is a
-    /// conversation identity without threading the session id through.
+    /// Prompt-cache routing key (`prompt_cache_key`, session-affinity headers).
+    /// One conversation owns one key: the caller passes that conversation's
+    /// identity to `new`, so a provider rebuilt mid-conversation keeps it.
     cache_key: String,
+    /// Header names this deployment named itself (`sessionAffinityHeaders`);
+    /// empty falls back to the `sessionAffinityFormat` dialect. Resolved once
+    /// at build, so an unusable name is one config-time warning, not one per
+    /// request.
+    affinity_headers: Vec<HeaderName>,
+    /// The base URL is one of the vendors' own endpoints — see
+    /// [`affinity_header_names`] for what that changes.
+    first_party: bool,
+    /// `User-Agent` this deployment wants instead of the shared client's
+    /// `husk/<version>` (`userAgent` in config).
+    user_agent: Option<String>,
     base_url: String,
     api_key: String,
     auth_header: bool,
@@ -464,12 +570,17 @@ pub struct RigProvider {
 impl RigProvider {
     /// Build from a resolved provider config. `api_key` is the already-
     /// resolved secret (empty when `auth_header` is false or the provider
-    /// needs no key).
+    /// needs no key). `conversation` is the opaque identity of the
+    /// conversation this instance serves: its `prompt_cache_key` and
+    /// session-affinity headers derive from it, so every rebuild inside that
+    /// conversation reuses the same routing key. `None` mints a fresh random
+    /// key for a one-off provider.
     pub fn new(
         cfg: &ProviderConfig,
         api_key: String,
         http: reqwest::Client,
         usage_observer: Option<Arc<UsageObserver>>,
+        conversation: Option<&str>,
     ) -> anyhow::Result<Self> {
         let kind = WireKind::from(cfg.kind);
         let caps = match kind {
@@ -487,9 +598,21 @@ impl RigProvider {
                 vision: true,
             },
         };
+        // Checked once here for the same reason as the header names: a value the
+        // wire cannot carry is a config mistake, and `build_model` runs per call.
+        let user_agent = cfg.user_agent.clone().filter(|ua| {
+            let ok = HeaderValue::from_str(ua).is_ok();
+            if !ok {
+                tracing::warn!(user_agent = %ua, "provider userAgent is not a valid header value — using the default");
+            }
+            ok
+        });
         Ok(Self {
             usage_observer,
-            cache_key: new_cache_key(),
+            cache_key: conversation.map_or_else(new_cache_key, conversation_key),
+            affinity_headers: custom_affinity_headers(&cfg.session_affinity_headers),
+            first_party: is_first_party(&cfg.base_url),
+            user_agent,
             id: match kind {
                 WireKind::Compat => "openai_completions",
                 WireKind::Responses => "openai_responses",
@@ -540,12 +663,19 @@ impl RigProvider {
     ) -> anyhow::Result<RigModel> {
         let mut headers = HeaderMap::new();
         // Sticky routing so a multi-node gateway serves this conversation from
-        // the node that already holds its prompt cache.
-        if retention != CacheRetention::None {
-            if let Ok(value) = HeaderValue::from_str(&self.cache_key) {
-                for name in session_affinity_headers(compat) {
-                    headers.insert(HeaderName::from_static(name), value.clone());
-                }
+        // the node that already holds its prompt cache. These headers identify
+        // the conversation, not our cache policy, so they go out whenever the
+        // deployment declares them — turning retention off must not drop them.
+        if let Ok(value) = HeaderValue::from_str(&self.cache_key) {
+            for name in affinity_header_names(compat, &self.affinity_headers, self.first_party) {
+                headers.insert(name, value.clone());
+            }
+        }
+        // Per-deployment client identity, overriding the shared client's
+        // `husk/<version>` default (a request header wins over a client one).
+        if let Some(ua) = &self.user_agent {
+            if let Ok(value) = HeaderValue::from_str(ua) {
+                headers.insert(reqwest::header::USER_AGENT, value);
             }
         }
         // Configured headers last so they can override the defaults.
@@ -2260,20 +2390,118 @@ mod tests {
     #[test]
     fn session_affinity_headers_follow_the_declared_format() {
         let mut compat = ProviderCompat::default();
+        // On by default, and the default set is the namespaced trio — no
+        // request-scoped names, which a gateway could read as idempotency keys.
+        assert_eq!(
+            session_affinity_headers(&compat),
+            vec!["x-session-affinity", "x-session-id", "x-opencode-session"]
+        );
+        // An explicit `false` is the only thing that silences them.
+        compat.send_session_affinity_headers = Some(false);
         assert!(session_affinity_headers(&compat).is_empty());
-        compat.send_session_affinity_headers = Some(true);
+        compat.send_session_affinity_headers = None;
         compat.session_affinity_format = Some("openrouter".into());
         assert_eq!(session_affinity_headers(&compat), vec!["x-session-id"]);
         compat.session_affinity_format = Some("openai".into());
         assert!(session_affinity_headers(&compat).contains(&"session_id"));
-        compat.session_affinity_format = None;
+        assert!(session_affinity_headers(&compat).contains(&"x-client-request-id"));
+        compat.session_affinity_format = Some("opencode".into());
+        assert_eq!(
+            session_affinity_headers(&compat),
+            vec!["x-opencode-session"]
+        );
+        // pi's request-id dialect stays available, explicitly declared.
+        compat.session_affinity_format = Some("openai-nosession".into());
         assert_eq!(
             session_affinity_headers(&compat),
             vec!["x-client-request-id", "x-session-affinity"]
         );
-        let key = new_cache_key();
+    }
+
+    /// One conversation, one routing key. A provider rebuilt mid-conversation
+    /// (model switch, fallback hop, delegated child) must hand the gateway the
+    /// same key it already saw, or the prompt cache starts over cold; distinct
+    /// conversations must not share one.
+    #[test]
+    fn conversation_key_is_stable_and_distinct_per_conversation() {
+        let key = conversation_key("7:/w");
+        assert_eq!(key, conversation_key("7:/w"), "stable across a rebuild");
+        assert_ne!(key, conversation_key("8:/w"), "distinct sessions");
+        assert_ne!(key, conversation_key("7:/other"), "distinct workspaces");
+        assert_ne!(key, conversation_key("7:/w2"), "no accidental prefix match");
         assert!(key.starts_with("husk-") && key.len() <= 64, "{key}");
-        assert_ne!(key, new_cache_key());
+        // A provider built without a conversation still gets a unique key.
+        assert_ne!(new_cache_key(), new_cache_key());
+    }
+
+    /// A deployment that names its own header gets exactly that header; a name
+    /// the wire cannot carry is dropped at build instead of failing the turn,
+    /// and the off switch still wins over a custom name.
+    #[test]
+    fn custom_header_names_win_over_the_builtin_dialect() {
+        let compat = ProviderCompat::default();
+        let custom = custom_affinity_headers(&["x-acme-session".into(), "bad header".into()]);
+        assert_eq!(custom, vec![HeaderName::from_static("x-acme-session")]);
+        let names = affinity_header_names(&compat, &custom, false);
+        assert_eq!(names, vec![HeaderName::from_static("x-acme-session")]);
+        // Naming a header is a declaration: it goes out on a first-party host too.
+        assert_eq!(affinity_header_names(&compat, &custom, true), names);
+        let off = ProviderCompat {
+            send_session_affinity_headers: Some(false),
+            ..Default::default()
+        };
+        assert!(affinity_header_names(&off, &custom, false).is_empty());
+    }
+
+    /// A vendor's own endpoint gets no affinity headers unless the deployment
+    /// asks; a gateway gets them by default; `false` silences both.
+    #[test]
+    fn first_party_endpoints_send_no_affinity_headers_by_default() {
+        let unset = ProviderCompat::default();
+        let on = ProviderCompat {
+            send_session_affinity_headers: Some(true),
+            ..Default::default()
+        };
+        let off = ProviderCompat {
+            send_session_affinity_headers: Some(false),
+            ..Default::default()
+        };
+        assert!(affinity_header_names(&unset, &[], true).is_empty());
+        assert_eq!(affinity_header_names(&unset, &[], false).len(), 3);
+        assert_eq!(affinity_header_names(&on, &[], true).len(), 3);
+        assert!(affinity_header_names(&off, &[], false).is_empty());
+    }
+
+    #[test]
+    fn first_party_means_the_host_not_a_substring() {
+        for url in [
+            "https://api.openai.com/v1",
+            "https://API.OpenAI.com",
+            "https://api.anthropic.com",
+            "https://generativelanguage.googleapis.com/v1beta",
+        ] {
+            assert!(is_first_party(url), "{url}");
+        }
+        for url in [
+            "https://api.openai.com.evil.example/v1",
+            "https://proxy.example/api.openai.com",
+            "https://openrouter.ai/api/v1",
+            "not a url",
+        ] {
+            assert!(!is_first_party(url), "{url}");
+        }
+    }
+
+    /// The digest must not be the old FNV value, and must depend on every byte
+    /// of the identity — including the salt the host mixes in.
+    #[test]
+    fn the_routing_key_is_a_sha256_prefix_of_the_identity() {
+        // First 8 bytes of SHA-256("abc"), a published test vector.
+        assert_eq!(conversation_key("abc"), "husk-ba7816bf8f01cfea");
+        assert_ne!(
+            conversation_key("salt-a:7:/w"),
+            conversation_key("salt-b:7:/w")
+        );
     }
 
     #[test]

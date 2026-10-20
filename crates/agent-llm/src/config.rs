@@ -59,6 +59,27 @@ pub struct ProviderConfig {
     /// Optional static headers (e.g. `{"HTTP-Referer" = "…"}`).
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// `User-Agent` for this deployment's requests (pi `userAgent`). `None`
+    /// sends the client's own `husk/<version>`. A gateway that validates
+    /// clients by name wants the client identified here, never an SDK name.
+    #[serde(
+        default,
+        alias = "user_agent",
+        alias = "userAgent",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub user_agent: Option<String>,
+    /// Explicit session-affinity header names, for a gateway whose dialect is
+    /// none of the built-in ones (`sessionAffinityFormat`). When non-empty
+    /// these names win, and each still carries this conversation's routing key.
+    /// A hand-written config may also spell it as one comma-separated string.
+    #[serde(
+        default,
+        alias = "sessionAffinityHeaders",
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "header_names"
+    )]
+    pub session_affinity_headers: Vec<String>,
     /// Defaults per-provider (rare) — model usually comes from `active_model`.
     #[serde(
         default,
@@ -95,6 +116,36 @@ pub struct ProviderConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub model_overrides: Option<HashMap<String, ModelOverride>>,
+}
+
+/// Read a header-name list written either as a TOML array (`["x-acme-session"]`)
+/// or as one string (`"x-acme-session, x-acme-conv"`). Commas and whitespace
+/// both separate — an HTTP header name never contains either, and the settings
+/// pane's hint says the same. Splitting on commas alone would turn a
+/// space-separated list into one name the wire cannot carry.
+fn header_names<'de, D>(de: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Names {
+        One(String),
+        Many(Vec<String>),
+    }
+    let names = match Option::<Names>::deserialize(de)? {
+        None => Vec::new(),
+        Some(Names::One(s)) => s
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        Some(Names::Many(v)) => v,
+    };
+    Ok(names
+        .into_iter()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect())
 }
 
 impl ProviderConfig {
@@ -1466,6 +1517,44 @@ high = "high"
         assert!(out.contains("active_model = \"deepseek-chat\""), "{out}");
     }
 
+    /// A gateway nobody has heard of names its own session header. The field
+    /// takes a list or one string, commas and spaces both separate, and blanks
+    /// never become a header name.
+    #[test]
+    fn session_affinity_header_names_accept_a_list_or_a_string() {
+        let list: ProviderConfig = toml::from_str(
+            "kind = \"openai_completions\"\n\
+             base_url = \"https://x\"\n\
+             sessionAffinityHeaders = [\"x-acme-session\", \"x-acme-conv\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            list.session_affinity_headers,
+            ["x-acme-session", "x-acme-conv"]
+        );
+        let one: ProviderConfig = toml::from_str(
+            "kind = \"openai_completions\"\n\
+             base_url = \"https://x\"\n\
+             session_affinity_headers = \" x-acme-session , \"\n",
+        )
+        .unwrap();
+        assert_eq!(one.session_affinity_headers, ["x-acme-session"]);
+        // The settings pane promises the same two separators.
+        let spaced: ProviderConfig = toml::from_str(
+            "kind = \"openai_completions\"\n\
+             base_url = \"https://x\"\n\
+             session_affinity_headers = \"x-acme-session x-acme-conv\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            spaced.session_affinity_headers,
+            ["x-acme-session", "x-acme-conv"]
+        );
+        let none: ProviderConfig =
+            toml::from_str("kind = \"openai_completions\"\nbase_url = \"https://x\"\n").unwrap();
+        assert!(none.session_affinity_headers.is_empty());
+    }
+
     /// Renaming a provider in the settings writes the config under the new id.
     /// The old table must leave the file — merging alone kept it, and the
     /// rename showed up as a second, duplicate provider. Deleting works the
@@ -1509,6 +1598,26 @@ high = "high"
         let out = std::fs::read_to_string(&path).unwrap();
         assert!(out.contains("# keep this comment"), "{out}");
         assert!(out.contains("my_note = \"keep me\""), "{out}");
+    }
+
+    /// A deployment that validates clients by name declares its own
+    /// `User-Agent`; both spellings load, and an absent field sends the
+    /// client's own `husk/<version>` identity.
+    #[test]
+    fn provider_user_agent_accepts_both_spellings() {
+        let camel: ProviderConfig = toml::from_str(
+            "kind = \"openai_completions\"\nbase_url = \"https://x\"\nuserAgent = \"husk-oc/1.0\"\n",
+        )
+        .unwrap();
+        let snake: ProviderConfig = toml::from_str(
+            "kind = \"openai_completions\"\nbase_url = \"https://x\"\nuser_agent = \"husk-oc/1.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(camel.user_agent.as_deref(), Some("husk-oc/1.0"));
+        assert_eq!(snake.user_agent, camel.user_agent);
+        let bare: ProviderConfig =
+            toml::from_str("kind = \"openai_completions\"\nbase_url = \"https://x\"\n").unwrap();
+        assert_eq!(bare.user_agent, None);
     }
 
     /// Every save keeps a timestamped backup, and only the newest few are kept.

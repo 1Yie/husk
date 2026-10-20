@@ -398,6 +398,53 @@ pub fn save_default_preferences(prefs: &DefaultPreferences) -> std::io::Result<(
     global_put("default_preferences", prefs)
 }
 
+/// A per-install secret mixed into every conversation's routing key. Session
+/// ids are small integers and workspace paths are guessable, so a key derived
+/// from them alone could be brute-forced back to the session it names; the salt
+/// makes the keys on the wire unlinkable to anything outside this install.
+///
+/// Stored in a global row so a restart keeps every conversation's key (and the
+/// gateway's prompt cache with it). When the store is not reachable the salt
+/// lives for the process only.
+pub fn routing_salt() -> String {
+    static PERSISTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    static PROCESS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(salt) = PERSISTED.get() {
+        return salt.clone();
+    }
+    if let Some(salt) = load_or_create_salt() {
+        return PERSISTED.get_or_init(|| salt).clone();
+    }
+    PROCESS.get_or_init(random_hex).clone()
+}
+
+fn load_or_create_salt() -> Option<String> {
+    let fresh = random_hex();
+    let mut chosen = None;
+    global_update("routing_salt", |stored: &mut String| {
+        if stored.is_empty() {
+            *stored = fresh.clone();
+        }
+        chosen = Some(stored.clone());
+    })
+    .ok()?;
+    chosen
+}
+
+fn random_hex() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::fill(&mut bytes).is_err() {
+        use std::hash::{BuildHasher, Hasher};
+        for chunk in bytes.chunks_mut(8) {
+            let word = std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish();
+            chunk.copy_from_slice(&word.to_le_bytes()[..chunk.len()]);
+        }
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn load_appearance_settings() -> AppearanceSettings {
     global_get("appearance").unwrap_or_default()
 }
@@ -409,6 +456,30 @@ pub fn save_appearance_settings(s: &AppearanceSettings) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One salt per process and install: every conversation key reads the same
+    /// secret, and it is long enough that it cannot be guessed back.
+    #[test]
+    fn the_routing_salt_is_stable_and_unguessable() {
+        let salt = routing_salt();
+        assert_eq!(salt, routing_salt());
+        assert!(
+            salt.len() >= 32 && salt.chars().all(|c| c.is_ascii_hexdigit()),
+            "{salt}"
+        );
+        assert_ne!(random_hex(), random_hex());
+    }
+
+    /// The identity carries the salt, so two installs name the same session
+    /// differently, while one install names it the same way every time.
+    #[test]
+    fn a_conversation_key_carries_the_install_salt() {
+        let ws = std::env::temp_dir();
+        let key = crate::session::conversation_key(7, &ws);
+        assert!(key.starts_with(&format!("{}:7:", routing_salt())), "{key}");
+        assert_eq!(key, crate::session::conversation_key(7, &ws));
+        assert_ne!(key, crate::session::conversation_key(8, &ws));
+    }
 
     /// A row saved before the sandbox default flipped stored nothing for a
     /// user who left it ON — loading it must keep them sandboxed.

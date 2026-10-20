@@ -277,7 +277,15 @@ struct SessionSeed {
 /// `SessionConfig` for a fresh spawn (`meta = None`) or a resumed session
 /// (`Some` — the persisted per-session choices win, mirroring the kernel's
 /// own `spawn_actor` restore logic at session_manager.rs:1116).
-fn make_cfg(seed: &SessionSeed, meta: Option<&SessionMeta>) -> Result<SessionConfig, String> {
+///
+/// `session_id` is the row this actor will run as: the provider is built under
+/// that conversation's identity, so the first request and every later rebuild
+/// (`/model`, fallback) hand the gateway the same routing key.
+fn make_cfg(
+    seed: &SessionSeed,
+    meta: Option<&SessionMeta>,
+    session_id: i64,
+) -> Result<SessionConfig, String> {
     let model = meta
         .and_then(|m| m.model.clone())
         .filter(|s| !s.is_empty())
@@ -287,11 +295,19 @@ fn make_cfg(seed: &SessionSeed, meta: Option<&SessionMeta>) -> Result<SessionCon
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| seed.provider_name.clone());
     let pcfg = seed.config.providers.get(&provider_name);
+    let conversation = husk_host::session::conversation_key(session_id, &seed.workspace);
     let provider = if provider_name == seed.provider_name {
-        seed.provider.clone()
+        // The boot provider has no session id; rebuild it under this
+        // conversation, keeping the boot instance when the config can no
+        // longer build it.
+        pcfg.and_then(|p| {
+            ProviderFactory::build_with_conversation(p, None, Some(&conversation)).ok()
+        })
+        .unwrap_or_else(|| seed.provider.clone())
     } else {
         let pcfg = pcfg.ok_or_else(|| format!("provider {provider_name:?} not in config.toml"))?;
-        ProviderFactory::build(pcfg).map_err(|e| format!("provider {provider_name:?}: {e}"))?
+        ProviderFactory::build_with_conversation(pcfg, None, Some(&conversation))
+            .map_err(|e| format!("provider {provider_name:?}: {e}"))?
     };
     let resolved = pcfg.map(|p| p.model_opts(&model));
     let model_params = resolved
@@ -339,6 +355,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     apply_sandbox_flags(&cli).map_err(anyhow::Error::msg)?;
+    agent_llm::factory::set_client_user_agent(concat!("husk-tui/", env!("CARGO_PKG_VERSION")));
 
     if !io::stdout().is_terminal() {
         eprintln!("husk-tui needs a terminal; use husk-cli --headless for pipes");
@@ -406,7 +423,7 @@ async fn main() -> anyhow::Result<()> {
             nid
         }
     };
-    let cfg = make_cfg(&seed, boot_meta.as_ref()).map_err(anyhow::Error::msg)?;
+    let cfg = make_cfg(&seed, boot_meta.as_ref(), session_id).map_err(anyhow::Error::msg)?;
     let provider_name = cfg.provider_name.clone();
     let model = cfg.model.clone();
     let permission = cfg.permission_mode.clone();
@@ -614,18 +631,18 @@ fn apply_cfg_labels(app: &mut App, cfg: &SessionConfig) {
 /// Same shape as `resume_into` minus history; the old actor dies with its
 /// channels on drop.
 async fn new_into(app: &mut App, seed: &SessionSeed) {
-    let cfg = match make_cfg(seed, None) {
+    let Some(store) = SessionStore::open_existing(&seed.workspace) else {
+        app.commit(crate::cells::Cell::Err("工作区没有会话存储".into()));
+        return;
+    };
+    let id = store.next_id();
+    let cfg = match make_cfg(seed, None, id) {
         Ok(cfg) => cfg,
         Err(e) => {
             app.commit(crate::cells::Cell::Err(e));
             return;
         }
     };
-    let Some(store) = SessionStore::open_existing(&seed.workspace) else {
-        app.commit(crate::cells::Cell::Err("工作区没有会话存储".into()));
-        return;
-    };
-    let id = store.next_id();
     let _ = store.set_last_active(id);
     apply_cfg_labels(app, &cfg);
     let (mut actor, channels) = SessionActor::spawn_with_id(cfg, id);
@@ -662,7 +679,7 @@ async fn resume_into(app: &mut App, seed: &SessionSeed, id: i64) {
         app.commit(crate::cells::Cell::Err(format!("会话 #{id} 无历史可恢复")));
         return;
     };
-    let cfg = match make_cfg(seed, meta.as_ref()) {
+    let cfg = match make_cfg(seed, meta.as_ref(), id) {
         Ok(cfg) => cfg,
         Err(e) => {
             app.commit(crate::cells::Cell::Err(e));

@@ -203,6 +203,7 @@ fn routed_child(
     config_dir: &Path,
     parent_name: &str,
     default: Option<&(String, String)>,
+    conversation: &str,
 ) -> agent_kernel::tools::delegate::ChildRoute {
     let cfg = agent_llm::AppConfig::load(config_dir, None).unwrap_or_default();
     let mut route = base.clone();
@@ -212,6 +213,7 @@ fn routed_child(
         parent_name,
         base.provider.clone(),
         default,
+        conversation,
     );
     route
 }
@@ -440,6 +442,10 @@ pub struct SessionActor {
     ),
     /// Stable session identity — sidebar ordering + persistence file name.
     session_id: i64,
+    /// This session's conversation identity (`conversation_key`). Every
+    /// provider the actor rebuilds advertises it, so a model switch or a
+    /// fallback hop keeps the gateway's routing and prompt cache.
+    conversation: String,
     /// Per-workspace session store, including recovery points for live turns.
     store: Option<Arc<agent_store::SessionStore>>,
     history_revision: u64,
@@ -470,12 +476,36 @@ pub struct SessionActor {
     skills: agent_skills::SkillManager,
 }
 
+/// The conversation identity every provider of this session advertises: the
+/// install's routing salt, the persisted session id and the workspace. Stable
+/// across a restart, a model switch and a fallback hop, which is what a gateway
+/// needs to keep serving one conversation from the node that holds its prompt
+/// cache. The provider hashes it before it reaches the wire, so neither the
+/// salt nor the session id is ever sent.
+///
+/// Canonical, so `--workspace .`, an absolute path and a symlinked path name the
+/// same conversation: the provider only sees the hash, and a different spelling
+/// would quietly cold-start the gateway's cache.
+pub fn conversation_key(session_id: i64, workspace_root: &Path) -> String {
+    let root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    format!(
+        "{}:{session_id}:{}",
+        crate::prefs::routing_salt(),
+        root.display()
+    )
+}
+
 /// A provider instance without the session's usage observer. Background work
 /// (distiller, child engines) must not overwrite the foreground counter.
-fn unobserved_provider(cfg: &SessionConfig) -> Option<Arc<dyn agent_llm::LlmProvider>> {
+fn unobserved_provider(
+    cfg: &SessionConfig,
+    conversation: &str,
+) -> Option<Arc<dyn agent_llm::LlmProvider>> {
     let app = agent_llm::AppConfig::load(&cfg.paths.config_dir, None).ok()?;
     let provider = app.providers.get(&cfg.provider_name)?;
-    agent_llm::ProviderFactory::build(provider).ok()
+    agent_llm::ProviderFactory::build_with_conversation(provider, None, Some(conversation)).ok()
 }
 
 /// Wrap the foreground session provider in prompt-cache warming when the
@@ -636,6 +666,10 @@ impl SessionActor {
         agent_kernel::channels::UiChannels<crate::command::UiCommand>,
     ) {
         let mut channels = ui_channels();
+        // One conversation, one routing key: everything this session builds —
+        // foreground, fallback chain, background, children — advertises the
+        // same identity, so a rebuild never cold-starts the provider cache.
+        let conversation = conversation_key(session_id, &cfg.workspace_root);
 
         // Workspace skeleton + git snapshot.
         let workspace_tree = WorkspaceScanner::build_skeleton(&cfg.workspace_root)
@@ -867,7 +901,8 @@ impl SessionActor {
         // foreground session's cache-write counter: a distill pass overlapping
         // the next turn would otherwise overwrite the parent's value. Build a
         // second provider instance without the observer.
-        let background_provider = unobserved_provider(&cfg).unwrap_or_else(|| cfg.provider.clone());
+        let background_provider =
+            unobserved_provider(&cfg, &conversation).unwrap_or_else(|| cfg.provider.clone());
         // The child route starts from the session's own settings and is
         // rewritten by `apply_model_switch`, so children follow a hot-swap.
         // `child_base` is the parent's own model; the shared route widens it to
@@ -892,6 +927,7 @@ impl SessionActor {
             &cfg.paths.config_dir,
             &cfg.provider_name,
             subagent_model.as_ref(),
+            &conversation,
         )));
         tool_ctx.install_subagent(
             agent_kernel::tools::delegate::SubagentSpawner::new(
@@ -1070,6 +1106,7 @@ impl SessionActor {
                     cfg.model_params.clone().unwrap_or_default(),
                 ),
                 session_id,
+                conversation,
                 store,
                 history_revision,
                 checkpoint,
@@ -1772,6 +1809,7 @@ impl SessionActor {
                     &cfg,
                     provider,
                     self.usage_observer.as_ref(),
+                    Some(&self.conversation),
                 );
                 // The old model's warm entry is no use to the new one.
                 self.warming.cancel();
@@ -1792,12 +1830,17 @@ impl SessionActor {
                         &cfg,
                         provider,
                         self.usage_observer.as_ref(),
+                        Some(&self.conversation),
                     ),
                 );
                 // Children are routed from this base, so it must match what the
                 // parent just got — but without the foreground usage observer.
-                let child_provider =
-                    agent_llm::ProviderFactory::build(pcfg).unwrap_or_else(|_| built.clone());
+                let child_provider = agent_llm::ProviderFactory::build_with_conversation(
+                    pcfg,
+                    None,
+                    Some(&self.conversation),
+                )
+                .unwrap_or_else(|_| built.clone());
                 let route = &mut self.child_base;
                 route.provider = child_provider;
                 match resolved {
@@ -1859,6 +1902,7 @@ impl SessionActor {
             &self.paths.config_dir,
             &self.provider_name,
             self.subagent_model.as_ref(),
+            &self.conversation,
         );
         *self.child_route.write().expect("child route lock poisoned") = route;
     }

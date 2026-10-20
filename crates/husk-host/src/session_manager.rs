@@ -946,10 +946,17 @@ impl SessionManager {
         // Anthropic's cache_creation tokens here; the checkpoint relay and the
         // turn-end persistence read the same counter.
         let usage_observer = Arc::new(agent_llm::UsageObserver::default());
+        // One identity for this conversation, shared by the session provider,
+        // the fallback chain and every rebuild the actor does later.
+        let conversation = crate::session::conversation_key(id, &self.workspace_root);
         // Never substitute another vendor here: an unbuildable session provider
         // fails its turns with the reason instead (see `choose_session_provider`).
-        let (provider, unavailable) =
-            choose_session_provider(&self.provider_cfg, &sess_provider, Some(&usage_observer));
+        let (provider, unavailable) = choose_session_provider(
+            &self.provider_cfg,
+            &sess_provider,
+            Some(&usage_observer),
+            Some(&conversation),
+        );
         let model = sess_model.clone();
         let mentry = self
             .provider_cfg
@@ -1037,7 +1044,12 @@ impl SessionManager {
         actor.set_secrets(self.provider_cfg.resolved_secrets());
         actor.set_fallbacks(
             &sess_provider,
-            build_fallback_chain(&self.provider_cfg, &sess_provider, Some(&usage_observer)),
+            build_fallback_chain(
+                &self.provider_cfg,
+                &sess_provider,
+                Some(&usage_observer),
+                Some(&conversation),
+            ),
         );
         actor.set_blueprint_enabled(self.blueprint_enabled);
 
@@ -2777,17 +2789,22 @@ fn boot_workspace(
 /// config order, minus the primary itself (a loop), minus entries that are
 /// missing or cannot be built. A broken backup is skipped rather than kept as
 /// a placeholder, because the point of the chain is to find one that answers.
+///
+/// Every entry is built under the session's own `conversation`, so a hop to a
+/// backup keeps the conversation's routing key instead of cold-starting it.
 pub(crate) fn build_fallback_chain(
     cfg: &AppConfig,
     primary: &str,
     observer: Option<&Arc<agent_llm::UsageObserver>>,
+    conversation: Option<&str>,
 ) -> Vec<(String, Arc<dyn agent_llm::LlmProvider>)> {
     cfg.fallback_chain
         .iter()
         .filter(|name| name.as_str() != primary)
         .filter_map(|name| {
             let pcfg = cfg.providers.get(name)?;
-            let p = ProviderFactory::build_with_observer(pcfg, observer.cloned()).ok()?;
+            let p = ProviderFactory::build_with_conversation(pcfg, observer.cloned(), conversation)
+                .ok()?;
             Some((name.clone(), p))
         })
         .collect()
@@ -2800,10 +2817,14 @@ pub(crate) fn build_fallback_chain(
 /// every turn with the reason. Silently routing that turn to whichever provider
 /// `resolve_provider` finds sends the conversation to a backend the user did
 /// not choose, under a model id that backend does not serve.
+///
+/// `conversation` is the session's routing identity; see
+/// [`crate::session::conversation_key`].
 pub(crate) fn choose_session_provider(
     cfg: &AppConfig,
     session_provider: &str,
     observer: Option<&Arc<agent_llm::UsageObserver>>,
+    conversation: Option<&str>,
 ) -> (Arc<dyn agent_llm::LlmProvider>, Option<String>) {
     let Some(pcfg) = cfg.providers.get(session_provider) else {
         let reason = format!("provider `{session_provider}` is not in the config");
@@ -2812,7 +2833,7 @@ pub(crate) fn choose_session_provider(
             Some(reason),
         );
     };
-    match ProviderFactory::build_with_observer(pcfg, observer.cloned()) {
+    match ProviderFactory::build_with_conversation(pcfg, observer.cloned(), conversation) {
         Ok(p) => (p, None),
         Err(e) => {
             let reason = format!("provider `{session_provider}`: {e}");
@@ -3063,7 +3084,7 @@ max = "max"
             ..Default::default()
         };
 
-        let (provider, reason) = choose_session_provider(&cfg, "openai", None);
+        let (provider, reason) = choose_session_provider(&cfg, "openai", None, None);
         assert_eq!(
             provider.id(),
             "unavailable",
@@ -3091,7 +3112,7 @@ max = "max"
             providers,
             ..Default::default()
         };
-        let (provider, reason) = choose_session_provider(&cfg, "gone", None);
+        let (provider, reason) = choose_session_provider(&cfg, "gone", None, None);
         assert_eq!(provider.id(), "unavailable");
         assert!(reason.expect("reason").contains("gone"));
     }
@@ -3124,7 +3145,7 @@ max = "max"
             ..Default::default()
         };
 
-        let chain = build_fallback_chain(&cfg, "primary", None);
+        let chain = build_fallback_chain(&cfg, "primary", None, None);
         let names: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["third", "second"]);
     }

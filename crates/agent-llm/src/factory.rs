@@ -22,11 +22,32 @@ pub enum FactoryError {
     Build(#[from] anyhow::Error),
 }
 
+/// The `User-Agent` every request advertises. Standalone gateways (OpenCode
+/// Go, …) route, meter and abuse-filter by client, and ask a client to name
+/// itself instead of wearing an SDK's or an HTTP library's default. A provider
+/// whose deployment wants its own name declares `userAgent` in config.
+///
+/// The version is the shipping binary's, not this crate's: each front end
+/// declares itself once at startup ([`set_client_user_agent`]). Until then the
+/// bare client name goes out — no version beats a wrong one.
+pub fn client_user_agent() -> &'static str {
+    CLIENT_USER_AGENT.get().map_or("husk", String::as_str)
+}
+
+/// Declare the client identity for this process, e.g.
+/// `concat!("husk/", env!("CARGO_PKG_VERSION"))` from the binary crate. The
+/// first call wins; later calls are ignored.
+pub fn set_client_user_agent(user_agent: impl Into<String>) {
+    let _ = CLIENT_USER_AGENT.set(user_agent.into());
+}
+
+static CLIENT_USER_AGENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// One `reqwest::Client` shared by every rig client — rustls-only TLS,
 /// generous total timeout for slow generations, short connect timeout.
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent(concat!("agent-rs/", env!("CARGO_PKG_VERSION")))
+        .user_agent(client_user_agent())
         .timeout(Duration::from_secs(30 * 60))
         .connect_timeout(Duration::from_secs(15))
         .build()
@@ -39,15 +60,35 @@ impl ProviderFactory {
     /// Build a provider from config. Resolves `env:`/`keyring:` indirections;
     /// plaintext keys warn but still build.
     pub fn build(cfg: &ProviderConfig) -> Result<Arc<dyn LlmProvider>, FactoryError> {
-        Self::build_with_observer(cfg, None)
+        Self::build_with_conversation(cfg, None, None)
     }
 
     /// Build with a per-session cache-write sink. Only the host's foreground
     /// session provider needs one; background providers (distiller, child
-    /// engines) pass `None`.
+    /// engines) pass `None`. This mints its own routing key — a caller that
+    /// serves an existing conversation wants [`Self::build_with_conversation`],
+    /// not this.
     pub fn build_with_observer(
         cfg: &ProviderConfig,
         observer: Option<Arc<crate::usage::UsageObserver>>,
+    ) -> Result<Arc<dyn LlmProvider>, FactoryError> {
+        Self::build_with_conversation(cfg, observer, None)
+    }
+
+    /// Build the provider one conversation runs on. `conversation` is that
+    /// conversation's opaque identity — the host derives it from the persisted
+    /// session id — and every request carries a routing key derived from it
+    /// (`prompt_cache_key`, session-affinity headers). Rebuilding the provider
+    /// inside the same conversation (model switch, fallback chain, delegated
+    /// child) therefore keeps the gateway's cache routing instead of starting
+    /// cold on a fresh key.
+    ///
+    /// `None` mints a random key: right for one-off work whose requests never
+    /// share a prompt prefix with anything else.
+    pub fn build_with_conversation(
+        cfg: &ProviderConfig,
+        observer: Option<Arc<crate::usage::UsageObserver>>,
+        conversation: Option<&str>,
     ) -> Result<Arc<dyn LlmProvider>, FactoryError> {
         let key = match crate::config::AppConfig::resolve_secret(cfg) {
             SecretResolution::Resolved(s) | SecretResolution::Plaintext(s) => s,
@@ -65,7 +106,7 @@ impl ProviderFactory {
                 "api_key is plaintext in config.toml — prefer env: or keyring: indirection"
             );
         }
-        RigProvider::new(cfg, key, http_client(), observer)
+        RigProvider::new(cfg, key, http_client(), observer, conversation)
             .map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
             .map_err(FactoryError::Build)
     }

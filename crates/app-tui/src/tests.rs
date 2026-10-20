@@ -20,7 +20,7 @@ fn seed(dir: &std::path::Path, provider: Arc<ScriptedProvider>) -> SessionSeed {
 }
 
 fn app_for(seed: &SessionSeed) -> App {
-    let mut cfg = make_cfg(seed, None).unwrap();
+    let mut cfg = make_cfg(seed, None, 100).unwrap();
     cfg.memory_enabled = false;
     cfg.memory_distill = false;
     let (actor, channels) = SessionActor::spawn_with_id(cfg, 100);
@@ -106,14 +106,14 @@ fn resume_resolves_provider_and_model_options_together() {
             "kind": "openai_completions", "base_url": "http://127.0.0.1:1/v1", "api_key": "test",
         "models": [{"id": "other-model", "contextWindow": 8192, "input": ["text", "image"], "maxTokens": 321}]
     })).unwrap());
-    let cfg = make_cfg(&seed, Some(&meta(Some("other"), Some("other-model")))).unwrap();
+    let cfg = make_cfg(&seed, Some(&meta(Some("other"), Some("other-model"))), 1).unwrap();
     assert_eq!(cfg.provider_name, "other");
     assert_eq!(cfg.model, "other-model");
     assert!(!Arc::ptr_eq(&cfg.provider, &seed.provider));
     assert_eq!(cfg.context_window, Some(8192));
     assert!(cfg.model_input.contains(&"image".into()));
     assert_eq!(cfg.model_params.unwrap().max_tokens, Some(321));
-    assert!(make_cfg(&seed, Some(&meta(Some("missing"), Some("other-model")))).is_err());
+    assert!(make_cfg(&seed, Some(&meta(Some("missing"), Some("other-model"))), 1).is_err());
 }
 
 #[test]
@@ -121,19 +121,19 @@ fn thinking_defaults_and_resume_default_reach_the_engine_configuration() {
     let dir = tempfile::tempdir().unwrap();
     let seed = seed(dir.path(), Arc::new(ScriptedProvider::new()));
     assert_eq!(
-        make_cfg(&seed, None).unwrap().thinking_level.as_deref(),
+        make_cfg(&seed, None, 1).unwrap().thinking_level.as_deref(),
         Some("high")
     );
     let mut saved = meta(None, None);
     // A saved default (None) must clear another session's custom level.
-    let cfg = make_cfg(&seed, Some(&saved)).unwrap();
+    let cfg = make_cfg(&seed, Some(&saved), 1).unwrap();
     assert_eq!(cfg.thinking_level, None);
     let mut app = app_for(&seed);
     apply_cfg_labels(&mut app, &cfg);
     assert_eq!(app.thinking_level, None);
     saved.thinking_level = Some("low".into());
     assert_eq!(
-        make_cfg(&seed, Some(&saved))
+        make_cfg(&seed, Some(&saved), 1)
             .unwrap()
             .thinking_level
             .as_deref(),

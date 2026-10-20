@@ -22,6 +22,7 @@ toml.workspace = true
 toml_edit = "0.25"
 keyring.workspace = true
 rig-core = "0.42.0"
+sha2 = "0.10"
 tempfile = "3"
 
 [dependencies.tokio]
@@ -29,5 +30,5 @@ workspace = true
 features = ["time", "rt"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util", "net", "io-util"] }
 

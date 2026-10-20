@@ -222,6 +222,7 @@ fn resolve_provider(
     cfg: &AppConfig,
     want_provider: Option<&str>,
     want_model: Option<&str>,
+    conversation: &str,
 ) -> Result<(Arc<dyn agent_llm::LlmProvider>, String, String), String> {
     // An explicitly named provider must resolve — no silent fallback that
     // could bill or hit a different account.
@@ -230,20 +231,22 @@ fn resolve_provider(
             .providers
             .get(name)
             .ok_or_else(|| format!("provider {name:?} not in config.toml"))?;
-        let p = ProviderFactory::build(pcfg).map_err(|e| format!("provider {name:?}: {e}"))?;
+        let p = ProviderFactory::build_with_conversation(pcfg, None, Some(conversation))
+            .map_err(|e| format!("provider {name:?}: {e}"))?;
         return Ok((p, name.into(), pick_model(cfg, pcfg, want_model)));
     }
     // Active pair first…
     if let Some(name) = &cfg.active_provider {
         if let Some(pcfg) = cfg.providers.get(name) {
-            if let Ok(p) = ProviderFactory::build(pcfg) {
+            if let Ok(p) = ProviderFactory::build_with_conversation(pcfg, None, Some(conversation))
+            {
                 return Ok((p, name.clone(), pick_model(cfg, pcfg, want_model)));
             }
         }
     }
     // …then any configured provider.
     for (n, pcfg) in &cfg.providers {
-        if let Ok(p) = ProviderFactory::build(pcfg) {
+        if let Ok(p) = ProviderFactory::build_with_conversation(pcfg, None, Some(conversation)) {
             return Ok((p, n.clone(), pick_model(cfg, pcfg, want_model)));
         }
     }
@@ -264,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     apply_sandbox_flags(&cli).map_err(|e| anyhow::anyhow!(e))?;
+    agent_llm::factory::set_client_user_agent(concat!("husk-cli/", env!("CARGO_PKG_VERSION")));
 
     // Prompt may also arrive on a piped stdin.
     let prompt = match cli.prompt.clone() {
@@ -283,14 +287,24 @@ async fn main() -> anyhow::Result<()> {
         .provider
         .as_deref()
         .or(app_cfg.active_provider.as_deref());
-    let (provider, provider_name, model) =
-        match resolve_provider(&app_cfg, cli.provider.as_deref(), cli.model.as_deref()) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("error: {e}");
-                std::process::exit(2);
-            }
-        };
+    // Allocated before the provider so the very first request already carries
+    // this run's conversation identity — the same one the actor rebuilds with.
+    let session_id = agent_store::SessionStore::open(&cli.workspace)
+        .map_err(|error| anyhow::anyhow!("session storage: {error}"))?
+        .next_id();
+    let conversation = husk_host::session::conversation_key(session_id, &cli.workspace);
+    let (provider, provider_name, model) = match resolve_provider(
+        &app_cfg,
+        cli.provider.as_deref(),
+        cli.model.as_deref(),
+        &conversation,
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    };
     let pcfg = pname.and_then(|p| app_cfg.providers.get(p));
     let resolved = pcfg
         .and_then(|p| p.find_model(&model))
@@ -324,9 +338,6 @@ async fn main() -> anyhow::Result<()> {
         memory_enabled: true,
         memory_distill: true,
     };
-    let session_id = agent_store::SessionStore::open(&cli.workspace)
-        .map_err(|error| anyhow::anyhow!("session storage: {error}"))?
-        .next_id();
     let (mut actor, channels) = SessionActor::spawn_with_id(cfg, session_id);
     let cmd_tx = actor.command_sender();
     let mut ev_rx = channels.event_rx;
