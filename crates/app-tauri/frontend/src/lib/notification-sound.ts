@@ -7,6 +7,11 @@
 // below the OS alert so a long session does not drown the desktop. The shell
 // owns the switch (`notification_sound`), independent of whether system
 // notifications are on — a tray app with toasts muted may still want the tone.
+//
+// The context lives only as long as the phrase: WebKitGTK opens one playback
+// stream per running context and keeps it open until the context is closed, so
+// a context parked after the cue leaves the app looking like it is playing —
+// a pinned speaker badge in the tray long after the tone stopped.
 
 import { CONFIG_CHANGED_EVENT, getDefaultPrefs } from "@/lib/agent-ipc/sessions";
 
@@ -24,6 +29,17 @@ const MIN_GAP_MS = 600;
 let lastPlayed = 0;
 
 let ctx: AudioContext | null = null;
+
+/** Pending hand-back of the device once the current phrase has finished. */
+let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Bumped per cue, so a resume that settles after a newer cue started does
+ *  not arm a hand-back for the older one. */
+let cueSeq = 0;
+
+/** Slack after the last note before the context closes — covers the
+ *  oscillator's own stop margin and the output buffer draining. */
+const RELEASE_SLACK_S = 0.15;
 
 /** `[frequency Hz, start offset s, duration s]` per note. Rising for a finish,
  *  twice-flat for "you are needed", falling for a failure — the shape carries
@@ -54,6 +70,17 @@ function audio(): AudioContext | null {
   return ctx;
 }
 
+/** Hand the device back the moment the phrase is over. WebKitGTK keeps one
+ *  playback stream open for the life of a running AudioContext, so a cue that
+ *  finished minutes ago still marks the app as playing — the desktop pins its
+ *  speaker badge, and the sink stays busy, until the context is closed. The
+ *  next cue builds a fresh one; a document's user activation is sticky, so it
+ *  starts unsuspended without a second gesture. */
+function release(ac: AudioContext) {
+  if (ctx === ac) ctx = null;
+  void ac.close().catch(() => {});
+}
+
 /** Play one cue. Silent when switched off, when the host has no Web Audio
  *  (older WebKitGTK builds, jsdom), or when the previous cue just played. */
 export function playCue(cue: Cue) {
@@ -63,10 +90,14 @@ export function playCue(cue: Cue) {
   lastPlayed = now;
   const ac = audio();
   if (!ac) return;
-  // A context created before the first gesture starts suspended and resuming
-  // is async, so the very first cue may be dropped. Acceptable: by the time an
-  // agent runs, the user has typed or clicked at least once.
-  if (ac.state === "suspended") void ac.resume().catch(() => {});
+  // This cue owns the device for its own length — the previous hand-back must
+  // not cut it short.
+  if (releaseTimer !== undefined) {
+    clearTimeout(releaseTimer);
+    releaseTimer = undefined;
+  }
+  const seq = ++cueSeq;
+  let endsAt = 0;
   for (const [freq, at, dur] of PHRASES[cue]) {
     const start = ac.currentTime + at;
     const osc = ac.createOscillator();
@@ -81,7 +112,23 @@ export function playCue(cue: Cue) {
     osc.connect(gain).connect(ac.destination);
     osc.start(start);
     osc.stop(start + dur + 0.02);
+    endsAt = Math.max(endsAt, at + dur);
   }
+  // The notes are scheduled on the context's clock, which stands still while
+  // it is suspended — so the hand-back clock starts once it runs, not now.
+  const arm = () => {
+    if (seq !== cueSeq) return;
+    releaseTimer = setTimeout(() => {
+      releaseTimer = undefined;
+      release(ac);
+    }, (endsAt + RELEASE_SLACK_S) * 1000);
+  };
+  // A context created before the first gesture starts suspended and resuming
+  // is async, so the very first cue may be dropped. Acceptable: by the time an
+  // agent runs, the user has typed or clicked at least once. A failed resume
+  // still hands the device back.
+  if (ac.state === "suspended") ac.resume().then(arm, arm);
+  else arm();
 }
 
 /** Read the stored switch and follow later saves — the settings pane
