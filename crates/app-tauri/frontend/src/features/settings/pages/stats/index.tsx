@@ -76,7 +76,7 @@ export function StatsPane() {
             icon={<Layers className="h-4 w-4" />}
             label="会话数"
             value={String(totals.sessions)}
-            hint={`活跃 ${totals.activeDays} 天 · 最长连续 ${streak} 天`}
+            hint={`活跃 ${totals.activeDays} 天 · 连续 ${streak} 天`}
           />
           <Kpi
             icon={<Activity className="h-4 w-4" />}
@@ -193,7 +193,10 @@ function Kpi({ icon, label, value, hint }: { icon: ReactNode; label: string; val
         <span className="text-[11px] text-neutral-500">{label}</span>
       </div>
       <span className="block break-all text-2xl font-semibold tabular-nums tracking-tight text-neutral-900">{value}</span>
-      <span className="mt-1 block text-[11px] leading-relaxed text-neutral-500">{hint}</span>
+      {/* Every hint fits one line now, so the row heights match on their own.
+          The clamp only stops a longer number from pushing its own card past
+          the rest. */}
+      <span className="mt-1 line-clamp-2 block text-[11px] leading-relaxed text-neutral-500">{hint}</span>
     </KvList>
   );
 }
