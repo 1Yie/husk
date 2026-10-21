@@ -390,6 +390,10 @@ export function initAgentStore(): () => void {
   // A settings save broadcasts CONFIG_CHANGED_EVENT — re-read so a renamed /
   // repriced / re-windowed model shows immediately.
   window.addEventListener(agent.CONFIG_CHANGED_EVENT, refreshAgentChips);
+  // A `git commit` in a terminal cleans the worktree without any event of
+  // ours: re-read when the window comes back, which is when the reader looks
+  // at the now-stale chip and the 改动 pill.
+  window.addEventListener("focus", refreshAgentChips);
 
   // A foreground session that rang while the window was away is on screen
   // again the moment the window is — its rows count as read, the same as
@@ -408,6 +412,7 @@ export function initAgentStore(): () => void {
     unlisten?.();
     unsubscribe();
     window.removeEventListener(agent.CONFIG_CHANGED_EVENT, refreshAgentChips);
+    window.removeEventListener("focus", refreshAgentChips);
     stopFront();
     ++chipsSeq; // pending model reads from a disposed subscription are stale
     disposeStore = null;

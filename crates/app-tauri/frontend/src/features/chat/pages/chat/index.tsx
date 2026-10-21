@@ -12,6 +12,7 @@ import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/componen
 import { useActiveView, useAgentChips, useAgentStore, useHasMoreHistory } from "@/stores/agent-store";
 import { listBgJobs, openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
 import { jobTone, summarizeJobs } from "@/lib/bg-jobs";
+import { changesStillLive, dockPill } from "@/lib/dock-pill";
 import { isAppInFront } from "@/lib/desktop-notify";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
@@ -174,20 +175,16 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // whatever tab is stored, so that counts as shown too.
   const jobsShown =
     dockVisible && view.bgJobs.length > 0 && (dockTab === "jobs" || filesCount === 0);
-  // Which view the pill should name: the last FILE view — 后台 is a detour, so
-  // the label does not jump while it is up — if it still has content,
-  // otherwise whichever list does (a session that only writes files, or only
-  // produces documents).
-  const activeDockTab: "changes" | "artifacts" | null =
-    filesTab === "artifacts" && artifacts.length > 0
-      ? "artifacts"
-      : view.changes.length > 0
-        ? "changes"
-        : artifacts.length > 0
-          ? "artifacts"
-          : null;
-  const activeDockCount =
-    activeDockTab === "artifacts" ? artifacts.length : view.changes.length;
+  // Which view the pill names: the last FILE view — 后台 is a detour, so the
+  // label does not jump while it is up — if it is still worth showing. The
+  // 改动 view follows the worktree: a commit leaves it nothing to announce,
+  // and the pill hands over to 产物 or disappears (`lib/dock-pill`).
+  const { tab: activeDockTab, count: activeDockCount } = dockPill({
+    filesTab,
+    changes: view.changes.length,
+    artifacts: artifacts.length,
+    changesLive: changesStillLive(gitInfo, view.changes.length),
+  });
   // The 改动 view's own numbers for the pill — same figures its header shows.
   const dockAdds = useMemo(
     () => view.changes.reduce((n, c) => n + c.adds, 0),
@@ -205,14 +202,15 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   }, [sessionKey]);
   useEffect(() => {
     // Files only: a background job is not a deliverable, and a sidebar that
-    // sprang open for every build would be noise. Its pill is the signal.
-    if (filesCount === 0 || autoOpenedRef.current || dismissedRef.current || dockOpen) return;
+    // sprang open for every build would be noise. Its pill is the signal —
+    // so this waits for a view the pill would actually name.
+    if (activeDockCount === 0 || autoOpenedRef.current || dismissedRef.current || dockOpen) return;
     autoOpenedRef.current = true;
     // Show the list that just got its first item — a turn that writes files
     // and a turn that generates documents both land here.
-    setDockTab(view.changes.length > 0 ? "changes" : "artifacts");
+    setDockTab(activeDockTab ?? "changes");
     setDockOpen(true);
-  }, [filesCount, dockOpen, setDockOpen, setDockTab, view.changes.length]);
+  }, [activeDockCount, activeDockTab, dockOpen, setDockOpen, setDockTab]);
   // The dock pill toggles the file views; from 后台 it switches back to them
   // instead of closing a sidebar the user did not open for files.
   const dockFilesShown = dockVisible && !jobsShown;
