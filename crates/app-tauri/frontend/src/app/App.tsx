@@ -639,6 +639,7 @@ export function App() {
           officeMode={officeMode}
           loading={viewLoading}
           sessionKey={`${workspace.root}:${activeId}`}
+          sessionId={activeId}
           sessionsEmpty={sessionsLoaded && sessions.length === 0}
           onNewSession={handleNewSession}
           onLoadOlder={handleLoadOlder}

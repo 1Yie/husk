@@ -30,6 +30,10 @@ interface ChatPageProps {
   /** Active session key (`root:id`) — resets the stream's incremental
    * mount window on session AND workspace switches. */
   sessionKey?: string;
+  /** The same session's id, as a value. The key stays the identity the view
+   * is cached under; parsing the id back out of it would be a second way to
+   * say the same thing, and the two could drift. */
+  sessionId?: number;
   /** Scroll-top handler — fetches + prepends the next older page. */
   onLoadOlder?: () => Promise<boolean>;
   /** Opens the raw-JSON history viewer. */
@@ -49,7 +53,7 @@ interface ChatPageProps {
   onNewSession?: () => void;
 }
 
-export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true, sessionsEmpty = false, onNewSession }: ChatPageProps) {
+export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey, sessionId = 0, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true, sessionsEmpty = false, onNewSession }: ChatPageProps) {
   // The conversation's live data comes from the store, not from props: the
   // shell must not be a subscriber of the 60 fps stream (it used to re-render —
   // and drag the sidebar with it — for a whole turn).
@@ -123,7 +127,6 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
 
   // Background jobs: a view rebuilt from history has none until asked, and
   // the live feed only speaks on a change — seed the list once per session.
-  const sessionId = Number(sessionKey?.slice(sessionKey.lastIndexOf(":") + 1)) || 0;
   const setBgJobs = useAgentStore((s) => s.setBgJobs);
   const writeJobs = useCallback(
     (jobs: BgJob[]) => setBgJobs(workspaceRoot, sessionId, jobs),
