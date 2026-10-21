@@ -81,7 +81,7 @@ describe("Git chip", () => {
   });
 
   it("stays off outside a repository", () => {
-    renderBar(viewWith(), { branch: null, dirty: 0 });
+    renderBar(viewWith(), { repo: false, branch: null, dirty: 0 });
     expect(screen.queryByRole("button", { name: /Git 分支/ })).toBeNull();
   });
 });
