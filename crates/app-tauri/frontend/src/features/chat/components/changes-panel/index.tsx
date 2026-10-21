@@ -3,7 +3,7 @@
 // Fed by `SessionView.changes` (applyEvent live, viewFromHistory on open).
 // The dock owns the frame (title, tabs, close, width); this renders rows.
 
-import { useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, FilePlus2, FileDiff, FileX2 } from "lucide-react";
 import { DiffView } from "@/features/chat/components/diff-view";
 import { cn } from "@/lib/utils";
@@ -29,14 +29,16 @@ function splitPath(p: string): { dir: string; base: string } {
   return { dir: p.slice(0, i + 1), base: p.slice(i + 1) };
 }
 
-function FileRow({
+/** Memoized on the entry itself: `recordFileChanges` replaces only the entry
+ *  it touched, so a new write re-renders that file's row and nothing else. */
+const FileRow = memo(function FileRow({
   change,
   open,
   onToggle,
 }: {
   change: FileChange;
   open: boolean;
-  onToggle: () => void;
+  onToggle: (path: string) => void;
 }) {
   const { dir, base } = splitPath(change.path);
   return (
@@ -44,7 +46,7 @@ function FileRow({
       <button
         type="button"
         aria-expanded={open}
-        onClick={onToggle}
+        onClick={() => onToggle(change.path)}
         className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_45%,transparent)]"
       >
         <span className="flex-none text-neutral-500">
@@ -89,9 +91,7 @@ function FileRow({
                   {p.tool} · 第 {p.n} 次修改
                 </div>
               )}
-              {/* The file row above already names the file and its totals —
-                  the card contributes the diff body only. */}
-              <DiffView diff={p.diff} maxHeight={340} reserveScrollbar showHeader={false} />
+              <DiffView diff={p.diff} file={change.path} maxHeight={340} />
             </div>
           ))}
           {change.fuzzy && (
@@ -103,11 +103,13 @@ function FileRow({
       )}
     </div>
   );
-}
+});
 
 /** The 改动 view's body — file rows with their patches. The dock owns the
- *  frame (title, tabs, scrolling), so this renders rows only. */
-export function ChangesList({ changes }: { changes: FileChange[] }) {
+ *  frame (title, tabs, scrolling), so this renders rows only. Memoized: the
+ *  page re-renders on every streamed token, and `changes` keeps its identity
+ *  until a write lands. */
+export const ChangesList = memo(function ChangesList({ changes }: { changes: FileChange[] }) {
   // Files start expanded — a first open answers "what changed" directly —
   // but a long agentic turn can produce dozens of patches. Mounting every
   // DiffView for all of them put thousands of nodes in the dock (the dock
@@ -139,16 +141,19 @@ export function ChangesList({ changes }: { changes: FileChange[] }) {
     setClosed(new Set());
   }
   prevPathsRef.current = changes.map((c) => c.path);
-  const toggle = (path: string) => {
-    const flip = (prev: Set<string>) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    };
-    if (dense) setOpened(flip);
-    else setClosed(flip);
-  };
+  const toggle = useCallback(
+    (path: string) => {
+      const flip = (prev: Set<string>) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      };
+      if (dense) setOpened(flip);
+      else setClosed(flip);
+    },
+    [dense],
+  );
 
   return (
     <div className="w-full">
@@ -157,9 +162,9 @@ export function ChangesList({ changes }: { changes: FileChange[] }) {
           key={c.path}
           change={c}
           open={dense ? opened.has(c.path) : !closed.has(c.path)}
-          onToggle={() => toggle(c.path)}
+          onToggle={toggle}
         />
       ))}
     </div>
   );
-}
+});

@@ -53,6 +53,61 @@ test("a multi-file patch becomes one card per file", () => {
   expect(screen.getByText("b.rs")).toBeInTheDocument();
 });
 
+test("every card of a multi-file patch caps and scrolls itself", () => {
+  // Under one shared vertical box, a tall card's horizontal bar sat at its
+  // far end — out of reach until the box had scrolled past the whole file.
+  const patch = [
+    "diff --git a/a.ts b/a.ts",
+    "@@ -1 +1 @@",
+    "-one",
+    "+two",
+    "diff --git a/b.rs b/b.rs",
+    "@@ -1 +1 @@",
+    "-three",
+    "+four",
+  ].join("\n");
+  const { container } = render(<DiffView diff={patch} maxHeight={300} />);
+  const cards = [...container.querySelectorAll<HTMLElement>(".rounded-\\[12px\\]")];
+  expect(cards).toHaveLength(2);
+  for (const card of cards) expect(card.style.maxHeight).toBe("300px");
+  // No ancestor between the cards and the caller scrolls on its own.
+  expect(container.querySelector(".overflow-y-auto")?.closest(".rounded-\\[12px\\]")).toBeTruthy();
+});
+
+test("a hunk-only diff with no file header still numbers its lines", () => {
+  // The dock hands each card a patch sliced down to its hunks.
+  render(<DiffView diff={"@@ -0,0 +1,2 @@\n+first\n+second"} file="a.ts" />);
+  expect(screen.getByText("1")).toBeInTheDocument();
+  expect(screen.getByText("2")).toBeInTheDocument();
+});
+
+test("the scrollbar's room is held before any line overflows", () => {
+  // A bar that appears later (highlight widening a line) must not grow the
+  // card under the reader — the space is already there as padding.
+  const { container } = render(<DiffView diff={diff} />);
+  const body = container.querySelector(".overflow-y-auto")!;
+  expect(body.className).toMatch(/\boverflow-x-hidden\b/);
+  expect(body.className).toMatch(/\bpb-1\.5\b/);
+});
+
+test("the line-number gutter stays put while the code scrolls sideways", () => {
+  render(<DiffView diff={diff} />);
+  const gutter = screen.getAllByText("12")[0].parentElement!;
+  expect(gutter.className).toMatch(/\bsticky\b/);
+  expect(gutter.className).toMatch(/\bleft-0\b/);
+});
+
+test("apply_patch's a/file placeholder is not a filename", () => {
+  const patch = ["--- a/file", "+++ b/file", "@@ -1 +1 @@", "-old", "+new"].join("\n");
+  const { rerender } = render(<DiffView diff={patch} />);
+  expect(screen.queryByText("file")).not.toBeInTheDocument();
+
+  // The dock slices a patch down to its hunks and hands the card the path —
+  // the card names itself instead of falling back to the `a/file` placeholder.
+  rerender(<DiffView diff={patch} file="src/real.ts" />);
+  expect(screen.getByText("src/real.ts")).toBeInTheDocument();
+});
+
 test("a huge diff mounts only the first 200 rows until expanded", () => {
   const big = [
     "@@ -1 +1,220 @@",

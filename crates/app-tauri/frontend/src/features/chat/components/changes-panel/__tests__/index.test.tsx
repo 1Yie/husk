@@ -12,18 +12,23 @@ const change = (path: string, body: string): FileChange => ({
   fuzzy: false,
 });
 
+/** The diff body is syntax-highlighted, so a line's text is split across token
+ *  spans — assert over the rendered text, not a single text node. */
+const shows = (container: HTMLElement, text: string) =>
+  container.textContent?.includes(text) ?? false;
+
 test("a small change set still opens by default", () => {
-  render(<ChangesList changes={[change("one.ts", "one-new")]} />);
-  expect(screen.getByText("one-new")).toBeInTheDocument();
+  const { container } = render(<ChangesList changes={[change("one.ts", "one-new")]} />);
+  expect(shows(container, "one-new")).toBe(true);
 });
 
 test("many files start collapsed and expand one row at a time", () => {
   const changes = Array.from({ length: 6 }, (_, i) => change(`f${i}.ts`, `new-${i}`));
-  render(<ChangesList changes={changes} />);
-  expect(screen.queryByText("new-0")).not.toBeInTheDocument();
+  const { container } = render(<ChangesList changes={changes} />);
+  expect(shows(container, "new-0")).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: /f0\.ts/ }));
-  expect(screen.getByText("new-0")).toBeInTheDocument();
-  expect(screen.queryByText("new-1")).not.toBeInTheDocument();
+  expect(shows(container, "new-0")).toBe(true);
+  expect(shows(container, "new-1")).toBe(false);
 });
 
 test("crossing the threshold mid-turn keeps the diffs already on screen open", () => {
@@ -31,20 +36,20 @@ test("crossing the threshold mid-turn keeps the diffs already on screen open", (
   // WHILE the reader is looking at an expanded diff. Folding the list at that
   // instant yanked the patch they were reading out from under them.
   const one = [change("a.ts", "a-new")];
-  const { rerender } = render(<ChangesList changes={one} />);
-  expect(screen.getByText("a-new")).toBeInTheDocument();
+  const { container, rerender } = render(<ChangesList changes={one} />);
+  expect(shows(container, "a-new")).toBe(true);
 
   rerender(<ChangesList changes={[...one, change("b.ts", "b-new"), change("c.ts", "c-new"), change("d.ts", "d-new"), change("e.ts", "e-new")]} />);
   // Already-open row stays open…
-  expect(screen.getByText("a-new")).toBeInTheDocument();
+  expect(shows(container, "a-new")).toBe(true);
   // …a file that arrives after the crossing comes in collapsed.
-  expect(screen.queryByText("b-new")).not.toBeInTheDocument();
+  expect(shows(container, "b-new")).toBe(false);
 });
 
 test("a list that shrinks below the threshold does not flip back to expanded", () => {
   const many = Array.from({ length: 6 }, (_, i) => change(`f${i}.ts`, `new-${i}`));
-  const { rerender } = render(<ChangesList changes={many} />);
+  const { container, rerender } = render(<ChangesList changes={many} />);
   rerender(<ChangesList changes={[many[0]]} />);
   // Sticky: a turn that rewrites fewer files must not remount every diff.
-  expect(screen.queryByText("new-0")).not.toBeInTheDocument();
+  expect(shows(container, "new-0")).toBe(false);
 });

@@ -6,25 +6,23 @@
 // The input stays a unified diff string: a write tool's result, an approval
 // preview or a ```diff fence all arrive in that shape.
 
-import { useMemo, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { highlightCodeToHtml, normalizeLanguage, supportsLanguage } from "@/lib/syntax-highlight";
+import {
+  highlightCodeToLines,
+  normalizeLanguage,
+  peekHighlightedLines,
+  scheduleHighlightLines,
+  supportsLanguage,
+} from "@/lib/syntax-highlight";
 
 interface Props {
   diff: string;
   maxHeight?: number;
-  /** Lay out the horizontal scrollbar track unconditionally.
-   *
-   *  WebKit only recomputes an `auto` scrollbar on a layout pass, so a diff
-   *  that mounts while its containing panel animates open can sit there with
-   *  no horizontal bar until something else forces a re-layout. A `scroll`
-   *  track is laid out from the first frame; the thumb still only shows when
-   *  the content overflows. Opt-in because it costs a permanent 6px gutter —
-   *  worth it in a resizable dock, needless in a chat bubble. */
-  reserveScrollbar?: boolean;
-  /** The card's own header — file path and ±totals. Turn it off where the
-   *  surrounding row already names the file, as the dock's file row does. */
-  showHeader?: boolean;
+  /** The file this diff belongs to, when the diff text itself does not say
+   *  (the dock slices a patch down to its hunks). Names the card and picks
+   *  the highlighter; a header inside the diff still wins. */
+  file?: string;
 }
 
 type RowKind = "add" | "del" | "ctx" | "hunk" | "meta";
@@ -47,11 +45,10 @@ interface Section {
   language?: string;
 }
 
-export function DiffView({
+export const DiffView = memo(function DiffView({
   diff,
   maxHeight = 500,
-  reserveScrollbar = false,
-  showHeader = true,
+  file,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const sections = useMemo(() => parseDiff(diff), [diff]);
@@ -72,7 +69,13 @@ export function DiffView({
         out.push(section);
         budget -= section.rows.length;
       } else {
-        out.push({ ...section, rows: section.rows.slice(0, budget) });
+        const rows = section.rows.slice(0, budget);
+        // `row.code` indexes `code`: a 5k-line file must not be tokenized in
+        // full to paint its first 200 rows, so cut the highlighter's input at
+        // the last visible line.
+        let lastCode = -1;
+        for (const row of rows) if (row.code !== undefined) lastCode = row.code;
+        out.push({ ...section, rows, code: section.code.slice(0, lastCode + 1) });
         budget = 0;
       }
     }
@@ -83,16 +86,17 @@ export function DiffView({
 
   return (
     <div className="w-full min-w-0">
-      <div
-        className="flex w-full min-w-0 flex-col gap-2 overflow-x-hidden overflow-y-auto"
-        style={{ maxHeight }}
-      >
+      {/* No shared scroll box: every card caps and scrolls its own body, so a
+          card's horizontal bar sits at the bottom of what is on screen. Under
+          a shared vertical box, a tall card's bar was at its far end — out of
+          reach until the box was scrolled down past the whole file. */}
+      <div className="flex w-full min-w-0 flex-col gap-2">
         {shown.map((section, i) => (
           <FileDiffCard
             key={`${section.path ?? "diff"}-${i}`}
             section={section}
-            showHeader={showHeader}
-            reserveScrollbar={reserveScrollbar}
+            file={file}
+            maxHeight={maxHeight}
           />
         ))}
       </div>
@@ -107,72 +111,83 @@ export function DiffView({
       )}
     </div>
   );
-}
+});
 
 const MAX_DIFF_LINES = 200;
 
-function FileDiffCard({
+const FileDiffCard = memo(function FileDiffCard({
   section,
-  showHeader,
-  reserveScrollbar,
+  file,
+  maxHeight,
 }: {
   section: Section;
-  showHeader: boolean;
-  reserveScrollbar: boolean;
+  file?: string;
+  /** Cap for the whole card. The card is a flex column, so the body shrinks
+   *  into whatever the header leaves — no hand-kept chrome height to drift. */
+  maxHeight: number;
 }) {
-  const html = useMemo(() => {
-    if (!section.language || section.code.length === 0) return undefined;
-    // One tokenize pass for the whole file's changed lines; the renderer's
-    // output is per-line balanced, so splitting it back per row is exact.
-    return highlightCodeToHtml(section.code.join("\n"), section.language).split("\n");
-  }, [section]);
+  const title = section.path ?? file;
+  const language = section.language ?? languageOf(file);
+  const html = useHighlightedLines(section.code, language);
+  const { ref: scrollRef, overflowing } = useOverflowX<HTMLDivElement>();
 
   return (
     <div
       className={cn(
-        "w-full min-w-0 select-text overflow-hidden rounded-[12px] bg-white font-mono",
-        "shadow-[0_1px_2px_rgba(0,0,0,0.05),0_2px_4px_rgba(0,0,0,0.02),0_0_0_0.5px_rgba(0,0,0,0.08)]",
-        "dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),0_2px_4px_rgba(0,0,0,0.3),0_0_0_0.5px_rgba(255,255,255,0.12)]",
+        "flex w-full min-w-0 select-text flex-col overflow-hidden rounded-[12px] border border-hairline bg-white font-mono",
+        // A dock resize or a sibling's expand must not re-lay out every row
+        // of every other card.
+        "[contain:content]",
+        // The page is white in the light theme, so the reference's sub-pixel
+        // ring washes out — a real hairline plus a soft drop keeps the card
+        // readable as a surface.
+        "shadow-[0_1px_2px_rgba(0,0,0,0.05),0_2px_4px_rgba(0,0,0,0.02)]",
+        "dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),0_2px_4px_rgba(0,0,0,0.3)]",
       )}
+      style={{ maxHeight }}
     >
-      {showHeader && (
-        <div className="flex items-center gap-2 border-b-[0.5px] border-neutral-200 px-3 py-2.5 text-[12.5px] leading-none">
-          <svg
-            aria-hidden="true"
-            className="h-[15px] w-[15px] flex-none text-[#a1a1a1]"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <path
-              d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.8}
-            />
-          </svg>
-          {section.path ? (
-            <span className="min-w-0 truncate text-neutral-900" title={section.path}>
-              {section.path}
-            </span>
-          ) : null}
-          <span className="ml-auto flex flex-none items-center gap-2 text-[12px] leading-none">
-            <span className="text-[#15a06a] dark:text-[#34d399]">+{section.adds}</span>
-            <span className="text-[#dc2626] dark:text-[#f87171]">-{section.dels}</span>
-          </span>
-        </div>
-      )}
-
-      <div className={cn("w-full", reserveScrollbar ? "overflow-x-scroll" : "overflow-x-auto")}>
-        {/* The gutter divider lives on the inner track so it stays aligned to
-            the line numbers while the body scrolls. */}
-        <div
-          className={cn(
-            "relative w-max min-w-full py-1 text-[12.5px] leading-5",
-            "before:absolute before:inset-y-0 before:left-16 before:z-[1] before:w-[0.5px]",
-            "before:bg-[#e6e8eb] before:content-[''] dark:before:bg-[#303030]",
-          )}
+      <div className="flex flex-none items-center gap-2 border-b border-neutral-200 px-3 py-2.5 text-[12.5px] leading-none">
+        <svg
+          aria-hidden="true"
+          className="h-[15px] w-[15px] flex-none text-[#a1a1a1]"
+          fill="none"
+          viewBox="0 0 24 24"
         >
+          <path
+            d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={1.8}
+          />
+        </svg>
+        {title ? (
+          <span className="min-w-0 truncate text-neutral-900" title={title}>
+            {title}
+          </span>
+        ) : null}
+        <span className="ml-auto flex flex-none items-center gap-2 text-[12px] leading-none">
+          <span className="text-[#15a06a] dark:text-[#34d399]">+{section.adds}</span>
+          <span className="text-[#dc2626] dark:text-[#f87171]">-{section.dels}</span>
+        </span>
+      </div>
+
+      <div
+        ref={scrollRef}
+        className={cn(
+          "min-h-0 w-full flex-1 overflow-y-auto",
+          // The bar's 6px is held as padding until a line overflows, so the
+          // card is the same height either way. Highlighting lands after
+          // mount and widens lines (bold keywords, italic comments); without
+          // this, the bar appearing grew the card under the reader — and
+          // WebKit has no scroll anchoring to absorb it.
+          overflowing ? "overflow-x-auto" : "overflow-x-hidden pb-1.5",
+        )}
+      >
+        {/* The gutter is sticky per row, so line numbers stay put while the
+            code scrolls sideways — in a 260px dock, the first swipe used to
+            take every number with it. */}
+        <div className="w-max min-w-full py-1 text-[12.5px] leading-5">
           {section.rows.map((row, i) => (
             <DiffRow
               key={i}
@@ -184,13 +199,99 @@ function FileDiffCard({
       </div>
     </div>
   );
+});
+
+/** Colour a card of at most this many code lines before paint. A bigger diff
+ *  mounts as plain text (same rows, same height) and gets its colours from the
+ *  shared highlight queue. */
+const SYNC_HIGHLIGHT_LINES = 80;
+/** …and at most this many lines across every card in one commit: the dock
+ *  opens on a turn's first change with all its small patches expanded, and a
+ *  per-card cap alone still tokenized them all back to back. */
+const SYNC_HIGHLIGHT_BUDGET = 160;
+let syncSpent = 0;
+let syncResetPending = false;
+
+function takeSyncBudget(lines: number): boolean {
+  if (syncSpent + lines > SYNC_HIGHLIGHT_BUDGET) return false;
+  syncSpent += lines;
+  if (!syncResetPending) {
+    // A commit renders in one task; the budget refills for the next one.
+    syncResetPending = true;
+    setTimeout(() => {
+      syncSpent = 0;
+      syncResetPending = false;
+    }, 0);
+  }
+  return true;
 }
 
-function DiffRow({ row, html }: { row: Row; html?: string }) {
+function useHighlightedLines(code: string[], language?: string): string[] | undefined {
+  const source = useMemo(() => code.join("\n"), [code]);
+  const sync = useMemo(() => {
+    if (!language || !source) return undefined;
+    // A card folded and reopened, or the same patch in the stream and the
+    // dock, is already coloured — that costs nothing to paint.
+    const cached = peekHighlightedLines(source, language);
+    if (cached) return cached;
+    if (code.length <= SYNC_HIGHLIGHT_LINES && takeSyncBudget(code.length)) {
+      return highlightCodeToLines(source, language);
+    }
+    return undefined;
+  }, [code, language, source]);
+  const [deferred, setDeferred] = useState<{ source: string; lines: string[] } | null>(null);
+
+  useEffect(() => {
+    if (sync || !language || !source) return;
+    return scheduleHighlightLines(source, language, (lines) => setDeferred({ source, lines }));
+  }, [sync, language, source]);
+
+  if (sync) return sync;
+  return deferred && deferred.source === source ? deferred.lines : undefined;
+}
+
+/** `overflow-x` is on only while a line is wider than the body.
+ *
+ *  A `scroll` track was reserved to dodge WebKit laying out an `auto`
+ *  scrollbar only on a layout pass — a diff mounting during the dock's width
+ *  transition kept a stale, missing bar. That cost a permanent 6px track whose
+ *  thumb painted even with nothing to scroll. Measuring instead produces the
+ *  hidden→auto style change (a layout pass) exactly when the content needs
+ *  one. */
+function useOverflowX<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      // Both sides are rounded integers: a fractional dock width can read one
+      // pixel over with nothing to scroll, which painted a 1px-travel bar.
+      const next = el.scrollWidth - el.clientWidth > 1;
+      setOverflowing((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    // The track is `w-max`: a long line added by the highlight or by expanding
+    // a capped diff changes its width, not the scrollport's.
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => observer.disconnect();
+  }, []);
+
+  return { ref, overflowing };
+}
+
+const DiffRow = memo(function DiffRow({ row, html }: { row: Row; html?: string }) {
+  // Full-width bands: the tint spans the whole track, the label inside sticks
+  // to the scrollport's left edge like the line-number gutter does. The band
+  // itself cannot stick — it is as wide as the track, so it has no room to.
   if (row.kind === "hunk") {
     return (
       <div className="select-none whitespace-pre bg-[color-mix(in_srgb,var(--husk-n100)_70%,transparent)] px-3 py-px text-[11px] text-neutral-500">
-        {row.text}
+        <span className="sticky left-3 inline-block">{row.text}</span>
       </div>
     );
   }
@@ -198,7 +299,7 @@ function DiffRow({ row, html }: { row: Row; html?: string }) {
   if (row.kind === "meta") {
     return (
       <div className="select-none whitespace-pre px-3 text-[11px] italic text-neutral-500">
-        {row.text}
+        <span className="sticky left-3 inline-block">{row.text}</span>
       </div>
     );
   }
@@ -209,40 +310,46 @@ function DiffRow({ row, html }: { row: Row; html?: string }) {
   );
 
   return (
-    <div
-      className={cn(
-        "relative grid grid-cols-[32px_32px_18px_1fr] items-stretch",
-        ROW_TONE[row.kind],
-      )}
-    >
-      <span
+    <div className={cn("grid grid-cols-[82px_1fr] items-stretch bg-[var(--row-tint)]", ROW_TONE[row.kind])}>
+      {/* Opaque, so code scrolled under it does not show through: the row's
+          tint laid over the card colour reads the same as the tint alone. */}
+      <div
         className={cn(
-          "select-none px-[7px] text-right text-[11px]",
-          row.kind === "del" ? "text-[#dc2626] dark:text-[#f87171]" : "text-[#a1a1a1]",
+          "sticky left-0 z-[1] grid select-none grid-cols-[32px_32px_18px] text-[11px]",
+          "[background:linear-gradient(var(--row-tint),var(--row-tint)),var(--husk-white)]",
+          "after:absolute after:inset-y-0 after:left-16 after:w-px after:content-['']",
+          "after:bg-[#e6e8eb] dark:after:bg-[#303030]",
         )}
       >
-        {row.old ?? ""}
-      </span>
-      <span
-        className={cn(
-          "select-none px-[7px] text-right text-[11px]",
-          row.kind === "add" ? "text-[#15a06a] dark:text-[#34d399]" : "text-[#a1a1a1]",
-        )}
-      >
-        {row.cur ?? ""}
-      </span>
-      <span
-        className={cn(
-          "select-none text-center text-[11px]",
-          row.kind === "add"
-            ? "text-[#15a06a] dark:text-[#34d399]"
-            : row.kind === "del"
-              ? "text-[#dc2626] dark:text-[#f87171]"
-              : "text-[#a1a1a1]",
-        )}
-      >
-        {row.kind === "add" ? "+" : row.kind === "del" ? "-" : ""}
-      </span>
+        <span
+          className={cn(
+            "px-[7px] text-right",
+            row.kind === "del" ? "text-[#dc2626] dark:text-[#f87171]" : "text-[#a1a1a1]",
+          )}
+        >
+          {row.old ?? ""}
+        </span>
+        <span
+          className={cn(
+            "px-[7px] text-right",
+            row.kind === "add" ? "text-[#15a06a] dark:text-[#34d399]" : "text-[#a1a1a1]",
+          )}
+        >
+          {row.cur ?? ""}
+        </span>
+        <span
+          className={cn(
+            "text-center",
+            row.kind === "add"
+              ? "text-[#15a06a] dark:text-[#34d399]"
+              : row.kind === "del"
+                ? "text-[#dc2626] dark:text-[#f87171]"
+                : "text-[#a1a1a1]",
+          )}
+        >
+          {row.kind === "add" ? "+" : row.kind === "del" ? "-" : ""}
+        </span>
+      </div>
       {html === undefined ? (
         <span className={codeClass}>{row.text || "\u00A0"}</span>
       ) : (
@@ -250,23 +357,24 @@ function DiffRow({ row, html }: { row: Row; html?: string }) {
       )}
     </div>
   );
-}
+});
 
-/** Row tints and edge accents: solid green for an addition, red hatch for a
+/** Row tints (`--row-tint`, shared by the row and its sticky gutter) and the
+ *  gutter's edge accent: solid green for an addition, red hatch for a
  *  deletion, nothing for unchanged lines. */
 const ROW_TONE: Record<"add" | "del" | "ctx", string> = {
   add: [
-    "bg-[rgba(26,127,55,0.09)] dark:bg-[rgba(63,185,80,0.15)]",
-    "before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:content-['']",
-    "before:bg-[#15a06a] dark:before:bg-[#34d399]",
+    "[--row-tint:rgba(26,127,55,0.09)] dark:[--row-tint:rgba(63,185,80,0.15)]",
+    "[&>div]:before:absolute [&>div]:before:inset-y-0 [&>div]:before:left-0 [&>div]:before:w-[3px] [&>div]:before:content-['']",
+    "[&>div]:before:bg-[#15a06a] dark:[&>div]:before:bg-[#34d399]",
   ].join(" "),
   del: [
-    "bg-[rgba(207,34,46,0.09)] dark:bg-[rgba(248,81,73,0.15)]",
-    "before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:content-['']",
-    "before:bg-[repeating-linear-gradient(45deg,#dc2626_0,#dc2626_1.5px,transparent_1.5px,transparent_3px)]",
-    "dark:before:bg-[repeating-linear-gradient(45deg,#f87171_0,#f87171_1.5px,transparent_1.5px,transparent_3px)]",
+    "[--row-tint:rgba(207,34,46,0.09)] dark:[--row-tint:rgba(248,81,73,0.15)]",
+    "[&>div]:before:absolute [&>div]:before:inset-y-0 [&>div]:before:left-0 [&>div]:before:w-[3px] [&>div]:before:content-['']",
+    "[&>div]:before:bg-[repeating-linear-gradient(45deg,#dc2626_0,#dc2626_1.5px,transparent_1.5px,transparent_3px)]",
+    "dark:[&>div]:before:bg-[repeating-linear-gradient(45deg,#f87171_0,#f87171_1.5px,transparent_1.5px,transparent_3px)]",
   ].join(" "),
-  ctx: "",
+  ctx: "[--row-tint:transparent]",
 };
 
 /** Metadata git emits between hunks — never rendered. */
@@ -303,6 +411,9 @@ function parseDiff(diff: string): Section[] {
     }
 
     if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+      // apply_patch names a hunk's ends `a/file` / `b/file` when the diff text
+      // carries no real path. The pair is a placeholder, not a filename.
+      if (/^(?:---|\+\+\+) [ab]\/file$/.test(line)) continue;
       // `--- a/x` / `+++ b/x` name the file when no `diff --git` row did. A
       // deleted line that happens to start with `-- ` is only read as content
       // once a hunk is open and the line is not the a/ b/ form.
@@ -321,10 +432,13 @@ function parseDiff(diff: string): Section[] {
 
     if (line.startsWith("@@")) {
       const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      // Section first: a headerless diff (the dock's hunk-only slices) opens
+      // its section here, and `open()` resets `inHunk`.
+      const target = current();
       inHunk = true;
       oldNo = hunk ? Number(hunk[1]) : 0;
       newNo = hunk ? Number(hunk[2]) : 0;
-      current().rows.push({ kind: "hunk", text: line });
+      target.rows.push({ kind: "hunk", text: line });
       continue;
     }
 
@@ -379,7 +493,10 @@ function fileHeader(line: string): string | null | undefined {
   }
   if (line.startsWith("diff --git ")) {
     const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    return m ? (cleanPath(m[2]) ?? null) : null;
+    if (!m) return null;
+    // The tool's placeholder pair, not a real filename.
+    if (m[1] === "file" && m[2] === "file") return null;
+    return cleanPath(m[2]) ?? null;
   }
   if (line.startsWith("Index: ")) return cleanPath(line.slice(7)) ?? null;
   const m = /^(?:added|deleted|modified|updated|patched)\s+(.+)$/.exec(line);
