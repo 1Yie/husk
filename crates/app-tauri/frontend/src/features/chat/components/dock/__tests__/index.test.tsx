@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, test } from "vitest";
+import { renderWithProviders } from "@/test/render";
 import { SessionDock } from "../index";
 import { DOCK_DEFAULT_WIDTH, DOCK_MAX_WIDTH, DOCK_MIN_WIDTH, useDockStore } from "../state";
-import type { Artifact, FileChange } from "@/features/chat/hooks/stream-view";
+import type { Artifact, BgJob, FileChange } from "@/features/chat/hooks/stream-view";
 
 const change = (path: string): FileChange => ({
   path,
@@ -11,6 +12,16 @@ const change = (path: string): FileChange => ({
   adds: 1,
   dels: 1,
   fuzzy: false,
+});
+
+const job = (): BgJob => ({
+  id: "bg-1",
+  command: "cargo test",
+  state: { kind: "running" },
+  started_at_ms: 1,
+  elapsed_ms: 1000,
+  notify: true,
+  from_child: false,
 });
 
 const artifact = (path: string): Artifact => ({
@@ -89,6 +100,80 @@ describe("unified session dock", () => {
     const saved = JSON.parse(localStorage.getItem("husk.dock.v1")!);
     expect(saved.width).toBe(DOCK_MAX_WIDTH);
     expect(saved.open).toBe(true);
+  });
+
+  test("background jobs get their own 后台 view", () => {
+    const job: BgJob = {
+      id: "bg-1",
+      command: "cargo test",
+      state: { kind: "done", label: "exited(0)", code: 0, reason: "exited" },
+      started_at_ms: 1,
+      elapsed_ms: 2000,
+      notify: true,
+      from_child: false,
+    };
+    // The job rows carry tooltips, which need the app's providers.
+    renderWithProviders(<SessionDock changes={[change("a.ts")]} artifacts={[]} jobs={[job]} />);
+    const tab = screen.getByRole("tab", { name: "后台（1 个任务）" });
+    fireEvent.click(tab);
+    expect(useDockStore.getState().tab).toBe("jobs");
+    expect(screen.getByText("cargo test")).toBeInTheDocument();
+    expect(screen.getByText("清除已结束")).toBeInTheDocument();
+    expect(screen.queryByText("a.ts")).not.toBeInTheDocument();
+  });
+
+  test("改动 and 后台 switch back and forth in one sidebar", () => {
+    const job: BgJob = {
+      id: "bg-1",
+      command: "cargo test",
+      state: { kind: "running" },
+      started_at_ms: 1,
+      elapsed_ms: 1000,
+      notify: true,
+      from_child: false,
+    };
+    renderWithProviders(
+      <SessionDock changes={[change("a.ts")]} artifacts={[]} jobs={[job]} />,
+    );
+    const changesTab = screen.getByRole("tab", { name: /改动/ });
+    const jobsTab = screen.getByRole("tab", { name: "后台（1 个任务）" });
+    // The file list is what the dock opens on.
+    expect(changesTab.getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.click(jobsTab);
+    expect(useDockStore.getState().tab).toBe("jobs");
+    expect(jobsTab.getAttribute("aria-selected")).toBe("true");
+    expect(changesTab.getAttribute("aria-selected")).toBe("false");
+    expect(screen.getByText("cargo test")).toBeInTheDocument();
+    expect(screen.queryByText("a.ts")).not.toBeInTheDocument();
+
+    fireEvent.click(changesTab);
+    expect(useDockStore.getState().tab).toBe("changes");
+    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.queryByText("cargo test")).not.toBeInTheDocument();
+  });
+
+  test("a stored 后台 view falls back once the jobs are gone", () => {
+    useDockStore.setState({ tab: "jobs" });
+    render(<SessionDock changes={[change("a.ts")]} artifacts={[]} jobs={[]} />);
+    expect(screen.queryByRole("tab", { name: /后台/ })).not.toBeInTheDocument();
+    expect(screen.getByText("a.ts")).toBeInTheDocument();
+  });
+
+  test("后台 is a detour: the file view you were on is the one you return to", () => {
+    useDockStore.setState({ tab: "artifacts", filesTab: "artifacts" });
+    renderWithProviders(
+      <SessionDock changes={[change("a.ts")]} artifacts={[artifact("b.pdf")]} jobs={[job()]} />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "后台（1 个任务）" }));
+    expect(useDockStore.getState()).toMatchObject({ tab: "jobs", filesTab: "artifacts" });
+    fireEvent.click(screen.getByRole("tab", { name: /产物/ }));
+    expect(useDockStore.getState().filesTab).toBe("artifacts");
+    // Persisted, so the next launch comes back to 产物 too.
+    expect(JSON.parse(localStorage.getItem("husk.dock.v1")!)).toMatchObject({
+      tab: "artifacts",
+      filesTab: "artifacts",
+    });
   });
 
   test("the active view and open state survive a remount", () => {

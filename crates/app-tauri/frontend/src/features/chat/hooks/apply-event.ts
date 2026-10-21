@@ -5,6 +5,7 @@
 import type { AgentEventEnvelope } from "@/types";
 import type {
   Artifact,
+  BgJob,
   ChangeKind,
   ContextBreakdown,
   ChangePatch,
@@ -369,6 +370,12 @@ function applyEventInto(
     // A settled turn is not waiting on anything — see `settleOpenApprovals`
     // and `settleOpenTools`.
     const settledItems = settled ? settleOpenTools(settleOpenApprovals(next)) : next;
+    // A turn that no user prompt opened — the host waking the model on a
+    // finished background job. It is still a turn: the clock starts here and
+    // the stream treats what follows as inside one, exactly as if the user
+    // had typed. `Compacting` is excluded: a `/compact` between turns is its
+    // own block, and it already carries its own clock.
+    const woke = streaming && !compacting && !v.turnOpen;
     return {
       ...v,
       items: settledItems,
@@ -376,7 +383,9 @@ function applyEventInto(
       streaming,
       ...(settled
         ? { pendingQuestion: undefined, turnStartedAt: undefined, turnOpen: false }
-        : {}),
+        : woke
+          ? { turnOpen: true, turnStartedAt: Date.now() }
+          : {}),
     };
   }
   if ("CompactionStarted" in ev) {
@@ -777,6 +786,13 @@ function applyEventInto(
       // snapshot's figure alone.
       ...(typeof p.turns === "number" ? { turnTotal: p.turns } : {}),
     };
+  }
+  if ("Custom" in ev && ev.Custom.kind === "husk:bg_jobs") {
+    // The host's whole list — replace, never merge: a removed job is simply
+    // absent from the next snapshot.
+    const jobs = (ev.Custom.payload as { jobs?: unknown } | null)?.jobs;
+    if (!Array.isArray(jobs)) return v;
+    return { ...v, bgJobs: jobs as BgJob[], bgJobsAt: Date.now() };
   }
   if ("Custom" in ev && ev.Custom.kind === "husk:usage_cache_write") {
     // Product extension accompanying the preceding `Usage`: the shared Usage

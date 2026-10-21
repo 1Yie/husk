@@ -7,7 +7,7 @@ import { create } from "zustand";
 
 /** The dock's views. New surfaces go here — everything the session produces
  *  hangs off this one sidebar, whatever the workspace mode. */
-export type DockTab = "changes" | "artifacts";
+export type DockTab = "changes" | "artifacts" | "jobs";
 
 export const DOCK_MIN_WIDTH = 260;
 export const DOCK_MAX_WIDTH = 560;
@@ -15,9 +15,16 @@ export const DOCK_DEFAULT_WIDTH = 300;
 
 const STORAGE_KEY = "husk.dock.v1";
 
+/** The file views — what `filesTab` remembers. */
+export type FilesTab = Exclude<DockTab, "jobs">;
+
 interface Persisted {
   open: boolean;
   tab: DockTab;
+  /** The file view to come back to when 后台 is the one on screen. Without
+   *  it, leaving 后台 always landed on 改动, even for a reader who was on
+   *  产物, and the dock pill's label jumped while 后台 was up. */
+  filesTab: FilesTab;
   width: number;
 }
 
@@ -34,15 +41,27 @@ export function clampDockWidth(width: number): number {
 }
 
 function load(): Persisted {
-  const fallback: Persisted = { open: false, tab: "changes", width: DOCK_DEFAULT_WIDTH };
+  const fallback: Persisted = {
+    open: false,
+    tab: "changes",
+    filesTab: "changes",
+    width: DOCK_DEFAULT_WIDTH,
+  };
   if (typeof localStorage === "undefined") return fallback;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return fallback;
     const p = JSON.parse(raw) as Partial<Persisted>;
+    const filesTab: FilesTab = p.filesTab === "artifacts" ? "artifacts" : "changes";
     return {
       open: p.open === true,
-      tab: p.tab === "artifacts" ? "artifacts" : "changes",
+      tab: p.tab === "artifacts" || p.tab === "jobs" ? p.tab : "changes",
+      // A snapshot written before `filesTab` existed: the stored tab was the
+      // file view whenever it still is one.
+      filesTab:
+        p.filesTab == null && (p.tab === "artifacts" || p.tab === "changes")
+          ? (p.tab as FilesTab)
+          : filesTab,
       width: clampDockWidth(Number(p.width ?? DOCK_DEFAULT_WIDTH)),
     };
   } catch {
@@ -56,7 +75,7 @@ function save(s: Persisted) {
     // Only the persisted slice — the setters must never leak into storage.
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ open: s.open, tab: s.tab, width: s.width }),
+      JSON.stringify({ open: s.open, tab: s.tab, filesTab: s.filesTab, width: s.width }),
     );
   } catch {
     // A blocked/full quota must not break the toggle.
@@ -75,8 +94,11 @@ export const useDockStore = create<DockState>((set, get) => ({
     save({ ...get(), open });
   },
   setTab: (tab) => {
-    set({ tab });
-    save({ ...get(), tab });
+    // 后台 is a detour, not a file view: it never becomes the one the dock
+    // pill names or falls back to.
+    const filesTab = tab === "jobs" ? get().filesTab : tab;
+    set({ tab, filesTab });
+    save({ ...get(), tab, filesTab });
   },
   setWidth: (width) => {
     const w = clampDockWidth(width);

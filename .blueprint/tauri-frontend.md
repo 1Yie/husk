@@ -2,13 +2,15 @@
 owns = ["crates/app-tauri/frontend/**"]
 forbidden_deps = ["tauri-backend", "kernel-core", "kernel-tools"]
 +++
+
 Husk 桌面端 React 前端：聊天流、会话侧栏、设置与产物面板。
 
-关键词：react, chat stream, plan card, settings, session sidebar, notification center, artifacts dock, apply-event, agent-ipc types, frontend
+关键词：react, chat stream, plan card, settings, session sidebar, notification center, artifacts dock, background jobs, apply-event, agent-ipc types, frontend
 
 ## 职责
 - 渲染 `UiEvent`（`apply-event`）并发出命令；设置页与产物面板
 - 前端类型与 `agent-ipc` 的事件契约保持一致
+- 右侧 dock 是会话产出的唯一侧栏：改动 / 产物 / 后台三个视图；后台视图读 `husk:bg_jobs` 快照，日志按需经 `bg_logs` 拉取，控制经 `bg_control`；输入框上方的任务胶囊与 dock 胶囊并列，点击切到后台视图；任务状态的措辞集中在 `lib/bg-jobs.ts`
 - 通知中心（`lib/notifications.ts`）：判定哪些事件值得通知，投递到铃铛与系统通知
 - 提示音（`lib/notification-sound.ts`）：agent loop 停下（回合结束 / 等审批或回答 / 失败）时用 Web Audio 合成一段短音，不受窗口可见性门控，也不依赖系统通知开关；`notification_sound` 偏好独立控制
 - 通知点击导航：订阅后按序读取后端保留的点击目标，等待启动会话恢复完成再打开目标项目和会话，处理后确认消费。

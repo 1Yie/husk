@@ -9,8 +9,10 @@ import { SessionDock } from "@/features/chat/components/dock";
 import { useDockStore } from "@/features/chat/components/dock/state";
 import { ComposerBar } from "@/features/chat/components/composer-bar";
 import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/components/workspace-welcome";
-import { useActiveView, useAgentChips, useHasMoreHistory } from "@/stores/agent-store";
-import { openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
+import { useActiveView, useAgentChips, useAgentStore, useHasMoreHistory } from "@/stores/agent-store";
+import { listBgJobs, openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
+import { summarizeJobs } from "@/lib/bg-jobs";
+import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Document extensions that pop the ready-toast — the office deliverable.
  *  Downloaded assets (images etc.) register silently in the dock. */
@@ -118,22 +120,51 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     [view.artifacts, missingArtifacts],
   );
 
-  // The dock is one sidebar for both lists, so "has content" is the sum —
+  // Background jobs: a view rebuilt from history has none until asked, and
+  // the live feed only speaks on a change — seed the list once per session.
+  const sessionId = Number(sessionKey?.slice(sessionKey.lastIndexOf(":") + 1)) || 0;
+  const setBgJobs = useAgentStore((s) => s.setBgJobs);
+  const writeJobs = useCallback(
+    (jobs: BgJob[]) => setBgJobs(workspaceRoot, sessionId, jobs),
+    [setBgJobs, workspaceRoot, sessionId],
+  );
+  useEffect(() => {
+    if (!workspaceRoot || !sessionId) return;
+    let live = true;
+    void listBgJobs(workspaceRoot, sessionId)
+      .then((r) => live && writeJobs(r.jobs))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [workspaceRoot, sessionId, writeJobs]);
+  const jobsSummary = useMemo(() => summarizeJobs(view.bgJobs), [view.bgJobs]);
+
+  // The dock is one sidebar for every list, so "has content" is the sum —
   // and which view to reveal follows whatever actually appeared.
   const dockOpen = useDockStore((s) => s.open);
   const dockTab = useDockStore((s) => s.tab);
   const setDockOpen = useDockStore((s) => s.setOpen);
   const setDockTab = useDockStore((s) => s.setTab);
-  const panelCount = view.changes.length + artifacts.length;
+  const filesTab = useDockStore((s) => s.filesTab);
+  const filesCount = view.changes.length + artifacts.length;
+  const panelCount = filesCount + view.bgJobs.length;
   // The dock's own open flag AND its content — an empty sidebar hides itself,
   // so a fresh session never lands on 「本会话还没有文件产出」 just because the
   // previous one left the dock open (the flag is persisted).
   const dockVisible = dockOpen && panelCount > 0;
-  // Which view the pill should name: the stored one if it still has content,
+  // The jobs pill speaks for the 后台 view; the dock pill for the file views.
+  // Each reads as open only while the dock shows its own view, so the two
+  // never both claim the sidebar. With no files the dock falls back to 后台
+  // whatever tab is stored, so that counts as shown too.
+  const jobsShown =
+    dockVisible && view.bgJobs.length > 0 && (dockTab === "jobs" || filesCount === 0);
+  // Which view the pill should name: the last FILE view — 后台 is a detour, so
+  // the label does not jump while it is up — if it still has content,
   // otherwise whichever list does (a session that only writes files, or only
   // produces documents).
   const activeDockTab: "changes" | "artifacts" | null =
-    dockTab === "artifacts" && artifacts.length > 0
+    filesTab === "artifacts" && artifacts.length > 0
       ? "artifacts"
       : view.changes.length > 0
         ? "changes"
@@ -158,18 +189,38 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     autoOpenedRef.current = false;
   }, [sessionKey]);
   useEffect(() => {
-    if (panelCount === 0 || autoOpenedRef.current || dismissedRef.current || dockOpen) return;
+    // Files only: a background job is not a deliverable, and a sidebar that
+    // sprang open for every build would be noise. Its pill is the signal.
+    if (filesCount === 0 || autoOpenedRef.current || dismissedRef.current || dockOpen) return;
     autoOpenedRef.current = true;
     // Show the list that just got its first item — a turn that writes files
     // and a turn that generates documents both land here.
     setDockTab(view.changes.length > 0 ? "changes" : "artifacts");
     setDockOpen(true);
-  }, [panelCount, dockOpen, setDockOpen, setDockTab, view.changes.length]);
+  }, [filesCount, dockOpen, setDockOpen, setDockTab, view.changes.length]);
+  // The dock pill toggles the file views; from 后台 it switches back to them
+  // instead of closing a sidebar the user did not open for files.
+  const dockFilesShown = dockVisible && !jobsShown;
   const handleToggleDock = useCallback(() => {
-    // Closing by hand is a decision, not a pause: it silences the auto-open.
-    if (dockOpen) dismissedRef.current = true;
-    setDockOpen(!dockOpen);
-  }, [dockOpen, setDockOpen]);
+    if (dockFilesShown) {
+      // Closing by hand is a decision, not a pause: it silences the auto-open.
+      dismissedRef.current = true;
+      setDockOpen(false);
+      return;
+    }
+    if (activeDockTab) setDockTab(activeDockTab);
+    setDockOpen(true);
+  }, [dockFilesShown, activeDockTab, setDockOpen, setDockTab]);
+  const handleToggleJobs = useCallback(() => {
+    if (jobsShown) {
+      dismissedRef.current = true;
+      setDockOpen(false);
+      return;
+    }
+    setDockTab("jobs");
+    setDockOpen(true);
+  }, [jobsShown, setDockOpen, setDockTab]);
+
   // The dock's own close button already flipped the flag — only the dismissal
   // bookkeeping is left here (toggling again would flip it straight back open).
   const handleDockClosed = useCallback(() => {
@@ -270,12 +321,15 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               sessionKey={sessionKey}
               hasMore={hasMore}
               onLoadOlder={onLoadOlder}
-              dockOpen={dockVisible}
+              dockOpen={dockFilesShown}
               dockCount={activeDockCount}
               dockTab={activeDockTab}
               dockAdds={dockAdds}
               dockDels={dockDels}
               onToggleDock={workspaceRoot ? handleToggleDock : undefined}
+              jobs={jobsSummary}
+              jobsOpen={jobsShown}
+              onToggleJobs={workspaceRoot ? handleToggleJobs : undefined}
             />
 
             {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
@@ -296,6 +350,11 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
           <SessionDock
             changes={view.changes}
             artifacts={artifacts}
+            jobs={view.bgJobs}
+            jobsAt={view.bgJobsAt}
+            root={workspaceRoot}
+            session={sessionId}
+            onJobs={writeJobs}
             open={dockVisible}
             onClose={handleDockClosed}
           />

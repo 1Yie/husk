@@ -14,7 +14,7 @@ import { create } from "zustand";
 import * as agent from "@/lib/agent-ipc";
 import type { AgentEventEnvelope } from "@/types";
 import { applyEvents } from "@/features/chat/hooks/apply-event";
-import { emptyView, type SessionView, type StreamItem } from "@/features/chat/hooks/stream-view";
+import { emptyView, type BgJob, type SessionView, type StreamItem } from "@/features/chat/hooks/stream-view";
 import { markSessionRead, notifyForEvent } from "@/lib/notifications";
 import { isAppInFront, onAppFront } from "@/lib/desktop-notify";
 
@@ -95,6 +95,9 @@ interface AgentStore {
    *  `loadView`'s no-overwrite rule would resurrect one if an id ever did
    *  collide again. */
   dropView: (root: string, id: number) => void;
+  /** Replace a session's background-job list — a `bg_list` seed or the list
+   *  a `bg_control` call returned. Live updates arrive as `husk:bg_jobs`. */
+  setBgJobs: (root: string, id: number, jobs: BgJob[]) => void;
 }
 
 export const useAgentStore = create<AgentStore>((set) => ({
@@ -199,6 +202,16 @@ export const useAgentStore = create<AgentStore>((set) => ({
       next.delete(k);
       const keys = runningKeysOf(next);
       return { views: next, runningKeys: sameKeys(s.runningKeys, keys) ? s.runningKeys : keys };
+    }),
+
+  setBgJobs: (root, id, jobs) =>
+    set((s) => {
+      const k = viewKey(root, id);
+      const v = s.views.get(k);
+      if (!v) return s;
+      const next = new Map(s.views);
+      next.set(k, { ...v, bgJobs: jobs, bgJobsAt: Date.now() });
+      return { views: next };
     }),
 }));
 

@@ -1,18 +1,26 @@
 // SessionDock — the one right-hand sidebar. Everything a session produces
-// hangs off it: the files the agent changed (改动) and the files it generated
-// (产物), as tabs. It is independent of the workspace mode (编程 and 工作 both
+// hangs off it: the files the agent changed (改动), the files it generated
+// (产物) and the background jobs it started (后台), as tabs. It is independent of the workspace mode (编程 and 工作 both
 // get the same dock) and owns its own UI state — open, active tab, width —
 // persisted across sessions.
 //
-// The frame is the dock's; the tab bodies are `ChangesList` / `ArtifactsList`.
+// The frame is the dock's; the tab bodies are `ChangesList` / `ArtifactsList`
+// / `JobsList`.
 
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { FileDiff, Package, X } from "lucide-react";
+import { FileDiff, Package, SquareTerminal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ChangesList } from "@/features/chat/components/changes-panel";
 import { ArtifactsList } from "@/features/chat/components/artifacts-panel";
-import type { Artifact, FileChange } from "@/features/chat/hooks/stream-view";
+import { JobsList } from "@/features/chat/components/jobs-panel";
+import type { Artifact, BgJob, FileChange } from "@/features/chat/hooks/stream-view";
 import { DOCK_MIN_WIDTH, clampDockWidth, useDockStore, type DockTab } from "./state";
+
+const TAB_META: Record<DockTab, { Icon: typeof FileDiff; label: string; unit: string }> = {
+  changes: { Icon: FileDiff, label: "改动", unit: "个文件" },
+  artifacts: { Icon: Package, label: "产物", unit: "个文件" },
+  jobs: { Icon: SquareTerminal, label: "后台", unit: "个任务" },
+};
 
 function TabButton({
   tab,
@@ -25,14 +33,13 @@ function TabButton({
   files: number;
   onSelect: (tab: DockTab) => void;
 }) {
-  const Icon = tab === "changes" ? FileDiff : Package;
-  const label = tab === "changes" ? "改动" : "产物";
+  const { Icon, label, unit } = TAB_META[tab];
   return (
     <button
       type="button"
       role="tab"
       aria-selected={active}
-      aria-label={`${label}（${files} 个文件）`}
+      aria-label={`${label}（${files} ${unit}）`}
       onClick={() => onSelect(tab)}
       className={cn(
         "relative flex flex-none items-center gap-1.5 rounded-md px-2 py-1 text-[12px] transition-colors",
@@ -51,11 +58,24 @@ function TabButton({
 export function SessionDock({
   changes,
   artifacts,
+  jobs = [],
+  jobsAt = 0,
+  root = "",
+  session = 0,
+  onJobs,
   open: openProp,
   onClose,
 }: {
   changes: FileChange[];
   artifacts: Artifact[];
+  /** The session's background jobs, and when that snapshot arrived. */
+  jobs?: BgJob[];
+  jobsAt?: number;
+  /** Which session the 后台 controls address. */
+  root?: string;
+  session?: number;
+  /** A control call's returned list — written back to the session's view. */
+  onJobs?: (jobs: BgJob[]) => void;
   /** Whether the sidebar is shown. Defaults to the store flag; the page
    *  additionally ANDs in "has content" so an empty dock never occupies the
    *  column (a fresh session inherits the previous one's open flag). */
@@ -116,6 +136,7 @@ export function SessionDock({
   const tabs: DockTab[] = [];
   if (changes.length > 0) tabs.push("changes");
   if (artifacts.length > 0) tabs.push("artifacts");
+  if (jobs.length > 0) tabs.push("jobs");
   // The stored tab can point at the list that just emptied (a new session,
   // /clear) — fall back to whichever one is on screen.
   const activeTab: DockTab | null = tabs.includes(tab) ? tab : (tabs[0] ?? null);
@@ -167,7 +188,7 @@ export function SessionDock({
                 key={t}
                 tab={t}
                 active={activeTab === t}
-                files={t === "changes" ? changes.length : artifacts.length}
+                files={t === "changes" ? changes.length : t === "artifacts" ? artifacts.length : jobs.length}
                 onSelect={setTab}
               />
             ))}
@@ -204,8 +225,10 @@ export function SessionDock({
             </div>
           ) : activeTab === "changes" ? (
             <ChangesList changes={changes} />
-          ) : (
+          ) : activeTab === "artifacts" ? (
             <ArtifactsList artifacts={artifacts} />
+          ) : (
+            <JobsList jobs={jobs} snapshotAt={jobsAt} root={root} session={session} onJobs={(j) => onJobs?.(j)} />
           )}
         </div>
       </aside>

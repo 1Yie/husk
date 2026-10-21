@@ -196,12 +196,14 @@ export interface ChatMessage {
   /** Set on `system` entries the live stream showed the user — `system`
    * renders as a plain line, `error` with a `⚠` prefix. `compacted`
    * carries the JSON card payload (`before/after/removed/note`), and
-   * `compacted_memory` is the model-facing summary note (hidden).
+   * `compacted_memory` is the model-facing summary note (hidden), and so is
+   * `host` — a host notice (a background job finishing) whose event the UI
+   * shows through its own channel (`husk:bg_jobs`).
    * `steer` is a mid-turn user correction: drawn as a user bubble inside the
    * running turn, never as a turn of its own.
    * Absent means internal context (system prompt, hook injections) —
    * stays hidden. */
-  notice?: "system" | "error" | "hidden" | "compacted_memory" | "compacted" | "plan" | "steer";
+  notice?: "system" | "error" | "hidden" | "compacted_memory" | "compacted" | "plan" | "steer" | "host";
   /** Creation time (epoch ms) — drives the `—— time ——` turn divider. */
   ts?: number | null;
   /** Reasoning trace of this assistant round — replays as the same 思考过程

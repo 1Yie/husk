@@ -182,6 +182,31 @@ export interface ContextBreakdown {
   other: number;
 }
 
+/** One background job (`bg_run`) as the host reports it — `husk:bg_jobs`
+ *  carries the session's whole list. */
+export interface BgJob {
+  id: string;
+  command: string;
+  state:
+    | { kind: "running" }
+    | { kind: "paused" }
+    /** `label` is the tool's wording (`exited(0)`, `killed(timeout)`), shown
+     *  as is; `code` is set only for a normal exit. `reason` is what the view
+     *  branches on — never the label's text. */
+    | { kind: "done"; label: string; code: number | null; reason: BgEndReason };
+  /** Wall-clock start, epoch ms. */
+  started_at_ms: number;
+  /** Run time at the snapshot, paused time excluded — a running job's clock
+   *  ticks on from here. */
+  elapsed_ms: number;
+  notify: boolean;
+  /** Started by a delegated subagent. */
+  from_child: boolean;
+}
+
+/** Why a job ended, as the host's monitor decided it. */
+export type BgEndReason = "exited" | "signaled" | "killed" | "timeout" | "log_cap" | "error";
+
 export interface SessionView {
   /** An unresolved `QuestionAsked` — the composer renders it in the same
    * slot as an approval strip. Cleared when answered (locally), when the
@@ -256,6 +281,11 @@ export interface SessionView {
    *  `QueuedPrompts` events echo it back, `open` seeds it from
    *  `SessionMeta`). Lives on the view so a session switch preserves it. */
   queuedPrompts: string[];
+  /** The session's background jobs — replaced whole by every `husk:bg_jobs`
+   *  snapshot, seeded by `bg_list` when a view is rebuilt. `bgJobsAt` is
+   *  when the list arrived, the base the running clocks tick from. */
+  bgJobs: BgJob[];
+  bgJobsAt: number;
 }
 
 export const emptyView = (): SessionView => ({
@@ -263,6 +293,8 @@ export const emptyView = (): SessionView => ({
   changes: [],
   artifacts: [],
   queuedPrompts: [],
+  bgJobs: [],
+  bgJobsAt: 0,
   state: null,
   streaming: false,
   turnOpen: false,

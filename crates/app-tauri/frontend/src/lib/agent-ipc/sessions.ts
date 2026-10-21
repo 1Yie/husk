@@ -2,6 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage, ProjectOverview, SessionRow } from "@/types";
+import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Sidebar project tree — every recent workspace with its full conversation
  * list; the active workspace is first and carries the live running flags. */
@@ -39,6 +40,24 @@ export async function openSession(id: number) {
     { op: "open", id },
   );
   return r;
+}
+
+/** A session's background jobs — the seed for a rebuilt view; live updates
+ *  ride `husk:bg_jobs`. A session with no live actor has none. */
+export function listBgJobs(root: string, id: number) {
+  return invoke<{ jobs: BgJob[] }>("agent_session", { op: "bg_list", id, path: root });
+}
+
+/** The last `lines` of a background job's log. */
+export function bgJobLogs(root: string, id: number, job: string, lines = 80) {
+  return invoke<string>("agent_session", { op: "bg_logs", id, path: root, payload: { job, lines } });
+}
+
+export type BgJobAction = "kill" | "pause" | "resume" | "remove";
+
+/** Stop, freeze, continue or drop one job — returns the list after the change. */
+export function controlBgJob(root: string, id: number, job: string, action: BgJobAction) {
+  return invoke<{ jobs: BgJob[] }>("agent_session", { op: "bg_control", id, path: root, payload: { job, action } });
 }
 
 export interface RawHistoryPage {

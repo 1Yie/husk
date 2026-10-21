@@ -327,3 +327,54 @@ test("a mid-turn compaction does not split the answer into two bubbles", () => {
   // The card keeps the position it happened in, between the two halves.
   expect(view.items.map((it) => it.kind)).toEqual(["user", "assistant", "compaction"]);
 });
+
+test("each bg-jobs snapshot replaces the list rather than merging into it", () => {
+  const job = (id: string) => ({
+    id,
+    command: `job ${id}`,
+    state: { kind: "running" },
+    started_at_ms: 1,
+    elapsed_ms: 0,
+    notify: true,
+    from_child: false,
+  });
+  const snapshot = (...ids: string[]): UiEvent => ({
+    Custom: { kind: "husk:bg_jobs", payload: { jobs: ids.map(job) } },
+  });
+  const two = applyEvents(emptyView(), [snapshot("bg-1", "bg-2")]);
+  expect(two.bgJobs.map((j) => j.id)).toEqual(["bg-1", "bg-2"]);
+  expect(two.bgJobsAt).toBeGreaterThan(0);
+  // bg-1 was removed: it is simply absent from the next snapshot.
+  const one = applyEvents(two, [snapshot("bg-2")]);
+  expect(one.bgJobs.map((j) => j.id)).toEqual(["bg-2"]);
+  // A malformed payload leaves the list alone.
+  const same = applyEvents(one, [{ Custom: { kind: "husk:bg_jobs", payload: null } }]);
+  expect(same.bgJobs).toBe(one.bgJobs);
+});
+
+test("a turn the host woke on its own opens without a user bubble", () => {
+  // A background job finished while the session was idle: the host runs a
+  // notice turn. No UserPrompt is echoed — the state transition is the only
+  // opening signal, and the turn must still read as open (clock, artifacts,
+  // inline notices) until it settles.
+  const before = emptyView();
+  const awake = applyEvent(before, { StateChanged: "Reasoning" });
+  expect(awake.turnOpen).toBe(true);
+  expect(awake.streaming).toBe(true);
+  expect(awake.turnStartedAt).toBeGreaterThan(0);
+  expect(awake.items.filter((it) => it.kind === "user")).toHaveLength(0);
+
+  const answered = applyEvents(awake, [
+    { TextDelta: { text: "后台任务已结束", parent: null } },
+    { StateChanged: "Finished" },
+  ]);
+  expect(answered.turnOpen).toBe(false);
+  expect(answered.turnStartedAt).toBeUndefined();
+  expect(answered.items.filter((it) => it.kind === "assistant")).toHaveLength(1);
+});
+
+test("a manual compaction between turns is not a wake-up turn", () => {
+  const v = applyEvent(emptyView(), { StateChanged: "Compacting" });
+  expect(v.streaming).toBe(true);
+  expect(v.turnOpen).toBe(false);
+});

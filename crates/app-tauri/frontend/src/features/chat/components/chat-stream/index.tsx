@@ -43,7 +43,9 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { requestQuote, selectionWithin } from "@/lib/selection-bus";
 import { cn } from "@/lib/utils";
-import { FileDiff, Package, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { CircleCheck, CircleX, FileDiff, Package, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Orb } from "@/features/chat/components/agent-orb";
+import type { JobsSummary } from "@/lib/bg-jobs";
 import { loadStamp } from "@/lib/load-probe";
 import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "@/lib/agent-ipc/sessions";
@@ -350,6 +352,12 @@ interface Props {
   dockAdds?: number;
   dockDels?: number;
   onToggleDock?: () => void;
+  /** The session's background jobs in one line — its own pill beside the
+   *  dock's, since jobs are not files. `null` = no jobs, no pill. */
+  jobs?: JobsSummary | null;
+  /** The dock is open on the 后台 view. */
+  jobsOpen?: boolean;
+  onToggleJobs?: () => void;
   /** Fetch + prepend the next older page (scroll-top trigger). */
   /** Fetch + prepend the next older page. Resolves `true` when a
    * page actually landed — `false` (empty/end) clears the pending
@@ -1621,7 +1629,7 @@ const ChatTurn = memo(function ChatTurn({
   );
 });
 
-export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock }: Props) {
+export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const [virtualApi, setVirtualApi] = useState<VirtualStepApi | null>(null);
@@ -2829,6 +2837,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // files, never because the surrounding repository happens to be dirty. The
   // working tree's own state is the title bar chip's business.
   const dockPillVisible = !!onToggleDock && dockCount > 0;
+  const jobsPillVisible = !!onToggleJobs && !!jobs;
+  // The arrow yields to whichever pills are up — one rule for the row.
+  const anyPill = dockPillVisible || jobsPillVisible;
 
   return (
     <ContextMenu>
@@ -2932,8 +2943,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       </div>
 
       {/* One centered floating row above the composer, two behaviours:
-          · with the dock pill up, `width`/`margin` animate — the row grows to
-            the right and the pill slides left to make room for the arrow,
+          · with a pill up (the jobs pill, the dock pill, or both side by
+            side), `width`/`margin` animate — the row grows to the right and
+            the pills slide left to make room for the arrow,
             which fades in on the right (an opacity-only swap would leave a
             40px hole beside a centred pill);
           · with no pill, the arrow IS the row, so it keeps its own width and
@@ -2943,6 +2955,39 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         style={{ bottom: `${(composerH ?? (bottomPad ? bottomPad - 24 : 140)) + 12}px` }}
         className="absolute left-1/2 z-30 flex -translate-x-1/2 items-center"
       >
+        {jobsPillVisible && jobs && (
+          <TooltipSimple content={jobsOpen ? "关闭后台任务" : `后台任务 · ${jobs.text}`} side="top">
+            <button
+              type="button"
+              onClick={onToggleJobs}
+              aria-label="后台任务"
+              aria-pressed={jobsOpen}
+              data-jobs-tone={jobs.tone}
+              className={cn(
+                "flex h-8 items-center gap-1.5 rounded-full border pl-2.5 pr-3 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer",
+                "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
+                "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
+                dockPillVisible && "mr-2",
+              )}
+            >
+              {jobs.tone === "running" ? (
+                // The orb's own travel, not a spinner: this pill sits on the
+                // same row as the session's activity glyphs, so it reads as
+                // the same family of motion.
+                <Orb variant="B2" size={16} className="flex-none text-sky-600 dark:text-sky-400" />
+              ) : jobs.tone === "failed" ? (
+                <CircleX className="h-4 w-4 flex-none text-rose-600 dark:text-rose-400" />
+              ) : (
+                // A touch smaller than the state glyphs beside it: a filled
+                // check carries more ink than an outlined cross at one size.
+                <CircleCheck className="h-3.5 w-3.5 flex-none text-emerald-600 dark:text-emerald-400" />
+              )}
+              <span className={cn("flex-none", jobs.tone === "failed" && "text-rose-600 dark:text-rose-400")}>
+                {jobs.text}
+              </span>
+            </button>
+          </TooltipSimple>
+        )}
         {dockPillVisible && (
           <TooltipSimple
             content={
@@ -2999,7 +3044,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             // The button fades out as the box collapses, so it never shows
             // outside the reserved space.
             "flex-none transition-all duration-200 ease-out",
-            dockPillVisible
+            anyPill
               ? // Beside the pill: the slot grows from zero, the pill yields
                 // to the right edge it just opened up.
                 !isAtBottom
