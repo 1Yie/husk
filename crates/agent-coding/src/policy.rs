@@ -205,12 +205,18 @@ impl TurnPolicy for CodingPolicy {
 
     async fn on_quiet_round(&self, view: &dyn agent_kernel::turn_policy::TurnView) -> Verdict {
         let mode = view.mode();
+        // A wake-up turn was opened by host notices, not by the user: nobody
+        // asked for work here, so the contracts that push it — submit a plan,
+        // advance the goal — stay out. The blueprint check below still runs:
+        // it reports on what this turn actually wrote.
+        let asked = !view.is_notice_turn();
 
         // Plan contract — a working turn that did tool work but never submitted
         // gets ONE nudge, so a plain question cannot be pushed twice.
         {
             let mut state = self.state.lock().unwrap();
-            if mode == crate::MODE_PLAN
+            if asked
+                && mode == crate::MODE_PLAN
                 && view.did_tool_work()
                 && !self.plan_submitted()
                 && state.plan_followups < MAX_PLAN_FOLLOWUPS
@@ -222,7 +228,8 @@ impl TurnPolicy for CodingPolicy {
             }
 
             // Goal contract — in goal mode going quiet undeclared is not a finish.
-            if mode == crate::MODE_GOAL
+            if asked
+                && mode == crate::MODE_GOAL
                 && self.goal_running()
                 && state.goal_followups < MAX_GOAL_FOLLOWUPS
             {
@@ -349,4 +356,48 @@ pub fn coding_policy_factory(
         crate::tracker::WriteTracker::new(agent_context::TrackingMode::AgentOnly).install(ctx);
         Box::new(CodingPolicy::from_ctx(ctx, workspace_root.clone()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_kernel::turn_policy::TurnView;
+
+    /// The view a policy sees: plan mode, one tool call behind it, and the
+    /// notice flag under test.
+    struct PlanView {
+        notice: bool,
+    }
+
+    impl TurnView for PlanView {
+        fn mode(&self) -> String {
+            crate::MODE_PLAN.into()
+        }
+        fn did_tool_work(&self) -> bool {
+            true
+        }
+        fn is_notice_turn(&self) -> bool {
+            self.notice
+        }
+    }
+
+    /// A wake-up is not a request for work: the plan contract must not nudge
+    /// it, or an unattended session would keep trying to deliver a plan.
+    #[tokio::test]
+    async fn a_wake_up_gets_no_plan_nudge() {
+        let ctx = ToolCtx::new();
+        let policy = CodingPolicy::from_ctx(&ctx, std::env::temp_dir());
+
+        let wake = policy.on_quiet_round(&PlanView { notice: true }).await;
+        assert!(
+            matches!(wake, Verdict::Finish { .. }),
+            "a wake-up ends quietly"
+        );
+
+        let asked = policy.on_quiet_round(&PlanView { notice: false }).await;
+        assert!(
+            matches!(asked, Verdict::Nudge { .. }),
+            "a user turn still gets its one nudge"
+        );
+    }
 }
