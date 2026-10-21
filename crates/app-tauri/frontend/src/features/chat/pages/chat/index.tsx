@@ -11,7 +11,8 @@ import { ComposerBar } from "@/features/chat/components/composer-bar";
 import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/components/workspace-welcome";
 import { useActiveView, useAgentChips, useAgentStore, useHasMoreHistory } from "@/stores/agent-store";
 import { listBgJobs, openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
-import { summarizeJobs } from "@/lib/bg-jobs";
+import { jobTone, summarizeJobs } from "@/lib/bg-jobs";
+import { isAppInFront } from "@/lib/desktop-notify";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Document extensions that pop the ready-toast — the office deliverable.
@@ -128,11 +129,22 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     (jobs: BgJob[]) => setBgJobs(workspaceRoot, sessionId, jobs),
     [setBgJobs, workspaceRoot, sessionId],
   );
+  // Failed jobs this view has already accounted for — see the toast below.
+  // Declared here because the seed writes into it first.
+  const seenFailuresRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!workspaceRoot || !sessionId) return;
     let live = true;
     void listBgJobs(workspaceRoot, sessionId)
-      .then((r) => live && writeJobs(r.jobs))
+      .then((r) => {
+        if (!live) return;
+        // The seed is history, not news: whatever already failed is on the
+        // pill and must not toast when the list lands.
+        const seen = seenFailuresRef.current ?? new Set<string>();
+        for (const j of r.jobs) if (jobTone(j) === "failed") seen.add(j.id);
+        seenFailuresRef.current = seen;
+        writeJobs(r.jobs);
+      })
       .catch(() => {});
     return () => {
       live = false;
@@ -221,6 +233,38 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     setDockOpen(true);
   }, [jobsShown, setDockOpen, setDockTab]);
 
+  // A job that fails is worth a toast with a way to look — once per job, and
+  // only for a failure that happened while this view was watching (a reopened
+  // session's old failures are already on its pill). The toast is for the
+  // user looking at this window: when it is not in front, the notification
+  // rules (`notifyForEvent`) send the system notice instead.
+  useEffect(() => {
+    seenFailuresRef.current = null;
+  }, [sessionKey]);
+  useEffect(() => {
+    const failed = view.bgJobs.filter((j) => jobTone(j) === "failed");
+    if (seenFailuresRef.current === null) {
+      seenFailuresRef.current = new Set(failed.map((j) => j.id));
+      return;
+    }
+    const seen = seenFailuresRef.current;
+    for (const j of failed) {
+      if (seen.has(j.id)) continue;
+      seen.add(j.id);
+      if (!isAppInFront()) continue;
+      toast.error("后台任务失败", {
+        description: j.command,
+        duration: 10000,
+        action: {
+          label: "查看",
+          onClick: () => {
+            setDockTab("jobs");
+            setDockOpen(true);
+          },
+        },
+      });
+    }
+  }, [view.bgJobs, setDockOpen, setDockTab]);
   // The dock's own close button already flipped the flag — only the dismissal
   // bookkeeping is left here (toggling again would flip it straight back open).
   const handleDockClosed = useCallback(() => {

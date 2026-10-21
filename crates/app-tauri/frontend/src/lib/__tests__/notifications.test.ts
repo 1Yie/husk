@@ -232,6 +232,78 @@ describe("delivery", () => {
   });
 });
 
+describe("background job failures", () => {
+  const snapshot = (...jobs: [string, string, number | null][]): UiEvent => ({
+    Custom: {
+      kind: "husk:bg_jobs",
+      payload: {
+        jobs: jobs.map(([id, label, code]) => ({
+          id,
+          command: `cmd ${id}`,
+          state:
+            label === "running"
+              ? { kind: "running" }
+              : {
+                  kind: "done",
+                  label,
+                  code,
+                  reason: code != null ? "exited" : label.includes("timeout") ? "timeout" : "killed",
+                },
+          started_at_ms: 1,
+          elapsed_ms: 0,
+          notify: true,
+          from_child: false,
+        })),
+      },
+    },
+  });
+
+  test("a failure in a session the user is not looking at notifies once", async () => {
+    setSessionTitles([{ root: "/project", sessions: [{ id: 21, title: "构建" }] }]);
+    vi.mocked(playCue).mockClear();
+    expect(notifyForEvent(env(snapshot(["bg-1", "running", null]), "/project", 21), foreground)).toBeNull();
+    const n = notifyForEvent(env(snapshot(["bg-1", "exited(101)", 101]), "/project", 21), foreground);
+    expect(n).toMatchObject({ kind: "error", title: "后台任务失败", body: "cmd bg-1", session: 21 });
+    expect(playCue).toHaveBeenCalledWith("error");
+    await Promise.resolve();
+    expect(tauri.invoke).toHaveBeenCalledWith(
+      "agent_session",
+      expect.objectContaining({
+        op: "notify",
+        payload: expect.objectContaining({
+          title: "后台任务失败 — 构建",
+          target: { root: "/project", session: 21 },
+        }),
+      }),
+    );
+    // Every later snapshot still lists the failure; it is not news again.
+    expect(
+      notifyForEvent(env(snapshot(["bg-1", "exited(101)", 101], ["bg-2", "running", null]), "/project", 21), foreground),
+    ).toBeNull();
+    expect(notificationsNow()).toHaveLength(1);
+  });
+
+  test("successes and the user's own kills stay quiet", () => {
+    const ev = snapshot(["bg-1", "exited(0)", 0], ["bg-2", "killed(sig 9)", null]);
+    expect(notifyForEvent(env(ev, "/project", 22), foreground)).toBeNull();
+    expect(notificationsNow()).toHaveLength(0);
+  });
+
+  test("failures landing together are one notice; a timeout counts", () => {
+    const ev = snapshot(["bg-1", "exited(1)", 1], ["bg-2", "killed(timeout)", null]);
+    const n = notifyForEvent(env(ev, "/project", 23), foreground);
+    expect(n).toMatchObject({ title: "2 个后台任务失败", body: "cmd bg-1\ncmd bg-2" });
+  });
+
+  test("the foreground session in a focused window leaves it to the toast", () => {
+    vi.mocked(playCue).mockClear();
+    expect(notifyForEvent(env(snapshot(["bg-1", "exited(1)", 1]), "/project", 1), foreground)).toBeNull();
+    expect(notificationsNow()).toHaveLength(0);
+    // The cue still plays: the job stopping is worth hearing either way.
+    expect(playCue).toHaveBeenCalledWith("error");
+  });
+});
+
 describe("store", () => {
   test("one row per session, carrying its latest state", () => {
     notify({ kind: "turn", title: "会话已完成", root: "/a", session: 1 });

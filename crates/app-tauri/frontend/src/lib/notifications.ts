@@ -9,6 +9,8 @@ import { useSyncExternalStore } from "react";
 import type { AgentEventEnvelope, AgentState, UiEvent } from "@/types";
 import { isAppInFront, sendDesktopNotification } from "@/lib/desktop-notify";
 import { playCue } from "@/lib/notification-sound";
+import { jobTone } from "@/lib/bg-jobs";
+import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** `turn` — a turn ended on its own. `attention` — the agent is blocked on
  *  the user. `error` — it gave up. Drives the row's dot colour. */
@@ -192,6 +194,32 @@ function forState(st: AgentState): NotificationInput | null {
   return null;
 }
 
+/** Failed background jobs already told, per session. `husk:bg_jobs` is the
+ *  whole list on every change, so a failure stays in every later snapshot —
+ *  remembering the ids is what makes it one notice, not one per snapshot.
+ *  Jobs die with their session's actor and the feed only speaks on a change,
+ *  so the live stream never replays an old failure; a reopened session's
+ *  `bg_list` seed does not pass through here at all. */
+const toldFailures = new Map<string, Set<string>>();
+
+/** A background job of this session failed since the last snapshot. */
+function bgFailureFor(root: string, session: number, ev: UiEvent): NotificationInput | null {
+  if (typeof ev !== "object" || !("Custom" in ev) || ev.Custom.kind !== "husk:bg_jobs") return null;
+  const jobs = (ev.Custom.payload as { jobs?: BgJob[] } | null)?.jobs;
+  if (!Array.isArray(jobs)) return null;
+  const key = target({ root, session });
+  const told = toldFailures.get(key) ?? new Set<string>();
+  toldFailures.set(key, told);
+  const fresh = jobs.filter((j) => jobTone(j) === "failed" && !told.has(j.id));
+  if (fresh.length === 0) return null;
+  for (const j of fresh) told.add(j.id);
+  return {
+    kind: "error",
+    title: fresh.length === 1 ? "后台任务失败" : `${fresh.length} 个后台任务失败`,
+    body: fresh.map((j) => j.command).join("\n"),
+  };
+}
+
 /** Whether the session left whatever it was blocked on: an answered question,
  *  or any state change that is not itself a wait (approved → executing,
  *  denied → finished, cancelled → failed). */
@@ -223,7 +251,7 @@ export function notifyForEvent(
 ): AppNotification | null {
   const root = env.root ?? "";
   if (resolvesAttention(env.event)) dismissAttention(root, env.session);
-  const input = notificationFor(env.event);
+  const input = notificationFor(env.event) ?? bgFailureFor(root, env.session, env.event);
   if (input) playCue(input.kind);
   if (root === foreground.root && env.session === foreground.id && isAppInFront()) {
     return null;
