@@ -79,7 +79,11 @@ export function sectionsFromPatch(content: string): { path: string; kind: Change
 }
 
 /** Fold a write tool's diff into `view.changes`, one entry per file.
- * `pending` marks an approval-preview diff (staged, not yet committed). */
+ * `pending` marks an approval-preview diff (staged, not yet committed).
+ *
+ * `changes` is a fresh array the caller owns, but the entries in it are the
+ * previous view's: a touched entry is replaced, never edited in place, so a
+ * memoized file row re-renders exactly when its own file changed. */
 export function recordFileChanges(
   changes: FileChange[],
   tool: string,
@@ -91,27 +95,33 @@ export function recordFileChanges(
   const sections =
     tool === "apply_patch" ? sectionsFromPatch(content) : sectionsFromFuzzy(content);
   for (const s of sections) {
-    let fc = changes.find((c) => c.path === s.path);
-    if (!fc) {
-      fc = { path: s.path, kind: s.kind, patches: [], adds: 0, dels: 0, fuzzy: false };
-      changes.push(fc);
+    let i = changes.findIndex((c) => c.path === s.path);
+    if (i < 0) {
+      changes.push({ path: s.path, kind: s.kind, patches: [], adds: 0, dels: 0, fuzzy: false });
+      i = changes.length - 1;
     }
+    const fc = changes[i];
     // Latest op wins the badge; adds/dels accumulate.
-    fc.kind = s.kind;
-    fc.fuzzy = fc.fuzzy || fuzzy;
+    const base = { ...fc, kind: s.kind, fuzzy: fc.fuzzy || fuzzy };
     // Approval → the same staged diff lands twice (ApprovalRequested,
     // then ToolCallFinished). Dedupe: the finished call flips `pending`
     // off instead of stacking a second patch.
     if (fc.patches.some((p) => p.diff === s.diff)) {
-      if (!pending) fc.pending = false;
+      const nextPending = pending ? fc.pending : false;
+      if (base.kind !== fc.kind || base.fuzzy !== fc.fuzzy || nextPending !== fc.pending) {
+        changes[i] = { ...base, pending: nextPending };
+      }
       continue;
     }
     const { adds, dels } = countDiff(s.diff);
-    fc.adds += adds;
-    fc.dels += dels;
     const patch: ChangePatch = { tool, diff: s.diff, n: fc.patches.length + 1 };
-    fc.patches.push(patch);
-    fc.pending = pending;
+    changes[i] = {
+      ...base,
+      adds: fc.adds + adds,
+      dels: fc.dels + dels,
+      patches: [...fc.patches, patch],
+      pending,
+    };
   }
 }
 
@@ -122,9 +132,9 @@ function dropPendingChanges(changes: FileChange[], tool: string) {
   for (let i = changes.length - 1; i >= 0; i--) {
     const fc = changes[i];
     if (!fc.pending) continue;
-    fc.patches = fc.patches.filter((p) => p.tool !== tool);
-    if (fc.patches.length === 0) changes.splice(i, 1);
-    else fc.pending = false;
+    const patches = fc.patches.filter((p) => p.tool !== tool);
+    if (patches.length === 0) changes.splice(i, 1);
+    else changes[i] = { ...fc, patches, pending: false };
   }
 }
 
