@@ -7,7 +7,7 @@
 // The frame is the dock's; the tab bodies are `ChangesList` / `ArtifactsList`
 // / `JobsList`.
 
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { FileDiff, Package, SquareTerminal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ChangesList } from "@/features/chat/components/changes-panel";
@@ -91,15 +91,14 @@ export function SessionDock({
   const setTab = useDockStore((s) => s.setTab);
   const setWidth = useDockStore((s) => s.setWidth);
 
-  // Width is dragged; a CSS width transition would fight the pointer, so the
-  // transition is switched off for the duration of the drag.
+  // Width is dragged; a CSS transition would fight the pointer, so the slide
+  // is switched off for the duration of the drag. The live width stays local
+  // and lands in the store (and localStorage) once, on release — writing it
+  // per pointermove was a synchronous storage write every frame.
   const [resizing, setResizing] = useState(false);
-  const dragRef = useRef<{ x: number; width: number } | null>(null);
-
-  const stopDrag = useCallback(() => {
-    dragRef.current = null;
-    setResizing(false);
-  }, []);
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  const dragRef = useRef<{ x: number; width: number; next: number; frame: number } | null>(null);
+  const shownWidth = dragWidth ?? width;
 
   useEffect(() => {
     if (!resizing) return;
@@ -107,9 +106,24 @@ export function SessionDock({
       const d = dragRef.current;
       if (!d) return;
       // The dock hugs the right edge: dragging its handle left widens it.
-      setWidth(clampDockWidth(d.width + (d.x - e.clientX)));
+      d.next = clampDockWidth(d.width + (d.x - e.clientX));
+      // One relayout per frame, however fast the pointer reports.
+      if (d.frame) return;
+      d.frame = requestAnimationFrame(() => {
+        d.frame = 0;
+        setDragWidth(d.next);
+      });
     };
-    const up = () => stopDrag();
+    const up = () => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      if (d) {
+        cancelAnimationFrame(d.frame);
+        setWidth(d.next);
+      }
+      setDragWidth(null);
+      setResizing(false);
+    };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
@@ -118,11 +132,11 @@ export function SessionDock({
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
     };
-  }, [resizing, setWidth, stopDrag]);
+  }, [resizing, setWidth]);
 
   const startDrag = (e: ReactPointerEvent) => {
     e.preventDefault();
-    dragRef.current = { x: e.clientX, width };
+    dragRef.current = { x: e.clientX, width, next: width, frame: 0 };
     setResizing(true);
   };
 
@@ -145,13 +159,17 @@ export function SessionDock({
     <div
       className={cn(
         "flex-none overflow-hidden",
+        // The column eases open rather than snapping: WebKit has no scroll
+        // anchoring, so a one-frame 300px re-flow of the stream threw the
+        // reader's place by however much the text re-wrapped above them —
+        // and the dock auto-opens mid-turn, on the first change.
         resizing ? "" : "transition-[width] duration-300 ease-out",
       )}
-      style={{ width: open ? width : 0 }}
+      style={{ width: open ? shownWidth : 0 }}
       aria-hidden={!open}
     >
       <aside
-        style={{ width }}
+        style={{ width: shownWidth }}
         className={cn(
           "relative flex h-full flex-none flex-col overflow-hidden border-l border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none",
           resizing ? "" : "transition-transform duration-300 ease-out",
@@ -164,7 +182,7 @@ export function SessionDock({
           role="separator"
           aria-orientation="vertical"
           aria-label="调整侧栏宽度"
-          aria-valuenow={width}
+          aria-valuenow={shownWidth}
           aria-valuemin={DOCK_MIN_WIDTH}
           tabIndex={0}
           onPointerDown={startDrag}

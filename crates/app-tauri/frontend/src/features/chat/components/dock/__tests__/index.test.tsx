@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, test } from "vitest";
 import { renderWithProviders } from "@/test/render";
 import { SessionDock } from "../index";
@@ -43,7 +43,7 @@ describe("unified session dock", () => {
     // Both views are always present, whatever the workspace mode.
     expect(screen.getByRole("tab", { name: /改动/ })).toBeTruthy();
     expect(screen.getByRole("tab", { name: /产物/ })).toBeTruthy();
-    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.getAllByText("a.ts").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("tab", { name: /产物/ }));
     expect(screen.getByText("report.docx")).toBeInTheDocument();
     expect(screen.queryByText("a.ts")).not.toBeInTheDocument();
@@ -59,7 +59,7 @@ describe("unified session dock", () => {
   test("a stored view whose list emptied out falls back to the other one", () => {
     useDockStore.setState({ tab: "artifacts" });
     render(<SessionDock changes={[change("a.ts")]} artifacts={[]} />);
-    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.getAllByText("a.ts").length).toBeGreaterThan(0);
     expect(screen.getByRole("tab", { name: /改动/ }).getAttribute("aria-selected")).toBe("true");
   });
 
@@ -100,6 +100,39 @@ describe("unified session dock", () => {
     const saved = JSON.parse(localStorage.getItem("husk.dock.v1")!);
     expect(saved.width).toBe(DOCK_MAX_WIDTH);
     expect(saved.open).toBe(true);
+  });
+
+  test("a pointer drag commits its width once, on release", async () => {
+    render(<SessionDock changes={[change("a.ts")]} artifacts={[]} />);
+    const handle = screen.getByRole("separator", { name: "调整侧栏宽度" });
+    fireEvent.pointerDown(handle, { clientX: 500 });
+    fireEvent.pointerMove(window, { clientX: 460 });
+    // The panel follows the pointer on the next frame…
+    await act(() => new Promise((r) => requestAnimationFrame(() => r(undefined))));
+    expect(handle.getAttribute("aria-valuenow")).toBe(String(DOCK_DEFAULT_WIDTH + 40));
+    // …but nothing is written while the drag is live.
+    expect(useDockStore.getState().width).toBe(DOCK_DEFAULT_WIDTH);
+    expect(localStorage.getItem("husk.dock.v1")).toBeNull();
+    fireEvent.pointerMove(window, { clientX: 450 });
+    fireEvent.pointerUp(window);
+    expect(useDockStore.getState().width).toBe(DOCK_DEFAULT_WIDTH + 50);
+    expect(JSON.parse(localStorage.getItem("husk.dock.v1")!).width).toBe(DOCK_DEFAULT_WIDTH + 50);
+  });
+
+  test("the column eases open and shut, except under a drag", () => {
+    const { container, rerender } = render(
+      <SessionDock changes={[change("a.ts")]} artifacts={[]} open={false} />,
+    );
+    const frame = container.firstElementChild as HTMLElement;
+    // Eased, not snapped: a one-frame re-flow of the stream throws the
+    // reader's place in WebKit, which has no scroll anchoring.
+    expect(frame.className).toMatch(/transition-\[width\]/);
+    expect(frame.style.width).toBe("0px");
+    rerender(<SessionDock changes={[change("a.ts")]} artifacts={[]} open />);
+    expect(frame.style.width).toBe(`${DOCK_DEFAULT_WIDTH}px`);
+    fireEvent.pointerDown(screen.getByRole("separator", { name: "调整侧栏宽度" }), { clientX: 500 });
+    expect(frame.className).not.toMatch(/transition/);
+    fireEvent.pointerUp(window);
   });
 
   test("background jobs get their own 后台 view", () => {
@@ -171,7 +204,7 @@ describe("unified session dock", () => {
 
     fireEvent.click(changesTab);
     expect(useDockStore.getState().tab).toBe("changes");
-    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.getAllByText("a.ts").length).toBeGreaterThan(0);
     expect(screen.queryByText("cargo test")).not.toBeInTheDocument();
   });
 
@@ -179,7 +212,7 @@ describe("unified session dock", () => {
     useDockStore.setState({ tab: "jobs" });
     render(<SessionDock changes={[change("a.ts")]} artifacts={[]} jobs={[]} />);
     expect(screen.queryByRole("tab", { name: /后台/ })).not.toBeInTheDocument();
-    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.getAllByText("a.ts").length).toBeGreaterThan(0);
   });
 
   test("后台 is a detour: the file view you were on is the one you return to", () => {
