@@ -176,15 +176,16 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   const jobsShown =
     dockVisible && view.bgJobs.length > 0 && (dockTab === "jobs" || filesCount === 0);
   // Which view the pill names: the last FILE view — 后台 is a detour, so the
-  // label does not jump while it is up — if it is still worth showing. The
-  // 改动 view follows the worktree: a commit leaves it nothing to announce,
-  // and the pill hands over to 产物 or disappears (`lib/dock-pill`).
+  // label does not jump while it is up — if it still has content.
   const { tab: activeDockTab, count: activeDockCount } = dockPill({
     filesTab,
     changes: view.changes.length,
     artifacts: artifacts.length,
-    changesLive: changesStillLive(gitInfo, view.changes.length),
   });
+  // What the 改动 view still owes the worktree. It never hides the pill — an
+  // already-committed session keeps its list — it decides whether the pill
+  // reads as uncommitted `+N −M` or as a file count.
+  const changesLive = changesStillLive(gitInfo, view.changes.length);
   // The 改动 view's own numbers for the pill — same figures its header shows.
   const dockAdds = useMemo(
     () => view.changes.reduce((n, c) => n + c.adds, 0),
@@ -368,6 +369,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               onLoadOlder={onLoadOlder}
               dockOpen={dockFilesShown}
               dockCount={activeDockCount}
+              dockLive={changesLive}
               dockTab={activeDockTab}
               dockAdds={dockAdds}
               dockDels={dockDels}

@@ -1,7 +1,10 @@
 // Which file view the dock pill speaks for, and whether the 改动 view still
-// has anything to announce. One rule, so the page and its tests cannot drift:
-// 后台 is a detour and never names the pill, 改动 counts while the worktree
-// still has something uncommitted, and 产物 counts whenever it has files.
+// has something uncommitted to report. One rule, so the page and its tests
+// cannot drift: 后台 is a detour and never names the pill, 改动 counts while
+// the session has written files, 产物 whenever it has any.
+//
+// The worktree decides the 改动 view's NUMBERS, never its existence: a commit
+// stops it claiming `+N −M`, but the list stays reachable.
 
 import type { FilesTab } from "@/features/chat/components/dock/state";
 
@@ -25,17 +28,15 @@ export function changesStillLive(
 }
 
 /** The view the pill names and its file count. The stored file tab wins while
- *  it still has content; 改动 yields to 产物 once it went live-and-empty. */
+ *  it still has content; 改动 yields to 产物 only when it has nothing left. */
 export function dockPill(input: {
   filesTab: FilesTab;
   changes: number;
   artifacts: number;
-  /** `changesStillLive` — the worktree's answer for the 改动 view. */
-  changesLive: boolean;
 }): DockPill {
-  const { filesTab, changes, artifacts, changesLive } = input;
+  const { filesTab, changes, artifacts } = input;
   if (filesTab === "artifacts" && artifacts > 0) return { tab: "artifacts", count: artifacts };
-  if (changesLive && changes > 0) return { tab: "changes", count: changes };
+  if (changes > 0) return { tab: "changes", count: changes };
   if (artifacts > 0) return { tab: "artifacts", count: artifacts };
   return { tab: null, count: 0 };
 }

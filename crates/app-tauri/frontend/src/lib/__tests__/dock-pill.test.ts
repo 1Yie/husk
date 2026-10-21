@@ -24,10 +24,10 @@ describe("changes still live", () => {
 });
 
 describe("dock pill", () => {
-  const base = { filesTab: "changes" as const, changes: 3, artifacts: 0, changesLive: true };
+  const base = { filesTab: "changes" as const, changes: 3, artifacts: 0 };
 
   test("no files, no pill", () => {
-    expect(dockPill({ ...base, changes: 0, changesLive: false })).toEqual({ tab: null, count: 0 });
+    expect(dockPill({ ...base, changes: 0 })).toEqual({ tab: null, count: 0 });
   });
 
   test("the stored file view wins while it has content", () => {
@@ -39,14 +39,16 @@ describe("dock pill", () => {
     expect(dockPill({ ...base, artifacts: 2 })).toEqual({ tab: "changes", count: 3 });
   });
 
-  test("committed changes hand the pill to 产物", () => {
-    expect(dockPill({ ...base, artifacts: 2, changesLive: false })).toEqual({
+  test("a committed change keeps its pill — the worktree only changes the numbers", () => {
+    // Visibility is the session's; `changesStillLive` is what the page hands
+    // the stream so the pill reads as a file count instead of `+N −M`.
+    expect(dockPill(base)).toEqual({ tab: "changes", count: 3 });
+  });
+
+  test("documents carry the pill when the session wrote no files", () => {
+    expect(dockPill({ ...base, changes: 0, artifacts: 2 })).toEqual({
       tab: "artifacts",
       count: 2,
     });
-  });
-
-  test("committed changes with no documents hide the pill", () => {
-    expect(dockPill({ ...base, changesLive: false })).toEqual({ tab: null, count: 0 });
   });
 });
