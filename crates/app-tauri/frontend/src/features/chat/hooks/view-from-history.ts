@@ -438,9 +438,6 @@ function foldMessage(
       // Rebuild the changes panel from the persisted write-tool result.
       if (m.is_error !== true && m.content) {
         recordFileChanges(v.changes, toolInfo.name, m.content, false);
-        // The row's own time, not "now": a replayed session's writes are as
-        // old as they are, so a clean read of the worktree covers them.
-        v.changesAt = Math.max(v.changesAt, m.ts ?? 0);
       }
       // Same for the artifacts dock — office/asset writers register the
       // locator path on their first ok call, later writes just bump it.

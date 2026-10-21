@@ -530,7 +530,6 @@ function applyEventInto(
     const changes = [...v.changes];
     if (t.ok && t.content) recordFileChanges(changes, t.name, t.content, false);
     else if (!t.ok) dropPendingChanges(changes, t.name);
-    const wrote = t.ok && !!t.content && WRITE_TOOLS.has(t.name);
     const artifacts = [...v.artifacts];
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -572,14 +571,7 @@ function applyEventInto(
     // children run in their own history and do not count.
     const taskTotal =
       v.taskTotal != null && !t.parent && t.child_id == null ? v.taskTotal + 1 : v.taskTotal;
-    return {
-      ...v,
-      items,
-      changes,
-      changesAt: wrote ? Date.now() : v.changesAt,
-      artifacts,
-      taskTotal,
-    };
+    return { ...v, items, changes, artifacts, taskTotal };
   }
   if ("ApprovalRequested" in ev) {
     closeOpenThinking(items);
@@ -588,7 +580,6 @@ function applyEventInto(
     // (pending). Approve re-records and dedupes; deny drops it.
     const changes = [...v.changes];
     if (a.diff) recordFileChanges(changes, a.tool_name, a.diff, a.fuzzy, true);
-    const previewed = !!a.diff && WRITE_TOOLS.has(a.tool_name);
     let attached = false;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -616,7 +607,7 @@ function applyEventInto(
         resolved: false,
       });
     }
-    return { ...v, items, changes, changesAt: previewed ? Date.now() : v.changesAt };
+    return { ...v, items, changes };
   }
   if ("QuestionAsked" in ev) {
     const q = ev.QuestionAsked;

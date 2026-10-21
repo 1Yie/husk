@@ -275,10 +275,6 @@ export interface SessionView {
   /** Files the agent wrote this session — feeds the changes panel.
    *  Accumulated live by `applyEvent`, rebuilt by `viewFromHistory`. */
   changes: FileChange[];
-  /** When the newest of them landed (epoch ms). A worktree read issued after
-   *  this moment already saw the write, so its "clean" verdict covers it —
-   *  that is how a commit empties the list without a stale read erasing it. */
-  changesAt: number;
   /** Files the session PRODUCED whole — office docs + downloads. Feeds
    *  the office artifacts dock; a new document registration also fires
    *  the ready-toast. */
@@ -297,7 +293,6 @@ export interface SessionView {
 export const emptyView = (): SessionView => ({
   items: [],
   changes: [],
-  changesAt: 0,
   artifacts: [],
   queuedPrompts: [],
   bgJobs: [],
