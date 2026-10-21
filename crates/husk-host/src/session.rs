@@ -941,7 +941,21 @@ impl SessionActor {
         let distill_record: Option<DistillRecorder> = store.as_ref().map(|s| {
             let store = s.clone();
             std::sync::Arc::new(move |prompt: u32, completion: u32| {
-                let _ = store.add_distill_usage(session_id, prompt, completion);
+                // The journal write is blocking file IO, and this runs on the
+                // task streaming the distillation: keep it off that worker, or
+                // a slow disk holds the memory pass open.
+                let store = store.clone();
+                let write = move || {
+                    let _ = store.add_distill_usage(session_id, prompt, completion);
+                };
+                match tokio::runtime::Handle::try_current() {
+                    Ok(rt) => {
+                        let _ = rt.spawn_blocking(write);
+                    }
+                    // No runtime to hand it to — a bare store test. There is no
+                    // async worker here for the write to stall.
+                    Err(_) => write(),
+                }
             }) as DistillRecorder
         });
         let distiller = build_distiller(
