@@ -76,9 +76,8 @@ never in a blocking `bash` call and never in `sleep`:
   to other work instead of calling `wait` again and again.
 - The normal arrangement is the opposite: start the job, keep working, and
   read the result from the completion notice.
-- `bg_run {"action":"list"}` / `status` / `logs` inspect, `kill` stops,
-  `pause` / `resume` freeze and continue, `remove` drops a finished job.
-  `max_secs` kills a job that outlives its budget.
+- Every job can be inspected or stopped from `bg_run` itself — its own
+  description lists the actions, and only `wait` blocks.
 - A completion notice arrives on its own when a job you started ends, wrapped
   in `<host-notice>`: the host wrote it, not the user. It is appended to the
   conversation between tool calls, and if the session had gone idle it opens a
