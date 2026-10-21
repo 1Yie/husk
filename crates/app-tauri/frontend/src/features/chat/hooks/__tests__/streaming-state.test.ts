@@ -282,6 +282,33 @@ test("a tool result cannot land on a sibling call that is still running", () => 
   expect(tools[1]).not.toHaveProperty("content");
 });
 
+test("a cancelled batch leaves no child card spinning", () => {
+  // Cancel drops the batch's dispatch: the engine settles the batch card,
+  // but its children never get a `ToolCallFinished` of their own. A settled
+  // turn has nothing in flight, so they close as interrupted.
+  const view = applyEvents(emptyView(), [
+    { UserPrompt: "读几个文件" },
+    { StateChanged: "Reasoning" },
+    { ToolCallStarted: { name: "batch_execute", args_preview: "" } },
+    { ToolCallStarted: { name: "smart_read", args_preview: "a.ts", parent: "batch_execute" } },
+    { ToolCallStarted: { name: "smart_grep", args_preview: "TODO", parent: "batch_execute" } },
+    { ToolCallFinished: { name: "smart_read", ok: true, content: "a", parent: "batch_execute" } },
+    { ToolCallFinished: { name: "batch_execute", ok: false, content: "已被用户中断" } },
+  ]);
+  const open = view.items.filter((it) => it.kind === "tool" && it.content === undefined);
+  expect(open.map((it) => it.kind === "tool" && it.name)).toEqual(["smart_grep"]);
+
+  const settled = applyEvents(view, [{ StateChanged: { Failed: "turn cancelled by user" } }]);
+  const tools = settled.items.filter((it) => it.kind === "tool");
+  expect(tools.every((it) => it.kind === "tool" && it.content !== undefined)).toBe(true);
+  // The child that did finish keeps its own result.
+  expect(tools.find((it) => it.kind === "tool" && it.name === "smart_read")).toMatchObject({
+    ok: true,
+    content: "a",
+  });
+  expect(tools.find((it) => it.kind === "tool" && it.name === "smart_grep")).toMatchObject({ ok: false });
+});
+
 test("a mid-turn compaction does not split the answer into two bubbles", () => {
   // Auto-compaction folds its card into the RUNNING turn, right behind the
   // draft it interrupted. Text must extend the draft, not the card, or one

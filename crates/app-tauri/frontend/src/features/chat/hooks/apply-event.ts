@@ -148,6 +148,24 @@ function settleOpenApprovals(items: StreamItem[]): StreamItem[] {
   return changed ? next : items;
 }
 
+/** Fail every tool card still waiting for its result. Tools run inside the
+ * turn, so a settled turn has none in flight: an open card is one it left
+ * behind — typically the children of a `batch_execute` or `delegate` whose
+ * dispatch a cancel dropped, which never get a `ToolCallFinished` of their
+ * own. Left open they would spin forever. */
+function settleOpenTools(items: StreamItem[]): StreamItem[] {
+  let changed = false;
+  const now = Date.now();
+  const next = items.map((it) => {
+    if (it.kind === "tool" && it.content === undefined) {
+      changed = true;
+      return { ...it, content: "已中断", ok: false, ts: now };
+    }
+    return it;
+  });
+  return changed ? next : items;
+}
+
 // ---------------------------------------------------------------- artifacts
 // Office mode's counterpart to `changes`: document/asset tools write whole
 // files, never diffs. The call's args locator (`args_preview` live,
@@ -348,8 +366,9 @@ function applyEventInto(
     const next = compacting
       ? items
       : items.filter((it) => !(it.kind === "compaction" && it.pending));
-    // A settled turn is not waiting on anything — see `settleOpenApprovals`.
-    const settledItems = settled ? settleOpenApprovals(next) : next;
+    // A settled turn is not waiting on anything — see `settleOpenApprovals`
+    // and `settleOpenTools`.
+    const settledItems = settled ? settleOpenTools(settleOpenApprovals(next)) : next;
     return {
       ...v,
       items: settledItems,
