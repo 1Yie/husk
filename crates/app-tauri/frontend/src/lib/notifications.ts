@@ -202,6 +202,12 @@ function forState(st: AgentState): NotificationInput | null {
  *  `bg_list` seed does not pass through here at all. */
 const toldFailures = new Map<string, Set<string>>();
 
+/** Forget a session's bookkeeping. Session ids are never reused, so nothing in
+ *  the map can be read again — leaving the entry would only grow it. */
+export function forgetToldFailures(root: string, session: number) {
+  toldFailures.delete(target({ root, session }));
+}
+
 /** A background job of this session failed since the last snapshot. */
 function bgFailureFor(root: string, session: number, ev: UiEvent): NotificationInput | null {
   if (typeof ev !== "object" || !("Custom" in ev) || ev.Custom.kind !== "husk:bg_jobs") return null;

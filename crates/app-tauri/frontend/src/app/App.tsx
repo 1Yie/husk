@@ -5,7 +5,7 @@ import { activeViewNow, refreshAgentChips, useAgentStore, useRunningKeys } from 
 import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
 import { viewFromHistory, viewFromHistoryChunked } from "@/features/chat/hooks/view-from-history";
 import { loadReset, loadStamp } from "@/lib/load-probe";
-import { markSessionRead, setSessionTitles } from "@/lib/notifications";
+import { forgetToldFailures, markSessionRead, setSessionTitles } from "@/lib/notifications";
 import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
@@ -421,6 +421,7 @@ export function App() {
     // entry, so a stale buffer would resurface the deleted session the
     // next time its key is mounted.
     dropView(workspace.root, id);
+    forgetToldFailures(workspace.root, id);
     void deleteSession(id).then((r) => {
       void refresh({ force: true });
       // If the deleted session was on screen, the backend already
