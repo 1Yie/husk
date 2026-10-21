@@ -443,10 +443,14 @@ impl SessionManager {
 
     /// A saved job list as the sidebar shows it after a restart: nothing is
     /// still running, because the process that ran it is gone. A job that had
-    /// already ended keeps its own ending.
+    /// already ended keeps its own ending. Every entry is marked `restored` —
+    /// no process is behind it, so nothing can be paused, killed or tailed.
     fn interrupted_bg_jobs(mut jobs: serde_json::Value) -> serde_json::Value {
         if let Some(list) = jobs.as_array_mut() {
             for job in list.iter_mut() {
+                if let Some(fields) = job.as_object_mut() {
+                    fields.insert("restored".into(), serde_json::Value::Bool(true));
+                }
                 let Some(state) = job.get_mut("state") else {
                     continue;
                 };
@@ -3994,5 +3998,10 @@ max = "max"
         // An ending that happened before the restart is left alone.
         assert_eq!(shown[2]["state"]["label"], "exited(0)");
         assert_eq!(shown[2]["state"]["reason"], "exited");
+        // Nothing behind these entries has a process: the pane must not offer
+        // controls or a log tail it cannot honour.
+        for job in shown.as_array().unwrap() {
+            assert_eq!(job["restored"], true, "{job}");
+        }
     }
 }

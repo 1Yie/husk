@@ -139,8 +139,11 @@ function JobRow({
   onJobs: (jobs: BgJob[]) => void;
 }) {
   const tone = jobTone(job);
+  // A restored row is a record, not a run: the host kept the list, not the
+  // process. It still reads, but nothing here can be acted on or tailed.
+  const restored = job.restored === true;
   const [busy, setBusy] = useState(false);
-  const { tail, error } = useLogTail(root, session, job, open);
+  const { tail, error } = useLogTail(root, session, job, open && !restored);
   const act = (action: BgJobAction) => {
     setBusy(true);
     void controlBgJob(root, session, job.id, action)
@@ -189,24 +192,28 @@ function JobRow({
           </span>
         </span>
         <span className="hidden flex-none items-center gap-0.5 group-hover:flex group-focus-within:flex">
-          {job.state.kind === "running" && (
-            <ActionButton label="暂停" disabled={busy} onClick={() => act("pause")}>
-              <Pause className="h-3 w-3" />
-            </ActionButton>
-          )}
-          {job.state.kind === "paused" && (
-            <ActionButton label="继续" disabled={busy} onClick={() => act("resume")}>
-              <Play className="h-3 w-3" />
-            </ActionButton>
-          )}
-          {live ? (
-            <ActionButton label="终止" disabled={busy} onClick={() => act("kill")}>
-              <Square className="h-3 w-3" />
-            </ActionButton>
-          ) : (
-            <ActionButton label="移除" disabled={busy} onClick={() => act("remove")}>
-              <X className="h-3 w-3" />
-            </ActionButton>
+          {restored ? null : (
+            <>
+              {job.state.kind === "running" && (
+                <ActionButton label="暂停" disabled={busy} onClick={() => act("pause")}>
+                  <Pause className="h-3 w-3" />
+                </ActionButton>
+              )}
+              {job.state.kind === "paused" && (
+                <ActionButton label="继续" disabled={busy} onClick={() => act("resume")}>
+                  <Play className="h-3 w-3" />
+                </ActionButton>
+              )}
+              {live ? (
+                <ActionButton label="终止" disabled={busy} onClick={() => act("kill")}>
+                  <Square className="h-3 w-3" />
+                </ActionButton>
+              ) : (
+                <ActionButton label="移除" disabled={busy} onClick={() => act("remove")}>
+                  <X className="h-3 w-3" />
+                </ActionButton>
+              )}
+            </>
           )}
         </span>
       </div>
@@ -218,7 +225,13 @@ function JobRow({
             <span className="font-mono tabular-nums">{formatElapsed(jobElapsedMs(job, snapshotAt, now))}</span>
           </div>
           <pre className="max-h-64 overflow-auto rounded-md border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n100)_70%,transparent)] px-2 py-1.5 font-mono text-[10.5px] leading-[1.45] whitespace-pre-wrap break-all text-neutral-600 select-text">
-            {error ? `读取日志失败：${error}` : tail === null ? "读取中…" : tail.trim() || "（暂无输出）"}
+            {restored
+              ? "日志随任务进程一起丢失"
+              : error
+                ? `读取日志失败：${error}`
+                : tail === null
+                  ? "读取中…"
+                  : tail.trim() || "（暂无输出）"}
           </pre>
         </div>
       )}
@@ -245,7 +258,9 @@ export function JobsList({
   const now = useNow(jobs.some((j) => j.state.kind === "running"));
   // Newest first: the job that just started is the one being asked about.
   const ordered = [...jobs].reverse();
-  const finished = jobs.filter((j) => j.state.kind === "done");
+  // A restored row is a record: the host holds no job to drop, so "清除已结束"
+  // counts only what it can actually remove.
+  const finished = jobs.filter((j) => j.state.kind === "done" && j.restored !== true);
   const clearFinished = () => {
     void Promise.allSettled(finished.map((j) => controlBgJob(root, session, j.id, "remove"))).then(
       (results) => {

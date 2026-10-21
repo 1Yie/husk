@@ -204,6 +204,9 @@ export interface BgJob {
    *  `false` in a host that installs one per session means a delegated
    *  child's job — it reports to this list and nobody else. */
   has_own_sink: boolean;
+  /** Read back from the session's saved record: the run is over and its
+   *  process is gone, so the row can be looked at but not acted on. */
+  restored?: boolean;
 }
 
 /** Why a job ended, as the host's monitor decided it. */
