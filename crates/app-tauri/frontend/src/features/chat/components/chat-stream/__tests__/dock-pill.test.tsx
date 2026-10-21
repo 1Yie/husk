@@ -31,15 +31,6 @@ describe("dock pill", () => {
     expect(pill).toContain("−4");
   });
 
-  test("a committed change reads as a file count, not as uncommitted lines", () => {
-    // The worktree says the work is committed: the pill keeps its place (the
-    // list stays reachable) but stops claiming `+N −M`.
-    renderStream({ dockCount: 2, dockTab: "changes", dockAdds: 12, dockDels: 4, dockLive: false });
-    const pill = screen.getByRole("button", { name: "侧栏" }).textContent ?? "";
-    expect(pill).toContain("2 个文件");
-    expect(pill).not.toContain("+12");
-  });
-
   test("names the file count when the active view is 产物", () => {
     renderStream({ dockCount: 3, dockTab: "artifacts" });
     expect(screen.getByRole("button", { name: "侧栏" }).textContent).toContain("3 个文件");

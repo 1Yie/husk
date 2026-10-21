@@ -12,7 +12,7 @@ import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/componen
 import { useActiveView, useAgentChips, useAgentStore, useHasMoreHistory } from "@/stores/agent-store";
 import { listBgJobs, openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
 import { jobTone, summarizeJobs } from "@/lib/bg-jobs";
-import { changesStillLive, dockPill } from "@/lib/dock-pill";
+import { dockPill } from "@/lib/dock-pill";
 import { isAppInFront } from "@/lib/desktop-notify";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
@@ -182,10 +182,6 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     changes: view.changes.length,
     artifacts: artifacts.length,
   });
-  // What the 改动 view still owes the worktree. It never hides the pill — an
-  // already-committed session keeps its list — it decides whether the pill
-  // reads as uncommitted `+N −M` or as a file count.
-  const changesLive = changesStillLive(gitInfo, view.changes.length);
   // The 改动 view's own numbers for the pill — same figures its header shows.
   const dockAdds = useMemo(
     () => view.changes.reduce((n, c) => n + c.adds, 0),
@@ -369,7 +365,6 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               onLoadOlder={onLoadOlder}
               dockOpen={dockFilesShown}
               dockCount={activeDockCount}
-              dockLive={changesLive}
               dockTab={activeDockTab}
               dockAdds={dockAdds}
               dockDels={dockDels}

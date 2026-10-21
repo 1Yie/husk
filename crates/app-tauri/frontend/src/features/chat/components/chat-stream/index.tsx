@@ -351,10 +351,6 @@ interface Props {
   /** Line totals of the 改动 view — the pill shows the diff's own numbers. */
   dockAdds?: number;
   dockDels?: number;
-  /** The 改动 view still has work the worktree does not hold as committed.
-   *  True: the pill reads as `+N −M`. False: it reads as a file count, so a
-   *  committed session keeps its list without claiming uncommitted lines. */
-  dockLive?: boolean;
   onToggleDock?: () => void;
   /** The session's background jobs in one line — its own pill beside the
    *  dock's, since jobs are not files. `null` = no jobs, no pill. */
@@ -1633,7 +1629,7 @@ const ChatTurn = memo(function ChatTurn({
   );
 });
 
-export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, dockLive = true, onToggleDock, jobs, jobsOpen, onToggleJobs }: Props) {
+export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const [virtualApi, setVirtualApi] = useState<VirtualStepApi | null>(null);
@@ -3022,10 +3018,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
                   box while 产物 is, and an “open the sidebar” arrow when it is
                   closed. */}
               <DockGlyph open={!!dockOpen} tab={dockTab} />
-              {/* The numbers are the view's own: uncommitted work reads as
-                  its line counts (+/−), anything else as a file count — a
-                  committed change is a list to browse, not a diff to weigh. */}
-              {dockTab === "changes" && dockLive ? (
+              {/* The numbers are the view's own: a diff reads as its line
+                  counts (+/−), a document list as its file count. */}
+              {dockTab === "changes" ? (
                 <>
                   <span className="flex-none font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
                     +{dockAdds}
