@@ -229,3 +229,372 @@ fn completion_notice_is_pushed() {
         "notice should carry the tail: {notice}"
     );
 }
+
+/// The session mirrors its jobs to the UI as full `husk:bg_jobs` snapshots,
+/// and a finished job reaches the UI only that way — never as a system line
+/// carrying the notice the model gets.
+#[test]
+fn the_session_streams_its_jobs_to_the_ui() {
+    use agent_llm::types::StreamChunk;
+    use husk_host::command::UiCommand;
+    use husk_host::session::{SessionActor, SessionConfig, BG_JOBS};
+
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(agent_testkit::ScriptedProvider::new().with_script(vec![
+        StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: Some("c1".into()),
+            name: Some("bg_run".into()),
+            args_delta: json!({"action":"run","command":"echo streamed"}).to_string(),
+        },
+        StreamChunk::Done {
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+        },
+    ]));
+    provider.script_text("started");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (mut actor, mut channels) = rt.block_on(async {
+        SessionActor::spawn(SessionConfig {
+            workspace_root: dir.path().to_path_buf(),
+            paths: agent_paths::AppPaths::for_tests("kernel"),
+            provider: provider.clone(),
+            model: "test-model".into(),
+            temperature: 0.0,
+            permission_mode: "bypassPermissions".into(),
+            agent_mode: "build".into(),
+            track_dirty: false,
+            thinking_level: None,
+            thinking_level_map: None,
+            context_window: None,
+            compact_at: None,
+            model_input: Vec::new(),
+            model_params: None,
+            memory_enabled: false,
+            memory_distill: false,
+            queued_prompts: Vec::new(),
+            plugins: None,
+            provider_name: "test".into(),
+        })
+    });
+    let reg = actor.bg_registry();
+    let cmd = actor.command_sender();
+    rt.spawn(async move { actor.run().await });
+    rt.block_on(cmd.send(UiCommand::Prompt { text: "go".into() }))
+        .unwrap();
+
+    // Read events until a snapshot shows the job finished.
+    let mut snapshots = Vec::new();
+    let mut system_lines = Vec::new();
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while let Some(ev) = channels.event_rx.recv().await {
+                match ev {
+                    agent_ipc::UiEvent::Custom { kind, payload } if kind == BG_JOBS => {
+                        let done = payload["jobs"][0]["state"]["kind"] == "done";
+                        snapshots.push(payload);
+                        if done {
+                            break;
+                        }
+                    }
+                    agent_ipc::UiEvent::SystemMessage(text) => system_lines.push(text),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("a finished-job snapshot");
+    });
+
+    let last = snapshots.last().unwrap();
+    let job = &last["jobs"][0];
+    assert_eq!(job["command"], "echo streamed", "{last}");
+    assert_eq!(job["state"]["code"], 0, "{last}");
+    assert_eq!(job["state"]["reason"], "exited", "{last}");
+    assert_eq!(job["from_child"], false, "the session's own job: {last}");
+    assert!(
+        system_lines.iter().all(|l| !l.contains("background task")),
+        "the notice must not reach the UI as a system line: {system_lines:?}"
+    );
+    // The handle the manager hands out is the one the feed mirrors.
+    assert_eq!(reg.jobs().len(), 1);
+    assert!(reg
+        .tail(job["id"].as_str().unwrap(), 5)
+        .unwrap()
+        .contains("streamed"));
+}
+
+/// A job that finishes after the turn ended wakes the session on its own: the
+/// model gets a second turn with the completion in front of it, and no user
+/// prompt opens it.
+#[test]
+fn an_idle_session_wakes_when_its_job_finishes() {
+    use agent_llm::types::StreamChunk;
+    use husk_host::command::UiCommand;
+    use husk_host::session::{SessionActor, SessionConfig};
+
+    let dir = tempfile::tempdir().unwrap();
+    let provider =
+        Arc::new(agent_testkit::ScriptedProvider::new().with_script(vec![
+        StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: Some("c1".into()),
+            name: Some("bg_run".into()),
+            args_delta: json!({"action":"run","command":"sleep 0.3; echo background result"})
+                .to_string(),
+        },
+        StreamChunk::Done { prompt_tokens: None, completion_tokens: None, cached_tokens: None },
+    ]));
+    // The first turn's answer, then the wake-up turn's. The third script is
+    // what the wake-up consumes — nothing else may run.
+    provider.script_text("started");
+    provider.script_text("the background job finished");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (mut actor, mut channels) = rt.block_on(async {
+        SessionActor::spawn(SessionConfig {
+            workspace_root: dir.path().to_path_buf(),
+            paths: agent_paths::AppPaths::for_tests("kernel"),
+            provider: provider.clone(),
+            model: "test-model".into(),
+            temperature: 0.0,
+            permission_mode: "bypassPermissions".into(),
+            agent_mode: "build".into(),
+            track_dirty: false,
+            thinking_level: None,
+            thinking_level_map: None,
+            context_window: None,
+            compact_at: None,
+            model_input: Vec::new(),
+            model_params: None,
+            memory_enabled: false,
+            memory_distill: false,
+            queued_prompts: Vec::new(),
+            plugins: None,
+            provider_name: "test".into(),
+        })
+    });
+    let reg = actor.bg_registry();
+    let cmd = actor.command_sender();
+    rt.spawn(async move { actor.run().await });
+    rt.block_on(cmd.send(UiCommand::Prompt {
+        text: "start the build".into(),
+    }))
+    .unwrap();
+
+    let prompts = rt.block_on(async {
+        let mut prompts = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(ev) = channels.event_rx.recv().await {
+                match ev {
+                    agent_ipc::UiEvent::UserPrompt(text) => prompts.push(text),
+                    agent_ipc::UiEvent::AssistantMessage(text)
+                        if text.contains("background job finished") =>
+                    {
+                        break
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the job's completion must wake the session");
+        prompts
+    });
+    // Only the prompt the user typed — the wake-up invented none.
+    assert_eq!(prompts, vec!["start the build".to_string()]);
+
+    // The model's second request carried the completion notice.
+    let seen = provider.seen_messages.lock().unwrap();
+    // The tool round, the answer, then the wake-up — and nothing after it.
+    assert_eq!(
+        seen.len(),
+        3,
+        "one tool round, its answer, one wake-up: {seen:#?}"
+    );
+    let wake = &seen[2];
+    // Job ids come from a process-wide counter that other tests in this
+    // binary also draw from, so read this session's id instead of assuming.
+    let id = reg.jobs()[0].id.clone();
+    assert!(
+        wake.iter()
+            .any(|m| m.contains(&format!("background task {id} finished"))),
+        "the wake-up must show the completion: {wake:#?}"
+    );
+}
+
+/// A model that starts a new job on every wake-up cannot keep an unattended
+/// session running: after `MAX_WAKES_IN_ROW` notice turns the next completion
+/// waits for the user, and the user is told once.
+#[test]
+fn wake_ups_stop_after_the_cap() {
+    use agent_llm::types::StreamChunk;
+    use husk_host::command::UiCommand;
+    use husk_host::session::{SessionActor, SessionConfig};
+
+    let start_job = |call: &str| {
+        vec![
+            StreamChunk::ToolCallDelta {
+                slot: 0,
+                id: Some(call.into()),
+                name: Some("bg_run".into()),
+                args_delta: json!({"action":"run","command":"sleep 0.3; echo again"}).to_string(),
+            },
+            StreamChunk::Done {
+                prompt_tokens: None,
+                completion_tokens: None,
+                cached_tokens: None,
+            },
+        ]
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(agent_testkit::ScriptedProvider::new());
+    // The prompt turn and three wake-ups, each starting one more job.
+    for i in 0..4 {
+        provider.push_script(start_job(&format!("c{i}")));
+        provider.script_text("started another");
+    }
+    // What a fourth wake-up would consume — it must stay unused.
+    provider.script_text("woke past the cap");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (mut actor, mut channels) = rt.block_on(async {
+        SessionActor::spawn(SessionConfig {
+            workspace_root: dir.path().to_path_buf(),
+            paths: agent_paths::AppPaths::for_tests("kernel"),
+            provider: provider.clone(),
+            model: "test-model".into(),
+            temperature: 0.0,
+            permission_mode: "bypassPermissions".into(),
+            agent_mode: "build".into(),
+            track_dirty: false,
+            thinking_level: None,
+            thinking_level_map: None,
+            context_window: None,
+            compact_at: None,
+            model_input: Vec::new(),
+            model_params: None,
+            memory_enabled: false,
+            memory_distill: false,
+            queued_prompts: Vec::new(),
+            plugins: None,
+            provider_name: "test".into(),
+        })
+    });
+    let cmd = actor.command_sender();
+    rt.spawn(async move { actor.run().await });
+    rt.block_on(cmd.send(UiCommand::Prompt {
+        text: "keep building".into(),
+    }))
+    .unwrap();
+
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(ev) = channels.event_rx.recv().await {
+                if let agent_ipc::UiEvent::SystemMessage(text) = &ev {
+                    if text.contains("连续唤醒") {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("the cap must be announced");
+        // Room for a wake-up that should not happen.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    });
+    let seen = provider.seen_messages.lock().unwrap();
+    assert_eq!(
+        seen.len(),
+        8,
+        "the prompt turn and three wake-ups, two requests each: {seen:#?}"
+    );
+}
+
+/// A kill from the UI is news to the model: the idle session wakes on a
+/// notice saying the user stopped the job, so the model never goes on
+/// believing it still runs.
+#[test]
+fn a_kill_from_the_ui_wakes_the_model() {
+    use agent_llm::types::StreamChunk;
+    use husk_host::command::UiCommand;
+    use husk_host::session::{SessionActor, SessionConfig};
+
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(agent_testkit::ScriptedProvider::new().with_script(vec![
+        StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: Some("c1".into()),
+            name: Some("bg_run".into()),
+            args_delta: json!({"action":"run","command":"sleep 60"}).to_string(),
+        },
+        StreamChunk::Done {
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+        },
+    ]));
+    provider.script_text("started");
+    provider.script_text("noted, the user stopped it");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (mut actor, mut channels) = rt.block_on(async {
+        SessionActor::spawn(SessionConfig {
+            workspace_root: dir.path().to_path_buf(),
+            paths: agent_paths::AppPaths::for_tests("kernel"),
+            provider: provider.clone(),
+            model: "test-model".into(),
+            temperature: 0.0,
+            permission_mode: "bypassPermissions".into(),
+            agent_mode: "build".into(),
+            track_dirty: false,
+            thinking_level: None,
+            thinking_level_map: None,
+            context_window: None,
+            compact_at: None,
+            model_input: Vec::new(),
+            model_params: None,
+            memory_enabled: false,
+            memory_distill: false,
+            queued_prompts: Vec::new(),
+            plugins: None,
+            provider_name: "test".into(),
+        })
+    });
+    let reg = actor.bg_registry();
+    let cmd = actor.command_sender();
+    rt.spawn(async move { actor.run().await });
+    rt.block_on(cmd.send(UiCommand::Prompt {
+        text: "start it".into(),
+    }))
+    .unwrap();
+
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            // The first turn ends with the job still running.
+            while let Some(ev) = channels.event_rx.recv().await {
+                if matches!(&ev, agent_ipc::UiEvent::AssistantMessage(t) if t == "started") {
+                    break;
+                }
+            }
+            let id = reg.jobs()[0].id.clone();
+            reg.kill(&id).await.unwrap();
+            while let Some(ev) = channels.event_rx.recv().await {
+                if matches!(&ev, agent_ipc::UiEvent::AssistantMessage(t) if t.contains("user stopped")) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the UI kill must wake the session");
+    });
+
+    let id = reg.jobs()[0].id.clone();
+    let seen = provider.seen_messages.lock().unwrap();
+    assert_eq!(seen.len(), 3, "tool round, answer, one wake-up: {seen:#?}");
+    assert!(
+        seen[2]
+            .iter()
+            .any(|m| m.contains(&format!("background task {id} stopped by the user"))),
+        "{:#?}",
+        seen[2]
+    );
+}

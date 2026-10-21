@@ -40,6 +40,26 @@ const MEMORY_CONTEXT_OPEN: &str =
 /// Product event carrying the persisted run/task counts after each commit.
 pub(crate) const SESSION_COUNTS: &str = "husk:session_counts";
 
+/// Product event carrying the session's background jobs — the whole list, so
+/// the view replaces rather than merges.
+pub const BG_JOBS: &str = "husk:bg_jobs";
+
+/// How long the bg feed waits for more changes before it sends one snapshot:
+/// `remove` on a batch of finished jobs or a burst of exits is one update.
+const BG_FEED_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Notice turns an idle session may open on its own before it waits for the
+/// user. Past the cap the notices stay queued and ride the next prompt.
+pub(crate) const MAX_WAKES_IN_ROW: u32 = 3;
+
+/// The session's background jobs as the `husk:bg_jobs` event.
+pub fn bg_jobs_event(reg: &agent_tools_shell::bg::BgRegistry) -> UiEvent {
+    UiEvent::Custom {
+        kind: BG_JOBS.into(),
+        payload: serde_json::json!({ "jobs": reg.jobs() }),
+    }
+}
+
 /// Real execution counts, not user-turn counts: one prompt can run the
 /// model/tool loop many times. One assistant row is one **step** — one model
 /// request plus the tool calls it triggered — and one tool row is one **call**
@@ -431,6 +451,18 @@ pub fn base_registries() -> (ToolRegistry, ToolRegistry) {
     (full, child)
 }
 
+/// What opened the turn being run — the only difference between a user prompt
+/// and a background wake-up once the shared bookkeeping starts.
+enum TurnInput {
+    /// The user's message, echoed to the UI and appended to history by the
+    /// engine.
+    Prompt(String),
+    /// Host notices the actor drained from the engine's notice channel — a
+    /// finished background job. The engine opens the turn on them, and no
+    /// user message is invented.
+    Notices(Vec<String>),
+}
+
 /// One live session: owns history + engine, consumes commands, emits events.
 pub struct SessionActor {
     history: Vec<ChatMessage>,
@@ -543,6 +575,16 @@ pub struct SessionActor {
     /// Skill backend — owns the cached prompt catalog and its change stamp, so
     /// a large tree is not re-read on every prompt.
     skills: agent_skills::SkillManager,
+    /// This session's background jobs. `run()` mirrors every change to the UI
+    /// as `husk:bg_jobs`; the manager queries and controls them directly.
+    bg_jobs: Arc<agent_tools_shell::bg::BgRegistry>,
+    /// Poked by the background notifier — `run()` turns an idle session into
+    /// a notice turn instead of waiting for the next prompt.
+    wake_rx: mpsc::Receiver<()>,
+    /// Notice turns run since the last user prompt. Capped at
+    /// `MAX_WAKES_IN_ROW`: a woken model may start another job, and nothing
+    /// else would stop that chain from billing an unattended session.
+    wakes_in_row: u32,
 }
 
 /// The conversation identity every provider of this session advertises: the
@@ -1007,19 +1049,31 @@ impl SessionActor {
         agent_tools_shell::services::install_registry(&mut tool_ctx);
         // Background jobs share that lifetime. A finished job pushes a notice
         // into the engine's notice channel (delivered between tool calls, or
-        // at the next turn when the session is idle) and a status line to the
-        // UI. The sink is installed per *context* on purpose: a delegated
+        // at the next turn when the session is idle). The UI learns of it
+        // from the job list (`husk:bg_jobs`, fed in `run()`), not from the
+        // notice. The sink is installed per *context* on purpose: a delegated
         // child inherits the registry (this session can see and stop its
         // jobs) but not the sink, so a child's job never reports here.
-        agent_tools_shell::bg::install_registry(&mut tool_ctx);
+        let bg_jobs = agent_tools_shell::bg::install_registry(&mut tool_ctx);
+        // An idle session wakes on a notice instead of holding it until the
+        // next prompt — a finished build must reach the model on its own. The
+        // notice goes first: whenever the wake lands, the text is already on
+        // the channel for the actor to take.
+        let (wake_tx, wake_rx) = mpsc::channel::<()>(1);
         {
             let notice = notice_tx.clone();
             let ui = channels.event_tx.clone();
+            let wake = wake_tx.clone();
             agent_tools_shell::bg::install_notifier(&mut tool_ctx, move |text| {
-                // The UI only needs the status line; the model gets the tail.
-                let line = text.lines().next().unwrap_or("background job finished");
-                let _ = ui.send(UiEvent::SystemMessage(line.to_string()));
-                let _ = notice.try_send(text);
+                // A full channel is 32 unread notices — tell the user rather
+                // than lose the report silently; the job list still shows it.
+                if notice.try_send(text).is_err() {
+                    let _ = ui.send(UiEvent::SystemMessage(
+                        "后台任务的完成通知过多，部分未送达模型".into(),
+                    ));
+                }
+                // One pending wake is enough: the actor drains the channel.
+                let _ = wake.try_send(());
             });
         }
         let memory_handle = agent_coding::remember::MemoryHandle::default();
@@ -1241,6 +1295,9 @@ impl SessionActor {
                 last_breakdown: None,
                 queued: Arc::new(std::sync::Mutex::new(cfg.queued_prompts.into())),
                 skills,
+                bg_jobs,
+                wake_rx,
+                wakes_in_row: 0,
             },
             channels,
         )
@@ -1256,11 +1313,18 @@ impl SessionActor {
         if let Some(checkpoint) = &self.checkpoint {
             checkpoint.start();
         }
+        self.spawn_bg_feed();
         loop {
             let cmd = tokio::select! {
                 biased;
                 _ = self.shutdown.notified() => break,
+                // A prompt outranks a wake: the user is waiting.
                 cmd = self.cmd_rx.recv() => cmd,
+                Some(()) = self.wake_rx.recv() => {
+                    self.run_notice_wake().await;
+                    self.drain_queue().await;
+                    continue;
+                }
             };
             let Some(cmd) = cmd else { break };
             if self
@@ -1275,6 +1339,31 @@ impl SessionActor {
         // A closed or deleted session must not keep paying for refreshes.
         self.warming.cancel();
         self.io.ui_tx.close();
+    }
+
+    /// Mirror the job registry to the UI: one full snapshot per settled burst
+    /// of changes. The task holds the registry weakly and the sink closes with
+    /// the actor, so it ends with the session instead of keeping it alive.
+    fn spawn_bg_feed(&self) {
+        let reg = Arc::downgrade(&self.bg_jobs);
+        let mut feed = self.bg_jobs.subscribe();
+        let ui = self.io.ui_tx.clone();
+        tokio::spawn(async move {
+            while feed.changed().await.is_ok() {
+                tokio::time::sleep(BG_FEED_SETTLE).await;
+                feed.mark_unchanged();
+                let Some(reg) = reg.upgrade() else { break };
+                if ui.send(bg_jobs_event(&reg)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// The session's background-job registry — shared with the manager so
+    /// the UI can list and control jobs without going through the pump.
+    pub fn bg_registry(&self) -> Arc<agent_tools_shell::bg::BgRegistry> {
+        self.bg_jobs.clone()
     }
 
     pub fn shutdown_writer(&self) -> Arc<tokio::sync::Notify> {
@@ -1424,6 +1513,78 @@ impl SessionActor {
     /// need a recursive `handle` call (async recursion requires boxing).
     async fn run_prompt(&mut self, text: String) {
         info!("user prompt ({} chars)", text.len());
+        // The user is back: the wake-up budget starts over.
+        self.wakes_in_row = 0;
+        let turn = self.begin_turn().await;
+        let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
+
+        // Facts recalled for THIS message ride a hidden user row right before
+        // it, never the system prompt: the system message is the head of the
+        // provider's prompt cache, and a per-question block there would turn
+        // every request into a full cache miss. Persisted with the turn, so
+        // later requests replay the same bytes and keep the prefix warm.
+        if let Some(m) = &self.memory {
+            if let Ok(block) = m.facts_block(&text) {
+                if !block.trim().is_empty() {
+                    self.history.push(ChatMessage::user_hidden(format!(
+                        "{MEMORY_CONTEXT_OPEN}\n{}\n</memory-context>",
+                        block.trim_end()
+                    )));
+                }
+            }
+        }
+
+        self.run_engine_turn(TurnInput::Prompt(text), turn).await;
+    }
+
+    /// A background job finished while the session sat idle: wake the model on
+    /// the completion notices rather than holding them until the next prompt.
+    /// Nothing happens when a running turn already drained them, or when the
+    /// session was deleted meanwhile.
+    async fn run_notice_wake(&mut self) {
+        if self.state.is_active() {
+            return;
+        }
+        if self
+            .store
+            .as_ref()
+            .is_some_and(|s| s.is_deleted(self.session_id))
+        {
+            return;
+        }
+        // Past the cap the notices stay on the channel — the next prompt's
+        // turn drains them — so a job chain the model keeps restarting
+        // cannot run on unattended. Said once, when the cap is reached.
+        if self.wakes_in_row >= MAX_WAKES_IN_ROW {
+            if self.wakes_in_row == MAX_WAKES_IN_ROW {
+                self.wakes_in_row += 1;
+                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(
+                    "后台任务已连续唤醒模型多次，后续结果将在你下次发言时送达".into(),
+                ));
+            }
+            return;
+        }
+        // The notifier sends the notice before the wake, so whatever is queued
+        // here belongs to this wake-up. Drained here rather than in the engine
+        // so an empty set means "a turn already took it" and starts nothing.
+        let mut notices = Vec::new();
+        while let Ok(text) = self.io.notice_rx.try_recv() {
+            notices.push(text);
+        }
+        if notices.is_empty() {
+            return;
+        }
+        info!(notices = notices.len(), "waking on background notices");
+        self.wakes_in_row += 1;
+        let turn = self.begin_turn().await;
+        self.run_engine_turn(TurnInput::Notices(notices), turn)
+            .await;
+    }
+
+    /// Everything a turn does before the model is asked: the cancel reset, the
+    /// opening state, the prompt blocks that may have changed since the last
+    /// turn, and the write tracker's turn mark. Returns that mark.
+    async fn begin_turn(&mut self) -> u32 {
         // Clear the cancel flag so a stale Cancel from a previous turn can't
         // abort this one before it starts.
         self.cancel
@@ -1432,7 +1593,6 @@ impl SessionActor {
         // The session's own writes feed the same transition slot the engine
         // emits into, so a state both sides announce is one hook event.
         self.hooks.observe(&self.state).await;
-        let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
         let turn = self.hunks.lock().begin_turn();
 
         // Refresh the skills catalog when a skill was added, removed, or
@@ -1471,32 +1631,38 @@ impl SessionActor {
                 sys.content = Some(replace_block(&content, "blueprint", &block));
             }
         }
+        turn
+    }
 
-        // Facts recalled for THIS message ride a hidden user row right before
-        // it, never the system prompt: the system message is the head of the
-        // provider's prompt cache, and a per-question block there would turn
-        // every request into a full cache miss. Persisted with the turn, so
-        // later requests replay the same bytes and keep the prefix warm.
-        if let Some(m) = &self.memory {
-            if let Ok(block) = m.facts_block(&text) {
-                if !block.trim().is_empty() {
-                    self.history.push(ChatMessage::user_hidden(format!(
-                        "{MEMORY_CONTEXT_OPEN}\n{}\n</memory-context>",
-                        block.trim_end()
-                    )));
-                }
-            }
-        }
-
+    /// Run the model and settle the turn — shared by a user prompt and a
+    /// background wake-up.
+    async fn run_engine_turn(&mut self, input: TurnInput, turn: u32) {
+        // A wake-up carries no user intent: it is not a task the distiller
+        // can learn a correction from, so only a prompt is distilled.
+        let was_prompt = matches!(&input, TurnInput::Prompt(_));
+        let outcome_text = match &input {
+            TurnInput::Prompt(text) => text.clone(),
+            // Nothing was typed: the notices are the turn's subject, so the
+            // checkpoint names them.
+            TurnInput::Notices(notices) => notices.first().cloned().unwrap_or_default(),
+        };
         self.turn_started_at = Some(unix_now());
-        if let (Some(checkpoint), Some(meta)) = (&self.checkpoint, self.session_meta(&text)) {
-            checkpoint.begin(&self.history, &text, meta);
+        if let (Some(checkpoint), Some(meta)) = (&self.checkpoint, self.session_meta(&outcome_text))
+        {
+            checkpoint.begin(&self.history, &outcome_text, meta);
         }
-        let outcome_text = text.clone();
-        let result = self
-            .engine
-            .run_turn(&mut self.io, &mut self.history, text)
-            .await;
+        let result = match input {
+            TurnInput::Prompt(text) => {
+                self.engine
+                    .run_turn(&mut self.io, &mut self.history, text)
+                    .await
+            }
+            TurnInput::Notices(notices) => {
+                self.engine
+                    .run_notice_turn(&mut self.io, &mut self.history, notices)
+                    .await
+            }
+        };
         // The turn is over either way: `streaming` warming stops, `idle`
         // switches to the idle horizon.
         self.warming.settle();
@@ -1527,14 +1693,16 @@ impl SessionActor {
                         .and_then(|checkpoint| checkpoint.last_breakdown());
                 }
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
-                let turn_files = self.turn_files(turn);
-                self.queue_distill(TurnRecord {
-                    task: outcome_text.clone(),
-                    outcome: "success".into(),
-                    files: turn_files,
-                    correction: denied_tools(&outcome.denials),
-                    steered_with: steered_with(&outcome.steers),
-                });
+                if was_prompt {
+                    let turn_files = self.turn_files(turn);
+                    self.queue_distill(TurnRecord {
+                        task: outcome_text.clone(),
+                        outcome: "success".into(),
+                        files: turn_files,
+                        correction: denied_tools(&outcome.denials),
+                        steered_with: steered_with(&outcome.steers),
+                    });
+                }
             }
             Err(e) => {
                 self.state = AgentState::Failed(e.clone());
@@ -1545,17 +1713,19 @@ impl SessionActor {
                 // in-stream failures — plus the terminal `StateChanged(Failed)`.
                 // Re-emitting here prints the reminder twice (the cancelled-
                 // turn double-line bug).
-                let turn_files = self.turn_files(turn);
-                self.queue_distill(TurnRecord {
-                    task: outcome_text.clone(),
-                    outcome: "failed".into(),
-                    files: turn_files,
-                    correction: denied_tools(self.engine.denials_this_turn()),
-                    // The engine keeps the turn's steer record across the error
-                    // return — a steer followed by a cancel is exactly the
-                    // correction the distiller seeds a fact from.
-                    steered_with: steered_with(self.engine.steers_this_turn()),
-                });
+                if was_prompt {
+                    let turn_files = self.turn_files(turn);
+                    self.queue_distill(TurnRecord {
+                        task: outcome_text.clone(),
+                        outcome: "failed".into(),
+                        files: turn_files,
+                        correction: denied_tools(self.engine.denials_this_turn()),
+                        // The engine keeps the turn's steer record across the error
+                        // return — a steer followed by a cancel is exactly the
+                        // correction the distiller seeds a fact from.
+                        steered_with: steered_with(self.engine.steers_this_turn()),
+                    });
+                }
             }
         }
         // The turn is done — drop the screenshots it staged. They fed the

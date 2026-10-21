@@ -386,6 +386,49 @@ fn agent_session_inner(
         let snapshot = state.lock().map_err(|e| e.to_string())?.projects_snapshot();
         return serde_json::to_value(snapshot.build()).map_err(|e| e.to_string());
     }
+    // Background jobs: only the registry handle is taken under the kernel
+    // lock. `bg_control kill` waits for the monitor to reap the job (up to a
+    // few seconds) and must not stall the event forwarder meanwhile.
+    if matches!(op.as_str(), "bg_list" | "bg_logs" | "bg_control") {
+        let id = id.ok_or_else(|| format!("{op} needs id"))?;
+        let root = path.as_deref().filter(|root| !root.is_empty());
+        let reg = {
+            let mgr = state.lock().map_err(|e| e.to_string())?;
+            let root = root
+                .map(str::to_string)
+                .unwrap_or_else(|| mgr.workspace_root.to_string_lossy().into_owned());
+            mgr.bg_registry(&root, id)
+        };
+        let field = |name: &str| payload.as_ref().and_then(|p| p.get(name));
+        return match op.as_str() {
+            // A session with no live actor has no jobs, not an error.
+            "bg_list" => Ok(serde_json::json!({
+                "jobs": reg.map(|r| serde_json::json!(r.jobs())).unwrap_or_else(|| serde_json::json!([])),
+            })),
+            "bg_logs" => {
+                let reg = reg.ok_or("会话未运行")?;
+                let job = field("job")
+                    .and_then(|v| v.as_str())
+                    .ok_or("bg_logs needs job")?;
+                let lines = field("lines").and_then(|v| v.as_u64()).unwrap_or(80) as usize;
+                Ok(serde_json::Value::String(reg.tail(job, lines)?))
+            }
+            _ => {
+                let reg = reg.ok_or("会话未运行")?;
+                let job = field("job")
+                    .and_then(|v| v.as_str())
+                    .ok_or("bg_control needs job")?;
+                match field("action").and_then(|v| v.as_str()) {
+                    Some("kill") => tauri::async_runtime::block_on(reg.kill(job))?,
+                    Some("pause") => reg.set_paused(job, true)?,
+                    Some("resume") => reg.set_paused(job, false)?,
+                    Some("remove") => reg.remove(job)?,
+                    other => return Err(format!("bg_control: unknown action {other:?}")),
+                }
+                Ok(serde_json::json!({ "jobs": reg.jobs() }))
+            }
+        };
+    }
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
     // keyed by the active workspace root, same path as the session actor's.

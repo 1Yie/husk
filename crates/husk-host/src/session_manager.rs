@@ -303,6 +303,9 @@ pub struct SessionHandle {
     /// delivery counters (coalesced/dropped deltas, queue high-water mark)
     /// without reaching into the actor.
     pub ui: UiSink,
+    /// The session's background jobs — listed and controlled from here, not
+    /// through the pump, so a kill lands while a turn is running.
+    pub bg_jobs: Arc<agent_tools_shell::bg::BgRegistry>,
 }
 
 /// The multi-session kernel manager — frontend-agnostic. Owns all live
@@ -411,6 +414,17 @@ impl SessionManager {
         } else {
             self.parked.get(root)?.get(&id)
         }
+    }
+
+    /// A session's background-job registry, wherever its actor lives. Cloned
+    /// out so the caller can drop the manager lock before a `kill` waits on
+    /// the monitor. `None` for a session with no live actor — it has no jobs.
+    pub fn bg_registry(
+        &self,
+        root: &str,
+        id: i64,
+    ) -> Option<Arc<agent_tools_shell::bg::BgRegistry>> {
+        self.handle_at(root, id).map(|h| h.bg_jobs.clone())
     }
 
     /// Mutable access to a session's live handle wherever it lives — the
@@ -1123,6 +1137,7 @@ impl SessionManager {
         let cancel = actor.cancel_writer();
         let shutdown = actor.shutdown_writer();
         let queue = actor.queue_writer();
+        let bg_jobs = actor.bg_registry();
 
         // Lifecycle hooks, installed before the actor starts: the shared chain
         // may gain hooks later (`reload_plugins`) without a restart.
@@ -1235,6 +1250,7 @@ impl SessionManager {
                 preview,
                 running: false,
                 ui,
+                bg_jobs,
             },
         );
     }
@@ -2773,6 +2789,12 @@ fn session_markdown(title: &str, id: i64, history: &[agent_llm::types::ChatMessa
                     && !text.is_empty()
                 {
                     out.push_str(&format!("\n> {text}\n"));
+                } else if m.notice == Some(NoticeKind::Host) {
+                    // The status line, as the stream drew it; the log tail
+                    // was for the model.
+                    if let Some(line) = text.lines().next().filter(|l| !l.is_empty()) {
+                        out.push_str(&format!("\n> {line}\n"));
+                    }
                 }
             }
         }
@@ -3051,6 +3073,7 @@ max = "max"
                 preview: String::new(),
                 running: false,
                 ui,
+                bg_jobs: Default::default(),
             },
         );
 
@@ -3405,6 +3428,7 @@ max = "max"
                     preview: String::new(),
                     running: false,
                     ui,
+                    bg_jobs: Default::default(),
                 },
                 cmd_rx,
             )
@@ -3485,6 +3509,7 @@ max = "max"
                     preview: String::new(),
                     running: false,
                     ui,
+                    bg_jobs: Default::default(),
                 },
             );
         }
@@ -3581,6 +3606,7 @@ max = "max"
                 preview: String::new(),
                 running: false,
                 ui,
+                bg_jobs: Default::default(),
             },
         );
 
