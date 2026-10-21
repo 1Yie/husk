@@ -1078,13 +1078,21 @@ impl SessionActor {
             let notice = notice_tx.clone();
             let ui = channels.event_tx.clone();
             let wake = wake_tx.clone();
+            // Said once per run of overflow, not once per lost notice: a burst
+            // of finishes would otherwise print the same line a dozen times.
+            let overflow_told = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             agent_tools_shell::bg::install_notifier(&mut tool_ctx, move |text| {
                 // A full channel is 32 unread notices — tell the user rather
                 // than lose the report silently; the job list still shows it.
                 if notice.try_send(text).is_err() {
-                    let _ = ui.send(UiEvent::SystemMessage(
-                        "后台任务的完成通知过多，部分未送达模型".into(),
-                    ));
+                    if !overflow_told.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        let _ = ui.send(UiEvent::SystemMessage(
+                            "后台任务的完成通知过多，部分未送达模型".into(),
+                        ));
+                    }
+                } else {
+                    // The channel drained in between — a later overflow is news.
+                    overflow_told.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 // One pending wake is enough: the actor drains the channel.
                 let _ = wake.try_send(());
