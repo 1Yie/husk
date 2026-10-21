@@ -75,6 +75,51 @@ pub(crate) fn measured_usage(
     real.then_some((prompt, completion, cached, cache_write))
 }
 
+/// A cache reading belongs to the model that produced it: another model has
+/// another cache, so a reading carried across a switch would mis-attribute the
+/// old hit rate and write count to the new model — in the header until the next
+/// turn, and permanently in the stats pane. The prompt size survives: it
+/// describes the history, not the cache.
+fn cache_reading_after_switch(
+    usage: Option<(u32, u32, u32, u32)>,
+    model_changed: bool,
+) -> Option<(u32, u32, u32, u32)> {
+    match usage {
+        Some((prompt, completion, _, _)) if model_changed => Some((prompt, completion, 0, 0)),
+        other => other,
+    }
+}
+
+/// What the distiller's model call runs on. Kept in step with the session's
+/// model, so a `/model` switch moves distillation to the model in use.
+struct DistillCtx {
+    provider: std::sync::Arc<dyn agent_llm::LlmProvider>,
+    model: String,
+    params: agent_llm::ModelParams,
+}
+
+/// This session's distiller, or `None` when memory is off. One constructor for
+/// the three places that (re)build it — spawn, the memory switch and a model
+/// switch — so they cannot drift apart.
+fn build_distiller(
+    memory: Option<&std::sync::Arc<MemoryStore>>,
+    distill: bool,
+    ctx: &DistillCtx,
+    record: Option<DistillRecorder>,
+) -> Option<std::sync::Arc<TurnDistiller>> {
+    let store = memory?.clone();
+    let mut d = TurnDistiller::new(store);
+    if distill {
+        d = d.with_summarizer(distill_summarizer(
+            ctx.provider.clone(),
+            ctx.model.clone(),
+            ctx.params.clone(),
+            record,
+        ));
+    }
+    Some(std::sync::Arc::new(d))
+}
+
 /// Append one instructions file to the rendered prompt as a `## User
 /// instructions` section — empty/missing files are no-ops.
 /// Replace the region between `<!-- name -->` and `<!-- /name -->` in the
@@ -140,21 +185,27 @@ fn denied_tools(denials: &[String]) -> Option<String> {
     Some(format!("denied tool(s): {}", denials.join(", ")))
 }
 
+/// Receives one distillation call's `(prompt, completion)` tokens — the host
+/// writes them to the session's store so the spend is visible in 统计.
+type DistillRecorder = std::sync::Arc<dyn Fn(u32, u32) + Send + Sync>;
+
 /// The kernel's end of the distill contract — a one-shot completion on the
-/// session's own provider (tools off, temperature 0). `Sampler::sample`
+/// session's side provider (tools off, temperature 0). `Sampler::sample`
 /// carries the retry policy; an `Err` or an empty body degrades to `None`
-/// so the distiller falls back to its deterministic path. Captured at
-/// spawn: a later `/model` swap leaves the distiller on the original
-/// provider — acceptable for a background bookkeeping call.
+/// so the distiller falls back to its deterministic path. Rebuilt through
+/// `build_distiller` on a `/model` switch, so it runs on the model in use;
+/// `record` gets each call's token spend.
 fn distill_summarizer(
     provider: std::sync::Arc<dyn agent_llm::LlmProvider>,
     model: String,
     params: agent_llm::ModelParams,
+    record: Option<DistillRecorder>,
 ) -> agent_context::memory::Summarizer {
     std::sync::Arc::new(move |prompt: String| {
         let provider = provider.clone();
         let model = model.clone();
         let params = params.clone();
+        let record = record.clone();
         Box::pin(async move {
             let sampler = agent_llm::sampler::Sampler::new(provider);
             let mut out = String::new();
@@ -169,10 +220,19 @@ fn distill_summarizer(
                 .sample(
                     req,
                     &[agent_llm::types::ChatMessage::user(prompt)],
-                    |chunk| {
-                        if let agent_llm::types::StreamChunk::ContentDelta(t) = chunk {
-                            out.push_str(t.as_str());
+                    |chunk| match chunk {
+                        agent_llm::types::StreamChunk::ContentDelta(t) => out.push_str(t.as_str()),
+                        // The side channel's numbers: what this call cost.
+                        agent_llm::types::StreamChunk::Done {
+                            prompt_tokens,
+                            completion_tokens,
+                            ..
+                        } => {
+                            if let Some(record) = &record {
+                                record(prompt_tokens.unwrap_or(0), completion_tokens.unwrap_or(0));
+                            }
                         }
+                        _ => {}
                     },
                     |_| {},
                     || {},
@@ -435,14 +495,15 @@ pub struct SessionActor {
     memory: Option<Arc<MemoryStore>>,
     memory_handle: agent_coding::remember::MemoryHandle,
     distiller: Option<Arc<TurnDistiller>>,
-    /// Provider/model/params captured at spawn — the distiller's summarizer
-    /// is rebuilt from these when `SetMemory` toggles memory on mid-session
-    /// (a `/model` swap doesn't follow it, same as the spawn contract).
-    distill_ctx: (
-        std::sync::Arc<dyn agent_llm::LlmProvider>,
-        String,
-        agent_llm::ModelParams,
-    ),
+    /// What the distillation pass runs on — rebuilt with the session's model
+    /// on every switch, so the memory pass uses the model in use.
+    distill_ctx: DistillCtx,
+    /// Whether the semantic distill pass is on (`SetMemory` flips it). The
+    /// distiller is rebuilt from this on every model switch.
+    memory_distill: bool,
+    /// Where a distill call reports its tokens — one write per call into the
+    /// session's store, so the spend is visible in 统计.
+    distill_record: Option<DistillRecorder>,
     /// Stable session identity — sidebar ordering + persistence file name.
     session_id: i64,
     /// This session's conversation identity (`conversation_key`). Every
@@ -512,7 +573,24 @@ fn unobserved_provider(
     conversation: &str,
 ) -> Option<Arc<dyn agent_llm::LlmProvider>> {
     let app = agent_llm::AppConfig::load(&cfg.paths.config_dir, None).ok()?;
-    let provider = app.providers.get(&cfg.provider_name)?;
+    unobserved_provider_from(&app, &cfg.provider_name, conversation)
+}
+
+/// The same provider, built without the session's usage observer.
+///
+/// Every request the provider sends starts with `UsageObserver::reset` and
+/// ends by publishing its cache-write count into that observer. The session's
+/// counter is read asynchronously — the checkpoint relay annotates the `Usage`
+/// event it forwards, and the actor reads it at turn end — so any *side*
+/// request sharing the observer can overwrite the foreground round's figure.
+/// Side traffic (the distiller, cache warming) therefore gets its own
+/// instance.
+pub(crate) fn unobserved_provider_from(
+    app: &agent_llm::AppConfig,
+    provider_name: &str,
+    conversation: &str,
+) -> Option<Arc<dyn agent_llm::LlmProvider>> {
+    let provider = app.providers.get(provider_name)?;
     agent_llm::ProviderFactory::build_with_conversation(provider, None, Some(conversation)).ok()
 }
 
@@ -522,6 +600,7 @@ fn unobserved_provider(
 /// through unchanged.
 fn warmed_provider(
     provider: Arc<dyn agent_llm::LlmProvider>,
+    replay: Arc<dyn agent_llm::LlmProvider>,
     model: &str,
     resolved: Option<&agent_llm::ModelConfig>,
     control: &agent_llm::WarmingControl,
@@ -531,6 +610,7 @@ fn warmed_provider(
     };
     agent_llm::WarmingProvider::wrap(
         provider,
+        replay,
         model,
         d.prompt_cache.as_ref(),
         d.cost.as_ref(),
@@ -678,6 +758,12 @@ impl SessionActor {
         // foreground, fallback chain, background, children — advertises the
         // same identity, so a rebuild never cold-starts the provider cache.
         let conversation = conversation_key(session_id, &cfg.workspace_root);
+        // Side traffic (the post-turn distiller, prompt-cache warming) runs on
+        // its own provider instance — see `unobserved_provider_from`. It holds
+        // no usage observer, so it can never move the foreground turn's
+        // cache-write counter.
+        let background_provider =
+            unobserved_provider(&cfg, &conversation).unwrap_or_else(|| cfg.provider.clone());
 
         // Workspace skeleton + git snapshot.
         let workspace_tree = WorkspaceScanner::build_skeleton(&cfg.workspace_root)
@@ -712,7 +798,7 @@ impl SessionActor {
         // gates only the per-turn summarizer call — deterministic
         // episode/fact writes keep running.
         let mut skills = agent_skills::SkillManager::new(&cfg.workspace_root);
-        let (memory, distiller, initial_memory_block) = {
+        let (memory, initial_memory_block) = {
             let store = if cfg.memory_enabled {
                 open_memory_store(&cfg.workspace_root)
             } else {
@@ -721,20 +807,10 @@ impl SessionActor {
             match store {
                 Some(s) => {
                     let s = Arc::new(s);
-                    let d = TurnDistiller::new(s.clone());
-                    let d = if cfg.memory_distill {
-                        d.with_summarizer(distill_summarizer(
-                            cfg.provider.clone(),
-                            cfg.model.clone(),
-                            cfg.model_params.clone().unwrap_or_default(),
-                        ))
-                    } else {
-                        d
-                    };
                     let block = s.stable_block().unwrap_or_default();
-                    (Some(s.clone()), Some(Arc::new(d)), block)
+                    (Some(s), block)
                 }
-                None => (None, None, "(no memory)".to_string()),
+                None => (None, "(no memory)".to_string()),
             }
         };
         let system_prompt = set_memory_block(&system_prompt, &initial_memory_block)
@@ -813,6 +889,25 @@ impl SessionActor {
         if let Some(warning) = agent_store::session_storage_warning() {
             let _ = channels.event_tx.send(UiEvent::SystemMessage(warning));
         }
+        // The distiller and the spend it records are both built here: the
+        // recorder needs the store handle, which exists only from this point.
+        let distill_ctx = DistillCtx {
+            provider: background_provider.clone(),
+            model: cfg.model.clone(),
+            params: cfg.model_params.clone().unwrap_or_default(),
+        };
+        let distill_record: Option<DistillRecorder> = store.as_ref().map(|s| {
+            let store = s.clone();
+            std::sync::Arc::new(move |prompt: u32, completion: u32| {
+                let _ = store.add_distill_usage(session_id, prompt, completion);
+            }) as DistillRecorder
+        });
+        let distiller = build_distiller(
+            memory.as_ref(),
+            cfg.memory_distill,
+            &distill_ctx,
+            distill_record.clone(),
+        );
         // Forks/importers may supply prior history before any journal exists.
         // Existing journals still compare against the supplied revision, so
         // a concurrently updated persisted session cannot be overwritten.
@@ -930,12 +1025,6 @@ impl SessionActor {
         let memory_handle = agent_coding::remember::MemoryHandle::default();
         memory_handle.set(memory.clone());
         memory_handle.install(&mut tool_ctx);
-        // Background work (distiller, child engines) must not write into the
-        // foreground session's cache-write counter: a distill pass overlapping
-        // the next turn would otherwise overwrite the parent's value. Build a
-        // second provider instance without the observer.
-        let background_provider =
-            unobserved_provider(&cfg, &conversation).unwrap_or_else(|| cfg.provider.clone());
         // The child route starts from the session's own settings and is
         // rewritten by `apply_model_switch`, so children follow a hot-swap.
         // `child_base` is the parent's own model; the shared route widens it to
@@ -982,8 +1071,12 @@ impl SessionActor {
         let ctx = Arc::new(tool_ctx);
         let registry = Arc::new(registry);
         let warming = agent_llm::WarmingControl::default();
+        // Warming replays requests on its own schedule: same rule as the
+        // distiller — the replays must not share the session's usage observer,
+        // while the turn itself still reports through it.
         let warmed = warmed_provider(
             cfg.provider.clone(),
+            background_provider.clone(),
             &cfg.model,
             resolved_model(&cfg).as_ref(),
             &warming,
@@ -1133,11 +1226,9 @@ impl SessionActor {
                 memory,
                 memory_handle,
                 distiller,
-                distill_ctx: (
-                    background_provider,
-                    cfg.model.clone(),
-                    cfg.model_params.clone().unwrap_or_default(),
-                ),
+                distill_ctx,
+                memory_distill: cfg.memory_distill,
+                distill_record,
                 session_id,
                 conversation,
                 store,
@@ -1720,7 +1811,23 @@ impl SessionActor {
             preview: old.as_ref().map(|m| m.preview.clone()).unwrap_or_default(),
             updated_at: now,
             pinned: old.as_ref().map(|m| m.pinned).unwrap_or(false),
-            usage: old.as_ref().and_then(|m| m.usage),
+            // Same rule as a turn-boundary write: the actor's own reading wins
+            // once a turn has produced one — a model switch trims its cache
+            // half — while a resumed actor that has not run yet keeps the
+            // stored value.
+            usage: self
+                .last_usage
+                .map(
+                    |(prompt, completion, cached, cache_write)| agent_store::SessionUsage {
+                        prompt,
+                        completion,
+                        context_window: self.engine.context_window() as u32,
+                        cached,
+                        cache_write,
+                        breakdown: self.last_breakdown,
+                    },
+                )
+                .or_else(|| old.as_ref().and_then(|m| m.usage)),
             model: (!model.is_empty()).then_some(model),
             provider: (!provider.is_empty()).then_some(provider),
             permission_mode: Some(self.current_permission_mode()),
@@ -1841,6 +1948,13 @@ impl SessionActor {
     /// at session spawn. A model the config doesn't describe resets to the
     /// built-in defaults instead of leaking the previous model's caps.
     fn apply_model_switch(&mut self, provider: &str, model: &str) {
+        let model_changed = self.model != model || self.provider_name != provider;
+        // What the distillation pass will run on after this switch. It mirrors
+        // the engine exactly: a buildable provider moves provider, model and
+        // params together; otherwise only the model name moves, as
+        // `engine.set_model` does below, and the old params stay with the old
+        // provider instead of being reset under it.
+        let mut next_distill: Option<DistillCtx> = None;
         if let Ok(cfg) = agent_llm::AppConfig::load(&self.paths.config_dir, None) {
             // Every provider's key is scrubbed, not just the active one: a
             // prompt can carry any configured key, and a switch must not leave
@@ -1858,12 +1972,21 @@ impl SessionActor {
                 );
                 // The old model's warm entry is no use to the new one.
                 self.warming.cancel();
+                // Warming is side traffic: on its own instance, so a replay
+                // cannot overwrite the foreground round's cache-write figure.
+                let side = unobserved_provider_from(&cfg, provider, &self.conversation)
+                    .unwrap_or_else(|| built.clone());
                 let resolved = pcfg
                     .find_model(model)
                     .is_some()
                     .then(|| pcfg.model_opts(model));
-                let warmed =
-                    warmed_provider(built.clone(), model, resolved.as_ref(), &self.warming);
+                let warmed = warmed_provider(
+                    built.clone(),
+                    side.clone(),
+                    model,
+                    resolved.as_ref(),
+                    &self.warming,
+                );
                 let parent_provider = self.checkpoint.as_ref().map_or_else(
                     || warmed.clone(),
                     |checkpoint| checkpoint.wrap(warmed.clone()),
@@ -1878,16 +2001,22 @@ impl SessionActor {
                         Some(&self.conversation),
                     ),
                 );
+                // Post-turn distillation follows the model in use: same side
+                // instance (no usage observer), so the memory pass reads the
+                // session's own dialect and never moves its cache counter.
+                next_distill = Some(DistillCtx {
+                    provider: side.clone(),
+                    model: model.to_string(),
+                    params: resolved
+                        .as_ref()
+                        .map(agent_llm::ProviderFactory::model_params_from)
+                        .unwrap_or(agent_llm::ModelParams::EMPTY),
+                });
                 // Children are routed from this base, so it must match what the
-                // parent just got — but without the foreground usage observer.
-                let child_provider = agent_llm::ProviderFactory::build_with_conversation(
-                    pcfg,
-                    None,
-                    Some(&self.conversation),
-                )
-                .unwrap_or_else(|_| built.clone());
+                // parent just got — but without the foreground usage observer
+                // (the same instance `side` already is).
                 let route = &mut self.child_base;
-                route.provider = child_provider;
+                route.provider = side;
                 match resolved {
                     Some(d) => {
                         let map = d.thinking_level_map.clone();
@@ -1925,6 +2054,23 @@ impl SessionActor {
         // recorded a stale model against the spend.
         self.model = model.to_string();
         self.provider_name = provider.to_string();
+        self.last_usage = cache_reading_after_switch(self.last_usage, model_changed);
+        // The distiller is rebuilt with the session, not left behind: a
+        // memory pass running on the previous model is a second, invisible
+        // bill — and the one thing the settings 统计 pane then cannot explain.
+        if let Some(ctx) = next_distill {
+            self.distill_ctx = ctx;
+        } else {
+            // The engine's own rule when the config cannot build the provider:
+            // the model name moves, provider and params stay as they were.
+            self.distill_ctx.model = model.to_string();
+        }
+        self.distiller = build_distiller(
+            self.memory.as_ref(),
+            self.memory_distill,
+            &self.distill_ctx,
+            self.distill_record.clone(),
+        );
         if let Ok(mut slot) = self.model_slot.write() {
             *slot = (provider.to_string(), model.to_string());
         }
@@ -2387,6 +2533,7 @@ impl SessionActor {
                 self.undo_last_turn().await;
             }
             UiCommand::SetMemory { enabled, distill } => {
+                self.memory_distill = distill;
                 if !enabled {
                     // Off means fully off — no recall block, no writes, and no
                     // `remember` either: the tools read the shared handle.
@@ -2405,12 +2552,12 @@ impl SessionActor {
                     self.memory = Some(Arc::new(s));
                     self.memory_handle.set(self.memory.clone());
                 }
-                let mut d = TurnDistiller::new(self.memory.clone().unwrap());
-                if distill {
-                    let (p, m, params) = &self.distill_ctx;
-                    d = d.with_summarizer(distill_summarizer(p.clone(), m.clone(), params.clone()));
-                }
-                self.distiller = Some(Arc::new(d));
+                self.distiller = build_distiller(
+                    self.memory.as_ref(),
+                    self.memory_distill,
+                    &self.distill_ctx,
+                    self.distill_record.clone(),
+                );
             }
         }
     }
@@ -2643,3 +2790,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod session_tests;

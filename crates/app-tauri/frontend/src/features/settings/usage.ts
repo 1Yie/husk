@@ -47,6 +47,11 @@ export interface UsageStats {
     cacheWrite: number;
     sessions: number;
     activeDays: number;
+    /** Memory distillation — its own channel, deliberately not folded into
+     *  `prompt`/`completion`: it is a background call, not conversation. */
+    distillCalls: number;
+    distillPrompt: number;
+    distillCompletion: number;
   };
   /** Longest run of consecutive active days. */
   streak: number;
@@ -68,7 +73,17 @@ export function aggregate(records: UsageRecord[], now = Date.now()): UsageStats 
   const byDay = new Map<string, { sessions: number; tokens: number }>();
   const models = new Map<string, ModelBucket>();
   const workspaces = new Map<string, WorkspaceBucket>();
-  const totals = { prompt: 0, completion: 0, cached: 0, cacheWrite: 0, sessions: 0, activeDays: 0 };
+  const totals = {
+    prompt: 0,
+    completion: 0,
+    cached: 0,
+    cacheWrite: 0,
+    sessions: 0,
+    activeDays: 0,
+    distillCalls: 0,
+    distillPrompt: 0,
+    distillCompletion: 0,
+  };
 
   for (const r of records) {
     totals.prompt += r.prompt;
@@ -76,6 +91,9 @@ export function aggregate(records: UsageRecord[], now = Date.now()): UsageStats 
     totals.cached += r.cached;
     totals.cacheWrite += r.cache_write ?? 0;
     totals.sessions += 1;
+    totals.distillCalls += r.distill_calls ?? 0;
+    totals.distillPrompt += r.distill_prompt ?? 0;
+    totals.distillCompletion += r.distill_completion ?? 0;
 
     const key = dayKey(r.ts);
     const day = byDay.get(key) ?? { sessions: 0, tokens: 0 };

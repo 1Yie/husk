@@ -159,6 +159,12 @@ impl WarmingControl {
 
 struct Shared {
     inner: Arc<dyn LlmProvider>,
+    /// The instance warm replays go through. Kept apart from `inner` on
+    /// purpose: a replay still publishes its cache-write count into whatever
+    /// usage observer its provider carries, and the session reads that counter
+    /// asynchronously — a replay landing in that window would overwrite the
+    /// foreground round's figure. The host passes an observer-less twin.
+    replay: Arc<dyn LlmProvider>,
     /// The model the session runs. Requests for other models (a fallback, a
     /// background summary) never arm warming.
     model: String,
@@ -171,11 +177,17 @@ struct Shared {
 pub struct WarmingProvider(Arc<Shared>);
 
 impl WarmingProvider {
-    /// Wrap `inner` for `model`. Returns `inner` unchanged when warming is
-    /// off, prompt caching is off (`HUSK_CACHE_RETENTION=none`), or the model
-    /// declares no lifetime for the active tier or no prices to weigh it by.
+    /// Wrap `inner` for `model`, replaying warm-up requests through `replay`.
+    /// Returns `inner` unchanged when warming is off, prompt caching is off
+    /// (`HUSK_CACHE_RETENTION=none`), or the model declares no lifetime for the
+    /// active tier or no prices to weigh it by.
+    ///
+    /// `replay` is normally the same provider without the session's usage
+    /// observer; passing `inner.clone()` is correct for a host that keeps no
+    /// such counter.
     pub fn wrap(
         inner: Arc<dyn LlmProvider>,
+        replay: Arc<dyn LlmProvider>,
         model: &str,
         prompt_cache: Option<&PromptCache>,
         cost: Option<&ModelCost>,
@@ -195,6 +207,7 @@ impl WarmingProvider {
         *control.mode.lock().unwrap_or_else(|e| e.into_inner()) = Some(mode);
         Arc::new(Self(Arc::new(Shared {
             inner,
+            replay,
             model: model.to_string(),
             ttl: Duration::from_secs(ttl),
             cost: cost.clone(),
@@ -243,7 +256,7 @@ async fn warm_loop(shared: Arc<Shared>, generation: u64) {
         let sent = Instant::now();
         // Best effort: an error never affects the session.
         if let Ok(mut stream) = shared
-            .inner
+            .replay
             .chat_stream(
                 &armed.model,
                 &armed.messages,
@@ -467,7 +480,14 @@ mod tests {
             short: Some(300),
             long: None,
         };
-        let p = WarmingProvider::wrap(inner.clone(), "m", Some(&cache), Some(&sonnet()), control);
+        let p = WarmingProvider::wrap(
+            inner.clone(),
+            inner.clone(),
+            "m",
+            Some(&cache),
+            Some(&sonnet()),
+            control,
+        );
         (inner, p)
     }
 
@@ -524,13 +544,27 @@ mod tests {
             caps: Mutex::new(Vec::new()),
         });
         let control = WarmingControl::default();
-        let p = WarmingProvider::wrap(inner.clone(), "m", None, Some(&sonnet()), &control);
+        let p = WarmingProvider::wrap(
+            inner.clone(),
+            inner.clone(),
+            "m",
+            None,
+            Some(&sonnet()),
+            &control,
+        );
         assert!(Arc::ptr_eq(&p, &inner));
         let cache = PromptCache {
             short: Some(300),
             long: None,
         };
-        let p = WarmingProvider::wrap(inner.clone(), "m", Some(&cache), None, &control);
+        let p = WarmingProvider::wrap(
+            inner.clone(),
+            inner.clone(),
+            "m",
+            Some(&cache),
+            None,
+            &control,
+        );
         assert!(Arc::ptr_eq(&p, &inner));
     }
 }

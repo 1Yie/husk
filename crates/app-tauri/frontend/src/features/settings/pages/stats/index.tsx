@@ -1,6 +1,6 @@
 // Charts use the existing local-time usage aggregation and theme palette.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Activity, Calendar, ChartColumn, Coins, Cpu, Folder, Layers } from "@keyline-icons/react";
+import { Activity, Brain, Calendar, ChartColumn, Coins, Cpu, Folder, Layers } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { KvList } from "@/components/ui/kv-list";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -93,6 +93,26 @@ export function StatsPane() {
         </div>
       </SettingsSection>
 
+      {/* Distillation is a background bill of its own: shown, never added to
+          the session totals above — folding it in would answer "how much did
+          my conversation cost" with a number no conversation produced. */}
+      {totals.distillCalls > 0 && (
+        <StatsCard
+          icon={<Brain className="h-4 w-4" />}
+          title="记忆蒸馏"
+          detail={`${totals.distillCalls} 次调用`}
+        >
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Figure label="输入" value={fmtTokens(totals.distillPrompt)} />
+            <Figure label="输出" value={fmtTokens(totals.distillCompletion)} />
+            <Figure label="合计" value={fmtTokens(totals.distillPrompt + totals.distillCompletion)} />
+          </div>
+          <p className="mt-3 text-[11px] leading-relaxed text-neutral-500">
+            每轮对话结束后归纳记忆的后台调用，单独计费，不计入上面的会话用量。
+          </p>
+        </StatsCard>
+      )}
+
       <StatsCard icon={<Activity className="h-4 w-4" />} title="活跃对话" detail="近一年">
         <div className="overflow-x-auto pb-1">
           <div className="min-w-[480px]"><ActivityHeatmap daily={daily} /></div>
@@ -163,6 +183,18 @@ export function StatsPane() {
           <UsageLegend />
         </StatsCard>
       )}
+    </div>
+  );
+}
+
+/** One labelled figure inside a card — the small twin of `Kpi`. */
+function Figure({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <span className="block text-[11px] text-neutral-500">{label}</span>
+      <span className="block break-all text-lg font-semibold tabular-nums tracking-tight text-neutral-900">
+        {value}
+      </span>
     </div>
   );
 }

@@ -358,6 +358,11 @@ export interface UsageRecord {
   context_window: number;
   model?: string | null;
   provider?: string | null;
+  /** Post-turn distillation: calls made and the tokens they spent. A side
+   *  channel — never part of `prompt`/`completion` above. */
+  distill_calls?: number;
+  distill_prompt?: number;
+  distill_completion?: number;
 }
 
 export function getUsageStats() {

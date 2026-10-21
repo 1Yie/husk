@@ -146,6 +146,20 @@ pub struct SessionMeta {
     /// Tool results (task steps) in the current history.
     #[serde(default)]
     pub tasks: Option<u32>,
+    /// Token spend of this session's post-turn distillation calls — a side
+    /// channel, never part of `usage`. Store-owned: `add_distill_usage`
+    /// accumulates it from the background task, and every other writer
+    /// leaves it alone (see `Writer::meta`).
+    #[serde(default)]
+    pub distill: Option<DistillUsage>,
+}
+
+/// What the background distiller has spent on this session, across resumes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DistillUsage {
+    pub calls: u32,
+    pub prompt: u32,
+    pub completion: u32,
 }
 
 /// One checked page of a session's *effective* history — the recovery draft

@@ -973,6 +973,12 @@ impl SessionManager {
                     "context_window": u.context_window,
                     "model": m.model,
                     "provider": m.provider,
+                    // The post-turn distillation pass is a side channel: its
+                    // spend never enters `usage`, so a reader must not have to
+                    // add it to the session's token count.
+                    "distill_calls": m.distill.map(|d| d.calls).unwrap_or(0),
+                    "distill_prompt": m.distill.map(|d| d.prompt).unwrap_or(0),
+                    "distill_completion": m.distill.map(|d| d.completion).unwrap_or(0),
                 }));
             }
         }

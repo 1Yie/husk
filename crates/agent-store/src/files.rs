@@ -379,7 +379,14 @@ impl JournalWriter {
         self.index.history_generation = self.index.history_generation.saturating_add(1);
         Ok(())
     }
-    fn meta(&mut self, meta: SessionMeta) -> std::io::Result<()> {
+    fn meta(&mut self, mut meta: SessionMeta) -> std::io::Result<()> {
+        // Distillation spend is the store's own bookkeeping: `add_distill_usage`
+        // merges it under this same write lock from a background task, so a
+        // turn-boundary upsert (which carries no value) must not erase what
+        // that task just recorded.
+        if meta.distill.is_none() {
+            meta.distill = self.index.meta.as_ref().and_then(|m| m.distill);
+        }
         self.record(Record::Metadata { meta: meta.clone() })?;
         self.index.meta = Some(meta);
         Ok(())
@@ -1008,6 +1015,21 @@ impl SessionStore {
     }
     pub fn upsert_meta(&self, meta: SessionMeta) -> std::io::Result<()> {
         self.write(meta.id, |w| w.meta(meta))
+    }
+
+    /// Add one distillation call's tokens to the session's side channel.
+    ///
+    /// Merged inside the session's write lock, so it cannot lose a concurrent
+    /// turn-boundary write and cannot be lost by one.
+    pub fn add_distill_usage(&self, id: i64, prompt: u32, completion: u32) -> std::io::Result<()> {
+        self.write(id, |w| {
+            let mut meta = w.index.meta.clone().unwrap_or_else(|| empty_meta(id));
+            let usage = meta.distill.get_or_insert_with(DistillUsage::default);
+            usage.calls = usage.calls.saturating_add(1);
+            usage.prompt = usage.prompt.saturating_add(prompt);
+            usage.completion = usage.completion.saturating_add(completion);
+            w.meta(meta)
+        })
     }
     pub fn commit_turn(
         &self,
