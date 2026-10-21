@@ -660,18 +660,29 @@ fn agent_session_inner(
             let was_active = mgr.remove_workspace(&p);
             Ok(serde_json::json!({ "removed_active": was_active }))
         }
-        // Header chip: branch + dirty count for the active workspace.
-        // Not-a-repo → branch:null (workspace can legitimately be outside git).
+        // Header chip + the dock's 改动 pill: branch and how much of the
+        // worktree is uncommitted. `repo` is what tells a plain folder apart
+        // from a clean repository — both report `dirty: 0`, but only the
+        // repository has anything to commit.
         "git_info" => {
             if !mgr.workspace_active {
-                return Ok(serde_json::json!({ "branch": serde_json::Value::Null, "dirty": 0 }));
+                return Ok(serde_json::json!({
+                    "repo": false,
+                    "branch": serde_json::Value::Null,
+                    "dirty": 0,
+                }));
             }
             match agent_context::git::git_snapshot(&mgr.workspace_root) {
                 Ok(snap) => Ok(serde_json::json!({
+                    "repo": true,
                     "branch": snap.branch,
                     "dirty": snap.dirty_count(),
                 })),
-                Err(_) => Ok(serde_json::json!({ "branch": serde_json::Value::Null, "dirty": 0 })),
+                Err(_) => Ok(serde_json::json!({
+                    "repo": false,
+                    "branch": serde_json::Value::Null,
+                    "dirty": 0,
+                })),
             }
         }
         "switch_workspace" => {

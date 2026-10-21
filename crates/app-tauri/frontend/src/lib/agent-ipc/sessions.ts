@@ -805,9 +805,11 @@ export function saveDevConfig(payload: DevConfig) {
   });
 }
 
-/** Git branch + dirty count for the active workspace — `branch` is null
- * when the workspace isn't inside a repository. */
+/** Git branch + dirty count for the active workspace. `repo` separates a
+ * clean repository from a plain folder: both report `dirty: 0`, but only the
+ * repository has anything to commit. `branch` is null outside a repository. */
 export interface GitInfo {
+  repo: boolean;
   branch: string | null;
   dirty: number;
 }

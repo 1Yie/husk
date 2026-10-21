@@ -71,7 +71,7 @@ export function resetTauri() {
   focusHandlers.clear();
   mockCommand("agent_cmd", () => undefined);
   mockCommand("agent_session", () => modelInfo(), "model_info");
-  mockCommand("agent_session", () => ({ branch: "main", dirty: 0 }), "git_info");
+  mockCommand("agent_session", () => ({ repo: true, branch: "main", dirty: 0 }), "git_info");
   mockCommand("agent_session", () => [], "list_files");
   mockCommand("agent_session", () => [], "list_skills");
   mockCommand("agent_session", () => [], "plugin_commands");

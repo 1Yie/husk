@@ -23,7 +23,11 @@ function viewWith() {
 
 function renderBar(
   view = viewWith(),
-  gitInfo: { branch: string | null; dirty: number } | null = { branch: "main", dirty: 2 },
+  gitInfo: { repo: boolean; branch: string | null; dirty: number } | null = {
+    repo: true,
+    branch: "main",
+    dirty: 2,
+  },
 ) {
   return render(
     <TooltipProvider>
@@ -67,7 +71,7 @@ describe("TitleBar stat chips", () => {
 
 describe("Git chip", () => {
   it("keeps the branch up while the tree is clean", async () => {
-    renderBar(viewWith(), { branch: "main", dirty: 0 });
+    renderBar(viewWith(), { repo: true, branch: "main", dirty: 0 });
     const chip = screen.getByRole("button", { name: "Git 分支 main" });
     expect(chip.textContent).toContain("main");
     // The cleanliness is detail, not a display gate.
