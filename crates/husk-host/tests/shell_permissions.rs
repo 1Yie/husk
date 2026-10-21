@@ -138,6 +138,7 @@ async fn engine_uses_the_tools_review_instead_of_parsing_command_arguments() {
             let mut io = EngineIo {
                 ui_tx,
                 steer_rx,
+                notice_rx: tokio::sync::mpsc::channel(4).1,
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
             let mut history = vec![ChatMessage::system("test")];

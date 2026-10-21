@@ -185,6 +185,7 @@ async fn run(
     let mut io = EngineIo {
         ui_tx,
         steer_rx,
+        notice_rx: tokio::sync::mpsc::channel(4).1,
         cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let slot = r.engine.decision_slot();

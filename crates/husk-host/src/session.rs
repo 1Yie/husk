@@ -303,6 +303,7 @@ fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
         agent_tools_shell::test_runner::spec(),
         agent_tools_shell::bash::spec(),
         agent_tools_shell::services::spec(),
+        agent_tools_shell::bg::spec(),
         agent_tools_web::web_fetch::spec(),
         agent_tools_web::web_fetch::spec_alias(),
         agent_tools_computer::screenshot::spec(),
@@ -838,6 +839,14 @@ impl SessionActor {
         // subagents inherit it (a user cancel tears down in-flight child
         // runs instead of orphaning them).
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Engine steering channel — created before the tool context so the
+        // background-job notifier can hold a sender from birth.
+        let (steer_tx, steer_rx) = mpsc::channel::<String>(32);
+        // Host notices (a background job finishing) get their own channel: a
+        // notice carries no user intent, so the engine appends it as a system
+        // row instead of a user steer — otherwise untrusted job output would
+        // pose as the user's words and pollute the turn's steering record.
+        let (notice_tx, notice_rx) = mpsc::channel::<String>(32);
         let (registry, child_full) = base_registries();
         // Subagent registries: a child never carries `delegate` (recursion
         // guard) or `HumanInteraction` tools (nobody can answer a child's
@@ -901,6 +910,23 @@ impl SessionActor {
         // Background services belong to this session: its `service` tool lists
         // and stops only its own, and they are killed when the session drops.
         agent_tools_shell::services::install_registry(&mut tool_ctx);
+        // Background jobs share that lifetime. A finished job pushes a notice
+        // into the engine's notice channel (delivered between tool calls, or
+        // at the next turn when the session is idle) and a status line to the
+        // UI. The sink is installed per *context* on purpose: a delegated
+        // child inherits the registry (this session can see and stop its
+        // jobs) but not the sink, so a child's job never reports here.
+        agent_tools_shell::bg::install_registry(&mut tool_ctx);
+        {
+            let notice = notice_tx.clone();
+            let ui = channels.event_tx.clone();
+            agent_tools_shell::bg::install_notifier(&mut tool_ctx, move |text| {
+                // The UI only needs the status line; the model gets the tail.
+                let line = text.lines().next().unwrap_or("background job finished");
+                let _ = ui.send(UiEvent::SystemMessage(line.to_string()));
+                let _ = notice.try_send(text);
+            });
+        }
         let memory_handle = agent_coding::remember::MemoryHandle::default();
         memory_handle.set(memory.clone());
         memory_handle.install(&mut tool_ctx);
@@ -1058,10 +1084,9 @@ impl SessionActor {
         let cmd_rx = std::mem::replace(&mut channels.cmd_rx, mpsc::channel(1).1);
         let cmd_tx = channels.cmd_tx.clone();
 
-        // Engine gets a private steering channel — SessionActor forwards
-        // `UiCommand::Steer` texts into it mid-turn (engine drains between
-        // tool calls). Between turns a Steer is a Prompt.
-        let (steer_tx, steer_rx) = mpsc::channel::<String>(32);
+        // The steering channel was created above (the bg notifier holds a
+        // sender); `SessionActor` forwards `UiCommand::Steer` texts into it
+        // mid-turn and the engine drains them between tool calls.
         // P0-C4: shared cancel flag — the UI writes it via `cancel_writer()`
         // (bypassing the command pump so a Cancel lands mid-turn); the engine
         // polls it between chunks and before each tool dispatch. Created above
@@ -1069,6 +1094,7 @@ impl SessionActor {
         let io = EngineIo {
             ui_tx: channels.event_tx.clone(),
             steer_rx,
+            notice_rx,
             cancel: cancel.clone(),
         };
 

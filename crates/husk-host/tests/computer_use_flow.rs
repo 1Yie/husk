@@ -131,6 +131,7 @@ async fn run_one_turn(dir: &std::path::Path, model_input: Vec<String>) -> Vec<Ch
     let mut io = EngineIo {
         ui_tx,
         steer_rx,
+        notice_rx: tokio::sync::mpsc::channel(4).1,
         cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let mut history = vec![ChatMessage::system("kernel")];
