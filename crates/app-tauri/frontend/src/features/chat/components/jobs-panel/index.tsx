@@ -192,7 +192,13 @@ function JobRow({
           </span>
         </span>
         <span className="hidden flex-none items-center gap-0.5 group-hover:flex group-focus-within:flex">
-          {restored ? null : (
+          {restored ? (
+            // The record has no process behind it — the only thing to do with
+            // it is drop it from the list.
+            <ActionButton label="移除记录" disabled={busy} onClick={() => act("remove")}>
+              <X className="h-3 w-3" />
+            </ActionButton>
+          ) : (
             <>
               {job.state.kind === "running" && (
                 <ActionButton label="暂停" disabled={busy} onClick={() => act("pause")}>
@@ -258,9 +264,9 @@ export function JobsList({
   const now = useNow(jobs.some((j) => j.state.kind === "running"));
   // Newest first: the job that just started is the one being asked about.
   const ordered = [...jobs].reverse();
-  // A restored row is a record: the host holds no job to drop, so "清除已结束"
-  // counts only what it can actually remove.
-  const finished = jobs.filter((j) => j.state.kind === "done" && j.restored !== true);
+  // A restored record is finished too, and the host can drop it from the file
+  // — so "清除已结束" covers both kinds of ended row.
+  const finished = jobs.filter((j) => j.state.kind === "done");
   const clearFinished = () => {
     void Promise.allSettled(finished.map((j) => controlBgJob(root, session, j.id, "remove"))).then(
       (results) => {

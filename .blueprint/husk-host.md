@@ -28,5 +28,5 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 ## 对外契约
 - `SessionManager` / `SessionActor` 以 `UiCommand` 驱动、`UiEvent` 回流；`base_registries()` 组装完整工具集（patch 工具与 `serena` 元工具在此经 `agent_coding::blueprint::guard_patch` 包装，`.blueprint/` 只能由 `blueprint_edit` 写入）
 - 后台任务：`SessionManager::bg_registry(root, id)` 交出会话的 `BgRegistry`，前端适配层据此列出、读日志与控制（kill / pause / resume / remove），不经 actor 命令泵，回合进行中也即时生效；界面上的 kill 会以「被用户停止」的通知告知模型
-- 后台任务列表：`bg_jobs_for_display` 在 actor 存活时给活注册表的快照，否则回落到记录文件；记录里仍是 running / paused 的条目按「应用已退出」呈现，整体标记 `restored` —— 界面据此不给控制按钮、也不去拉已经随进程消失的日志
+- 后台任务列表：`bg_jobs_for_display` 在 actor 存活时给活注册表的快照，否则回落到记录文件；记录里仍是 running / paused 的条目按「应用已退出」呈现，整体标记 `restored`。记录态只能整条删除（`remove_bg_record` 改写记录文件），不能暂停/终止，日志也已随进程消失
 - 侧路流量（蒸馏、缓存预热）一律走不带 usage observer 的 provider 实例（`unobserved_provider_from`），只有前台回合写会话的 cache-write 计数

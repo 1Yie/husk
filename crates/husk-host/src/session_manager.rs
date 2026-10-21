@@ -471,6 +471,26 @@ impl SessionManager {
         jobs
     }
 
+    /// Drop one entry from a session's saved job record, returning the list the
+    /// pane should show. `None` when an actor is live — the registry owns the
+    /// list then, and its next change rewrites the record anyway.
+    pub fn remove_bg_record(&self, root: &str, id: i64, job: &str) -> Option<serde_json::Value> {
+        if self.bg_registry(root, id).is_some() {
+            return None;
+        }
+        let saved = self.store.load_bg_jobs(id)?;
+        let jobs = Self::without_bg_job(saved, job);
+        let _ = self.store.save_bg_jobs(id, &jobs);
+        Some(jobs)
+    }
+
+    /// The saved list without `job` — what a removal from the record leaves.
+    fn without_bg_job(jobs: serde_json::Value, job: &str) -> serde_json::Value {
+        let mut list = jobs.as_array().cloned().unwrap_or_default();
+        list.retain(|entry| entry.get("id").and_then(|v| v.as_str()) != Some(job));
+        serde_json::Value::Array(list)
+    }
+
     /// Mutable access to a session's live handle wherever it lives — the
     /// event forwarder uses this since a background workspace's actor
     /// keeps emitting after a switch (its handle sits in `parked`).
@@ -4003,5 +4023,18 @@ max = "max"
         for job in shown.as_array().unwrap() {
             assert_eq!(job["restored"], true, "{job}");
         }
+    }
+
+    /// A record can be pruned: the entry the reader asked about goes, the rest
+    /// stay.
+    #[test]
+    fn a_record_drops_the_entry_asked_for() {
+        let saved = serde_json::json!([
+            {"id": "bg-1", "command": "a", "restored": true},
+            {"id": "bg-2", "command": "b", "restored": true},
+        ]);
+        let left = SessionManager::without_bg_job(saved, "bg-1");
+        assert_eq!(left.as_array().unwrap().len(), 1);
+        assert_eq!(left[0]["id"], "bg-2");
     }
 }

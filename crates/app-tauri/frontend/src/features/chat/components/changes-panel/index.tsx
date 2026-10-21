@@ -89,7 +89,9 @@ function FileRow({
                   {p.tool} · 第 {p.n} 次修改
                 </div>
               )}
-              <DiffView diff={p.diff} maxHeight={340} reserveScrollbar />
+              {/* The file row above already names the file and its totals —
+                  the card contributes the diff body only. */}
+              <DiffView diff={p.diff} maxHeight={340} reserveScrollbar showHeader={false} />
             </div>
           ))}
           {change.fuzzy && (

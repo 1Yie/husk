@@ -391,17 +391,18 @@ fn agent_session_inner(
     // few seconds) and must not stall the event forwarder meanwhile.
     if matches!(op.as_str(), "bg_list" | "bg_logs" | "bg_control") {
         let id = id.ok_or_else(|| format!("{op} needs id"))?;
-        let root = path.as_deref().filter(|root| !root.is_empty());
-        let (reg, display) = {
+        let given = path.as_deref().filter(|root| !root.is_empty());
+        let (root, reg, display) = {
             let mgr = state.lock().map_err(|e| e.to_string())?;
-            let root = root
+            let root = given
                 .map(str::to_string)
                 .unwrap_or_else(|| mgr.workspace_root.to_string_lossy().into_owned());
             // Only `bg_list` needs a list; control and logs need the handle.
             // The list outlives the actor: it falls back to the record the
             // session wrote, so the pane still shows what ran and how it ended.
             let display = (op == "bg_list").then(|| mgr.bg_jobs_for_display(&root, id));
-            (mgr.bg_registry(&root, id), display)
+            let reg = mgr.bg_registry(&root, id);
+            (root, reg, display)
         };
         let field = |name: &str| payload.as_ref().and_then(|p| p.get(name));
         return match op.as_str() {
@@ -417,11 +418,26 @@ fn agent_session_inner(
                 Ok(serde_json::Value::String(reg.tail(job, lines)?))
             }
             _ => {
-                let reg = reg.ok_or("会话未运行")?;
                 let job = field("job")
                     .and_then(|v| v.as_str())
                     .ok_or("bg_control needs job")?;
-                match field("action").and_then(|v| v.as_str()) {
+                let action = field("action").and_then(|v| v.as_str());
+                let Some(reg) = reg else {
+                    // No actor: the list is the record left on disk, and only a
+                    // removal means anything — there is no process to stop.
+                    if action != Some("remove") {
+                        return Err("会话未运行".to_string());
+                    }
+                    let removed = {
+                        let mgr = state.lock().map_err(|e| e.to_string())?;
+                        mgr.remove_bg_record(&root, id, job)
+                    };
+                    return match removed {
+                        Some(jobs) => Ok(serde_json::json!({ "jobs": jobs })),
+                        None => Err("会话未运行".to_string()),
+                    };
+                };
+                match action {
                     Some("kill") => tauri::async_runtime::block_on(reg.kill(job))?,
                     Some("pause") => reg.set_paused(job, true)?,
                     Some("resume") => reg.set_paused(job, false)?,

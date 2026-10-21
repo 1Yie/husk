@@ -122,7 +122,7 @@ describe("unified session dock", () => {
     expect(screen.queryByText("a.ts")).not.toBeInTheDocument();
   });
 
-  test("a restored job is a record: no controls, and its log is gone with it", () => {
+  test("a restored job is a record: readable, prunable, not controllable", () => {
     const job: BgJob = {
       id: "bg-1",
       command: "cargo test",
@@ -135,11 +135,13 @@ describe("unified session dock", () => {
     };
     renderWithProviders(<SessionDock changes={[]} artifacts={[]} jobs={[job]} />);
     fireEvent.click(screen.getByRole("tab", { name: "后台（1 个任务）" }));
-    // No process is behind the row, so the host has nothing to remove.
-    expect(screen.queryByText("清除已结束")).not.toBeInTheDocument();
+    // The record can be dropped, so the bulk action counts it…
+    expect(screen.getByText("清除已结束")).toBeInTheDocument();
+    // …and the row offers its own removal, but nothing that needs a process.
+    expect(screen.queryByRole("button", { name: "终止" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /bg-1/ }));
     expect(screen.getByText("日志随任务进程一起丢失")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "移除记录" })).toBeInTheDocument();
   });
 
   test("改动 and 后台 switch back and forth in one sidebar", () => {
