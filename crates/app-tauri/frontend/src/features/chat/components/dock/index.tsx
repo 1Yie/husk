@@ -140,8 +140,6 @@ export function SessionDock({
   // The stored tab can point at the list that just emptied (a new session,
   // /clear) — fall back to whichever one is on screen.
   const activeTab: DockTab | null = tabs.includes(tab) ? tab : (tabs[0] ?? null);
-  const adds = activeTab === "changes" ? changes.reduce((n, c) => n + c.adds, 0) : 0;
-  const dels = activeTab === "changes" ? changes.reduce((n, c) => n + c.dels, 0) : 0;
 
   return (
     <div
@@ -194,16 +192,6 @@ export function SessionDock({
             ))}
           </div>
           <span className="flex-1" />
-          {(adds > 0 || dels > 0) && (
-            <span className="font-mono text-[10.5px] tabular-nums">
-              {adds > 0 && (
-                <span className="text-emerald-600 dark:text-emerald-400">+{adds}</span>
-              )}
-              {dels > 0 && (
-                <span className="ml-1 text-rose-600 dark:text-rose-400">-{dels}</span>
-              )}
-            </span>
-          )}
           <button
             type="button"
             onClick={close}
