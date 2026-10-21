@@ -31,6 +31,25 @@ describe("jobs pill", () => {
     expect(pill.getAttribute("data-jobs-tone")).toBe("running");
   });
 
+  test("yields to the dock pill: an icon until the pointer asks for it", () => {
+    renderStream({
+      jobs: { text: "2 个任务运行中", tone: "running" },
+      dockCount: 1,
+      dockTab: "changes",
+      onToggleDock: () => {},
+    });
+    expect(
+      screen.getByRole("button", { name: "后台任务" }).getAttribute("data-compact"),
+    ).toBe("true");
+  });
+
+  test("alone on the row, it speaks in full", () => {
+    renderStream({ jobs: { text: "2 个任务运行中", tone: "running" } });
+    expect(
+      screen.getByRole("button", { name: "后台任务" }).getAttribute("data-compact"),
+    ).toBeNull();
+  });
+
   test("sits beside the dock pill, each with its own toggle", () => {
     const onToggleJobs = vi.fn();
     const onToggleDock = vi.fn();

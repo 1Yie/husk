@@ -1331,6 +1331,21 @@ function DockGlyph({
   );
 }
 
+/** The Dynamic-Island row: the FIRST pill speaks in full, every pill after it
+ *  is an icon until the pointer or the keyboard asks for its text. One class
+ *  pair so the two can never animate differently. */
+const PILL_TEXT = "flex min-w-0 items-center gap-1.5 overflow-hidden transition-all duration-200 ease-out";
+const PILL_TEXT_OPEN = "ml-1.5 max-w-[180px] opacity-100";
+const PILL_TEXT_COLLAPSED =
+  "ml-0 max-w-0 opacity-0 " +
+  "group-hover:ml-1.5 group-hover:max-w-[180px] group-hover:opacity-100 " +
+  "group-focus-visible:ml-1.5 group-focus-visible:max-w-[180px] group-focus-visible:opacity-100";
+
+/** A pill's text wrapper: `collapsed` ones wait for hover/focus. */
+function pillTextClass(collapsed: boolean): string {
+  return `${PILL_TEXT} ${collapsed ? PILL_TEXT_COLLAPSED : PILL_TEXT_OPEN}`;
+}
+
 /** Overscan around the viewport inside which steps are mounted. */
 const STEP_OVERSCAN = 600;
 
@@ -2838,6 +2853,11 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // working tree's own state is the title bar chip's business.
   const dockPillVisible = !!onToggleDock && dockCount > 0;
   const jobsPillVisible = !!onToggleJobs && !!jobs;
+  // One capsule speaks, the ones behind it collapse (the island's rule). The
+  // dock pill leads whenever it is up, so the jobs pill beside it is an orb
+  // until the pointer asks for the count. A third pill would follow the same
+  // rule: collapsed only because something already leads it.
+  const jobsCollapsed = dockPillVisible;
   // The arrow yields to whichever pills are up — one rule for the row.
   const anyPill = dockPillVisible || jobsPillVisible;
 
@@ -2955,39 +2975,6 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         style={{ bottom: `${(composerH ?? (bottomPad ? bottomPad - 24 : 140)) + 12}px` }}
         className="absolute left-1/2 z-30 flex -translate-x-1/2 items-center"
       >
-        {jobsPillVisible && jobs && (
-          <TooltipSimple content={jobsOpen ? "关闭后台任务" : `后台任务 · ${jobs.text}`} side="top">
-            <button
-              type="button"
-              onClick={onToggleJobs}
-              aria-label="后台任务"
-              aria-pressed={jobsOpen}
-              data-jobs-tone={jobs.tone}
-              className={cn(
-                "flex h-8 items-center gap-1.5 rounded-full border pl-2.5 pr-3 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer",
-                "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
-                "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
-                dockPillVisible && "mr-2",
-              )}
-            >
-              {jobs.tone === "running" ? (
-                // The orb's own travel, not a spinner: this pill sits on the
-                // same row as the session's activity glyphs, so it reads as
-                // the same family of motion.
-                <Orb variant="B2" size={16} className="flex-none text-sky-600 dark:text-sky-400" />
-              ) : jobs.tone === "failed" ? (
-                <CircleX className="h-4 w-4 flex-none text-rose-600 dark:text-rose-400" />
-              ) : (
-                // A touch smaller than the state glyphs beside it: a filled
-                // check carries more ink than an outlined cross at one size.
-                <CircleCheck className="h-3.5 w-3.5 flex-none text-emerald-600 dark:text-emerald-400" />
-              )}
-              <span className={cn("flex-none", jobs.tone === "failed" && "text-rose-600 dark:text-rose-400")}>
-                {jobs.text}
-              </span>
-            </button>
-          </TooltipSimple>
-        )}
         {dockPillVisible && (
           <TooltipSimple
             content={
@@ -3005,12 +2992,15 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
               data-dock-state={dockOpen ? "open" : "closed"}
               data-dock-tab={dockTab ?? undefined}
               className={cn(
-                "flex h-8 items-center gap-1.5 rounded-full border pl-2.5 pr-3 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer group",
+                "group flex h-8 items-center gap-0 rounded-full border px-2 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer",
                 "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
                 // One look whether the sidebar is open or closed — an open
                 // card is not a selected tab, and the grey "active" fill read
                 // as exactly that. Hover is the only state change.
                 "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
+                // The leader carries the row's spacing: the follower is a
+                // 32px icon, and the gap belongs between them, not around it.
+                jobsPillVisible && "mr-2",
               )}
             >
               {/* The sidebar's state, not just a badge: the glyph follows
@@ -3020,20 +3010,66 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
               <DockGlyph open={!!dockOpen} tab={dockTab} />
               {/* The numbers are the view's own: a diff reads as its line
                   counts (+/−), a document list as its file count. */}
-              {dockTab === "changes" ? (
-                <>
-                  <span className="flex-none font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
-                    +{dockAdds}
+              <span className={pillTextClass(false)}>
+                {dockTab === "changes" ? (
+                  <>
+                    <span className="flex-none font-mono tabular-nums whitespace-nowrap text-emerald-600 dark:text-emerald-400">
+                      +{dockAdds}
+                    </span>
+                    <span className="flex-none font-mono tabular-nums whitespace-nowrap text-rose-600 dark:text-rose-400">
+                      −{dockDels}
+                    </span>
+                  </>
+                ) : (
+                  <span className="flex-none whitespace-nowrap font-mono tabular-nums opacity-70">
+                    {dockCount} 个文件
                   </span>
-                  <span className="flex-none font-mono tabular-nums text-rose-600 dark:text-rose-400">
-                    −{dockDels}
-                  </span>
-                </>
-              ) : (
-                <span className="flex-none font-mono tabular-nums opacity-70">
-                  {dockCount} 个文件
-                </span>
+                )}
+              </span>
+            </button>
+          </TooltipSimple>
+        )}
+        {jobsPillVisible && jobs && (
+          <TooltipSimple content={jobsOpen ? "关闭后台任务" : `后台任务 · ${jobs.text}`} side="top">
+            <button
+              type="button"
+              onClick={onToggleJobs}
+              aria-label="后台任务"
+              aria-pressed={jobsOpen}
+              data-jobs-tone={jobs.tone}
+              data-compact={jobsCollapsed ? "true" : undefined}
+              className={cn(
+                "group flex h-8 items-center gap-0 rounded-full border px-2 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer",
+                "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
+                "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
               )}
+            >
+              {/* One 16px box for every tone: the pill's collapsed width is
+                  the icon's, and it must not jump 2px when a job fails. */}
+              <span className="flex h-4 w-4 flex-none items-center justify-center">
+                {jobs.tone === "running" ? (
+                  // The orb's own travel, not a spinner: this pill sits on the
+                  // same row as the session's activity glyphs, so it reads as
+                  // the same family of motion.
+                  <Orb variant="B2" size={16} className="text-sky-600 dark:text-sky-400" />
+                ) : jobs.tone === "failed" ? (
+                  <CircleX className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+                ) : (
+                  // A touch smaller than the state glyphs beside it: a filled
+                  // check carries more ink than an outlined cross at one size.
+                  <CircleCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                )}
+              </span>
+              <span className={pillTextClass(jobsCollapsed)}>
+                <span
+                  className={cn(
+                    "flex-none whitespace-nowrap",
+                    jobs.tone === "failed" && "text-rose-600 dark:text-rose-400",
+                  )}
+                >
+                  {jobs.text}
+                </span>
+              </span>
             </button>
           </TooltipSimple>
         )}
