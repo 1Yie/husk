@@ -21,7 +21,7 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 #[tokio::test]
 async fn registry_lists_the_host_tools() {
     let r = registry();
-    assert_eq!(r.len(), 21);
+    assert_eq!(r.len(), 22);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -38,6 +38,7 @@ async fn registry_lists_the_host_tools() {
         "smart_grep",
         "bash",
         "service",
+        "bg_run",
         "todo",
         "web_fetch",
         "webfetch",
