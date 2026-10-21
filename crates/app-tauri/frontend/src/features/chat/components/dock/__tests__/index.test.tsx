@@ -21,7 +21,7 @@ const job = (): BgJob => ({
   started_at_ms: 1,
   elapsed_ms: 1000,
   notify: true,
-  from_child: false,
+  has_own_sink: false,
 });
 
 const artifact = (path: string): Artifact => ({
@@ -110,7 +110,7 @@ describe("unified session dock", () => {
       started_at_ms: 1,
       elapsed_ms: 2000,
       notify: true,
-      from_child: false,
+      has_own_sink: false,
     };
     // The job rows carry tooltips, which need the app's providers.
     renderWithProviders(<SessionDock changes={[change("a.ts")]} artifacts={[]} jobs={[job]} />);
@@ -130,7 +130,7 @@ describe("unified session dock", () => {
       started_at_ms: 1,
       elapsed_ms: 1000,
       notify: true,
-      from_child: false,
+      has_own_sink: false,
     };
     renderWithProviders(
       <SessionDock changes={[change("a.ts")]} artifacts={[]} jobs={[job]} />,

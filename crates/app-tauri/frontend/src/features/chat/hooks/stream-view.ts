@@ -200,8 +200,10 @@ export interface BgJob {
    *  ticks on from here. */
   elapsed_ms: number;
   notify: boolean;
-  /** Started by a delegated subagent. */
-  from_child: boolean;
+  /** The context that started the job installed its own completion sink.
+   *  `false` in a host that installs one per session means a delegated
+   *  child's job — it reports to this list and nobody else. */
+  has_own_sink: boolean;
 }
 
 /** Why a job ended, as the host's monitor decided it. */

@@ -312,7 +312,7 @@ fn the_session_streams_its_jobs_to_the_ui() {
     assert_eq!(job["command"], "echo streamed", "{last}");
     assert_eq!(job["state"]["code"], 0, "{last}");
     assert_eq!(job["state"]["reason"], "exited", "{last}");
-    assert_eq!(job["from_child"], false, "the session's own job: {last}");
+    assert_eq!(job["has_own_sink"], true, "the session's own job: {last}");
     assert!(
         system_lines.iter().all(|l| !l.contains("background task")),
         "the notice must not reach the UI as a system line: {system_lines:?}"

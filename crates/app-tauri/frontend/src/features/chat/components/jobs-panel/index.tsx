@@ -172,7 +172,7 @@ function JobRow({
         <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-neutral-700" title={job.command}>
           {job.command}
         </span>
-        {job.from_child && (
+        {!job.has_own_sink && (
           <span className="flex-none rounded bg-neutral-500/10 px-1 py-px text-[9.5px] text-neutral-500">
             子代理
           </span>

@@ -11,7 +11,7 @@ const job = (id: string, state: BgJob["state"], elapsed_ms = 0): BgJob => ({
   started_at_ms: 1,
   elapsed_ms,
   notify: true,
-  from_child: false,
+  has_own_sink: false,
 });
 const running = { kind: "running" } as const;
 const done = (label: string, code: number | null, reason: BgEndReason = code == null ? "killed" : "exited") =>

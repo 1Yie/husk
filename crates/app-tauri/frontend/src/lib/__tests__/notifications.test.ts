@@ -252,7 +252,7 @@ describe("background job failures", () => {
           started_at_ms: 1,
           elapsed_ms: 0,
           notify: true,
-          from_child: false,
+          has_own_sink: false,
         })),
       },
     },

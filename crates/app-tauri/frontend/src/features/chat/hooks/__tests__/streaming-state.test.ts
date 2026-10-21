@@ -336,7 +336,7 @@ test("each bg-jobs snapshot replaces the list rather than merging into it", () =
     started_at_ms: 1,
     elapsed_ms: 0,
     notify: true,
-    from_child: false,
+    has_own_sink: false,
   });
   const snapshot = (...ids: string[]): UiEvent => ({
     Custom: { kind: "husk:bg_jobs", payload: { jobs: ids.map(job) } },
