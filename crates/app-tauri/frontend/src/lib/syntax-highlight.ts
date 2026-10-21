@@ -367,8 +367,54 @@ function plainResult(code: string): HighlightResult {
  */
 const CACHE_MAX_ENTRIES = 32;
 const CACHE_MAX_LINES = 20_000;
-const cache = new Map<string, { value: unknown; lines: number }>();
-let cachedLines = 0;
+
+interface LruCache {
+  get<T>(key: string): T | undefined;
+  put<T>(key: string, value: T, lines: number): T;
+}
+
+function createCache(maxEntries: number, maxLines: number): LruCache {
+  const entries = new Map<string, { value: unknown; lines: number }>();
+  let cachedLines = 0;
+  return {
+    get<T>(key: string): T | undefined {
+      const hit = entries.get(key);
+      if (!hit) return undefined;
+      // LRU touch — re-insert so the Map's insertion order stays recency-ordered.
+      entries.delete(key);
+      entries.set(key, hit);
+      return hit.value as T;
+    },
+    put<T>(key: string, value: T, lines: number): T {
+      const previous = entries.get(key);
+      if (previous) cachedLines -= previous.lines;
+      entries.set(key, { value, lines });
+      cachedLines += lines;
+      while ((entries.size > maxEntries || cachedLines > maxLines) && entries.size > 1) {
+        const oldest = entries.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        cachedLines -= entries.get(oldest)?.lines ?? 0;
+        entries.delete(oldest);
+      }
+      return value;
+    },
+  };
+}
+
+/** Token results for the Streamdown plugins. A streaming block writes a new
+ *  entry per delta, so this one churns. */
+const tokenCache = createCache(CACHE_MAX_ENTRIES, CACHE_MAX_LINES);
+/** Per-line HTML for diff cards and tool capsules — kept apart from the
+ *  streaming churn above, so a card folded and reopened is still a hit. */
+const lineCache = createCache(64, CACHE_MAX_LINES);
+
+function cacheGet<T>(key: string): T | undefined {
+  return tokenCache.get<T>(key);
+}
+
+function cachePut<T>(key: string, value: T, lines: number): T {
+  return tokenCache.put(key, value, lines);
+}
 
 function cacheKey(mode: string, code: string, language: string): string {
   return `${mode}\u0000${language}\u0000${code}`;
@@ -381,29 +427,6 @@ function countLines(code: string): number {
     if (code.charCodeAt(i) === 10) n += 1;
   }
   return n;
-}
-
-function cacheGet<T>(key: string): T | undefined {
-  const hit = cache.get(key);
-  if (!hit) return undefined;
-  // LRU touch — re-insert so the Map's insertion order stays recency-ordered.
-  cache.delete(key);
-  cache.set(key, hit);
-  return hit.value as T;
-}
-
-function cachePut<T>(key: string, value: T, lines: number): T {
-  const previous = cache.get(key);
-  if (previous) cachedLines -= previous.lines;
-  cache.set(key, { value, lines });
-  cachedLines += lines;
-  while ((cache.size > CACHE_MAX_ENTRIES || cachedLines > CACHE_MAX_LINES) && cache.size > 1) {
-    const oldest = cache.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    cachedLines -= cache.get(oldest)?.lines ?? 0;
-    cache.delete(oldest);
-  }
-  return value;
 }
 
 function tokenizeWith(language: string, tokenizer: Tokenizer, code: string): HighlightResult {
@@ -520,31 +543,98 @@ function scheduleIdle(fn: () => void) {
 }
 
 /**
+ * One source line's tokens → the HTML string shared by both renderers.
+ */
+function lineToHtml(line: HighlightToken[]): string {
+  return line
+    .map((token) =>
+      token.htmlAttrs?.className
+        ? `<span class="${token.htmlAttrs.className}">${escapeHtml(token.content)}</span>`
+        : escapeHtml(token.content)
+    )
+    .join("");
+}
+
+/**
+ * Highlighted HTML, one string per source line.
+ *
+ * Diff cards paint row by row: keeping the lines separate avoids building the
+ * whole file's HTML as one string only to split it again per row.
+ */
+export function highlightCodeToLines(code: string, language: string): string[] {
+  const norm = normalizeLanguage(language);
+  const tokenizer = tokenizers[norm];
+  if (!tokenizer || !code) return code.split("\n").map((line) => escapeHtml(line));
+  const key = cacheKey("lines", code, norm);
+  const hit = lineCache.get<string[]>(key);
+  if (hit !== undefined) return hit;
+  // Straight to HTML: the token result is an intermediate here, and caching
+  // it as well cost a second slot and twice the line budget per card.
+  const { tokens } = tokensToResult(tokenizer(code), code);
+  return lineCache.put(key, tokens.map(lineToHtml), countLines(code));
+}
+
+/** The cached lines for `code`, or `undefined` — never tokenizes. A remounted
+ *  diff card paints its colours on the first frame instead of re-queueing. */
+export function peekHighlightedLines(code: string, language: string): string[] | undefined {
+  const norm = normalizeLanguage(language);
+  if (!tokenizers[norm] || !code) return undefined;
+  return lineCache.get<string[]>(cacheKey("lines", code, norm));
+}
+
+/** Time budget per frame for queued highlights. */
+const SLICE_MS = 8;
+const highlightQueue: Array<() => void> = [];
+let drainScheduled = false;
+
+function drainQueue() {
+  drainScheduled = false;
+  const started = performance.now();
+  // At least one job per slice, so a single big block still makes progress.
+  do {
+    highlightQueue.shift()?.();
+  } while (highlightQueue.length > 0 && performance.now() - started < SLICE_MS);
+  if (highlightQueue.length > 0) scheduleDrain();
+}
+
+function scheduleDrain() {
+  if (drainScheduled) return;
+  drainScheduled = true;
+  // WebKit (Tauri on Linux/macOS) ships no `requestIdleCallback`; a frame
+  // callback paces the queue there instead of draining it all in one task.
+  if (typeof requestIdleCallback === "function") requestIdleCallback(drainQueue, { timeout: 500 });
+  else if (typeof requestAnimationFrame === "function") requestAnimationFrame(drainQueue);
+  else setTimeout(drainQueue, 0);
+}
+
+/**
+ * Highlight `code` off the commit, sharing one time-sliced queue with every
+ * other card: twenty cards mounting at once colour in over a few frames
+ * rather than tokenizing back to back in one task. Returns a cancel.
+ */
+export function scheduleHighlightLines(
+  code: string,
+  language: string,
+  done: (lines: string[]) => void,
+): () => void {
+  let cancelled = false;
+  highlightQueue.push(() => {
+    if (!cancelled) done(highlightCodeToLines(code, language));
+  });
+  scheduleDrain();
+  return () => {
+    cancelled = true;
+  };
+}
+
+/**
  * Highlighted HTML string for direct rendering (tool capsules, raw history).
  * Token colour comes from the same palette: the classed buckets are coloured by
  * the stylesheet (light/dark aware), and a token type with no bucket keeps the
  * container's colour rather than forcing a mode-blind inline colour.
  */
 export function highlightCodeToHtml(code: string, language: string): string {
-  const norm = normalizeLanguage(language);
-  const tokenizer = tokenizers[norm];
-  if (!tokenizer || !code) return escapeHtml(code);
-  const key = cacheKey("html", code, norm);
-  const hit = cacheGet<string>(key);
-  if (hit !== undefined) return hit;
-  const { tokens } = tokenizeWith(norm, tokenizer, code);
-  const html = tokens
-    .map((line) =>
-      line
-        .map((token) =>
-          token.htmlAttrs?.className
-            ? `<span class="${token.htmlAttrs.className}">${escapeHtml(token.content)}</span>`
-            : escapeHtml(token.content)
-        )
-        .join("")
-    )
-    .join("\n");
-  return cachePut(key, html, countLines(code));
+  return highlightCodeToLines(code, language).join("\n");
 }
 
 function escapeHtml(str: string): string {
