@@ -43,6 +43,32 @@ describe("persisted history replay", () => {
     ]);
   });
 
+  test("a reopened session rebuilds its 改动 list from the write results", () => {
+    const view = viewFromHistory([
+      { role: "user", content: "改一下", ts: 100 },
+      {
+        role: "assistant",
+        content: "",
+        ts: 150,
+        tool_calls: [
+          {
+            id: "c9",
+            type: "function",
+            function: { name: "fuzzy_patch", arguments: '{"path":"src/a.ts"}' },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "c9",
+        ts: 200,
+        content:
+          "patched src/a.ts (line 3)\n\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,3 @@\n-old\n+new\n+extra\n",
+      },
+    ]);
+    expect(view.changes).toMatchObject([{ path: "src/a.ts", adds: 2, dels: 1 }]);
+  });
+
   test("a real prompt is not marked as a steer", () => {
     const view = viewFromHistory([{ role: "user", content: "检查文件" }]);
     expect(view.items[0]).not.toHaveProperty("steer");
