@@ -57,6 +57,9 @@ interface AgentStore {
   activeId: number;
   // Header chips.
   gitInfo: agent.GitInfo | null;
+  /** When the current `gitInfo` was ASKED for — a write recorded after this
+   *  moment may not be in that answer. See `noteGitInfo`. */
+  gitInfoAt: number;
   ctxWindow: number;
   modelCost: agent.ModelItem["cost"];
 
@@ -106,6 +109,7 @@ export const useAgentStore = create<AgentStore>((set) => ({
   workspaceRoot: "",
   activeId: 0,
   gitInfo: null,
+  gitInfoAt: 0,
   ctxWindow: 0,
   modelCost: undefined,
 
@@ -276,10 +280,37 @@ let chipsSeq = 0;
 
 /** Exported for the composer: `setModel` is a fire-and-forget session command
  *  with no event to key off, so the picker triggers the refresh itself. */
+/** Take a worktree reading. `issuedAt` is when it was REQUESTED, not when it
+ * landed: a write recorded after the request may not be in the answer, so
+ * only a reading issued after the newest change can call that change
+ * committed.
+ *
+ *  A clean repository is the commit signal — the session's writes are in, so
+ *  the 改动 view empties and its pill goes away. The stamp above is what
+ *  keeps a reading from before the writes from erasing a list the reader is
+ *  watching fill up. */
+export function noteGitInfo(git: agent.GitInfo, issuedAt: number) {
+  useAgentStore.setState((s) => {
+    const k = viewKey(s.workspaceRoot, s.activeId);
+    const v = s.views.get(k);
+    const committed =
+      git.repo &&
+      git.dirty === 0 &&
+      v !== undefined &&
+      v.changes.length > 0 &&
+      v.changesAt <= issuedAt;
+    if (!v || !committed) return { gitInfo: git, gitInfoAt: issuedAt };
+    const views = new Map(s.views);
+    views.set(k, { ...v, changes: [], changesAt: 0 });
+    return { gitInfo: git, gitInfoAt: issuedAt, views };
+  });
+}
+
 export function refreshAgentChips() {
+  const issuedAt = Date.now();
   void agent
     .getGitInfo()
-    .then((g) => useAgentStore.setState({ gitInfo: g }))
+    .then((g) => noteGitInfo(g, issuedAt))
     .catch(() => {});
   const seq = ++chipsSeq;
   void agent

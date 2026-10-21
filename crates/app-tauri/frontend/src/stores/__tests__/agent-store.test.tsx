@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
-  activeViewNow, initAgentStore, useActiveView, useActiveViewSelector,
+  activeViewNow, initAgentStore, noteGitInfo, useActiveView, useActiveViewSelector,
   useAgentStore, useHasMoreHistory,
 } from "../agent-store";
 import { emptyView } from "@/features/chat/hooks/stream-view";
@@ -259,5 +259,47 @@ describe("persisted history and live state", () => {
     const snapshot = useAgentStore.getState();
     useAgentStore.getState().dropView("/project", 1);
     expect(useAgentStore.getState()).toBe(snapshot);
+  });
+});
+
+describe("a commit empties the 改动 view", () => {
+  const seed = (changesAt: number) => {
+    const view = {
+      ...emptyView(),
+      changes: [
+        { path: "src/a.ts", kind: "modified" as const, patches: [], adds: 32, dels: 100, fuzzy: false },
+      ],
+      changesAt,
+    };
+    useAgentStore.getState().loadView("/project", 1, view);
+  };
+  const clean = { repo: true, branch: "main", dirty: 0 };
+  const dirty = { repo: true, branch: "main", dirty: 2 };
+
+  test("a reading issued after the write sees the commit and clears the list", () => {
+    seed(1_000);
+    act(() => noteGitInfo(clean, 2_000));
+    expect(activeViewNow().changes).toHaveLength(0);
+    expect(activeViewNow().changesAt).toBe(0);
+  });
+
+  test("an uncommitted tree keeps the session's list", () => {
+    seed(1_000);
+    act(() => noteGitInfo(dirty, 2_000));
+    expect(activeViewNow().changes).toHaveLength(1);
+  });
+
+  test("a reading from before the write cannot erase it", () => {
+    // The answer was asked for before the agent wrote, so a clean tree there
+    // says nothing about this write.
+    seed(3_000);
+    act(() => noteGitInfo(clean, 2_000));
+    expect(activeViewNow().changes).toHaveLength(1);
+  });
+
+  test("a plain folder never clears — there is nothing to commit", () => {
+    seed(1_000);
+    act(() => noteGitInfo({ repo: false, branch: null, dirty: 0 }, 2_000));
+    expect(activeViewNow().changes).toHaveLength(1);
   });
 });
