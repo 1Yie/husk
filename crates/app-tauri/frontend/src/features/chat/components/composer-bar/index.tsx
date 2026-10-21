@@ -4,7 +4,6 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import {
   Plus,
   ChevronDown,
-  ChevronsUpDown,
   ArrowUp,
   Square,
   FileText,
@@ -13,7 +12,6 @@ import {
   FolderOpen,
   Search,
   ListCheck,
-  Brain,
   Wrench,
   Check,
   Image,
@@ -25,6 +23,7 @@ import {
   CirclePen,
   ListPlus, MessagesSquare, Monitor } from "@keyline-icons/react";
 import { MentionPopup } from "@/features/chat/components/composer-bar/mention-popup";
+import { ModelPicker } from "@/features/chat/components/composer-bar/model-picker";
 import { AttachmentChips } from "@/features/chat/components/composer-bar/attachment-chips";
 import { TokenMirror } from "@/features/chat/components/composer-bar/token-mirror";
 import {
@@ -106,24 +105,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, TooltipSimple } from "@/components/ui/tooltip";
-import { TruncatedText } from "@/components/ui/truncated-text";
-import { groupOptions } from "@/lib/group-options";
 import { cn } from "@/lib/utils";
 import { INK_MUTED, SURFACE_OVERLAY } from "@/lib/theme";
-
-/** The model picker's primary label: the `name` set in settings, falling back
- *  to the wire id when the config declares none. */
-function modelLabel(m: agent.ModelItem): string {
-  return m.name?.trim() || m.model;
-}
-
-/** The picker's small second line — the raw model id, what actually goes on
- *  the wire and what `/model` expects. Empty when the id IS the label, so a
- *  nameless model never prints its own name twice; the provider is the row's
- *  section heading, not a sub-label. */
-function modelSubLabel(m: agent.ModelItem): string {
-  return modelLabel(m) !== m.model ? m.model : "";
-}
 
 /** Tool name → icon for the approval strip. */
 function toolIcon(name: string) {
@@ -1919,29 +1902,6 @@ function ComposerToolbar({
   cancel: () => Promise<void>;
 }) {
   const canSubmit = text.trim().length > 0 || hasAttachments;
-  // The active model's config entry — supplies the display name for the
-  // trigger. `undefined` when the model isn't in the configured list (a
-  // hand-encoded `/model` target, or a config edited outside the app): the
-  // raw id is then the only thing we can show.
-  const activeItem = models.find((model) =>
-    model.model === activeModel && model.provider === activeProvider,
-  );
-  const modelSections = useMemo(
-    () =>
-      groupOptions(
-        models,
-        (m) => m.provider || undefined,
-        (a, b) => modelLabel(a).localeCompare(modelLabel(b)),
-      ),
-    [models],
-  );
-  /** The wire value the active tier rewrites to, when the model remaps it
-   *  (e.g. picking Low sends `max`) — shown so the slider never lies. */
-  const thinkingOverride =
-    thinkingMap?.[activeThinkingLevel] &&
-    thinkingMap[activeThinkingLevel] !== activeThinkingLevel
-      ? thinkingMap[activeThinkingLevel]
-      : null;
 
   return (
     // `min-w-0` on both groups is what lets a narrow window compress the row
@@ -2000,148 +1960,17 @@ function ComposerToolbar({
       </div>
 
       <div className="flex items-center gap-2 min-w-0 shrink-0">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label={`当前模型: ${activeItem ? modelLabel(activeItem) : activeModel || "未选择"} (${activeProvider}/${activeModel})`}
-              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer"
-            >
-              <span
-                className={cn(
-                  "truncate max-w-[140px]",
-                  // No display name → the label IS the id; keep the old mono
-                  // look instead of re-styling an identifier as prose.
-                  (!activeItem || modelLabel(activeItem) === activeModel) && "font-mono text-[11.5px]",
-                )}
-              >
-                {activeItem ? modelLabel(activeItem) : activeModel || "选择模型"}
-              </span>
-              {hasReasoning && effectiveThinkingLevels.length > 0 && (
-                // The thinking level rides with the model — one control picks
-                // both what answers and how hard it thinks.
-                <span className="flex items-center gap-1 shrink-0 pl-1.5 border-l border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]">
-                  <Brain
-                    className={cn(
-                      "h-3 w-3 shrink-0",
-                      activeThinkingLevel === "off"
-                        ? "text-neutral-400"
-                        : "text-purple-600 dark:text-purple-400",
-                    )}
-                  />
-                  <span className="truncate max-w-[5em] text-[11px] text-neutral-500">
-                    {effectiveThinkingLevels.find((l) => l.value === activeThinkingLevel)?.token ??
-                      activeThinkingLevel}
-                  </span>
-                </span>
-              )}
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-            </button>
-          </DropdownMenuTrigger>
-
-          <DropdownMenuContent
-            align="end"
-            side="top"
-            className="w-80 max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] overflow-hidden flex flex-col"
-          >
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
-              模型
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-
-            {models.length > 0 ? (
-              <DropdownMenuGroup className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-                {/* One section per provider, alphabetical — the provider map
-                    upstream carries no order of its own. */}
-                {modelSections.map((section, i) => (
-                  <div key={section.group ?? "__ungrouped"}>
-                    {i > 0 && <DropdownMenuSeparator />}
-                    {section.group && (
-                      <DropdownMenuLabel className="truncate text-[11px] font-medium text-neutral-700">
-                        {section.group}
-                      </DropdownMenuLabel>
-                    )}
-                    {section.items.map((item) => {
-                      const active =
-                        item.model === activeModel && item.provider === activeProvider;
-                      return (
-                        <DropdownMenuItem
-                          key={`${item.provider}/${item.model}`}
-                          onClick={() => void onSelectModel(item.provider, item.model)}
-                          className="flex min-w-0 items-center justify-between overflow-hidden text-xs py-2 cursor-pointer"
-                        >
-                          <div className="flex min-w-0 flex-1 flex-col pr-2">
-                            <TruncatedText
-                              text={modelLabel(item)}
-                              className="truncate font-medium text-neutral-900"
-                            />
-                            {modelSubLabel(item) && (
-                              <TruncatedText
-                                text={modelSubLabel(item)}
-                                className="truncate font-mono text-[10px] text-neutral-500"
-                              />
-                            )}
-                          </div>
-                          {active && (
-                            <Check className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                          )}
-                        </DropdownMenuItem>
-                      );
-                    })}
-                  </div>
-                ))}
-              </DropdownMenuGroup>
-            ) : (
-              <div className="px-3 py-3 text-xs text-neutral-500 text-center">未检测到模型</div>
-            )}
-
-            {hasReasoning && effectiveThinkingLevels.length > 0 && (
-              <>
-                <DropdownMenuSeparator />
-                {/* Tier slider — one click switches, and the active tier reads
-                    as a raised segment instead of a bulleted list. */}
-                <DropdownMenuLabel className="flex items-center gap-1.5 text-xs text-neutral-500 font-normal">
-                  <Brain
-                    className={cn(
-                      "h-3 w-3 shrink-0",
-                      activeThinkingLevel === "off"
-                        ? "text-neutral-400"
-                        : "text-purple-600 dark:text-purple-400",
-                    )}
-                  />
-                  思考
-                  {thinkingOverride && (
-                    <span className="ml-auto font-mono text-[10px] text-neutral-400">
-                      → {thinkingOverride}
-                    </span>
-                  )}
-                </DropdownMenuLabel>
-                <DropdownMenuGroup className="flex items-center gap-0.5 rounded-lg bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] p-0.5">
-                  {effectiveThinkingLevels.map((lvl) => {
-                    const active = lvl.value === activeThinkingLevel;
-                    return (
-                      <DropdownMenuItem
-                        key={lvl.value}
-                        title={`${lvl.token}（${thinkingSuffix(lvl.value, thinkingMap)}）`}
-                        // Keep the menu open: the tier is tuned alongside the
-                        // model, often in a few clicks — Radix closes on select.
-                        onSelect={(e) => e.preventDefault()}
-                        onClick={() => void onSelectThinkingLevel(lvl.value)}
-                        className={cn(
-                          "flex-1 justify-center rounded-md px-1 py-1 text-[11px] font-medium cursor-pointer transition-colors",
-                          active
-                            ? "bg-white text-neutral-900 shadow-xs dark:bg-[var(--husk-hover)]"
-                            : "text-neutral-500 hover:text-neutral-800",
-                        )}
-                      >
-                        {lvl.token}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuGroup>
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <ModelPicker
+          activeModel={activeModel}
+          activeProvider={activeProvider}
+          models={models}
+          onSelectModel={onSelectModel}
+          hasReasoning={hasReasoning}
+          activeThinkingLevel={activeThinkingLevel}
+          thinkingMap={thinkingMap}
+          effectiveThinkingLevels={effectiveThinkingLevels}
+          onSelectThinkingLevel={onSelectThinkingLevel}
+        />
 
         {streaming ? (
           <>

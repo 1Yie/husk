@@ -28,15 +28,66 @@ describe("composer model and thinking controls", () => {
     const user = userEvent.setup();
     renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
     await loaded();
+    // The popover opens on the summary; 模型 drills into the list.
     await user.click(modelButton());
+    await user.click(screen.getByRole("menuitem", { name: /^模型/ }));
     await user.click(screen.getByRole("menuitem", { name: /Model B/ }));
     expect(modelButton()).toHaveTextContent("Model B");
     expect(modelButton()).toHaveTextContent("Med");
     expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", { cmd: { SetModel: { provider: "test", model: "model-b" } } });
     expect(tauri.invoke.mock.calls.filter(([cmd, args]) => cmd === "agent_cmd" && "SetThinkingLevel" in (args?.cmd as object))).toHaveLength(0);
+    // 思考 drills into the stepped control; a gesture reports its tier.
     await user.click(modelButton());
-    await user.click(screen.getByRole("menuitem", { name: /Xhigh/ }));
+    await user.click(screen.getByRole("menuitem", { name: /^思考/ }));
+    const slider = screen.getByRole("slider", { name: "思考等级" });
+    // End is the highest tier this model declares.
+    fireEvent.keyDown(slider, { key: "End" });
     expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", { cmd: { SetThinkingLevel: { level: "xhigh" } } });
+  });
+
+  test("the summary level states the current pair and each row drills in", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    await user.click(modelButton());
+    const modelRow = screen.getByRole("menuitem", { name: /^模型/ });
+    const thinkingRow = screen.getByRole("menuitem", { name: /^思考/ });
+    expect(modelRow).toHaveTextContent("Model A");
+    expect(thinkingRow).toHaveTextContent("Low");
+
+    // 思考 → the stepped control, with the tier's own wording.
+    await user.click(thinkingRow);
+    const rail = screen.getByRole("slider", { name: "思考等级" });
+    // The control names the model and the tier it is sitting on.
+    expect(rail).toHaveAttribute("aria-valuetext", expect.stringMatching(/Low$/));
+    expect(rail).toHaveAttribute("aria-valuemax", "3");
+
+    // Back returns to the summary, not out of the popover.
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(screen.getByRole("menuitem", { name: /^模型/ })).toBeInTheDocument();
+
+    // Keyboard moves one stop at a time.
+    await user.click(screen.getByRole("menuitem", { name: /^思考/ }));
+    fireEvent.keyDown(screen.getByRole("slider", { name: "思考等级" }), { key: "ArrowRight" });
+    expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", { cmd: { SetThinkingLevel: { level: "high" } } });
+  });
+
+  test("a model without reasoning offers no thinking row target", async () => {
+    const user = userEvent.setup();
+    const info = modelInfo();
+    for (const m of info.models) {
+      m.reasoning = false;
+      m.available_levels = [];
+    }
+    mockCommand("agent_session", () => info, "model_info");
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    await user.click(modelButton());
+    const row = screen.getByRole("menuitem", { name: /^思考/ });
+    expect(row).toHaveAttribute("data-disabled");
+    // Clicking it opens nothing: the session has no tiers to pick from.
+    await user.click(row);
+    expect(screen.queryByRole("slider", { name: "思考等级" })).toBeNull();
   });
 
   test("late model info cannot roll a newer configuration refresh back", async () => {
@@ -206,6 +257,8 @@ describe("composer model picker sections", () => {
     renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
     await loaded();
     await user.click(modelButton());
+    // The list lives one level down, behind the 模型 row.
+    await user.click(screen.getByRole("menuitem", { name: /^模型/ }));
     const menu = (await screen.findAllByRole("menu")).at(-1)!;
     // `getAllBy*` returns document order, which is exactly what is under test.
     const inMenu = (text: RegExp) =>
