@@ -427,6 +427,46 @@ impl SessionManager {
         self.handle_at(root, id).map(|h| h.bg_jobs.clone())
     }
 
+    /// The 后台 view's list for a session: the live registry while its actor is
+    /// up, otherwise the record that actor last wrote. A job the record still
+    /// calls running died with the process that ran it — the app was closed —
+    /// so it reads as interrupted rather than as work still going.
+    pub fn bg_jobs_for_display(&self, root: &str, id: i64) -> serde_json::Value {
+        if let Some(reg) = self.bg_registry(root, id) {
+            return serde_json::json!(reg.jobs());
+        }
+        self.store
+            .load_bg_jobs(id)
+            .map(Self::interrupted_bg_jobs)
+            .unwrap_or_else(|| serde_json::json!([]))
+    }
+
+    /// A saved job list as the sidebar shows it after a restart: nothing is
+    /// still running, because the process that ran it is gone. A job that had
+    /// already ended keeps its own ending.
+    fn interrupted_bg_jobs(mut jobs: serde_json::Value) -> serde_json::Value {
+        if let Some(list) = jobs.as_array_mut() {
+            for job in list.iter_mut() {
+                let Some(state) = job.get_mut("state") else {
+                    continue;
+                };
+                let kind = state
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or_default();
+                if kind == "running" || kind == "paused" {
+                    *state = serde_json::json!({
+                        "kind": "done",
+                        "label": "应用已退出",
+                        "code": null,
+                        "reason": "error",
+                    });
+                }
+            }
+        }
+        jobs
+    }
+
     /// Mutable access to a session's live handle wherever it lives — the
     /// event forwarder uses this since a background workspace's actor
     /// keeps emitting after a switch (its handle sits in `parked`).
@@ -3934,5 +3974,25 @@ max = "max"
         let row = &tree[0].sessions[0];
         assert_eq!(row.preview, "live");
         assert!(row.running && row.active);
+    }
+
+    /// A record from a previous run cannot claim a job is still going: the
+    /// process that ran it is gone, so the sidebar shows it as interrupted.
+    #[test]
+    fn a_saved_running_job_reads_as_interrupted() {
+        let saved = serde_json::json!([
+            {"id": "bg-1", "command": "sleep 30", "state": {"kind": "running"}},
+            {"id": "bg-2", "command": "echo hi", "state": {"kind": "paused"}},
+            {"id": "bg-3", "command": "true",
+             "state": {"kind": "done", "label": "exited(0)", "code": 0, "reason": "exited"}},
+        ]);
+        let shown = SessionManager::interrupted_bg_jobs(saved);
+        assert_eq!(shown[0]["state"]["kind"], "done");
+        assert_eq!(shown[0]["state"]["label"], "应用已退出");
+        assert_eq!(shown[0]["state"]["reason"], "error");
+        assert_eq!(shown[1]["state"]["kind"], "done");
+        // An ending that happened before the restart is left alone.
+        assert_eq!(shown[2]["state"]["label"], "exited(0)");
+        assert_eq!(shown[2]["state"]["reason"], "exited");
     }
 }

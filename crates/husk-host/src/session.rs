@@ -1370,11 +1370,19 @@ impl SessionActor {
         let reg = Arc::downgrade(&self.bg_jobs);
         let mut feed = self.bg_jobs.subscribe();
         let ui = self.io.ui_tx.clone();
+        let store = self.store.clone();
+        let session_id = self.session_id;
         tokio::spawn(async move {
             while feed.changed().await.is_ok() {
                 tokio::time::sleep(BG_FEED_SETTLE).await;
                 feed.mark_unchanged();
                 let Some(reg) = reg.upgrade() else { break };
+                // The pane outlives the run: the jobs die with this process, so
+                // what the sidebar shows next time it starts is this record.
+                if let Some(store) = &store {
+                    let jobs = serde_json::json!(reg.jobs());
+                    let _ = store.save_bg_jobs(session_id, &jobs);
+                }
                 if ui.send(bg_jobs_event(&reg)).is_err() {
                     break;
                 }

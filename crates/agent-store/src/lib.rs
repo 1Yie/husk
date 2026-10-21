@@ -520,6 +520,25 @@ mod tests {
         assert!(!counts_as_turn(&ChatMessage::notice("已被用户中断")));
     }
 
+    /// The 后台 record outlives the run it describes: the store keeps the list
+    /// beside the journal, and a fresh handle reads it back.
+    #[test]
+    fn a_saved_job_list_outlives_the_store_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = serde_json::json!([
+            {"id": "bg-1", "command": "cargo test", "state": {"kind": "running"}},
+        ]);
+        {
+            let store = test_store(&dir);
+            assert_eq!(store.load_bg_jobs(0), None);
+            store.save_bg_jobs(0, &jobs).unwrap();
+        }
+        let reopened = test_store(&dir);
+        assert_eq!(reopened.load_bg_jobs(0), Some(jobs));
+        // Another session's record is its own.
+        assert_eq!(reopened.load_bg_jobs(1), None);
+    }
+
     /// An isolated store: temp db file + the tempdir as the workspace root.
     fn test_store(dir: &tempfile::TempDir) -> SessionStore {
         let db = open_db(&dir.path().join("conversations")).unwrap();

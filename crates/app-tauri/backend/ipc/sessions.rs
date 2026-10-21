@@ -392,18 +392,21 @@ fn agent_session_inner(
     if matches!(op.as_str(), "bg_list" | "bg_logs" | "bg_control") {
         let id = id.ok_or_else(|| format!("{op} needs id"))?;
         let root = path.as_deref().filter(|root| !root.is_empty());
-        let reg = {
+        let (reg, display) = {
             let mgr = state.lock().map_err(|e| e.to_string())?;
             let root = root
                 .map(str::to_string)
                 .unwrap_or_else(|| mgr.workspace_root.to_string_lossy().into_owned());
-            mgr.bg_registry(&root, id)
+            // Only `bg_list` needs a list; control and logs need the handle.
+            // The list outlives the actor: it falls back to the record the
+            // session wrote, so the pane still shows what ran and how it ended.
+            let display = (op == "bg_list").then(|| mgr.bg_jobs_for_display(&root, id));
+            (mgr.bg_registry(&root, id), display)
         };
         let field = |name: &str| payload.as_ref().and_then(|p| p.get(name));
         return match op.as_str() {
-            // A session with no live actor has no jobs, not an error.
             "bg_list" => Ok(serde_json::json!({
-                "jobs": reg.map(|r| serde_json::json!(r.jobs())).unwrap_or_else(|| serde_json::json!([])),
+                "jobs": display.unwrap_or_else(|| serde_json::json!([])),
             })),
             "bg_logs" => {
                 let reg = reg.ok_or("会话未运行")?;

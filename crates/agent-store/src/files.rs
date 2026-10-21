@@ -436,6 +436,11 @@ impl SessionStore {
     fn lock(&self, id: i64) -> PathBuf {
         self.directory().join(format!("{id}.lock"))
     }
+    /// The sidebar's background-job record — beside the journal, so a session
+    /// carries its jobs with it.
+    fn bg_jobs(&self, id: i64) -> PathBuf {
+        self.directory().join(format!("{id}.bg.json"))
+    }
     /// A corrupt or torn snapshot degrades to the journal: the snapshot is a
     /// cache, the journal is the source of truth.
     fn read_recovery(&self, id: i64) -> std::io::Result<Option<RecoverySnapshot>> {
@@ -1031,6 +1036,22 @@ impl SessionStore {
             w.meta(meta)
         })
     }
+
+    /// Keep the session's background-job list for the sidebar. The jobs
+    /// themselves die with the process that started them — what survives is
+    /// the record of what ran and how it ended, which the 后台 view shows
+    /// again after a restart. The payload is opaque here: the host owns its
+    /// shape, the store only keeps it next to the journal.
+    pub fn save_bg_jobs(&self, id: i64, jobs: &serde_json::Value) -> std::io::Result<()> {
+        atomic_json(&self.bg_jobs(id), jobs)
+    }
+
+    /// The last saved list, or `None` when the session never ran a job.
+    pub fn load_bg_jobs(&self, id: i64) -> Option<serde_json::Value> {
+        let bytes = std::fs::read(self.bg_jobs(id)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
     pub fn commit_turn(
         &self,
         history: &[ChatMessage],
