@@ -1221,6 +1221,23 @@ impl MemoryStore {
         Ok(removed)
     }
 
+    /// Remove a persona key from `scope` only — the settings pane's per-row
+    /// delete, which names the entry the user clicked. The same label may be a
+    /// separate entry in the other scope and must survive. Returns whether the
+    /// row existed.
+    pub fn remove_persona_scoped(&self, scope: PersonaScope, key: &str) -> Result<bool, String> {
+        let row = persona_row_key(scope, self.workspace_id, &persona_key(key));
+        let w = self.db.begin_write().map_err(|e| e.to_string())?;
+        let removed = w
+            .open_table(PERSONA)
+            .map_err(|e| e.to_string())?
+            .remove(row.as_str())
+            .map_err(|e| e.to_string())?
+            .is_some();
+        w.commit().map_err(|e| e.to_string())?;
+        Ok(removed)
+    }
+
     /// Every persona entry this workspace sees: its own rows plus the global
     /// ones. Another repo's rows stay in their own partition.
     pub fn all_persona(&self) -> Result<Vec<Persona>, String> {
@@ -2214,6 +2231,43 @@ mod tests {
         );
         assert!(s.remove_persona("style").unwrap());
         assert_eq!(s.persona("style").unwrap(), None);
+    }
+
+    /// A scoped delete names one row: the same label kept in the other scope is
+    /// a preference the user never clicked and has to survive.
+    #[test]
+    fn remove_persona_scoped_leaves_the_other_scope_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.set_persona("style", "global value").unwrap();
+        s.set_persona_scoped(PersonaScope::Workspace, "style", "workspace value")
+            .unwrap();
+
+        assert!(s
+            .remove_persona_scoped(PersonaScope::Workspace, "style")
+            .unwrap());
+        assert_eq!(
+            s.persona_in(PersonaScope::Workspace, "style").unwrap(),
+            None
+        );
+        assert_eq!(
+            s.persona_in(PersonaScope::Global, "style").unwrap().as_deref(),
+            Some("global value")
+        );
+        assert!(!s
+            .remove_persona_scoped(PersonaScope::Workspace, "style")
+            .unwrap()); // already gone
+
+        s.set_persona_scoped(PersonaScope::Workspace, "style", "workspace value")
+            .unwrap();
+        assert!(s
+            .remove_persona_scoped(PersonaScope::Global, "style")
+            .unwrap());
+        assert_eq!(s.persona_in(PersonaScope::Global, "style").unwrap(), None);
+        assert_eq!(
+            s.persona("style").unwrap().as_deref(),
+            Some("workspace value")
+        );
     }
 
     /// The delta is what makes a mid-session `remember` visible — the stable
