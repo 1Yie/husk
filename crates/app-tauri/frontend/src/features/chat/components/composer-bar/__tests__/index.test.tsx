@@ -160,6 +160,18 @@ describe("composer message lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "立即发送" }));
     expect(await screen.findByText("等待插入")).toBeInTheDocument();
     expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", { cmd: { Steer: { text: "先别改 config" } } });
+    // The host echoes the emptied queue: the panel must stay up for the
+    // pending row alone, not fold away with the last queued draft.
+    act(() => {
+      useAgentStore.setState((s) => {
+        const views = new Map(s.views);
+        const v = views.get("/ws:1")!;
+        views.set("/ws:1", applyEvents(v, [{ QueuedPrompts: { items: [] } }]));
+        return { views };
+      });
+    });
+    expect(screen.queryByText("排队消息")).not.toBeInTheDocument();
+    expect(screen.getByText("等待插入")).toBeInTheDocument();
   });
 
   test("reasoning updates preserve the draft while queue and approval state still update", async () => {

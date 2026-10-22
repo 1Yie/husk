@@ -944,7 +944,7 @@ function ComposerBarContent({
         )}
       >
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
-          {planReady || (pending && !isComputerApproval) || question || hasActiveTodos || queued.length > 0 ? (
+          {planReady || (pending && !isComputerApproval) || question || hasActiveTodos || queued.length > 0 || pendingSteers.length > 0 ? (
             /* Outer container with attached banner: the plan handoff, approval
                (Priority 1), ask_question and the active todo list (Priority 2)
                all render as rows of this one panel, so the composer reads as a
