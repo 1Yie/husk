@@ -260,6 +260,7 @@ fn streamed_activity_keeps_visible_tail_and_reflows_after_resize() {
         app.on_ui_event(UiEvent::TextDelta {
             text: chunk.iter().collect(),
             parent: None,
+            child_id: None,
         });
     }
     for width in [12, 30, 8, 12] {
@@ -277,10 +278,12 @@ fn streamed_activity_keeps_visible_tail_and_reflows_after_resize() {
     app.on_ui_event(UiEvent::ReasoningDelta {
         text: "reason".into(),
         parent: None,
+        child_id: None,
     });
     app.on_ui_event(UiEvent::TextDelta {
         text: "child".into(),
         parent: Some("delegate".into()),
+        child_id: Some(1),
     });
     let visible = app.activity_lines(30, 2);
     let plain: Vec<String> = visible
@@ -373,6 +376,7 @@ fn reasoning_is_committed_before_the_tool_it_precedes() {
     app.on_ui_event(UiEvent::ReasoningDelta {
         text: "first look at the dir".into(),
         parent: None,
+        child_id: None,
     });
     app.on_ui_event(tool_start("list_dir", "crates"));
     app.on_ui_event(tool_done("list_dir", ""));

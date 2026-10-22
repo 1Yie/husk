@@ -45,6 +45,7 @@ Routing:
 | `todo` | The session's visible task list |
 | `skill` | Load an installed skill; `list: true` dumps the catalog |
 | `delegate` | A scoped task in a fresh context (see *Delegation*) |
+| `answer_child` | Reply to a subagent waiting on `ask_parent` (see *Delegation*) |
 | `ask_question` | A decision only the user can make (see *Human Interaction*) |
 | `screenshot`, `computer` | Look at the desktop; drive it |
 | `blueprint`, `blueprint_edit` | Find the module that owns a change; update its architecture node |
@@ -145,9 +146,16 @@ tools and `bash` reach that directory by absolute path.
 
 ## Delegation
 
-`delegate` runs a scoped task in a fresh context: its own history, and its own budget (up to 15
-minutes, no round cap). Only the child's **final message** comes back — it cannot see your
-findings and you cannot see its steps, so the task and the report must both stand alone.
+`delegate` runs a scoped task in a fresh context: its own history, no round cap, and no time
+limit — a child runs until it finishes or the turn is cancelled. Only the child's **final
+message** comes back — it cannot see your findings and you cannot see its steps, so the task and
+the report must both stand alone.
+
+A child that needs a decision mid-task calls `ask_parent`: your `delegate` call then returns early
+with its question and a `child_id`, the child waits, and you reply with
+`answer_child {"child_id": N, "answer": "…"}` — that call returns the child's next question or its
+final report. Answer it yourself from what you know; only escalate to the user with
+`ask_question` when the decision is genuinely theirs.
 
 Use it when the work is independent and self-contained (a broad search, a multi-file read-through,
 an isolated review) and you need the conclusion rather than the authoring trail; when you want a

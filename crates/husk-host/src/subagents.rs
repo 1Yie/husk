@@ -33,6 +33,14 @@ impl SubagentHost for HuskSubagents {
                 append_repo_instructions(&mut out, &paths.config_file("AGENTS.md"), "user");
             }
             append_repo_instructions(&mut out, &root.join("AGENTS.md"), "project");
+            // Standing rules travel with the instructions they belong to: a
+            // child that honours AGENTS.md but not the rules would do work the
+            // parent's own prompt forbids.
+            if let Some(paths) = ctx.paths() {
+                out.push_str(&crate::rules::prompt_block(&crate::rules::discover_rules(
+                    root, &paths,
+                )));
+            }
         }
         out
     }
@@ -234,7 +242,7 @@ pub fn agent_rows(root: &Path, paths: &agent_paths::AppPaths) -> Vec<SubagentInf
                 path: String::new(),
                 global: true,
                 tools: None,
-                readonly: BUILTIN_READONLY.contains(name),
+                readonly: builtin_readonly(name),
                 model: None,
                 thinking: None,
                 context_files: None,
@@ -303,7 +311,7 @@ fn find_subagent(root: &Path, name: &str, paths: &agent_paths::AppPaths) -> Opti
                     path: String::new(),
                     global: true,
                     tools: None,
-                    readonly: BUILTIN_READONLY.contains(n),
+                    readonly: builtin_readonly(n),
                     model: None,
                     thinking: None,
                     context_files: None,
@@ -324,6 +332,14 @@ pub fn builtin_subagent(name: &str) -> Option<(String, String, String)> {
 /// Builtins that must never write. Their prompts say 不修改任何文件, but a
 /// prompt is not a guard, so the registry they run on is read-only.
 const BUILTIN_READONLY: &[&str] = &["review"];
+
+/// Whether a builtin name runs on the read-only registry — the settings IPC
+/// reports a file-less profile's permission from here.
+pub fn builtin_readonly(name: &str) -> bool {
+    BUILTIN_READONLY
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(name))
+}
 
 /// Write one child's full history to `<workspace_dir>/subagents/` as JSONL, one message
 /// per line. Best effort: a write failure is logged and never fails the delegate
@@ -418,16 +434,19 @@ pub fn agent_frontmatter(content: &str) -> AgentFrontmatter {
 }
 
 /// Render a manifest for the settings editor. Frontmatter keys the editor
-/// does not own (`tools:`, `readonly:`, …) are carried over from `existing`,
-/// so saving from the dialog never drops a hand-written limit. `model` empty
-/// or `None` = no `model:` line (the child follows the subagent default, then
-/// the parent); likewise for `thinking`.
+/// does not own (`tools:`, `context_files:`, …) are carried over from
+/// `existing`, so saving from the dialog never drops a hand-written limit.
+/// `model` empty or `None` = no `model:` line (the child follows the subagent
+/// default, then the parent); likewise for `thinking`. `readonly` follows the
+/// dialog's 权限 choice: `Some(true)` writes the line, `Some(false)` removes
+/// any carried-over one, `None` keeps whatever the file already said.
 pub fn render_manifest(
     existing: Option<&str>,
     name: &str,
     description: &str,
     model: Option<&str>,
     thinking: Option<&str>,
+    readonly: Option<bool>,
     prompt: &str,
 ) -> String {
     let mut out = format!("---\nname: {name}\ndescription: {description}\n");
@@ -437,17 +456,22 @@ pub fn render_manifest(
     if let Some(t) = thinking.map(str::trim).filter(|t| !t.is_empty()) {
         out.push_str(&format!("thinking: {t}\n"));
     }
+    if readonly == Some(true) {
+        out.push_str("readonly: true\n");
+    }
     let kept = existing
         .and_then(|c| c.trim_start().strip_prefix("---"))
         .and_then(|fm| fm.find("\n---").map(|end| &fm[..end]))
         .unwrap_or("");
     for line in kept.lines() {
         let key = line.trim_start();
-        if key.is_empty()
-            || ["name:", "description:", "model:", "thinking:"]
-                .iter()
-                .any(|k| key.starts_with(k))
-        {
+        let owned = ["name:", "description:", "model:", "thinking:"]
+            .iter()
+            .any(|k| key.starts_with(k))
+            // An explicit 权限 choice replaces the hand-written line too —
+            // otherwise the carried `readonly: true` would override 可读写.
+            || (readonly.is_some() && key.starts_with("readonly:"));
+        if key.is_empty() || owned {
             continue;
         }
         out.push_str(line);
@@ -455,6 +479,61 @@ pub fn render_manifest(
     }
     out.push_str(&format!("---\n\n{prompt}\n"));
     out
+}
+
+/// Write `<name>.md` into the chosen scope dir — the settings dialog's save.
+///
+/// A same-named manifest in the other scope dir is the same profile to the
+/// editor: its frontmatter seeds the render (so hand-written keys survive an
+/// unrelated edit) and it is removed once the target file is written. Without
+/// that removal a scope switch leaves two files behind and the workspace copy
+/// keeps shadowing the global one, so switching workspace→global never took
+/// effect.
+pub fn save_manifest(
+    root: &Path,
+    paths: &agent_paths::AppPaths,
+    name: &str,
+    global: bool,
+    description: &str,
+    model: Option<&str>,
+    thinking: Option<&str>,
+    readonly: Option<bool>,
+    prompt: &str,
+) -> std::io::Result<PathBuf> {
+    let file = format!("{name}.md");
+    let (target_dir, other_file) = if global {
+        (
+            global_agent_dir(paths),
+            workspace_agent_dir(root, paths).join(&file),
+        )
+    } else {
+        (
+            workspace_agent_dir(root, paths),
+            global_agent_dir(paths).join(&file),
+        )
+    };
+    let target = target_dir.join(&file);
+    // The target dir wins: an edit must not adopt the copy it is about to drop.
+    let existing = std::fs::read_to_string(&target)
+        .or_else(|_| std::fs::read_to_string(&other_file))
+        .ok();
+    std::fs::create_dir_all(&target_dir)?;
+    std::fs::write(
+        &target,
+        render_manifest(
+            existing.as_deref(),
+            name,
+            description,
+            model,
+            thinking,
+            readonly,
+            prompt,
+        ),
+    )?;
+    if other_file.is_file() {
+        std::fs::remove_file(&other_file)?;
+    }
+    Ok(target)
 }
 
 /// `name`/`description` frontmatter split — same `---` convention skills use.
@@ -512,24 +591,156 @@ mod tests {
             "new",
             Some("cheap/small"),
             Some("high"),
+            None,
             "body",
         );
         let fm = agent_frontmatter(&out);
         assert_eq!(fm.model.as_deref(), Some("cheap/small"));
         assert_eq!(fm.thinking.as_deref(), Some("high"));
         assert_eq!(fm.tools, Some(vec!["read".to_string()]));
+        // `None` leaves the hand-written `readonly:` line alone.
         assert!(fm.readonly);
         assert_eq!(
             split_agent(&out),
             (Some("x".into()), Some("new".into()), "body".into())
         );
 
-        let cleared = render_manifest(Some(old), "x", "d", None, None, "body");
+        let cleared = render_manifest(Some(old), "x", "d", None, None, None, "body");
         assert_eq!(agent_frontmatter(&cleared).model, None);
         assert_eq!(agent_frontmatter(&cleared).thinking, None);
         // A key the editor replaced must not survive as a duplicate line.
         assert_eq!(cleared.matches("model:").count(), 0);
         assert_eq!(cleared.matches("thinking:").count(), 0);
+    }
+
+    /// The dialog's 权限 choice wins over the file: 只读 writes the line,
+    /// 可读写 drops it outright.
+    #[test]
+    fn render_manifest_owns_the_readonly_line_when_told_to() {
+        let old = "---\nname: x\ndescription: d\nreadonly: true\n---\nold";
+        let writable = render_manifest(Some(old), "x", "d", None, None, Some(false), "body");
+        assert!(!agent_frontmatter(&writable).readonly);
+        assert_eq!(writable.matches("readonly:").count(), 0);
+
+        let readonly = render_manifest(None, "x", "d", None, None, Some(true), "body");
+        assert!(agent_frontmatter(&readonly).readonly);
+        assert_eq!(readonly.matches("readonly:").count(), 1);
+    }
+
+    /// Switching scope rewrites the one manifest instead of adding a second
+    /// file — a leftover workspace copy would keep shadowing the global one.
+    #[test]
+    fn save_manifest_moves_scope_and_drops_the_old_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = agent_paths::AppPaths::new(dir.path().join("husk"), dir.path(), ".husk");
+
+        let ws = save_manifest(
+            dir.path(),
+            &paths,
+            "hunter",
+            false,
+            "project copy",
+            None,
+            None,
+            None,
+            "HUNT",
+        )
+        .unwrap();
+        assert_eq!(
+            ws,
+            workspace_agent_dir(dir.path(), &paths).join("hunter.md")
+        );
+
+        let gl = save_manifest(
+            dir.path(),
+            &paths,
+            "hunter",
+            true,
+            "user copy",
+            None,
+            None,
+            Some(true),
+            "HUNT",
+        )
+        .unwrap();
+        assert_eq!(gl, global_agent_dir(&paths).join("hunter.md"));
+        assert!(!ws.exists(), "the workspace manifest must be gone");
+
+        let found = discover_subagents(dir.path(), &paths);
+        let hits: Vec<&SubagentInfo> = found.iter().filter(|s| s.name == "hunter").collect();
+        assert_eq!(hits.len(), 1, "{found:?}");
+        assert!(hits[0].global);
+        assert_eq!(hits[0].description, "user copy");
+        assert!(hits[0].readonly);
+    }
+
+    /// An edit keeps the limits a hand-written manifest carries, and the 权限
+    /// choice toggles `readonly:` on top of them.
+    #[test]
+    fn save_manifest_keeps_hand_written_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = agent_paths::AppPaths::new(dir.path().join("husk"), dir.path(), ".husk");
+        let ws = workspace_agent_dir(dir.path(), &paths);
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("hunter.md"),
+            "---\nname: hunter\ndescription: hand\ntools: [read, grep]\nreadonly: true\n---\n\nHAND\n",
+        )
+        .unwrap();
+
+        let path = save_manifest(
+            dir.path(),
+            &paths,
+            "hunter",
+            false,
+            "hand",
+            Some("cheap/small"),
+            Some("high"),
+            Some(false),
+            "BODY",
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let fm = agent_frontmatter(&text);
+        assert_eq!(fm.tools, Some(vec!["read".to_string(), "grep".to_string()]));
+        assert_eq!(fm.model.as_deref(), Some("cheap/small"));
+        assert!(!fm.readonly);
+        assert_eq!(text.matches("readonly:").count(), 0);
+        assert_eq!(
+            split_agent(&text),
+            (Some("hunter".into()), Some("hand".into()), "BODY".into())
+        );
+
+        // 只读 writes the line back; an untouched choice then keeps it.
+        let written = save_manifest(
+            dir.path(),
+            &paths,
+            "hunter",
+            false,
+            "hand",
+            Some("cheap/small"),
+            Some("high"),
+            Some(true),
+            "BODY",
+        )
+        .unwrap();
+        assert!(agent_frontmatter(&std::fs::read_to_string(&written).unwrap()).readonly);
+
+        let kept = save_manifest(
+            dir.path(),
+            &paths,
+            "hunter",
+            false,
+            "hand",
+            Some("cheap/small"),
+            Some("high"),
+            None,
+            "BODY",
+        )
+        .unwrap();
+        let fm = agent_frontmatter(&std::fs::read_to_string(&kept).unwrap());
+        assert!(fm.readonly);
+        assert_eq!(fm.tools, Some(vec!["read".to_string(), "grep".to_string()]));
     }
 
     /// An override manifest replaces its built-in row instead of sitting

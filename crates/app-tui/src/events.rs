@@ -17,7 +17,7 @@ impl App {
                 text: t,
                 time: hm_now(),
             }),
-            UiEvent::TextDelta { text, parent } => {
+            UiEvent::TextDelta { text, parent, .. } => {
                 if parent.is_some() {
                     match self.live.last_mut() {
                         Some(LiveItem::Delegate(buf)) => buf.push_str(&text),
@@ -35,7 +35,7 @@ impl App {
                     }
                 }
             }
-            UiEvent::ReasoningDelta { text, parent } => {
+            UiEvent::ReasoningDelta { text, parent, .. } => {
                 if parent.is_none() {
                     match self.live.last_mut() {
                         Some(LiveItem::Reasoning(buf)) => buf.push_str(&text),

@@ -465,6 +465,28 @@ fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
     ));
 }
 
+/// Everything the prompt appends from disk: the AGENTS.md sections, then the
+/// standing `## Rules`. One function because spawn and resume must render the
+/// same tail — a resumed conversation that re-read only half of it would keep
+/// the other half frozen at the build that wrote it.
+fn append_prompt_tail(out: &mut String, root: &Path, paths: &agent_paths::AppPaths) {
+    append_instructions(out, &paths.config_file("AGENTS.md"), "user");
+    append_instructions(out, &root.join("AGENTS.md"), "project");
+    out.push_str(&crate::rules::prompt_block(&crate::rules::discover_rules(
+        root, paths,
+    )));
+}
+
+/// Where the re-rendered tail starts: the first of the two markers. The rules
+/// marker stands on its own because a workspace with rules but no AGENTS.md
+/// has no instructions section to find.
+fn prompt_tail_start(prompt: &str) -> Option<usize> {
+    ["\n\n## User instructions — ", crate::rules::PROMPT_MARKER]
+        .iter()
+        .filter_map(|marker| prompt.find(marker))
+        .min()
+}
+
 /// The children's route for one parent: `base` widened to every configured
 /// provider, with the subagent default applied (see `child_route`).
 fn routed_child(
@@ -639,7 +661,9 @@ pub fn base_registries() -> (ToolRegistry, ToolRegistry) {
         full.register(spec);
     }
     let child = full.filtered(|s| {
-        s.name != "delegate" && s.name != "computer" && s.class != ToolClass::HumanInteraction
+        !agent_kernel::tools::delegate::PARENT_ONLY_TOOLS.contains(&s.name)
+            && s.name != "computer"
+            && s.class != ToolClass::HumanInteraction
     });
     for spec in parent_only_tools() {
         full.register(spec);
@@ -711,7 +735,10 @@ pub struct SessionActor {
     /// moment a `SetModel` arrives, ahead of the pump (which waits behind a
     /// running turn); the actor keeps it in step on every switch it applies.
     model_slot: Arc<std::sync::RwLock<(String, String)>>,
-    /// Forwards `UiCommand::Steer` texts into the engine's steer channel.
+    /// Forwards `UiCommand::Steer` texts into the engine's steer channel. The
+    /// engine drains it between rounds; whatever it leaves behind when a turn
+    /// ends is read back by the actor itself (`drain_queue` / `run`) and run
+    /// as the next prompt.
     steer_tx: mpsc::Sender<String>,
     /// Cooperative cancel flag shared with the engine — `UiCommand::Cancel`
     /// and `cancel_writer()` set it; the engine polls it between chunks and
@@ -1100,19 +1127,11 @@ impl SessionActor {
             );
 
         // the host's user-level AGENTS.md then `<workspace>/AGENTS.md`
-        // (project) append verbatim as dedicated sections — custom rules live
-        // outside the template so they never fight its contract.
+        // (project) append verbatim as dedicated sections, then the rule files
+        // — custom rules live outside the template so they never fight its
+        // contract.
         let mut system_prompt = system_prompt;
-        append_instructions(
-            &mut system_prompt,
-            &cfg.paths.config_file("AGENTS.md"),
-            "user",
-        );
-        append_instructions(
-            &mut system_prompt,
-            &cfg.workspace_root.join("AGENTS.md"),
-            "project",
-        );
+        append_prompt_tail(&mut system_prompt, &cfg.workspace_root, &cfg.paths);
 
         // Fresh session → just the rendered system prompt; resume → the
         // persisted history (its system prompt was rendered at that session's
@@ -1128,10 +1147,11 @@ impl SessionActor {
         // refresh the volatile regions so a reopened conversation keeps up:
         //   - `<!-- memory -->` markers let `set_memory_block` swap only the
         //     recall block (persona/facts/episodes change between sessions);
-        //   - the trailing `## User instructions` sections are re-appended
-        //     from the CURRENT AGENTS.md files (they're always the tail of
-        //     the prompt, so truncating at the first marker restores them
-        //     exactly).
+        //   - the trailing `## User instructions` and `## Rules` sections are
+        //     re-appended from the CURRENT AGENTS.md files and rule files (they
+        //     are always the tail of the prompt, so truncating at whichever
+        //     marker comes first restores them exactly — a prompt that only
+        //     has rules has no instructions marker at all).
         if is_resume {
             if let Some(sys) = history.get_mut(0) {
                 if let Some(c) = sys.content.take() {
@@ -1146,14 +1166,9 @@ impl SessionActor {
                         crate::mode::AgentMode::from_str(&cfg.agent_mode).prompt_block(),
                     );
                     c = replace_block(&c, "permission", &permission_block(&cfg.permission_mode));
-                    if let Some(idx) = c.find("\n\n## User instructions — ") {
+                    if let Some(idx) = prompt_tail_start(&c) {
                         c.truncate(idx);
-                        append_instructions(&mut c, &cfg.paths.config_file("AGENTS.md"), "user");
-                        append_instructions(
-                            &mut c,
-                            &cfg.workspace_root.join("AGENTS.md"),
-                            "project",
-                        );
+                        append_prompt_tail(&mut c, &cfg.workspace_root, &cfg.paths);
                     }
                     sys.content = Some(c);
                 }
@@ -1676,6 +1691,18 @@ impl SessionActor {
                     self.drain_queue().await;
                     continue;
                 }
+                // The IPC layer routes `Steer` straight into the engine's
+                // channel, never through this pump, so while nothing runs the
+                // actor is that channel's only reader — without this arm a
+                // steer arriving the instant a turn ended would wait for the
+                // next prompt. Mid-turn the select is not polled at all: the
+                // engine owns the channel then, and `drain_queue` picks up
+                // whatever it left behind.
+                Some(text) = self.io.steer_rx.recv() => {
+                    self.handle_prompt(text).await;
+                    self.drain_queue().await;
+                    continue;
+                }
             };
             let Some(cmd) = cmd else { break };
             if self
@@ -1903,8 +1930,9 @@ impl SessionActor {
     }
 
     /// The mid-turn steering sender — `Steer` texts go here when a turn is
-    /// already in flight (the engine drains between tool calls). Between
-    /// turns a Steer is a Prompt — the bridge checks `state().is_active()`.
+    /// already in flight (the engine drains between rounds). A steer that
+    /// arrives with no round left to join is not lost: the actor runs it as
+    /// the next prompt.
     pub fn steer_writer(&self) -> mpsc::Sender<String> {
         self.steer_tx.clone()
     }
@@ -2396,6 +2424,12 @@ impl SessionActor {
     /// normal prompt (slash intercept included), one turn at a time, for
     /// as long as the session is idle. Called after any path that can end
     /// a turn; a mid-turn call is a no-op (`is_active` guard).
+    ///
+    /// A steer that outlived its turn — it landed while the last round was
+    /// already sampling, so the engine's between-round drain never saw it —
+    /// is still in the channel here and goes first: the user typed it before
+    /// anything parked behind it. Left there it would sit until the next
+    /// prompt's turn, which is what made 插队 look like it did nothing.
     async fn drain_queue(&mut self) {
         while !self.state.is_active() {
             if self
@@ -2406,10 +2440,16 @@ impl SessionActor {
                 self.queued.lock().unwrap().clear();
                 break;
             }
-            let Some(next) = self.queued.lock().unwrap().pop_front() else {
-                break;
+            let next = match self.io.steer_rx.try_recv() {
+                Ok(text) => text,
+                Err(_) => {
+                    let Some(next) = self.queued.lock().unwrap().pop_front() else {
+                        break;
+                    };
+                    self.emit_queued();
+                    next
+                }
             };
-            self.emit_queued();
             self.handle_prompt(next).await;
         }
     }

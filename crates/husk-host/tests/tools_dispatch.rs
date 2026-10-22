@@ -21,7 +21,7 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 #[tokio::test]
 async fn registry_lists_the_host_tools() {
     let r = registry();
-    assert_eq!(r.len(), 24);
+    assert_eq!(r.len(), 25);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -45,6 +45,7 @@ async fn registry_lists_the_host_tools() {
         "screenshot",
         "computer",
         "delegate",
+        "answer_child",
         "ask_question",
         "batch_execute",
         "blueprint",

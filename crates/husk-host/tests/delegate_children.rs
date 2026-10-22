@@ -132,7 +132,9 @@ async fn every_child_emits_a_nested_card() {
             agent_ipc::events::UiEvent::ToolCallFinished {
                 name, ok, parent, ..
             } => finished.push((name, ok, parent)),
-            agent_ipc::events::UiEvent::TextDelta { text: t, parent } => text.push((parent, t)),
+            agent_ipc::events::UiEvent::TextDelta {
+                text: t, parent, ..
+            } => text.push((parent, t)),
             agent_ipc::events::UiEvent::ReasoningDelta { parent, .. } => reasoning.push(parent),
             _ => {}
         }
