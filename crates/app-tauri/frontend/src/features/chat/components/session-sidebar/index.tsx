@@ -34,7 +34,7 @@ import {
   saveArtifact,
   type RecentArtifact,
 } from "@/lib/agent-ipc/index";
-import { useActiveViewSelector } from "@/stores/agent-store";
+import { useActiveViewSelector, useHasRunningChildren } from "@/stores/agent-store";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -885,6 +885,9 @@ function SessionItem({
 }) {
   const displayTitle = row.title === "new session" ? "新会话" : row.title || `会话 ${row.id}`;
   const [menuOpen, setMenuOpen] = useState(false);
+  // A row whose session delegated work reads differently from one merely
+  // streaming: the orb names which of the two is going on.
+  const subagentRunning = useHasRunningChildren(root, row.id);
   const pinnedHere = pinMark === "global" ? row.pinned_global : row.pinned;
 
   const copyId = () => {
@@ -1001,8 +1004,9 @@ function SessionItem({
         <span className="relative flex-none h-5 w-5">
           {!menuOpen && (
             <Orb
-              variant="C3"
+              variant={subagentRunning ? "G2" : "C3"}
               size={14}
+              label={subagentRunning ? "子代理运行中" : undefined}
               className="absolute inset-0 flex items-center justify-center text-neutral-800 group-hover:invisible group-focus-visible:invisible"
             />
           )}

@@ -186,3 +186,64 @@ test("the feed asks for every tool the summary parsers read", () => {
     expect(SUMMARY_TOOLS).toContain(tool);
   }
 });
+
+describe("a delegated child survives reopening", () => {
+  const delegation = (content: string, isError?: boolean): ChatMessage[] => [
+    { role: "user", content: "委派子代理", ts: 10 },
+    {
+      role: "assistant",
+      content: "",
+      ts: 20,
+      tool_calls: [
+        {
+          id: "d1",
+          type: "function",
+          function: { name: "delegate", arguments: '{"task":"探索仓库"}' },
+        },
+      ],
+    },
+    { role: "tool", content, tool_call_id: "d1", ts: 30, is_error: isError },
+  ];
+
+  test("the parked report replays as a waiting card with its child_id", () => {
+    const view = viewFromHistory(
+      delegation("[subagent reviewer (child_id 7) is waiting for you]\n需要确认分支"),
+    );
+    expect(view.items.find((it) => it.kind === "tool" && it.parent === "delegate")).toMatchObject({
+      parent: "delegate",
+      childId: 7,
+      waiting: "需要确认分支",
+      ok: true,
+    });
+  });
+
+  test("a failed child card reloads red instead of green", () => {
+    const view = viewFromHistory(delegation("已中断", true));
+    expect(view.items.find((it) => it.kind === "tool")).toMatchObject({ ok: false });
+  });
+
+  test("an answer_child row replays onto the child's card", () => {
+    const view = viewFromHistory([
+      ...delegation("[subagent reviewer (child_id 7) is waiting for you]"),
+      {
+        role: "assistant",
+        content: "",
+        ts: 40,
+        tool_calls: [
+          {
+            id: "a1",
+            type: "function",
+            function: { name: "answer_child", arguments: '{"child_id":7,"answer":"用 main"}' },
+          },
+        ],
+      },
+      { role: "tool", content: "已回复", tool_call_id: "a1", ts: 50 },
+    ]);
+    const card = view.items.find((it) => it.kind === "tool" && it.parent === "delegate");
+    expect(card).toMatchObject({ childId: 7 });
+    if (card?.kind === "tool") expect(card.waiting).toBeUndefined();
+    if (card?.kind === "tool") {
+      expect(card.segments).toContainEqual({ kind: "text", text: "> 主代理回复：用 main", muted: true });
+    }
+  });
+});

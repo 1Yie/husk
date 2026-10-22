@@ -22,6 +22,7 @@ import {
 } from "@keyline-icons/react";
 import { chatMarkdownComponents } from "@/features/chat/components/chat-stream/markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ChatTurnRail, type RailMark } from "@/features/chat/components/chat-stream/chat-turn-rail";
 import { opensTurn, railHistoryBoundary } from "./rail-history";
 import {
@@ -46,6 +47,8 @@ import { cn } from "@/lib/utils";
 import { CircleCheck, CircleX, FileDiff, Package, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Orb } from "@/features/chat/components/agent-orb";
 import type { JobsSummary } from "@/lib/bg-jobs";
+import { summarizeChildren } from "@/lib/subagents";
+import type { RunningChild } from "@/features/chat/hooks/running-children";
 import { loadStamp } from "@/lib/load-probe";
 import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "@/lib/agent-ipc/sessions";
@@ -358,6 +361,9 @@ interface Props {
   /** The dock is open on the 后台 view. */
   jobsOpen?: boolean;
   onToggleJobs?: () => void;
+  /** Delegated subagents still running — their own capsule beside the jobs
+   *  pill, listing what each child was handed. `[]` = no pill. */
+  subagents?: RunningChild[];
   /** Fetch + prepend the next older page (scroll-top trigger). */
   /** Fetch + prepend the next older page. Resolves `true` when a
    * page actually landed — `false` (empty/end) clears the pending
@@ -644,10 +650,15 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
   let currentTurn: Turn | null = null;
   let turnStart = start;
 
+  // The current turn's child cards by id — a nested item finds its card by id
+  // whichever step it landed in, so a mid-turn tools step can't strand it.
+  let childRows = new Map<number, ToolChipRow>();
+
   const flush = (end: number) => {
     if (currentTurn) {
       out.push({ turn: currentTurn, span: items.slice(turnStart, end) });
       currentTurn = null;
+      childRows = new Map();
     }
   };
 
@@ -801,13 +812,15 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
     }
 
     if (item.kind === "tool" || item.kind === "approval") {
-      // Batch children — attach to the nearest preceding batch_execute
-      // row in the current step instead of counting as a top-level call.
+      // Batch children and a subagent's own calls — attach to their parent row
+      // instead of counting as a top-level call.
       if (item.kind === "tool" && item.parent) {
-        const lastStep = t.steps[t.steps.length - 1];
-        if (lastStep?.type === "tools") {
-          // Parent may be a top-level row (batch) or a nested agent card
-          // (a subagent's own tool calls) — search both, newest first.
+        {
+          // A delegated child's id names its card exactly; the label is only
+          // the fallback (two children can share one).
+          const byId = item.parent !== "delegate" && item.childId != null
+            ? childRows.get(item.childId)
+            : undefined;
           const findParent = (rows: ToolChipRow[]): ToolChipRow | null => {
             for (let j = rows.length - 1; j >= 0; j--) {
               if (rows[j].label === item.parent) return rows[j];
@@ -816,10 +829,22 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
             }
             return null;
           };
-          const parentRow = findParent(lastStep.rows);
+          // Parent may be a top-level row (batch) or a nested agent card (a
+          // subagent's own tool calls) — search the WHOLE turn, newest first,
+          // not just its last step: a child's card can sit steps earlier.
+          const scanTurn = (): ToolChipRow | null => {
+            for (let s = t.steps.length - 1; s >= 0; s--) {
+              const step = t.steps[s];
+              if (step.type !== "tools") continue;
+              const hit = findParent(step.rows);
+              if (hit) return hit;
+            }
+            return null;
+          };
+          const parentRow = byId ?? scanTurn();
           if (parentRow) {
               const child: ToolChipRow = {
-                id: `tool-${idx}`,
+                id: item.hi != null ? `tool-${item.hi}` : `tool-${idx}`,
                 // A subagent is a second agent, not a tool call: give it its
                 // own card so it does not read as one more line in the list.
                 kind: item.parent === "delegate" ? "agent" : undefined,
@@ -842,25 +867,25 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
                       : item.ok === false
                         ? "aborted"
                         : "done",
-                // Finished → the report; still running → whatever it has
-                // streamed so far (reasoning first, then the answer).
-                detail: item.content
-                  ? [item.content]
-                  : item.live || item.liveReasoning
-                    ? [[item.liveReasoning, item.live].filter(Boolean).join("\n\n")]
-                    : undefined,
+                // Finished → the report; still running → whatever answer text
+                // it streamed (its reasoning is its own 思考 block).
+                detail: item.content ? [item.content] : item.live ? [item.live] : undefined,
+                reasoning: item.liveReasoning,
+                waiting: item.waiting,
                 uiType: item.uiType,
               };
+              if (child.childId != null) childRows.set(child.childId, child);
               parentRow.children = [...(parentRow.children ?? []), child];
               continue;
           }
-          continue;
+          // No parent found — fall through and draw it as a top-level row
+          // rather than dropping the event.
         }
       }
       const row: ToolChipRow =
         item.kind === "tool"
           ? {
-              id: `tool-${idx}`,
+              id: item.hi != null ? `tool-${item.hi}` : `tool-${idx}`,
               // A delegated subagent's own card: a second agent, so it gets the
               // agent card and carries the id a `SteerChild` names.
               kind: item.parent === "delegate" ? "agent" : undefined,
@@ -881,6 +906,8 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
                 : item.approval?.diff
                   ? [item.approval.diff]
                   : undefined,
+              reasoning: item.liveReasoning,
+              waiting: item.waiting,
               uiType: item.uiType,
               approval: item.approval
                 ? {
@@ -906,6 +933,8 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
               },
             };
 
+      // A child card is findable by id from anywhere later in this turn.
+      if (row.kind === "agent" && row.childId != null) childRows.set(row.childId, row);
       if (lastStep?.type === "tools") {
         lastStep.rows.push(row);
         // The step's clock anchors on its FIRST tool — later calls in the
@@ -1644,7 +1673,7 @@ const ChatTurn = memo(function ChatTurn({
   );
 });
 
-export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs }: Props) {
+export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs, subagents }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const [virtualApi, setVirtualApi] = useState<VirtualStepApi | null>(null);
@@ -2853,13 +2882,18 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // working tree's own state is the title bar chip's business.
   const dockPillVisible = !!onToggleDock && dockCount > 0;
   const jobsPillVisible = !!onToggleJobs && !!jobs;
+  // The subagents' capsule: it says how many children are out and names their
+  // tasks on demand, since a running child has no row of its own in the dock.
+  const subagentPill = subagents && subagents.length > 0 ? summarizeChildren(subagents) : null;
+  const subagentPillVisible = !!subagentPill;
   // One capsule speaks, the ones behind it collapse (the island's rule). The
   // dock pill leads whenever it is up, so the jobs pill beside it is an orb
   // until the pointer asks for the count. A third pill would follow the same
   // rule: collapsed only because something already leads it.
   const jobsCollapsed = dockPillVisible;
+  const subagentCollapsed = dockPillVisible || jobsPillVisible;
   // The arrow yields to whichever pills are up — one rule for the row.
-  const anyPill = dockPillVisible || jobsPillVisible;
+  const anyPill = dockPillVisible || jobsPillVisible || subagentPillVisible;
 
   return (
     <ContextMenu>
@@ -2963,10 +2997,10 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       </div>
 
       {/* One centered floating row above the composer, two behaviours:
-          · with a pill up (the jobs pill, the dock pill, or both side by
-            side), `width`/`margin` animate — the row grows to the right and
-            the pills slide left to make room for the arrow,
-            which fades in on the right (an opacity-only swap would leave a
+          · with a pill up (the jobs pill, the subagents capsule, the dock
+            pill, or several side by side), `width`/`margin` animate — the row
+            grows to the right and the pills slide left to make room for the
+            arrow, which fades in on the right (an opacity-only swap would leave a
             40px hole beside a centred pill);
           · with no pill, the arrow IS the row, so it keeps its own width and
             only fades, rising out of the composer's edge; a growing margin
@@ -3072,6 +3106,44 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
               </span>
             </button>
           </TooltipSimple>
+        )}
+        {subagentPillVisible && subagentPill && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label="子代理"
+                data-compact={subagentCollapsed ? "true" : undefined}
+                className={cn(
+                  "group flex h-8 items-center gap-0 rounded-full border px-2 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer",
+                  "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
+                  "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
+                )}
+              >
+                <span className="flex h-4 w-4 flex-none items-center justify-center">
+                  <Orb variant="G2" size={12} label="子代理" className="text-violet-600 dark:text-violet-400" />
+                </span>
+                <span className={pillTextClass(subagentCollapsed)}>
+                  <span className="flex-none whitespace-nowrap">{subagentPill.text}</span>
+                </span>
+              </button>
+            </PopoverTrigger>
+            {/* The children have no rows anywhere else — this is where what
+                each of them was handed stays readable while it runs. */}
+            <PopoverContent side="top" align="center" className="w-80 p-1.5">
+              <div className="flex flex-col">
+                {(subagents ?? []).map((c) => (
+                  <div key={c.childId} className="flex items-start gap-2 rounded-md px-2 py-1.5">
+                    <Orb variant="G2" size={12} className="mt-0.5 flex-none text-violet-600 dark:text-violet-400" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12px]">{c.name}</div>
+                      <div className="truncate text-[11px] text-neutral-500 dark:text-neutral-400">{c.task}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
         )}
         <div
           className={cn(

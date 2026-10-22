@@ -14,6 +14,7 @@ import { create } from "zustand";
 import * as agent from "@/lib/agent-ipc";
 import type { AgentEventEnvelope } from "@/types";
 import { applyEvents } from "@/features/chat/hooks/apply-event";
+import { hasRunningChildren } from "@/features/chat/hooks/running-children";
 import { emptyView, type BgJob, type SessionView, type StreamItem } from "@/features/chat/hooks/stream-view";
 import { markSessionRead, notifyForEvent } from "@/lib/notifications";
 import { isAppInFront, onAppFront } from "@/lib/desktop-notify";
@@ -98,6 +99,12 @@ interface AgentStore {
   /** Replace a session's background-job list — a `bg_list` seed or the list
    *  a `bg_control` call returned. Live updates arrive as `husk:bg_jobs`. */
   setBgJobs: (root: string, id: number, jobs: BgJob[]) => void;
+  /** Park a「等待插入」row — a steer the composer just sent. The host says
+   *  nothing when it takes one, so the row outlives the IPC call and drops
+   *  only on the echo (`UserSteer` / a late `UserPrompt`) or a failed send. */
+  addPendingSteer: (root: string, id: number, text: string) => void;
+  /** Retire one pending steer — the echo landed or the send failed. */
+  dropPendingSteer: (root: string, id: number, text: string) => void;
 }
 
 export const useAgentStore = create<AgentStore>((set) => ({
@@ -213,6 +220,31 @@ export const useAgentStore = create<AgentStore>((set) => ({
       next.set(k, { ...v, bgJobs: jobs, bgJobsAt: Date.now() });
       return { views: next };
     }),
+
+  addPendingSteer: (root, id, text) =>
+    set((s) => {
+      const k = viewKey(root, id);
+      const v = s.views.get(k);
+      if (!v) return s;
+      const next = new Map(s.views);
+      next.set(k, { ...v, pendingSteers: [...v.pendingSteers, text] });
+      return { views: next };
+    }),
+
+  dropPendingSteer: (root, id, text) =>
+    set((s) => {
+      const k = viewKey(root, id);
+      const v = s.views.get(k);
+      if (!v) return s;
+      const at = v.pendingSteers.indexOf(text);
+      if (at < 0) return s;
+      const next = new Map(s.views);
+      next.set(k, {
+        ...v,
+        pendingSteers: [...v.pendingSteers.slice(0, at), ...v.pendingSteers.slice(at + 1)],
+      });
+      return { views: next };
+    }),
 }));
 
 /** The foreground session's view — a stable reference until that session's own
@@ -238,6 +270,27 @@ export function useHasMoreHistory(): boolean {
   return useAgentStore(
     (s) => (s.views.get(viewKey(s.workspaceRoot, s.activeId))?.historyStart ?? 0) > 0
   );
+}
+
+/** Whether a session's view exists yet. The view is folded from history
+ *  asynchronously, so anything that has to write INTO it (the `bg_list` seed)
+ *  must wait: a write with no view is dropped, not queued. */
+export function useHasView(root: string, id: number): boolean {
+  return useAgentStore((s) => s.views.has(viewKey(root, id)));
+}
+
+/** A session's view outside React, whether or not it is the foreground one. */
+export function viewNow(root: string, id: number): SessionView | undefined {
+  return useAgentStore.getState().views.get(viewKey(root, id));
+}
+
+/** Whether a session has a delegated subagent still running — a boolean, so a
+ *  sidebar row re-renders when it flips rather than on every delta. */
+export function useHasRunningChildren(root: string, id: number): boolean {
+  return useAgentStore((s) => {
+    const v = s.views.get(viewKey(root, id));
+    return v ? hasRunningChildren(v) : false;
+  });
 }
 
 export function useRunningKeys(): ReadonlySet<string> {

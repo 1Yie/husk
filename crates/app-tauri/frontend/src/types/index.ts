@@ -61,8 +61,8 @@ export type UiEvent =
   | { QuestionAnswered: { request_id: number } }
   | { UserPrompt: string }
   | { UserSteer: string }
-  | { TextDelta: { text: string; parent?: string | null } }
-  | { ReasoningDelta: { text: string; parent?: string | null } }
+  | { TextDelta: { text: string; parent?: string | null; child_id?: number | null } }
+  | { ReasoningDelta: { text: string; parent?: string | null; child_id?: number | null } }
   | {
       ToolCallStarted: {
         name: string;

@@ -8,7 +8,9 @@ import type { AgentState, ApprovalActions, PlanPayload } from "@/types";
  *  answer; a tool run points at the child's `children` entry by index, so a
  *  tool's data is stored once. */
 export type ChildSegment =
-  | { kind: "text"; text: string }
+  /** `muted` = a side note (a steer sent to the child, a notice), drawn quieter
+   *  than the child's own answer prose. */
+  | { kind: "text"; text: string; muted?: boolean }
   | { kind: "tool"; index: number };
 
 export type StreamItem =
@@ -70,6 +72,9 @@ export type StreamItem =
       parent?: string;
       /** Set on a delegated subagent's card: the id a `SteerChild` names. */
       childId?: number;
+      /** A delegated child parked on a question for the parent agent — the
+       *  question text; cleared when the parent answers. */
+      waiting?: string;
       hi?: number;
       approval?: {
         requestId: number;
@@ -149,6 +154,11 @@ export interface FileChange {
   /** True while the only diffs came from `ApprovalRequested` previews —
    * not yet committed (pending or denied). Cleared on ToolCallFinished. */
   pending?: boolean;
+  /** Workspace-level rows only: git found no line diff to show — the file is
+   * binary, or too large to render — so `patches` is empty and the panel says
+   * why instead of drawing an empty card. */
+  binary?: boolean;
+  truncated?: boolean;
 }
 
 /** A workspace file the session produced — office documents
@@ -290,6 +300,12 @@ export interface SessionView {
    *  `QueuedPrompts` events echo it back, `open` seeds it from
    *  `SessionMeta`). Lives on the view so a session switch preserves it. */
   queuedPrompts: string[];
+  /** Steers the composer has sent that the host has not echoed back yet —
+   *  the「等待插入」rows above the input. The host says nothing when it takes
+   *  a steer, so an entry retires only when the engine reports it injected
+   *  (`UserSteer`) or the host ran the late text as a prompt (`UserPrompt`).
+   *  Client-owned: nothing seeds it from the persisted session. */
+  pendingSteers: string[];
   /** The session's background jobs — replaced whole by every `husk:bg_jobs`
    *  snapshot, seeded by `bg_list` when a view is rebuilt. `bgJobsAt` is
    *  when the list arrived, the base the running clocks tick from. */
@@ -302,6 +318,7 @@ export const emptyView = (): SessionView => ({
   changes: [],
   artifacts: [],
   queuedPrompts: [],
+  pendingSteers: [],
   bgJobs: [],
   bgJobsAt: 0,
   state: null,

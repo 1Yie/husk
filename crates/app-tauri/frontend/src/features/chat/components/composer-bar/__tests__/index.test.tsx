@@ -144,6 +144,24 @@ describe("composer message lifecycle", () => {
     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("发送失败"));
   });
 
+  test("a promoted steer waits on its own row until the host echoes it", async () => {
+    const user = userEvent.setup();
+    const seeded = { ...emptyView(), streaming: true, queuedPrompts: ["先别改 config"] };
+    useAgentStore.setState({ workspaceRoot: "/ws", activeId: 1 });
+    useAgentStore.getState().loadView("/ws", 1, seeded);
+    // The view prop normally comes from the store, so the click's own write
+    // has to reach the composer the same way.
+    const Live = () => {
+      const live = useAgentStore((s) => s.views.get("/ws:1"));
+      return <ComposerBar view={live ?? seeded} sessionKey="/ws:1" />;
+    };
+    renderWithProviders(<Live />);
+    await loaded();
+    await user.click(screen.getByRole("button", { name: "立即发送" }));
+    expect(await screen.findByText("等待插入")).toBeInTheDocument();
+    expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", { cmd: { Steer: { text: "先别改 config" } } });
+  });
+
   test("reasoning updates preserve the draft while queue and approval state still update", async () => {
     const user = userEvent.setup();
     let view = applyEvents(emptyView(), [{ UserPrompt: "分析" }, { StateChanged: "Reasoning" }, { ReasoningDelta: { text: "推导", parent: null } }]);

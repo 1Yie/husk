@@ -166,6 +166,27 @@ function batchChildren(rawArgs: string, content: string) {
   return items;
 }
 
+/** `answer_child` args → the child it answers, and the answer text. */
+function answerChildArgs(rawArgs: string): { childId?: number; answer: string } {
+  try {
+    const parsed = JSON.parse(rawArgs);
+    return {
+      childId: typeof parsed?.child_id === "number" ? parsed.child_id : undefined,
+      answer: typeof parsed?.answer === "string" ? parsed.answer : "",
+    };
+  } catch {
+    return { answer: "" };
+  }
+}
+
+function answerChildId(rawArgs: string): number | undefined {
+  return answerChildArgs(rawArgs).childId;
+}
+
+function answerChildText(rawArgs: string): string {
+  return answerChildArgs(rawArgs).answer;
+}
+
 /** `delegate` args → `N tasks` chip text for the parent capsule. */
 function delegateCallCount(rawArgs: string): string {
   try {
@@ -184,11 +205,16 @@ function delegateChildLabel(agent: string | undefined, index: number, total: num
   return total === 1 ? "subagent" : `subagent #${index + 1}`;
 }
 
+/** The parent's early return while a child is parked: `delegate` answers with
+ *  `[subagent <label> (child_id N) is waiting for you]`, so a reloaded session
+ *  can still draw the waiting card against the right child. */
+const WAITING_REPORT = /^\[subagent (.+?) \(child_id (\d+)\) is waiting for you\]/;
+
 /** Rebuild a delegation's nested child items from the persisted args
  * (`task`/`tasks`) and result text (`── [i] ok · 3s ──` sections for the
  * parallel form; the bare report for a single child) — live-only events, so
  * without this a reopened session would show the parent capsule alone. */
-function delegateChildren(rawArgs: string, content: string) {
+function delegateChildren(rawArgs: string, content: string, isError: boolean) {
   let tasks: string[] = [];
   let agent: string | undefined;
   try {
@@ -207,18 +233,27 @@ function delegateChildren(rawArgs: string, content: string) {
     content?: string;
     ok: boolean;
     parent: string;
+    childId?: number;
+    waiting?: string;
   }[] = [];
   if (total <= 1) {
     // Single child: the report is the whole body, one card.
     const body = content.trim();
     if (!body) return items;
+    // A parked child's early return: the card is waiting, not finished, and
+    // the id in the text is the only thing that names it after a reload.
+    const waiting = body.match(WAITING_REPORT);
     items.push({
       kind: "tool" as const,
-      name: delegateChildLabel(agent, 0, 1),
+      name: waiting ? waiting[1] : delegateChildLabel(agent, 0, 1),
       args: tasks[0] ? extractArgsPreview(JSON.stringify(tasks[0])) : "",
       content: body,
-      ok: true,
+      // The persisted `is_error` is what the live card's `ok` showed — a
+      // cancelled or failed child must not reload green.
+      ok: !isError,
       parent: "delegate",
+      childId: waiting ? Number(waiting[2]) : undefined,
+      waiting: waiting ? body.slice(waiting[0].length).trim() : undefined,
     });
     return items;
   }
@@ -475,8 +510,29 @@ function foldMessage(
       }
       // Same for a delegation: child cards are live-only events.
       if (toolInfo.name === "delegate") {
-        for (const child of delegateChildren(toolInfo.raw, m.content ?? "")) {
+        for (const child of delegateChildren(toolInfo.raw, m.content ?? "", m.is_error === true)) {
           v.items.push({ ...child, hi });
+        }
+      }
+      // The parent answering a parked child is its own tool row — replay the
+      // reply onto the child's card, so the reloaded session shows it resumed.
+      if (toolInfo.name === "answer_child") {
+        const childId = answerChildId(toolInfo.raw);
+        const answer = answerChildText(toolInfo.raw);
+        if (childId != null && answer) {
+          for (let i = v.items.length - 1; i >= 0; i--) {
+            const card = v.items[i];
+            if (card.kind !== "tool" || card.parent !== "delegate" || card.childId !== childId) continue;
+            v.items[i] = {
+              ...card,
+              waiting: undefined,
+              segments: [
+                ...(card.segments ?? []),
+                { kind: "text" as const, text: `> 主代理回复：${answer}`, muted: true },
+              ],
+            };
+            break;
+          }
         }
       }
       return;

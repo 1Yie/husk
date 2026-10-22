@@ -270,53 +270,102 @@ function rateEstimate(rate: SessionView["rate"]): number {
   return rate.activeMs > 0 ? rate.chars / 4 / (rate.activeMs / 1000) : 0;
 }
 
-/** Append a delegated child's streamed text to its own capsule (matched by the
- *  label the kernel tagged it with). Returns false when no such row is open —
- *  the text is then dropped rather than misattributed to the turn's draft. */
+/** The card a delegated child's own event belongs to. `child_id` names it
+ *  exactly — two `delegate` calls in one turn can share a label like
+ *  "subagent", so the label alone picks the wrong row. The label is only the
+ *  fallback for events emitted before the wire carried ids. */
+function childCardAt(
+  items: SessionView["items"],
+  childId: number | undefined,
+  parent: string,
+): number {
+  if (childId != null) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "tool" && it.parent === "delegate" && it.childId === childId) return i;
+    }
+    return -1;
+  }
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "tool" && it.content === undefined && it.name === parent) return i;
+  }
+  return -1;
+}
+
+/** Append a delegated child's streamed text to its own card. Returns false when
+ *  no such card exists — the text is then dropped rather than misattributed to
+ *  the turn's draft. */
 function appendChildText(
   items: SessionView["items"],
+  childId: number | undefined,
   parent: string,
   text: string,
   reasoning: boolean,
 ): boolean {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
-    if (it.kind === "tool" && it.content === undefined && it.name === parent) {
-      const segments = [...(it.segments ?? [])];
-      const last = segments[segments.length - 1];
-      // Reasoning keeps its own single field — it is not part of the answer's
-      // time order. Answer text extends the open text run, or opens a new one
-      // after a tool run, so the body keeps its arrival order.
-      if (!reasoning) {
-        if (last?.kind === "text") {
-          segments[segments.length - 1] = { kind: "text", text: last.text + text };
-        } else {
-          segments.push({ kind: "text", text });
-        }
-      }
-      items[i] = reasoning
-        ? { ...it, liveReasoning: (it.liveReasoning ?? "") + text }
-        : { ...it, live: (it.live ?? "") + text, segments };
-      return true;
-    }
+  const i = childCardAt(items, childId, parent);
+  if (i < 0) return false;
+  const it = items[i];
+  if (it.kind !== "tool") return false;
+  // Reasoning is its own stream, drawn apart from the answer prose.
+  if (reasoning) {
+    items[i] = { ...it, liveReasoning: (it.liveReasoning ?? "") + text };
+    return true;
   }
-  return false;
+  const segments = [...(it.segments ?? [])];
+  const last = segments[segments.length - 1];
+  // Answer text extends the open text run, or opens a new one after a tool
+  // run, so the body keeps its arrival order.
+  if (last?.kind === "text") {
+    segments[segments.length - 1] = { kind: "text", text: last.text + text };
+  } else {
+    segments.push({ kind: "text", text });
+  }
+  items[i] = { ...it, live: (it.live ?? "") + text, segments };
+  return true;
 }
 
-/** Record a child tool run on the open card: a tool segment pointing at the
- *  child's ordinal, so the card reads as the child's own sequence of text and
- *  tool calls. */
-function appendChildTool(items: SessionView["items"], parent: string, index: number) {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
-    if (it.kind === "tool" && it.content === undefined && it.name === parent) {
-      items[i] = {
-        ...it,
-        segments: [...(it.segments ?? []), { kind: "tool", index }],
-      };
-      return;
-    }
-  }
+/** Record a child tool run on its card: a tool segment whose index is the
+ *  card's OWN tool-run count, matching the nested rows the card renders — a
+ *  session-wide count would point past them. */
+function appendChildTool(
+  items: SessionView["items"],
+  childId: number | undefined,
+  parent: string,
+) {
+  const i = childCardAt(items, childId, parent);
+  if (i < 0) return;
+  const it = items[i];
+  if (it.kind !== "tool") return;
+  const segments = it.segments ?? [];
+  const index = segments.filter((s) => s.kind === "tool").length;
+  items[i] = { ...it, segments: [...segments, { kind: "tool", index }] };
+}
+
+/** Append a side note to a child's card — a steer it was sent, or a kernel
+ *  notice about it. Drawn muted, in arrival order. */
+function appendChildNote(
+  items: SessionView["items"],
+  childId: number | undefined,
+  label: string,
+  text: string,
+) {
+  const i = childCardAt(items, childId, label);
+  if (i < 0) return;
+  const it = items[i];
+  if (it.kind !== "tool") return;
+  items[i] = { ...it, segments: [...(it.segments ?? []), { kind: "text", text, muted: true }] };
+}
+
+/** The host echoes a steer only once it has a home — injected mid-turn
+ *  (`UserSteer`) or run as the next prompt (`UserPrompt`). Either echo retires
+ *  the FIRST matching「等待插入」row; duplicates queue up one row each, so one
+ *  echo pops exactly one. Untouched arrays keep their identity. */
+function retirePendingSteer(pending: string[], text: string): string[] {
+  const want = text.trim();
+  const at = pending.findIndex((p) => p.trim() === want);
+  if (at < 0) return pending;
+  return [...pending.slice(0, at), ...pending.slice(at + 1)];
 }
 
 export function applyEvent(
@@ -434,13 +483,15 @@ function applyEventInto(
   if ("UserSteer" in ev) {
     // A steer joins the running turn: a bubble, but no new turn, clock or draft.
     items.push({ kind: "user", text: ev.UserSteer, ts: Date.now(), steer: true });
-    return { ...v, items };
+    return { ...v, items, pendingSteers: retirePendingSteer(v.pendingSteers, ev.UserSteer) };
   }
   if ("UserPrompt" in ev) {
     items.push({ kind: "user", text: ev.UserPrompt, ts: Date.now() });
     return {
       ...v,
       items,
+      // A steer that lost the race is run as this prompt — same retirement.
+      pendingSteers: retirePendingSteer(v.pendingSteers, ev.UserPrompt),
       turnOpen: true,
       pendingQuestion: undefined,
       turnStartedAt: Date.now(),
@@ -452,13 +503,15 @@ function applyEventInto(
   // child's row, never to the turn's draft (three children would share one
   // buffer), and they must not move the turn's tokens/sec meter.
   if ("TextDelta" in ev && ev.TextDelta.parent) {
-    const { parent, text } = ev.TextDelta;
-    appendChildText(items, parent, text, false);
+    const { parent, text, child_id } = ev.TextDelta;
+    appendChildText(items, child_id ?? undefined, parent, text, false);
     return { ...v, items };
   }
   if ("ReasoningDelta" in ev && ev.ReasoningDelta.parent) {
-    const { parent, text } = ev.ReasoningDelta;
-    appendChildText(items, parent, text, true);
+    const { parent, text, child_id } = ev.ReasoningDelta;
+    // A child's reasoning stays on the card's 思考 block — never in its prose
+    // and never in the turn's own thinking row.
+    appendChildText(items, child_id ?? undefined, parent, text, true);
     return { ...v, items };
   }
   if ("TextDelta" in ev) {
@@ -520,9 +573,13 @@ function applyEventInto(
     return { ...v, items, rate, toksPerSec: rateEstimate(rate) };
   }
   if ("ToolCallStarted" in ev) {
-    closeOpenThinking(items);
     const name = ev.ToolCallStarted.name;
     const parent = ev.ToolCallStarted.parent ?? undefined;
+    const childId = ev.ToolCallStarted.child_id ?? undefined;
+    // A child's own call runs in the child's stream — it is not a step of this
+    // turn, so it must not close the parent's thinking block.
+    const internal = parent !== undefined && parent !== "delegate" && childId != null;
+    if (!internal) closeOpenThinking(items);
     items.push({
       kind: "tool",
       name,
@@ -532,40 +589,49 @@ function applyEventInto(
       // normalize at the boundary so the Finished matcher's
       // `=== undefined` comparison actually works.
       parent,
-      childId: ev.ToolCallStarted.child_id ?? undefined,
+      childId,
     });
     // A child's own tool call also lands on its card's body, in arrival order.
-    // Its ordinal is how many of this card's children came before it.
-    if (parent && parent !== "delegate") {
-      const ordinal = items.filter((x) => x.kind === "tool" && x.parent === parent).length - 1;
-      appendChildTool(items, parent, ordinal);
-    }
+    // Its index is how many of that card's own calls came before it.
+    if (parent && parent !== "delegate") appendChildTool(items, childId, parent);
     return { ...v, items };
   }
   if ("ToolCallFinished" in ev) {
-    closeOpenThinking(items);
     const t = ev.ToolCallFinished;
-    // Fold a committed write's diff into the changes panel.
-    const changes = [...v.changes];
-    if (t.ok && t.content) recordFileChanges(changes, t.name, t.content, false);
-    else if (!t.ok) dropPendingChanges(changes, t.name);
-    const artifacts = [...v.artifacts];
-    for (let i = items.length - 1; i >= 0; i--) {
-      const it = items[i];
-      if (it.kind === "approval" && !it.resolved && it.toolName === t.name) {
-        items[i] = { ...it, resolved: true, approved: t.ok };
-        break;
+    const parent = t.parent ?? undefined;
+    const childId = t.child_id ?? undefined;
+    // Internal = a child's own call. It settles that child's card body only:
+    // the parent's thinking block, approval cards and session summary (the
+    // changes panel now reads git) all belong to the parent's stream.
+    const internal = parent !== undefined && parent !== "delegate" && childId != null;
+    let changes = v.changes;
+    let artifacts = v.artifacts;
+    if (!internal) {
+      closeOpenThinking(items);
+      // Fold a committed write's diff into the changes panel.
+      changes = [...v.changes];
+      if (t.ok && t.content) recordFileChanges(changes, t.name, t.content, false);
+      else if (!t.ok) dropPendingChanges(changes, t.name);
+      artifacts = [...v.artifacts];
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (it.kind === "approval" && !it.resolved && it.toolName === t.name) {
+          items[i] = { ...it, resolved: true, approved: t.ok };
+          break;
+        }
       }
     }
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      // Same-parent match: a batch child's Finished lands on the child
-      // row, not the batch capsule itself (and vice versa).
+      // Same-parent, same-child match: a batch child's Finished lands on the
+      // child row, not the batch capsule itself (and vice versa), and two
+      // delegated children sharing a label stay apart by `childId`.
       if (
         it.kind === "tool" &&
         it.name === t.name &&
         it.content === undefined &&
-        (it.parent ?? undefined) === (t.parent ?? undefined)
+        it.parent === parent &&
+        it.childId === childId
       ) {
         items[i] = {
           ...it,
@@ -578,10 +644,11 @@ function applyEventInto(
           approval: it.approval
             ? { ...it.approval, resolved: true, approved: t.ok }
             : undefined,
+          waiting: undefined,
         };
         // Only the matched tool's locator is a real file path — read it
         // off the started row's args before the loop ends.
-        if (t.ok) recordArtifact(artifacts, t.name, it.args);
+        if (t.ok && !internal) recordArtifact(artifacts, t.name, it.args);
         break;
       }
     }
@@ -589,7 +656,7 @@ function applyEventInto(
     // (re-based by `husk:session_counts` when the turn commits). Delegate
     // children run in their own history and do not count.
     const taskTotal =
-      v.taskTotal != null && !t.parent && t.child_id == null ? v.taskTotal + 1 : v.taskTotal;
+      v.taskTotal != null && parent === undefined && childId == null ? v.taskTotal + 1 : v.taskTotal;
     return { ...v, items, changes, artifacts, taskTotal };
   }
   if ("ApprovalRequested" in ev) {
@@ -851,6 +918,53 @@ function applyEventInto(
     const { errors, text } = ev.Custom.payload as { errors: number; text: string };
     items.push({ kind: "system", text: errors > 0 ? `⚠ ${text}` : text, standalone: !v.turnOpen, ts: Date.now() });
     return { ...v, items };
+  }
+  if ("Custom" in ev && typeof ev.Custom.kind === "string" && ev.Custom.kind.startsWith("subagent:")) {
+    // A delegated child's own lifecycle notes — they belong on its card, never
+    // on the turn's stream.
+    const p = (ev.Custom.payload ?? {}) as {
+      child_id?: number | null;
+      label?: string;
+      text?: string;
+      question?: string;
+      answer?: string;
+    };
+    const childId = p.child_id ?? undefined;
+    const label = p.label ?? "";
+    const at = childCardAt(items, childId, label);
+    if (at < 0) return v;
+    const card = items[at];
+    if (card.kind !== "tool") return v;
+    switch (ev.Custom.kind) {
+      case "subagent:waiting":
+        items[at] = { ...card, waiting: p.question ?? "" };
+        return { ...v, items };
+      case "subagent:resumed":
+        items[at] = {
+          ...card,
+          waiting: undefined,
+          segments: [
+            ...(card.segments ?? []),
+            { kind: "text", text: `> 主代理回复：${p.answer ?? ""}`, muted: true },
+          ],
+        };
+        return { ...v, items };
+      case "subagent:steer":
+        items[at] = {
+          ...card,
+          segments: [
+            ...(card.segments ?? []),
+            { kind: "text", text: `> 用户插话：${p.text ?? ""}`, muted: true },
+          ],
+        };
+        return { ...v, items };
+      default:
+        items[at] = {
+          ...card,
+          segments: [...(card.segments ?? []), { kind: "text", text: p.text ?? "", muted: true }],
+        };
+        return { ...v, items };
+    }
   }
   if ("QueuedPrompts" in ev) {
     // The kernel's parked list is the single source of truth — every

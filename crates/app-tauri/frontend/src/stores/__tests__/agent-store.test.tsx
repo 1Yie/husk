@@ -4,7 +4,7 @@ import {
   activeViewNow, initAgentStore, useActiveView, useActiveViewSelector,
   useAgentStore, useHasMoreHistory,
 } from "../agent-store";
-import { emptyView } from "@/features/chat/hooks/stream-view";
+import { emptyView, type BgJob } from "@/features/chat/hooks/stream-view";
 import { deferred, emitAgentEvent, listenerCount, mockCommand, modelInfo, tauri } from "@/test/tauri";
 import { clearAll, notificationsNow } from "@/lib/notifications";
 import { CONFIG_CHANGED_EVENT, type ModelInfo } from "@/lib/agent-ipc/sessions";
@@ -259,5 +259,25 @@ describe("persisted history and live state", () => {
     const snapshot = useAgentStore.getState();
     useAgentStore.getState().dropView("/project", 1);
     expect(useAgentStore.getState()).toBe(snapshot);
+  });
+
+  test("a background-job list has nowhere to land before the view exists", () => {
+    const jobs: BgJob[] = [{
+      id: "bg-1",
+      command: "cargo test",
+      state: { kind: "running" },
+      started_at_ms: 1,
+      elapsed_ms: 1000,
+      notify: true,
+      has_own_sink: false,
+    }];
+    // The view is folded asynchronously, so a `bg_list` seed that lands first is
+    // dropped — which is why the seed waits for the view (see ChatPage).
+    useAgentStore.getState().setBgJobs("/project", 1, jobs);
+    expect(activeViewNow().bgJobs).toHaveLength(0);
+    useAgentStore.getState().loadView("/project", 1, emptyView());
+    useAgentStore.getState().setBgJobs("/project", 1, jobs);
+    expect(activeViewNow().bgJobs).toHaveLength(1);
+    expect(activeViewNow().bgJobsAt).toBeGreaterThan(0);
   });
 });

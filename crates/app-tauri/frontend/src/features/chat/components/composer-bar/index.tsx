@@ -162,6 +162,16 @@ function ComposerBarContent({
   // mid-turn parks the payload; each drains as a fresh prompt the moment the
   // turn ends. "立即发送" on a row promotes it to a live Steer.
   const queued = useMemo(() => view.queuedPrompts ?? [], [view.queuedPrompts]);
+  // Steers already sent but not yet echoed — the host answers with `UserSteer`
+  // (injected mid-turn) or a late `UserPrompt`, so the row is client-owned.
+  const pendingSteers = view.pendingSteers ?? [];
+  // Where a pending steer is parked — the store's key is `root:id` of THIS
+  // session, and the view the row renders from is the store's copy.
+  const storeRoot = useAgentStore((s) => s.workspaceRoot);
+  const steerSession = useMemo(
+    () => (sessionId === undefined ? null : { root: workspaceRoot || storeRoot, id: sessionId }),
+    [workspaceRoot, storeRoot, sessionId],
+  );
   const pushQueued = useCallback((items: string[]) => {
     agent.setQueued(items).catch((e) => console.error("setQueued failed:", e));
   }, []);
@@ -636,11 +646,16 @@ function ComposerBarContent({
   /** Promote a queued draft to a live Steer — delivered mid-turn. */
   const steerNow = async (i: number) => {
     const item = shown[i];
+    const store = useAgentStore.getState();
     pushQueued(shown.filter((_, j) => j !== i));
+    // The row appears at once: a steer can be injected after the IPC call
+    // returns, and only the host's echo retires it.
+    if (steerSession) store.addPendingSteer(steerSession.root, steerSession.id, item);
     try {
       await agent.steer(item);
     } catch (e) {
       console.error("steer failed:", e);
+      if (steerSession) store.dropPendingSteer(steerSession.root, steerSession.id, item);
       pushQueued([item, ...shown]);
     }
   };
@@ -1189,19 +1204,35 @@ function ComposerBarContent({
                 </div>
               ) : null}
 
-              {shown.length > 0 ? (
-                /* Queued follow-ups — parked drafts sent when the turn ends;
-                   approval-strip visual family (icon · label · chips · actions). */
+              {pendingSteers.length > 0 || shown.length > 0 ? (
+                /* Steers in flight and queued follow-ups — parked drafts sent
+                   when the turn ends; approval-strip visual family. */
                 <div className="flex flex-col gap-1.5 px-3 pt-0.5">
-                  <div className="flex items-center gap-2 text-xs text-neutral-600 font-medium select-none">
-                    <Clock className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-                    <span className="shrink-0 text-neutral-800 font-medium text-xs">
-                      排队消息
-                    </span>
-                    <span className="text-[11px] font-mono text-neutral-500">
-                      {shown.length} 条 · 回合结束后按序发送
-                    </span>
-                  </div>
+                  {pendingSteers.map((q, i) => (
+                    /* Sent, waiting for the host to find it a home — a status
+                       row only: no edit, no drag, no send, no delete. */
+                    <div key={`pending-steer-${i}`} className="flex items-center gap-1.5 pl-1 pr-0">
+                      <Clock className="h-3.5 w-3.5 text-neutral-300 shrink-0" />
+                      <span
+                        title={q}
+                        className="font-mono text-[11px] text-neutral-500 truncate min-w-0 flex-1"
+                      >
+                        {q.split("\n")[0]}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-neutral-400">等待插入</span>
+                    </div>
+                  ))}
+                  {shown.length > 0 ? (
+                    <div className="flex items-center gap-2 text-xs text-neutral-600 font-medium select-none">
+                      <Clock className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+                      <span className="shrink-0 text-neutral-800 font-medium text-xs">
+                        排队消息
+                      </span>
+                      <span className="text-[11px] font-mono text-neutral-500">
+                        {shown.length} 条 · 回合结束后按序发送
+                      </span>
+                    </div>
+                  ) : null}
                   {shown.map((q, i) => (
                     <div
                       key={i}

@@ -11,6 +11,7 @@ export function sameComposerView(previous: SessionView, next: SessionView): bool
     previous.streaming !== next.streaming ||
     previous.pendingQuestion !== next.pendingQuestion ||
     previous.queuedPrompts !== next.queuedPrompts ||
+    previous.pendingSteers !== next.pendingSteers ||
     previous.items.length !== next.items.length
   ) return false;
 

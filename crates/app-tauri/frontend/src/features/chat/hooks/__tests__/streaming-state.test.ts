@@ -221,6 +221,32 @@ test("a steer joins the running turn without restarting its clock or draft", () 
   expect(after.rate).toEqual(before.rate);
 });
 
+describe("pending steers retire on the host's echo", () => {
+  const waiting = (pending: string[]) => ({ ...emptyView(), pendingSteers: pending });
+
+  test("a UserSteer retires one matching row, duplicates one at a time", () => {
+    const before = waiting(["先别改 config", "先别改 config", "看下日志"]);
+    const after = applyEvent(before, { UserSteer: "先别改 config" });
+    expect(after.pendingSteers).toEqual(["先别改 config", "看下日志"]);
+    // The echo is trimmed like the row is — a second one retires the duplicate.
+    const again = applyEvent(after, { UserSteer: " 先别改 config " });
+    expect(again.pendingSteers).toEqual(["看下日志"]);
+  });
+
+  test("a steer too late to inject retires on the prompt it became", () => {
+    const before = waiting(["看下日志"]);
+    const after = applyEvent(before, { UserPrompt: "看下日志" });
+    expect(after.pendingSteers).toEqual([]);
+    expect(after.items.at(-1)).toMatchObject({ kind: "user", text: "看下日志" });
+  });
+
+  test("an echo matching no row leaves the pending list untouched", () => {
+    const before = waiting(["看下日志"]);
+    const after = applyEvent(before, { UserPrompt: "另一个提问" });
+    expect(after.pendingSteers).toBe(before.pendingSteers);
+  });
+});
+
 test("a prompt is a prompt even while a turn is open", () => {
   // Nothing about the open turn makes a `UserPrompt` a steer: the kernel says
   // so with `UserSteer`, so a queued prompt echoed mid-run still opens its turn.
@@ -377,4 +403,91 @@ test("a manual compaction between turns is not a wake-up turn", () => {
   const v = applyEvent(emptyView(), { StateChanged: "Compacting" });
   expect(v.streaming).toBe(true);
   expect(v.turnOpen).toBe(false);
+});
+
+describe("delegated child streams route by child_id", () => {
+  // Two delegate calls in one turn both label their card "subagent" — only the
+  // id tells them apart.
+  const card = (childId: number): UiEvent => ({
+    ToolCallStarted: { name: "subagent", args_preview: "探索仓库", parent: "delegate", child_id: childId },
+  });
+  const twoCards = () =>
+    applyEvents(emptyView(), [{ UserPrompt: "并行审查" }, card(1), card(2)]);
+  const cardsOf = (v: ReturnType<typeof emptyView>) =>
+    v.items.flatMap((it) => (it.kind === "tool" ? [it] : []));
+
+  test("text and tool runs land on the card their child_id names", () => {
+    const v = applyEvents(twoCards(), [
+      { TextDelta: { text: "子一", parent: "subagent", child_id: 1 } },
+      { TextDelta: { text: "子二", parent: "subagent", child_id: 2 } },
+      { ToolCallStarted: { name: "smart_read", args_preview: "a.rs", parent: "subagent", child_id: 2 } },
+    ]);
+    const [first, second] = cardsOf(v);
+    expect(first).toMatchObject({ childId: 1, live: "子一" });
+    expect(first?.segments).toEqual([{ kind: "text", text: "子一" }]);
+    expect(second).toMatchObject({ childId: 2, live: "子二" });
+    // The nested run's index is that card's OWN tool count.
+    expect(second?.segments).toEqual([
+      { kind: "text", text: "子二" },
+      { kind: "tool", index: 0 },
+    ]);
+  });
+
+  test("a child's own write does not touch the changes panel or the parent's thinking", () => {
+    const before = applyEvents(emptyView(), [
+      { UserPrompt: "改文件" },
+      card(1),
+      { ReasoningDelta: { text: "思考中", parent: null } },
+      { ToolCallStarted: { name: "fuzzy_patch", args_preview: "a.rs", parent: "subagent", child_id: 1 } },
+    ]);
+    const after = applyEvents(before, [
+      {
+        ToolCallFinished: {
+          name: "fuzzy_patch",
+          ok: true,
+          content: "patched a.rs (line 1)\n\n@@ -1 +1 @@\n-x\n+y",
+          parent: "subagent",
+          child_id: 1,
+        },
+      },
+    ]);
+    expect(after.changes).toBe(before.changes);
+    expect(after.changes).toHaveLength(0);
+    expect(after.items.find((it) => it.kind === "thinking")).toMatchObject({ done: false });
+    expect(after.items.find((it) => it.kind === "tool" && it.name === "fuzzy_patch")).toMatchObject({
+      ok: true,
+    });
+  });
+
+  test("the child's reasoning stays on its card, apart from the answer prose", () => {
+    const v = applyEvents(twoCards(), [
+      { ReasoningDelta: { text: "先定位", parent: "subagent", child_id: 1 } },
+      { TextDelta: { text: "找到了", parent: "subagent", child_id: 1 } },
+    ]);
+    expect(cardsOf(v)[0]).toMatchObject({ liveReasoning: "先定位", live: "找到了" });
+    expect(cardsOf(v)[1]?.liveReasoning).toBeUndefined();
+    expect(cardsOf(v)[1]?.live).toBeUndefined();
+  });
+
+  test("waiting and resumed notes land on the card and clear the park", () => {
+    const waiting = applyEvents(twoCards(), [
+      { Custom: { kind: "subagent:waiting", payload: { child_id: 2, label: "subagent", question: "用哪个分支？" } } },
+    ]);
+    expect(cardsOf(waiting)[1]).toMatchObject({ waiting: "用哪个分支？" });
+    expect(cardsOf(waiting)[0]?.waiting).toBeUndefined();
+    const resumed = applyEvents(waiting, [
+      { Custom: { kind: "subagent:resumed", payload: { child_id: 2, label: "subagent", answer: "main" } } },
+    ]);
+    const card2 = cardsOf(resumed)[1];
+    expect(card2?.waiting).toBeUndefined();
+    expect(card2?.segments).toContainEqual({ kind: "text", text: "> 主代理回复：main", muted: true });
+    const notice = applyEvents(resumed, [
+      { Custom: { kind: "subagent:notice", payload: { child_id: 2, label: "subagent", text: "已读取 3 个文件" } } },
+    ]);
+    expect(cardsOf(notice)[1]?.segments).toContainEqual({
+      kind: "text",
+      text: "已读取 3 个文件",
+      muted: true,
+    });
+  });
 });

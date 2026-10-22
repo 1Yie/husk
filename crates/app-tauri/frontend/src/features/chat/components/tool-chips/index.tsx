@@ -255,6 +255,11 @@ export type ToolChipRow = {
   kind?: "agent";
   /** On an agent card: the id a `SteerChild` names to reach this child. */
   childId?: number;
+  /** On an agent card: the child's streamed reasoning, drawn as its own 思考
+   *  block — separate from its answer prose. */
+  reasoning?: string;
+  /** On an agent card: it parked on a question for the parent agent. */
+  waiting?: string;
   /** On an agent card: its body in arrival order — text runs and tool runs
    * (by index into `children`) interleaved, like a session's own steps. */
   segments?: ChildSegment[];
@@ -402,9 +407,28 @@ export function ToolChips({
    *  it was handed, then whatever it has streamed so far (or its report). */
   function renderAgentRow(row: ToolChipRow) {
     const rowOpen = isRowOpen(row);
-    const statusText =
-      row.status === "aborted" ? "已中断" : row.status === "running" ? "进行中" : "完成";
     const body = row.detail ? row.detail.join("\n").trim() : "";
+    const statusText =
+      row.waiting != null
+        ? "等待回复"
+        : row.status === "aborted"
+          ? body && body !== "已中断"
+            ? "失败"
+            : "已中断"
+          : row.status === "running"
+            ? "进行中"
+            : "完成";
+    const lastText = (() => {
+      const segs = row.segments ?? [];
+      for (let i = segs.length - 1; i >= 0; i--) {
+        const s = segs[i];
+        if (s.kind === "text" && !s.muted) return s.text.trim();
+      }
+      return "";
+    })();
+    // The report is the child's own answer, drawn under its body whenever the
+    // body was streamed live — the two are separate deliverables.
+    const report = row.status !== "running" && body && body !== lastText ? body : "";
     return (
       <div key={row.id} className="w-full">
         <div className="w-full overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n100)_45%,transparent)]">
@@ -436,7 +460,12 @@ export function ToolChips({
             ) : (
               <span className="flex-1" />
             )}
-            <span className="text-neutral-500 shrink-0 text-[11px]">
+            <span
+              className={cn(
+                "shrink-0 text-[11px]",
+                row.waiting != null ? "text-amber-600" : "text-neutral-500"
+              )}
+            >
               {statusText}
               {row.children && row.children.length > 0 ? ` · ${row.children.length} 项` : ""}
             </span>
@@ -449,6 +478,26 @@ export function ToolChips({
           </button>
           <RowDetail open={rowOpen}>
             <div className="px-2.5 pb-2.5">
+              {row.waiting != null ? (
+                // Parked on a question for the parent agent — the one state the
+                // card must shout about, in amber, above everything else.
+                <div className="mb-2 rounded-lg border border-amber-400/50 bg-amber-50/60 px-2 py-1.5">
+                  <div className="text-[11.5px] font-medium text-amber-700">等待主代理回复</div>
+                  {row.waiting ? (
+                    <div className="mt-0.5 text-[12px] leading-relaxed text-amber-700/90 whitespace-pre-wrap select-text">
+                      {row.waiting}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {row.reasoning ? (
+                <details className="mb-2">
+                  <summary className="text-neutral-500 cursor-pointer text-[11.5px]">思考</summary>
+                  <div className="text-neutral-500 mt-1 text-[12px] leading-relaxed whitespace-pre-wrap select-text">
+                    {row.reasoning}
+                  </div>
+                </details>
+              ) : null}
               {row.segments && row.segments.length > 0 ? (
                 // The child's text and its own tool calls read in the order they arrived,
                 // the same as a session's steps, whether it is still running or finished.
@@ -461,8 +510,11 @@ export function ToolChips({
                   ).map((seg, i) =>
                     seg.kind === "text" ? (
                       <div
-                        key={`text-${i}`}
-                        className="text-neutral-700 text-[12.5px] leading-relaxed select-text"
+                        key={`seg-${i}`}
+                        className={cn(
+                          "text-[12.5px] leading-relaxed select-text",
+                          seg.muted ? "text-neutral-500 text-[12px]" : "text-neutral-700"
+                        )}
                       >
                         {renderProse ? renderProse(seg.text) : <div className="whitespace-pre-wrap">{seg.text}</div>}
                       </div>
@@ -491,6 +543,20 @@ export function ToolChips({
                   ) : null}
                 </>
               )}
+              {report ? (
+                // The child's final report, below whatever it streamed — the
+                // body is its working trace, this is its deliverable.
+                <div className="border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] mt-2 border-t pt-2">
+                  <div className="text-neutral-500 mb-1 text-[11px]">报告</div>
+                  <div className="text-neutral-700 text-[12.5px] leading-relaxed select-text">
+                    {renderProse ? (
+                      renderProse(report)
+                    ) : (
+                      <div className="whitespace-pre-wrap">{report}</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </RowDetail>
         </div>
