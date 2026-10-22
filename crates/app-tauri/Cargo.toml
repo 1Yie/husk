@@ -69,11 +69,18 @@ gtk-layer-shell-sys = { version = "0.7", features = ["v0_6"] }
 ksni = { version = "0.3", features = ["blocking"] }
 
 [features]
-default = []
+# The desktop app ships with semantic recall: the settings switch is part of
+# the product, and a switch that cannot do anything is worse than none. It
+# costs a build-time ONNX Runtime download and a ~250 MB model fetched on
+# first use — turn it off with `--no-default-features` where that is too much.
+default = ["semantic"]
 # WASM plugin runtime — compiles wasmtime into the app. Now ON by default
 # through `agent-kernel`'s default features; this explicit feature remains
 # as the opt-in spelling for consumers that disabled kernel defaults.
 wasm = ["husk-host/wasm"]
+# Recall scored by a local sentence encoder (~250 MB model, downloaded on
+# first use). On by default for the app; the library crates keep it off.
+semantic = ["husk-host/semantic"]
 # Enabled automatically by `tauri build` for production bundles.
 # MUST NOT be a default feature — it makes the app serve `frontendDist`
 # via tauri://localhost and ignores `build.devUrl`, which kills the dev
