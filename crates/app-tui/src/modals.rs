@@ -344,11 +344,13 @@ impl Modal {
                 (KeyCode::Char('y'), _) => ModalOutcome::Send(vec![UiCommand::ToolDecision {
                     request_id: *request_id,
                     approved: true,
+                    action: None,
                 }]),
                 (KeyCode::Char('n'), _) | (KeyCode::Esc, _) => {
                     ModalOutcome::Send(vec![UiCommand::ToolDecision {
                         request_id: *request_id,
                         approved: false,
+                        action: None,
                     }])
                 }
                 // whitelist first, then the verdict — order matters for tools
@@ -360,6 +362,7 @@ impl Modal {
                     UiCommand::ToolDecision {
                         request_id: *request_id,
                         approved: true,
+                        action: None,
                     },
                 ]),
                 _ => ModalOutcome::Handled,

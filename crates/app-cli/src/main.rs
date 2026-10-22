@@ -436,12 +436,18 @@ async fn main() -> anyhow::Result<()> {
 fn auto_decide(
     ev: &UiEvent,
     yes: bool,
-    decision_slot: &std::sync::Mutex<Option<(u64, bool)>>,
+    decision_slot: &std::sync::Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>,
     ask_channel: &agent_kernel::tools::registry::AskChannel,
 ) {
     match ev {
         UiEvent::ApprovalRequested { request_id, .. } => {
-            *decision_slot.lock().unwrap() = Some((*request_id, yes));
+            *decision_slot.lock().unwrap() = Some((
+                *request_id,
+                agent_kernel::tools::registry::ToolVerdict {
+                    approved: yes,
+                    action: None,
+                },
+            ));
         }
         UiEvent::QuestionAsked {
             request_id,

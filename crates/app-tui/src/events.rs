@@ -142,9 +142,20 @@ impl App {
                 tool_name,
                 diff,
                 fuzzy,
+                actions,
             } => {
+                // The terminal has no room for per-action buttons: take the
+                // first offer (a session link) when auto-approving, so a
+                // TUI run can still recover from a refusal.
+                let offer = actions.first().map(|a| a.id.clone());
                 if self.auto_yes {
-                    *self.decision_slot.lock().unwrap() = Some((request_id, true));
+                    *self.decision_slot.lock().unwrap() = Some((
+                        request_id,
+                        agent_kernel::tools::registry::ToolVerdict {
+                            approved: true,
+                            action: offer.clone(),
+                        },
+                    ));
                     self.commit(Cell::Note(format!("auto-approved {tool_name}")));
                 } else {
                     self.modal = Some(Modal::Approval {

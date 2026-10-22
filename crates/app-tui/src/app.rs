@@ -130,7 +130,7 @@ pub struct App {
     /// decisions/answers/cancels must NOT go through `cmd_tx` (the pump is
     /// blocked inside `run_prompt` for the whole turn; the IPC bridge
     /// bypasses the channel the same way).
-    pub(crate) decision_slot: Arc<Mutex<Option<(u64, bool)>>>,
+    pub(crate) decision_slot: Arc<Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>>,
     pub(crate) ask_channel: Arc<agent_kernel::tools::registry::AskChannel>,
     pub(crate) cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) queue: Arc<Mutex<std::collections::VecDeque<String>>>,
@@ -208,7 +208,7 @@ impl App {
     pub fn new(
         cmd_tx: mpsc::Sender<UiCommand>,
         ev_rx: UiReceiver,
-        decision_slot: Arc<Mutex<Option<(u64, bool)>>>,
+        decision_slot: Arc<Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>>,
         ask_channel: Arc<agent_kernel::tools::registry::AskChannel>,
         cancel_flag: Arc<std::sync::atomic::AtomicBool>,
         queue: Arc<Mutex<std::collections::VecDeque<String>>>,
@@ -278,8 +278,15 @@ impl App {
             UiCommand::ToolDecision {
                 request_id,
                 approved,
+                action,
             } => {
-                *self.decision_slot.lock().unwrap() = Some((request_id, approved));
+                *self.decision_slot.lock().unwrap() = Some((
+                    request_id,
+                    agent_kernel::tools::registry::ToolVerdict {
+                        approved,
+                        action,
+                    },
+                ));
             }
             UiCommand::AnswerQuestion { request_id, answer } => {
                 self.ask_channel.answer(request_id, answer);
@@ -363,7 +370,7 @@ impl App {
         &mut self,
         cmd_tx: mpsc::Sender<UiCommand>,
         ev_rx: UiReceiver,
-        decision_slot: Arc<Mutex<Option<(u64, bool)>>>,
+        decision_slot: Arc<Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>>,
         ask_channel: Arc<agent_kernel::tools::registry::AskChannel>,
         cancel_flag: Arc<std::sync::atomic::AtomicBool>,
         queue: Arc<Mutex<std::collections::VecDeque<String>>>,
