@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect, type SettingSelectOption } from "@/features/settings/components/index";
+import { THINKING_LEVELS } from "@/lib/thinking";
 import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import {
@@ -31,6 +32,13 @@ import {
 } from "@/features/settings/pages/agent/shared/index";
 
 type Filter = "all" | "builtin" | "custom";
+
+/** "" = no `thinking:` line: the child follows the subagent default, then the
+ *  parent session's level. */
+const THINKING_OPTIONS: SettingSelectOption[] = [
+  { value: "", label: "跟随默认" },
+  ...THINKING_LEVELS.map((l) => ({ value: l.value, label: l.label })),
+];
 
 /** Limits a spec carries, as compact tag text. `max_tool_rounds` bounds the
  * model/tool loop, so it caps **steps** (one model request each), not turns. */
@@ -57,6 +65,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
   const [prompt, setPrompt] = useState("");
   /** Manifest `model:` as `provider/model`; "" = follow the subagent default. */
   const [model, setModel] = useState("");
+  const [thinking, setThinking] = useState("");
   const [busy, setBusy] = useState(false);
   /** Editing an existing manifest (createSubagent overwrites it). */
   const [editName, setEditName] = useState<string | null>(null);
@@ -95,7 +104,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
   const startCreate = () => {
     setEditName(null);
     setEditBuiltin(false);
-    setName(""); setDesc(""); setPrompt(""); setModel("");
+    setName(""); setDesc(""); setPrompt(""); setModel(""); setThinking("");
     setScope("workspace");
     setOpen(true);
   };
@@ -109,6 +118,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
       setDesc(detail.description);
       setPrompt(detail.prompt);
       setModel(detail.model ?? "");
+      setThinking(detail.thinking ?? "");
       setScope(detail.scope);
       setOpen(true);
     } catch (e) {
@@ -136,6 +146,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
         scope,
         prompt: prompt.trim(),
         model,
+        thinking,
       });
       toast.success(
         editBuiltin ? "已生成内置子代理的覆盖配置" : editName ? "已更新子代理" : "已创建子代理",
@@ -143,7 +154,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
       setOpen(false);
       setEditName(null);
       setEditBuiltin(false);
-      setName(""); setDesc(""); setPrompt(""); setModel("");
+      setName(""); setDesc(""); setPrompt(""); setModel(""); setThinking("");
       reload();
     } catch (e) {
       toast.error(editName ? "保存失败" : "创建失败", { description: String(e) });
@@ -189,6 +200,11 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                   <>
                     <Tag>{a.builtin ? "内置" : a.global ? "全局" : "工作区"}</Tag>
                     {a.model && <Tag className="font-mono">{a.model}</Tag>}
+                    {a.thinking && (
+                      <Tag>
+                        {THINKING_LEVELS.find((l) => l.value === a.thinking)?.label ?? a.thinking}
+                      </Tag>
+                    )}
                     {limits(a).map((t) => (
                       <Tag key={t} className="tabular-nums">{t}</Tag>
                     ))}
@@ -285,7 +301,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                 />
               </Field>
             </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_auto]">
               <Field label="描述">
                 <Input
                   value={desc}
@@ -301,6 +317,15 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                   triggerClassName="w-full sm:w-44"
                   options={modelOptions}
                   ariaLabel="子代理模型"
+                />
+              </Field>
+              <Field label="思考等级">
+                <SettingSelect
+                  value={thinking}
+                  onChange={setThinking}
+                  triggerClassName="w-full sm:w-32"
+                  options={THINKING_OPTIONS}
+                  ariaLabel="子代理思考等级"
                 />
               </Field>
             </div>

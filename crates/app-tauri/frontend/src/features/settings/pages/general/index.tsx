@@ -125,6 +125,8 @@ function prefsToState(prefs: DefaultPrefs) {
       prefs.subagent_provider && prefs.subagent_model
         ? `${prefs.subagent_provider}/${prefs.subagent_model}`
         : "__parent__",
+    // "" = no level of its own: children follow the parent session's.
+    subagentThinking: prefs.subagent_thinking_level || "",
     thinking: prefs.thinking_level || "medium",
     agentMode: prefs.agent_mode || "build",
     workspaceMode: prefs.default_workspace_mode || "last",
@@ -150,6 +152,7 @@ export function GeneralPane() {
   const [permission, setPermission] = useState(init.permission);
   const [activeModelKey, setActiveModelKey] = useState(init.activeModelKey);
   const [subagentModelKey, setSubagentModelKey] = useState(init.subagentModelKey);
+  const [subagentThinking, setSubagentThinking] = useState(init.subagentThinking);
   const [thinking, setThinking] = useState(init.thinking);
   const [agentMode, setAgentMode] = useState(init.agentMode);
   const [workspaceMode, setWorkspaceMode] = useState(init.workspaceMode);
@@ -180,6 +183,7 @@ export function GeneralPane() {
         setPermission(s.permission);
         setActiveModelKey(s.activeModelKey);
         setSubagentModelKey(s.subagentModelKey);
+        setSubagentThinking(s.subagentThinking);
         setThinking(s.thinking);
         setAgentMode(s.agentMode);
         setWorkspaceMode(s.workspaceMode);
@@ -325,6 +329,29 @@ export function GeneralPane() {
                   }}
                   options={subagentOptions}
                   ariaLabel="子代理模型"
+                />
+              ) : (
+                <SkeletonControl />
+              )}
+            </SettingRow>
+            <SettingRow
+              title="子代理思考等级"
+              description="委派任务的思考强度，子代理自身指定的等级优先"
+              icon={<Sparkles className="h-4 w-4" />}
+              wideControl
+            >
+              {ready ? (
+                <SettingSelect
+                  value={subagentThinking}
+                  onChange={(v) => {
+                    setSubagentThinking(v);
+                    void save({ subagent_thinking_level: v });
+                  }}
+                  options={[
+                    { value: "", label: "跟随主代理" },
+                    ...THINKING_OPTIONS,
+                  ]}
+                  ariaLabel="子代理思考等级"
                 />
               ) : (
                 <SkeletonControl />
@@ -506,6 +533,7 @@ export function GeneralPane() {
           </KvListContent>
         </KvList>
       </SettingsSection>
+
     </div>
   );
 }
