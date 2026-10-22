@@ -8,6 +8,8 @@ pub mod child_route;
 pub mod command;
 pub mod commands;
 mod context_breakdown;
+pub mod links;
+pub mod link_policy;
 pub mod mode;
 pub mod office;
 pub mod plugins;

@@ -28,6 +28,7 @@ static LIMITS: RwLock<SandboxLimits> = RwLock::new(SandboxLimits {
     allowed_domains: Vec::new(),
     denied_domains: Vec::new(),
     extra_ro_mounts: Vec::new(),
+    extra_rw_mounts: Vec::new(),
 });
 
 /// Current overrides — a poisoned read yields defaults rather than
