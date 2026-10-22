@@ -22,7 +22,6 @@ import {
 } from "@keyline-icons/react";
 import { chatMarkdownComponents } from "@/features/chat/components/chat-stream/markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ChatTurnRail, type RailMark } from "@/features/chat/components/chat-stream/chat-turn-rail";
 import { opensTurn, railHistoryBoundary } from "./rail-history";
 import {
@@ -47,9 +46,8 @@ import { cn } from "@/lib/utils";
 import { CircleCheck, CircleX, FileDiff, Package, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Orb } from "@/features/chat/components/agent-orb";
 import type { JobsSummary } from "@/lib/bg-jobs";
-import { WAITING_STEER_HINT, summarizeChildren } from "@/lib/subagents";
+import { summarizeChildren } from "@/lib/subagents";
 import type { RunningChild } from "@/features/chat/hooks/running-children";
-import { ChildSteerInput } from "@/features/chat/components/chat-stream/child-steer";
 import { loadStamp } from "@/lib/load-probe";
 import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "@/lib/agent-ipc/sessions";
@@ -363,8 +361,11 @@ interface Props {
   jobsOpen?: boolean;
   onToggleJobs?: () => void;
   /** Delegated subagents still running — their own capsule beside the jobs
-   *  pill, listing what each child was handed. `[]` = no pill. */
+   *  pill, which opens the dock's 子代理 view. `[]` = no pill. */
   subagents?: RunningChild[];
+  /** The dock is open on the 子代理 view. */
+  subagentsOpen?: boolean;
+  onToggleSubagents?: () => void;
   /** Fetch + prepend the next older page (scroll-top trigger). */
   /** Fetch + prepend the next older page. Resolves `true` when a
    * page actually landed — `false` (empty/end) clears the pending
@@ -1674,7 +1675,7 @@ const ChatTurn = memo(function ChatTurn({
   );
 });
 
-export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs, subagents }: Props) {
+export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs, subagents, subagentsOpen, onToggleSubagents }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const [virtualApi, setVirtualApi] = useState<VirtualStepApi | null>(null);
@@ -2883,8 +2884,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // working tree's own state is the title bar chip's business.
   const dockPillVisible = !!onToggleDock && dockCount > 0;
   const jobsPillVisible = !!onToggleJobs && !!jobs;
-  // The subagents' capsule: it says how many children are out and names their
-  // tasks on demand, since a running child has no row of its own in the dock.
+  // The subagents' capsule: it says how many children are out, and opens the
+  // dock's 子代理 view where each of them can be read and steered.
   const subagentPill = subagents && subagents.length > 0 ? summarizeChildren(subagents) : null;
   const subagentPillVisible = !!subagentPill;
   // One capsule speaks, the ones behind it collapse (the island's rule). The
@@ -3109,54 +3110,27 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           </TooltipSimple>
         )}
         {subagentPillVisible && subagentPill && (
-          <Popover>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                aria-label="子代理"
-                data-compact={subagentCollapsed ? "true" : undefined}
-                className={cn(
-                  "group flex h-8 items-center gap-0 rounded-full border px-2 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer",
-                  "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
-                  "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
-                )}
-              >
-                <span className="flex h-4 w-4 flex-none items-center justify-center">
-                  <Orb variant="G2" size={12} label="子代理" className="text-violet-600 dark:text-violet-400" />
-                </span>
-                <span className={pillTextClass(subagentCollapsed)}>
-                  <span className="flex-none whitespace-nowrap">{subagentPill.text}</span>
-                </span>
-              </button>
-            </PopoverTrigger>
-            {/* The children have no rows anywhere else — this is where what
-                each of them was handed stays readable while it runs. */}
-            <PopoverContent side="top" align="center" className="w-80 p-1.5">
-              <div className="flex flex-col gap-0.5">
-                {(subagents ?? []).map((c) => (
-                  <div key={c.childId} className="flex flex-col gap-1 rounded-md px-2 py-1.5">
-                    <div className="flex items-start gap-2">
-                      <Orb variant="G2" size={12} className="mt-0.5 flex-none text-violet-600 dark:text-violet-400" />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[12px]">{c.name}</div>
-                        <div className="truncate text-[11px] text-neutral-500 dark:text-neutral-400">{c.task}</div>
-                      </div>
-                    </div>
-                    {/* A parked child takes the text only after it resumes —
-                        saying so beats a steer that looks swallowed. */}
-                    {c.waiting != null && (
-                      <div className="pl-5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
-                        {WAITING_STEER_HINT}
-                      </div>
-                    )}
-                    <div className="pl-5">
-                      <ChildSteerInput childId={c.childId} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
+          <TooltipSimple content={subagentsOpen ? "关闭子代理" : `子代理 · ${subagentPill.text}`} side="top">
+            <button
+              type="button"
+              onClick={onToggleSubagents}
+              aria-label="子代理"
+              aria-pressed={subagentsOpen}
+              data-compact={subagentCollapsed ? "true" : undefined}
+              className={cn(
+                "group flex h-8 items-center gap-0 rounded-full border px-2 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer",
+                "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
+                "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
+              )}
+            >
+              {/* The orb bare, at the jobs pill's 16px: the same violet family
+                  as the children's cards, and the row's one motion glyph. */}
+              <Orb variant="G2" size={16} label="子代理" className="flex-none text-violet-600 dark:text-violet-400" />
+              <span className={pillTextClass(subagentCollapsed)}>
+                <span className="flex-none whitespace-nowrap">{subagentPill.text}</span>
+              </span>
+            </button>
+          </TooltipSimple>
         )}
         <div
           className={cn(

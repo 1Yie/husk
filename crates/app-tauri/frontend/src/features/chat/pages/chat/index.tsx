@@ -181,7 +181,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   const workspaceChanges = useWorkspaceChanges(workspaceRoot);
   const changes = workspaceChanges.repo ? workspaceChanges.files : view.changes;
   const filesCount = changes.length + artifacts.length;
-  const panelCount = filesCount + view.bgJobs.length;
+  const panelCount = filesCount + view.bgJobs.length + runningChildren.length;
   // The dock's own open flag AND its content — an empty sidebar hides itself,
   // so a fresh session never lands on 「本会话还没有文件产出」 just because the
   // previous one left the dock open (the flag is persisted).
@@ -192,6 +192,13 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // whatever tab is stored, so that counts as shown too.
   const jobsShown =
     dockVisible && view.bgJobs.length > 0 && (dockTab === "jobs" || filesCount === 0);
+  // The subagents pill speaks for the 子代理 view — same rule as 后台. Subagents
+  // are the dock's last view, so "no files" only lands on them when 后台 is
+  // empty too.
+  const subagentsShown =
+    dockVisible &&
+    runningChildren.length > 0 &&
+    (dockTab === "subagents" || (filesCount === 0 && view.bgJobs.length === 0));
   // Which view the pill names: the last FILE view — 后台 is a detour, so the
   // label does not jump while it is up — if it still has content.
   const { tab: activeDockTab, count: activeDockCount } = dockPill({
@@ -227,7 +234,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   }, [activeDockCount, activeDockTab, dockOpen, setDockOpen, setDockTab]);
   // The dock pill toggles the file views; from 后台 it switches back to them
   // instead of closing a sidebar the user did not open for files.
-  const dockFilesShown = dockVisible && !jobsShown;
+  const dockFilesShown = dockVisible && !jobsShown && !subagentsShown;
   const handleToggleDock = useCallback(() => {
     if (dockFilesShown) {
       // Closing by hand is a decision, not a pause: it silences the auto-open.
@@ -247,6 +254,15 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     setDockTab("jobs");
     setDockOpen(true);
   }, [jobsShown, setDockOpen, setDockTab]);
+  const handleToggleSubagents = useCallback(() => {
+    if (subagentsShown) {
+      dismissedRef.current = true;
+      setDockOpen(false);
+      return;
+    }
+    setDockTab("subagents");
+    setDockOpen(true);
+  }, [subagentsShown, setDockOpen, setDockTab]);
 
   // A job that fails is worth a toast with a way to look — once per job, and
   // only for a failure that happened while this view was watching (a reopened
@@ -391,6 +407,8 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               jobsOpen={jobsShown}
               onToggleJobs={workspaceRoot ? handleToggleJobs : undefined}
               subagents={runningChildren}
+              subagentsOpen={subagentsShown}
+              onToggleSubagents={workspaceRoot ? handleToggleSubagents : undefined}
             />
 
             {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
@@ -405,14 +423,15 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
             </div>
           </div>
 
-          {/* The unified dock: 改动 + 产物 in one sidebar, either mode. It reads
-              its own open/tab/width from the dock store; the page only feeds
-              content and the manual-close dismissal. */}
+          {/* The unified dock: 改动 + 产物 + 后台 + 子代理 in one sidebar, either
+              mode. It reads its own open/tab/width from the dock store; the
+              page only feeds content and the manual-close dismissal. */}
           <SessionDock
             changes={changes}
             artifacts={artifacts}
             jobs={view.bgJobs}
             jobsAt={view.bgJobsAt}
+            subagents={runningChildren}
             root={workspaceRoot}
             session={sessionId}
             onJobs={writeJobs}

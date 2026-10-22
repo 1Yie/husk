@@ -1,25 +1,29 @@
 // SessionDock — the one right-hand sidebar. Everything a session produces
 // hangs off it: the files the agent changed (改动), the files it generated
-// (产物) and the background jobs it started (后台), as tabs. It is independent of the workspace mode (编程 and 工作 both
+// (产物), the background jobs it started (后台) and the subagents still out
+// (子代理), as tabs. It is independent of the workspace mode (编程 and 工作 both
 // get the same dock) and owns its own UI state — open, active tab, width —
 // persisted across sessions.
 //
 // The frame is the dock's; the tab bodies are `ChangesList` / `ArtifactsList`
-// / `JobsList`.
+// / `JobsList` / `SubagentsList`.
 
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { FileDiff, Package, SquareTerminal, X } from "lucide-react";
+import { Bot, FileDiff, Package, SquareTerminal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ChangesList } from "@/features/chat/components/changes-panel";
 import { ArtifactsList } from "@/features/chat/components/artifacts-panel";
 import { JobsList } from "@/features/chat/components/jobs-panel";
+import { SubagentsList } from "@/features/chat/components/subagents-panel";
 import type { Artifact, BgJob, FileChange } from "@/features/chat/hooks/stream-view";
+import type { RunningChild } from "@/features/chat/hooks/running-children";
 import { DOCK_MIN_WIDTH, clampDockWidth, useDockStore, type DockTab } from "./state";
 
 const TAB_META: Record<DockTab, { Icon: typeof FileDiff; label: string; unit: string }> = {
   changes: { Icon: FileDiff, label: "改动", unit: "个文件" },
   artifacts: { Icon: Package, label: "产物", unit: "个文件" },
   jobs: { Icon: SquareTerminal, label: "后台", unit: "个任务" },
+  subagents: { Icon: Bot, label: "子代理", unit: "个" },
 };
 
 function TabButton({
@@ -60,6 +64,7 @@ export function SessionDock({
   artifacts,
   jobs = [],
   jobsAt = 0,
+  subagents = [],
   root = "",
   session = 0,
   onJobs,
@@ -71,6 +76,8 @@ export function SessionDock({
   /** The session's background jobs, and when that snapshot arrived. */
   jobs?: BgJob[];
   jobsAt?: number;
+  /** Delegated children still running — their rows and their steer boxes. */
+  subagents?: RunningChild[];
   /** Which session the 后台 controls address. */
   root?: string;
   session?: number;
@@ -151,6 +158,13 @@ export function SessionDock({
   if (changes.length > 0) tabs.push("changes");
   if (artifacts.length > 0) tabs.push("artifacts");
   if (jobs.length > 0) tabs.push("jobs");
+  if (subagents.length > 0) tabs.push("subagents");
+  const counts: Record<DockTab, number> = {
+    changes: changes.length,
+    artifacts: artifacts.length,
+    jobs: jobs.length,
+    subagents: subagents.length,
+  };
   // The stored tab can point at the list that just emptied (a new session,
   // /clear) — fall back to whichever one is on screen.
   const activeTab: DockTab | null = tabs.includes(tab) ? tab : (tabs[0] ?? null);
@@ -204,7 +218,7 @@ export function SessionDock({
                 key={t}
                 tab={t}
                 active={activeTab === t}
-                files={t === "changes" ? changes.length : t === "artifacts" ? artifacts.length : jobs.length}
+                files={counts[t]}
                 onSelect={setTab}
               />
             ))}
@@ -233,8 +247,10 @@ export function SessionDock({
             <ChangesList changes={changes} />
           ) : activeTab === "artifacts" ? (
             <ArtifactsList artifacts={artifacts} />
-          ) : (
+          ) : activeTab === "jobs" ? (
             <JobsList jobs={jobs} snapshotAt={jobsAt} root={root} session={session} onJobs={(j) => onJobs?.(j)} />
+          ) : (
+            <SubagentsList children={subagents} />
           )}
         </div>
       </aside>

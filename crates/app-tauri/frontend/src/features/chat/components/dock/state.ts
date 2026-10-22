@@ -7,7 +7,7 @@ import { create } from "zustand";
 
 /** The dock's views. New surfaces go here — everything the session produces
  *  hangs off this one sidebar, whatever the workspace mode. */
-export type DockTab = "changes" | "artifacts" | "jobs";
+export type DockTab = "changes" | "artifacts" | "jobs" | "subagents";
 
 export const DOCK_MIN_WIDTH = 260;
 export const DOCK_MAX_WIDTH = 560;
@@ -16,14 +16,14 @@ export const DOCK_DEFAULT_WIDTH = 300;
 const STORAGE_KEY = "husk.dock.v1";
 
 /** The file views — what `filesTab` remembers. */
-export type FilesTab = Exclude<DockTab, "jobs">;
+export type FilesTab = Exclude<DockTab, "jobs" | "subagents">;
 
 interface Persisted {
   open: boolean;
   tab: DockTab;
-  /** The file view to come back to when 后台 is the one on screen. Without
-   *  it, leaving 后台 always landed on 改动, even for a reader who was on
-   *  产物, and the dock pill's label jumped while 后台 was up. */
+  /** The file view to come back to when a detour (后台 / 子代理) is on screen.
+   *  Without it, leaving 后台 always landed on 改动, even for a reader who was
+   *  on 产物, and the dock pill's label jumped while 后台 was up. */
   filesTab: FilesTab;
   width: number;
 }
@@ -55,7 +55,10 @@ function load(): Persisted {
     const filesTab: FilesTab = p.filesTab === "artifacts" ? "artifacts" : "changes";
     return {
       open: p.open === true,
-      tab: p.tab === "artifacts" || p.tab === "jobs" ? p.tab : "changes",
+      tab:
+        p.tab === "artifacts" || p.tab === "jobs" || p.tab === "subagents"
+          ? p.tab
+          : "changes",
       // A snapshot written before `filesTab` existed: the stored tab was the
       // file view whenever it still is one.
       filesTab:
@@ -94,9 +97,9 @@ export const useDockStore = create<DockState>((set, get) => ({
     save({ ...get(), open });
   },
   setTab: (tab) => {
-    // 后台 is a detour, not a file view: it never becomes the one the dock
-    // pill names or falls back to.
-    const filesTab = tab === "jobs" ? get().filesTab : tab;
+    // 后台 and 子代理 are detours, not file views: neither ever becomes the one
+    // the dock pill names or falls back to.
+    const filesTab = tab === "jobs" || tab === "subagents" ? get().filesTab : tab;
     set({ tab, filesTab });
     save({ ...get(), tab, filesTab });
   },

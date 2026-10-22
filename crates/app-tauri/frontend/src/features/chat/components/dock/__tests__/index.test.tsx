@@ -250,6 +250,43 @@ describe("unified session dock", () => {
     });
   });
 
+  test("running children get their own 子代理 view", () => {
+    renderWithProviders(
+      <SessionDock
+        changes={[change("a.ts")]}
+        artifacts={[]}
+        subagents={[{ childId: 1, name: "review #1", task: "检查鉴权" }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "子代理（1 个）" }));
+    expect(useDockStore.getState().tab).toBe("subagents");
+    expect(screen.getByText("review #1")).toBeInTheDocument();
+    expect(screen.getByText("检查鉴权")).toBeInTheDocument();
+    // The steer rides with the row, in the sidebar instead of a popover.
+    expect(screen.getByPlaceholderText("插话…")).toBeInTheDocument();
+    expect(screen.queryByText("a.ts")).not.toBeInTheDocument();
+  });
+
+  test("子代理 is a detour too: the file view you were on is the one you return to", () => {
+    useDockStore.setState({ tab: "artifacts", filesTab: "artifacts" });
+    renderWithProviders(
+      <SessionDock
+        changes={[change("a.ts")]}
+        artifacts={[artifact("b.pdf")]}
+        subagents={[{ childId: 2, name: "review #1", task: "检查鉴权" }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /子代理/ }));
+    expect(useDockStore.getState()).toMatchObject({ tab: "subagents", filesTab: "artifacts" });
+  });
+
+  test("a stored 子代理 view falls back once the children are gone", () => {
+    useDockStore.setState({ tab: "subagents" });
+    render(<SessionDock changes={[change("a.ts")]} artifacts={[]} subagents={[]} />);
+    expect(screen.queryByRole("tab", { name: /子代理/ })).not.toBeInTheDocument();
+    expect(screen.getAllByText("a.ts").length).toBeGreaterThan(0);
+  });
+
   test("the active view and open state survive a remount", () => {
     const first = render(
       <SessionDock changes={[change("a.ts")]} artifacts={[artifact("b.pdf")]} />,

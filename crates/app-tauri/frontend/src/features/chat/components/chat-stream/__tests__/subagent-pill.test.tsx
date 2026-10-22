@@ -1,15 +1,12 @@
-// The subagents capsule: how many children are out, and what each was handed.
+// The subagents capsule: how many children are out, and that it opens the
+// dock's 子代理 view.
 
 import type { ComponentProps } from "react";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import { toast } from "sonner";
 import { ChatStream } from "@/features/chat/components/chat-stream";
 import { emptyView } from "@/features/chat/hooks/stream-view";
 import { renderWithProviders } from "@/test/render";
-import { mockCommand, tauri } from "@/test/tauri";
-import { WAITING_STEER_HINT } from "@/lib/subagents";
 
 vi.mock("@/features/chat/components/chat-stream/markdown-stream", () => ({
   MemoStreamdown: ({ text }: { text: string }) => <div>{text}</div>,
@@ -37,11 +34,26 @@ describe("subagent capsule", () => {
     expect(pill.getAttribute("data-compact")).toBeNull();
   });
 
-  test("lists each child's task when opened", () => {
-    renderStream({ subagents: [child(1, "review #1", "检查鉴权分支")] });
+  test("clicking it opens the 子代理 view instead of a popover", () => {
+    const onToggleSubagents = vi.fn();
+    renderStream({
+      subagents: [child(1, "review #1", "检查鉴权分支")],
+      onToggleSubagents,
+    });
     fireEvent.click(screen.getByRole("button", { name: "子代理" }));
-    expect(screen.getByText("review #1")).toBeInTheDocument();
-    expect(screen.getByText("检查鉴权分支")).toBeInTheDocument();
+    expect(onToggleSubagents).toHaveBeenCalledTimes(1);
+    // The rows live in the sidebar now, never in a popover over the composer.
+    expect(screen.queryByText("检查鉴权分支")).not.toBeInTheDocument();
+  });
+
+  test("reads as pressed while the dock shows the 子代理 view", () => {
+    renderStream({
+      subagents: [child(1, "review #1", "检查鉴权")],
+      subagentsOpen: true,
+      onToggleSubagents: () => {},
+    });
+    const pill = screen.getByRole("button", { name: "子代理" });
+    expect(pill.getAttribute("aria-pressed")).toBe("true");
   });
 
   test("yields to the pill ahead of it", () => {
@@ -51,38 +63,6 @@ describe("subagent capsule", () => {
       onToggleJobs: () => {},
     });
     expect(screen.getByRole("button", { name: "子代理" }).getAttribute("data-compact")).toBe("true");
-  });
-
-  test("a steer typed against a child reaches the kernel", async () => {
-    const user = userEvent.setup();
-    renderStream({ subagents: [child(3, "review #1", "检查鉴权")] });
-    await user.click(screen.getByRole("button", { name: "子代理" }));
-    const box = screen.getByPlaceholderText("插话…");
-    await user.type(box, "先看中间件{Enter}");
-    expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", {
-      cmd: { SteerChild: { child_id: 3, text: "先看中间件" } },
-    });
-    // The kernel echoes the steer back as a `subagent:steer` custom event, so
-    // the box empties and nothing is drawn locally.
-    await waitFor(() => expect(box).toHaveValue(""));
-  });
-
-  test("a rejected steer is reported and the draft kept", async () => {
-    mockCommand("agent_cmd", () => Promise.reject(new Error("session gone")));
-    const user = userEvent.setup();
-    renderStream({ subagents: [child(3, "review #1", "检查鉴权")] });
-    await user.click(screen.getByRole("button", { name: "子代理" }));
-    const box = screen.getByPlaceholderText("插话…");
-    await user.type(box, "先看中间件{Enter}");
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("插话失败：Error: session gone"));
-    expect(box).toHaveValue("先看中间件");
-  });
-
-  test("a parked child says its steer waits for the resume", async () => {
-    const user = userEvent.setup();
-    renderStream({ subagents: [{ ...child(4, "review #1", "检查鉴权"), waiting: "用哪条分支？" }] });
-    await user.click(screen.getByRole("button", { name: "子代理" }));
-    expect(screen.getByText(WAITING_STEER_HINT)).toBeInTheDocument();
   });
 
   test("a replayed transcript nests under its child's card", () => {
