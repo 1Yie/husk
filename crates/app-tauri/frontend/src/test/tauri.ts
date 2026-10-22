@@ -72,6 +72,9 @@ export function resetTauri() {
   mockCommand("agent_cmd", () => undefined);
   mockCommand("agent_session", () => modelInfo(), "model_info");
   mockCommand("agent_session", () => ({ repo: true, branch: "main", dirty: 0 }), "git_info");
+  // The 改动 panel's workspace source: a plain folder by default, so a test
+  // that is not about git keeps the session-level list it always had.
+  mockCommand("agent_session", () => ({ repo: false, files: [] }), "workspace_changes");
   mockCommand("agent_session", () => [], "list_files");
   mockCommand("agent_session", () => [], "list_skills");
   mockCommand("agent_session", () => [], "plugin_commands");

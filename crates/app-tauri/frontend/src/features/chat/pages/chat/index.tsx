@@ -9,11 +9,13 @@ import { SessionDock } from "@/features/chat/components/dock";
 import { useDockStore } from "@/features/chat/components/dock/state";
 import { ComposerBar } from "@/features/chat/components/composer-bar";
 import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/components/workspace-welcome";
-import { useActiveView, useAgentChips, useAgentStore, useHasMoreHistory } from "@/stores/agent-store";
+import { useActiveView, useAgentChips, useAgentStore, useHasMoreHistory, useHasView, viewNow } from "@/stores/agent-store";
 import { listBgJobs, openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
 import { jobTone, summarizeJobs } from "@/lib/bg-jobs";
 import { dockPill } from "@/lib/dock-pill";
 import { isAppInFront } from "@/lib/desktop-notify";
+import { useWorkspaceChanges } from "@/features/chat/hooks/use-workspace-changes";
+import { extractRunningChildren } from "@/features/chat/hooks/running-children";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Document extensions that pop the ready-toast — the office deliverable.
@@ -128,6 +130,10 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
 
   // Background jobs: a view rebuilt from history has none until asked, and
   // the live feed only speaks on a change — seed the list once per session.
+  // The view lands after the session pointer flips (the fold is async), so the
+  // seed waits for it: a write into a session with no view is dropped, and this
+  // effect would never run again.
+  const hasView = useHasView(workspaceRoot, sessionId);
   const setBgJobs = useAgentStore((s) => s.setBgJobs);
   const writeJobs = useCallback(
     (jobs: BgJob[]) => setBgJobs(workspaceRoot, sessionId, jobs),
@@ -137,11 +143,14 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // Declared here because the seed writes into it first.
   const seenFailuresRef = useRef<Set<string> | null>(null);
   useEffect(() => {
-    if (!workspaceRoot || !sessionId) return;
+    if (!workspaceRoot || !sessionId || !hasView) return;
     let live = true;
     void listBgJobs(workspaceRoot, sessionId)
       .then((r) => {
         if (!live) return;
+        // A live snapshot may have landed while the read was in flight — the
+        // feed is newer than the persisted record, so it keeps the list.
+        if (viewNow(workspaceRoot, sessionId)?.bgJobsAt) return;
         // The seed is history, not news: whatever already failed is on the
         // pill and must not toast when the list lands.
         const seen = seenFailuresRef.current ?? new Set<string>();
@@ -153,8 +162,10 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     return () => {
       live = false;
     };
-  }, [workspaceRoot, sessionId, writeJobs]);
+  }, [workspaceRoot, sessionId, hasView, writeJobs]);
   const jobsSummary = useMemo(() => summarizeJobs(view.bgJobs), [view.bgJobs]);
+  // Delegated children still out — the composer's own capsule names them.
+  const runningChildren = useMemo(() => extractRunningChildren(view), [view]);
 
   // The dock is one sidebar for every list, so "has content" is the sum —
   // and which view to reveal follows whatever actually appeared.
@@ -163,7 +174,13 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   const setDockOpen = useDockStore((s) => s.setOpen);
   const setDockTab = useDockStore((s) => s.setTab);
   const filesTab = useDockStore((s) => s.filesTab);
-  const filesCount = view.changes.length + artifacts.length;
+  // 改动 is the WORKSPACE's uncommitted git files, not this session's write
+  // log: a reopened session replays part of its history, so its folded list
+  // shrinks while the tree it changed is still dirty. `repo: false` = a plain
+  // folder has no git to ask, and the session's own list is all there is.
+  const workspaceChanges = useWorkspaceChanges(workspaceRoot);
+  const changes = workspaceChanges.repo ? workspaceChanges.files : view.changes;
+  const filesCount = changes.length + artifacts.length;
   const panelCount = filesCount + view.bgJobs.length;
   // The dock's own open flag AND its content — an empty sidebar hides itself,
   // so a fresh session never lands on 「本会话还没有文件产出」 just because the
@@ -179,17 +196,17 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // label does not jump while it is up — if it still has content.
   const { tab: activeDockTab, count: activeDockCount } = dockPill({
     filesTab,
-    changes: view.changes.length,
+    changes: changes.length,
     artifacts: artifacts.length,
   });
   // The 改动 view's own numbers for the pill — same figures its header shows.
   const dockAdds = useMemo(
-    () => view.changes.reduce((n, c) => n + c.adds, 0),
-    [view.changes],
+    () => changes.reduce((n, c) => n + c.adds, 0),
+    [changes],
   );
   const dockDels = useMemo(
-    () => view.changes.reduce((n, c) => n + c.dels, 0),
-    [view.changes],
+    () => changes.reduce((n, c) => n + c.dels, 0),
+    [changes],
   );
   const dismissedRef = useRef(false);
   const autoOpenedRef = useRef(false);
@@ -373,6 +390,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               jobs={jobsSummary}
               jobsOpen={jobsShown}
               onToggleJobs={workspaceRoot ? handleToggleJobs : undefined}
+              subagents={runningChildren}
             />
 
             {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
@@ -391,7 +409,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               its own open/tab/width from the dock store; the page only feeds
               content and the manual-close dismissal. */}
           <SessionDock
-            changes={view.changes}
+            changes={changes}
             artifacts={artifacts}
             jobs={view.bgJobs}
             jobsAt={view.bgJobsAt}

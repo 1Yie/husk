@@ -53,3 +53,16 @@ test("a list that shrinks below the threshold does not flip back to expanded", (
   // Sticky: a turn that rewrites fewer files must not remount every diff.
   expect(shows(container, "new-0")).toBe(false);
 });
+
+test("a git row with no diff says why instead of drawing an empty card", () => {
+  const { container } = render(
+    <ChangesList
+      changes={[
+        { path: "logo.png", kind: "add", patches: [], adds: 0, dels: 0, fuzzy: false, binary: true },
+        { path: "big.json", kind: "update", patches: [], adds: 0, dels: 0, fuzzy: false, truncated: true },
+      ]}
+    />,
+  );
+  expect(shows(container, "二进制文件")).toBe(true);
+  expect(shows(container, "文件过大，未显示差异")).toBe(true);
+});

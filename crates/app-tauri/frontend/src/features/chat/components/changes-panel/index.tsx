@@ -1,6 +1,8 @@
 // ChangesList — the 改动 tab body of the unified session dock: every file the
 // agent touched, grouped by path, with each patch's diff stacked under it.
-// Fed by `SessionView.changes` (applyEvent live, viewFromHistory on open).
+// Fed by the workspace's git change list, or — where the root is no repository
+// — by `SessionView.changes` (applyEvent live, viewFromHistory on open); a
+// workspace row carries one patch, a session row one per write.
 // The dock owns the frame (title, tabs, close, width); this renders rows.
 
 import { memo, useCallback, useMemo, useRef, useState } from "react";
@@ -94,6 +96,14 @@ const FileRow = memo(function FileRow({
               <DiffView diff={p.diff} file={change.path} maxHeight={340} />
             </div>
           ))}
+          {/* A git row can have no patch to draw: git keeps no line diff for a
+              binary file, and an oversized one is dropped rather than rendered. */}
+          {change.patches.length === 0 && change.binary && (
+            <div className="px-1 text-[10.5px] text-neutral-400">二进制文件</div>
+          )}
+          {change.patches.length === 0 && !change.binary && change.truncated && (
+            <div className="px-1 text-[10.5px] text-neutral-400">文件过大，未显示差异</div>
+          )}
           {change.fuzzy && (
             <div className="px-1 text-[10.5px] text-amber-600 dark:text-amber-400">
               部分补丁为近似匹配，请核对
