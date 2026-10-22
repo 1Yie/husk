@@ -267,7 +267,15 @@ export function RulesPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
               />
             </Field>
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[auto_1fr]">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+            <Field label="描述">
+              <Input
+                value={desc}
+                onChange={(e) => setDesc(e.target.value)}
+                placeholder="这条规则约束什么"
+                className="h-8 text-xs"
+              />
+            </Field>
             <Field label="生效方式">
               <SettingSelect
                 value={mode}
@@ -277,27 +285,19 @@ export function RulesPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 ariaLabel="规则生效方式"
               />
             </Field>
-            {mode === "globs" && (
-              <Field label="文件匹配（逗号分隔）">
-                <Input
-                  value={globs}
-                  onChange={(e) => setGlobs(e.target.value)}
-                  placeholder="src/**/*.ts, docs/*.md"
-                  aria-invalid={!globsOk}
-                  className={cn("h-8 text-xs font-mono", !globsOk && "border-red-400 focus-visible:border-red-400")}
-                />
-                {!globsOk && <span className="text-[11px] text-red-600">至少写一个匹配模式</span>}
-              </Field>
-            )}
           </div>
-          <Field label="描述">
-            <Input
-              value={desc}
-              onChange={(e) => setDesc(e.target.value)}
-              placeholder="这条规则约束什么"
-              className="h-8 text-xs"
-            />
-          </Field>
+          {mode === "globs" && (
+            <Field label="文件匹配（逗号分隔）">
+              <Input
+                value={globs}
+                onChange={(e) => setGlobs(e.target.value)}
+                placeholder="src/**/*.ts, docs/*.md"
+                aria-invalid={!globsOk}
+                className={cn("h-8 text-xs font-mono", !globsOk && "border-red-400 focus-visible:border-red-400")}
+              />
+              {!globsOk && <span className="text-[11px] text-red-600">至少写一个匹配模式</span>}
+            </Field>
+          )}
           <Field label="规则内容">
             <Textarea
               value={body}
