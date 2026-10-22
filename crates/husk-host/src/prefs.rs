@@ -87,6 +87,12 @@ pub struct DefaultPreferences {
     /// deterministic path but skips the per-turn summarizer model call.
     #[serde(default = "default_pref_bool_true")]
     pub memory_distill: bool,
+    /// Semantic recall — score facts against the prompt with a local sentence
+    /// encoder instead of the bag-of-hashed-tokens stand-in. Its own switch
+    /// because it is the one part of memory that costs a model download; off
+    /// by default, and only a build carrying the `semantic` feature honours it.
+    #[serde(default)]
+    pub semantic_recall: bool,
     /// `.blueprint/` architecture layer — `false` ignores the directory
     /// everywhere (prompt index, `blueprint` tool, turn-end check).
     #[serde(default = "default_pref_bool_true")]
@@ -189,6 +195,7 @@ impl Default for DefaultPreferences {
             sandbox_denied_domains: None,
             memory_enabled: true,
             memory_distill: true,
+            semantic_recall: false,
             blueprint_enabled: true,
             desktop_notifications: true,
             notification_sound: true,
@@ -532,6 +539,20 @@ mod tests {
         let mut p = DefaultPreferences::default();
         assert!(!migrate_default_preferences(&mut p));
         assert_eq!(p.sandbox_enabled, None);
+    }
+
+    /// A row written before the semantic switch existed must read as off: the
+    /// model is a ~250 MB download, so an upgrade must not start one.
+    #[test]
+    fn a_row_without_the_semantic_switch_reads_as_off() {
+        let p: DefaultPreferences = serde_json::from_value(serde_json::json!({
+            "schema_version": DEFAULT_PREFERENCES_VERSION,
+        }))
+        .unwrap();
+        assert!(!p.semantic_recall);
+        // Saving it back leaves the switch off rather than dropping the field.
+        let round: DefaultPreferences = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+        assert!(!round.semantic_recall);
     }
 
     /// A row written before the subagent default existed leaves children on
