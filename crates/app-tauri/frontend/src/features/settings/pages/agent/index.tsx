@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { type AgentOverview, getAgentOverview } from "@/lib/agent-ipc/sessions";
 import { InstructionsPane } from "@/features/settings/pages/agent/instructions/index";
+import { RulesPane } from "@/features/settings/pages/agent/rules/index";
 import { ModelPane } from "@/features/settings/pages/agent/model/index";
 import { MemoryPane } from "@/features/settings/pages/agent/memory/index";
 import { SkillsPane } from "@/features/settings/pages/agent/skills/index";
@@ -11,6 +12,7 @@ import { SubagentPane } from "@/features/settings/pages/agent/subagent/index";
 
 export type AgentTab =
   | "instructions"
+  | "rules"
   | "model"
   | "memory"
   | "skills"
@@ -35,6 +37,7 @@ export function AgentSettings({ tab }: { tab: AgentTab }) {
   return (
     <div className="flex flex-col gap-8 w-full">
       {tab === "instructions" && <InstructionsPane />}
+      {tab === "rules" && <RulesPane ov={ov} reload={reload} />}
       {tab === "model" && <ModelPane ov={ov} reload={reload} />}
       {tab === "memory" && <MemoryPane />}
       {tab === "skills" && <SkillsPane ov={ov} reload={reload} />}

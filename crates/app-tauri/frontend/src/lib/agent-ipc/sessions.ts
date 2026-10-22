@@ -107,6 +107,29 @@ export async function changesFeed(id: number, tools: readonly string[]) {
   });
 }
 
+/** One uncommitted file of the workspace's git worktree. `path` is relative to
+ *  the workspace root; `diff` is HEAD against the bytes on disk (empty for a
+ *  binary or an oversized file). */
+export interface WorkspaceChangeRow {
+  path: string;
+  kind: "add" | "update" | "delete";
+  adds: number;
+  dels: number;
+  diff: string;
+  binary: boolean;
+  truncated: boolean;
+}
+
+/** The workspace's WHOLE uncommitted change list — the repository's own answer,
+ *  not a session's write log, so it does not shrink when a session reopens.
+ *  `repo: false` = the workspace is not a git repository (or git failed). */
+export function workspaceChanges(root?: string) {
+  return invoke<{ repo: boolean; files: WorkspaceChangeRow[] }>("agent_session", {
+    op: "workspace_changes",
+    path: root,
+  });
+}
+
 /** Duplicate a session's history into a fresh session (which becomes the
  * active one) — returns the new id + the copied history. */
 export async function forkSession(id: number) {
@@ -401,17 +424,35 @@ export interface SubagentItem {
   /** Manifest `thinking:` — absent → the subagent default, then the parent's
    *  level. */
   thinking?: string | null;
+  /** Runs on the read-only registry — inspection tools only, no file edits or
+   *  commands. */
+  readonly?: boolean;
+}
+
+/** One always-on constraint. `always` rules are inlined into the system
+ *  prompt; the rest are listed and read before editing a matching file. */
+export interface RuleItem {
+  name: string;
+  description: string;
+  /** Globs the rule claims — empty means it only applies when `always`. */
+  globs: string[];
+  always: boolean;
+  path: string;
+  /** Living in the global rules dir; a workspace rule shadows a same-named
+   *  global one. */
+  global: boolean;
 }
 
 /** The agent's configuration surfaces for the settings "智能体" pane —
  * read-only: system-prompt template, live model info, skills, MCP
- * plugins, and subagent specs. */
+ * plugins, subagent specs and rules. */
 export interface AgentOverview {
   instructions: string;
   model: ModelInfo;
   skills: SkillItem[];
   plugins: PluginItem[];
   subagents: SubagentItem[];
+  rules?: RuleItem[];
 }
 
 export function getAgentOverview() {
@@ -545,10 +586,52 @@ export function createSubagent(p: {
   model?: string;
   /** One of the thinking levels; "" or absent writes no `thinking:` line. */
   thinking?: string;
+  /** 权限: `true` = 只读 (inspection tools only), `false` = 可读写 (may edit
+   *  files and run commands); absent keeps the manifest's own line. */
+  readonly?: boolean;
 }) {
   return invoke<{ success: boolean; path: string }>("agent_session", {
     op: "create_subagent",
     payload: p,
+  });
+}
+
+/** One rule file, body included — the edit dialog's source. */
+export interface RuleDetail {
+  name: string;
+  description: string;
+  globs: string[];
+  always: boolean;
+  body: string;
+  scope: "workspace" | "global";
+}
+
+export function readRule(name: string) {
+  return invoke<RuleDetail>("agent_session", { op: "read_rule", payload: { name } });
+}
+
+/** Write a rule. `scope` picks the directory, so changing it MOVES the file. */
+export function saveRule(p: {
+  name: string;
+  scope: "workspace" | "global";
+  description: string;
+  globs: string[];
+  /** `true` = inline into the system prompt, `false` = read on glob match. */
+  always: boolean;
+  body: string;
+}) {
+  return invoke<{ success: boolean; path: string }>("agent_session", {
+    op: "save_rule",
+    payload: p,
+  });
+}
+
+/** Drop a rule file. `scope` names the one file; omitting it drops every
+ *  scope's copy of that name. */
+export function deleteRule(name: string, scope?: "workspace" | "global") {
+  return invoke<{ success: boolean }>("agent_session", {
+    op: "delete_rule",
+    payload: scope ? { name, scope } : { name },
   });
 }
 
@@ -872,10 +955,13 @@ export function setMemoryPersona(
   });
 }
 
-export function forgetMemory(key: string) {
+/** Drop a persona entry. `scope` names the one row to drop — the same label may
+ *  be a separate entry in the other scope; omitting it forgets the key in every
+ *  scope, which is what the `/forget` command means. */
+export function forgetMemory(key: string, scope?: "global" | "workspace") {
   return invoke<{ success: boolean; removed: boolean }>("agent_session", {
     op: "memory_forget",
-    payload: { key },
+    payload: scope ? { key, scope } : { key },
   });
 }
 
@@ -1009,6 +1095,9 @@ export interface SubagentDetail {
   model?: string | null;
   /** Manifest `thinking:` — absent → the subagent default, then the parent. */
   thinking?: string | null;
+  /** 权限: `true` = 只读, `false` = 可读写. A builtin without a manifest
+   *  reports its own registry (review is read-only). */
+  readonly?: boolean;
   /** No manifest file behind this profile — saving an edit writes an
    *  override that shadows the built-in. */
   builtin?: boolean;

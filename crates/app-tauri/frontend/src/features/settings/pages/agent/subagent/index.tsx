@@ -40,6 +40,13 @@ const THINKING_OPTIONS: SettingSelectOption[] = [
   ...THINKING_LEVELS.map((l) => ({ value: l.value, label: l.label })),
 ];
 
+/** 权限 — the registry the child spawns on. 只读 is what a new profile starts
+ *  with: a child that cannot write cannot surprise its parent. */
+const PERMISSION_OPTIONS: SettingSelectOption[] = [
+  { value: "readonly", label: "只读", description: "仅审查类工具" },
+  { value: "write", label: "可读写", description: "可改文件、执行命令" },
+];
+
 /** Limits a spec carries, as compact tag text. `max_tool_rounds` bounds the
  * model/tool loop, so it caps **steps** (one model request each), not turns. */
 function limits(a: SubagentItem): string[] {
@@ -66,6 +73,8 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
   /** Manifest `model:` as `provider/model`; "" = follow the subagent default. */
   const [model, setModel] = useState("");
   const [thinking, setThinking] = useState("");
+  /** 权限 — `true` writes `readonly: true` into the manifest. */
+  const [readonly, setReadonly] = useState(true);
   const [busy, setBusy] = useState(false);
   /** Editing an existing manifest (createSubagent overwrites it). */
   const [editName, setEditName] = useState<string | null>(null);
@@ -105,6 +114,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
     setEditName(null);
     setEditBuiltin(false);
     setName(""); setDesc(""); setPrompt(""); setModel(""); setThinking("");
+    setReadonly(true);
     setScope("workspace");
     setOpen(true);
   };
@@ -119,6 +129,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
       setPrompt(detail.prompt);
       setModel(detail.model ?? "");
       setThinking(detail.thinking ?? "");
+      setReadonly(detail.readonly ?? true);
       setScope(detail.scope);
       setOpen(true);
     } catch (e) {
@@ -147,6 +158,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
         prompt: prompt.trim(),
         model,
         thinking,
+        readonly,
       });
       toast.success(
         editBuiltin ? "已生成内置子代理的覆盖配置" : editName ? "已更新子代理" : "已创建子代理",
@@ -155,6 +167,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
       setEditName(null);
       setEditBuiltin(false);
       setName(""); setDesc(""); setPrompt(""); setModel(""); setThinking("");
+      setReadonly(true);
       reload();
     } catch (e) {
       toast.error(editName ? "保存失败" : "创建失败", { description: String(e) });
@@ -199,6 +212,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                 tags={
                   <>
                     <Tag>{a.builtin ? "内置" : a.global ? "全局" : "工作区"}</Tag>
+                    <Tag>{a.readonly ? "只读" : "可读写"}</Tag>
                     {a.model && <Tag className="font-mono">{a.model}</Tag>}
                     {a.thinking && (
                       <Tag>
@@ -279,7 +293,7 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                 内置子代理没有定义文件，保存会生成一份同名覆盖配置来替代它，工作区与全局各有一份时以工作区为准
               </p>
             )}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_auto]">
               <Field label="名称（小写 slug）">
                 <Input
                   value={name}
@@ -300,7 +314,21 @@ export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload:
                   ]}
                 />
               </Field>
+              <Field label="权限">
+                <SettingSelect
+                  value={readonly ? "readonly" : "write"}
+                  onChange={(v) => setReadonly(v === "readonly")}
+                  triggerClassName="w-full sm:w-32"
+                  options={PERMISSION_OPTIONS}
+                  ariaLabel="子代理权限"
+                />
+              </Field>
             </div>
+            {!readonly && (
+              <p className="rounded-lg bg-neutral-100 px-3 py-2 text-[11px] leading-relaxed text-neutral-600">
+                可读写的子代理以无界面方式运行，不会弹出审批：需要人工确认的操作会被直接拒绝，只在确实需要时开启
+              </p>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_auto]">
               <Field label="描述">
                 <Input

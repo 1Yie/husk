@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test } from "vitest";
 import { MemoryPane } from "../index";
@@ -46,7 +46,7 @@ test("memory lists expand independently in batches and can return to the compact
   expect(screen.queryByText("fact-6")).not.toBeInTheDocument();
 });
 
-test("a workspace-scoped preference is marked as such", async () => {
+test("each preference carries its scope as a tag, not as a description suffix", async () => {
   const data: MemoryOverview = {
     enabled: true,
     distill: true,
@@ -60,8 +60,171 @@ test("a workspace-scoped preference is marked as such", async () => {
   mockCommand("agent_session", () => data, "memory_overview");
   renderWithProviders(<MemoryPane />);
 
-  expect(await screen.findByText("make -j4 · 仅本工作区")).toBeInTheDocument();
-  expect(screen.getByText("中文")).toBeInTheDocument();
+  // The tag says which layer the entry belongs to; the value stays the value.
+  const workspaceRow = (await screen.findByText("make -j4")).closest(".group")!;
+  expect(within(workspaceRow as HTMLElement).getByText("工作区")).toBeInTheDocument();
+  expect(workspaceRow).not.toHaveTextContent("仅本工作区");
+  const globalRow = screen.getByText("中文").closest(".group")!;
+  expect(within(globalRow as HTMLElement).getByText("全局")).toBeInTheDocument();
+});
+
+test("the scope tabs count each layer and the pagination follows the filter", async () => {
+  const user = userEvent.setup();
+  const data: MemoryOverview = {
+    enabled: true,
+    distill: true,
+    persona: [
+      ...Array.from({ length: 12 }, (_, i) => ({
+        key: `preference-${i + 1}`,
+        value: `value-${i + 1}`,
+        scope: "global" as const,
+      })),
+      { key: "build", value: "make -j4", scope: "workspace" as const },
+    ],
+    facts: [],
+    episodes: 0,
+  };
+  mockCommand("agent_session", () => data, "memory_overview");
+  renderWithProviders(<MemoryPane />);
+
+  await screen.findByText("preference-5");
+  // The counts are per layer, not for the list as a whole.
+  const tab = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
+  expect(tab("工作区")).toHaveTextContent("1");
+  expect(tab("全局")).toHaveTextContent("12");
+  await user.click(tab("工作区"));
+  expect(screen.getByText("make -j4")).toBeInTheDocument();
+  expect(screen.queryByText("preference-1")).not.toBeInTheDocument();
+  // One row is under the preview cap: no footer to expand.
+  expect(screen.queryByRole("button", { name: "显示更多个人偏好" })).not.toBeInTheDocument();
+
+  // The footer counts what the filter shows, not everything the store holds.
+  await user.click(tab("全局"));
+  expect(screen.getByText("preference-5")).toBeInTheDocument();
+  expect(screen.queryByText("build")).not.toBeInTheDocument();
+  expect(screen.getByText("已显示 5 / 12 条")).toBeInTheDocument();
+});
+
+test("adding a preference with 仅当前工作区 writes it to the workspace scope", async () => {
+  const user = userEvent.setup();
+  mockCommand("agent_session", () => overview(0, 0), "memory_overview");
+  mockCommand("agent_session", () => ({ success: true }), "memory_set");
+  renderWithProviders(<MemoryPane />);
+
+  await user.click(await screen.findByRole("button", { name: "添加" }));
+  await user.type(screen.getByPlaceholderText("key"), "build");
+  await user.type(screen.getByPlaceholderText("value"), "make -j4");
+  // A new preference is global until the dialog is told otherwise.
+  expect(screen.getByRole("button", { name: "偏好范围" })).toHaveTextContent("全局");
+  await user.click(screen.getByRole("button", { name: "偏好范围" }));
+  await user.click(await screen.findByRole("menuitemradio", { name: "仅当前工作区" }));
+  await user.click(screen.getByRole("button", { name: "保存" }));
+
+  await waitFor(() =>
+    expect(tauri.invoke).toHaveBeenCalledWith("agent_session", {
+      op: "memory_set",
+      payload: { key: "build", value: "make -j4", scope: "workspace" },
+    }),
+  );
+});
+
+test("editing opens on the entry's own scope, and changing it forgets the old row first", async () => {
+  const user = userEvent.setup();
+  const data: MemoryOverview = {
+    enabled: true,
+    distill: true,
+    persona: [{ key: "language", value: "中文", scope: "global" }],
+    facts: [],
+    episodes: 0,
+  };
+  mockCommand("agent_session", () => data, "memory_overview");
+  mockCommand("agent_session", () => ({ success: true }), "memory_set");
+  mockCommand("agent_session", () => ({ success: true, removed: true }), "memory_forget");
+  renderWithProviders(<MemoryPane />);
+
+  await user.click(await screen.findByRole("button", { name: "编辑" }));
+  expect(screen.getByRole("button", { name: "偏好范围" })).toHaveTextContent("全局");
+  await user.click(screen.getByRole("button", { name: "偏好范围" }));
+  await user.click(await screen.findByRole("menuitemradio", { name: "仅当前工作区" }));
+  // The move is announced — the label cannot live in both scopes at once.
+  expect(screen.getByText(/移到新范围/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "保存" }));
+
+  await waitFor(() =>
+    expect(tauri.invoke).toHaveBeenCalledWith("agent_session", {
+      op: "memory_set",
+      payload: { key: "language", value: "中文", scope: "workspace" },
+    }),
+  );
+  // Only the row it came from: the same label may be kept in the other scope,
+  // and that entry is not part of the move.
+  expect(tauri.invoke).toHaveBeenCalledWith("agent_session", {
+    op: "memory_forget",
+    payload: { key: "language", scope: "global" },
+  });
+  const ops = tauri.invoke.mock.calls
+    .map(([, args]) => args?.op)
+    .filter((op) => op === "memory_forget" || op === "memory_set");
+  expect(ops).toEqual(["memory_forget", "memory_set"]);
+});
+
+test("editing without a scope change overwrites the row and forgets nothing", async () => {
+  const user = userEvent.setup();
+  const data: MemoryOverview = {
+    enabled: true,
+    distill: true,
+    persona: [{ key: "language", value: "中文", scope: "workspace" }],
+    facts: [],
+    episodes: 0,
+  };
+  mockCommand("agent_session", () => data, "memory_overview");
+  mockCommand("agent_session", () => ({ success: true }), "memory_set");
+  mockCommand("agent_session", () => ({ success: true, removed: true }), "memory_forget");
+  renderWithProviders(<MemoryPane />);
+
+  await user.click(await screen.findByRole("button", { name: "编辑" }));
+  // Same scope: nothing moves, so the dialog says nothing about one.
+  expect(screen.queryByText(/移到新范围/)).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "保存" }));
+
+  await waitFor(() =>
+    expect(tauri.invoke).toHaveBeenCalledWith("agent_session", {
+      op: "memory_set",
+      payload: { key: "language", value: "中文", scope: "workspace" },
+    }),
+  );
+  expect(tauri.invoke).not.toHaveBeenCalledWith(
+    "agent_session",
+    expect.objectContaining({ op: "memory_forget" }),
+  );
+});
+
+test("deleting a row forgets that row's scope, not the label in every scope", async () => {
+  const user = userEvent.setup();
+  const data: MemoryOverview = {
+    enabled: true,
+    distill: true,
+    persona: [
+      { key: "style", value: "全局值", scope: "global" },
+      { key: "style", value: "工作区值", scope: "workspace" },
+    ],
+    facts: [],
+    episodes: 0,
+  };
+  mockCommand("agent_session", () => structuredClone(data), "memory_overview");
+  mockCommand("agent_session", () => ({ success: true, removed: true }), "memory_forget");
+  renderWithProviders(<MemoryPane />);
+
+  const row = (await screen.findByText("工作区值")).closest(".group")!;
+  await user.click(row.querySelector<HTMLButtonElement>('button[title="删除"]')!);
+  await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "删除" }));
+
+  await waitFor(() =>
+    expect(tauri.invoke).toHaveBeenCalledWith("agent_session", {
+      op: "memory_forget",
+      payload: { key: "style", scope: "workspace" },
+    }),
+  );
 });
 
 test("search includes hidden facts and changing the query resets the result preview", async () => {

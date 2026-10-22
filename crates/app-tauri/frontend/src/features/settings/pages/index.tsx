@@ -12,6 +12,7 @@ import {
   FileText,
   FlaskConical,
   Info,
+  ListCheck,
   Palette,
   Plug,
   SlidersHorizontal,
@@ -44,6 +45,7 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
     label: "智能体",
     items: [
       { key: "instructions", label: "指令", icon: <FileText className="h-4 w-4 shrink-0" /> },
+      { key: "rules", label: "规则", icon: <ListCheck className="h-4 w-4 shrink-0" /> },
       { key: "model", label: "模型", icon: <Cpu className="h-4 w-4 shrink-0" /> },
       { key: "memory", label: "记忆", icon: <Brain className="h-4 w-4 shrink-0" /> },
       { key: "skills", label: "技能", icon: <Sparkles className="h-4 w-4 shrink-0" /> },

@@ -1,6 +1,7 @@
 // 「记忆」pane — the read/write side of the three memory write paths
 // (remember tool, /remember command, turn-end distillation). Persona is
-// global key/value; facts + episodes are scoped to this workspace.
+// key/value with a global or a workspace scope; facts + episodes are always
+// this workspace's.
 
 import { SkeletonKvRows } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -14,6 +15,8 @@ import {
   CircleUser,
   Clock,
   Database,
+  Folder,
+  Globe,
   Plus,
   Radar,
   Sparkles,
@@ -33,7 +36,7 @@ import {
 } from "@/components/ui/dialog";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { AnimatedHeight } from "@/components/ui/animated-height";
-import { SettingsSection } from "@/features/settings/components";
+import { SettingSelect, SettingsSection } from "@/features/settings/components";
 import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import {
@@ -41,7 +44,9 @@ import {
   Field,
   ItemIcon,
   ItemRow,
+  ScopeTabs,
   SearchBox,
+  Tag,
   matchQuery,
 } from "@/features/settings/pages/agent/shared/index";
 import { timeAgo } from "@/lib/time";
@@ -55,8 +60,25 @@ import {
   setDefaultPrefs,
   setMemoryPersona,
   type MemoryOverview,
+  type PersonaEntry,
   type SemanticProgress,
 } from "@/lib/agent-ipc/sessions";
+
+/** Where a preference applies. */
+type Scope = "global" | "workspace";
+
+/** The pane's own view of a row — the wire omits `scope` on older payloads,
+ *  and those entries are global. */
+type PersonaRow = PersonaEntry & { scope: Scope };
+
+/** The 个人偏好 filter: 全部 plus one tab per scope. */
+type ScopeFilter = "all" | Scope;
+
+/** Icon tint per scope — the glyph alone is easy to miss in a list of twelve. */
+const SCOPE_ICON_TONE: Record<Scope, string> = {
+  global: "text-sky-600 dark:text-sky-300",
+  workspace: "text-violet-600 dark:text-violet-300",
+};
 
 /** Confidence → tag tone: the distiller's certainty at a glance. */
 const confidenceTone = (c: number) => (c >= 0.8 ? "success" : c >= 0.5 ? "neutral" : "warn");
@@ -117,10 +139,14 @@ function MemoryListFooter({ label, listId, total, visible, onMore, onCollapse }:
 export function MemoryPane() {
   const [ov, setOv] = useState<MemoryOverview | null>(null);
   const [open, setOpen] = useState(false);
-  /** Persona key being edited — saving overwrites it, so the key stays locked. */
-  const [editKey, setEditKey] = useState<string | null>(null);
+  /** The preference being edited — saving overwrites it, so the key stays locked. */
+  const [edit, setEdit] = useState<PersonaRow | null>(null);
   const [newKey, setNewKey] = useState("");
   const [newVal, setNewVal] = useState("");
+  /** Where the entry lands — 全局 unless the 工作区 filter says otherwise. */
+  const [newScope, setNewScope] = useState<Scope>("global");
+  /** The 个人偏好 filter; the list and its counts both follow it. */
+  const [personaScope, setPersonaScope] = useState<ScopeFilter>("all");
   const [busy, setBusy] = useState(false);
   const [factQuery, setFactQuery] = useState("");
   const [personaLimit, setPersonaLimit] = useState(PREVIEW_COUNT);
@@ -200,17 +226,41 @@ export function MemoryPane() {
   };
 
   const startAdd = () => {
-    setEditKey(null);
+    setEdit(null);
     setNewKey("");
     setNewVal("");
+    // The filter already states the intent: adding while 工作区 is selected
+    // must not need the scope picked a second time.
+    setNewScope(personaScope === "workspace" ? "workspace" : "global");
     setOpen(true);
   };
 
-  const startEdit = (key: string, value: string) => {
-    setEditKey(key);
-    setNewKey(key);
-    setNewVal(value);
+  const startEdit = (p: PersonaEntry) => {
+    setEdit({ ...p, scope: p.scope ?? "global" });
+    setNewKey(p.key);
+    setNewVal(p.value);
+    setNewScope(p.scope ?? "global");
     setOpen(true);
+  };
+
+  /** Write the entry in `scope`. A changed scope is a move, and only the row it
+   *  came from is forgotten — the label may be a separate entry in the other
+   *  scope, and dropping that one would delete a preference the user never
+   *  touched. It is written back if the re-write fails: a move must not end
+   *  with the preference gone. */
+  const writePersona = async (key: string, value: string, scope: Scope) => {
+    if (!edit || edit.scope === scope) {
+      await setMemoryPersona(key, value, scope);
+      return;
+    }
+    const from = edit;
+    await forgetMemory(key, from.scope);
+    try {
+      await setMemoryPersona(key, value, scope);
+    } catch (e) {
+      await setMemoryPersona(key, from.value, from.scope).catch(() => {});
+      throw e;
+    }
   };
 
   const savePersona = async () => {
@@ -219,10 +269,10 @@ export function MemoryPane() {
     if (!k || !v) return;
     setBusy(true);
     try {
-      await setMemoryPersona(k, v);
-      toast.success(editKey ? "已更新偏好" : "已记住偏好");
+      await writePersona(k, v, newScope);
+      toast.success(edit ? "已更新偏好" : "已记住偏好");
       setOpen(false);
-      setEditKey(null);
+      setEdit(null);
       setNewKey("");
       setNewVal("");
       reload();
@@ -235,7 +285,17 @@ export function MemoryPane() {
 
   const persona = ov?.persona ?? [];
   const facts = ov?.facts ?? [];
-  const shownPersona = persona.slice(0, personaLimit);
+  /** Old payloads carry no scope, and everything written before scoping was global. */
+  const scopeOf = (p: PersonaEntry): Scope => p.scope ?? "global";
+  const scopedPersona = persona.filter(
+    (p) => personaScope === "all" || scopeOf(p) === personaScope,
+  );
+  const scopeCounts = {
+    all: persona.length,
+    global: persona.filter((p) => scopeOf(p) === "global").length,
+    workspace: persona.filter((p) => scopeOf(p) === "workspace").length,
+  };
+  const shownPersona = scopedPersona.slice(0, personaLimit);
   const filteredFacts = facts.filter((f) => matchQuery(factQuery, f.text));
   const shownFacts = filteredFacts.slice(0, factLimit);
 
@@ -365,7 +425,20 @@ export function MemoryPane() {
         description="全局或仅当前工作区，每轮对话都会附带"
         actions={
           <>
-            {count(ov ? persona.length : undefined)}
+            <ScopeTabs
+              value={personaScope}
+              onChange={(v) => {
+                setPersonaScope(v);
+                // A narrower filter starts at the top: a list already expanded
+                // to twelve rows would hide the point of switching.
+                setPersonaLimit(PREVIEW_COUNT);
+              }}
+              options={[
+                { value: "all", label: "全部", count: ov ? scopeCounts.all : undefined },
+                { value: "global", label: "全局", count: ov ? scopeCounts.global : undefined },
+                { value: "workspace", label: "工作区", count: ov ? scopeCounts.workspace : undefined },
+              ]}
+            />
             <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={startAdd}>
               <Plus className="h-3.5 w-3.5" /> 添加
             </Button>
@@ -377,30 +450,37 @@ export function MemoryPane() {
           <KvListContent id={personaListId}>
             {!ov ? (
               <SkeletonKvRows rows={2} />
-            ) : persona.length ? (
+            ) : scopedPersona.length ? (
               shownPersona.map((p, i) => (
                 <ItemRow
-                  key={p.key}
+                  key={`${p.scope}:${p.key}`}
                   className={revealClass(i)}
                   icon={
-                    <ItemIcon>
-                      <CircleUser className="h-4 w-4" />
+                    <ItemIcon className={SCOPE_ICON_TONE[scopeOf(p)]}>
+                      {p.scope === "workspace" ? (
+                        <Folder className="h-4 w-4" />
+                      ) : (
+                        <Globe className="h-4 w-4" />
+                      )}
                     </ItemIcon>
                   }
                   title={p.key}
                   monoTitle
-                  description={p.scope === "workspace" ? `${p.value} · 仅本工作区` : p.value}
+                  tags={<Tag>{p.scope === "workspace" ? "工作区" : "全局"}</Tag>}
+                  description={p.value}
                   actions={
                     <>
                       <Button variant="ghost" size="icon" className="h-6 w-6" title="编辑"
-                        onClick={() => startEdit(p.key, p.value)}>
+                        onClick={() => startEdit(p)}>
                         <SquarePen className="h-3.5 w-3.5" />
                       </Button>
                       <DeleteButton
                         confirmTitle="删除偏好"
                         confirmDescription={`确定要删除偏好「${p.key}」吗？此操作无法撤销。`}
                         onConfirm={() =>
-                          void forgetMemory(p.key)
+                          // Only the row on screen: the same label may be kept in
+                          // the other scope, and that entry is not what was clicked.
+                          void forgetMemory(p.key, scopeOf(p))
                             .then(() => {
                               toast.success("已删除偏好");
                               reload();
@@ -415,8 +495,18 @@ export function MemoryPane() {
             ) : (
               <EmptyState
                 icon={<CircleUser className="h-4 w-4" />}
-                title="暂无偏好"
-                description="对话中说「记住…」或在此手动添加，例如回复语言、代码风格"
+                title={
+                  personaScope === "workspace"
+                    ? "工作区暂无偏好"
+                    : personaScope === "global"
+                      ? "全局暂无偏好"
+                      : "暂无偏好"
+                }
+                description={
+                  personaScope === "all"
+                    ? "对话中说「记住…」或在此手动添加，例如回复语言、代码风格"
+                    : "切换范围查看其它偏好"
+                }
                 action={
                   <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={startAdd}>
                     <Plus className="h-3.5 w-3.5" /> 添加偏好
@@ -429,7 +519,7 @@ export function MemoryPane() {
           <MemoryListFooter
             label="个人偏好"
             listId={personaListId}
-            total={persona.length}
+            total={scopedPersona.length}
             visible={shownPersona.length}
             onMore={() => setPersonaLimit((n) => n + PREVIEW_COUNT)}
             onCollapse={() => setPersonaLimit(PREVIEW_COUNT)}
@@ -439,8 +529,13 @@ export function MemoryPane() {
 
       {/* ---------- 记忆事实（当前工作区） ---------- */}
       <SettingsSection
-        title="记忆事实"
-        description="当前工作区，由蒸馏或 remember 工具写入"
+        title={
+          <span className="flex items-center gap-2">
+            记忆事实
+            <Tag icon={<Folder className="h-2.5 w-2.5" />}>工作区</Tag>
+          </span>
+        }
+        description="只在本工作区生效，由蒸馏或 remember 工具写入"
         actions={
           <>
             {count(ov ? facts.length : undefined)}
@@ -586,7 +681,7 @@ export function MemoryPane() {
       <FormDialog
         open={open}
         onOpenChange={setOpen}
-        title={editKey ? "编辑偏好" : "添加偏好"}
+        title={edit ? "编辑偏好" : "添加偏好"}
         submitLabel="保存"
         busyLabel="保存中…"
         busy={busy}
@@ -594,15 +689,29 @@ export function MemoryPane() {
         onSubmit={() => void savePersona()}
       >
         <div className="flex flex-col gap-3 py-1">
-          <Field label="键（如 language）">
-            <Input
-              value={newKey}
-              disabled={!!editKey}
-              onChange={(e) => setNewKey(e.target.value)}
-              placeholder="key"
-              className="h-8 text-xs font-mono"
-            />
-          </Field>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+            <Field label="键（如 language）">
+              <Input
+                value={newKey}
+                disabled={!!edit}
+                onChange={(e) => setNewKey(e.target.value)}
+                placeholder="key"
+                className="h-8 text-xs font-mono"
+              />
+            </Field>
+            <Field label="范围">
+              <SettingSelect
+                value={newScope}
+                onChange={(v) => setNewScope(v as Scope)}
+                triggerClassName="w-full sm:w-44"
+                ariaLabel="偏好范围"
+                options={[
+                  { value: "global", label: "全局" },
+                  { value: "workspace", label: "仅当前工作区" },
+                ]}
+              />
+            </Field>
+          </div>
           <Field label="值（如 使用中文回复）">
             <Input
               value={newVal}
@@ -611,6 +720,13 @@ export function MemoryPane() {
               className="h-8 text-xs"
             />
           </Field>
+          {/* A scope change is a move, not a second entry — the row it came from
+           *  is forgotten on save. Say so before it happens. */}
+          {edit && edit.scope !== newScope && (
+            <p className="rounded-lg bg-neutral-100 px-3 py-2 text-[11px] leading-relaxed text-neutral-600">
+              保存会把这条偏好移到新范围，原范围不再保留
+            </p>
+          )}
         </div>
       </FormDialog>
 
