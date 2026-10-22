@@ -8,5 +8,7 @@ pub mod workspace;
 
 pub use git::{git_snapshot, GitSnapshot};
 pub use hunks::{HunkTracker, TrackingMode, UndoError, UndoOp};
-pub use memory::{Episode, Fact, MemoryStore, Persona, TurnDistiller, TurnRecord};
+pub use memory::{
+    Episode, Fact, MemoryStore, Persona, PersonaScope, PurgeReport, TurnDistiller, TurnRecord,
+};
 pub use workspace::{WorkspaceScanner, WorkspaceTree};

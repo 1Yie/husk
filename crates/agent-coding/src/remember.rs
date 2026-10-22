@@ -1,12 +1,17 @@
-//! `remember` — the agent's write path into persistent memory.
+//! `remember` / `memory_search` — the agent's write and read paths into
+//! persistent memory.
 //!
-//! The read side already exists (the `<memory>` block in the system prompt);
-//! this tool lets the agent decide in the moment that something the user
-//! said is a durable preference rather than a one-off request — "以后都用
-//! 中文回答" is worth remembering, "改一下这个文件" is not. Entries land in
-//! the shared persona k/v of `memory.db` and surface in the `── persona ──`
-//! section from the next turn on. The user's `/remember` + `/forget`
-//! commands and the memory distiller write the same table.
+//! Writing lets the agent decide in the moment that something the user said
+//! is a durable preference rather than a one-off request — "以后都用中文回答"
+//! is worth remembering, "改一下这个文件" is not. Entries land in the shared
+//! persona k/v of `memory.db`; the host injects what the session has not seen
+//! yet on the next message, and every new session renders it up-front. The
+//! user's `/remember` + `/forget` commands and the memory distiller write the
+//! same table.
+//!
+//! Reading exists because the system prompt only carries persona: facts are
+//! pushed per message and episodes not at all, so an explicit question about
+//! what was decided earlier needs a tool.
 
 use std::sync::Arc;
 
@@ -16,7 +21,7 @@ use agent_kernel::tools::registry::{
     schema_for, ExecFn, ToolClass, ToolError, ToolResult, ToolSpec,
 };
 
-use agent_context::memory::MemoryStore;
+use agent_context::memory::{MemoryStore, PersonaScope};
 
 /// Shared, swappable handle to the workspace memory store. Cloning shares the
 /// same slot, so a subagent or a tool sees the owning actor's current switch
@@ -52,6 +57,10 @@ struct RememberArgs {
     key: String,
     /// The durable preference to keep — one line.
     value: String,
+    /// `true` when the preference should follow the user into every project
+    /// (回答语言、语气、提交习惯). Default `false` — this workspace only.
+    #[serde(default)]
+    global: bool,
 }
 
 pub fn spec() -> ToolSpec {
@@ -89,26 +98,114 @@ pub fn spec() -> ToolSpec {
                         .into(),
                 ));
             }
-            memory
-                .set_persona(key, value)
-                .map_err(|e| ToolError::Failed(format!("memory write failed: {e}")))?;
-            Ok(ToolResult::text(format!("remembered `{key}: {value}`")))
+            let scope = if parsed.global {
+                PersonaScope::Global
+            } else {
+                PersonaScope::Workspace
+            };
+            // The write opens the store's only write transaction and, with the
+            // semantic model loaded, runs inference before it — seconds of CPU
+            // that must not hold a runtime worker every session shares.
+            let key = key.to_string();
+            let value = value.to_string();
+            let written = value.clone();
+            let landed = tokio::task::spawn_blocking(move || {
+                memory.set_persona_scoped(scope, &key, &written)
+            })
+            .await
+            .map_err(|e| ToolError::Failed(format!("memory write failed: {e}")))?
+            .map_err(|e| ToolError::Failed(format!("memory write failed: {e}")))?;
+            let where_ = if parsed.global {
+                "all workspaces"
+            } else {
+                "this workspace"
+            };
+            Ok(ToolResult::text(format!(
+                "remembered `{landed}: {value}` ({where_})"
+            )))
         }
         .boxed()
     });
     ToolSpec {
         name: "remember",
         schema: schema_for::<RememberArgs>(
-            "Store a durable user preference in persistent memory — it surfaces \
-             in the `── persona ──` block every following turn. Call it when the \
-             user states something meant to hold across sessions (\"用中文回答\", \
-             \"先跑 fmt 再 test\"); a one-off request is NOT memory. `key` is a \
-             short label (reuse overwrites), `value` one line. The user can see \
-             entries via `/memory` and remove them via `/forget <key>` — never \
-             store secrets or ephemeral task state.",
+            "Store a durable user preference in persistent memory — the user sees \
+             it from the next message on, and every new session starts with it. \
+             Call it when the user states something meant to hold across sessions \
+             (\"用中文回答\", \"先跑 fmt 再 test\"); a one-off request is NOT memory. \
+             `key` is a short label (reuse overwrites), `value` one line, and \
+             `global: true` only for preferences that should follow the user into \
+             other projects — everything else stays scoped to this workspace. \
+             The user can see entries via `/memory` and remove them via \
+             `/forget <key>` — never store secrets or ephemeral task state.",
         ),
         readonly: false,
         class: ToolClass::SessionMutation,
+        network: false,
+        staged: false,
+        review: None,
+        exec,
+    }
+}
+
+/// What the agent asks memory for.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SearchArgs {
+    /// The question or topic to look up — natural language, not a regex.
+    query: String,
+    /// How many stored facts to consider (default 5).
+    limit: Option<usize>,
+}
+
+/// `memory_search` — the read side of the same store. Read-only: the system
+/// prompt carries persona, facts arrive per message, and episodes not at all,
+/// so "what did we decide about X" needs a way to ask.
+pub fn search_spec() -> ToolSpec {
+    let exec: ExecFn = Arc::new(|args, ctx| {
+        let parsed: SearchArgs = match serde_json::from_value(args) {
+            Ok(a) => a,
+            Err(e) => {
+                return async move { Err(ToolError::Args(format!("memory_search args: {e}"))) }
+                    .boxed()
+            }
+        };
+        async move {
+            let Some(memory) = ctx.ext.get::<MemoryHandle>().and_then(|m| m.get()) else {
+                return Err(ToolError::Failed(
+                    "memory_search is unavailable — memory disabled or store failed to open".into(),
+                ));
+            };
+            let query = parsed.query.trim();
+            if query.is_empty() {
+                return Err(ToolError::Args(
+                    "`memory_search` needs a non-empty query".into(),
+                ));
+            }
+            // Recall scans the fact table and, with the semantic model loaded,
+            // runs inference — seconds of CPU that must not hold a runtime
+            // worker every session shares.
+            let query = query.to_string();
+            let limit = parsed.limit.unwrap_or(5);
+            let report = tokio::task::spawn_blocking(move || memory.search_report(&query, limit))
+                .await
+                .map_err(|e| ToolError::Failed(format!("memory read failed: {e}")))?
+                .map_err(|e| ToolError::Failed(format!("memory read failed: {e}")))?;
+            Ok(ToolResult::text(report))
+        }
+        .boxed()
+    });
+    ToolSpec {
+        name: "memory_search",
+        schema: schema_for::<SearchArgs>(
+            "Search persistent project memory — facts distilled from earlier \
+             sessions plus the most recent turn summaries. The system prompt \
+             already carries the user's stated preferences; call this for project \
+             knowledge (build/test commands, conventions, past decisions) that is \
+             not already in front of you. An empty answer means nothing was ever \
+             stored — it is not an error.",
+        ),
+        readonly: true,
+        class: ToolClass::Observation,
         network: false,
         staged: false,
         review: None,

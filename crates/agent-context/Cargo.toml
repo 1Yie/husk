@@ -17,6 +17,19 @@ serde_json.workspace = true
 xxhash-rust.workspace = true
 hnsw_rs = "0.3"
 tokio.workspace = true
+# Local sentence embeddings for recall. Pulls ONNX Runtime binaries plus a
+# ~250 MB model downloaded on first use, so it is opt-in: rustls keeps the
+# TLS stack out of the dependency tree (this crate forbids `reqwest`).
+fastembed = { version = "7", optional = true, default-features = false, features = [
+    "ort-download-binaries-rustls-tls",
+    "hf-hub-rustls-tls",
+] }
+
+[features]
+default = []
+# Recall scored by a local multilingual embedding model instead of the
+# bag-of-hashed-tokens stand-in. See `memory::semantic`.
+semantic = ["dep:fastembed"]
 
 [dev-dependencies]
 tempfile = "3"

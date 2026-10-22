@@ -67,6 +67,9 @@ pub struct CommandCtx<'a> {
     /// The session's `.blueprint/` switch — `/blueprint` answers "off" when
     /// it is false.
     pub blueprint_enabled: bool,
+    /// The session's linked workspaces. `@path` reaches them too (by absolute
+    /// path only — a relative token always names the workspace).
+    pub linked_roots: &'a [agent_capabilities::LinkedRoot],
 }
 
 /// The registry — built-ins first; plugin commands register under
@@ -100,14 +103,11 @@ impl CommandRegistry {
             let line = format!("`${skill_name}` 不是可用技能 — 已作为普通消息发送");
             let _ = ctx.ui_tx.send(UiEvent::SystemMessage(line.clone()));
             ctx.history.push(ChatMessage::notice(line));
-            return Some(CommandResult::FeedToAgent(expand_user_tokens(
-                t,
-                ctx.workspace_root,
-            )));
+            return Some(CommandResult::FeedToAgent(expand_user_tokens(t, ctx.workspace_root, ctx.linked_roots)));
         }
         // Plain prompt — still expand `@path`/`$skill` mentions so the
         // model sees file contents / skill instructions, not bare tokens.
-        let expanded = expand_user_tokens(t, ctx.workspace_root);
+        let expanded = expand_user_tokens(t, ctx.workspace_root, ctx.linked_roots);
         if expanded != t {
             return Some(CommandResult::FeedToAgent(expanded));
         }
@@ -283,6 +283,7 @@ impl CommandRegistry {
                     CommandResult::FeedToAgent(expand_user_tokens(
                         &t_fallback(name, args),
                         ctx.workspace_root,
+                        ctx.linked_roots,
                     ))
                 }
             }
@@ -303,7 +304,7 @@ fn t_fallback<'a>(name: &'a str, args: &'a str) -> String {
 /// content block so the model reads the file, not just its name. Missing /
 /// binary / oversized files degrade to a bracketed note rather than
 /// silently dropping the mention.
-fn expand_mentions(text: &str, root: &Path) -> String {
+fn expand_mentions(text: &str, root: &Path, linked: &[agent_capabilities::LinkedRoot]) -> String {
     if !text.contains('@') {
         return text.to_string();
     }
@@ -328,9 +329,11 @@ fn expand_mentions(text: &str, root: &Path) -> String {
             rest = after;
             continue;
         }
-        // Resolve inside the workspace — refuse escapes (`@../x`, absolute).
-        // Normalize `..`/`.` lexically first so a non-existent escape target
-        // is still caught (canonicalize fails on missing files).
+        // Resolve inside the workspace, or inside a linked workspace for an
+        // absolute token — that is the only way to name a file the workspace
+        // root cannot reach. A relative token always means the workspace.
+        // `..`/`.` are normalized lexically first so a non-existent escape
+        // target is still caught (canonicalize fails on missing files).
         let rel = Path::new(token);
         let mut norm = PathBuf::new();
         let mut escapes = rel.is_absolute();
@@ -347,10 +350,16 @@ fn expand_mentions(text: &str, root: &Path) -> String {
                 RootDir | Prefix(_) => escapes = true,
             }
         }
-        let joined = root.join(&norm);
-        let canon = joined.canonicalize().unwrap_or_else(|_| joined.clone());
+        let canon = if rel.is_absolute() {
+            rel.canonicalize().unwrap_or_else(|_| rel.to_path_buf())
+        } else {
+            let joined = root.join(&norm);
+            joined.canonicalize().unwrap_or_else(|_| joined.clone())
+        };
         let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        if escapes || !canon.starts_with(&root_canon) {
+        let in_workspace = !escapes && canon.starts_with(&root_canon);
+        let in_linked = linked.iter().any(|r| canon.starts_with(&r.path));
+        if !in_workspace && !in_linked {
             out.push_str(&format!("`@{token}` (outside workspace — not inlined)"));
             rest = &after[end..];
             continue;
@@ -443,8 +452,12 @@ fn expand_skill_refs(text: &str, root: &Path) -> String {
 /// (only the user's own text is scanned, no injected content yet), then
 /// `@path` mentions over the result (so `@` tokens inside an injected
 /// skill body still resolve).
-fn expand_user_tokens(text: &str, root: &Path) -> String {
-    expand_mentions(&expand_skill_refs(text, root), root)
+fn expand_user_tokens(
+    text: &str,
+    root: &Path,
+    linked: &[agent_capabilities::LinkedRoot],
+) -> String {
+    expand_mentions(&expand_skill_refs(text, root), root, linked)
 }
 
 #[cfg(test)]
@@ -504,6 +517,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
@@ -528,6 +542,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
@@ -551,6 +566,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
@@ -574,6 +590,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
@@ -612,9 +629,32 @@ mod tests {
     #[test]
     fn user_tokens_expand_dollar_then_at() {
         let (_d, root) = skill_ws();
-        let out = expand_user_tokens("用 $review 检查 @main.rs", &root);
+        let out = expand_user_tokens("用 $review 检查 @main.rs", &root, &[]);
         assert!(out.contains("<skill name=\"review\">"), "{out}");
         assert!(out.contains("path=\"main.rs\""), "{out}");
+    }
+
+    /// An absolute token may name a file in a linked workspace; a relative one
+    /// never does, and an absolute token outside every root stays literal.
+    #[test]
+    fn at_mentions_reach_linked_workspaces_by_absolute_path() {
+        let (_d, root) = skill_ws();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let linked = elsewhere.path().canonicalize().unwrap();
+        std::fs::write(linked.join("kernel.rs"), "fn linked() {}\n").unwrap();
+        let roots = [agent_capabilities::LinkedRoot {
+            path: linked.clone(),
+            access: agent_capabilities::RootAccess::Read,
+        }];
+        let abs = linked.join("kernel.rs");
+        let out = expand_user_tokens(&format!("look at @{}", abs.display()), &root, &roots);
+        assert!(out.contains("fn linked()"), "{out}");
+
+        let out = expand_user_tokens(&format!("look at @{}", abs.display()), &root, &[]);
+        assert!(out.contains("outside workspace — not inlined"), "{out}");
+
+        let out = expand_user_tokens("look at @kernel.rs", &root, &roots);
+        assert!(out.contains("not found — left as literal"), "{out}");
     }
 
     #[tokio::test]
@@ -626,6 +666,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
@@ -651,6 +692,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
@@ -692,6 +734,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &[],
             ui_tx: &tx,
@@ -732,6 +775,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: Some(&store),
             plugin_commands: &[],
             ui_tx: &tx,
@@ -766,6 +810,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: Some(&store),
             plugin_commands: &[],
             ui_tx: &tx,
@@ -830,6 +875,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: Some(&store),
             plugin_commands: &[],
             ui_tx: &tx,
@@ -878,6 +924,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &cmds,
             ui_tx: &tx,
@@ -907,6 +954,7 @@ mod tests {
             history: &mut hist,
             permission_mode: "default",
             workspace_root: &root,
+            linked_roots: &[],
             memory: None,
             plugin_commands: &cmds,
             ui_tx: &tx,

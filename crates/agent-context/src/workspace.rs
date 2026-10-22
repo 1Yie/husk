@@ -28,6 +28,18 @@ pub const DEFAULT_MAX_DEPTH: usize = 3;
 /// Marker appended when the tree hits [`MAX_TREE_ENTRIES`].
 pub const FOLD_MARKER: &str = "... [truncated]";
 
+/// Extensions that carry nothing the model reads in a tree listing. An icon
+/// directory or a font pack would otherwise spend dozens of prompt lines
+/// saying "there are images here".
+const ASSET_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "ico", "icns", "bmp", "tiff", "psd", "pdf", "woff",
+    "woff2", "ttf", "otf", "mp3", "wav", "mp4", "mov", "zip", "gz",
+];
+
+/// Siblings needed before a run of one asset extension folds into a single
+/// line. Below this the paths are cheaper to show than to summarise.
+const FOLD_RUN_MIN: usize = 3;
+
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
     #[error("workspace root does not exist or is not a directory: {0}")]
@@ -52,9 +64,34 @@ impl WorkspaceTree {
     /// kernel system prompt — one relative path per line, fold marker last.
     pub fn to_prompt_block(&self) -> String {
         let mut out = String::with_capacity(self.entries.len() * 24);
-        for e in &self.entries {
-            out.push_str(e);
+        let mut i = 0;
+        while i < self.entries.len() {
+            // Entries arrive sorted by name, so one directory's files are
+            // contiguous — a run is counted from here, never searched for.
+            if let Some((dir, ext)) = foldable(&self.entries[i]) {
+                let mut end = i;
+                while end < self.entries.len() {
+                    match foldable(&self.entries[end]) {
+                        Some((d, e)) if d == dir && e == ext => end += 1,
+                        _ => break,
+                    }
+                }
+                if end - i >= FOLD_RUN_MIN {
+                    let count = end - i;
+                    let label = if dir.is_empty() {
+                        format!("./ ({count} .{ext})")
+                    } else {
+                        format!("{dir}/ ({count} .{ext})")
+                    };
+                    out.push_str(&label);
+                    out.push('\n');
+                    i = end;
+                    continue;
+                }
+            }
+            out.push_str(&self.entries[i]);
             out.push('\n');
+            i += 1;
         }
         if self.truncated {
             out.push_str(FOLD_MARKER);
@@ -62,6 +99,20 @@ impl WorkspaceTree {
         }
         out
     }
+}
+
+/// `Some((parent, ext))` when a listing entry is a file whose extension is
+/// asset noise; directories and source files are always kept verbatim.
+fn foldable(entry: &str) -> Option<(&str, &str)> {
+    if entry.ends_with('/') {
+        return None;
+    }
+    let (dir, name) = entry.rsplit_once('/').unwrap_or(("", entry));
+    let ext = name.rsplit_once('.')?.1;
+    ASSET_EXTS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(ext))
+        .then_some((dir, ext))
 }
 
 /// Stateless scanner — configuration lives on the builder call, matching the
@@ -291,5 +342,46 @@ mod tests {
         }
         let idx = WorkspaceScanner::build_file_index(root, 4).unwrap();
         assert_eq!(idx.len(), 4);
+    }
+
+    /// A run of sibling assets folds into one line; source files and short
+    /// runs stay verbatim, so the tree still says where the code is.
+    #[test]
+    fn prompt_block_folds_sibling_assets() {
+        let tree = WorkspaceTree {
+            root: PathBuf::from("/w"),
+            entries: vec![
+                "src/".into(),
+                "src/lib.rs".into(),
+                "icons/".into(),
+                "icons/a.png".into(),
+                "icons/b.png".into(),
+                "icons/c.png".into(),
+                "icons/d.png".into(),
+                "icons/keep.svg".into(),
+                "docs/x.ico".into(),
+                "docs/y.ico".into(),
+            ],
+            truncated: false,
+        };
+        let block = tree.to_prompt_block();
+        assert!(block.contains("icons/ (4 .png)"), "{block}");
+        // Below the fold threshold, and never for source files.
+        assert!(block.contains("icons/keep.svg"), "{block}");
+        assert!(block.contains("docs/x.ico"), "{block}");
+        assert!(block.contains("docs/y.ico"), "{block}");
+        assert!(block.contains("src/lib.rs"), "{block}");
+        assert!(!block.contains("icons/a.png"), "{block}");
+    }
+
+    /// Two assets are cheaper to list than to summarise.
+    #[test]
+    fn prompt_block_keeps_short_asset_runs() {
+        let tree = WorkspaceTree {
+            root: PathBuf::from("/w"),
+            entries: vec!["a.png".into(), "b.png".into()],
+            truncated: false,
+        };
+        assert_eq!(tree.to_prompt_block(), "a.png\nb.png\n");
     }
 }
