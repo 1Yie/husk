@@ -96,6 +96,7 @@ pub fn install(
     parent_name: &str,
     parent: Arc<dyn LlmProvider>,
     default: Option<&(String, String)>,
+    thinking: Option<&str>,
     conversation: &str,
 ) {
     let (models, targets) = model_table(cfg, parent_name);
@@ -113,6 +114,13 @@ pub fn install(
         built: Mutex::new(HashMap::new()),
     });
     route.models = models;
+    // A manifest `thinking:` is applied per call and wins over this; here is
+    // the level a child runs at when its own file names none. Empty means
+    // "inherit the parent's", which is what the route already carries. Set
+    // before the early return below — the level is independent of the model.
+    if let Some(level) = thinking.map(str::trim).filter(|l| !l.is_empty()) {
+        route.thinking_level = Some(level.to_string());
+    }
     let Some((provider, model)) = default else {
         return;
     };
@@ -264,6 +272,7 @@ mod tests {
             "main",
             Arc::new(agent_llm::provider::UnconfiguredProvider),
             Some(&default),
+            None,
             "1:/tmp/workspace",
         );
         assert_eq!(r.model, "cheap/small");
@@ -281,9 +290,42 @@ mod tests {
             "main",
             Arc::new(agent_llm::provider::UnconfiguredProvider),
             Some(&default),
+            None,
             "1:/tmp/workspace",
         );
         assert_eq!(r.model, "big");
+    }
+
+    /// A child may keep the parent's model and still think less. Blank is
+    /// "inherit", not "clear" — the settings row's empty choice must not
+    /// silently drop a level the parent session is running at.
+    #[test]
+    fn a_subagent_thinking_default_overrides_the_parents_level() {
+        let mut r = route();
+        r.thinking_level = Some("high".into());
+        install(
+            &mut r,
+            &cfg(),
+            "main",
+            Arc::new(agent_llm::provider::UnconfiguredProvider),
+            None,
+            Some("low"),
+            "1:/tmp/workspace",
+        );
+        assert_eq!(r.thinking_level.as_deref(), Some("low"));
+
+        let mut r = route();
+        r.thinking_level = Some("high".into());
+        install(
+            &mut r,
+            &cfg(),
+            "main",
+            Arc::new(agent_llm::provider::UnconfiguredProvider),
+            None,
+            Some("   "),
+            "1:/tmp/workspace",
+        );
+        assert_eq!(r.thinking_level.as_deref(), Some("high"));
     }
 
     #[test]
@@ -296,6 +338,7 @@ mod tests {
             "main",
             Arc::new(agent_llm::provider::UnconfiguredProvider),
             Some(&default),
+            None,
             "1:/tmp/workspace",
         );
         assert_eq!(r.model, "big");

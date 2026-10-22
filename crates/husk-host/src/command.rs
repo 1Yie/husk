@@ -20,7 +20,14 @@ pub enum UiCommand {
     /// correlates the verdict to a specific `ApprovalRequested` — without it
     /// a stale click can be consumed by a *later* pending approval and
     /// approve a tool the user never reviewed (P1-a).
-    ToolDecision { request_id: u64, approved: bool },
+    ToolDecision {
+        request_id: u64,
+        approved: bool,
+        /// Which approval-card action was picked (`link:session`,
+        /// `link:workspace`). `None` is a plain 允许.
+        #[serde(default)]
+        action: Option<String>,
+    },
     /// Whitelist a tool for the rest of this session — the gate's
     /// `rules.allow` gains `tool_name`, so subsequent calls of the same
     /// tool auto-approve instead of pausing again. Used by the
@@ -68,6 +75,10 @@ pub enum UiCommand {
     /// `provider`/`model` clears it. Broadcast by `SessionManager` when the
     /// settings default changes; never persisted per session.
     SetSubagentModel { provider: String, model: String },
+    /// Global thinking level for children spawned from this session. Empty
+    /// `level` clears it (children follow the session's own level). Broadcast
+    /// with `SetSubagentModel`; never persisted per session.
+    SetSubagentThinking { level: String },
     /// Turn the `.blueprint/` architecture layer on or off for this session.
     SetBlueprintEnabled { enabled: bool },
     /// Undo/rewind the last turn's hunk set.

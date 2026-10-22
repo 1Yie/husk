@@ -418,20 +418,24 @@ pub fn agent_frontmatter(content: &str) -> AgentFrontmatter {
 }
 
 /// Render a manifest for the settings editor. Frontmatter keys the editor
-/// does not own (`tools:`, `readonly:`, `thinking:`, …) are carried over from
-/// `existing`, so saving from the dialog never drops a hand-written limit.
-/// `model` empty or `None` = no `model:` line (the child follows the
-/// subagent default, then the parent).
+/// does not own (`tools:`, `readonly:`, …) are carried over from `existing`,
+/// so saving from the dialog never drops a hand-written limit. `model` empty
+/// or `None` = no `model:` line (the child follows the subagent default, then
+/// the parent); likewise for `thinking`.
 pub fn render_manifest(
     existing: Option<&str>,
     name: &str,
     description: &str,
     model: Option<&str>,
+    thinking: Option<&str>,
     prompt: &str,
 ) -> String {
     let mut out = format!("---\nname: {name}\ndescription: {description}\n");
     if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
         out.push_str(&format!("model: {m}\n"));
+    }
+    if let Some(t) = thinking.map(str::trim).filter(|t| !t.is_empty()) {
+        out.push_str(&format!("thinking: {t}\n"));
     }
     let kept = existing
         .and_then(|c| c.trim_start().strip_prefix("---"))
@@ -440,7 +444,7 @@ pub fn render_manifest(
     for line in kept.lines() {
         let key = line.trim_start();
         if key.is_empty()
-            || ["name:", "description:", "model:"]
+            || ["name:", "description:", "model:", "thinking:"]
                 .iter()
                 .any(|k| key.starts_with(k))
         {
@@ -502,9 +506,17 @@ mod tests {
     fn render_manifest_sets_model_and_keeps_foreign_keys() {
         let old =
             "---\nname: x\ndescription: d\nmodel: big\ntools: [read]\nreadonly: true\n---\nold";
-        let out = render_manifest(Some(old), "x", "new", Some("cheap/small"), "body");
+        let out = render_manifest(
+            Some(old),
+            "x",
+            "new",
+            Some("cheap/small"),
+            Some("high"),
+            "body",
+        );
         let fm = agent_frontmatter(&out);
         assert_eq!(fm.model.as_deref(), Some("cheap/small"));
+        assert_eq!(fm.thinking.as_deref(), Some("high"));
         assert_eq!(fm.tools, Some(vec!["read".to_string()]));
         assert!(fm.readonly);
         assert_eq!(
@@ -512,8 +524,12 @@ mod tests {
             (Some("x".into()), Some("new".into()), "body".into())
         );
 
-        let cleared = render_manifest(Some(old), "x", "d", None, "body");
+        let cleared = render_manifest(Some(old), "x", "d", None, None, "body");
         assert_eq!(agent_frontmatter(&cleared).model, None);
+        assert_eq!(agent_frontmatter(&cleared).thinking, None);
+        // A key the editor replaced must not survive as a duplicate line.
+        assert_eq!(cleared.matches("model:").count(), 0);
+        assert_eq!(cleared.matches("thinking:").count(), 0);
     }
 
     /// An override manifest replaces its built-in row instead of sitting

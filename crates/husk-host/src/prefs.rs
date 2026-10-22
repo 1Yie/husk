@@ -40,6 +40,10 @@ pub struct DefaultPreferences {
     /// See `subagent_provider`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_model: Option<String>,
+    /// Global thinking level for delegated subagents. A manifest `thinking:`
+    /// still wins; absent here, children inherit the parent session's level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_thinking_level: Option<String>,
     #[serde(default = "default_pref_permission_mode")]
     pub permission_mode: String,
     #[serde(default = "default_pref_thinking_level")]
@@ -180,6 +184,7 @@ impl Default for DefaultPreferences {
             active_model: None,
             subagent_provider: None,
             subagent_model: None,
+            subagent_thinking_level: None,
             permission_mode: default_pref_permission_mode(),
             // No row = no level: the spawn resolvers fall back to `None`,
             // and the settings echo must report the same thing.
