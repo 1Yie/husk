@@ -354,6 +354,9 @@ pub fn coding_policy_factory(
         // The child's own tracker, never the parent's: a child's writes must
         // not land in the parent's undo history.
         crate::tracker::WriteTracker::new(agent_context::TrackingMode::AgentOnly).install(ctx);
+        // Its own ledger too: the child cannot see what the parent read, so
+        // "you saw this already" would be false there.
+        crate::observe::ObservationLedger::install(ctx);
         Box::new(CodingPolicy::from_ctx(ctx, workspace_root.clone()))
     })
 }

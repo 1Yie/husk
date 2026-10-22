@@ -22,6 +22,7 @@ schemars.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
+xxhash-rust.workspace = true
 
 [dev-dependencies]
 agent-testkit = { workspace = true }
