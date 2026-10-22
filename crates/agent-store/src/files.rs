@@ -3,6 +3,7 @@
 
 use super::*;
 use fs2::FileExt;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 
@@ -107,6 +108,40 @@ struct Location {
     offset: u64,
     hash: u64,
     turn: bool,
+    /// `(call id, tool name)` for every call an assistant row issued.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    calls: Vec<(String, String)>,
+    /// A tool row's tool name and the index of the assistant row that issued
+    /// it — what lets a reader pick one tool's results out of a session
+    /// without reading the transcript around them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool: Option<(String, u32)>,
+}
+
+/// Index entry for `message` at `offset`, linked to the rows before it. The
+/// issuing call sits in the same turn, so the backward search is short.
+fn locate(message: &ChatMessage, offset: u64, before: &[Location]) -> std::io::Result<Location> {
+    let calls = message
+        .tool_calls
+        .iter()
+        .flatten()
+        .map(|c| (c.id.clone(), c.name.clone()))
+        .collect();
+    let tool = message.tool_call_id.as_deref().and_then(|id| {
+        before.iter().enumerate().rev().find_map(|(at, l)| {
+            l.calls
+                .iter()
+                .find(|(call, _)| call == id)
+                .map(|(_, name)| (name.clone(), at as u32))
+        })
+    });
+    Ok(Location {
+        offset,
+        hash: message_hash(message)?,
+        turn: is_turn(message),
+        calls,
+        tool,
+    })
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct JournalIndex {
@@ -130,8 +165,10 @@ struct JournalIndex {
     history_generation: u64,
 }
 
-/// Current turn rule — see [`crate::counts_as_turn`].
-const TURN_RULE: u32 = 2;
+/// Current index rule — see [`crate::counts_as_turn`]. 3 added the call links
+/// ([`Location::calls`] / [`Location::tool`]): an older cache has none, so it
+/// is re-read from the journal once rather than trusted without them.
+const TURN_RULE: u32 = 3;
 
 /// A running turn's newest history, stored outside the journal so frequent
 /// checkpoints replace one small file instead of appending full drafts.
@@ -202,6 +239,31 @@ fn is_turn(message: &ChatMessage) -> bool {
     crate::counts_as_turn(message)
 }
 
+/// [`SessionStore::tool_results`] over a history already in memory.
+fn tool_results_in(history: &[ChatMessage], tools: &[&str]) -> Vec<(String, String, String)> {
+    let mut calls: HashMap<&str, (&str, &str)> = HashMap::new();
+    let mut out = Vec::new();
+    for m in history {
+        for c in m.tool_calls.iter().flatten() {
+            calls.insert(c.id.as_str(), (c.name.as_str(), c.arguments.as_str()));
+        }
+        if m.is_error == Some(true) {
+            continue;
+        }
+        let Some(&(name, args)) = m.tool_call_id.as_deref().and_then(|id| calls.get(id)) else {
+            continue;
+        };
+        if tools.contains(&name) {
+            out.push((
+                name.to_string(),
+                args.to_string(),
+                m.content.clone().unwrap_or_default(),
+            ));
+        }
+    }
+    out
+}
+
 /// Content hash for the journal index — the same construction as
 /// `SessionStore::history_revision_of`, one message at a time.
 fn message_hash(message: &ChatMessage) -> std::io::Result<u64> {
@@ -251,18 +313,15 @@ fn journal_index_rebuilt(journal: &Path, index: &Path) -> std::io::Result<(Journ
                 }
                 pending.messages.truncate(from);
             }
-            Record::Message { message } => pending.messages.push(Location {
-                offset,
-                hash: message_hash(&message)?,
-                turn: is_turn(&message),
-            }),
+            Record::Message { message } => {
+                let location = locate(&message, offset, &pending.messages)?;
+                pending.messages.push(location);
+            }
             Record::Replace { index, message } => {
-                let Some(location) = pending.messages.get_mut(index) else {
+                if index >= pending.messages.len() {
                     return Err(io_err("replace journal has an invalid index"));
-                };
-                location.offset = offset;
-                location.hash = message_hash(&message)?;
-                location.turn = is_turn(&message);
+                }
+                pending.messages[index] = locate(&message, offset, &pending.messages[..index])?;
             }
             Record::Metadata { meta } => pending.meta = Some(meta),
             Record::Deleted => {
@@ -300,11 +359,8 @@ impl JournalWriter {
     fn record(&mut self, record: Record) -> std::io::Result<()> {
         let offset = self.file.stream_position()?;
         if let Record::Message { message } = &record {
-            self.index.messages.push(Location {
-                offset,
-                hash: message_hash(message)?,
-                turn: is_turn(message),
-            });
+            let location = locate(message, offset, &self.index.messages)?;
+            self.index.messages.push(location);
         }
         serde_json::to_writer(&mut self.file, &record)?;
         self.file.write_all(b"\n")?;
@@ -320,10 +376,7 @@ impl JournalWriter {
             index,
             message: message.clone(),
         })?;
-        let location = &mut self.index.messages[index];
-        location.offset = offset;
-        location.hash = message_hash(message)?;
-        location.turn = is_turn(message);
+        self.index.messages[index] = locate(message, offset, &self.index.messages[..index])?;
         Ok(())
     }
     fn history(&mut self, history: &[ChatMessage]) -> std::io::Result<()> {
@@ -440,6 +493,11 @@ impl SessionStore {
     /// carries its jobs with it.
     fn bg_jobs(&self, id: i64) -> PathBuf {
         self.directory().join(format!("{id}.bg.json"))
+    }
+    /// The session's own linked workspaces ("本会话"), beside the journal so a
+    /// restart reopens the session with the grants it had.
+    fn session_links(&self, id: i64) -> PathBuf {
+        self.directory().join(format!("{id}.links.json"))
     }
     /// A corrupt or torn snapshot degrades to the journal: the snapshot is a
     /// cache, the journal is the source of truth.
@@ -997,6 +1055,68 @@ impl SessionStore {
         let page = self.history_page(id, before, count)?;
         Ok((page.history, page.total, page.turns, page.turn_offset))
     }
+
+    /// Every ok result of a tool named in `tools`, oldest first, with the
+    /// arguments of the call that produced it: `(tool, args, content)`.
+    ///
+    /// A canonical journal answers from the index — only the matching tool rows
+    /// and the assistant rows that issued them are read, so the cost follows
+    /// the number of results, not the length of the session. A live turn's
+    /// recovery draft is already in memory and is filtered directly.
+    pub fn tool_results(
+        &self,
+        id: i64,
+        tools: &[&str],
+    ) -> std::io::Result<Vec<(String, String, String)>> {
+        let (snapshot, index) = self.recovery_and_index(id)?;
+        if index.deleted {
+            return Ok(Vec::new());
+        }
+        if let Some(snapshot) = snapshot {
+            return Ok(tool_results_in(&snapshot.history, tools));
+        }
+        let wanted: Vec<(usize, &str, usize)> = index
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(at, l)| {
+                let (name, issuer) = l.tool.as_ref()?;
+                tools
+                    .contains(&name.as_str())
+                    .then_some((at, name.as_str(), *issuer as usize))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut rows: Vec<usize> = wanted.iter().flat_map(|(at, _, by)| [*by, *at]).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        let locations: Vec<Location> = rows.iter().map(|&i| index.messages[i].clone()).collect();
+        let read: HashMap<usize, ChatMessage> = rows
+            .into_iter()
+            .zip(self.messages(id, &locations)?)
+            .collect();
+        Ok(wanted
+            .into_iter()
+            .filter_map(|(at, name, by)| {
+                let result = read.get(&at)?;
+                if result.is_error == Some(true) {
+                    return None;
+                }
+                let call_id = result.tool_call_id.as_deref()?;
+                let args = read
+                    .get(&by)?
+                    .tool_calls
+                    .iter()
+                    .flatten()
+                    .find(|c| c.id == call_id)
+                    .map(|c| c.arguments.clone())
+                    .unwrap_or_default();
+                Some((name.to_string(), args, result.content.clone().unwrap_or_default()))
+            })
+            .collect())
+    }
     /// Checked paging: `expected_revision` must match the snapshot the page is
     /// sliced from, so a caller paging a stale view gets a refresh error
     /// instead of a silently inconsistent splice.
@@ -1050,6 +1170,51 @@ impl SessionStore {
     pub fn load_bg_jobs(&self, id: i64) -> Option<serde_json::Value> {
         let bytes = std::fs::read(self.bg_jobs(id)).ok()?;
         serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Replace the session-scoped linked roots. An empty list removes the file.
+    pub fn save_session_links(
+        &self,
+        id: i64,
+        links: &[crate::LinkedRootPref],
+    ) -> std::io::Result<()> {
+        if links.is_empty() {
+            return remove_file_if_exists(&self.session_links(id));
+        }
+        atomic_json(&self.session_links(id), &links)
+    }
+
+    /// Read-modify-write the session-scoped linked roots under the session
+    /// lock. A bare `load` + `save` pair loses a concurrent grant: the IPC
+    /// layer and a running actor's approval card both write this file, and the
+    /// second writer would start from the list the first one replaced.
+    pub fn update_session_links<T>(
+        &self,
+        id: i64,
+        f: impl FnOnce(&mut Vec<crate::LinkedRootPref>) -> T,
+    ) -> std::io::Result<T> {
+        locked(&self.lock(id), || {
+            let path = self.session_links(id);
+            let mut links = std::fs::read(&path)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Vec<crate::LinkedRootPref>>(&b).ok())
+                .unwrap_or_default();
+            let out = f(&mut links);
+            if links.is_empty() {
+                remove_file_if_exists(&path)?;
+            } else {
+                atomic_json(&path, &links)?;
+            }
+            Ok(out)
+        })
+    }
+
+    /// The session-scoped linked roots; a missing or unreadable file is none.
+    pub fn load_session_links(&self, id: i64) -> Vec<crate::LinkedRootPref> {
+        std::fs::read(self.session_links(id))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 
     pub fn commit_turn(
@@ -1231,6 +1396,10 @@ impl SessionStore {
         if state.exists() {
             std::fs::remove_dir_all(state)?;
         }
+        // The job record describes this session only, and ids are never
+        // reused: nothing can read it again.
+        remove_file_if_exists(&self.bg_jobs(id))?;
+        remove_file_if_exists(&self.session_links(id))?;
         Ok(())
     }
     pub fn is_deleted(&self, id: i64) -> bool {
@@ -1255,6 +1424,24 @@ impl SessionStore {
     pub fn save_prefs(&self, prefs: &WorkspacePrefs) -> std::io::Result<()> {
         locked(&self.directory().join("prefs.lock"), || {
             atomic_json(&self.directory().join("prefs.json"), prefs)
+        })
+    }
+
+    /// Read-modify-write the workspace's preference row under the workspace
+    /// lock — the only correct shape for a one-field change. Every other
+    /// `load_prefs` + `save_prefs` pair is a lost update waiting for a second
+    /// writer: a model pick, a linked workspace and the settings pane all
+    /// write this one row from different threads.
+    pub fn update_prefs<T>(
+        &self,
+        f: impl FnOnce(&mut WorkspacePrefs) -> T,
+    ) -> std::io::Result<T> {
+        locked(&self.directory().join("prefs.lock"), || {
+            let path = self.directory().join("prefs.json");
+            let mut prefs: WorkspacePrefs = read_json(&path)?.unwrap_or_default();
+            let out = f(&mut prefs);
+            atomic_json(&path, &prefs)?;
+            Ok(out)
         })
     }
 }

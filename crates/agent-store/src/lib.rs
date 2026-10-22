@@ -251,6 +251,24 @@ pub struct WorkspacePrefs {
     /// Per-workspace agent mode (`build` | `plan` | `goal`).
     #[serde(default)]
     pub agent_mode: Option<String>,
+    /// Directories outside this workspace the user linked for good ("关联并记住").
+    /// Every session of this workspace starts with them; another workspace
+    /// never sees them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_roots: Vec<LinkedRootPref>,
+}
+
+/// One linked directory as stored. `access` is `"read"` or `"readwrite"`;
+/// anything else reads back as read-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkedRootPref {
+    pub path: std::path::PathBuf,
+    #[serde(default = "default_link_access")]
+    pub access: String,
+}
+
+fn default_link_access() -> String {
+    "read".into()
 }
 
 /// Per-workspace row in the `workspaces` table.
@@ -539,6 +557,70 @@ mod tests {
         assert_eq!(reopened.load_bg_jobs(1), None);
     }
 
+    /// Deleting a session takes its job record with it.
+    #[test]
+    fn removing_a_session_drops_its_job_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = test_store(&dir);
+        store.save_bg_jobs(3, &serde_json::json!([{"id": "bg-1"}])).unwrap();
+        store.remove(3).unwrap();
+        assert_eq!(store.load_bg_jobs(3), None);
+    }
+
+    /// One tool's results come out of the index with their call's arguments —
+    /// across turns, through a re-rendered system prompt, without failed ones.
+    #[test]
+    fn tool_results_pick_one_tools_rows_out_of_the_journal() {
+        use agent_llm_core::types::ToolCall;
+        let call = |id: &str, name: &str, args: &str| ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: args.into(),
+        };
+        let mut a1 = ChatMessage::assistant("");
+        a1.tool_calls = Some(vec![call("c1", "fuzzy_patch", "{\"path\":\"a\"}"), call("c2", "smart_read", "{}")]);
+        let mut a2 = ChatMessage::assistant("");
+        a2.tool_calls = Some(vec![call("c3", "apply_patch", "{}"), call("c4", "fuzzy_patch", "{\"path\":\"b\"}")]);
+        let mut failed = ChatMessage::tool_result("c4", "refused");
+        failed.is_error = Some(true);
+        let history = vec![
+            ChatMessage::system("v1"),
+            ChatMessage::user("one"),
+            a1,
+            ChatMessage::tool_result("c1", "patched a"),
+            ChatMessage::tool_result("c2", "body"),
+            ChatMessage::user("two"),
+            a2,
+            ChatMessage::tool_result("c3", "updated b"),
+            failed,
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = test_store(&dir);
+        store.commit_turn(&history[..5], meta(8, 1)).unwrap();
+        // The next turn re-renders the system prompt — a `Replace` record.
+        let mut next = history.clone();
+        next[0] = ChatMessage::system("v2");
+        store.commit_turn(&next, meta(8, 2)).unwrap();
+
+        let rows = store.tool_results(8, &["fuzzy_patch", "apply_patch"]).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("fuzzy_patch".into(), "{\"path\":\"a\"}".into(), "patched a".into()),
+                ("apply_patch".into(), "{}".into(), "updated b".into()),
+            ]
+        );
+        // A fresh handle rebuilds the same links from the journal alone.
+        let index = dir
+            .path()
+            .join("conversations")
+            .join(workspace_key(dir.path()))
+            .join("8.index.json");
+        std::fs::remove_file(&index).unwrap();
+        assert_eq!(test_store(&dir).tool_results(8, &["fuzzy_patch", "apply_patch"]).unwrap(), rows);
+    }
+
     /// An isolated store: temp db file + the tempdir as the workspace root.
     fn test_store(dir: &tempfile::TempDir) -> SessionStore {
         let db = open_db(&dir.path().join("conversations")).unwrap();
@@ -677,11 +759,16 @@ mod tests {
             thinking_level: Some("high".into()),
             permission_mode: Some("default".into()),
             agent_mode: Some("plan".into()),
+            linked_roots: vec![LinkedRootPref {
+                path: std::path::PathBuf::from("/tmp/elsewhere"),
+                access: "readwrite".into(),
+            }],
         };
         store.save_prefs(&prefs).unwrap();
         let loaded = store.load_prefs();
         assert_eq!(loaded.thinking_level.as_deref(), Some("high"));
         assert_eq!(loaded.model.as_deref(), Some("devin/swe-2"));
+        assert_eq!(loaded.linked_roots, prefs.linked_roots);
 
         store
             .write_state(0, "todos.json", b"{\"next_id\":2}")
