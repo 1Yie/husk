@@ -216,7 +216,9 @@ function bgFailureFor(root: string, session: number, ev: UiEvent): NotificationI
   const key = target({ root, session });
   const told = toldFailures.get(key) ?? new Set<string>();
   toldFailures.set(key, told);
-  const fresh = jobs.filter((j) => jobTone(j) === "failed" && !told.has(j.id));
+  // A restored row is the record of an earlier run, already on the pill when
+  // the session opened — it rides every snapshot now, but it is not news.
+  const fresh = jobs.filter((j) => !j.restored && jobTone(j) === "failed" && !told.has(j.id));
   if (fresh.length === 0) return null;
   for (const j of fresh) told.add(j.id);
   return {

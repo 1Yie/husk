@@ -76,6 +76,9 @@ export function resetTauri() {
   mockCommand("agent_session", () => [], "list_skills");
   mockCommand("agent_session", () => [], "plugin_commands");
   mockCommand("agent_session", () => ({ desktop_notifications: true }), "get_default_prefs");
+  // Saving a preference succeeds unless a test says otherwise — a rejected
+  // write is the exception, and panes now roll their switch back on it.
+  mockCommand("agent_session", () => ({ success: true }), "set_default_prefs");
   mockCommand("agent_session", () => ({ success: true }), "notify");
   mockCommand("agent_session", () => ({ ok: true }), "play_cue");
   mockCommand("agent_session", () => null, "peek_notification_click");

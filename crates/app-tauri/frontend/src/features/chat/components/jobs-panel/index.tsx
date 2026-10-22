@@ -232,7 +232,7 @@ function JobRow({
           </div>
           <pre className="max-h-64 overflow-auto rounded-md border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n100)_70%,transparent)] px-2 py-1.5 font-mono text-[10.5px] leading-[1.45] whitespace-pre-wrap break-all text-neutral-600 select-text">
             {restored
-              ? "日志随任务进程一起丢失"
+              ? job.log_tail?.trim() || "（未保存输出）"
               : error
                 ? `读取日志失败：${error}`
                 : tail === null

@@ -3,10 +3,11 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { activeViewNow, refreshAgentChips, useAgentStore, useRunningKeys } from "@/stores/agent-store";
 import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
-import { viewFromHistory, viewFromHistoryChunked } from "@/features/chat/hooks/view-from-history";
+import { applyChangesFeed, viewFromHistory, viewFromHistoryChunked } from "@/features/chat/hooks/view-from-history";
+import { SUMMARY_TOOLS } from "@/features/chat/hooks/apply-event";
 import { loadReset, loadStamp } from "@/lib/load-probe";
 import { forgetToldFailures, markSessionRead, setSessionTitles } from "@/lib/notifications";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
 import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
@@ -191,15 +192,25 @@ export function App() {
       // lands in the same commit as the chat view (see handleSwitchWorkspace).
       alsoCommit?: () => void,
     ) => {
-      const folded = await viewFromHistoryChunked(
-        r.history,
-        r.usage,
-        // Global baseIndex — items[0] sits at historyStart in the full
-        // log, so hi = historyStart + i. baseIndex=0 collided with real
-        // page indices → duplicate t{hi} turn/mark ids (multiple active
-        // rail marks + key remount churn).
-        (r.history_total ?? r.history.length) - r.history.length,
-      );
+      // The changes panel is a session-level summary, not a page-level one: the
+      // mounted page is only the newest slice, so the file list is rebuilt from
+      // the whole log — in parallel, and a failure keeps the page-derived list
+      // rather than showing an empty panel. A page that already holds the whole
+      // log has nothing to add, and the feed re-reads the full journal.
+      const paged = (r.history_total ?? r.history.length) > r.history.length;
+      const [folded, feed] = await Promise.all([
+        viewFromHistoryChunked(
+          r.history,
+          r.usage,
+          // Global baseIndex — items[0] sits at historyStart in the full
+          // log, so hi = historyStart + i. baseIndex=0 collided with real
+          // page indices → duplicate t{hi} turn/mark ids (multiple active
+          // rail marks + key remount churn).
+          (r.history_total ?? r.history.length) - r.history.length,
+        ),
+        paged ? changesFeed(id, SUMMARY_TOOLS).catch(() => null) : null,
+      ]);
+      if (feed) applyChangesFeed(folded, feed.rows);
       // Cold view rebuild — the parked queue is session state persisted in
       // SessionMeta; seed it so the composer shows the same rows the actor
       // still holds (live updates continue via QueuedPrompts events).

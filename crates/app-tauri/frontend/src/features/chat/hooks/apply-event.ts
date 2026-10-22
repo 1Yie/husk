@@ -202,6 +202,15 @@ const ARTIFACT_WRITERS = new Set([
  *  `office_exec view …` must not pop "产物已生成"). */
 const ARTIFACT_TOUCHERS = new Set(["office_raw", "office_exec"]);
 
+/** Every tool whose result the session-level summary — the changes panel and
+ *  the artifacts dock — is rebuilt from. The host's `changes_feed` ships
+ *  exactly these, so the list lives here, beside the parsers that read them. */
+export const SUMMARY_TOOLS: readonly string[] = [
+  ...WRITE_TOOLS,
+  ...ARTIFACT_WRITERS,
+  ...ARTIFACT_TOUCHERS,
+];
+
 /** Fold a finished tool call into `view.artifacts`. `locator` is the
  *  call's args preview — the workspace-relative file path for every
  *  office/asset tool shape. */
@@ -600,6 +609,7 @@ function applyEventInto(
             requestId: a.request_id,
             diff: a.diff,
             fuzzy: a.fuzzy,
+            actions: a.actions,
             resolved: false,
           },
         };
@@ -614,6 +624,7 @@ function applyEventInto(
         toolName: a.tool_name,
         diff: a.diff,
         fuzzy: a.fuzzy,
+        actions: a.actions,
         resolved: false,
       });
     }

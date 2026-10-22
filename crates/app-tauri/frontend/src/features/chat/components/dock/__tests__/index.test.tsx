@@ -165,6 +165,7 @@ describe("unified session dock", () => {
       notify: true,
       has_own_sink: false,
       restored: true,
+      log_tail: "test result: FAILED. 3 passed; 1 failed\n",
     };
     renderWithProviders(<SessionDock changes={[]} artifacts={[]} jobs={[job]} />);
     fireEvent.click(screen.getByRole("tab", { name: "后台（1 个任务）" }));
@@ -173,8 +174,26 @@ describe("unified session dock", () => {
     // …and the row offers its own removal, but nothing that needs a process.
     expect(screen.queryByRole("button", { name: "终止" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /bg-1/ }));
-    expect(screen.getByText("日志随任务进程一起丢失")).toBeInTheDocument();
+    // The log file went with the process; the saved tail is what is left.
+    expect(screen.getByText("test result: FAILED. 3 passed; 1 failed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "移除记录" })).toBeInTheDocument();
+  });
+
+  test("a restored job saved before tails existed says so", () => {
+    const job: BgJob = {
+      id: "bg-1@1",
+      command: "cargo test",
+      state: { kind: "done", label: "exited(0)", code: 0, reason: "exited" },
+      started_at_ms: 1,
+      elapsed_ms: 2000,
+      notify: true,
+      has_own_sink: true,
+      restored: true,
+    };
+    renderWithProviders(<SessionDock changes={[]} artifacts={[]} jobs={[job]} />);
+    fireEvent.click(screen.getByRole("tab", { name: "后台（1 个任务）" }));
+    fireEvent.click(screen.getByRole("button", { name: /bg-1@1/ }));
+    expect(screen.getByText("（未保存输出）")).toBeInTheDocument();
   });
 
   test("改动 and 后台 switch back and forth in one sidebar", () => {

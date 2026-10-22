@@ -7,6 +7,7 @@
 import * as agent from "@/lib/agent-ipc/index";
 import { emptyView, type SessionView } from "@/features/chat/hooks/stream-view";
 import { recordArtifact, recordFileChanges } from "@/features/chat/hooks/apply-event";
+import type { ChangeFeedRow } from "@/lib/agent-ipc/sessions";
 import type { ChatMessage } from "@/types";
 
 /** Strip persisted `[call: …]` text-protocol echoes from an assistant
@@ -299,6 +300,25 @@ export async function viewFromHistoryChunked(
     if (i % 24 === 23) await new Promise((r) => setTimeout(r, 0));
   }
   return v;
+}
+
+/** Rebuild the session-level summary — the changes panel and the artifacts
+ * dock — from the WHOLE persisted log.
+ *
+ * `viewFromHistory` only sees the mounted page (the newest messages), so a
+ * session whose writes are older than that page used to reopen with fewer
+ * files than it wrote: the live view had accumulated every `ToolCallFinished`
+ * of the process, the rebuilt one only what fit in the page. Same parser and
+ * same tool sets — only the source of rows is wider. */
+export function applyChangesFeed(v: SessionView, rows: ChangeFeedRow[]) {
+  v.changes = [];
+  v.artifacts = [];
+  for (const row of rows) {
+    recordFileChanges(v.changes, row.tool, row.content, false);
+    // Artifact writers are located by their call args, exactly as the live
+    // event and the page replay do it.
+    recordArtifact(v.artifacts, row.tool, extractArgsPreview(row.args));
+  }
 }
 
 type ToolInfo = { name: string; args: string; raw: string };

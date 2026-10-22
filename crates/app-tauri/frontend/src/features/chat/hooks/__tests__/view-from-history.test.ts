@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { opensUserTurn, steerTextOf, viewFromHistory, viewFromHistoryChunked } from "../view-from-history";
+import { applyChangesFeed, opensUserTurn, steerTextOf, viewFromHistory, viewFromHistoryChunked } from "../view-from-history";
+import { SUMMARY_TOOLS } from "../apply-event";
 import type { ChatMessage } from "@/types";
 
 const history: ChatMessage[] = [
@@ -135,4 +136,53 @@ describe("persisted history replay", () => {
     await vi.runAllTimersAsync();
     await expect(task).resolves.toEqual(viewFromHistory(messages, undefined, 30));
   });
+});
+
+describe("changes feed", () => {
+  const page: ChatMessage[] = [
+    { role: "user", content: "改第二个文件" },
+    { role: "assistant", content: "",
+      tool_calls: [{ id: "c2", type: "function", function: { name: "fuzzy_patch", arguments: '{"path":"b.ts"}' } }] },
+    { role: "tool", tool_call_id: "c2",
+      content: "patched b.ts (line 3)\n\n--- a/b.ts\n+++ b/b.ts\n@@ -1 +1 @@\n-old\n+new" },
+  ];
+
+  test("the whole log rebuilds files the mounted page no longer carries", () => {
+    const view = viewFromHistory(page);
+    expect(view.changes.map((c) => c.path)).toEqual(["b.ts"]);
+
+    // `open` returns only the newest page; the earlier write lives only in the
+    // feed — without it the panel reopens one file short.
+    applyChangesFeed(view, [
+      { tool: "fuzzy_patch", args: '{"path":"a.ts"}',
+        content: "patched a.ts (line 1)\n\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-x\n+y" },
+      { tool: "fuzzy_patch", args: '{"path":"b.ts"}',
+        content: "patched b.ts (line 3)\n\n--- a/b.ts\n+++ b/b.ts\n@@ -1 +1 @@\n-old\n+new" },
+    ]);
+    expect(view.changes.map((c) => c.path).sort()).toEqual(["a.ts", "b.ts"]);
+    // The feed replaces the page-derived list rather than stacking onto it.
+    expect(view.changes.find((c) => c.path === "b.ts")?.patches).toHaveLength(1);
+  });
+
+  test("the artifacts dock is rebuilt from the same feed, not emptied by it", () => {
+    const view = viewFromHistory([
+      { role: "user", content: "做个 PPT" },
+      { role: "assistant", content: "",
+        tool_calls: [{ id: "o1", type: "function", function: { name: "office_create", arguments: '{"file":"q4/deck.pptx"}' } }] },
+      { role: "tool", tool_call_id: "o1", content: "created q4/deck.pptx" },
+    ]);
+    expect(view.artifacts.map((a) => a.path)).toEqual(["q4/deck.pptx"]);
+
+    applyChangesFeed(view, [
+      { tool: "web_download", args: '{"path":"q4/assets/logo.png","url":"https://x/logo.png"}', content: "saved" },
+      { tool: "office_create", args: '{"file":"q4/deck.pptx"}', content: "created q4/deck.pptx" },
+    ]);
+    expect(view.artifacts.map((a) => a.path)).toEqual(["q4/assets/logo.png", "q4/deck.pptx"]);
+  });
+});
+
+test("the feed asks for every tool the summary parsers read", () => {
+  for (const tool of ["fuzzy_patch", "apply_patch", "office_create", "web_download", "office_exec"]) {
+    expect(SUMMARY_TOOLS).toContain(tool);
+  }
 });

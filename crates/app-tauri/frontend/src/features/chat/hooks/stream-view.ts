@@ -2,8 +2,7 @@
 // into (`applyEvent` for the live stream, `viewFromHistory` for a
 // reopened session). Pure data: no React, no IPC.
 
-import type { AgentState } from "@/types";
-import type { PlanPayload } from "@/types";
+import type { AgentState, ApprovalActions, PlanPayload } from "@/types";
 
 /** One run inside a delegated child's body. A text run is the child's streamed
  *  answer; a tool run points at the child's `children` entry by index, so a
@@ -76,6 +75,8 @@ export type StreamItem =
         requestId: number;
         diff?: string;
         fuzzy?: boolean;
+        /** Grant buttons this card offers (associate another directory). */
+        actions?: ApprovalActions;
         resolved?: boolean;
         approved?: boolean;
       };
@@ -86,6 +87,7 @@ export type StreamItem =
       toolName: string;
       diff: string;
       fuzzy: boolean;
+      actions?: ApprovalActions;
       resolved?: boolean;
       approved?: boolean;
       hi?: number;
@@ -207,6 +209,8 @@ export interface BgJob {
   /** Read back from the session's saved record: the run is over and its
    *  process is gone, so the row can be looked at but not acted on. */
   restored?: boolean;
+  /** A restored row's saved log tail — its log file went with the process. */
+  log_tail?: string;
 }
 
 /** Why a job ended, as the host's monitor decided it. */
@@ -339,6 +343,9 @@ export function pendingApprovalOf(view: SessionView): {
   toolName: string;
   args?: string;
   diff: string;
+  /** Grant buttons this card offers, if the host asked a question that can
+   *  be answered by one (associating a directory). */
+  actions?: { id: string; label: string; description?: string }[];
 } | null {
   if (view.state !== null && !isAwaitingApproval(view.state)) return null;
   for (let i = view.items.length - 1; i >= 0; i--) {
@@ -349,6 +356,7 @@ export function pendingApprovalOf(view: SessionView): {
         toolName: it.name,
         args: it.args,
         diff: it.approval.diff || "",
+        actions: it.approval.actions,
       };
     }
     if (it.kind === "approval" && !it.resolved) {
@@ -356,6 +364,7 @@ export function pendingApprovalOf(view: SessionView): {
         requestId: it.requestId,
         toolName: it.toolName,
         diff: it.diff,
+        actions: it.actions,
       };
     }
   }

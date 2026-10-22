@@ -240,7 +240,8 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     seenFailuresRef.current = null;
   }, [sessionKey]);
   useEffect(() => {
-    const failed = view.bgJobs.filter((j) => jobTone(j) === "failed");
+    // Restored rows are an earlier run's record, never a fresh failure.
+    const failed = view.bgJobs.filter((j) => !j.restored && jobTone(j) === "failed");
     if (seenFailuresRef.current === null) {
       seenFailuresRef.current = new Set(failed.map((j) => j.id));
       return;

@@ -295,6 +295,15 @@ describe("background job failures", () => {
     expect(n).toMatchObject({ title: "2 个后台任务失败", body: "cmd bg-1\ncmd bg-2" });
   });
 
+  test("an earlier run's failure riding the snapshot is not news", () => {
+    // After a restart every snapshot leads with the restored record — an
+    // interrupted job reads as failed, but it was on the pill already.
+    const ev = snapshot(["bg-2@12", "应用已退出", null], ["bg-1", "running", null]);
+    const jobs = (ev as { Custom: { payload: { jobs: { restored?: boolean }[] } } }).Custom.payload.jobs;
+    jobs[0].restored = true;
+    expect(notifyForEvent(env(ev, "/project", 24), foreground)).toBeNull();
+  });
+
   test("the foreground session in a focused window leaves it to the toast", () => {
     vi.mocked(playCue).mockClear();
     expect(notifyForEvent(env(snapshot(["bg-1", "exited(1)", 1]), "/project", 1), foreground)).toBeNull();

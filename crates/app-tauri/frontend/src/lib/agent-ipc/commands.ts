@@ -31,9 +31,11 @@ export const setQueued = (items: string[]) => send({ SetQueued: { items } });
  * user's keystroke and this command" race). */
 export const enqueue = (text: string) => send({ Enqueue: { text } });
 
-/** Resolve a pending approval card. */
-export const decideTool = (requestId: number, approved: boolean) =>
-  send({ ToolDecision: { request_id: requestId, approved } });
+/** Resolve a pending approval card. `action` names one of the grants the card
+ *  offered (`actions` on `ApprovalRequested`): the kernel hands it to the host,
+ *  which applies the grant and then reruns the same call. */
+export const decideTool = (requestId: number, approved: boolean, action?: string) =>
+  send({ ToolDecision: { request_id: requestId, approved, action } });
 
 /** Whitelist a tool for the rest of this session — pairs with
  *  `decideTool` on the computer-use approval modal: "本会话允许"
