@@ -41,8 +41,8 @@ type Mode = "always" | "globs";
 const SLUG_RE = /^[a-z0-9_-]+$/;
 
 const MODE_OPTIONS: SettingSelectOption[] = [
-  { value: "always", label: "始终生效", description: "写入系统提示词，每次对话都可见" },
-  { value: "globs", label: "按文件匹配", description: "编辑匹配文件前由模型读取" },
+  { value: "always", label: "始终生效" },
+  { value: "globs", label: "按文件匹配" },
 ];
 
 /** The form keeps globs in one comma-separated input; newlines count too, so
