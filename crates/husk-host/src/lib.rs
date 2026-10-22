@@ -12,6 +12,7 @@ pub mod mode;
 pub mod office;
 pub mod plugins;
 pub mod prefs;
+pub mod repeat_guard;
 pub mod sandbox_prefs;
 pub mod session;
 pub mod session_manager;
