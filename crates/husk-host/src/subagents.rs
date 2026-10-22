@@ -49,8 +49,11 @@ impl SubagentHost for HuskSubagents {
         let Ok(state_dir) = ctx.workspace_state_dir() else {
             return;
         };
-        let subs = state_dir.join("subagents");
-        persist_transcript(&subs, child_id, label, history);
+        // A child with no session attached (a test, a headless host) records as
+        // session 0, the same convention the kernel uses for an ownerless child.
+        // Nothing looks such a file up: reads are always session-scoped.
+        let session = ctx.session().unwrap_or(0);
+        persist_transcript(&transcript_dir(&state_dir), session, child_id, label, history);
     }
 }
 
@@ -341,22 +344,36 @@ pub fn builtin_readonly(name: &str) -> bool {
         .any(|n| n.eq_ignore_ascii_case(name))
 }
 
-/// Write one child's full history to `<workspace_dir>/subagents/` as JSONL, one message
-/// per line. Best effort: a write failure is logged and never fails the delegate
-/// call, because the report the parent needs does not depend on this file.
-fn persist_transcript(dir: &Path, child_id: u64, label: &str, history: &[ChatMessage]) {
+/// Where child transcripts live: `<workspace state dir>/subagents/`. One dir per
+/// workspace, shared by every session that ever ran a child in it.
+pub fn transcript_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("subagents")
+}
+
+/// Write one child's full history into `dir` as JSONL, one message per line.
+/// The name carries both ids because neither alone is unique: the directory
+/// outlives the process, and child ids restart with each one. Best effort: a
+/// write failure is logged and never fails the delegate call, because the report
+/// the parent needs does not depend on this file.
+fn persist_transcript(
+    dir: &Path,
+    session: i64,
+    child_id: u64,
+    label: &str,
+    history: &[ChatMessage],
+) {
     // Zero-padded epoch milliseconds: file names sort in the order children ran,
     // without an extra date dependency for one timestamp.
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let stamp = format!("{millis:015}");
+    let stamp = format!("{millis:0w$}", w = TRANSCRIPT_STAMP_WIDTH);
     let safe: String = label
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    let path = dir.join(format!("{stamp}-{child_id}-{safe}.jsonl"));
+    let path = dir.join(format!("{stamp}-s{session}-c{child_id}-{safe}.jsonl"));
     let write = || -> std::io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         let mut out = String::new();
@@ -369,6 +386,83 @@ fn persist_transcript(dir: &Path, child_id: u64, label: &str, history: &[ChatMes
     if let Err(e) = write() {
         tracing::warn!(path = %path.display(), error = %e, "subagent transcript not saved");
     }
+}
+
+/// Width of the leading epoch-millisecond stamp. Fixed, so the id pair behind it
+/// sits at a known offset and names sort in the order they were written.
+const TRANSCRIPT_STAMP_WIDTH: usize = 15;
+
+/// The newest saved transcript of one child of one session, if any.
+///
+/// Only the session-scoped `…-s{session}-c{child_id}-…` form is matched. The
+/// pre-session `…-{child_id}-…` names belong to no session, so a read cannot
+/// attribute one: showing a stranger's child under this session's id would be
+/// worse than showing nothing, so legacy files are skipped.
+pub fn find_transcript(dir: &Path, session: i64, child_id: u64) -> Option<PathBuf> {
+    let scope = format!("s{session}-c{child_id}-");
+    let mut newest: Option<(String, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Anchored right behind the stamp instead of searched for: a label may
+        // itself spell `s7-c1`, and that must not answer for that child.
+        let Some((stamp, rest)) = name.split_once('-') else {
+            continue;
+        };
+        let stamped =
+            stamp.len() == TRANSCRIPT_STAMP_WIDTH && stamp.bytes().all(|b| b.is_ascii_digit());
+        if !stamped || !rest.starts_with(&scope) || !name.ends_with(".jsonl") {
+            continue;
+        }
+        // Fixed-width stamp: the largest name is the latest write.
+        let better = match &newest {
+            Some((best, _)) => name.as_ref() > best.as_str(),
+            None => true,
+        };
+        if better {
+            newest = Some((name.into_owned(), entry.path()));
+        }
+    }
+    newest.map(|(_, path)| path)
+}
+
+/// Cap on one transcript read back. A child that ran long enough to pass these
+/// is not something a panel should try to render; the caller gets an error
+/// naming the size instead of a half-loaded history.
+const TRANSCRIPT_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Cap on the messages returned. Past it the tail is dropped: the head is where
+/// the task and the first findings are.
+const TRANSCRIPT_MAX_MESSAGES: usize = 2000;
+
+/// Read one transcript file back. A blank or unparsable line is skipped — one
+/// torn write must not cost the whole transcript.
+pub fn load_transcript(path: &Path) -> Result<Vec<ChatMessage>, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if meta.len() > TRANSCRIPT_MAX_BYTES {
+        return Err(format!(
+            "transcript is {} bytes, over the {} byte cap",
+            meta.len(),
+            TRANSCRIPT_MAX_BYTES
+        ));
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if out.len() >= TRANSCRIPT_MAX_MESSAGES {
+            break;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(msg) = serde_json::from_str::<ChatMessage>(line) else {
+            continue;
+        };
+        out.push(msg);
+    }
+    Ok(out)
 }
 
 /// Append one instruction file as a labelled section, matching the parent
@@ -830,5 +924,79 @@ mod tests {
         assert!(ws.ends_with(".husk/agents"), "{ws:?}");
         let global = global_agent_dir(&paths);
         assert!(global.ends_with("husk/agents"), "{global:?}");
+    }
+
+    /// A saved child transcript is found again by its own (session, child) pair
+    /// and reads back as exactly what was written — junk lines included, skipped.
+    #[test]
+    fn a_transcript_round_trips_through_find_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let subs = transcript_dir(dir.path());
+        let history = vec![
+            ChatMessage::system("contract"),
+            ChatMessage::user("record me"),
+            ChatMessage::assistant("the answer"),
+        ];
+        persist_transcript(&subs, 7, 3, "review #1", &history);
+
+        let found = find_transcript(&subs, 7, 3).expect("the child's own file");
+        let name = found.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.contains("-s7-c3-"), "session and child are in the name: {name}");
+        assert!(name.ends_with(".jsonl"), "{name}");
+        assert_eq!(load_transcript(&found).unwrap(), history);
+
+        // A blank line and a torn one cost nothing: the rest still reads back.
+        let mut text = std::fs::read_to_string(&found).unwrap();
+        text.push_str("\n\n{not json}\n");
+        std::fs::write(&found, text).unwrap();
+        assert_eq!(load_transcript(&found).unwrap(), history);
+    }
+
+    /// The session is what separates two children numbered alike in one shared
+    /// directory — and a pre-session name belongs to no session, so it is skipped
+    /// rather than guessed at.
+    #[test]
+    fn another_sessions_transcript_is_not_returned() {
+        let dir = tempfile::tempdir().unwrap();
+        let subs = transcript_dir(dir.path());
+        let history = vec![ChatMessage::user("theirs")];
+        persist_transcript(&subs, 9, 1, "subagent", &history);
+
+        assert!(find_transcript(&subs, 8, 1).is_none(), "wrong session");
+        assert!(find_transcript(&subs, 9, 2).is_none(), "wrong child");
+        assert!(find_transcript(&subs, 9, 1).is_some());
+
+        std::fs::write(subs.join(format!("{:015}-1-subagent.jsonl", 5)), "{}").unwrap();
+        assert!(
+            find_transcript(&subs, 8, 1).is_none(),
+            "a legacy name cannot be attributed to a session"
+        );
+
+        // The pair is anchored behind the stamp, never searched for: a label that
+        // happens to spell one must not answer for it.
+        std::fs::write(subs.join(format!("{:015}-s1-c9-s7-c3-x.jsonl", 6)), "{}").unwrap();
+        assert!(
+            find_transcript(&subs, 7, 3).is_none(),
+            "a label is not a scope"
+        );
+        assert!(
+            find_transcript(&subs, 1, 9).is_some(),
+            "the pair it belongs to still matches"
+        );
+    }
+
+    /// A child listed again (a retry) leaves two files; the later write is the
+    /// one the reader gets.
+    #[test]
+    fn the_newest_transcript_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let subs = transcript_dir(dir.path());
+        persist_transcript(&subs, 4, 2, "subagent", &[ChatMessage::user("first")]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        persist_transcript(&subs, 4, 2, "subagent", &[ChatMessage::user("second")]);
+
+        let found = find_transcript(&subs, 4, 2).expect("one of the two");
+        let msgs = load_transcript(&found).unwrap();
+        assert_eq!(msgs[0].content.as_deref(), Some("second"));
     }
 }

@@ -581,28 +581,50 @@ async fn manifest_context_files_overrides_the_readonly_default() {
     );
 }
 
-/// Every child leaves a readable transcript under `.husk/subagents/`: one JSON
-/// message per line, ending with the answer the parent was given.
+/// Every child leaves a readable transcript under `.husk/subagents/`, named after
+/// the session and the child that wrote it: one JSON message per line, ending
+/// with the answer the parent was given.
 #[tokio::test]
 async fn child_transcript_is_saved_as_jsonl() {
     let _serial = DELEGATE_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(ScriptedProvider::new());
     provider.script_text("the transcript answer");
-    let ctx = ctx_with(dir.path(), spawner(provider));
+    // A session id, because the file name must carry one: ids restart with each
+    // process while the directory outlives it, so the session is half the name.
+    let mut ctx = ToolCtx::new().with_workspace(dir.path()).with_session(7);
+    ctx.install_paths(agent_paths::AppPaths::new(dir.path(), dir.path(), ".husk"));
+    ctx.install_subagent(spawner(provider));
+    let ctx = Arc::new(ctx);
 
     let spec = registry().spec("delegate").unwrap();
     (spec.exec)(serde_json::json!({"task": "record me"}), ctx)
         .await
         .expect("child must finish");
 
-    let files: Vec<_> = std::fs::read_dir(dir.path().join(".husk/subagents"))
+    let subs = husk_host::subagents::transcript_dir(&dir.path().join(".husk"));
+    let names: Vec<String> = std::fs::read_dir(&subs)
         .expect("transcript directory exists")
-        .map(|e| e.unwrap().path())
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(names[0].contains("-s7-c"), "{names:?}");
 
-    let text = std::fs::read_to_string(&files[0]).unwrap();
+    let child: u64 = names[0]
+        .split("-c")
+        .nth(1)
+        .and_then(|rest| rest.split('-').next())
+        .expect("the child id leads the label")
+        .parse()
+        .expect("a numeric child id");
+    let file = husk_host::subagents::find_transcript(&subs, 7, child)
+        .expect("the child's own transcript");
+    assert!(
+        husk_host::subagents::find_transcript(&subs, 8, child).is_none(),
+        "another session must not read this child's transcript"
+    );
+
+    let text = std::fs::read_to_string(&file).unwrap();
     let lines: Vec<serde_json::Value> = text
         .lines()
         .map(|l| serde_json::from_str(l).expect("each line is a JSON message"))

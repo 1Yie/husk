@@ -419,6 +419,35 @@ fn agent_session_inner(
         };
         return Ok(serde_json::json!({ "rows": change_feed_rows(rows) }));
     }
+    // `subagent_transcript` — one delegated child's saved history. A child is
+    // identified by the pair the stream tagged it with: its session and its id,
+    // because child ids restart with each process. The directory is the one
+    // `SubagentHost::persist` writes to (the workspace state dir), so the file a
+    // child left behind is exactly the one this reads. Only the root read takes
+    // the kernel lock — the file I/O below is plain disk work.
+    if op == "subagent_transcript" {
+        let id = id.ok_or("subagent_transcript needs id")?;
+        let child_id = payload
+            .as_ref()
+            .and_then(|p| p.get("child_id"))
+            .and_then(|v| v.as_u64())
+            .ok_or("subagent_transcript needs payload.child_id")?;
+        let root = match path.as_deref().filter(|p| !p.is_empty()) {
+            Some(given) => std::path::PathBuf::from(given),
+            None => state
+                .lock()
+                .map_err(|e| e.to_string())?
+                .workspace_root
+                .clone(),
+        };
+        let state_dir = crate::kernel::app_paths().workspace_dir(&root);
+        let dir = husk_host::subagents::transcript_dir(&state_dir);
+        let messages = match husk_host::subagents::find_transcript(&dir, id, child_id) {
+            Some(file) => husk_host::subagents::load_transcript(&file)?,
+            None => Vec::new(),
+        };
+        return Ok(serde_json::json!({ "messages": messages }));
+    }
     // Linked workspaces: the dirs this session may reach beyond its own root.
     // The manager keeps both layers (workspace-level grants survive the
     // session, session-level ones do not) and pushes the merged list into the
