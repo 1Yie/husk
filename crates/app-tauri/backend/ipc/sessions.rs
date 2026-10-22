@@ -547,6 +547,73 @@ fn agent_session_inner(
             }
         };
     }
+    // 「改动」— the changes panel's workspace-level source: every uncommitted
+    // file of the active worktree against HEAD (staged, unstaged and
+    // untracked alike) with its line counts and unified diff. The walk reads
+    // HEAD blobs and renders a patch per file, so only the root is taken
+    // under the kernel lock, like `projects` above — the event forwarder
+    // needs that lock for every state change and must not wait on it.
+    if op == "workspace_changes" {
+        let given = path.as_deref().filter(|root| !root.is_empty());
+        let root = match given {
+            Some(root) => std::path::PathBuf::from(root),
+            None => {
+                let mgr = state.lock().map_err(|e| e.to_string())?;
+                // No workspace open: nothing to diff, and no repo to report.
+                if !mgr.workspace_active {
+                    return Ok(serde_json::json!({ "repo": false, "files": [] }));
+                }
+                mgr.workspace_root.clone()
+            }
+        };
+        // A workspace can be a subdirectory of a repository (a crate in a
+        // monorepo): git reports paths from the worktree root, but the panel
+        // speaks the workspace's own paths — strip the prefix and drop the
+        // sibling files that are not this workspace's changes.
+        let workspace = root.canonicalize().unwrap_or_else(|_| root.clone());
+        let worktree = agent_context::git::worktree_root(&workspace)
+            .ok()
+            .and_then(|wt| wt.canonicalize().ok());
+        // An empty prefix means the workspace IS the repository root.
+        let prefix = worktree
+            .and_then(|wt| {
+                workspace
+                    .strip_prefix(&wt)
+                    .ok()
+                    .map(|rel| rel.to_path_buf())
+            })
+            .filter(|p| !p.as_os_str().is_empty());
+        // A plain folder is a workspace too — it answers `repo: false` and the
+        // panel shows its empty state, exactly like `git_info` does.
+        return Ok(match agent_context::git::worktree_changes(&workspace) {
+            Ok(files) => serde_json::json!({
+                "repo": true,
+                "files": files
+                    .into_iter()
+                    .filter_map(|f| {
+                        let path = match &prefix {
+                            Some(base) => std::path::Path::new(&f.path)
+                                .strip_prefix(base)
+                                .ok()?
+                                .to_string_lossy()
+                                .into_owned(),
+                            None => f.path,
+                        };
+                        Some(serde_json::json!({
+                            "path": path,
+                            "kind": f.kind.as_str(),
+                            "adds": f.adds,
+                            "dels": f.dels,
+                            "diff": f.diff,
+                            "binary": f.binary,
+                            "truncated": f.truncated,
+                        }))
+                    })
+                    .collect::<Vec<_>>(),
+            }),
+            Err(_) => serde_json::json!({ "repo": false, "files": [] }),
+        });
+    }
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
     // keyed by the active workspace root, same path as the session actor's.
@@ -931,9 +998,27 @@ fn agent_session_inner(
                         "prompt": a.prompt,
                         "path": a.path,
                         "global": a.global,
+                        "readonly": a.readonly,
                         "model": a.model,
                         "thinking": a.thinking,
                         "builtin": a.path.is_empty(),
+                    }))
+                    .collect::<Vec<_>>(),
+                // Rule files: standing constraints, one row per name (a
+                // workspace rule shadows the global one — `discover_rules`
+                // already resolved that).
+                "rules": husk_host::rules::discover_rules(
+                    &mgr.workspace_root,
+                    &crate::kernel::app_paths(),
+                )
+                    .into_iter()
+                    .map(|r| serde_json::json!({
+                        "name": r.name,
+                        "description": r.description,
+                        "globs": r.globs,
+                        "always": r.always,
+                        "path": r.path,
+                        "global": r.global,
                     }))
                     .collect::<Vec<_>>(),
             }))
@@ -1066,11 +1151,16 @@ fn agent_session_inner(
                     "thinking": null,
                     "builtin": true,
                     "scope": "global",
+                    "readonly": husk_host::subagents::builtin_readonly(&n),
                 }));
             };
             let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
             let (_, desc, body) = husk_host::subagents::split_agent(&text);
             let fm = husk_host::subagents::agent_frontmatter(&text);
+            let workspace_dir = husk_host::subagents::workspace_agent_dir(
+                &mgr.workspace_root,
+                &crate::kernel::app_paths(),
+            );
             Ok(serde_json::json!({
                 "name": name,
                 "description": desc.unwrap_or_default(),
@@ -1078,7 +1168,8 @@ fn agent_session_inner(
                 "model": fm.model,
                 "thinking": fm.thinking,
                 "builtin": false,
-                "scope": if path.starts_with(mgr.workspace_root.join(".husk/agents")) { "workspace" } else { "global" },
+                "readonly": fm.readonly,
+                "scope": if path.starts_with(&workspace_dir) { "workspace" } else { "global" },
             }))
         }
         "delete_subagent" => {
@@ -1090,6 +1181,122 @@ fn agent_session_inner(
                 .trim()
                 .to_lowercase();
             let path = subagent_file(&mgr.workspace_root, &name).ok_or("内置子代理不可删除")?;
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "success": true }))
+        }
+        // `rules` — standing constraints (rule files), distinct from skills:
+        // same trio as the subagent ops, but every rule has a file. A
+        // workspace rule shadows the global one of the same stem, and saving
+        // into the other scope moves the file (see `rules::save_rule`).
+        "read_rule" => {
+            let name = payload
+                .as_ref()
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            let rule =
+                husk_host::rules::discover_rules(&mgr.workspace_root, &crate::kernel::app_paths())
+                    .into_iter()
+                    .find(|r| r.name.to_lowercase() == name)
+                    .ok_or_else(|| format!("找不到规则 {name}"))?;
+            Ok(serde_json::json!({
+                "name": rule.name,
+                "description": rule.description,
+                "globs": rule.globs,
+                "always": rule.always,
+                "body": rule.body,
+                "scope": if rule.global { "global" } else { "workspace" },
+            }))
+        }
+        "save_rule" => {
+            let name = payload
+                .as_ref()
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            let description = payload
+                .as_ref()
+                .and_then(|p| p.get("description"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let globs: Vec<String> = payload
+                .as_ref()
+                .and_then(|p| p.get("globs"))
+                .and_then(|v| v.as_array())
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|g| g.as_str())
+                        .map(|g| g.trim().to_string())
+                        .filter(|g| !g.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let always = payload
+                .as_ref()
+                .and_then(|p| p.get("always"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(globs.is_empty());
+            let body = payload
+                .as_ref()
+                .and_then(|p| p.get("body"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let global = payload
+                .as_ref()
+                .and_then(|p| p.get("scope"))
+                .and_then(|v| v.as_str())
+                == Some("global");
+            if !valid_slug(&name) {
+                return Err("规则名只能是小写字母/数字/-/ _".into());
+            }
+            if body.trim().is_empty() {
+                return Err("规则内容不能为空".into());
+            }
+            let path = husk_host::rules::save_rule(
+                &mgr.workspace_root,
+                &crate::kernel::app_paths(),
+                &name,
+                global,
+                description,
+                &globs,
+                always,
+                body,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "success": true, "path": path.to_string_lossy() }))
+        }
+        "delete_rule" => {
+            let name = payload
+                .as_ref()
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            let paths = crate::kernel::app_paths();
+            // An explicit scope deletes that file; without one the workspace
+            // copy goes first — the one `read_rule` would have shown.
+            let path = match payload
+                .as_ref()
+                .and_then(|p| p.get("scope"))
+                .and_then(|v| v.as_str())
+            {
+                Some(scope) => {
+                    let file = husk_host::rules::rule_file(
+                        &mgr.workspace_root,
+                        &paths,
+                        &name,
+                        scope == "global",
+                    );
+                    file.is_file().then_some(file)
+                }
+                None => husk_host::rules::find_rule_file(&mgr.workspace_root, &paths, &name),
+            }
+            .ok_or_else(|| format!("找不到规则 {name}"))?;
             std::fs::remove_file(&path).map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true }))
         }
@@ -1180,7 +1387,8 @@ fn agent_session_inner(
         }
         // `create_subagent` — write `<name>.md` under `.husk/agents/` (project)
         // or `~/.config/husk/agents/` (global); `delegate { agent: "<name>" }`
-        // resolves it at call time.
+        // resolves it at call time. A same-named manifest in the other dir is
+        // the same profile: it is moved, not duplicated (see `save_manifest`).
         "create_subagent" => {
             let name = payload
                 .as_ref()
@@ -1212,6 +1420,12 @@ fn agent_session_inner(
                 .and_then(|p| p.get("scope"))
                 .and_then(|v| v.as_str())
                 == Some("global");
+            // 权限: `true` = read-only registry, `false` = may write, absent =
+            // leave whatever the manifest already said.
+            let readonly = payload
+                .as_ref()
+                .and_then(|p| p.get("readonly"))
+                .and_then(|v| v.as_bool());
             if !valid_slug(&name) {
                 return Err("子代理名只能是小写字母/数字/-/ _".into());
             }
@@ -1219,24 +1433,16 @@ fn agent_session_inner(
                 return Err("提示词不能为空".into());
             }
             let paths = crate::kernel::app_paths();
-            let base = if global {
-                husk_host::subagents::global_agent_dir(&paths)
-            } else {
-                husk_host::subagents::workspace_agent_dir(&mgr.workspace_root, &paths)
-            };
-            std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
-            let path = base.join(format!("{name}.md"));
-            let existing = std::fs::read_to_string(&path).ok();
-            std::fs::write(
-                &path,
-                husk_host::subagents::render_manifest(
-                    existing.as_deref(),
-                    &name,
-                    desc,
-                    model,
-                    thinking,
-                    prompt,
-                ),
+            let path = husk_host::subagents::save_manifest(
+                &mgr.workspace_root,
+                &paths,
+                &name,
+                global,
+                desc,
+                model,
+                thinking,
+                readonly,
+                prompt,
             )
             .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true, "path": path.to_string_lossy() }))
@@ -1483,7 +1689,18 @@ fn agent_session_inner(
                 .and_then(|v| v.as_str())
                 .ok_or("memory_forget needs key")?;
             let s = open_memory(&mgr).ok_or("memory store unavailable")?;
-            let removed = s.remove_persona(key)?;
+            // Scope is optional on the wire: a pane that names one deletes that
+            // row alone — the same label may be a separate entry in the other
+            // scope — while an older pane still means it everywhere.
+            let removed = match p.get("scope").and_then(|v| v.as_str()) {
+                Some("workspace") => {
+                    s.remove_persona_scoped(agent_context::memory::PersonaScope::Workspace, key)?
+                }
+                Some("global") => {
+                    s.remove_persona_scoped(agent_context::memory::PersonaScope::Global, key)?
+                }
+                _ => s.remove_persona(key)?,
+            };
             Ok(serde_json::json!({ "success": true, "removed": removed }))
         }
         "memory_remove_fact" => {
