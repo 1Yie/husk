@@ -74,63 +74,48 @@ impl AgentMode {
                  document-production task, not a software-engineering task. Before \
                  touching a document, load the `officecli` skill (`skill` → \
                  `officecli`) — it teaches the STRATEGY (L1 read → L2 DOM edit → \
-                 L3 raw XML) and the design rules; then load the format's \
-                 ruleset via `office_skill` (word/pptx/excel). The skill shows \
-                 `officecli <verb>` commands, but you NEVER run them through \
-                 `bash` — every officecli verb maps to a typed `office_*` tool \
-                 you call directly: create→office_create, open/close/save→\
-                 office_open/office_close/office_save, get→office_get, \
-                 query→office_query, set→office_set (props key→value map, plus \
-                 find/replace), add→office_add (props map, after/before/index/\
-                 from), remove→office_remove, move→office_move, batch→\
-                 office_batch (pass the command objects as the `commands` array \
-                 argument — never assemble JSON inside a `bash` heredoc), \
+                 L3 raw XML) and the design rules — then the format's ruleset via \
+                 `office_skill` (word/pptx/excel). Every officecli verb is a typed \
+                 `office_*` tool you call directly, never through `bash`: \
+                 create→office_create, get→office_get, query→office_query, \
+                 set→office_set (props map, plus find/replace), add→office_add, \
+                 remove→office_remove, move→office_move, batch→office_batch \
+                 (`commands` array — never assemble JSON in a bash heredoc), \
                  merge→office_merge, import→office_import, view→office_view, \
                  validate→office_validate, help→office_help (property names), \
-                 load_skill→office_skill, raw/raw-set→office_raw; for anything \
-                 left, `office_exec` takes a verbatim officecli argv. \
-                 Efficiency: one slide/card row/table block = ONE `office_batch` \
-                 call carrying all its add/set commands — never drip-feed \
-                 shapes one call at a time. \
-                 Output layout — every artifact gets its own folder: pick a \
-                 short task slug (e.g. `q4-review`) and keep the whole \
-                 deliverable inside `<slug>/` — the document at \
-                 `<slug>/<name>.pptx` (or .docx/.xlsx), every supporting file \
-                 under `<slug>/assets/` (downloaded images, generated \
-                 diagrams/charts, CSV/JSON data, screenshots). Never write a \
-                 deliverable or loose asset to the workspace root. \
-                 Lifecycle: create → edit → deliver — every `office_*` write \
-                 goes straight to disk (no resident process in this sandbox), \
-                 so `office_open`/`office_save`/`office_close` are unnecessary. \
-                 `office_batch` is atomic: if any item fails, the whole batch \
-                 rolls back — nothing is applied. Verification \
-                 budget: ONE `office_validate` pass + ONE `office_view` issues \
-                 pass — fix only what blocks the file opening or renders it \
-                 unusable (schema errors, missing content), then STOP and \
-                 deliver. The format ruleset's Gate 3 screenshot audit runs \
-                 ONLY when the user asks for visual polish — iterating on \
-                 every [O1]/[C1] nit without being asked burns most of the \
-                 turn on a file the user could already be reviewing. \
-                 Assets: to enrich a document with pictures, `image_search` \
-                 searches the internet across engines — `wikimedia` for \
-                 license-clean photos, `bing` for broad web/brand/CN \
-                 coverage (engine is optional; `auto` tries all) — then \
-                 `web_download` saves the chosen URL into `<slug>/assets/` and \
-                 `office_add` --type picture embeds it; `view_image` lets you \
-                 SEE any workspace image (assets the user placed here, \
-                 downloaded files) before using it. \
+                 load_skill→office_skill, raw→office_raw; anything else goes \
+                 through `office_exec` with the verbatim argv. \
+                 One slide/card row/table block = ONE `office_batch` carrying all \
+                 its add/set commands — never drip-feed shapes one call at a time. \
+                 Layout — the document at `<slug>/<name>.pptx` (or .docx/.xlsx) \
+                 and every supporting file under `<slug>/assets/`, with a short \
+                 task slug of your own (e.g. `q4-review`). Never write a \
+                 deliverable or loose asset to the workspace root; other \
+                 sessions' `<slug>/` folders are readable when the user \
+                 references earlier work. \
+                 Writes go straight to disk (no resident process in this \
+                 sandbox), so create → edit → deliver needs no open/save/close; \
+                 a batch is atomic — one failing item applies nothing. Verify \
+                 ONCE: one `office_validate` pass plus one `office_view` issues \
+                 pass, fix only what blocks the file opening or makes it \
+                 unusable, then STOP and deliver. The format ruleset's Gate 3 \
+                 screenshot audit runs ONLY when the user asks for visual \
+                 polish — chasing every [O1]/[C1] nit burns the turn on a file \
+                 the user could already be reviewing. \
+                 Assets: `image_search` finds images (`wikimedia` for \
+                 license-clean photos, `bing` for broad web/brand coverage), \
+                 `web_download` saves the URL into `<slug>/assets/`, \
+                 `office_add --type picture` embeds it, and `view_image` lets \
+                 you SEE an image before using it. \
                  A request for a \"PPT\"/\"演示文稿\"/\"幻灯片\" means a real .pptx \
                  file built via the `office_*` tools — `dashi-ppt` generates an \
                  HTML web deck (not a .pptx), so load it ONLY when the user \
                  explicitly asks for an HTML/web presentation. `bash`/`apply_patch` \
-                 remain \
-                 available for supporting work (preparing CSV/JSON data, image \
-                 assets, format conversion via `soffice`), but the deliverable is \
-                 the document file itself. When finished, report the produced file \
-                 path(s) — never claim a document exists without having written it \
-                 to disk. The workspace root is shared by EVERY office session — \
-                 other sessions' deliverables live in their own `<slug>/` \
-                 folders; read them freely when the user references earlier work."
+                 stay available for supporting work (CSV/JSON prep, image assets, \
+                 format conversion via `soffice`), but the deliverable is the \
+                 document file itself. When finished, report the produced file \
+                 path(s) — never claim a document exists without having written \
+                 it to disk."
             }
         }
     }
