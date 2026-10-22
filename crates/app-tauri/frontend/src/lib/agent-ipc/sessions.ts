@@ -86,6 +86,27 @@ export async function historyPage(id: number, before: number) {
   );
 }
 
+/** One write-tool result from the WHOLE persisted log. `content` is the tool's
+ *  own result text (a unified diff); `args` is the raw call arguments, which
+ *  name the file for artifact writers. */
+export interface ChangeFeedRow {
+  tool: string;
+  args: string;
+  content: string;
+}
+
+/** Every ok result of `tools` in the session, not just the mounted page's.
+ *  `open` returns the newest slice only, so the changes panel and the
+ *  artifacts dock rebuild from here — otherwise a long session reopens with
+ *  fewer files than it wrote. */
+export async function changesFeed(id: number, tools: readonly string[]) {
+  return invoke<{ rows: ChangeFeedRow[] }>("agent_session", {
+    op: "changes_feed",
+    id,
+    payload: { tools },
+  });
+}
+
 /** Duplicate a session's history into a fresh session (which becomes the
  * active one) — returns the new id + the copied history. */
 export async function forkSession(id: number) {
@@ -187,6 +208,70 @@ export interface WorkspaceSwitchResult {
 
 export function getWorkspaceInfo() {
   return invoke<WorkspaceInfo>("agent_session", { op: "workspace_info" });
+}
+
+/** A directory outside the workspace a session may reach. `scope` says which
+ *  grant it came from: a `workspace` link outlives the session, a `session`
+ *  link dies with it. */
+export interface LinkedRoot {
+  path: string;
+  access: "read" | "readwrite";
+  scope: "workspace" | "session";
+}
+
+export interface LinkedRootLayers {
+  workspace: LinkedRoot[];
+  session: LinkedRoot[];
+}
+
+export function listLinkedRoots(root: string, id: number) {
+  return invoke<LinkedRootLayers>("agent_session", { op: "linked_roots", id, path: root });
+}
+
+/** Grant a directory. `persist` remembers it for every session of this
+ *  workspace; otherwise it applies to this session only. Refusals (`/`,
+ *  `$HOME`, system dirs, the app's own data) come back as the reason. */
+export function linkRoot(
+  root: string,
+  id: number,
+  path: string,
+  access: LinkedRoot["access"],
+  persist: boolean,
+) {
+  return invoke<LinkedRootLayers>("agent_session", {
+    op: "link_root",
+    id,
+    path: root,
+    payload: { path, access, persist },
+  });
+}
+
+export function unlinkRoot(root: string, id: number, path: string) {
+  return invoke<LinkedRootLayers>("agent_session", {
+    op: "unlink_root",
+    id,
+    path: root,
+    payload: { path },
+  });
+}
+
+export function setLinkAccess(
+  root: string,
+  id: number,
+  path: string,
+  access: LinkedRoot["access"],
+) {
+  return invoke<LinkedRootLayers>("agent_session", {
+    op: "set_link_access",
+    id,
+    path: root,
+    payload: { path, access },
+  });
+}
+
+/** The system folder picker — the chosen path, or null when dismissed. */
+export function pickLinkDir() {
+  return invoke<string | null>("agent_session", { op: "pick_link_dir" });
 }
 
 export function pickWorkspace() {
@@ -313,6 +398,9 @@ export interface SubagentItem {
   /** Manifest `model:` — `provider/model` (or a bare id under the parent's
    *  provider). Absent → the subagent default, then the parent's model. */
   model?: string | null;
+  /** Manifest `thinking:` — absent → the subagent default, then the parent's
+   *  level. */
+  thinking?: string | null;
 }
 
 /** The agent's configuration surfaces for the settings "智能体" pane —
@@ -455,6 +543,8 @@ export function createSubagent(p: {
   prompt: string;
   /** `provider/model`; "" or absent writes no `model:` line. */
   model?: string;
+  /** One of the thinking levels; "" or absent writes no `thinking:` line. */
+  thinking?: string;
 }) {
   return invoke<{ success: boolean; path: string }>("agent_session", {
     op: "create_subagent",
@@ -481,6 +571,9 @@ export interface DefaultPrefs {
    *  to live sessions from their next `delegate` call. */
   subagent_provider?: string | null;
   subagent_model?: string | null;
+  /** Global thinking level for delegated children — independent of the model
+   *  pair. "" clears it: children follow the parent session's level. */
+  subagent_thinking_level?: string | null;
   /** Fraction of the context window that triggers compaction — 0.7/0.8/0.9. */
   compact_at?: number;
   /** Sandbox master switch — absent/true = sandboxed; false = every process
@@ -496,6 +589,10 @@ export interface DefaultPrefs {
   memory_enabled?: boolean;
   /** Model distillation — off = deterministic writes only, no extra call. */
   memory_distill?: boolean;
+  /** Semantic recall — score facts with a local sentence encoder instead of
+   *  the bag-of-hashed-tokens stand-in. Only a build carrying the model
+   *  honours it; the pane's switch reads `getMemoryOverview` for that. */
+  semantic_recall?: boolean;
   /** `.blueprint/` architecture layer — off = the directory is ignored. */
   blueprint_enabled?: boolean;
   /** Desktop (OS) notifications — off = the notification center stays in-app
@@ -713,6 +810,8 @@ export function getSandboxInfo() {
 export interface PersonaEntry {
   key: string;
   value: string;
+  /** where the entry applies — omitted on older payloads, which are global. */
+  scope?: "global" | "workspace";
 }
 
 export interface FactRow {
@@ -727,6 +826,13 @@ export interface MemoryOverview {
   enabled: boolean;
   /** model distillation switch — off: deterministic writes only. */
   distill: boolean;
+  /** semantic recall switch — off: recall keeps the hash vector. */
+  semantic?: boolean;
+  /** the model is loaded and recall is actually scored semantically. */
+  semantic_ready?: boolean;
+  /** whether this build carries the encoder at all — a build without it must
+   *  not draw a switch that can do nothing. */
+  semantic_available?: boolean;
   persona: PersonaEntry[];
   facts: FactRow[];
   episodes: number;
@@ -738,11 +844,31 @@ export function getMemoryOverview() {
   return invoke<MemoryOverview>("agent_session", { op: "memory_overview" });
 }
 
+/** Where the local model's fetch is. Polled by the settings dialog while it
+ *  runs — no store is opened for this, so it is cheap at 2 Hz. */
+export interface SemanticProgress {
+  phase: "off" | "idle" | "downloading" | "loading" | "ready" | "failed";
+  /** Bytes of the model already on disk. */
+  bytes: number;
+  /** The finished model's size — an estimate for the bar. */
+  total: number;
+  /** Why the fetch or the load failed. */
+  error?: string;
+}
+
+export function getSemanticProgress() {
+  return invoke<SemanticProgress>("agent_session", { op: "semantic_progress" });
+}
+
 /** Add or overwrite a persona entry (the manual `/remember` path). */
-export function setMemoryPersona(key: string, value: string) {
+export function setMemoryPersona(
+  key: string,
+  value: string,
+  scope: "global" | "workspace" = "global",
+) {
   return invoke<{ success: boolean }>("agent_session", {
     op: "memory_set",
-    payload: { key, value },
+    payload: { key, value, scope },
   });
 }
 
@@ -881,6 +1007,8 @@ export interface SubagentDetail {
   prompt: string;
   scope: "workspace" | "global";
   model?: string | null;
+  /** Manifest `thinking:` — absent → the subagent default, then the parent. */
+  thinking?: string | null;
   /** No manifest file behind this profile — saving an edit writes an
    *  override that shadows the built-in. */
   builtin?: boolean;

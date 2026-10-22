@@ -23,7 +23,13 @@ import {
   Hammer,
   Route,
   Flag,
+  Plus,
+  Folders,
 } from "@keyline-icons/react";
+import { useLinkedRoots } from "@/lib/linked-roots";
+import { LinkedRootRow } from "@/components/linked-roots";
+import { cn } from "@/lib/utils";
+import { useState } from "react";
 
 // Each mode carries its own icon so the trigger and the menu tell the modes
 // apart at a glance, instead of one shield for every choice.
@@ -57,6 +63,8 @@ export function ModePicker({
   mode,
   modeLabel,
   switchMode,
+  workspaceRoot,
+  sessionId,
 }: {
   agentMode: string;
   agentModeLabel: string;
@@ -68,9 +76,17 @@ export function ModePicker({
   mode: string;
   modeLabel: string;
   switchMode: (m: string) => Promise<void>;
+  /** A linked-workspace grant is per session, so the menu needs the pair that
+   *  names one. Absent → the entry stays hidden. */
+  workspaceRoot?: string;
+  sessionId?: number;
 }) {
   const ModeIcon = PERMISSION_MODES.find((m) => m.value === mode)?.icon ?? Shield;
   const AgentModeIcon = AGENT_MODES.find((m) => m.value === agentMode)?.icon ?? Hammer;
+  const links = useLinkedRoots(workspaceRoot, sessionId);
+  // Where a new grant lands: this session by default (a grant should not
+  // outlive the task unless the user says so), remembered on request.
+  const [addScope, setAddScope] = useState<"session" | "workspace">("session");
   return (
     <>
         {/* Office mode is workspace-scoped — every session there is
@@ -162,6 +178,85 @@ export function ModePicker({
                 );
               })}
             </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        )}
+
+        {/* A grant is not a mode: it sits BESIDE the permission picker rather
+            than inside its five choices. Same pill shape, so the toolbar still
+            reads as one row of controls. */}
+        {/* Re-read on open: a grant can land without this menu touching it —
+            the model's `link_workspace` call, or another window's change. The
+            hook only refetches on mount, so opening is the refresh point (and
+            nothing is fetched while the menu stays closed). */}
+        {!officeMode && links.ready && (
+        <DropdownMenu
+          onOpenChange={(open) => {
+            if (open) void links.reload();
+          }}
+        >
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label="关联工作区"
+              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
+            >
+              <Folders className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+              <span className="truncate max-w-[7em]">关联工作区</span>
+              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" className="w-[22rem] p-1">
+            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+              关联工作区
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {links.all.length === 0 ? (
+              <p className="px-2 py-1.5 text-[11px] text-neutral-500">
+                还没有关联目录。跨仓库的项目可以在这里把另一个仓库加进来。
+              </p>
+            ) : (
+              links.all.map((r) => (
+                <LinkedRootRow
+                  key={r.path}
+                  root={r}
+                  busy={links.busy}
+                  onAccess={(root, access) => void links.setAccess(root.path, access)}
+                  onRemove={(path) => void links.remove(path)}
+                />
+              ))
+            )}
+            <DropdownMenuSeparator />
+            {/* One action, one line, left-to-right: the label hugs its text on
+                the left, the scope control sits at the right edge. */}
+            <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+              <button
+                type="button"
+                aria-disabled={links.busy}
+                onClick={() => void links.pickAndAdd("readwrite", addScope === "workspace")}
+                className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs text-neutral-700 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)]"
+              >
+                <Plus className="h-3.5 w-3.5 shrink-0 text-neutral-500" />
+                添加目录
+              </button>
+              <div className="flex shrink-0 items-center gap-0.5 rounded-full bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] p-0.5">
+                {(["session", "workspace"] as const).map((scope) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    aria-pressed={addScope === scope}
+                    onClick={() => setAddScope(scope)}
+                    className={cn(
+                      "cursor-pointer rounded-full px-2 py-0.5 text-[10px] transition-colors",
+                      addScope === scope
+                        ? "bg-white text-neutral-900 shadow-2xs"
+                        : "text-neutral-500 hover:text-neutral-900",
+                    )}
+                  >
+                    {scope === "session" ? "本会话" : "本工作区"}
+                  </button>
+                ))}
+              </div>
+            </div>
           </DropdownMenuContent>
         </DropdownMenu>
         )}

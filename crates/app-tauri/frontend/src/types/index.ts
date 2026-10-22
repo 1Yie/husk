@@ -87,6 +87,9 @@ export type UiEvent =
         tool_name: string;
         diff: string;
         fuzzy: boolean;
+        /** Alternatives to 允许/拒绝 — a grant the host offers when a tool
+         *  refused a path. Empty or absent means an ordinary card. */
+        actions?: ApprovalAction[];
       };
     }
   | { AssistantMessage: string }
@@ -114,7 +117,14 @@ export type UiCommand =
   | { Prompt: { text: string } }
   | { Steer: { text: string } }
   | { SteerChild: { child_id: number; text: string } }
-  | { ToolDecision: { request_id: number; approved: boolean } }
+  | {
+      ToolDecision: {
+        request_id: number;
+        approved: boolean;
+        /** A grant the card offered (`ApprovalRequested.actions`). */
+        action?: string;
+      };
+    }
   | { ApproveSessionTool: { tool_name: string } }
   | { RevokeSessionTool: { tool_name: string } }
   | { AnswerQuestion: { request_id: number; answer: string } }
@@ -228,3 +238,15 @@ export interface UiStats {
   dropped: number;
   depth_peak: number;
 }
+
+/** One thing the user may do instead of a plain yes/no — a grant the host
+ *  offers when a tool refused a path (associate another directory). `id` is
+ *  opaque here: it goes back out in `ToolDecision` and the host interprets it. */
+export interface ApprovalAction {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+/** The same list where a stream item keeps it. */
+export type ApprovalActions = ApprovalAction[];

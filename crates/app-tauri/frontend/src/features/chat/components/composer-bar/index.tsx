@@ -145,6 +145,13 @@ function ComposerBarContent({
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<string>("default");
+  // `root:id` → the id alone. The linked-workspace grant is per session, and
+  // the menu is the only place it can be given mid-turn.
+  const sessionId = useMemo(() => {
+    const tail = sessionKey?.split(":").pop();
+    const id = tail ? Number(tail) : NaN;
+    return Number.isFinite(id) ? id : undefined;
+  }, [sessionKey]);
   // Agent mode (build/plan/goal) — orthogonal to the permission mode: the
   // gate decides HOW calls get approved, the mode decides WHAT the session
   // may do at all (plan = readonly registry, goal = completion contract).
@@ -782,14 +789,14 @@ function ComposerBarContent({
   const latestTodos = useMemo(() => extractLatestTodos(view), [view.items]);
   const hasActiveTodos = Boolean(latestTodos && latestTodos.totalCount > 0 && !latestTodos.allDone);
 
-  const decide = async (approved: boolean) => {
+  const decide = async (approved: boolean, action?: string) => {
     const req = pending;
     // The ref guards re-entry from a stale closure (the dialog's own close
     // handler); `pending` alone would let a deny overwrite the click's verdict.
     if (!req || decidedRef.current === req.requestId) return;
     remember(req.requestId);
     try {
-      await agent.decideTool(req.requestId, approved);
+      await agent.decideTool(req.requestId, approved, action);
     } catch (e) {
       console.error("decideTool failed:", e);
       remember(null);
@@ -1040,7 +1047,7 @@ function ComposerBarContent({
                     {toolIcon(pending.toolName)}
                   </span>
                   <span className="shrink-0 text-neutral-800 font-medium">
-                    允许执行
+                    {pending.actions?.length ? "需要访问" : "允许执行"}
                   </span>
                   <TooltipSimple
                     content={
@@ -1058,13 +1065,37 @@ function ComposerBarContent({
                       {pending.args || pending.toolName}
                     </span>
                   </TooltipSimple>
-                  <Button
-                    size="sm"
-                    className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-zinc-50 cursor-pointer"
-                    onClick={() => void decide(true)}
-                  >
-                    允许
-                  </Button>
+                  {/* A refusal the host can turn into a grant offers that
+                      grant here. One click associates the directory AND lets
+                      the same call run again — the kernel retries the tool, so
+                      the model doesn't spend a round trip on it. A card with no
+                      actions keeps the plain 允许/拒绝 pair. */}
+                  {pending.actions?.length ? (
+                    pending.actions.map((a) => (
+                      <TooltipSimple
+                        key={a.id}
+                        content={a.description || a.label}
+                        side="top"
+                        sideOffset={8}
+                      >
+                        <Button
+                          size="sm"
+                          className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-zinc-50 cursor-pointer"
+                          onClick={() => void decide(true, a.id)}
+                        >
+                          {a.label}
+                        </Button>
+                      </TooltipSimple>
+                    ))
+                  ) : (
+                    <Button
+                      size="sm"
+                      className="shrink-0 h-6 px-2.5 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-zinc-50 cursor-pointer"
+                      onClick={() => void decide(true)}
+                    >
+                      允许
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -1286,6 +1317,8 @@ function ComposerBarContent({
                   agentModeLabel={agentModeLabel}
                   switchAgentMode={switchAgentMode}
                   officeMode={officeMode}
+                  workspaceRoot={workspaceRoot}
+                  sessionId={sessionId}
                   modeLabel={modeLabel}
                   mode={mode}
                   switchMode={switchMode}
@@ -1340,6 +1373,8 @@ function ComposerBarContent({
                 agentModeLabel={agentModeLabel}
                 switchAgentMode={switchAgentMode}
                 officeMode={officeMode}
+                workspaceRoot={workspaceRoot}
+                sessionId={sessionId}
                 modeLabel={modeLabel}
                 mode={mode}
                 switchMode={switchMode}
@@ -1858,6 +1893,8 @@ function ComposerToolbar({
   agentModeLabel,
   switchAgentMode,
   officeMode,
+  workspaceRoot,
+  sessionId,
   modeLabel,
   mode,
   switchMode,
@@ -1882,6 +1919,9 @@ function ComposerToolbar({
   switchAgentMode: (m: string) => Promise<void>;
   /** Office workspace —「工作」only appears in the mode dropdown there. */
   officeMode?: boolean;
+  /** The pair naming the session the linked-workspace menu grants to. */
+  workspaceRoot?: string;
+  sessionId?: number;
   modeLabel: string;
   mode: string;
   switchMode: (m: string) => Promise<void>;
@@ -1953,6 +1993,8 @@ function ComposerToolbar({
           agentModeLabel={agentModeLabel}
           switchAgentMode={switchAgentMode}
           officeMode={officeMode}
+          workspaceRoot={workspaceRoot}
+          sessionId={sessionId}
           mode={mode}
           modeLabel={modeLabel}
           switchMode={switchMode}
