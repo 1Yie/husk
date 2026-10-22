@@ -2,9 +2,9 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   activeViewNow, initAgentStore, useActiveView, useActiveViewSelector,
-  useAgentStore, useHasMoreHistory,
+  useAgentStore, useHasMoreHistory, viewNow,
 } from "../agent-store";
-import { emptyView, type BgJob } from "@/features/chat/hooks/stream-view";
+import { emptyView, type BgJob, type StreamItem } from "@/features/chat/hooks/stream-view";
 import { deferred, emitAgentEvent, listenerCount, mockCommand, modelInfo, tauri } from "@/test/tauri";
 import { clearAll, notificationsNow } from "@/lib/notifications";
 import { CONFIG_CHANGED_EVENT, type ModelInfo } from "@/lib/agent-ipc/sessions";
@@ -279,5 +279,65 @@ describe("persisted history and live state", () => {
     useAgentStore.getState().setBgJobs("/project", 1, jobs);
     expect(activeViewNow().bgJobs).toHaveLength(1);
     expect(activeViewNow().bgJobsAt).toBeGreaterThan(0);
+  });
+});
+
+describe("a reopened child card takes its transcript back", () => {
+  const card: StreamItem = {
+    kind: "tool",
+    name: "review #1",
+    args: "看鉴权",
+    content: "[subagent report — child_id 7 · 2 tool calls, 3s]\n报告",
+    ok: true,
+    parent: "delegate",
+    childId: 7,
+  };
+  const segments = [
+    { kind: "text" as const, text: "找到三处" },
+    { kind: "tool" as const, index: 0 },
+  ];
+  const rows: StreamItem[] = [
+    {
+      kind: "tool",
+      name: "smart_grep",
+      args: "auth",
+      content: "3 hits",
+      ok: true,
+      parent: "review #1",
+      childId: 7,
+    },
+  ];
+
+  const load = () => {
+    useAgentStore.getState().loadView("/project", 1, {
+      ...emptyView(),
+      items: [
+        { kind: "user", text: "委派子代理" },
+        { kind: "tool", name: "delegate", args: "1 task", content: "x", ok: true },
+        card,
+        { kind: "assistant", text: "完成", streaming: false },
+      ],
+    });
+  };
+
+  test("the rows land right behind the card, once", () => {
+    load();
+    act(() => useAgentStore.getState().applyChildTranscript("/project", 1, 7, segments, rows));
+    const items = viewNow("/project", 1)!.items;
+    expect(items.map((it) => it.kind)).toEqual(["user", "tool", "tool", "tool", "assistant"]);
+    expect(items[2]).toMatchObject({ kind: "tool", childId: 7, segments, transcriptLoaded: true });
+    expect(items[3]).toMatchObject({ kind: "tool", name: "smart_grep", parent: "review #1" });
+    const snapshot = viewNow("/project", 1);
+    // A second fetch of the same child finds a card that already has it.
+    act(() => useAgentStore.getState().applyChildTranscript("/project", 1, 7, segments, rows));
+    expect(viewNow("/project", 1)).toBe(snapshot);
+    expect(viewNow("/project", 1)!.items).toHaveLength(5);
+  });
+
+  test("a child whose card is gone leaves the view untouched", () => {
+    load();
+    const snapshot = viewNow("/project", 1);
+    act(() => useAgentStore.getState().applyChildTranscript("/project", 1, 99, segments, rows));
+    expect(viewNow("/project", 1)).toBe(snapshot);
   });
 });

@@ -107,6 +107,17 @@ export async function changesFeed(id: number, tools: readonly string[]) {
   });
 }
 
+/** A delegated child's own history — the body its card replays after a reopen.
+ *  `[]` when the child left none (parked, or cancelled before it answered). */
+export function subagentTranscript(root: string, id: number, childId: number) {
+  return invoke<{ messages: ChatMessage[] }>("agent_session", {
+    op: "subagent_transcript",
+    id,
+    path: root,
+    payload: { child_id: childId },
+  });
+}
+
 /** One uncommitted file of the workspace's git worktree. `path` is relative to
  *  the workspace root; `diff` is HEAD against the bytes on disk (empty for a
  *  binary or an oversized file). */

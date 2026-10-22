@@ -1,5 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
-import { applyChangesFeed, opensUserTurn, steerTextOf, viewFromHistory, viewFromHistoryChunked } from "../view-from-history";
+import {
+  applyChangesFeed,
+  childTranscriptCard,
+  opensUserTurn,
+  steerTextOf,
+  viewFromHistory,
+  viewFromHistoryChunked,
+} from "../view-from-history";
 import { SUMMARY_TOOLS } from "../apply-event";
 import type { ChatMessage } from "@/types";
 
@@ -245,5 +252,106 @@ describe("a delegated child survives reopening", () => {
     if (card?.kind === "tool") {
       expect(card.segments).toContainEqual({ kind: "text", text: "> 主代理回复：用 main", muted: true });
     }
+  });
+
+  test("a finished report's header names the child it came from", () => {
+    const view = viewFromHistory(
+      delegation("[subagent report — child_id 12 · 4 tool calls, 9s]\n结论：无问题"),
+    );
+    expect(view.items.find((it) => it.kind === "tool" && it.parent === "delegate")).toMatchObject({
+      childId: 12,
+      ok: true,
+    });
+  });
+
+  test("a parallel delegation names each child its sections report", () => {
+    const view = viewFromHistory([
+      { role: "user", content: "并行委派", ts: 10 },
+      {
+        role: "assistant",
+        content: "",
+        ts: 20,
+        tool_calls: [
+          {
+            id: "d2",
+            type: "function",
+            function: { name: "delegate", arguments: '{"tasks":["看鉴权","看性能"]}' },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content:
+          "[delegate — 2 children]\n" +
+          "── [0] ok · 3s ──\n[subagent report — child_id 21 · 2 tool calls, 3s]\n鉴权没问题\n" +
+          "── [1] ok · 5s ──\n[subagent report — child_id 22 · 1 tool calls, 5s]\n性能可以",
+        tool_call_id: "d2",
+        ts: 30,
+      },
+    ]);
+    const cards = view.items.filter((it) => it.kind === "tool" && it.parent === "delegate");
+    expect(cards.map((it) => (it.kind === "tool" ? it.childId : null))).toEqual([21, 22]);
+  });
+});
+
+describe("a subagent's own history replays onto its card", () => {
+  // What `subagent_transcript` returns for a finished child: its system prompt,
+  // the task it was handed, one tool round, a steer, the parent's answer.
+  const transcript: ChatMessage[] = [
+    { role: "system", content: "你是子代理" },
+    { role: "user", content: "探索仓库的鉴权分支", ts: 10 },
+    {
+      role: "assistant",
+      content: "",
+      ts: 20,
+      tool_calls: [
+        { id: "t1", type: "function", function: { name: "smart_grep", arguments: '{"pattern":"auth"}' } },
+      ],
+    },
+    { role: "tool", content: "3 hits", tool_call_id: "t1", ts: 30, duration_ms: 5 },
+    { role: "assistant", content: "找到三处", ts: 40 },
+    { role: "user", content: "The user interrupted: 只看中间件", notice: "steer", ts: 50 },
+    { role: "user", content: "[answer from your parent] 用 main 分支", ts: 60 },
+    { role: "assistant", content: "结论：中间件没问题", ts: 70 },
+  ];
+
+  test("text, tool, steer and parent answer fold in arrival order", () => {
+    const card = childTranscriptCard(transcript, "review #1", 9);
+    expect(card.rows).toMatchObject([
+      {
+        kind: "tool",
+        name: "smart_grep",
+        args: "auth",
+        content: "3 hits",
+        ok: true,
+        parent: "review #1",
+        childId: 9,
+        startedAt: 25,
+      },
+    ]);
+    // The system row and the task prompt are context — the live card drew
+    // neither, and the chip already carries the task.
+    expect(card.segments).toEqual([
+      { kind: "tool", index: 0 },
+      { kind: "text", text: "找到三处" },
+      { kind: "text", text: "> 用户插话：只看中间件\n\n> 主代理回复：用 main 分支", muted: true },
+      { kind: "text", text: "结论：中间件没问题" },
+    ]);
+  });
+
+  test("a failed call replays red and the task prompt stays out of the body", () => {
+    const card = childTranscriptCard(
+      [
+        { role: "user", content: "探索仓库" },
+        { role: "assistant", content: "[call: bash {}]\n先看目录", ts: 20 },
+        { role: "tool", content: "denied", is_error: true, ts: 30 },
+      ],
+      "subagent",
+    );
+    expect(card.rows).toMatchObject([{ ok: false, name: "tool", parent: "subagent" }]);
+    expect(card.segments).toEqual([
+      { kind: "text", text: "先看目录" },
+      { kind: "tool", index: 0 },
+    ]);
   });
 });

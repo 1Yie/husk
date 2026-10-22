@@ -15,7 +15,13 @@ import * as agent from "@/lib/agent-ipc";
 import type { AgentEventEnvelope } from "@/types";
 import { applyEvents } from "@/features/chat/hooks/apply-event";
 import { hasRunningChildren } from "@/features/chat/hooks/running-children";
-import { emptyView, type BgJob, type SessionView, type StreamItem } from "@/features/chat/hooks/stream-view";
+import {
+  emptyView,
+  type BgJob,
+  type ChildSegment,
+  type SessionView,
+  type StreamItem,
+} from "@/features/chat/hooks/stream-view";
 import { markSessionRead, notifyForEvent } from "@/lib/notifications";
 import { isAppInFront, onAppFront } from "@/lib/desktop-notify";
 
@@ -96,6 +102,17 @@ interface AgentStore {
    *  `loadView`'s no-overwrite rule would resurrect one if an id ever did
    *  collide again. */
   dropView: (root: string, id: number) => void;
+  /** Fold a finished subagent's own history onto its card: the body segments,
+   *  and its tool rows spliced in right behind the card so the stream's fold
+   *  nests them under it. A missing card or an already replayed one is a
+   *  no-op — the fetch may land after the view was rebuilt or switched. */
+  applyChildTranscript: (
+    root: string,
+    id: number,
+    childId: number,
+    segments: ChildSegment[],
+    rows: StreamItem[]
+  ) => void;
   /** Replace a session's background-job list — a `bg_list` seed or the list
    *  a `bg_control` call returned. Live updates arrive as `husk:bg_jobs`. */
   setBgJobs: (root: string, id: number, jobs: BgJob[]) => void;
@@ -209,6 +226,26 @@ export const useAgentStore = create<AgentStore>((set) => ({
       next.delete(k);
       const keys = runningKeysOf(next);
       return { views: next, runningKeys: sameKeys(s.runningKeys, keys) ? s.runningKeys : keys };
+    }),
+
+  applyChildTranscript: (root, id, childId, segments, rows) =>
+    set((s) => {
+      const k = viewKey(root, id);
+      const v = s.views.get(k);
+      if (!v) return s;
+      const at = v.items.findIndex(
+        (it) => it.kind === "tool" && it.parent === "delegate" && it.childId === childId,
+      );
+      const card = v.items[at];
+      if (card?.kind !== "tool" || card.transcriptLoaded) return s;
+      const items = v.items.slice();
+      items[at] = { ...card, segments, transcriptLoaded: true };
+      // Right AFTER the card: the stream's fold walks items in order and
+      // attaches each row to the child its `childId` names.
+      items.splice(at + 1, 0, ...rows);
+      const next = new Map(s.views);
+      next.set(k, { ...v, items });
+      return { views: next };
     }),
 
   setBgJobs: (root, id, jobs) =>

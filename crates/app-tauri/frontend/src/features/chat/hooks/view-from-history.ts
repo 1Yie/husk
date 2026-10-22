@@ -5,7 +5,12 @@
 // steer annotations strip to the bare text.
 
 import * as agent from "@/lib/agent-ipc/index";
-import { emptyView, type SessionView } from "@/features/chat/hooks/stream-view";
+import {
+  emptyView,
+  type ChildSegment,
+  type SessionView,
+  type StreamItem,
+} from "@/features/chat/hooks/stream-view";
 import { recordArtifact, recordFileChanges } from "@/features/chat/hooks/apply-event";
 import type { ChangeFeedRow } from "@/lib/agent-ipc/sessions";
 import type { ChatMessage } from "@/types";
@@ -210,6 +215,11 @@ function delegateChildLabel(agent: string | undefined, index: number, total: num
  *  can still draw the waiting card against the right child. */
 const WAITING_REPORT = /^\[subagent (.+?) \(child_id (\d+)\) is waiting for you\]/;
 
+/** A finished child's report opens with `[subagent report — child_id N · K tool
+ *  calls, Xs]` — the only place the persisted log still names the child, and
+ *  the id its card needs to replay the transcript afterwards. */
+const CHILD_REPORT = /\[subagent report — child_id (\d+) ·/;
+
 /** Rebuild a delegation's nested child items from the persisted args
  * (`task`/`tasks`) and result text (`── [i] ok · 3s ──` sections for the
  * parallel form; the bare report for a single child) — live-only events, so
@@ -243,6 +253,7 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
     // A parked child's early return: the card is waiting, not finished, and
     // the id in the text is the only thing that names it after a reload.
     const waiting = body.match(WAITING_REPORT);
+    const finished = body.match(CHILD_REPORT);
     items.push({
       kind: "tool" as const,
       name: waiting ? waiting[1] : delegateChildLabel(agent, 0, 1),
@@ -252,7 +263,7 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
       // cancelled or failed child must not reload green.
       ok: !isError,
       parent: "delegate",
-      childId: waiting ? Number(waiting[2]) : undefined,
+      childId: waiting ? Number(waiting[2]) : finished ? Number(finished[1]) : undefined,
       waiting: waiting ? body.slice(waiting[0].length).trim() : undefined,
     });
     return items;
@@ -266,6 +277,7 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
     if (nl < 0) continue;
     const status = rest.slice(0, nl).trim();
     const body = rest.slice(nl + 2).replace(/^\n/, "").trim();
+    const finished = body.match(CHILD_REPORT);
     items.push({
       kind: "tool" as const,
       name: delegateChildLabel(agent, idx, total),
@@ -273,9 +285,78 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
       content: body || undefined,
       ok: status.startsWith("ok"),
       parent: "delegate",
+      childId: finished ? Number(finished[1]) : undefined,
     });
   }
   return items;
+}
+
+/** The kernel's prefix on the row a child reads a parent answer as. */
+const PARENT_ANSWER_PREFIX = "[answer from your parent]";
+
+/** A finished child's own history → the body its card shows, so reopening a
+ *  session restores what the live `applyEvent` path had streamed: assistant
+ *  text runs, the child's own tool calls as nested rows, and the muted steer /
+ *  parent-answer notes. Its system row and the task prompt are context, not
+ *  body — the live card never drew them either. */
+export function childTranscriptCard(
+  history: ChatMessage[],
+  label: string,
+  childId?: number,
+): { segments: ChildSegment[]; rows: StreamItem[] } {
+  const idToTool = new Map<string, ToolInfo>();
+  for (const m of history) indexToolCalls(idToTool, m);
+  const segments: ChildSegment[] = [];
+  const rows: StreamItem[] = [];
+  // Consecutive text folds into the run already open — the live stream
+  // appended each delta to it, so replay must not fan one run into several.
+  const pushText = (text: string, muted = false) => {
+    const last = segments[segments.length - 1];
+    if (last?.kind === "text" && !!last.muted === muted) {
+      segments[segments.length - 1] = { ...last, text: `${last.text}\n\n${text}` };
+      return;
+    }
+    segments.push(muted ? { kind: "text", text, muted } : { kind: "text", text });
+  };
+  for (const m of history) {
+    if (m.role === "system") continue;
+    if (m.role === "user") {
+      if (m.notice === "hidden") continue;
+      const steer = steerTextOf(m);
+      if (steer !== null) {
+        pushText(`> 用户插话：${steer}`, true);
+        continue;
+      }
+      const text = (m.content ?? "").trim();
+      if (text.startsWith(PARENT_ANSWER_PREFIX)) {
+        pushText(`> 主代理回复：${text.slice(PARENT_ANSWER_PREFIX.length).trim()}`, true);
+      }
+      // Anything else is the task it was handed — already on the card's chip.
+      continue;
+    }
+    if (m.role === "tool") {
+      const info = (m.tool_call_id && idToTool.get(m.tool_call_id)) || { name: "tool", args: "", raw: "" };
+      // One row per call, and the segment indexes ITS OWN rows — the card's
+      // `children` are appended in this same order.
+      const index = rows.length;
+      rows.push({
+        kind: "tool",
+        name: info.name,
+        args: info.args,
+        content: m.content ?? "",
+        ok: m.is_error !== true,
+        parent: label,
+        childId,
+        ts: m.ts ?? undefined,
+        startedAt: m.ts != null && m.duration_ms != null ? m.ts - m.duration_ms : undefined,
+      });
+      segments.push({ kind: "tool", index });
+      continue;
+    }
+    const text = stripCallEcho(m.content ?? "").trim();
+    if (text) pushText(text);
+  }
+  return { segments, rows };
 }
 
 /** Rebuild a `SessionView`'s item list from persisted `ChatMessage`

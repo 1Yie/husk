@@ -72,6 +72,9 @@ export type StreamItem =
       parent?: string;
       /** Set on a delegated subagent's card: the id a `SteerChild` names. */
       childId?: number;
+      /** A delegated child's own history was fetched and folded onto this
+       *  card — replaying it again would duplicate its rows. */
+      transcriptLoaded?: boolean;
       /** A delegated child parked on a question for the parent agent — the
        *  question text; cleared when the parent answers. */
       waiting?: string;

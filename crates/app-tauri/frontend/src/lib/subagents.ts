@@ -14,6 +14,10 @@ export function childLabel(name: string): string {
   return name.replace(/\s*#\d+\s*$/, "").trim() || "子代理";
 }
 
+/** Shown beside a steer box while the child is parked: the kernel holds the
+ *  text and injects it only once the child resumes. */
+export const WAITING_STEER_HINT = "等待主代理回复中，插话会在子代理恢复后生效";
+
 /** The capsule's one line. One child is worth naming; several are worth counting. */
 export function summarizeChildren(children: readonly RunningChild[]): ChildrenSummary | null {
   if (children.length === 0) return null;

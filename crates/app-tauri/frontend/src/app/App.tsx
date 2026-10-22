@@ -3,11 +3,17 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { activeViewNow, refreshAgentChips, useAgentStore, useRunningKeys } from "@/stores/agent-store";
 import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
-import { applyChangesFeed, viewFromHistory, viewFromHistoryChunked } from "@/features/chat/hooks/view-from-history";
+import {
+  applyChangesFeed,
+  childTranscriptCard,
+  viewFromHistory,
+  viewFromHistoryChunked,
+} from "@/features/chat/hooks/view-from-history";
 import { SUMMARY_TOOLS } from "@/features/chat/hooks/apply-event";
+import type { ChildSegment, StreamItem } from "@/features/chat/hooks/stream-view";
 import { loadReset, loadStamp } from "@/lib/load-probe";
 import { forgetToldFailures, markSessionRead, setSessionTitles } from "@/lib/notifications";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, subagentTranscript, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
 import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
@@ -95,6 +101,43 @@ function useAppChromeGuards() {
   }, []);
 }
 
+/** Fetch and fold the transcript of every finished delegated child in a rebuilt
+ *  page — the child's own stream was live-only, so a reopened session has just
+ *  its report. A few at a time; a child whose history is gone simply keeps its
+ *  report, and the store action no-ops if its card is no longer loaded. */
+async function hydrateChildTranscripts(
+  root: string,
+  id: number,
+  items: readonly StreamItem[],
+  apply: (
+    root: string,
+    id: number,
+    childId: number,
+    segments: ChildSegment[],
+    rows: StreamItem[]
+  ) => void,
+) {
+  // One fetch per child — a parallel delegation draws one card each, and a
+  // second `delegate` in the same page cannot reuse the first's transcript.
+  const cards = new Map<number, string>();
+  for (const it of items) {
+    if (it.kind !== "tool" || it.parent !== "delegate" || it.childId == null) continue;
+    if (it.content === undefined || it.transcriptLoaded) continue;
+    cards.set(it.childId, it.name);
+  }
+  const pending = [...cards];
+  for (let i = 0; i < pending.length; i += 8) {
+    await Promise.allSettled(
+      pending.slice(i, i + 8).map(async ([childId, label]) => {
+        const { messages } = await subagentTranscript(root, id, childId);
+        if (messages.length === 0) return;
+        const { segments, rows } = childTranscriptCard(messages, label, childId);
+        apply(root, id, childId, segments, rows);
+      }),
+    );
+  }
+}
+
 export function App() {
   useAppChromeGuards();
   const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: "", name: "", recents: [] });
@@ -116,6 +159,7 @@ export function App() {
   const loadView = useAgentStore((s) => s.loadView);
   const prependItems = useAgentStore((s) => s.prependItems);
   const dropView = useAgentStore((s) => s.dropView);
+  const applyChildTranscript = useAgentStore((s) => s.applyChildTranscript);
   const runningKeys = useRunningKeys();
 
   // The store keys every view by `root:id`, and it is the only place the active
@@ -226,8 +270,12 @@ export function App() {
         taskTotal: r.task_total,
       });
       releaseLoading();
+      // A delegated child's own stream was live-only: the rebuilt page carries
+      // its report, and its body arrives from the kernel afterwards. Off the
+      // veil — the page never waits on it.
+      void hydrateChildTranscripts(root, id, folded.items, applyChildTranscript);
     },
-    [loadView, releaseLoading],
+    [applyChildTranscript, loadView, releaseLoading],
   );
 
   // Non-null while the delete confirmation dialog is open — holds the row

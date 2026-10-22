@@ -47,8 +47,9 @@ import { cn } from "@/lib/utils";
 import { CircleCheck, CircleX, FileDiff, Package, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Orb } from "@/features/chat/components/agent-orb";
 import type { JobsSummary } from "@/lib/bg-jobs";
-import { summarizeChildren } from "@/lib/subagents";
+import { WAITING_STEER_HINT, summarizeChildren } from "@/lib/subagents";
 import type { RunningChild } from "@/features/chat/hooks/running-children";
+import { ChildSteerInput } from "@/features/chat/components/chat-stream/child-steer";
 import { loadStamp } from "@/lib/load-probe";
 import { timeGreeting } from "@/lib/greeting";
 import { readAttachment } from "@/lib/agent-ipc/sessions";
@@ -3131,13 +3132,25 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             {/* The children have no rows anywhere else — this is where what
                 each of them was handed stays readable while it runs. */}
             <PopoverContent side="top" align="center" className="w-80 p-1.5">
-              <div className="flex flex-col">
+              <div className="flex flex-col gap-0.5">
                 {(subagents ?? []).map((c) => (
-                  <div key={c.childId} className="flex items-start gap-2 rounded-md px-2 py-1.5">
-                    <Orb variant="G2" size={12} className="mt-0.5 flex-none text-violet-600 dark:text-violet-400" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[12px]">{c.name}</div>
-                      <div className="truncate text-[11px] text-neutral-500 dark:text-neutral-400">{c.task}</div>
+                  <div key={c.childId} className="flex flex-col gap-1 rounded-md px-2 py-1.5">
+                    <div className="flex items-start gap-2">
+                      <Orb variant="G2" size={12} className="mt-0.5 flex-none text-violet-600 dark:text-violet-400" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[12px]">{c.name}</div>
+                        <div className="truncate text-[11px] text-neutral-500 dark:text-neutral-400">{c.task}</div>
+                      </div>
+                    </div>
+                    {/* A parked child takes the text only after it resumes —
+                        saying so beats a steer that looks swallowed. */}
+                    {c.waiting != null && (
+                      <div className="pl-5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                        {WAITING_STEER_HINT}
+                      </div>
+                    )}
+                    <div className="pl-5">
+                      <ChildSteerInput childId={c.childId} />
                     </div>
                   </div>
                 ))}
