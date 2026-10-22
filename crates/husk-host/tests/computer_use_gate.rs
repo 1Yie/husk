@@ -207,7 +207,10 @@ async fn run(
                 }
                 let ok = answer(&tool_name, &diff);
                 cards2.lock().unwrap().push((tool_name, diff));
-                *slot.lock().unwrap() = Some((request_id, ok));
+                *slot.lock().unwrap() = Some((
+                    request_id,
+                    agent_kernel::tools::registry::ToolVerdict { approved: ok, action: None },
+                ));
             }
         }
     });

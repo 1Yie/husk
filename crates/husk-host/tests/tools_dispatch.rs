@@ -21,7 +21,7 @@ fn ctx_at(dir: &std::path::Path) -> Arc<ToolCtx> {
 #[tokio::test]
 async fn registry_lists_the_host_tools() {
     let r = registry();
-    assert_eq!(r.len(), 22);
+    assert_eq!(r.len(), 24);
     let schema = r.request_schema();
     let names: Vec<&str> = schema
         .as_array()
@@ -49,8 +49,12 @@ async fn registry_lists_the_host_tools() {
         "batch_execute",
         "blueprint",
         "remember",
+        "memory_search",
         "skill",
         "serena",
+        // Asking for another directory is a kernel tool; the host decides
+        // what a grant means (and refuses when it installed nothing).
+        "link_workspace",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
@@ -66,6 +70,8 @@ async fn registry_lists_the_host_tools() {
     assert!(!r.is_readonly("computer"));
     assert!(!r.is_readonly("fuzzy_patch"));
     assert!(!r.is_readonly("bash"));
+    // Granting reach is a write that needs a human: it pauses like one.
+    assert!(!r.is_readonly("link_workspace"));
 }
 
 #[tokio::test]

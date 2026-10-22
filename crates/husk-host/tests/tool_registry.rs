@@ -21,6 +21,7 @@ fn eligibility_matrix() {
         ("smart_test_runner", false),
         ("serena", false),
         ("skill", false),
+        ("memory_search", true),
         ("delegate", false),
         ("ask_question", false),
         ("todo", false),
@@ -176,7 +177,7 @@ fn husk_batch_keeps_its_description_and_signature_inference() {
         .as_str()
         .unwrap()
         .to_string();
-    assert_eq!(description.len(), 994, "{description}");
+    assert_eq!(description.len(), 1018, "{description}");
     assert!(description
         .starts_with("The DEFAULT way to issue 2+ INDEPENDENT observation calls (smart_read"));
     assert!(description.ends_with("goal signals, and nested batch_execute."));

@@ -235,16 +235,24 @@ const DECISION_PICKUP: std::time::Duration = std::time::Duration::from_millis(50
 ///
 /// Blocking — call it without holding any lock the engine's event path needs.
 pub fn deliver_decision(
-    slot: &Mutex<Option<(u64, bool)>>,
+    slot: &Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>,
     request_id: u64,
     approved: bool,
+    action: Option<String>,
 ) -> Result<(), String> {
-    *slot.lock().map_err(|e| e.to_string())? = Some((request_id, approved));
+    *slot.lock().map_err(|e| e.to_string())? = Some((
+        request_id,
+        agent_kernel::tools::registry::ToolVerdict { approved, action },
+    ));
     let deadline = std::time::Instant::now() + DECISION_PICKUP;
     loop {
         {
             let mut current = slot.lock().map_err(|e| e.to_string())?;
-            if *current != Some((request_id, approved)) {
+            let picked = current
+                .as_ref()
+                .is_some_and(|(id, verdict)| *id == request_id && verdict.approved == approved);
+            // Cleared by the engine — the verdict was taken.
+            if !picked {
                 return Ok(());
             }
             if std::time::Instant::now() >= deadline {
@@ -262,7 +270,7 @@ pub struct SessionHandle {
     #[allow(dead_code)]
     pub id: i64,
     pub cmd_tx: tokio::sync::mpsc::Sender<crate::command::UiCommand>,
-    pub decision: Arc<Mutex<Option<(u64, bool)>>>,
+    pub decision: Arc<Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>>,
     /// The approval this session is parked on right now (`0` = none), kept
     /// from the event stream by the shell's forwarder. `ToolDecision` is
     /// written into the ACTIVE session's slot, and the engine discards a stale
@@ -306,6 +314,15 @@ pub struct SessionHandle {
     /// The session's background jobs — listed and controlled from here, not
     /// through the pump, so a kill lands while a turn is running.
     pub bg_jobs: Arc<agent_tools_shell::bg::BgRegistry>,
+    /// The entries the actor read back from the session's job record — listed
+    /// ahead of the live jobs and removable from here.
+    pub bg_restored: crate::session::BgRestored,
+    /// The session's linked workspaces — the same handle the actor's tool
+    /// context reads, so a grant applies to the next call without the pump.
+    pub linked_roots: Arc<agent_capabilities::LinkedRoots>,
+    /// The actor's notice channel — a mid-session grant is announced on
+    /// the model's next turn through it.
+    pub notices: tokio::sync::mpsc::Sender<String>,
 }
 
 /// The multi-session kernel manager — frontend-agnostic. Owns all live
@@ -355,6 +372,9 @@ pub struct SessionManager {
     /// Global subagent default `(provider, model)` — pushed into every actor
     /// so `delegate` children run on it. `None` → children follow the parent.
     pub subagent_model: Option<(String, String)>,
+    /// Global subagent thinking level — pushed with `subagent_model`.
+    /// `None` → children follow the parent session's level.
+    pub subagent_thinking_level: Option<String>,
     /// Active thinking intensity level across sessions (e.g. "medium", "high").
     pub active_thinking_level: Option<String>,
     /// Active permission mode across sessions (e.g. "default", "acceptEdits", "auto").
@@ -376,6 +396,9 @@ pub struct SessionManager {
     /// Model distillation switch — `false` keeps deterministic episode/fact
     /// writes but drops the per-turn summarizer model call.
     pub memory_distill: bool,
+    /// Semantic recall switch — `false` scores recall on the hash vector even
+    /// in a build that carries the sentence encoder.
+    pub semantic_recall: bool,
     /// `.blueprint/` switch — the default for sessions spawned from now on,
     /// and broadcast to live sessions when it changes.
     pub blueprint_enabled: bool,
@@ -427,68 +450,130 @@ impl SessionManager {
         self.handle_at(root, id).map(|h| h.bg_jobs.clone())
     }
 
-    /// The 后台 view's list for a session: the live registry while its actor is
-    /// up, otherwise the record that actor last wrote. A job the record still
-    /// calls running died with the process that ran it — the app was closed —
-    /// so it reads as interrupted rather than as work still going.
+    /// The 后台 view's list for a session: the entries earlier processes left
+    /// in its record, then its live jobs; with no actor up, just the record.
+    /// A job the record still calls running died with the process that ran it
+    /// — the app was closed — so it reads as interrupted rather than as work
+    /// still going.
     pub fn bg_jobs_for_display(&self, root: &str, id: i64) -> serde_json::Value {
-        if let Some(reg) = self.bg_registry(root, id) {
-            return serde_json::json!(reg.jobs());
+        if let Some(h) = self.handle_at(root, id) {
+            return crate::session::bg_snapshot(&h.bg_restored, &h.bg_jobs);
         }
-        self.store
-            .load_bg_jobs(id)
-            .map(Self::interrupted_bg_jobs)
-            .unwrap_or_else(|| serde_json::json!([]))
+        let saved = self.bg_store(root).and_then(|s| s.load_bg_jobs(id));
+        serde_json::Value::Array(saved.map(crate::session::restored_bg_jobs).unwrap_or_default())
     }
 
-    /// A saved job list as the sidebar shows it after a restart: nothing is
-    /// still running, because the process that ran it is gone. A job that had
-    /// already ended keeps its own ending. Every entry is marked `restored` —
-    /// no process is behind it, so nothing can be paused, killed or tailed.
-    fn interrupted_bg_jobs(mut jobs: serde_json::Value) -> serde_json::Value {
-        if let Some(list) = jobs.as_array_mut() {
-            for job in list.iter_mut() {
-                if let Some(fields) = job.as_object_mut() {
-                    fields.insert("restored".into(), serde_json::Value::Bool(true));
-                }
-                let Some(state) = job.get_mut("state") else {
-                    continue;
-                };
-                let kind = state
-                    .get("kind")
-                    .and_then(|k| k.as_str())
-                    .unwrap_or_default();
-                if kind == "running" || kind == "paused" {
-                    *state = serde_json::json!({
-                        "kind": "done",
-                        "label": "应用已退出",
-                        "code": null,
-                        "reason": "error",
-                    });
+    /// Drop one restored entry from a session's job record, returning the list
+    /// the pane should show. `None` when `job` is not a restored entry — a live
+    /// job, which only its registry can remove.
+    pub fn remove_bg_record(&self, root: &str, id: i64, job: &str) -> Option<serde_json::Value> {
+        let store = self.bg_store(root)?;
+        let is_job = |e: &serde_json::Value| e.get("id").and_then(|v| v.as_str()) == Some(job);
+        if let Some(h) = self.handle_at(root, id) {
+            {
+                let mut restored = h.bg_restored.lock().ok()?;
+                let before = restored.len();
+                restored.retain(|e| !is_job(e));
+                if restored.len() == before {
+                    return None;
                 }
             }
+            // The registry did not change, so its feed will not write this.
+            let _ = store.save_bg_jobs(id, &crate::session::bg_record(&h.bg_restored, &h.bg_jobs));
+            return Some(crate::session::bg_snapshot(&h.bg_restored, &h.bg_jobs));
         }
-        jobs
-    }
-
-    /// Drop one entry from a session's saved job record, returning the list the
-    /// pane should show. `None` when an actor is live — the registry owns the
-    /// list then, and its next change rewrites the record anyway.
-    pub fn remove_bg_record(&self, root: &str, id: i64, job: &str) -> Option<serde_json::Value> {
-        if self.bg_registry(root, id).is_some() {
-            return None;
-        }
-        let saved = self.store.load_bg_jobs(id)?;
-        let jobs = Self::without_bg_job(saved, job);
-        let _ = self.store.save_bg_jobs(id, &jobs);
+        let mut list = crate::session::restored_bg_jobs(store.load_bg_jobs(id)?);
+        list.retain(|e| !is_job(e));
+        let jobs = serde_json::Value::Array(list);
+        let _ = store.save_bg_jobs(id, &jobs);
         Some(jobs)
     }
 
-    /// The saved list without `job` — what a removal from the record leaves.
-    fn without_bg_job(jobs: serde_json::Value, job: &str) -> serde_json::Value {
-        let mut list = jobs.as_array().cloned().unwrap_or_default();
-        list.retain(|entry| entry.get("id").and_then(|v| v.as_str()) != Some(job));
-        serde_json::Value::Array(list)
+    /// The store a session of `root` keeps its record in. Records sit in each
+    /// workspace's own directory, so a parked workspace's session must not be
+    /// looked up in the active one's.
+    fn bg_store(&self, root: &str) -> Option<Arc<SessionStore>> {
+        if self.workspace_root.to_string_lossy() == root {
+            return Some(self.store.clone());
+        }
+        SessionStore::open(std::path::Path::new(root)).ok().map(Arc::new)
+    }
+    // ---- linked workspaces ------------------------------------------------
+
+    /// The roots session `id` may reach beyond its workspace: what the
+    /// workspace remembered plus what this session was granted, normalized.
+    /// Read from the store, so it answers for a session with no live actor.
+    pub fn effective_links(
+        &self,
+        root: &str,
+        id: i64,
+    ) -> Vec<agent_capabilities::LinkedRoot> {
+        self.links_hub(root).effective(id)
+    }
+
+    /// The two grant layers for a session, each already normalized:
+    /// `(workspace-level, session-level)`. The UI shows them apart because
+    /// only one of them survives the session.
+    pub fn link_layers(
+        &self,
+        root: &str,
+        id: i64,
+    ) -> (
+        Vec<agent_capabilities::LinkedRoot>,
+        Vec<agent_capabilities::LinkedRoot>,
+    ) {
+        self.links_hub(root).layers(id)
+    }
+
+    /// Grant `path` to session `id`. `persist` remembers it for every session
+    /// of this workspace; otherwise it dies with this session. Returns the
+    /// session's effective list.
+    pub fn link_root(
+        &mut self,
+        root: &str,
+        id: i64,
+        path: &std::path::Path,
+        access: &str,
+        persist: bool,
+    ) -> Result<Vec<agent_capabilities::LinkedRoot>, String> {
+        let layer = if persist {
+            crate::links::Layer::Workspace
+        } else {
+            crate::links::Layer::Session
+        };
+        self.links_hub(root)
+            .grant(id, &path.to_string_lossy(), access, layer)
+    }
+
+    /// Drop a grant, whichever layer holds it. A path granted both ways is
+    /// gone from both — "取消关联" means the session no longer reaches it.
+    pub fn unlink_root(
+        &mut self,
+        root: &str,
+        id: i64,
+        path: &std::path::Path,
+    ) -> Result<Vec<agent_capabilities::LinkedRoot>, String> {
+        self.links_hub(root).revoke(id, path)
+    }
+
+    /// Switch one link between read and read-write, in whichever layer holds
+    /// it (persistent first: that is the broader grant).
+    pub fn set_link_access(
+        &mut self,
+        root: &str,
+        id: i64,
+        path: &std::path::Path,
+        access: &str,
+    ) -> Result<Vec<agent_capabilities::LinkedRoot>, String> {
+        self.links_hub(root).set_access(id, path, access)
+    }
+
+    /// The hub every grant of `root` goes through — the manager's ops and a
+    /// running actor's approval card share one instance, so a grant made in a
+    /// background window is live in this one too, and a revocation reaches
+    /// every window that was already open.
+    fn links_hub(&self, root: &str) -> Arc<crate::links::LinkHub> {
+        crate::links::hub_for(std::path::Path::new(root), &self.paths)
     }
 
     /// Mutable access to a session's live handle wherever it lives — the
@@ -527,6 +612,19 @@ impl SessionManager {
         // Loaded up here because the「默认进入」row decides the boot root
         // below; every later layer reads this same snapshot.
         let defaults = crate::prefs::try_load_default_preferences();
+        // Semantic recall is a switch on top of the build feature: the
+        // embedding model is only loaded when the user asked for it, and
+        // nothing about recall changes until it is up. Memory off means recall
+        // off — the model is a download and a resident quarter-gigabyte, and
+        // the master switch governs that cost.
+        let (memory_on, semantic_on) = defaults
+            .as_ref()
+            .map(|d| (d.memory_enabled, d.semantic_recall))
+            .unwrap_or((true, false));
+        agent_context::memory::semantic::set_enabled(
+            memory_on && semantic_on,
+            paths.data_dir.join("models"),
+        );
         // No explicit root → the boot workspace `default_workspace_mode`
         // asks for. Nothing to open → empty state (no cwd fallback — don't
         // silently attach the launch directory).
@@ -585,6 +683,7 @@ impl SessionManager {
                     allowed_domains: d.sandbox_allowed_domains.clone().unwrap_or_default(),
                     denied_domains: d.sandbox_denied_domains.clone().unwrap_or_default(),
                     extra_ro_mounts: agent_skills::scanner::global_skill_roots(),
+                    extra_rw_mounts: Vec::new(),
                 });
             }
             // No workspace yet — the settings-pane default pair is the only
@@ -613,6 +712,9 @@ impl SessionManager {
                 default_provider: defaults.as_ref().and_then(|d| d.active_provider.clone()),
                 default_model: defaults.as_ref().and_then(|d| d.active_model.clone()),
                 subagent_model: defaults.as_ref().and_then(|d| d.subagent_pair()),
+                subagent_thinking_level: defaults
+                    .as_ref()
+                    .and_then(|d| d.subagent_thinking_level.clone()),
                 active_thinking_level: defaults.as_ref().and_then(|d| d.thinking_level.clone()),
                 permission_mode: defaults
                     .as_ref()
@@ -632,6 +734,7 @@ impl SessionManager {
                     .unwrap_or(agent_kernel::compaction::COMPACT_AT),
                 memory_enabled: defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true),
                 memory_distill: defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true),
+                semantic_recall: defaults.as_ref().is_some_and(|d| d.semantic_recall),
                 blueprint_enabled: defaults
                     .as_ref()
                     .map(|d| d.blueprint_enabled)
@@ -686,6 +789,10 @@ impl SessionManager {
             .unwrap_or(agent_kernel::compaction::COMPACT_AT);
         let memory_enabled = defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true);
         let memory_distill = defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true);
+        let semantic_recall = defaults
+            .as_ref()
+            .map(|d| d.semantic_recall)
+            .unwrap_or(false);
         // Sandbox overrides are process-global — seed the slot once so
         // process tools read them even before the settings window opens.
         if let Some(d) = &defaults {
@@ -700,6 +807,7 @@ impl SessionManager {
                 allowed_domains: d.sandbox_allowed_domains.clone().unwrap_or_default(),
                 denied_domains: d.sandbox_denied_domains.clone().unwrap_or_default(),
                 extra_ro_mounts: agent_skills::scanner::global_skill_roots(),
+                extra_rw_mounts: Vec::new(),
             });
         }
 
@@ -721,6 +829,9 @@ impl SessionManager {
             default_provider: defaults.as_ref().and_then(|d| d.active_provider.clone()),
             default_model: defaults.as_ref().and_then(|d| d.active_model.clone()),
             subagent_model: defaults.as_ref().and_then(|d| d.subagent_pair()),
+            subagent_thinking_level: defaults
+                .as_ref()
+                .and_then(|d| d.subagent_thinking_level.clone()),
             active_thinking_level,
             permission_mode,
             agent_mode,
@@ -731,6 +842,7 @@ impl SessionManager {
             compact_at,
             memory_enabled,
             memory_distill,
+            semantic_recall,
             blueprint_enabled: defaults
                 .as_ref()
                 .map(|d| d.blueprint_enabled)
@@ -1202,6 +1314,9 @@ impl SessionManager {
         let shutdown = actor.shutdown_writer();
         let queue = actor.queue_writer();
         let bg_jobs = actor.bg_registry();
+        let bg_restored = actor.bg_restored();
+        let linked_handle = actor.linked_roots();
+        let notices = actor.notice_writer();
 
         // Lifecycle hooks, installed before the actor starts: the shared chain
         // may gain hooks later (`reload_plugins`) without a restart.
@@ -1315,6 +1430,9 @@ impl SessionManager {
                 running: false,
                 ui,
                 bg_jobs,
+                bg_restored,
+                linked_roots: linked_handle,
+                notices,
             },
         );
     }
@@ -2045,6 +2163,13 @@ impl SessionManager {
         self.store.load_history(id)
     }
 
+    /// The active workspace's session store, for reads that should not hold
+    /// the manager's lock — [`SessionStore::tool_results`] walks a whole
+    /// journal's index. `None` with no workspace open.
+    pub fn active_store(&self) -> Option<Arc<SessionStore>> {
+        self.workspace_active.then(|| self.store.clone())
+    }
+
     /// Paged history — `(slice, total_len, turn_total, turn_offset)`.
     /// `before` is an exclusive end index into the full message list;
     /// `None` takes the tail page. `turn_offset` is the ordinal (among
@@ -2538,6 +2663,7 @@ impl SessionManager {
             active_model: self.default_model.clone(),
             subagent_provider: self.subagent_model.as_ref().map(|(p, _)| p.clone()),
             subagent_model: self.subagent_model.as_ref().map(|(_, m)| m.clone()),
+            subagent_thinking_level: self.subagent_thinking_level.clone(),
             sandbox_enabled: lim.enabled,
             sandbox_network: Some(lim.network_label().into()),
             sandbox_max_memory_mb: lim.max_memory_mb,
@@ -2548,6 +2674,7 @@ impl SessionManager {
                 .then(|| lim.denied_domains.clone()),
             memory_enabled: self.memory_enabled,
             memory_distill: self.memory_distill,
+            semantic_recall: self.semantic_recall,
             blueprint_enabled: self.blueprint_enabled,
             // Not the manager's to own — the notification switch belongs to
             // the shell, so a save from here carries the stored value over.
@@ -2607,23 +2734,17 @@ impl SessionManager {
         // fields the user just re-defaulted HERE — "new sessions use X" has to
         // mean exactly that, the same treatment `set_default_model` gives the
         // model pair. Other workspaces keep theirs.
-        let mut ws = self.store.load_prefs();
-        let mut touched = false;
-        if permission_mode.is_some() && ws.permission_mode.is_some() {
-            ws.permission_mode = None;
-            touched = true;
-        }
-        if thinking_level.is_some() && ws.thinking_level.is_some() {
-            ws.thinking_level = None;
-            touched = true;
-        }
-        if agent_mode.is_some() && ws.agent_mode.is_some() {
-            ws.agent_mode = None;
-            touched = true;
-        }
-        if touched {
-            let _ = self.store.save_prefs(&ws);
-        }
+        let _ = self.store.update_prefs(|ws| {
+            if permission_mode.is_some() {
+                ws.permission_mode = None;
+            }
+            if thinking_level.is_some() {
+                ws.thinking_level = None;
+            }
+            if agent_mode.is_some() {
+                ws.agent_mode = None;
+            }
+        });
     }
 
     /// Memory subsystem switches — `(enabled, distill)`. Both are
@@ -2637,6 +2758,29 @@ impl SessionManager {
     /// sessions by `set_blueprint_enabled`, so this is the settings echo.
     pub fn blueprint_pref(&self) -> bool {
         self.blueprint_enabled
+    }
+
+    /// Whether recall is scored by the sentence encoder — the settings echo.
+    pub fn semantic_recall_pref(&self) -> bool {
+        self.semantic_recall
+    }
+
+    /// Flip semantic recall. Takes effect on the next recall, in every
+    /// session: the model sits behind one process-wide switch, so nothing has
+    /// to be re-spawned. Enabling starts the background model load.
+    pub fn set_semantic_recall(&mut self, on: bool) {
+        self.semantic_recall = on;
+        self.apply_semantic_switch();
+        let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
+    }
+
+    /// The encoder runs only when the build carries it, the user asked for it
+    /// and memory itself is on — the two switches are one gate, not two.
+    fn apply_semantic_switch(&self) {
+        agent_context::memory::semantic::set_enabled(
+            self.memory_enabled && self.semantic_recall,
+            self.paths.data_dir.join("models"),
+        );
     }
 
     /// The settings-pane default model (`active_provider`, `active_model`)
@@ -2660,12 +2804,10 @@ impl SessionManager {
         // X" must mean exactly that. Drop THIS workspace's pin so the new
         // default reaches the next session here; other workspaces keep
         // theirs, and any model picked from the composer re-pins it.
-        let mut prefs = self.store.load_prefs();
-        if prefs.provider.is_some() || prefs.model.is_some() {
+        let _ = self.store.update_prefs(|prefs| {
             prefs.provider = None;
             prefs.model = None;
-            let _ = self.store.save_prefs(&prefs);
-        }
+        });
         self.restore_workspace_default_settings();
     }
 
@@ -2680,7 +2822,24 @@ impl SessionManager {
     pub fn set_subagent_model(&mut self, pair: Option<(String, String)>) {
         self.subagent_model = pair.filter(|(p, m)| !p.is_empty() && !m.is_empty());
         let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
+        self.broadcast_subagent_defaults();
+    }
+
+    /// Global thinking level for delegated children. `None` (or empty) means
+    /// each session decides: children follow the parent's own level, and a
+    /// manifest `thinking:` still wins over both.
+    pub fn set_subagent_thinking_level(&mut self, level: Option<String>) {
+        self.subagent_thinking_level = level.filter(|l| !l.trim().is_empty());
+        let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
+        self.broadcast_subagent_defaults();
+    }
+
+    /// Push both subagent defaults into every live and parked actor — the same
+    /// reason `broadcast_memory_prefs` exists: a settings change otherwise only
+    /// reached the next spawn, and a session already running keeps delegating.
+    fn broadcast_subagent_defaults(&self) {
         let (provider, model) = self.subagent_model.clone().unwrap_or_default();
+        let level = self.subagent_thinking_level.clone().unwrap_or_default();
         let live = self
             .handles
             .values()
@@ -2691,6 +2850,11 @@ impl SessionManager {
                 .try_send(crate::command::UiCommand::SetSubagentModel {
                     provider: provider.clone(),
                     model: model.clone(),
+                });
+            let _ = h
+                .cmd_tx
+                .try_send(crate::command::UiCommand::SetSubagentThinking {
+                    level: level.clone(),
                 });
         }
     }
@@ -2724,6 +2888,9 @@ impl SessionManager {
         if let Some(v) = distill {
             self.memory_distill = v;
         }
+        // Turning memory off turns the encoder off with it, and turning it
+        // back on restores what the semantic switch already said.
+        self.apply_semantic_switch();
         let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
     }
 
@@ -2770,9 +2937,9 @@ impl SessionManager {
     /// It also re-pinned, on the next composer change, the fields
     /// `set_default_prefs` had just cleared so a new default could apply.
     fn pin_workspace_pref(&self, f: impl FnOnce(&mut agent_store::WorkspacePrefs)) {
-        let mut prefs = self.store.load_prefs();
-        f(&mut prefs);
-        let _ = self.store.save_prefs(&prefs);
+        // Locked read-modify-write: the settings pane, the composer and a
+        // grant can all land here, and a bare load+save drops one of them.
+        let _ = self.store.update_prefs(f);
     }
 
     /// Update active model & provider in manager metadata and pin the pair
@@ -2875,8 +3042,7 @@ fn session_markdown(title: &str, id: i64, history: &[agent_llm::types::ChatMessa
 /// provider still exists in `providers` — a deleted provider falls
 /// through instead of stranding the session on a dead backend.
 /// The per-workspace preference layer, minus the office pseudo-workspace.
-///
-/// Office is a mode, not a project: every office session shares one root, and
+////// Office is a mode, not a project: every office session shares one root, and
 /// the composer setters (`set_model` & co.) pin model / mode / level there on
 /// every change. A pin saved by one office session would then outrank the Agent 偏好
 /// defaults for every *later* office session — a new office session silently
@@ -2892,6 +3058,25 @@ fn workspace_layer(
     } else {
         prefs.clone()
     }
+}
+
+/// The line the model reads after a grant changed. A permission is worth
+/// stating plainly: which roots, what access, and the one rule that keeps
+/// "relative path" unambiguous.
+pub(crate) fn links_notice(roots: &[agent_capabilities::LinkedRoot]) -> String {
+    let mut text = String::from("工作区许可已更新（立即生效）：\n");
+    if roots.is_empty() {
+        text.push_str("  （当前没有关联工作区）\n");
+    }
+    for r in roots {
+        let access = match r.access {
+            agent_capabilities::RootAccess::ReadWrite => "读写",
+            agent_capabilities::RootAccess::Read => "只读",
+        };
+        text.push_str(&format!("  - {}（{access}）\n", r.path.display()));
+    }
+    text.push_str("相对路径仍然相对主工作区，访问关联目录请用绝对路径。");
+    text
 }
 
 fn resolve_model_pair(
@@ -3138,6 +3323,9 @@ max = "max"
                 running: false,
                 ui,
                 bg_jobs: Default::default(),
+                bg_restored: Default::default(),
+                linked_roots: Default::default(),
+                notices: tokio::sync::mpsc::channel(1).0,
             },
         );
 
@@ -3490,9 +3678,12 @@ max = "max"
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     shutdown: Arc::new(tokio::sync::Notify::new()),
                     preview: String::new(),
+                    linked_roots: Default::default(),
+                    notices: tokio::sync::mpsc::channel(1).0,
                     running: false,
                     ui,
                     bg_jobs: Default::default(),
+                    bg_restored: Default::default(),
                 },
                 cmd_rx,
             )
@@ -3571,9 +3762,12 @@ max = "max"
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     shutdown: Arc::new(tokio::sync::Notify::new()),
                     preview: String::new(),
+                    linked_roots: Default::default(),
+                    notices: tokio::sync::mpsc::channel(1).0,
                     running: false,
                     ui,
                     bg_jobs: Default::default(),
+                    bg_restored: Default::default(),
                 },
             );
         }
@@ -3671,6 +3865,9 @@ max = "max"
                 running: false,
                 ui,
                 bg_jobs: Default::default(),
+                bg_restored: Default::default(),
+                linked_roots: Default::default(),
+                notices: tokio::sync::mpsc::channel(1).0,
             },
         );
 
@@ -3762,6 +3959,7 @@ max = "max"
             thinking_level: Some("max".into()),
             permission_mode: Some("bypassPermissions".into()),
             agent_mode: Some("plan".into()),
+            ..Default::default()
         };
 
         // A real project keeps its pin.
@@ -3940,12 +4138,13 @@ max = "max"
     /// success as soon as it sees that, without waiting out the pickup window.
     #[test]
     fn a_verdict_the_engine_takes_is_delivered() {
-        let slot = Arc::new(Mutex::new(None));
+        let slot: Arc<Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>> =
+            Arc::new(Mutex::new(None));
         let engine = {
             let slot = slot.clone();
             std::thread::spawn(move || loop {
                 let mut s = slot.lock().unwrap();
-                if *s == Some((7, true)) {
+                if s.as_ref().is_some_and(|(id, v)| *id == 7 && v.approved) {
                     *s = None;
                     return;
                 }
@@ -3954,7 +4153,10 @@ max = "max"
             })
         };
         let started = std::time::Instant::now();
-        assert_eq!(deliver_decision(&slot, 7, true), Ok(()));
+        assert_eq!(
+            deliver_decision(&slot, 7, true, None),
+            Ok::<(), String>(())
+        );
         assert!(started.elapsed() < DECISION_PICKUP);
         engine.join().unwrap();
     }
@@ -3964,8 +4166,8 @@ max = "max"
     #[test]
     fn a_verdict_nobody_takes_is_withdrawn_and_reported() {
         let slot = Mutex::new(None);
-        assert!(deliver_decision(&slot, 3, true).is_err());
-        assert_eq!(*slot.lock().unwrap(), None);
+        assert!(deliver_decision(&slot, 3, true, None).is_err());
+        assert!(slot.lock().unwrap().is_none());
     }
 
     /// `build` reads the rows from the store and overlays the live actor state
@@ -4010,7 +4212,7 @@ max = "max"
             {"id": "bg-3", "command": "true",
              "state": {"kind": "done", "label": "exited(0)", "code": 0, "reason": "exited"}},
         ]);
-        let shown = SessionManager::interrupted_bg_jobs(saved);
+        let shown = crate::session::restored_bg_jobs(saved);
         assert_eq!(shown[0]["state"]["kind"], "done");
         assert_eq!(shown[0]["state"]["label"], "应用已退出");
         assert_eq!(shown[0]["state"]["reason"], "error");
@@ -4020,21 +4222,33 @@ max = "max"
         assert_eq!(shown[2]["state"]["reason"], "exited");
         // Nothing behind these entries has a process: the pane must not offer
         // controls or a log tail it cannot honour.
-        for job in shown.as_array().unwrap() {
+        for job in &shown {
             assert_eq!(job["restored"], true, "{job}");
         }
     }
 
-    /// A record can be pruned: the entry the reader asked about goes, the rest
-    /// stay.
+    /// A restored id cannot collide with the new process's `bg-1`, and an entry
+    /// restored once keeps its id through every later restart — or the pane's
+    /// remove would hit the wrong row.
     #[test]
-    fn a_record_drops_the_entry_asked_for() {
+    fn restored_ids_are_unique_and_stable() {
         let saved = serde_json::json!([
-            {"id": "bg-1", "command": "a", "restored": true},
-            {"id": "bg-2", "command": "b", "restored": true},
+            {"id": "bg-1", "command": "a", "started_at_ms": 7, "state": {"kind": "running"}},
         ]);
-        let left = SessionManager::without_bg_job(saved, "bg-1");
-        assert_eq!(left.as_array().unwrap().len(), 1);
-        assert_eq!(left[0]["id"], "bg-2");
+        let once = crate::session::restored_bg_jobs(saved);
+        assert_eq!(once[0]["id"], "bg-1@7");
+        let twice = crate::session::restored_bg_jobs(serde_json::Value::Array(once.clone()));
+        assert_eq!(twice, once);
+    }
+
+    /// The record keeps the most recent entries only.
+    #[test]
+    fn a_restored_record_is_capped_to_the_newest() {
+        let saved: Vec<serde_json::Value> = (0..80)
+            .map(|i| serde_json::json!({"id": format!("bg-{i}"), "started_at_ms": i}))
+            .collect();
+        let kept = crate::session::restored_bg_jobs(serde_json::Value::Array(saved));
+        assert_eq!(kept.len(), 50);
+        assert_eq!(kept.last().unwrap()["id"], "bg-79@79");
     }
 }

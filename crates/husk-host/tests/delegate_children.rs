@@ -646,6 +646,7 @@ async fn subagent_default_model_applies_and_manifest_model_wins() {
         "main",
         provider.clone(),
         Some(&("main".to_string(), "model-b".to_string())),
+        None,
         "1:/tmp/workspace",
     );
     assert!(route.read().unwrap().models.contains_key("cheap/small"));

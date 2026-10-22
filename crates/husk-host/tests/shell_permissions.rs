@@ -152,7 +152,13 @@ async fn engine_uses_the_tools_review_instead_of_parsing_command_arguments() {
                         event = ui_rx.recv() => {
                             if let Some(UiEvent::ApprovalRequested { request_id, .. }) = event {
                                 cards += 1;
-                                *slot.lock().unwrap() = Some((request_id, false));
+                                *slot.lock().unwrap() = Some((
+                                    request_id,
+                                    agent_kernel::tools::registry::ToolVerdict {
+                                        approved: false,
+                                        action: None,
+                                    },
+                                ));
                             }
                         }
                     }

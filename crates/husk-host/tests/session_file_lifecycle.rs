@@ -152,7 +152,10 @@ async fn approve_after<F: FnOnce()>(root: &std::path::Path, patch: &str, between
     .await
     .unwrap();
     between();
-    *decision.lock().unwrap() = Some((request_id, true));
+    *decision.lock().unwrap() = Some((
+        request_id,
+        agent_kernel::tools::registry::ToolVerdict { approved: true, action: None },
+    ));
     tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = channels.event_rx.recv().await {
             if matches!(

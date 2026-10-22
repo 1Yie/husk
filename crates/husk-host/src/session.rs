@@ -36,6 +36,10 @@ pub const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../assets/kernel-system-p
 /// system prompt (see `run_prompt`).
 const MEMORY_CONTEXT_OPEN: &str =
     "<memory-context>\nRecalled for the next message — guidance only; live workspace files take precedence.";
+/// Char cap on the turn's final answer handed to the distiller — enough to
+/// tell a project convention from a bug report, small enough to ride a
+/// one-shot call.
+const REPLY_CAP: usize = 1200;
 
 /// Product event carrying the persisted run/task counts after each commit.
 pub(crate) const SESSION_COUNTS: &str = "husk:session_counts";
@@ -52,12 +56,120 @@ const BG_FEED_SETTLE: std::time::Duration = std::time::Duration::from_millis(150
 /// user. Past the cap the notices stay queued and ride the next prompt.
 pub(crate) const MAX_WAKES_IN_ROW: u32 = 3;
 
-/// The session's background jobs as the `husk:bg_jobs` event.
-pub fn bg_jobs_event(reg: &agent_tools_shell::bg::BgRegistry) -> UiEvent {
-    UiEvent::Custom {
-        kind: BG_JOBS.into(),
-        payload: serde_json::json!({ "jobs": reg.jobs() }),
+/// Entries a session read back from its job record — jobs an earlier process
+/// ran. Shared between the actor (its feed writes them back with every
+/// snapshot) and the manager (a removal prunes them).
+pub type BgRestored = Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
+
+/// Saved entries kept per session. The record grows by every job the session
+/// ever ran; the pane only needs the recent ones.
+const BG_RECORD_CAP: usize = 50;
+
+/// The list the 后台 view shows and the record keeps: what earlier processes
+/// ran, then this process's live jobs. Without the first half a reopened
+/// session shows only what ran since the restart, and its first new job
+/// overwrites the record with that.
+pub fn bg_snapshot(
+    restored: &BgRestored,
+    reg: &agent_tools_shell::bg::BgRegistry,
+) -> serde_json::Value {
+    let mut jobs = restored.lock().map(|r| r.clone()).unwrap_or_default();
+    if let serde_json::Value::Array(live) = serde_json::json!(reg.jobs()) {
+        jobs.extend(live);
     }
+    serde_json::Value::Array(jobs)
+}
+
+/// Log lines a saved job keeps. Its log file goes with the process that wrote
+/// it, so this tail is all a later process can show.
+const BG_RECORD_TAIL_LINES: usize = 40;
+
+/// Byte cap on one saved tail — the record is rewritten on every change.
+const BG_RECORD_TAIL_BYTES: usize = 4 * 1024;
+
+/// [`bg_snapshot`] as the record keeps it: every live job also carries the
+/// tail of its log (`log_tail`). Written on every change, so a finished job's
+/// tail is its final output, and one cut off by the app closing keeps what it
+/// had printed by its last change.
+pub fn bg_record(
+    restored: &BgRestored,
+    reg: &agent_tools_shell::bg::BgRegistry,
+) -> serde_json::Value {
+    let mut jobs = bg_snapshot(restored, reg);
+    for job in jobs.as_array_mut().into_iter().flatten() {
+        if job.get("restored").is_some() {
+            continue;
+        }
+        let Some(id) = job.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
+            continue;
+        };
+        let Ok(tail) = reg.tail(&id, BG_RECORD_TAIL_LINES) else {
+            continue;
+        };
+        let tail = if tail.len() > BG_RECORD_TAIL_BYTES {
+            let mut cut = tail.len() - BG_RECORD_TAIL_BYTES;
+            while !tail.is_char_boundary(cut) {
+                cut += 1;
+            }
+            tail[cut..].to_string()
+        } else {
+            tail
+        };
+        if let Some(fields) = job.as_object_mut() {
+            fields.insert("log_tail".into(), serde_json::Value::String(tail));
+        }
+    }
+    jobs
+}
+
+/// A saved job list as it reads in a later process. Nothing in it is still
+/// running — the process that ran it is gone — so a running or paused entry
+/// becomes interrupted, while one that had ended keeps its own ending. Every
+/// entry is marked `restored`: no process is behind it, nothing can be paused,
+/// killed or tailed.
+///
+/// The ids get the start stamp appended: the new process numbers its jobs
+/// from `bg-1` again, and two rows sharing an id would remove each other. An
+/// entry restored before keeps the id it already has, so a record survives
+/// any number of restarts unchanged.
+pub fn restored_bg_jobs(saved: serde_json::Value) -> Vec<serde_json::Value> {
+    let serde_json::Value::Array(mut list) = saved else {
+        return Vec::new();
+    };
+    for job in list.iter_mut() {
+        let Some(fields) = job.as_object_mut() else {
+            continue;
+        };
+        if fields.get("restored") != Some(&serde_json::Value::Bool(true)) {
+            let stamp = fields
+                .get("started_at_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if let Some(serde_json::Value::String(id)) = fields.get_mut("id") {
+                *id = format!("{id}@{stamp}");
+            }
+            fields.insert("restored".into(), serde_json::Value::Bool(true));
+        }
+        let kind = fields
+            .get("state")
+            .and_then(|s| s.get("kind"))
+            .and_then(|k| k.as_str())
+            .unwrap_or_default();
+        if kind == "running" || kind == "paused" {
+            fields.insert(
+                "state".into(),
+                serde_json::json!({
+                    "kind": "done",
+                    "label": "应用已退出",
+                    "code": null,
+                    "reason": "error",
+                }),
+            );
+        }
+    }
+    let skip = list.len().saturating_sub(BG_RECORD_CAP);
+    list.drain(..skip);
+    list
 }
 
 /// Real execution counts, not user-turn counts: one prompt can run the
@@ -140,8 +252,6 @@ fn build_distiller(
     Some(std::sync::Arc::new(d))
 }
 
-/// Append one instructions file to the rendered prompt as a `## User
-/// instructions` section — empty/missing files are no-ops.
 /// Replace the region between `<!-- name -->` and `<!-- /name -->` in the
 /// rendered system prompt. The template ships the markers, so a per-turn
 /// refresh can swap just its own block instead of rebuilding the whole prompt.
@@ -154,6 +264,47 @@ fn replace_block(content: &str, name: &str, block: &str) -> String {
     let head = &content[..start + open.len()];
     let tail = &content[end..];
     format!("{head}\n{block}\n{tail}")
+}
+
+/// The `<!-- linked -->` region — the directories outside the workspace this
+/// session may reach. Each carries its access and the one rule the model has
+/// to keep: a relative path still means the workspace, so a linked file is
+/// named by absolute path. Empty means none, and the region then says nothing
+/// — a session with no grants should not spend prompt on the concept.
+pub(crate) fn linked_roots_block(roots: &[agent_capabilities::LinkedRoot]) -> String {
+    if roots.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "### Linked workspaces\n\n\
+         These directories are granted to this session. The file tools and `bash`\n\
+         reach them exactly as they reach the workspace; treat their contents as\n\
+         in scope.\n\n",
+    );
+    for r in roots {
+        let access = match r.access {
+            agent_capabilities::RootAccess::ReadWrite => "read-write",
+            agent_capabilities::RootAccess::Read => "read-only",
+        };
+        out.push_str(&format!("- {}  ({access})\n", r.path.display()));
+    }
+    out.push_str(
+        "\nRelative paths always resolve against the workspace root, so name a\n\
+         linked file by its absolute path. `@-mentions` reach a linked file the same\n\
+         way — absolute only. A path outside every link comes back as a refusal; the\n\
+         user is offered the grant for it on the approval card, so do not retry the\n\
+         same call unchanged — if they declined, work inside what you reach.\n",
+    );
+    out
+}
+
+/// The `<!-- permission -->` region — one bullet naming the gate's mode. The
+/// live gate is what approves calls, so the prompt's copy is rewritten from it
+/// on every switch rather than left at the value the session was spawned with.
+fn permission_block(mode: &str) -> String {
+    format!(
+        "- Permission mode: {mode}  (default | acceptEdits | auto | dontAsk | bypassPermissions)"
+    )
 }
 
 /// Swap the recalled-memory region of a system prompt.
@@ -178,6 +329,40 @@ pub(crate) fn is_memory_context(m: &ChatMessage) -> bool {
         && m.content
             .as_deref()
             .is_some_and(|c| c.starts_with(MEMORY_CONTEXT_OPEN))
+}
+
+/// Drop all but the last `keep` recall rows, with their bookkeeping. A row
+/// exists for the message it precedes: once that turn is history, the facts it
+/// carried are in the transcript anyway and the session never re-sends one.
+/// Compaction rewrites the history wholesale, so that is where deleting them
+/// costs no prompt cache.
+fn prune_recall_rows_in(
+    history: &mut Vec<ChatMessage>,
+    facts: &mut Vec<(usize, u64)>,
+    keep: usize,
+) {
+    let rows: Vec<usize> = history
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| is_memory_context(m))
+        .map(|(i, _)| i)
+        .collect();
+    if rows.len() <= keep {
+        return;
+    }
+    let doomed: Vec<usize> = rows[..rows.len() - keep].to_vec();
+    let doomed_set: std::collections::HashSet<usize> = doomed.iter().copied().collect();
+    // The bookkeeping is keyed by the prompt row that follows each recall row:
+    // a dropped row takes its facts with it, and every later index shifts down
+    // by the number removed before it.
+    facts.retain(|(at, _)| !doomed_set.contains(&at.saturating_sub(1)));
+    for (at, _) in facts.iter_mut() {
+        *at -= doomed.iter().filter(|drop| **drop < *at).count();
+    }
+    // Ascending, so dropping from the back never shifts a pending index.
+    for idx in doomed.iter().rev() {
+        history.remove(*idx);
+    }
 }
 
 /// Join a turn's injected steers into the single correction string the
@@ -264,6 +449,8 @@ fn distill_summarizer(
     })
 }
 
+/// Append one instructions file to the rendered prompt as a `## User
+/// instructions` section — empty/missing files are no-ops.
 fn append_instructions(out: &mut String, path: &std::path::Path, label: &str) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return;
@@ -285,6 +472,7 @@ fn routed_child(
     config_dir: &Path,
     parent_name: &str,
     default: Option<&(String, String)>,
+    thinking: Option<&str>,
     conversation: &str,
 ) -> agent_kernel::tools::delegate::ChildRoute {
     let cfg = agent_llm::AppConfig::load(config_dir, None).unwrap_or_default();
@@ -295,6 +483,7 @@ fn routed_child(
         parent_name,
         base.provider.clone(),
         default,
+        thinking,
         conversation,
     );
     route
@@ -373,15 +562,17 @@ pub struct SessionConfig {
 fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
     vec![
         agent_kernel::tools::batch::spec_with(batch_profile()),
-        agent_tools_fs::fs_read::spec(),
+        // The file tools and the shell are described against each other —
+        // observe the workspace with the former, run commands with the latter.
+        agent_coding::observe::read(agent_tools_fs::fs_read::spec()),
         // The patch tools cannot write `.blueprint/`: a node file has one
         // writer, `blueprint_edit`, which validates the fields first.
         agent_coding::blueprint::guard_patch(agent_tools_fs::fs_patch::spec()),
         agent_coding::blueprint::guard_patch(agent_tools_fs::apply_patch::spec()),
-        agent_tools_fs::list_dir::spec(),
-        agent_tools_fs::grep::spec(),
+        agent_coding::observe::list(agent_tools_fs::list_dir::spec()),
+        agent_coding::observe::grep(agent_tools_fs::grep::spec()),
         agent_tools_shell::test_runner::spec(),
-        agent_tools_shell::bash::spec(),
+        agent_coding::observe::bash(agent_tools_shell::bash::spec()),
         agent_tools_shell::services::spec(),
         agent_tools_shell::bg::spec(),
         agent_tools_web::web_fetch::spec(),
@@ -391,6 +582,10 @@ fn host_tools() -> Vec<agent_kernel::tools::registry::ToolSpec> {
         agent_coding::blueprint_tool::spec(),
         agent_coding::blueprint::edit::spec(),
         agent_coding::skill::spec(),
+        // Read-only recall: the prompt carries persona, facts arrive per
+        // message, episodes not at all — so "what did we decide about X" needs
+        // a way to ask. Safe for a delegated child to hold.
+        agent_coding::remember::search_spec(),
         // Serena's own file ops write too, and its target sits inside
         // `arguments` — the guard reads through the dispatcher.
         agent_coding::blueprint::guard_patch(agent_tools_serena::spec()),
@@ -408,7 +603,8 @@ fn batch_profile() -> agent_kernel::tools::batch::BatchProfile {
          {\"calls\":[{\"tool\":\"smart_read\",\"args\":{\"path\":\"src/lib.rs\"}},\
          {\"tool\":\"smart_grep\",\"args\":{\"pattern\":\"TODO\"}}]}. \
          Known-target rule: if the targets are already known (e.g. three \
-         file paths, a dir listing plus a grep), batch them now — never \
+         file paths, two ranges of one file, a dir listing plus a grep), \
+         batch them now — never \
          read A → reason → read B when A and B were both known up front. \
          Only go sequential when the next call's arguments depend on this \
          call's result. Calls run at limited concurrency (max 4, max 4 \
@@ -479,8 +675,19 @@ pub struct SessionActor {
     cmd_tx: mpsc::Sender<UiCommand>,
     /// Write tracking for undo/rewind + files-changed list.
     hunks: WriteTracker,
+    /// What the root context has observed. Cleared with the history rows that
+    /// held the results, so "you saw this already" is never said about a
+    /// result the model no longer has.
+    observations: Arc<agent_coding::observe::ObservationLedger>,
+    /// Background notices into the model — a linked workspace granted mid-turn
+    /// is announced on the next turn instead of waiting for a restart.
+    notices: mpsc::Sender<String>,
+    /// The roots this session may reach beyond its workspace — shared with
+    /// the tool context, so a grant applies to the next call and to every
+    /// delegated child without rebuilding anything.
+    linked_roots: Arc<agent_capabilities::LinkedRoots>,
     /// Engine's decision slot — `ToolDecision` writes here mid-turn.
-    decision_slot: Arc<std::sync::Mutex<Option<(u64, bool)>>>,
+    decision_slot: Arc<std::sync::Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>>,
     /// `AnswerQuestion` resolves here mid-turn (same bypass pattern).
     ask_channel: Arc<agent_kernel::tools::registry::AskChannel>,
     /// Engine's permissions slot — permission mode updates apply immediately mid-turn.
@@ -494,6 +701,9 @@ pub struct SessionActor {
     /// Global subagent default `(provider, model)`; `None` = children follow
     /// the parent's model.
     subagent_model: Option<(String, String)>,
+    /// Global subagent thinking level; `None` = children follow this session's
+    /// level. A manifest `thinking:` still wins over it.
+    subagent_thinking: Option<String>,
     /// Engine's thinking-level slot — read by the manager to report the
     /// session's live level (defaults may differ once prefs change).
     thinking_slot: Arc<std::sync::RwLock<Option<String>>>,
@@ -517,6 +727,9 @@ pub struct SessionActor {
     paths: agent_paths::AppPaths,
     /// Ordered hook chain (lifecycle interception).
     hooks: HookChain,
+    /// Per-session loop guard, layered into every chain this actor installs —
+    /// it is not a plugin, so a `reload_plugins` must not remove it.
+    repeat_guard: Arc<crate::repeat_guard::RepeatGuard>,
     /// Live plugin router — the SAME `Arc` the engine reads per request,
     /// so a `reload_plugins` swap reaches `/x` dispatch too. `None` = no
     /// plugin manager installed for this workspace.
@@ -536,6 +749,13 @@ pub struct SessionActor {
     /// Where a distill call reports its tokens — one write per call into the
     /// session's store, so the spend is visible in 统计.
     distill_record: Option<DistillRecorder>,
+    /// Recall rows this session already sent: `(history index of the prompt
+    /// that follows it, fact id)`. A fact the model has already read is not
+    /// worth re-sending, and a rewind drops the rows together with the index.
+    injected_facts: Vec<(usize, u64)>,
+    /// Persona entries this session is already carrying (system prompt plus
+    /// recall rows). A mid-session `remember` reaches the model as the delta.
+    injected_persona: std::collections::HashMap<String, String>,
     /// Stable session identity — sidebar ordering + persistence file name.
     session_id: i64,
     /// This session's conversation identity (`conversation_key`). Every
@@ -578,6 +798,9 @@ pub struct SessionActor {
     /// This session's background jobs. `run()` mirrors every change to the UI
     /// as `husk:bg_jobs`; the manager queries and controls them directly.
     bg_jobs: Arc<agent_tools_shell::bg::BgRegistry>,
+    /// What earlier processes of this session ran, read back from the record
+    /// at spawn — the head of every snapshot the feed sends and saves.
+    bg_restored: BgRestored,
     /// Poked by the background notifier — `run()` turns an idle session into
     /// a notice turn instead of waiting for the next prompt.
     wake_rx: mpsc::Receiver<()>,
@@ -840,7 +1063,7 @@ impl SessionActor {
         // gates only the per-turn summarizer call — deterministic
         // episode/fact writes keep running.
         let mut skills = agent_skills::SkillManager::new(&cfg.workspace_root);
-        let (memory, initial_memory_block) = {
+        let (memory, initial_memory_block, injected_persona) = {
             let store = if cfg.memory_enabled {
                 open_memory_store(&cfg.workspace_root)
             } else {
@@ -849,10 +1072,20 @@ impl SessionActor {
             match store {
                 Some(s) => {
                     let s = Arc::new(s);
-                    let block = s.stable_block().unwrap_or_default();
-                    (Some(s), block)
+                    // Only what the block actually carries counts as delivered:
+                    // an entry the budget dropped never reached the model, and
+                    // after this point the recall row is the only way to send
+                    // it.
+                    let (block, carried) = s
+                        .stable_block_carried()
+                        .unwrap_or_else(|_| (String::new(), Vec::new()));
+                    (Some(s), block, carried.into_iter().collect())
                 }
-                None => (None, "(no memory)".to_string()),
+                None => (
+                    None,
+                    "(no memory)".to_string(),
+                    std::collections::HashMap::new(),
+                ),
             }
         };
         let system_prompt = set_memory_block(&system_prompt, &initial_memory_block)
@@ -903,6 +1136,16 @@ impl SessionActor {
             if let Some(sys) = history.get_mut(0) {
                 if let Some(c) = sys.content.take() {
                     let mut c = set_memory_block(&c, &initial_memory_block);
+                    // The mode and permission the session runs with are
+                    // settings, not history: re-stamp them from this spawn's
+                    // config so a reopened conversation cannot describe a
+                    // registry it no longer dispatches against.
+                    c = replace_block(
+                        &c,
+                        "mode",
+                        crate::mode::AgentMode::from_str(&cfg.agent_mode).prompt_block(),
+                    );
+                    c = replace_block(&c, "permission", &permission_block(&cfg.permission_mode));
                     if let Some(idx) = c.find("\n\n## User instructions — ") {
                         c.truncate(idx);
                         append_instructions(&mut c, &cfg.paths.config_file("AGENTS.md"), "user");
@@ -931,6 +1174,23 @@ impl SessionActor {
         if let Some(warning) = agent_store::session_storage_warning() {
             let _ = channels.event_tx.send(UiEvent::SystemMessage(warning));
         }
+        // Linked workspaces — this session's reach beyond its own root. Read
+        // through the workspace's hub so the prompt and the tool context agree
+        // from the first call, and so a grant another window makes while this
+        // session is starting is already in it. The hub is what every later
+        // grant goes through, whichever side of the app asked for it.
+        let links = crate::links::hub_for(&cfg.workspace_root, &cfg.paths);
+        let linked_roots = Arc::new(agent_capabilities::LinkedRoots::default());
+        linked_roots.set(links.effective(session_id));
+        if let Some(sys) = history.get_mut(0) {
+            if let Some(c) = sys.content.take() {
+                sys.content = Some(replace_block(
+                    &c,
+                    "linked",
+                    &linked_roots_block(&linked_roots.snapshot()),
+                ));
+            }
+        }
         // The distiller and the spend it records are both built here: the
         // recorder needs the store handle, which exists only from this point.
         let distill_ctx = DistillCtx {
@@ -950,7 +1210,9 @@ impl SessionActor {
                 };
                 match tokio::runtime::Handle::try_current() {
                     Ok(rt) => {
-                        let _ = rt.spawn_blocking(write);
+                        // Deliberately dropped: the write is fire-and-forget,
+                        // and awaiting it would hold the distillation task.
+                        drop(rt.spawn_blocking(write));
                     }
                     // No runtime to hand it to — a bare store test. There is no
                     // async worker here for the write to stall.
@@ -1016,6 +1278,27 @@ impl SessionActor {
         let mut tool_ctx = ToolCtx::new()
             .with_workspace(&cfg.workspace_root)
             .with_session(session_id);
+        // The handle the prompt was rendered from. It is `insert_shared`, so a
+        // delegated child reaches the same roots, and a later grant lands in
+        // every context at once — they share the `Arc`.
+        tool_ctx.install_linked_roots(linked_roots.clone());
+        // The kernel asks before a refusal becomes a wall: a path outside every
+        // root comes back as `OutOfScope`, and this answers it with a grant.
+        // It is the same hub the manager's menu writes through, so one grant
+        // path serves the tool, the card and the composer — and its refresh
+        // reaches every other live session of this workspace.
+        {
+            let hub = links.clone();
+            tool_ctx.install_scope_grant(Arc::new(move |action: &str, path: &str, access: &str| {
+                let Some(layer) = crate::links::Layer::from_action(action) else {
+                    return Err(format!("`{action}` 不是本会话支持的授权动作"));
+                };
+                hub.grant(session_id, path, access, layer).map(|_| ())
+            }));
+        }
+        // This actor's handle is what the hub refreshes on every grant; the
+        // notice channel is how the model hears about one it did not make.
+        links.register(session_id, &linked_roots, &notice_tx);
         // The todo list persists beside this session's history. A session with
         // no store (the db failed to open) gets the kernel's in-memory list.
         if let Some(store) = store.clone() {
@@ -1048,6 +1331,7 @@ impl SessionActor {
         }
 
         hunks.install(&mut tool_ctx);
+        let observations = agent_coding::observe::ObservationLedger::install(&mut tool_ctx);
         tool_ctx.cancel = Some(cancel.clone());
         // The host's sandbox: the detected backend behind the live master switch.
         // Installed here, not in `ToolCtx::new`, so a context built elsewhere
@@ -1069,6 +1353,13 @@ impl SessionActor {
         // child inherits the registry (this session can see and stop its
         // jobs) but not the sink, so a child's job never reports here.
         let bg_jobs = agent_tools_shell::bg::install_registry(&mut tool_ctx);
+        let bg_restored: BgRestored = Arc::new(std::sync::Mutex::new(
+            store
+                .as_ref()
+                .and_then(|s| s.load_bg_jobs(session_id))
+                .map(restored_bg_jobs)
+                .unwrap_or_default(),
+        ));
         // An idle session wakes on a notice instead of holding it until the
         // next prompt — a finished build must reach the model on its own. The
         // notice goes first: whenever the wake lands, the text is already on
@@ -1118,13 +1409,17 @@ impl SessionActor {
         };
         // Every frontend spawns through here, so the stored default is read
         // once at birth; `SetSubagentModel` carries later changes.
-        let subagent_model =
-            crate::prefs::try_load_default_preferences().and_then(|d| d.subagent_pair());
+        let subagent_defaults = crate::prefs::try_load_default_preferences();
+        let subagent_model = subagent_defaults.as_ref().and_then(|d| d.subagent_pair());
+        let subagent_thinking = subagent_defaults
+            .as_ref()
+            .and_then(|d| d.subagent_thinking_level.clone());
         let child_route = Arc::new(std::sync::RwLock::new(routed_child(
             &child_base,
             &cfg.paths.config_dir,
             &cfg.provider_name,
             subagent_model.as_ref(),
+            subagent_thinking.as_deref(),
             &conversation,
         )));
         tool_ctx.install_subagent(
@@ -1168,6 +1463,20 @@ impl SessionActor {
             cfg.model.clone(),
             cfg.temperature,
         );
+        // No round cap. A single message can legitimately need hundreds of
+        // tool round-trips — a repo-wide refactor, a review that reads forty
+        // files, a fix that edits ten and re-runs the suite after each. The
+        // kernel's limit ended that kind of turn by taking the tools away and
+        // asking the model to summarize what it had so far, which for a coding
+        // task means stopping mid-edit.
+        //
+        // What actually bounds a turn here, and bounds it honestly: the user's
+        // cancel, the context window (the per-round sanitize/compaction pass
+        // owns that), and the wake-up budget on the unattended paths. A count
+        // of round-trips is not a signal that the agent is going wrong — a
+        // loop that repeats the same call with the same arguments is, and that
+        // is a different check.
+        engine.set_max_tool_rounds(usize::MAX);
         let coding_policy =
             agent_coding::policy::CodingPolicy::from_ctx(&ctx, cfg.workspace_root.clone());
         debug_assert!(
@@ -1238,14 +1547,24 @@ impl SessionActor {
         let ask_channel = engine.ask_channel();
         let permissions_slot = engine.permissions_writer();
         let thinking_slot = engine.thinking_level_shared();
+        // This session's loop guard, layered under the plugin chain whenever
+        // one is installed — see `SessionActor::set_hooks`.
+        let repeat_guard: Arc<crate::repeat_guard::RepeatGuard> = Arc::new(Default::default());
         if let Some(checkpoint) = &checkpoint {
             checkpoint.set_settings(
                 permissions_slot.clone(),
                 engine.agent_mode_writer(),
                 thinking_slot.clone(),
             );
-            engine.set_hooks(checkpoint.hooks(HookChain::new()));
         }
+        // Installed with or without a checkpoint: the guard is the session's
+        // own, and a headless test spawns an actor with no plugins at all.
+        let local: Vec<Arc<dyn agent_kernel::hooks::AgentHook>> = vec![repeat_guard.clone()];
+        let layered = HookChain::layered(local, &HookChain::new());
+        engine.set_hooks(match &checkpoint {
+            Some(checkpoint) => checkpoint.hooks(layered),
+            None => layered,
+        });
 
         // Actor keeps the real cmd_rx — `run()` drains it into `handle()`.
         // The `channels.cmd_rx` left for the caller is a dead end; the
@@ -1278,6 +1597,9 @@ impl SessionActor {
                 io,
                 cmd_tx,
                 hunks,
+                observations,
+                notices: notice_tx.clone(),
+                linked_roots,
                 decision_slot,
                 ask_channel,
                 permissions_slot,
@@ -1289,6 +1611,7 @@ impl SessionActor {
                 child_route,
                 child_base,
                 subagent_model,
+                subagent_thinking,
                 steer_tx,
                 cancel,
                 cmd_rx,
@@ -1296,8 +1619,11 @@ impl SessionActor {
                 workspace_root: cfg.workspace_root.clone(),
                 paths: cfg.paths,
                 // Empty until `set_hooks` installs the plugin chain — the
-                // manager does it before the actor starts running.
+                // manager does it before the actor starts running. The loop
+                // guard is not part of that chain: it belongs to this session
+                // and is layered back in on every install.
                 hooks: HookChain::new(),
+                repeat_guard,
                 plugins: cfg.plugins.clone(),
                 memory,
                 memory_handle,
@@ -1305,6 +1631,8 @@ impl SessionActor {
                 distill_ctx,
                 memory_distill: cfg.memory_distill,
                 distill_record,
+                injected_facts: Vec::new(),
+                injected_persona,
                 session_id,
                 conversation,
                 store,
@@ -1318,6 +1646,7 @@ impl SessionActor {
                 queued: Arc::new(std::sync::Mutex::new(cfg.queued_prompts.into())),
                 skills,
                 bg_jobs,
+                bg_restored,
                 wake_rx,
                 wakes_in_row: 0,
             },
@@ -1358,6 +1687,15 @@ impl SessionActor {
             }
             self.handle(cmd).await;
         }
+        // The registry drops with the actor and takes the log files with it: a
+        // job still running now has printed more since its last change, and
+        // this is the last moment its output can be read. A deleted session's
+        // record is gone and must stay gone.
+        if let Some(store) = &self.store {
+            if !store.is_deleted(self.session_id) && !self.bg_jobs.jobs().is_empty() {
+                let _ = store.save_bg_jobs(self.session_id, &bg_record(&self.bg_restored, &self.bg_jobs));
+            }
+        }
         // A closed or deleted session must not keep paying for refreshes.
         self.warming.cancel();
         self.io.ui_tx.close();
@@ -1368,6 +1706,7 @@ impl SessionActor {
     /// the actor, so it ends with the session instead of keeping it alive.
     fn spawn_bg_feed(&self) {
         let reg = Arc::downgrade(&self.bg_jobs);
+        let restored = self.bg_restored.clone();
         let mut feed = self.bg_jobs.subscribe();
         let ui = self.io.ui_tx.clone();
         let store = self.store.clone();
@@ -1377,13 +1716,20 @@ impl SessionActor {
                 tokio::time::sleep(BG_FEED_SETTLE).await;
                 feed.mark_unchanged();
                 let Some(reg) = reg.upgrade() else { break };
+                let jobs = bg_snapshot(&restored, &reg);
                 // The pane outlives the run: the jobs die with this process, so
-                // what the sidebar shows next time it starts is this record.
+                // what the sidebar shows next time it starts is this record —
+                // the earlier runs' entries included, or a restart's first job
+                // would erase them. The record also keeps each job's log tail:
+                // the log file goes with the process.
                 if let Some(store) = &store {
-                    let jobs = serde_json::json!(reg.jobs());
-                    let _ = store.save_bg_jobs(session_id, &jobs);
+                    let _ = store.save_bg_jobs(session_id, &bg_record(&restored, &reg));
                 }
-                if ui.send(bg_jobs_event(&reg)).is_err() {
+                let event = UiEvent::Custom {
+                    kind: BG_JOBS.into(),
+                    payload: serde_json::json!({ "jobs": jobs }),
+                };
+                if ui.send(event).is_err() {
                     break;
                 }
             }
@@ -1394,6 +1740,35 @@ impl SessionActor {
     /// the UI can list and control jobs without going through the pump.
     pub fn bg_registry(&self) -> Arc<agent_tools_shell::bg::BgRegistry> {
         self.bg_jobs.clone()
+    }
+
+    /// The entries read back from the job record — shared with the manager so
+    /// the pane lists them and can drop one while the actor is up.
+    pub fn bg_restored(&self) -> BgRestored {
+        self.bg_restored.clone()
+    }
+    /// The session's linked workspaces — the same handle its tool context and
+    /// every delegated child read, so `set` takes effect on the next call.
+    pub fn linked_roots(&self) -> Arc<agent_capabilities::LinkedRoots> {
+        self.linked_roots.clone()
+    }
+
+    /// Tell the model something between turns — the same channel background
+    /// jobs report on. Nothing reaches the wire until the next turn, which is
+    /// what a permission change wants: the tools are already live.
+    pub fn notice_writer(&self) -> mpsc::Sender<String> {
+        self.notices.clone()
+    }
+    /// May an undo write to `path`? The workspace, or a linked root that
+    /// granted writes — the same boundary the patch tools hold, so a file the
+    /// agent changed in a linked workspace can be rolled back too.
+    fn undo_reaches(&self, path: &std::path::Path) -> bool {
+        if path.starts_with(&self.workspace_root) {
+            return true;
+        }
+        self.linked_roots.snapshot().iter().any(|r| {
+            r.access == agent_capabilities::RootAccess::ReadWrite && path.starts_with(&r.path)
+        })
     }
 
     pub fn shutdown_writer(&self) -> Arc<tokio::sync::Notify> {
@@ -1422,9 +1797,15 @@ impl SessionActor {
     /// already runs under the plugins' hooks. The chain is shared, so a
     /// later `reload_plugins` reaches this session without a restart.
     pub fn set_hooks(&mut self, chain: HookChain) {
+        // The loop guard is this session's own hook, not a plugin: it goes in
+        // as the local layer so a reload (which replaces the shared chain)
+        // cannot take it away.
+        let local: Vec<Arc<dyn agent_kernel::hooks::AgentHook>> =
+            vec![self.repeat_guard.clone()];
+        let layered = HookChain::layered(local, &chain);
         let engine_chain = self.checkpoint.as_ref().map_or_else(
-            || chain.clone(),
-            |checkpoint| checkpoint.hooks(chain.clone()),
+            || layered.clone(),
+            |checkpoint| checkpoint.hooks(layered.clone()),
         );
         self.hooks = chain;
         self.engine.set_hooks(engine_chain);
@@ -1461,18 +1842,33 @@ impl SessionActor {
     /// a session that turned the layer off.
     pub fn set_blueprint_enabled(&mut self, enabled: bool) {
         self.architecture.set(enabled);
-        if let Some(sys) = self.history.get_mut(0) {
-            if let Some(content) = sys.content.take() {
-                let block = agent_coding::blueprint::prompt_block(&self.workspace_root, enabled);
-                sys.content = Some(replace_block(&content, "blueprint", &block));
-            }
+        let block = agent_coding::blueprint::prompt_block(&self.workspace_root, enabled);
+        self.rewrite_prompt_block("blueprint", &block);
+    }
+
+    /// Swap one `<!-- name -->` region of the rendered system prompt.
+    ///
+    /// The prompt is rendered once per spawn and heads the provider's prompt
+    /// cache, so a setting the user flips mid-session rewrites its own region
+    /// instead of rebuilding the whole text. Marker-located: matching the old
+    /// block by content would silently no-op on a session resumed from a build
+    /// that worded it differently.
+    fn rewrite_prompt_block(&mut self, name: &str, block: &str) {
+        let Some(sys) = self.history.first_mut() else {
+            return;
+        };
+        if sys.role != agent_llm::Role::System || sys.notice.is_some() {
+            return;
+        }
+        if let Some(content) = sys.content.take() {
+            sys.content = Some(replace_block(&content, name, block));
         }
     }
 
     /// The shared tool-decision slot — the bridge writes `ToolDecision`
     /// **here directly**, bypassing the command channel so a mid-turn
     /// approval isn't queued behind the running `run_turn`.
-    pub fn decision_writer(&self) -> Arc<std::sync::Mutex<Option<(u64, bool)>>> {
+    pub fn decision_writer(&self) -> Arc<std::sync::Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>> {
         self.decision_slot.clone()
     }
 
@@ -1548,21 +1944,48 @@ impl SessionActor {
         let turn = self.begin_turn().await;
         let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
 
-        // Facts recalled for THIS message ride a hidden user row right before
-        // it, never the system prompt: the system message is the head of the
+        // Recalled memory rides a hidden user row right before the message,
+        // never the system prompt: the system message is the head of the
         // provider's prompt cache, and a per-question block there would turn
         // every request into a full cache miss. Persisted with the turn, so
         // later requests replay the same bytes and keep the prefix warm.
-        if let Some(m) = &self.memory {
-            if let Ok(block) = m.facts_block(&text) {
-                if !block.trim().is_empty() {
-                    self.history.push(ChatMessage::user_hidden(format!(
-                        "{MEMORY_CONTEXT_OPEN}\n{}\n</memory-context>",
-                        block.trim_end()
-                    )));
-                }
+        //
+        // It carries a delta, not a dump: facts the model has not read yet
+        // (re-sending one is pure token spend) plus any persona written since
+        // the system prompt was rendered — a mid-session `remember` would
+        // otherwise only be visible after a restart.
+        let seen: std::collections::HashSet<u64> =
+            self.injected_facts.iter().map(|(_, id)| *id).collect();
+        let (block, ids, persona) = match self.memory.clone() {
+            Some(m) => {
+                // Recall reads the whole fact table, and with the semantic
+                // model loaded it also runs inference — seconds of CPU that
+                // must not hold a runtime worker, because this is an async
+                // task and every other session shares its pool.
+                let persona_seen = self.injected_persona.clone();
+                let prompt = text.clone();
+                tokio::task::spawn_blocking(move || {
+                    let (facts, ids) =
+                        m.facts_block_excluding(&prompt, &seen).unwrap_or_default();
+                    let (persona, rows) = m.persona_delta_block(&persona_seen).unwrap_or_default();
+                    (format!("{facts}{persona}"), ids, rows)
+                })
+                .await
+                .unwrap_or_default()
             }
+            None => (String::new(), Vec::new(), Vec::new()),
+        };
+        if !block.trim().is_empty() {
+            // The row lands at `at - 1` and the prompt it belongs to at `at`:
+            // a rewind that truncates history at the prompt drops both.
+            let at = self.history.len() + 1;
+            self.history.push(ChatMessage::user_hidden(format!(
+                "{MEMORY_CONTEXT_OPEN}\n{}\n</memory-context>",
+                block.trim_end()
+            )));
+            self.injected_facts.extend(ids.into_iter().map(|id| (at, id)));
         }
+        self.injected_persona.extend(persona);
 
         self.run_engine_turn(TurnInput::Prompt(text), turn).await;
     }
@@ -1725,12 +2148,14 @@ impl SessionActor {
                 info!(tool_calls = outcome.tool_calls_run, turn, "turn finished");
                 if was_prompt {
                     let turn_files = self.turn_files(turn);
+                    let reply = self.last_reply();
                     self.queue_distill(TurnRecord {
                         task: outcome_text.clone(),
                         outcome: "success".into(),
                         files: turn_files,
                         correction: denied_tools(&outcome.denials),
                         steered_with: steered_with(&outcome.steers),
+                        reply,
                     });
                 }
             }
@@ -1752,8 +2177,10 @@ impl SessionActor {
                         correction: denied_tools(self.engine.denials_this_turn()),
                         // The engine keeps the turn's steer record across the error
                         // return — a steer followed by a cancel is exactly the
-                        // correction the distiller seeds a fact from.
+                        // evidence the model pass reads the next time it runs.
                         steered_with: steered_with(self.engine.steers_this_turn()),
+                        // The turn produced no answer worth reading back.
+                        reply: None,
                     });
                 }
             }
@@ -2074,6 +2501,35 @@ impl SessionActor {
             .collect()
     }
 
+    /// The turn's final assistant text, capped — the distiller's evidence of
+    /// what actually happened. Without it the memory pass only ever saw the
+    /// user's ask, and had no way to tell "the project's convention is X" from
+    /// "the user reported a bug".
+    fn last_reply(&self) -> Option<String> {
+        self.history
+            .iter()
+            .rev()
+            .filter(|m| m.role == agent_llm::types::Role::Assistant)
+            .filter_map(|m| m.content.as_deref())
+            .find(|text| !text.trim().is_empty())
+            .map(|text| text.chars().take(REPLY_CAP).collect())
+    }
+
+    /// Drop the recall bookkeeping for rows at or past `len`. A rewind
+    /// (`/retry`, `/clear`, `/compact`) takes the recall rows with the prompt,
+    /// so those facts become recallable again. The observation ledger goes
+    /// whole: the tool results it vouches for may have been in the cut.
+    fn forget_after(&mut self, len: usize) {
+        self.injected_facts.retain(|(at, _)| *at < len);
+        self.observations.clear();
+    }
+
+    /// Drop the recall rows exhausted turns left behind — see
+    /// [`prune_recall_rows_in`].
+    fn prune_recall_rows(&mut self, keep: usize) {
+        prune_recall_rows_in(&mut self.history, &mut self.injected_facts, keep);
+    }
+
     /// Reverse-apply the last turn's writes via the write tracker — restores
     /// each touched file to its pre-turn state (or deletes it if created).
     async fn undo_last_turn(&mut self) {
@@ -2114,11 +2570,11 @@ impl SessionActor {
         }
         let mut reverted = 0usize;
         for op in ops {
-            // Safety: never undo outside the workspace — the tracker records
-            // resolved paths, but guard here so a bad origin can't delete
-            // arbitrary files.
-            if !op.path.starts_with(&self.workspace_root) {
-                warn!(path = %op.path.display(), "undo skipped: outside workspace");
+            // Safety: never undo outside the workspace or a linked workspace
+            // that granted writes — the tracker records resolved paths, but
+            // guard here so a bad origin can't delete arbitrary files.
+            if !self.undo_reaches(&op.path) {
+                warn!(path = %op.path.display(), "undo skipped: outside the granted roots");
                 continue;
             }
             match &op.restore_to {
@@ -2285,6 +2741,14 @@ impl SessionActor {
         self.refresh_child_route();
     }
 
+    /// Global thinking level for delegated children — `None` follows this
+    /// session's own level, and a manifest `thinking:` still wins. Applies
+    /// from the next `delegate` call; a child already running keeps its level.
+    pub fn set_subagent_thinking(&mut self, level: Option<String>) {
+        self.subagent_thinking = level.filter(|l| !l.trim().is_empty());
+        self.refresh_child_route();
+    }
+
     /// Rebuild the shared child route from the parent's base, the current
     /// config and the subagent default.
     fn refresh_child_route(&mut self) {
@@ -2293,6 +2757,7 @@ impl SessionActor {
             &self.paths.config_dir,
             &self.provider_name,
             self.subagent_model.as_ref(),
+            self.subagent_thinking.as_deref(),
             &self.conversation,
         );
         *self.child_route.write().expect("child route lock poisoned") = route;
@@ -2304,6 +2769,7 @@ impl SessionActor {
         match op {
             ControlOp::ClearHistory => {
                 self.history.truncate(1); // keep the system prompt
+                self.forget_after(1);
                 self.warming.cancel();
                 let line = "会话历史已清空".to_string();
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
@@ -2327,6 +2793,10 @@ impl SessionActor {
                     .send(UiEvent::StateChanged(AgentState::Compacting));
                 // The summary rewrites the history the warm entry was keyed on.
                 self.warming.cancel();
+                // Stale recall rows are the cheapest thing to lose, and a
+                // compaction is the one moment a rewrite is free: the facts they
+                // carried are already in the transcript.
+                self.prune_recall_rows(2);
                 let result = self
                     .engine
                     .compact_now(&mut self.io, &mut self.history)
@@ -2353,6 +2823,9 @@ impl SessionActor {
                         });
                         // The split described the pre-compaction request.
                         self.last_breakdown = None;
+                        // The summariser dropped the recall rows it folded in.
+                        let len = self.history.len();
+                        self.forget_after(len);
                         self.persist_turn("已压缩上下文");
                     }
                     Ok(agent_kernel::engine::CompactOutcome::NothingToDo) => {
@@ -2440,10 +2913,12 @@ impl SessionActor {
             .map(|m| m.commands())
             .unwrap_or_default();
         let cmd_result = {
+            let linked = self.linked_roots.snapshot();
             let mut ctx = CommandCtx {
                 history: &mut self.history,
                 permission_mode: "default",
                 workspace_root: &workspace_root,
+                linked_roots: &linked,
                 memory: self.memory.as_deref(),
                 plugin_commands: &plugin_commands,
                 ui_tx: &self.io.ui_tx,
@@ -2478,6 +2953,8 @@ impl SessionActor {
                     }
                     agent_kernel::hooks::HookAction::MutateMessages(msgs) => {
                         self.history = msgs;
+                        let len = self.history.len();
+                        self.forget_after(len);
                         self.run_prompt(text).await;
                     }
                     agent_kernel::hooks::HookAction::Continue => {
@@ -2543,6 +3020,7 @@ impl SessionActor {
                         idx
                     };
                     self.history.truncate(idx);
+                    self.forget_after(idx);
                     self.warming.cancel();
                     let _ = self.io.ui_tx.send(UiEvent::TurnRetry);
                     self.handle_prompt(text).await;
@@ -2610,6 +3088,9 @@ impl SessionActor {
                 let pair = (!provider.is_empty() && !model.is_empty()).then_some((provider, model));
                 self.set_subagent_model(pair);
             }
+            UiCommand::SetSubagentThinking { level } => {
+                self.set_subagent_thinking(Some(level));
+            }
             UiCommand::SetThinkingLevel { level } => {
                 info!(%level, "thinking level change requested");
                 self.engine.set_model_thinking_level(if level.is_empty() {
@@ -2636,28 +3117,23 @@ impl SessionActor {
                 let line = format!("权限模式已切换为: {}", parsed.label());
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
                 self.history.push(ChatMessage::notice(line));
+                // The prompt carries the gate's mode too — a stale copy would
+                // tell the model it is judged by rules the gate no longer has.
+                self.rewrite_prompt_block("permission", &permission_block(parsed.as_str()));
             }
             UiCommand::SetBlueprintEnabled { enabled } => {
                 self.set_blueprint_enabled(enabled);
             }
             UiCommand::SetAgentMode { mode } => {
                 let new = crate::mode::AgentMode::from_str(&mode);
-                let old = self.engine.agent_mode();
                 self.engine.set_agent_mode(new.as_str());
                 self.persist_settings();
                 // Rewrite the mode block inside the rendered system prompt —
                 // the contract text must match the registry the next round
-                // actually dispatches against.
-                if let Some(sys) = self.history.first_mut() {
-                    if sys.role == agent_llm::Role::System && sys.notice.is_none() {
-                        if let Some(c) = sys.content.take() {
-                            sys.content = Some(c.replace(
-                                crate::mode::AgentMode::from_str(&old).prompt_block(),
-                                new.prompt_block(),
-                            ));
-                        }
-                    }
-                }
+                // actually dispatches against. Located by marker, not by the
+                // old text: a session resumed from an older build carries
+                // wording this build would never match.
+                self.rewrite_prompt_block("mode", new.prompt_block());
                 let label = match new {
                     crate::mode::AgentMode::Build => "构建",
                     crate::mode::AgentMode::Plan => "计划",
@@ -2694,13 +3170,17 @@ impl SessionActor {
             UiCommand::ToolDecision {
                 request_id,
                 approved,
+                action,
             } => {
                 // Direct write to the engine's shared decision slot — reaches
                 // the wait even when handle() runs mid-turn via run()'s
                 // serial pump (the turn future polls the slot, not this
                 // channel). The request_id correlates the verdict to a
                 // specific ApprovalRequested (P1-a).
-                *self.decision_slot.lock().unwrap() = Some((request_id, approved));
+                *self.decision_slot.lock().unwrap() = Some((
+                    request_id,
+                    agent_kernel::tools::registry::ToolVerdict { approved, action },
+                ));
             }
             UiCommand::ApproveSessionTool { tool_name } => {
                 // Computer-use (and friends) opt into per-session
@@ -2910,8 +3390,46 @@ mod tests {
         ] {
             assert!(session.contains(ph), "{ph} missing");
         }
-        // The mode block is the one region a live session rewrites — last.
-        assert!(session.trim_end().ends_with("{{AGENT_MODE}}"));
+        // The regions a live session rewrites carry markers: content-matched
+        // replacement goes stale on a prompt resumed from an older build.
+        for marker in [
+            ("<!-- permission -->", "<!-- /permission -->"),
+            ("<!-- blueprint -->", "<!-- /blueprint -->"),
+            ("<!-- memory -->", "<!-- /memory -->"),
+            ("<!-- mode -->", "<!-- /mode -->"),
+        ] {
+            assert!(session.contains(marker.0), "{} missing", marker.0);
+            assert!(session.contains(marker.1), "{} missing", marker.1);
+        }
+        // The mode block is last, and it is what a mode switch rewrites.
+        assert!(session.contains("<!-- mode -->\n{{AGENT_MODE}}\n<!-- /mode -->"));
+        assert!(session.trim_end().ends_with("<!-- /mode -->"));
+    }
+
+    /// A live mode or permission switch must not depend on the wording it
+    /// replaces: a resumed session carries whatever the build that spawned it
+    /// wrote. `replace_block` locates its region by marker for exactly that.
+    #[test]
+    fn rewrites_regions_by_marker_not_by_content() {
+        let prompt = "a\n<!-- mode -->\nMode: build — old wording\n<!-- /mode -->\nb";
+        let out = replace_block(prompt, "mode", "Mode: plan — new");
+        assert!(out.contains("Mode: plan — new"), "{out}");
+        assert!(!out.contains("old wording"), "{out}");
+        assert!(out.starts_with("a\n<!-- mode -->"), "{out}");
+        assert!(out.ends_with("<!-- /mode -->\nb"), "{out}");
+        // No marker → untouched, never a half-mangled prompt.
+        assert_eq!(replace_block("no markers", "mode", "x"), "no markers");
+    }
+
+    /// The permission region renders the gate's canonical wire label, so the
+    /// prompt and the gate name the same mode.
+    #[test]
+    fn permission_block_names_the_wire_label() {
+        let block = permission_block(agent_kernel::permissions::PermissionMode::Bypass.as_str());
+        assert!(
+            block.starts_with("- Permission mode: bypassPermissions"),
+            "{block}"
+        );
     }
 
     #[test]
@@ -2920,6 +3438,31 @@ mod tests {
             ChatMessage::user_hidden(format!("{MEMORY_CONTEXT_OPEN}\nfact\n</memory-context>"));
         assert!(is_memory_context(&row));
         assert!(!is_memory_context(&ChatMessage::user("<memory-context>")));
+    }
+
+    /// A compaction drops the recall rows of turns that are already history,
+    /// with their bookkeeping, and leaves the newest one alone.
+    #[test]
+    fn pruning_recall_rows_keeps_the_newest_and_reindexes_the_bookkeeping() {
+        let mut history = vec![
+            ChatMessage::system("s"),
+            ChatMessage::user_hidden(format!("{MEMORY_CONTEXT_OPEN}\na")),
+            ChatMessage::user("q1"),
+            ChatMessage::assistant("a1"),
+            ChatMessage::user_hidden(format!("{MEMORY_CONTEXT_OPEN}\nb")),
+            ChatMessage::user("q2"),
+            ChatMessage::assistant("a2"),
+            ChatMessage::user_hidden(format!("{MEMORY_CONTEXT_OPEN}\nc")),
+            ChatMessage::user("q3"),
+        ];
+        let mut facts = vec![(2, 10), (5, 20), (8, 30)];
+
+        prune_recall_rows_in(&mut history, &mut facts, 1);
+
+        assert_eq!(history.iter().filter(|m| is_memory_context(m)).count(), 1);
+        // The surviving row's prompt moved from 8 to 6 — the fact went with it.
+        assert_eq!(facts, vec![(6, 30)]);
+        assert_eq!(history[6].content.as_deref(), Some("q3"));
     }
 
     /// Spawn and per-turn both route through this: the region is swapped
