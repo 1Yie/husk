@@ -12,6 +12,13 @@ const HISTORY_PAGE: usize = 80;
 /// Trace rows can contain large tool results; use smaller pages than chat.
 const RAW_HISTORY_PAGE: usize = 40;
 
+/// The rows `changes_feed` ships, as the webview reads them.
+fn change_feed_rows(rows: Vec<(String, String, String)>) -> Vec<serde_json::Value> {
+    rows.into_iter()
+        .map(|(tool, args, content)| serde_json::json!({ "tool": tool, "args": args, "content": content }))
+        .collect()
+}
+
 /// Persisted meta fields that seed a rebuilt view — read once per response
 /// instead of one full workspace scan per field.
 struct PersistedSeed {
@@ -386,6 +393,94 @@ fn agent_session_inner(
         let snapshot = state.lock().map_err(|e| e.to_string())?.projects_snapshot();
         return serde_json::to_value(snapshot.build()).map_err(|e| e.to_string());
     }
+    // `changes_feed` — every write-tool result in the WHOLE persisted log.
+    // The mounted page is only the newest `HISTORY_PAGE` messages, so a
+    // longer session used to reopen with fewer files than it had written:
+    // the changes panel is a session-level summary, not a page-level one.
+    // Only the results of `payload.tools` ship — the changes panel's writers
+    // and the artifact dock's — nothing else in the transcript is needed.
+    // Only the store handle is taken under the kernel lock; the journal reads
+    // run without it, like `projects` above.
+    if op == "changes_feed" {
+        let id = id.ok_or("changes_feed needs id")?;
+        let tools: Vec<&str> = payload
+            .as_ref()
+            .and_then(|p| p.get("tools"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|t| t.as_str()).collect())
+            .unwrap_or_default();
+        if tools.is_empty() {
+            return Err("changes_feed needs tools".into());
+        }
+        let store = state.lock().map_err(|e| e.to_string())?.active_store();
+        let rows = match store {
+            Some(store) => store.tool_results(id, &tools).map_err(|e| e.to_string())?,
+            None => Vec::new(),
+        };
+        return Ok(serde_json::json!({ "rows": change_feed_rows(rows) }));
+    }
+    // Linked workspaces: the dirs this session may reach beyond its own root.
+    // The manager keeps both layers (workspace-level grants survive the
+    // session, session-level ones do not) and pushes the merged list into the
+    // live actor, so a grant applies to the next tool call — no restart.
+    if matches!(
+        op.as_str(),
+        "linked_roots" | "link_root" | "unlink_root" | "set_link_access" | "pick_link_dir"
+    ) {
+        // The pick itself is the dialog half — no kernel lock while it is up.
+        if op == "pick_link_dir" {
+            let picked = dialog_on_main(&app, || {
+                rfd::FileDialog::new()
+                    .set_title("关联工作区目录")
+                    .pick_folder()
+            })
+            .flatten();
+            return Ok(picked
+                .map(|p| serde_json::json!(p.to_string_lossy()))
+                .unwrap_or(serde_json::Value::Null));
+        }
+        let id = id.ok_or_else(|| format!("{op} needs id"))?;
+        let given = path.as_deref().filter(|root| !root.is_empty());
+        let mut mgr = state.lock().map_err(|e| e.to_string())?;
+        let root = given
+            .map(str::to_string)
+            .unwrap_or_else(|| mgr.workspace_root.to_string_lossy().into_owned());
+        let field = |name: &str| payload.as_ref().and_then(|p| p.get(name));
+        let target = match op.as_str() {
+            "link_root" => {
+                let dir = field("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("link_root needs path")?;
+                let access = field("access").and_then(|v| v.as_str()).unwrap_or("read");
+                let persist = field("persist").and_then(|v| v.as_bool()).unwrap_or(false);
+                Some(mgr.link_root(&root, id, std::path::Path::new(dir), access, persist))
+            }
+            "unlink_root" => {
+                let dir = field("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("unlink_root needs path")?;
+                Some(mgr.unlink_root(&root, id, std::path::Path::new(dir)))
+            }
+            "set_link_access" => {
+                let dir = field("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("set_link_access needs path")?;
+                let access = field("access").and_then(|v| v.as_str()).unwrap_or("read");
+                Some(mgr.set_link_access(&root, id, std::path::Path::new(dir), access))
+            }
+            _ => None,
+        };
+        if let Some(result) = target {
+            // A refusal (`/`, `$HOME`, a system dir, an ancestor of the app's
+            // own data) reaches the caller as the reason to show.
+            result.map_err(|e| e)?;
+        }
+        let (workspace, session) = mgr.link_layers(&root, id);
+        return Ok(serde_json::json!({
+            "workspace": workspace.iter().map(|r| husk_host::link_policy::root_json(r, "workspace")).collect::<Vec<_>>(),
+            "session": session.iter().map(|r| husk_host::link_policy::root_json(r, "session")).collect::<Vec<_>>(),
+        }));
+    }
     // Background jobs: only the registry handle is taken under the kernel
     // lock. `bg_control kill` waits for the monitor to reap the job (up to a
     // few seconds) and must not stall the event forwarder meanwhile.
@@ -422,20 +517,21 @@ fn agent_session_inner(
                     .and_then(|v| v.as_str())
                     .ok_or("bg_control needs job")?;
                 let action = field("action").and_then(|v| v.as_str());
-                let Some(reg) = reg else {
-                    // No actor: the list is the record left on disk, and only a
-                    // removal means anything — there is no process to stop.
-                    if action != Some("remove") {
-                        return Err("会话未运行".to_string());
-                    }
+                // A restored entry is a record, live actor or not: only its
+                // removal means anything, and the record is where it goes.
+                if action == Some("remove") {
                     let removed = {
                         let mgr = state.lock().map_err(|e| e.to_string())?;
                         mgr.remove_bg_record(&root, id, job)
                     };
-                    return match removed {
-                        Some(jobs) => Ok(serde_json::json!({ "jobs": jobs })),
-                        None => Err("会话未运行".to_string()),
-                    };
+                    if let Some(jobs) = removed {
+                        return Ok(serde_json::json!({ "jobs": jobs }));
+                    }
+                }
+                let Some(reg) = reg else {
+                    // No actor and no such record entry: there is no process to
+                    // stop and nothing left to remove.
+                    return Err("会话未运行".to_string());
                 };
                 match action {
                     Some("kill") => tauri::async_runtime::block_on(reg.kill(job))?,
@@ -444,7 +540,10 @@ fn agent_session_inner(
                     Some("remove") => reg.remove(job)?,
                     other => return Err(format!("bg_control: unknown action {other:?}")),
                 }
-                Ok(serde_json::json!({ "jobs": reg.jobs() }))
+                // The pane replaces its list with this, so it is the whole one —
+                // the restored entries ahead of the live jobs, as `bg_list` gives.
+                let mgr = state.lock().map_err(|e| e.to_string())?;
+                Ok(serde_json::json!({ "jobs": mgr.bg_jobs_for_display(&root, id) }))
             }
         };
     }
@@ -833,6 +932,7 @@ fn agent_session_inner(
                         "path": a.path,
                         "global": a.global,
                         "model": a.model,
+                        "thinking": a.thinking,
                         "builtin": a.path.is_empty(),
                     }))
                     .collect::<Vec<_>>(),
@@ -963,6 +1063,7 @@ fn agent_session_inner(
                     "description": d,
                     "prompt": p,
                     "model": null,
+                    "thinking": null,
                     "builtin": true,
                     "scope": "global",
                 }));
@@ -975,6 +1076,7 @@ fn agent_session_inner(
                 "description": desc.unwrap_or_default(),
                 "prompt": body,
                 "model": fm.model,
+                "thinking": fm.thinking,
                 "builtin": false,
                 "scope": if path.starts_with(mgr.workspace_root.join(".husk/agents")) { "workspace" } else { "global" },
             }))
@@ -1101,6 +1203,10 @@ fn agent_session_inner(
                 .as_ref()
                 .and_then(|p| p.get("model"))
                 .and_then(|v| v.as_str());
+            let thinking = payload
+                .as_ref()
+                .and_then(|p| p.get("thinking"))
+                .and_then(|v| v.as_str());
             let global = payload
                 .as_ref()
                 .and_then(|p| p.get("scope"))
@@ -1128,6 +1234,7 @@ fn agent_session_inner(
                     &name,
                     desc,
                     model,
+                    thinking,
                     prompt,
                 ),
             )
@@ -1154,8 +1261,10 @@ fn agent_session_inner(
                 "active_model": active_model,
                 "subagent_provider": subagent.as_ref().map(|(p, _)| p),
                 "subagent_model": subagent.as_ref().map(|(_, m)| m),
+                "subagent_thinking_level": mgr.subagent_thinking_level.clone(),
                 "memory_enabled": memory_enabled,
                 "memory_distill": memory_distill,
+                "semantic_recall": mgr.semantic_recall_pref(),
                 "blueprint_enabled": mgr.blueprint_pref(),
                 "desktop_notifications": husk_host::prefs::load_default_preferences()
                     .desktop_notifications,
@@ -1257,6 +1366,16 @@ fn agent_session_inner(
                 let pair = (field("subagent_provider"), field("subagent_model"));
                 mgr.set_subagent_model(Some(pair));
             }
+            // Global subagent thinking level — independent of the model pair:
+            // a child may keep the parent's model and still think less.
+            if p.get("subagent_thinking_level").is_some() {
+                let level = p
+                    .get("subagent_thinking_level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                mgr.set_subagent_thinking_level((!level.is_empty()).then_some(level));
+            }
             // Memory switches ride the same payload — separate setter so the
             // save lands in one `default_preferences` write.
             let mem_en = p.get("memory_enabled").and_then(|v| v.as_bool());
@@ -1267,6 +1386,11 @@ fn agent_session_inner(
                 // reach the NEXT spawn; actors swap their store/distiller
                 // on the command.
                 mgr.broadcast_memory_prefs();
+            }
+            // Semantic recall is one process-wide switch, not per actor, so it
+            // needs no broadcast: the next recall anywhere reads it.
+            if let Some(v) = p.get("semantic_recall").and_then(|v| v.as_bool()) {
+                mgr.set_semantic_recall(v);
             }
             if let Some(v) = p.get("blueprint_enabled").and_then(|v| v.as_bool()) {
                 mgr.set_blueprint_enabled(v);
@@ -1293,6 +1417,12 @@ fn agent_session_inner(
             let mut out = serde_json::json!({
                 "enabled": enabled,
                 "distill": distill,
+                "semantic": mgr.semantic_recall_pref(),
+                // On but not ready while the model is still loading.
+                "semantic_ready": agent_context::memory::semantic::is_ready(),
+                // Whether this build carries the encoder at all — a build
+                // without it must not draw a switch that can do nothing.
+                "semantic_available": agent_context::memory::semantic::available(),
                 "persona": [],
                 "facts": [],
                 "episodes": 0,
@@ -1321,6 +1451,12 @@ fn agent_session_inner(
             }
             Ok(out)
         }
+        // Semantic recall's fetch state, on its own op: the settings dialog
+        // polls it twice a second, and `memory_overview` opens the store.
+        "semantic_progress" => Ok(serde_json::to_value(
+            agent_context::memory::semantic::progress(),
+        )
+        .unwrap_or_default()),
         "memory_set" => {
             let p = payload.clone().ok_or("memory_set needs payload")?;
             let key = p
@@ -1332,7 +1468,12 @@ fn agent_session_inner(
                 .and_then(|v| v.as_str())
                 .ok_or("memory_set needs value")?;
             let s = open_memory(&mgr).ok_or("memory store unavailable")?;
-            s.set_persona(key, value)?;
+            // Scope is optional on the wire: an older pane writes global.
+            let scope = match p.get("scope").and_then(|v| v.as_str()) {
+                Some("workspace") => agent_context::memory::PersonaScope::Workspace,
+                _ => agent_context::memory::PersonaScope::Global,
+            };
+            s.set_persona_scoped(scope, key, value)?;
             Ok(serde_json::json!({ "success": true }))
         }
         "memory_forget" => {
@@ -2302,6 +2443,15 @@ fn workspace_paths_match(root: &str, expected: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The store picks the rows (see `agent-store`'s `tool_results` test); this
+    /// layer only names the fields the webview reads.
+    #[test]
+    fn change_feed_rows_carry_the_fields_the_webview_reads() {
+        let rows = change_feed_rows(vec![("fuzzy_patch".into(), "{\"path\":\"a.ts\"}".into(), "patched a.ts".into())]);
+        assert_eq!(rows[0]["tool"], "fuzzy_patch");
+        assert_eq!(rows[0]["args"], "{\"path\":\"a.ts\"}");
+        assert_eq!(rows[0]["content"], "patched a.ts");
+    }
     #[test]
     fn trace_workspace_guard_accepts_normalized_paths_and_rejects_other_workspaces() {
         let directory = tempfile::tempdir().unwrap();

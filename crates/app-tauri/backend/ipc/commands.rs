@@ -146,6 +146,7 @@ fn agent_cmd_inner(
     if let UiCommand::ToolDecision {
         request_id,
         approved,
+        action,
     } = &cmd
     {
         // A verdict is written into the ACTIVE session's slot, so one meant for
@@ -165,7 +166,12 @@ fn agent_cmd_inner(
         // takes it on every state change, so this very approval's transition
         // would queue behind it.
         drop(mgr);
-        return husk_host::session_manager::deliver_decision(&decision, *request_id, *approved);
+        return husk_host::session_manager::deliver_decision(
+            &decision,
+            *request_id,
+            *approved,
+            action.clone(),
+        );
     }
     if let UiCommand::AnswerQuestion { request_id, answer } = &cmd {
         // Only a matched answer resolves the parked card — `answer()` returns
