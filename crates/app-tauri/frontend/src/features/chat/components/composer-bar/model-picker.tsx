@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { ReasoningEffort } from "@/components/ui/reasoning-effort";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { THINKING_LEVELS, thinkingTone } from "@/lib/thinking";
 import { groupOptions } from "@/lib/group-options";
 import { cn } from "@/lib/utils";
@@ -255,41 +254,22 @@ export function ModelPicker({
             {activeItem ? modelLabel(activeItem) : activeModel || "选择模型"}
           </span>
           {/* The thinking level rides with the model — one control picks both
-              what answers and how hard it thinks. Below full its word is the
-              first thing to go: the icon and a tooltip say it in 12px. */}
+              what answers and how hard it thinks. Its word stays for as long as
+              the chip is there: the name truncates first, the chip gives way
+              only when the row folds into tight and the whole chip goes. */}
           {thinkingAvailable && density !== "tight" && (
             <span className="flex items-center gap-1 shrink-0 pl-1.5 border-l border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]">
-              {density === "full" ? (
-                <>
-                  <Brain
-                    className={cn(
-                      "h-3 w-3 shrink-0",
-                      activeThinkingLevel === "off"
-                        ? "text-neutral-400"
-                        : "text-purple-600 dark:text-purple-400",
-                    )}
-                  />
-                  <span className="truncate max-w-[5em] text-[11px] text-neutral-500">
-                    {activeTierToken}
-                  </span>
-                </>
-              ) : (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="flex items-center">
-                      <Brain
-                        className={cn(
-                          "h-3 w-3 shrink-0",
-                          activeThinkingLevel === "off"
-                            ? "text-neutral-400"
-                            : "text-purple-600 dark:text-purple-400",
-                        )}
-                      />
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">思考：{activeTierToken}</TooltipContent>
-                </Tooltip>
-              )}
+              <Brain
+                className={cn(
+                  "h-3 w-3 shrink-0",
+                  activeThinkingLevel === "off"
+                    ? "text-neutral-400"
+                    : "text-purple-600 dark:text-purple-400",
+                )}
+              />
+              <span className="truncate max-w-[5em] text-[11px] text-neutral-500">
+                {activeTierToken}
+              </span>
             </span>
           )}
           <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />

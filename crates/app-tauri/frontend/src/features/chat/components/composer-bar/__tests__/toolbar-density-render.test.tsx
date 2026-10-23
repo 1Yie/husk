@@ -66,8 +66,9 @@ describe("composer toolbar density", () => {
     expect(screen.getByRole("button", { name: "代理模式：构建" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "权限模式：默认" })).toBeInTheDocument();
     expect(screen.queryByText("构建")).toBeNull();
-    // The thinking chip loses its word too — only the icon and its tooltip stay.
-    expect(screen.queryByText("Low")).toBeNull();
+    // The thinking chip keeps its word at this width — only the model name is
+    // allowed to truncate, and the row still has room for the tier.
+    expect(screen.getByRole("button", { name: /当前模型: Model A/ })).toHaveTextContent("Low");
     expect(screen.getByRole("button", { name: /当前模型: Model A/ })).toHaveTextContent("Model A");
 
     // An icon-only pill still opens its menu.
