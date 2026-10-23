@@ -33,6 +33,12 @@ const viewKey = (root: string, id: number) => `${root}:${id}`;
 const EMPTY_VIEW: SessionView = emptyView();
 const EMPTY_KEYS: ReadonlySet<string> = new Set();
 
+/** The buffer the pump mints for a session that has no view yet — a turn can
+ *  start before its history was folded (a parked workspace still streaming, or
+ *  an open that has not answered). Marked provisional so `loadView` knows its
+ *  rows are a fragment and may replace them with the fold. */
+const provisionalView = (): SessionView => ({ ...emptyView(), provisional: true });
+
 /** Running-session keys. `AgentState::is_active` mirror — everything except
  *  Idle/Finished/Failed; a parked workspace's turn counts too, so its sidebar
  *  row keeps the orb while it streams in the background. */
@@ -140,6 +146,31 @@ export const useAgentStore = create<AgentStore>((set) => ({
     set((s) => {
       const k = viewKey(root, id);
       const existing = s.views.get(k);
+      // A buffer the pump minted for a session that had no view yet holds only
+      // the events that streamed in — a fragment, and nothing would ever
+      // complete it. The fold in `view` is the record, so it REPLACES it; the
+      // events it held are persisted already (committed rows or the checkpoint
+      // draft), so none are replayed on top. The live status a fold cannot know
+      // — running state, the turn clock, a parked question — is carried over:
+      // without it the sidebar orb and the streaming header blink off until the
+      // session's next event.
+      if (existing?.provisional) {
+        const next = new Map(s.views);
+        next.set(k, {
+          ...(meta ? { ...view, ...meta } : view),
+          state: existing.state,
+          streaming: existing.streaming,
+          turnOpen: existing.turnOpen,
+          turnStartedAt: existing.turnStartedAt,
+          pendingQuestion: existing.pendingQuestion,
+          // The `bg_list` seed writes a list history never had; a live
+          // `husk:bg_jobs` snapshot is newer than the persisted record.
+          bgJobs: existing.bgJobs,
+          bgJobsAt: existing.bgJobsAt,
+        });
+        const keys = runningKeysOf(next);
+        return { views: next, runningKeys: sameKeys(s.runningKeys, keys) ? s.runningKeys : keys };
+      }
       if (existing) {
         // A live buffer can predate the open response. Never replace its
         // rows/state, but fill a missing meter/breakdown from the persisted
@@ -424,7 +455,7 @@ export function initAgentStore(): () => void {
         else byView.set(k, [event]);
       }
       for (const [k, events] of byView) {
-        next.set(k, applyEvents(next.get(k) ?? emptyView(), events));
+        next.set(k, applyEvents(next.get(k) ?? provisionalView(), events));
       }
       // NOTE: `activeId` is deliberately NOT driven by events — otherwise a
       // background session's traffic yanks the visible session, and the

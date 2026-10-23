@@ -490,4 +490,20 @@ describe("delegated child streams route by child_id", () => {
       muted: true,
     });
   });
+
+  test("a live cancel settles the child card and the parent's marker", () => {
+    // What a cancel between dispatch and result emits: the child's own card
+    // closes as 已中断, and the parent's `delegate` result carries the kernel's
+    // marker — both must fold like any other finished call.
+    const v = applyEvents(emptyView(), [
+      { UserPrompt: "委派" },
+      { ToolCallStarted: { name: "delegate", args_preview: "1 task" } },
+      { ToolCallStarted: { name: "subagent", args_preview: "探索仓库", parent: "delegate", child_id: 5 } },
+      { ToolCallFinished: { name: "subagent", ok: false, content: "已中断", parent: "delegate", child_id: 5 } },
+      { ToolCallFinished: { name: "delegate", ok: false, content: "[subagent cancelled — child_id 5]" } },
+    ]);
+    const tools = cardsOf(v);
+    expect(tools[0]).toMatchObject({ name: "delegate", ok: false, content: "[subagent cancelled — child_id 5]" });
+    expect(tools[1]).toMatchObject({ name: "subagent", childId: 5, ok: false, content: "已中断" });
+  });
 });

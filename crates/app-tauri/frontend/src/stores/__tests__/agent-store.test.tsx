@@ -261,6 +261,41 @@ describe("persisted history and live state", () => {
     expect(useAgentStore.getState()).toBe(snapshot);
   });
 
+  test("a buffer the pump minted before the fold is replaced by the record", async () => {
+    start();
+    // A session streams before anything folded its history — the pump has to
+    // buffer it somewhere, or the events land on the floor.
+    emit({ UserPrompt: "后台问答" }, 2);
+    emit({ StateChanged: "Reasoning" }, 2);
+    await flush();
+    expect(viewNow("/project", 2)).toMatchObject({ provisional: true });
+    expect(useAgentStore.getState().runningKeys.has("/project:2")).toBe(true);
+
+    // The fold lands: the record REPLACES the fragment (a provisional buffer is
+    // not a page anyone can trust), while the live status a fold cannot know
+    // survives — without it the sidebar orb blinks off until the session's
+    // next event.
+    act(() => useAgentStore.getState().loadView("/project", 2, {
+      ...emptyView(),
+      items: [
+        { kind: "user", text: "后台问答", hi: 0 },
+        { kind: "assistant", text: "已答", streaming: false, hi: 1 },
+      ],
+    }, { historyStart: 0, historyTotal: 2 }));
+    const folded = viewNow("/project", 2)!;
+    expect(folded.items.map((it) => it.kind)).toEqual(["user", "assistant"]);
+    expect(folded.provisional).toBeUndefined();
+    expect(folded.historyStart).toBe(0);
+    expect(useAgentStore.getState().runningKeys.has("/project:2")).toBe(true);
+
+    // A real view — one the fold already installed — is never replaced.
+    act(() => useAgentStore.getState().loadView("/project", 2, {
+      ...emptyView(),
+      items: [{ kind: "user", text: "另一页", hi: 0 }],
+    }, { historyStart: 0 }));
+    expect(viewNow("/project", 2)!.items.map((it) => it.kind)).toEqual(["user", "assistant"]);
+  });
+
   test("a background-job list has nowhere to land before the view exists", () => {
     const jobs: BgJob[] = [{
       id: "bg-1",
@@ -339,5 +374,28 @@ describe("a reopened child card takes its transcript back", () => {
     const snapshot = viewNow("/project", 1);
     act(() => useAgentStore.getState().applyChildTranscript("/project", 1, 99, segments, rows));
     expect(viewNow("/project", 1)).toBe(snapshot);
+  });
+
+  test("a cancelled card keeps 已中断 while its transcript fills in", () => {
+    // A cancelled child's card carries 已中断 as its body, not a report: the
+    // transcript arriving must fill its segments/rows without turning the
+    // card green or losing the interruption.
+    const cancelled: StreamItem = {
+      kind: "tool",
+      name: "subagent",
+      args: "探索仓库",
+      content: "已中断",
+      ok: false,
+      parent: "delegate",
+      childId: 3,
+    };
+    useAgentStore.getState().loadView("/project", 1, { ...emptyView(), items: [cancelled] });
+    act(() => useAgentStore.getState().applyChildTranscript("/project", 1, 3, segments, rows));
+    expect(viewNow("/project", 1)!.items[0]).toMatchObject({
+      content: "已中断",
+      ok: false,
+      segments,
+      transcriptLoaded: true,
+    });
   });
 });

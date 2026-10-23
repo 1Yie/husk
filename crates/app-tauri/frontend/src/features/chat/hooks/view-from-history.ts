@@ -220,6 +220,16 @@ const WAITING_REPORT = /^\[subagent (.+?) \(child_id (\d+)\) is waiting for you\
  *  the id its card needs to replay the transcript afterwards. */
 const CHILD_REPORT = /\[subagent report — child_id (\d+) ·/;
 
+/** A cancelled child's result: the report it never produced is replaced by
+ *  `[subagent cancelled — child_id N]`. The id still names the child, so a
+ *  reloaded card keeps its transcript; only the report is gone. */
+const CHILD_CANCELLED = /\[subagent cancelled — child_id (\d+)\]/;
+
+/** The body a cancelled child's card carries. The chips read this exact word as
+ *  已中断 — the live card's own cancel wording — where any other body would read
+ *  失败. */
+const CANCELLED_BODY = "已中断";
+
 /** Rebuild a delegation's nested child items from the persisted args
  * (`task`/`tasks`) and result text (`── [i] ok · 3s ──` sections for the
  * parallel form; the bare report for a single child) — live-only events, so
@@ -254,21 +264,31 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
     // the id in the text is the only thing that names it after a reload.
     const waiting = body.match(WAITING_REPORT);
     const finished = body.match(CHILD_REPORT);
+    // A cancelled child never wrote a report — the kernel's marker is all the
+    // log kept, and it is the card's only route back to the child.
+    const cancelled = body.match(CHILD_CANCELLED);
     items.push({
       kind: "tool" as const,
       name: waiting ? waiting[1] : delegateChildLabel(agent, 0, 1),
       args: tasks[0] ? extractArgsPreview(JSON.stringify(tasks[0])) : "",
-      content: body,
+      content: cancelled ? CANCELLED_BODY : body,
       // The persisted `is_error` is what the live card's `ok` showed — a
       // cancelled or failed child must not reload green.
-      ok: !isError,
+      ok: !isError && !cancelled,
       parent: "delegate",
-      childId: waiting ? Number(waiting[2]) : finished ? Number(finished[1]) : undefined,
+      childId: waiting
+        ? Number(waiting[2])
+        : finished
+          ? Number(finished[1])
+          : cancelled
+            ? Number(cancelled[1])
+            : undefined,
       waiting: waiting ? body.slice(waiting[0].length).trim() : undefined,
     });
     return items;
   }
-  // Parallel form: `── [i] ok · 3s ──` sections, input order.
+  // Parallel form: `── [i] ok · 3s ──` sections, input order. A cancelled child
+  // says so in its status word and carries the marker as its body.
   const parts = content.split(/\n── \[(\d+)\] /);
   for (let i = 1; i + 1 < parts.length; i += 2) {
     const idx = Number(parts[i]);
@@ -278,14 +298,18 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
     const status = rest.slice(0, nl).trim();
     const body = rest.slice(nl + 2).replace(/^\n/, "").trim();
     const finished = body.match(CHILD_REPORT);
+    const cancelled = body.match(CHILD_CANCELLED);
+    // Either signal marks it: the status word alone is enough when a log lost
+    // the marker, the marker alone when the head still says `ok`.
+    const interrupted = cancelled != null || status.startsWith("cancelled");
     items.push({
       kind: "tool" as const,
       name: delegateChildLabel(agent, idx, total),
       args: tasks[idx] ? extractArgsPreview(JSON.stringify(tasks[idx])) : "",
-      content: body || undefined,
-      ok: status.startsWith("ok"),
+      content: interrupted ? CANCELLED_BODY : body || undefined,
+      ok: !interrupted && status.startsWith("ok"),
       parent: "delegate",
-      childId: finished ? Number(finished[1]) : undefined,
+      childId: finished ? Number(finished[1]) : cancelled ? Number(cancelled[1]) : undefined,
     });
   }
   return items;

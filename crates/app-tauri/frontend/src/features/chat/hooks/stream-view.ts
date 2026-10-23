@@ -250,6 +250,10 @@ export interface SessionView {
    * the rail. The unloaded dots are ordinals `0 .. turnOffset-1`, and a
    * dot click seeks straight to its own ordinal. */
   turnOffset?: number;
+  /** Minted by the event pump for a session that had no view yet: its rows are
+   *  only the events that streamed in, not the session. `loadView` replaces a
+   *  provisional buffer with the history fold; a real one is never replaced. */
+  provisional?: boolean;
   /** Real model runs (assistant rounds) in the whole session — not user
    *  prompts. Absent on old snapshots; the header falls back to loaded
    *  assistant rows. */

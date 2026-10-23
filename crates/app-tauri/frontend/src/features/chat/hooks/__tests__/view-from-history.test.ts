@@ -229,6 +229,51 @@ describe("a delegated child survives reopening", () => {
     expect(view.items.find((it) => it.kind === "tool")).toMatchObject({ ok: false });
   });
 
+  test("a cancelled child keeps its child_id and reads 已中断", () => {
+    // The marker is all the log kept of it — no report — but the id survives,
+    // so the card can still fetch the transcript persisted when it was
+    // cancelled, and it reads 已中断 (the live card's own wording), not 失败.
+    const view = viewFromHistory(delegation("[subagent cancelled — child_id 31]", true));
+    expect(view.items.find((it) => it.kind === "tool" && it.parent === "delegate")).toMatchObject({
+      childId: 31,
+      ok: false,
+      content: "已中断",
+    });
+  });
+
+  test("a cancelled section of a parallel delegation is interrupted, not failed", () => {
+    const view = viewFromHistory([
+      { role: "user", content: "并行委派", ts: 10 },
+      {
+        role: "assistant",
+        content: "",
+        ts: 20,
+        tool_calls: [
+          {
+            id: "d3",
+            type: "function",
+            function: { name: "delegate", arguments: '{"tasks":["看鉴权","看性能"]}' },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content:
+          "[delegate — 2 children]\n" +
+          "── [0] ok · 3s ──\n[subagent report — child_id 41 · 2 tool calls, 3s]\n鉴权没问题\n" +
+          "── [1] cancelled ──\n[subagent cancelled — child_id 42]",
+        tool_call_id: "d3",
+        ts: 30,
+        is_error: true,
+      },
+    ]);
+    const cards = view.items.filter((it) => it.kind === "tool" && it.parent === "delegate");
+    expect(cards).toMatchObject([
+      { childId: 41, ok: true },
+      { childId: 42, ok: false, content: "已中断" },
+    ]);
+  });
+
   test("an answer_child row replays onto the child's card", () => {
     const view = viewFromHistory([
       ...delegation("[subagent reviewer (child_id 7) is waiting for you]"),
