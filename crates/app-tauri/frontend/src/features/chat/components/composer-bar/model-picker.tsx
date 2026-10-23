@@ -223,10 +223,11 @@ export function ModelPicker({
   }));
   const thinkingAvailable = hasReasoning && tiers.length > 0;
 
-  /** How much of the model name the trigger may print at this tier — the name
-   *  is the only thing on the toolbar row allowed to give way. */
-  const nameCap =
-    density === "full" ? "max-w-[140px]" : density === "compact" ? "max-w-[96px]" : "max-w-[72px]";
+  /** How much of the model name the trigger may print. Full keeps a cap so a
+   *  long id cannot stretch a roomy row; below full the name takes whatever the
+   *  row has left and truncates only when that runs out — a fixed cap there cut
+   *  it short while space sat empty beside it. */
+  const nameCap = density === "full" ? "max-w-[180px]" : "max-w-full";
   const activeTierToken =
     tiers.find((l) => l.value === activeThinkingLevel)?.token ?? activeThinkingLevel;
 
@@ -237,8 +238,9 @@ export function ModelPicker({
           aria-label={`当前模型: ${activeItem ? modelLabel(activeItem) : activeModel || "未选择"} (${activeProvider}/${activeModel})`}
           className={cn(
             "flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer",
-            // Below full the chip keeps its size and lets the name truncate.
-            density !== "full" && "shrink-0",
+            // Below full the trigger is the one thing on the row that gives way:
+            // it may shrink, and only its name truncates inside it.
+            density !== "full" && "shrink",
           )}
         >
           <span
