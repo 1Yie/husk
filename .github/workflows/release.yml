@@ -16,6 +16,10 @@ permissions:
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  # ONNX Runtime compiled for x86_64-apple-darwin; pins the source tag and the
+  # cache key. Must stay equal to the version ort-sys binds to, or the linked
+  # dylib won't match its generated bindings.
+  ORT_VERSION: "1.31.0"
   # The ONNX Runtime binaries fastembed downloads are built for macOS 13.4;
   # linking with a lower target leaves `___isPlatformVersionAtLeast` undefined.
   # Keep this equal to tauri.macos.conf.json's minimumSystemVersion.
@@ -61,6 +65,9 @@ jobs:
           - platform: macos-15-intel
             target: x86_64-apple-darwin
             label: macOS Intel
+            # No prebuilt ONNX Runtime exists for this target: bundle the dylib
+            # the steps below compile from source. Unset (empty) elsewhere.
+            tauri_args: --config tauri.macos-x86_64.conf.json
           # 24.04: the ONNX Runtime objects fastembed downloads need glibc 2.38+.
           # The artifact therefore requires a 2.39 base (Ubuntu 24.04, Debian 13).
           - platform: ubuntu-24.04
@@ -90,6 +97,38 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
 
+      # Building ONNX Runtime from source takes 40-60 min, so keep the dylib
+      # between runs; the key follows the version, the deployment target baked
+      # into the binary, and the script that produces it.
+      - name: Cache ONNX Runtime (macOS Intel)
+        if: matrix.target == 'x86_64-apple-darwin'
+        id: ort-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: crates/app-tauri/onnxruntime
+          key: onnxruntime-${{ env.ORT_VERSION }}-x86_64-apple-darwin-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-onnxruntime-macos-x86_64.sh') }}
+
+      - name: Build ONNX Runtime from source (macOS Intel)
+        if: matrix.target == 'x86_64-apple-darwin' && steps.ort-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-onnxruntime-macos-x86_64.sh crates/app-tauri/onnxruntime
+
+      # Saved right away rather than in a post step, which only runs when the
+      # whole job succeeds — a failed bundle must not cost another full build.
+      - name: Save ONNX Runtime cache (macOS Intel)
+        if: matrix.target == 'x86_64-apple-darwin' && steps.ort-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: crates/app-tauri/onnxruntime
+          key: ${{ steps.ort-cache.outputs.cache-primary-key }}
+
+      # An absolute ORT_LIB_LOCATION makes ort-sys skip its prebuilt download —
+      # there is none for this target — and link the dylib above by @rpath.
+      - name: Point ort-sys at the local ONNX Runtime (macOS Intel)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          echo "ORT_LIB_LOCATION=$GITHUB_WORKSPACE/crates/app-tauri/onnxruntime" >> "$GITHUB_ENV"
+          echo "ORT_PREFER_DYNAMIC_LINK=1" >> "$GITHUB_ENV"
+
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -115,7 +154,27 @@ jobs:
           releaseName: "Husk ${{ env.RELEASE_TAG }}"
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} ${{ matrix.tauri_args }}
+
+      # tauri-action has already attached the bundle to the draft release, so a
+      # failure here flags a bad Intel build rather than preventing the upload:
+      # delete the draft, fix, and re-tag.
+      - name: Verify the bundled ONNX Runtime (macOS Intel)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          set -euo pipefail
+          app=target/x86_64-apple-darwin/release/bundle/macos/Husk.app
+          bin="$app/Contents/MacOS/husk"
+          test -f "$app/Contents/Frameworks/libonnxruntime.1.dylib"
+          # grep reads captured output: piping `otool -l` straight into `grep -q`
+          # SIGPIPEs otool and trips pipefail on a match.
+          deps=$(otool -L "$bin")
+          grep -q '@rpath/libonnxruntime.1.dylib' <<<"$deps"
+          load=$(otool -l "$bin")
+          grep -q '@executable_path/../Frameworks' <<<"$load"
+          codesign --verify --deep --strict "$app"
+          archs=$(lipo -archs "$bin")
+          [[ $archs == x86_64 ]]
 
   release:
     name: Publish release
