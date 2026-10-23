@@ -16,8 +16,8 @@ jobs:
       run:
         working-directory: crates/app-tauri/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -28,7 +28,7 @@ jobs:
       - run: npm run build
       - name: Upload test and coverage reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-test-reports
           path: |
@@ -41,7 +41,7 @@ jobs:
     name: Dependency law
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       # `cargo metadata --no-deps` resolves nothing and compiles nothing.
       # The kernel (korei) and extensions (korei-ext) run their own laws in

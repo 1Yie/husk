@@ -30,7 +30,7 @@ jobs:
     name: Generate changelog
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.inputs.tag || github.sha }}
@@ -44,7 +44,7 @@ jobs:
       - name: Generate changelog for the release
         run: git cliff --latest -o changelog.md
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: changelog
           path: changelog.md
@@ -78,11 +78,11 @@ jobs:
             label: Windows
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.sha }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -103,7 +103,7 @@ jobs:
       - name: Cache ONNX Runtime (macOS Intel)
         if: matrix.target == 'x86_64-apple-darwin'
         id: ort-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: crates/app-tauri/onnxruntime
           key: onnxruntime-${{ env.ORT_VERSION }}-x86_64-apple-darwin-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-onnxruntime-macos-x86_64.sh') }}
@@ -116,7 +116,7 @@ jobs:
       # whole job succeeds — a failed bundle must not cost another full build.
       - name: Save ONNX Runtime cache (macOS Intel)
         if: matrix.target == 'x86_64-apple-darwin' && steps.ort-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: crates/app-tauri/onnxruntime
           key: ${{ steps.ort-cache.outputs.cache-primary-key }}
@@ -158,12 +158,17 @@ jobs:
 
       # tauri-action has already attached the bundle to the draft release, so a
       # failure here flags a bad Intel build rather than preventing the upload:
-      # delete the draft, fix, and re-tag.
+      # delete the draft, fix, and re-tag. The bundler removes Husk.app once the
+      # DMG is built (only `dmg` is a bundle target), so check the shipped DMG.
       - name: Verify the bundled ONNX Runtime (macOS Intel)
         if: matrix.target == 'x86_64-apple-darwin'
         run: |
           set -euo pipefail
-          app=target/x86_64-apple-darwin/release/bundle/macos/Husk.app
+          dmg=$(ls target/x86_64-apple-darwin/release/bundle/dmg/Husk_*_x64.dmg)
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          trap 'hdiutil detach "$mnt" -force' EXIT
+          app="$mnt/Husk.app"
           bin="$app/Contents/MacOS/husk"
           test -f "$app/Contents/Frameworks/libonnxruntime.1.dylib"
           # grep reads captured output: piping `otool -l` straight into `grep -q`
@@ -181,7 +186,7 @@ jobs:
     needs: [changelog, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: changelog
 
