@@ -28,10 +28,11 @@ function renderBar(
     branch: "main",
     dirty: 2,
   },
+  extra: { onCompact?: () => void } = {},
 ) {
   return render(
     <TooltipProvider>
-      <TitleBar title="t" view={view} contextWindowHint={200_000} gitInfo={gitInfo} />
+      <TitleBar title="t" view={view} contextWindowHint={200_000} gitInfo={gitInfo} {...extra} />
     </TooltipProvider>,
   );
 }
@@ -114,6 +115,30 @@ describe("context card", () => {
     renderBar();
     fireEvent.click(screen.getByRole("button", { name: "上下文窗口" }));
     expect(await screen.findByText("缓存前缀")).toBeTruthy();
+  });
+
+  it("offers a compact button that calls onCompact", async () => {
+    const onCompact = vi.fn();
+    renderBar(viewWith(), undefined, { onCompact });
+    fireEvent.click(screen.getByRole("button", { name: "上下文窗口" }));
+    fireEvent.click(await screen.findByRole("button", { name: "压缩上下文" }));
+    expect(onCompact).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables compact while a turn is streaming", async () => {
+    const v = viewWith();
+    v.streaming = true;
+    renderBar(v, undefined, { onCompact: vi.fn() });
+    fireEvent.click(screen.getByRole("button", { name: "上下文窗口" }));
+    const button = (await screen.findByRole("button", { name: "压缩上下文" })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
+  it("hides the compact button without an onCompact handler", async () => {
+    renderBar();
+    fireEvent.click(screen.getByRole("button", { name: "上下文窗口" }));
+    expect(await screen.findByText("缓存前缀")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "压缩上下文" })).toBeNull();
   });
 });
 

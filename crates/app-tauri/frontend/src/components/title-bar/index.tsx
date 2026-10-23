@@ -21,6 +21,8 @@ interface TitleBarProps {
   modelCost?: ModelItem["cost"];
   /** Opens the raw-JSON history viewer for the active session. */
   onShowRaw?: () => void;
+  /** Runs a manual `/compact` pass on the active session. */
+  onCompact?: () => void;
   /** No workspace open — hide title, raw button and the stats cluster. */
   noWorkspace?: boolean;
   /** No ACTIVE session (workspace open, zero sessions) — git stays, the
@@ -166,7 +168,7 @@ function turnCost(
   );
 }
 
-export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, noWorkspace = false, noSession = false }: TitleBarProps) {
+export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint, modelCost, onShowRaw, onCompact, noWorkspace = false, noSession = false }: TitleBarProps) {
   const prompt = view?.usage.prompt ?? 0;
   const completion = view?.usage.completion ?? 0;
   const cached = view?.usage.cachedTokens ?? 0;
@@ -236,6 +238,9 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
   const breakdown = view?.contextBreakdown;
   const composition = contextComposition(breakdown, prompt, cached, cacheWrite, uncached);
   const totalTokens = prompt + completion;
+  // A manual `/compact` can't start mid-turn, and a running pass blocks another.
+  const busy = view?.streaming ?? false;
+  const compacting = view?.state === "Compacting";
 
   // The stat chips — `compact` drops the text and keeps icon + glyph, so
   // a narrow bar still has every card one hover away.
@@ -381,6 +386,23 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
         <CardBody>
           <CardRow label="缓存命中" value={cacheRate !== null ? `${cacheRate} · ~${fmtCompact(cached)}` : "—"} muted />
         </CardBody>
+        {onCompact && (
+          <>
+            <CardDivider />
+            <div className="px-3.5 py-2">
+              <button
+                type="button"
+                data-tauri-drag-region="false"
+                onClick={onCompact}
+                disabled={compacting || busy}
+                title={busy && !compacting ? "回复进行中，结束后可压缩" : undefined}
+                className="flex h-7 w-full items-center justify-center rounded-md text-[12px] text-neutral-700 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] disabled:opacity-50 disabled:cursor-default"
+              >
+                {compacting ? "正在压缩…" : "压缩上下文"}
+              </button>
+            </div>
+          </>
+        )}
         {breakdown && (
           <p className="px-3.5 pb-3 text-[11px] text-neutral-400">各项为按字符估算后按实际用量缩放</p>
         )}
