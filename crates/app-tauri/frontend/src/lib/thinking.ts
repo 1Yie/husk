@@ -14,6 +14,12 @@ export const THINKING_LEVELS = [
   { value: "max", token: "Max", label: "Max" },
 ] as const;
 
+/** The tier's text colour — a theme token from the calm-to-intense ramp in
+ *  index.css, so light and dark each get their own legible shade. */
+export function thinkingTone(value: string): string {
+  return `var(--husk-think-${value}, var(--husk-fg-muted))`;
+}
+
 /** Pick only from the active model's declared levels. Unknown persisted tiers
  * never become a label or a command just because the global list knows them. */
 export function normalizeThinkingLevel(

@@ -44,6 +44,15 @@
   /* 活跃度（统计热力图）— the one place the app needs a "more is better"
      ramp; kept out of the neutral ramp so it reads as data, not chrome. */
   --husk-activity: #10b981;
+  /* 思考强度 — one ramp from calm to intense, cool to warm, so the tier word
+     beside the effort slider reads its strength at a glance. */
+  --husk-think-off: #a1a1aa;
+  --husk-think-minimal: #64748b;
+  --husk-think-low: #0284c7;
+  --husk-think-medium: #2563eb;
+  --husk-think-high: #7c3aed;
+  --husk-think-xhigh: #c026d3;
+  --husk-think-max: #e11d48;
   --husk-contrast: 0;
   --husk-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --husk-code-font: ui-monospace, "SFMono-Regular", monospace;
@@ -83,6 +92,13 @@
   --husk-fg-dim: #5b5b66;
   --husk-bubble-user: #2c2c34;
   --husk-activity: #34d399;
+  --husk-think-off: #71717a;
+  --husk-think-minimal: #94a3b8;
+  --husk-think-low: #38bdf8;
+  --husk-think-medium: #60a5fa;
+  --husk-think-high: #a78bfa;
+  --husk-think-xhigh: #e879f9;
+  --husk-think-max: #fb7185;
   /* Inverted ramp — n50 becomes the darkest, n950 the lightest, so
      `bg-neutral-100` (a light surface in light mode) reads as the matching
      dark surface, and `text-neutral-900` (darkest text) reads as the

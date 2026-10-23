@@ -181,6 +181,9 @@ export interface ReasoningEffortProps {
   ariaLabel?: string;
   /** Fires once per gesture — a release or a key press, not per pixel. */
   onChange?: (index: number) => void;
+  /** Text colour per stop (same order as `stops`). The tier word takes it so
+   *  its strength reads at a glance; absent keeps the dim caption colour. */
+  levelTones?: readonly (string | undefined)[];
 }
 
 export function ReasoningEffort({
@@ -189,6 +192,7 @@ export function ReasoningEffort({
   label = DEFAULT_LABEL,
   ariaLabel = "Reasoning effort",
   onChange,
+  levelTones,
 }: ReasoningEffortProps = {}) {
   // The caller owns the real tier list; index 0 is the lowest.
   const start = Math.round(value ?? 1);
@@ -526,7 +530,9 @@ export function ReasoningEffort({
         <span className={s.swap}>
           <span className={s.current}>{label}</span>
           <span key={level} className={s.swap + (animateLabel ? " " + s.enter : "")}>
-            <span className={s.next}>{level}</span>
+            <span className={s.next} style={levelTones?.[active] ? { color: levelTones[active] } : undefined}>
+              {level}
+            </span>
           </span>
         </span>
       </div>

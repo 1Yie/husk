@@ -16,7 +16,7 @@ import {
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { ReasoningEffort } from "@/components/ui/reasoning-effort";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { THINKING_LEVELS } from "@/lib/thinking";
+import { THINKING_LEVELS, thinkingTone } from "@/lib/thinking";
 import { groupOptions } from "@/lib/group-options";
 import { cn } from "@/lib/utils";
 import type { ToolbarDensity } from "@/features/chat/components/composer-bar/toolbar-density";
@@ -405,6 +405,7 @@ export function ModelPicker({
                   tiers, and one gesture reports the tier it landed on. */}
               <ReasoningEffort
                 stops={tiers.map((tier) => tier.label)}
+                levelTones={tiers.map((tier) => thinkingTone(tier.value))}
                 value={Math.max(0, tiers.findIndex((tier) => tier.value === activeThinkingLevel))}
                 label={activeItem ? modelLabel(activeItem) : activeModel}
                 ariaLabel="思考等级"
