@@ -24,8 +24,8 @@ import {
 } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -42,6 +42,7 @@ import { FormDialog } from "@/features/settings/components/form-dialog";
 import {
   EmptyState,
   Field,
+  ItemDetail,
   ItemIcon,
   ItemRow,
   ScopeTabs,
@@ -52,11 +53,14 @@ import {
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import {
+  cancelSemanticRecall,
   clearMemory,
   forgetMemory,
   getMemoryOverview,
   getSemanticProgress,
   removeMemoryFact,
+  removeSemanticModel,
+  retrySemanticRecall,
   setDefaultPrefs,
   setMemoryPersona,
   type MemoryOverview,
@@ -83,11 +87,25 @@ const SCOPE_ICON_TONE: Record<Scope, string> = {
 /** Confidence → tag tone: the distiller's certainty at a glance. */
 const confidenceTone = (c: number) => (c >= 0.8 ? "success" : c >= 0.5 ? "neutral" : "warn");
 
-const PREVIEW_COUNT = 5;
+/** Bytes → whole megabytes, the unit the semantic row reports in. */
+const toMb = (bytes: number) => Math.round(bytes / (1024 * 1024));
 
-/** `123.4 MB` — the model is hundreds of megabytes, so one decimal is enough
- *  to see it move and not so much that the line jitters. */
-const mb = (bytes: number | undefined) => `${((bytes ?? 0) / (1024 * 1024)).toFixed(1)} MB`;
+/** Whether `active` has held for `ms`. A busy hint on a step that ends in a blink
+ *  would only flash, so it stays hidden until the wait is real. */
+function useDelayedFlag(active: boolean, ms = 300) {
+  const [elapsed, setElapsed] = useState(false);
+  useEffect(() => {
+    if (!active) {
+      setElapsed(false);
+      return;
+    }
+    const timer = setTimeout(() => setElapsed(true), ms);
+    return () => clearTimeout(timer);
+  }, [active, ms]);
+  return active && elapsed;
+}
+
+const PREVIEW_COUNT = 5;
 
 /** Rows past the preview fade in as the list grows, staggered within their
  *  batch; preview rows render plain so the first paint never animates. */
@@ -151,18 +169,25 @@ export function MemoryPane() {
   const [factQuery, setFactQuery] = useState("");
   const [personaLimit, setPersonaLimit] = useState(PREVIEW_COUNT);
   const [factLimit, setFactLimit] = useState(PREVIEW_COUNT);
-  /** `null` = closed; `ask` = the download prompt; `run` = the progress view. */
-  const [semanticStep, setSemanticStep] = useState<null | "ask" | "run">(null);
+  /** The download prompt — the only modal this feature has. Progress lives in
+   *  the row, so a modal and the row can never disagree about it. */
+  const [askSemantic, setAskSemantic] = useState(false);
   const [progress, setProgress] = useState<SemanticProgress | null>(null);
   /** The fetch ended badly. Its own flag rather than a test on `progress`, so
    *  the ticker's dependencies stay about the switch instead of every sample. */
   const [semanticFailed, setSemanticFailed] = useState(false);
+  /** The encoder is in this process's memory. The backend keeps it through a
+   *  switch-off, so switching back on is instant; only 卸载 clears it. */
+  const [modelLoaded, setModelLoaded] = useState(false);
   const personaListId = useId();
   const factListId = useId();
 
   const reload = () => {
     void getMemoryOverview()
-      .then(setOv)
+      .then((o) => {
+        setOv(o);
+        if (o.semantic_ready) setModelLoaded(true);
+      })
       .catch(() => {});
   };
   useEffect(reload, []);
@@ -178,14 +203,62 @@ export function MemoryPane() {
       toast.error("保存失败", { description: String(e) });
     });
 
+  /** A failed fetch is not permanent: every file that verified is reused, so a
+   *  retry that only has to rebuild the session costs a second. */
+  const retrySemantic = () => {
+    setProgress(null);
+    setSemanticFailed(false);
+    void retrySemanticRecall()
+      .then(setProgress)
+      .catch((e) => toast.error("重试失败", { description: String(e) }));
+  };
+
+  /** Turn the switch on. A model already on disk needs no download and gets no
+   *  prompt — asking again is what made "off, then on" read as "you uninstalled
+   *  it". Only a machine that has never fetched the weights is asked. A model
+   *  still in memory is ready at once, so nothing is polled for it. */
+  const enableSemantic = () => {
+    if (!ov) return;
+    const before = { semantic: ov.semantic, semantic_ready: ov.semantic_ready };
+    setSemanticFailed(false);
+    setProgress(null);
+    setOv({ ...ov, semantic: true, semantic_ready: modelLoaded });
+    void savePref({ semantic_recall: true }, () =>
+      setOv((o) => (o ? { ...o, ...before } : o)),
+    );
+  };
+
+  /** 取消 during the fetch. The partial file stays backend-side and resumes on the
+   *  next enable, so the row simply goes back to off. */
+  const cancelSemantic = () => {
+    if (!ov) return;
+    void cancelSemanticRecall().catch((e) => toast.error("取消失败", { description: String(e) }));
+    setSemanticFailed(false);
+    setOv({ ...ov, semantic: false });
+    void savePref({ semantic_recall: false }, () =>
+      setOv((o) => (o ? { ...o, semantic: true } : o)),
+    );
+  };
+
+  /** 卸载 — drop the weights and switch the feature off with them. */
+  const uninstallSemantic = () => {
+    if (!ov) return;
+    setProgress(null);
+    setSemanticFailed(false);
+    setModelLoaded(false);
+    setOv({ ...ov, semantic: false, semantic_ready: false, semantic_cached: false });
+    void removeSemanticModel().catch(() => {});
+    void savePref({ semantic_recall: false });
+  };
+
   /** Whether anything is still waiting on the model. One ticker serves both
-   *  consumers — the open dialog, and the row that must stop saying 下载中
-   *  once the fetch lands or fails. Two polls only doubled the IPC. */
+   *  consumers — the open dialog, and the row that must stop showing the fetch
+   *  once it lands or fails. Two polls only doubled the IPC. */
   const watchingModel =
     !!ov?.enabled &&
     !!ov?.semantic &&
     !semanticFailed &&
-    (semanticStep === "run" || !ov.semantic_ready);
+    !ov.semantic_ready;
   useEffect(() => {
     if (!watchingModel) return;
     let live = true;
@@ -193,13 +266,21 @@ export function MemoryPane() {
       void getSemanticProgress()
         .then((p) => {
           if (!live) return;
-          setProgress(p);
+          // Keep the previous object when the sample is unchanged: a poll that
+          // moves nothing must not re-render the pane (and the spinner with it).
+          setProgress((prev) =>
+            prev && prev.phase === p.phase && prev.bytes === p.bytes && prev.file === p.file
+              ? prev
+              : p,
+          );
           if (p.phase === "ready") {
-            setOv((o) => (o ? { ...o, semantic_ready: true } : o));
-            if (semanticStep === "run") {
-              setSemanticStep(null);
-              toast.success("语义召回已启用", { description: "本地模型已就绪" });
-            }
+            // The weights are on disk and in memory from here on. Recording that
+            // is what keeps a later switch-off/on from offering a download that
+            // no longer exists, and what keeps 卸载 on screen while the feature is off.
+            setModelLoaded(true);
+            setOv((o) =>
+              o ? { ...o, semantic_ready: true, semantic_cached: true } : o,
+            );
           } else if (p.phase === "failed") {
             // Stop polling: the reason is already on screen, and asking again
             // every second does not fix a blocked download.
@@ -213,7 +294,26 @@ export function MemoryPane() {
       live = false;
       clearInterval(timer);
     };
-  }, [watchingModel, semanticStep]);
+  }, [watchingModel]);
+
+  // Share of the model on disk. `total` comes from the backend's file
+  // manifest, so this is a real fraction rather than an estimate.
+  const semanticPct =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.bytes / progress.total) * 100))
+      : 0;
+
+  // On, but nothing to use yet: the weights are still arriving or being read back.
+  // The row shows the fetch or the load, and the switch waits on the load.
+  const semanticBusy = !!ov?.semantic && !ov.semantic_ready && !semanticFailed;
+  // A download only while bytes are arriving. A model already on disk that is
+  // being read back into memory is loading, and must never read as a download.
+  const semanticDownloading =
+    semanticBusy &&
+    (progress?.phase === "downloading" ||
+      (progress?.phase !== "loading" && !ov?.semantic_cached));
+  // The busy hint waits out a fast load, so a switch that settles at once shows nothing.
+  const busyShown = useDelayedFlag(semanticBusy);
 
   const clearOne = async (table: string, label: string) => {
     try {
@@ -356,54 +456,132 @@ export function MemoryPane() {
             />
             {/* Off by default; the model behind it is a download, so turning it
              *  ON asks first. Turning it off is immediate. A build without the
-             *  encoder gets no row at all — a switch that cannot do anything. */}
+             *  encoder gets no row at all — a switch that cannot do anything.
+             *
+             *  While the fetch runs the row shows its progress and 取消 takes the
+             *  switch's place. Once the weights are on disk but still being read
+             *  back, the switch is LOCKED: it is on, but there is nothing to use yet. */}
             {ov?.semantic_available && (
-              <ItemRow
-                className={cn(inactive && "opacity-60")}
-                icon={
-                  <ItemIcon
-                    status={ov.semantic && ov.semantic_ready ? "success" : undefined}
-                  >
-                    <Radar className="h-4 w-4" />
-                  </ItemIcon>
-                }
-                title="语义召回"
-                description={
-                  inactive
-                    ? "记忆关闭时不生效"
-                    : ov.semantic
-                      ? ov.semantic_ready
-                        ? "已启用，本地模型已就绪"
-                        : semanticFailed
-                          ? (progress?.error ??
-                            "本地模型未就绪，召回暂时按关键词匹配")
-                          : "已启用，正在下载并加载本地模型…"
-                      : "用本地语义模型匹配，中英文同一件事也能召回"
-                }
-                actions={
-                  <Switch
-                    checked={ov.semantic}
-                    disabled={inactive}
-                    onCheckedChange={(v) => {
-                      if (v) {
-                        setProgress(null);
-                        setSemanticFailed(false);
-                        setSemanticStep("ask");
-                        return;
+              <div>
+                <ItemRow
+                  className={cn(inactive && "opacity-60")}
+                  icon={
+                    <ItemIcon
+                      status={
+                        ov.semantic && ov.semantic_ready
+                          ? "success"
+                          : semanticFailed
+                            ? "danger"
+                            : ov.semantic
+                              ? "idle"
+                              : undefined
                       }
-                      const before = {
-                        semantic: ov.semantic,
-                        semantic_ready: ov.semantic_ready,
-                      };
-                      setSemanticFailed(false);
-                      setOv({ ...ov, semantic: false, semantic_ready: false });
-                      void savePref({ semantic_recall: false }, () =>
-                        setOv((o) => (o ? { ...o, ...before } : o)),
-                      );
-                    }}
-                  />
-                }
-              />
+                    >
+                      <Radar className="h-4 w-4" />
+                    </ItemIcon>
+                  }
+                  title="语义召回"
+                  tags={semanticFailed ? <Tag tone="danger">下载失败</Tag> : undefined}
+                  description={
+                    inactive ? (
+                      "记忆关闭时不生效"
+                    ) : !ov.semantic ? (
+                      "本地小型语义模型，给记忆召回打分。"
+                    ) : ov.semantic_ready ? (
+                      `${ov.semantic_model ?? "本地语义模型"} · 本地运行`
+                    ) : semanticFailed ? (
+                      <span className="text-red-600 dark:text-red-400">
+                        {progress?.error ?? "下载失败，召回暂时按关键词匹配"}
+                      </span>
+                    ) : semanticDownloading ? (
+                      "本地模型下载完成后自动启用"
+                    ) : undefined
+                  }
+                  actions={
+                    <>
+                      {/* 卸载 belongs to the weights: there is nothing to delete
+                       *  while they are still arriving, and a bin next to a
+                       *  running download reads as "cancel". */}
+                      {(ov.semantic_cached || ov.semantic_ready) && (
+                        <DeleteButton
+                          title="卸载本地模型"
+                          confirmTitle="卸载本地模型"
+                          confirmDescription="将删除已下载的语义模型文件，并关闭语义召回。下次启用需要重新下载。"
+                          confirmLabel="卸载"
+                          onConfirm={uninstallSemantic}
+                        />
+                      )}
+                      {semanticFailed && (
+                        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={retrySemantic}>
+                          重试
+                        </Button>
+                      )}
+                      {semanticDownloading ? (
+                        <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={cancelSemantic}>
+                          取消
+                        </Button>
+                      ) : (
+                        <Switch
+                          // A failed model is not in effect, so the switch must
+                          // not claim it is — the preference is still on file,
+                          // which is why the next launch tries once more.
+                          checked={ov.semantic && !semanticFailed}
+                          // Locked while the weights are being read back: it is
+                          // on, but there is nothing to use yet, so it is not a choice.
+                          disabled={inactive || busyShown}
+                          aria-label="语义召回"
+                          onCheckedChange={(v) => {
+                            if (v) {
+                              // Already agreed to the download once: this is a
+                              // retry, not a fresh decision.
+                              if (semanticFailed) {
+                                retrySemantic();
+                                return;
+                              }
+                              // The weights are on disk, or already in memory —
+                              // nothing to warn about, so the switch just works.
+                              if (ov.semantic_cached || modelLoaded) {
+                                enableSemantic();
+                                return;
+                              }
+                              setAskSemantic(true);
+                              return;
+                            }
+                            // Switching off keeps `modelLoaded`: the encoder stays
+                            // in memory, so switching back on is instant.
+                            setSemanticFailed(false);
+                            setOv({ ...ov, semantic: false });
+                            void savePref({ semantic_recall: false }, () =>
+                              setOv((o) => (o ? { ...o, semantic: true } : o)),
+                            );
+                          }}
+                        />
+                      )}
+                    </>
+                  }
+                />
+                {busyShown && (
+                  <ItemDetail>
+                    {semanticDownloading ? (
+                      <>
+                        <Progress value={progress && progress.total > 0 ? semanticPct : undefined} />
+                        <span className="flex items-center justify-between text-[11px] tabular-nums text-neutral-500">
+                          <span>
+                            {progress && progress.total > 0 &&
+                              `已下载 ${toMb(progress.bytes)} MB / ${toMb(progress.total)} MB`}
+                          </span>
+                          <span role="status" aria-live="polite">{semanticPct}%</span>
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Progress />
+                        <span className="text-[11px] text-neutral-500">正在加载模型…</span>
+                      </>
+                    )}
+                  </ItemDetail>
+                )}
+              </div>
             )}
           </KvListContent>
         </KvList>
@@ -730,99 +908,32 @@ export function MemoryPane() {
         </div>
       </FormDialog>
 
-      {/* The fetch is the one part of memory that costs a wait, so it starts
-       *  from a prompt and reports bytes while it runs — never a silent
-       *  quarter-gigabyte download behind a switch flip. */}
-      <Dialog
-        open={semanticStep !== null}
-        onOpenChange={(o) => {
-          if (!o) setSemanticStep(null);
-        }}
-      >
+      {/* Ask before the one part of memory that costs a wait — never a silent
+       *  quarter-gigabyte download behind a switch flip. The fetch itself is
+       *  reported in the row, so there is no second progress surface to fall
+       *  out of step with it. */}
+      <Dialog open={askSemantic} onOpenChange={(o) => setAskSemantic(o)}>
         <DialogContent className="max-w-sm">
-          {semanticStep === "ask" ? (
-            <>
-              <DialogHeader>
-                <DialogTitle className="text-base">启用语义召回</DialogTitle>
-                <DialogDescription>
-                  首次启用需要下载本地语义模型，约 250 MB。下载完成后完全离线运行，不会把对话内容发到任何地方。
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter className="gap-2">
-                <Button variant="outline" size="sm" onClick={() => setSemanticStep(null)}>
-                  取消
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    if (!ov) return;
-                    setSemanticFailed(false);
-                    setSemanticStep("run");
-                    setOv({ ...ov, semantic: true, semantic_ready: false });
-                    void savePref({ semantic_recall: true }, () =>
-                      setOv((o) =>
-                        o ? { ...o, semantic: false, semantic_ready: false } : o,
-                      ),
-                    );
-                  }}
-                >
-                  下载并启用
-                </Button>
-              </DialogFooter>
-            </>
-          ) : (
-            <>
-              <DialogHeader>
-                <DialogTitle className="text-base">
-                  {progress?.phase === "failed" ? "下载失败" : "正在启用语义召回"}
-                </DialogTitle>
-                <DialogDescription>
-                  {progress?.phase === "failed"
-                    ? (progress.error ??
-                      "本地模型没有下载成功。记忆仍照常工作，召回暂时按关键词匹配。")
-                    : progress?.phase === "ready"
-                      ? "模型已就绪"
-                      : progress === null
-                        ? "准备下载…"
-                        : progress.phase === "loading"
-                          ? `${mb(progress.bytes)} 已下载，正在加载模型…`
-                          : `${mb(progress.bytes)} / 约 ${Math.round(progress.total / (1024 * 1024))} MB`}
-                </DialogDescription>
-              </DialogHeader>
-              {progress?.phase !== "failed" && (
-                <Progress
-                  value={
-                    progress === null
-                      ? undefined
-                      : Math.min(
-                          100,
-                          Math.round((progress.bytes / Math.max(progress.total, 1)) * 100),
-                        )
-                  }
-                />
-              )}
-              <DialogFooter className="gap-2">
-                <Button variant="outline" size="sm" onClick={() => setSemanticStep(null)}>
-                  在后台继续
-                </Button>
-                {progress?.phase === "failed" && (
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setProgress(null);
-                      setSemanticFailed(false);
-                      // Re-saving the value is what asks the host to retry: a
-                      // failed load is not permanent.
-                      void setDefaultPrefs({ semantic_recall: true }).catch(() => {});
-                      setSemanticStep("run");
-                    }}
-                  >
-                    重试
-                  </Button>
-                )}
-              </DialogFooter>
-            </>
-          )}
+          <DialogHeader>
+            <DialogTitle className="text-base">启用语义召回</DialogTitle>
+            <DialogDescription>
+              首次启用需要下载本地语义模型，约 241 MB。下载完成后完全离线运行，不会把对话内容发到任何地方。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setAskSemantic(false)}>
+              取消
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                setAskSemantic(false);
+                enableSemantic();
+              }}
+            >
+              下载并启用
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
