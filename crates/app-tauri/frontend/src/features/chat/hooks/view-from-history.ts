@@ -318,6 +318,59 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
 /** The kernel's prefix on the row a child reads a parent answer as. */
 const PARENT_ANSWER_PREFIX = "[answer from your parent]";
 
+/** A `delegate`/`answer_child` call the log never answered: the app was quit
+ *  (or the actor killed) with the child still out, so no tool row will ever
+ *  follow it. Nothing else in the history can draw that child's card, so it is
+ *  drawn here as interrupted — cheap and honest beats no card at all. A
+ *  `delegate` child's id is minted at runtime and never persisted, so it stays
+ *  unknown; `answer_child` names the child it resumed in its own args. */
+function danglingDelegateCards(
+  tool: string,
+  rawArgs: string,
+): {
+  kind: "tool";
+  name: string;
+  args: string;
+  content?: string;
+  ok: boolean;
+  parent: string;
+  childId?: number;
+}[] {
+  if (tool === "delegate") {
+    let tasks: string[] = [];
+    let agent: string | undefined;
+    try {
+      const parsed = JSON.parse(rawArgs);
+      if (Array.isArray(parsed?.tasks)) tasks = parsed.tasks.map(String);
+      else if (typeof parsed?.task === "string") tasks = [parsed.task];
+      if (typeof parsed.agent === "string") agent = parsed.agent;
+    } catch {
+      /* malformed args — the card still says the child never came back */
+    }
+    if (tasks.length === 0) tasks = [""];
+    return tasks.map((task, i) => ({
+      kind: "tool" as const,
+      name: delegateChildLabel(agent, i, tasks.length),
+      args: task ? extractArgsPreview(JSON.stringify(task)) : "",
+      content: CANCELLED_BODY,
+      ok: false,
+      parent: "delegate",
+      childId: undefined,
+    }));
+  }
+  return [
+    {
+      kind: "tool" as const,
+      name: "subagent",
+      args: "",
+      content: CANCELLED_BODY,
+      ok: false,
+      parent: "delegate",
+      childId: answerChildId(rawArgs),
+    },
+  ];
+}
+
 /** A finished child's own history → the body its card shows, so reopening a
  *  session restores what the live `applyEvent` path had streamed: assistant
  *  text runs, the child's own tool calls as nested rows, and the muted steer /
@@ -383,6 +436,25 @@ export function childTranscriptCard(
   return { segments, rows };
 }
 
+/** Every `tool_call_id` this history answered with a tool row. A call without
+ *  one was never dispatched to completion: the process died mid-turn. */
+function answeredCalls(history: ChatMessage[]): Set<string> {
+  const out = new Set<string>();
+  for (const m of history) {
+    if (m.role === "tool" && m.tool_call_id) out.add(m.tool_call_id);
+  }
+  return out;
+}
+
+/** How a rebuilt page should read rows it cannot complete. `dangling` says the
+ *  page is the session's whole state and nothing is running, so a
+ *  `delegate`/`answer_child` call with no result is a child that died with the
+ *  process — an older page must leave that alone (its results are in the newer
+ *  pages already on screen), and a running session leaves it to the live stream. */
+export interface HistoryFoldOptions {
+  dangling?: boolean;
+}
+
 /** Rebuild a `SessionView`'s item list from persisted `ChatMessage`
  * history — used when switching to a session whose in-memory view was
  * never built (first open after launch) or dropped. Tool result messages
@@ -395,6 +467,7 @@ export function viewFromHistory(
   history: ChatMessage[],
   usage?: agent.SessionUsage | null,
   baseIndex = 0,
+  opts?: HistoryFoldOptions,
 ): SessionView {
   const v = emptyView();
   if (usage) {
@@ -410,7 +483,8 @@ export function viewFromHistory(
   // call_id → tool name and args: resolve from the preceding assistant `tool_calls`.
   const idToTool = new Map<string, { name: string; args: string; raw: string }>();
   for (const m of history) indexToolCalls(idToTool, m);
-  history.forEach((m, i) => foldMessage(v, idToTool, m, baseIndex + i));
+  const answered = answeredCalls(history);
+  history.forEach((m, i) => foldMessage(v, idToTool, m, baseIndex + i, answered, opts?.dangling === true));
   return v;
 }
 
@@ -421,6 +495,7 @@ export async function viewFromHistoryChunked(
   history: ChatMessage[],
   usage?: agent.SessionUsage | null,
   baseIndex = 0,
+  opts?: HistoryFoldOptions,
 ): Promise<SessionView> {
   const v = emptyView();
   if (usage) {
@@ -435,8 +510,9 @@ export async function viewFromHistoryChunked(
   }
   const idToTool = new Map<string, { name: string; args: string; raw: string }>();
   for (const m of history) indexToolCalls(idToTool, m);
+  const answered = answeredCalls(history);
   for (let i = 0; i < history.length; i++) {
-    foldMessage(v, idToTool, history[i], baseIndex + i);
+    foldMessage(v, idToTool, history[i], baseIndex + i, answered, opts?.dangling === true);
     if (i % 24 === 23) await new Promise((r) => setTimeout(r, 0));
   }
   return v;
@@ -543,6 +619,12 @@ function foldMessage(
   idToTool: Map<string, ToolInfo>,
   m: ChatMessage,
   hi: number,
+  /** Calls that DO have a tool row somewhere in this history. */
+  answered: ReadonlySet<string>,
+  /** Whether an unanswered `delegate`/`answer_child` call is a child that died
+   *  with the process — false for an older page whose results are in a newer
+   *  one, and false while the session is still running. */
+  emitDangling: boolean,
 ) {
     // `notice` marks the system lines the live stream actually showed —
     // replayed verbatim. Everything else (system prompt, compaction
@@ -690,6 +772,33 @@ function foldMessage(
             ? m.ts - m.duration_ms
             : undefined,
       });
+    }
+    // A `delegate`/`answer_child` call this history never answered: the child
+    // was still out when the process died, and no tool row will ever follow.
+    // Its card is drawn here as interrupted — the only thing the log can say.
+    if (emitDangling && m.role === "assistant") {
+      for (const c of m.tool_calls ?? []) {
+        const tool = c.function.name;
+        if (tool !== "delegate" && tool !== "answer_child") continue;
+        if (answered.has(c.id)) continue;
+        for (const card of danglingDelegateCards(tool, c.function.arguments ?? "")) {
+          // A resumed child already has the card its own `delegate` row drew —
+          // that one closes in place instead of appearing twice.
+          const at =
+            card.childId == null
+              ? -1
+              : v.items.findIndex(
+                  (it) =>
+                    it.kind === "tool" && it.parent === "delegate" && it.childId === card.childId,
+                );
+          const existing = at >= 0 ? v.items[at] : undefined;
+          if (existing?.kind === "tool") {
+            v.items[at] = { ...existing, content: CANCELLED_BODY, ok: false, waiting: undefined };
+            continue;
+          }
+          v.items.push({ ...card, hi });
+        }
+      }
     }
     // Assistant messages that only carry `tool_calls` have no visible text —
     // the matching `tool` result already renders the capsule.

@@ -65,6 +65,28 @@ describe("subagent capsule", () => {
     expect(screen.getByRole("button", { name: "子代理" }).getAttribute("data-compact")).toBe("true");
   });
 
+  test("a seeded running card with no parent row still renders", () => {
+    // Exactly the shape `seedRunningChildren` installs after a webview reload:
+    // the child's card, no report yet, and NO `delegate` row anywhere in the
+    // turn to nest under — it must still be drawn rather than dropped.
+    const view = emptyView();
+    view.items = [
+      { kind: "user", text: "委派子代理" },
+      {
+        kind: "tool",
+        name: "review #1",
+        args: "看鉴权",
+        parent: "delegate",
+        childId: 7,
+        startedAt: Date.now(),
+      },
+    ];
+    renderWithProviders(<ChatStream view={view} sessionKey="/project:1" />);
+    fireEvent.click(screen.getByRole("button", { name: /次工具调用/ }));
+    expect(screen.getByText("review #1")).toBeInTheDocument();
+    expect(screen.getByText("看鉴权")).toBeInTheDocument();
+  });
+
   test("a replayed transcript nests under its child's card", () => {
     // Exactly the shape `applyChildTranscript` installs: the card with its body
     // segments, then the child's own tool rows right behind it.

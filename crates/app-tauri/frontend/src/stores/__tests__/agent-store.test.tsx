@@ -5,6 +5,7 @@ import {
   useAgentStore, useHasMoreHistory, viewNow,
 } from "../agent-store";
 import { emptyView, type BgJob, type StreamItem } from "@/features/chat/hooks/stream-view";
+import { hasRunningChildren } from "@/features/chat/hooks/running-children";
 import { deferred, emitAgentEvent, listenerCount, mockCommand, modelInfo, tauri } from "@/test/tauri";
 import { clearAll, notificationsNow } from "@/lib/notifications";
 import { CONFIG_CHANGED_EVENT, type ModelInfo } from "@/lib/agent-ipc/sessions";
@@ -397,5 +398,103 @@ describe("a reopened child card takes its transcript back", () => {
       segments,
       transcriptLoaded: true,
     });
+  });
+});
+
+describe("a subagent still running when the webview reloaded", () => {
+  const child = (childId: number, name: string, task: string, waiting?: string) => ({
+    childId,
+    name,
+    task,
+    waiting,
+  });
+  const load = (items: StreamItem[] = [{ kind: "user", text: "委派子代理" }]) =>
+    useAgentStore.getState().loadView("/project", 1, { ...emptyView(), items });
+
+  test("its card is seeded from the live registry", () => {
+    load();
+    act(() => useAgentStore.getState().seedRunningChildren("/project", 1, [child(7, "review #1", "看鉴权")]));
+    const items = viewNow("/project", 1)!.items;
+    expect(items).toHaveLength(2);
+    const card = items[1];
+    expect(card).toMatchObject({
+      kind: "tool",
+      name: "review #1",
+      args: "看鉴权",
+      parent: "delegate",
+      childId: 7,
+    });
+    // No report yet — that is what keeps it running, and the 子代理 dock entry
+    // alive with it.
+    if (card.kind !== "tool") throw new Error("the seed must append a tool card");
+    expect(card.content).toBeUndefined();
+    expect(card.waiting).toBeUndefined();
+    expect(card.startedAt).toBeGreaterThan(0);
+    expect(hasRunningChildren(viewNow("/project", 1)!)).toBe(true);
+  });
+
+  test("seeding twice cannot draw the card twice, but carries the question", () => {
+    load();
+    act(() => useAgentStore.getState().seedRunningChildren("/project", 1, [child(7, "review #1", "看鉴权")]));
+    act(() => useAgentStore.getState().seedRunningChildren("/project", 1, [child(7, "review #1", "看鉴权")]));
+    expect(viewNow("/project", 1)!.items).toHaveLength(2);
+    act(() =>
+      useAgentStore.getState().seedRunningChildren("/project", 1, [
+        child(7, "review #1", "看鉴权", "用哪个 crate?"),
+      ]),
+    );
+    const items = viewNow("/project", 1)!.items;
+    expect(items).toHaveLength(2);
+    expect(items[1]).toMatchObject({ childId: 7, waiting: "用哪个 crate?" });
+  });
+
+  test("a card the live stream already drew keeps its body", () => {
+    load([
+      {
+        kind: "tool",
+        name: "subagent",
+        args: "看鉴权",
+        content: "报告",
+        ok: true,
+        parent: "delegate",
+        childId: 7,
+      },
+    ]);
+    act(() => useAgentStore.getState().seedRunningChildren("/project", 1, [child(7, "subagent", "看鉴权")]));
+    expect(viewNow("/project", 1)!.items[0]).toMatchObject({ content: "报告", ok: true });
+  });
+
+  test("the body it already streamed fills the card without closing it", () => {
+    const segments = [{ kind: "text" as const, text: "找到三处" }];
+    const rows: StreamItem[] = [
+      {
+        kind: "tool",
+        name: "smart_grep",
+        args: "auth",
+        content: "3 hits",
+        ok: true,
+        parent: "review #1",
+        childId: 7,
+      },
+    ];
+    load();
+    act(() => useAgentStore.getState().seedRunningChildren("/project", 1, [child(7, "review #1", "看鉴权")]));
+    act(() =>
+      useAgentStore.getState().applyChildTranscript("/project", 1, 7, segments, rows, { keepRunning: true }),
+    );
+    const items = viewNow("/project", 1)!.items;
+    expect(items).toHaveLength(3);
+    expect(items[1]).toMatchObject({ childId: 7, segments });
+    const card = items[1];
+    if (card.kind !== "tool") throw new Error("the card must still be a tool card");
+    expect(card.transcriptLoaded).toBeUndefined();
+    expect(card.content).toBeUndefined();
+    // The live stream owns the card from here: a second snapshot must not
+    // splice its rows in behind rows that arrived after it.
+    const snapshot = viewNow("/project", 1);
+    act(() =>
+      useAgentStore.getState().applyChildTranscript("/project", 1, 7, segments, rows, { keepRunning: true }),
+    );
+    expect(viewNow("/project", 1)).toBe(snapshot);
   });
 });

@@ -339,6 +339,116 @@ describe("a delegated child survives reopening", () => {
   });
 });
 
+/** A page that ends mid-delegation: the app was quit while the child ran, so
+ *  the `delegate` call never got a tool row. */
+const danglingDelegation: ChatMessage[] = [
+  { role: "user", content: "让子代理看看鉴权", ts: 10 },
+  {
+    role: "assistant",
+    content: "",
+    ts: 20,
+    tool_calls: [
+      {
+        id: "d1",
+        type: "function",
+        function: { name: "delegate", arguments: '{"task":"探索仓库"}' },
+      },
+    ],
+  },
+];
+
+describe("a child that died with the process", () => {
+  test("an unanswered delegate call reopens as an interrupted card", () => {
+    // Nothing else in the log can draw the child: its card was live-only, and
+    // no tool row follows the call. Cheap and honest beats no card at all.
+    const view = viewFromHistory(danglingDelegation, undefined, 0, { dangling: true });
+    const card = view.items.find((it) => it.kind === "tool" && it.parent === "delegate");
+    expect(card).toMatchObject({
+      name: "subagent",
+      args: "探索仓库",
+      content: "已中断",
+      ok: false,
+    });
+    if (card?.kind === "tool") expect(card.childId).toBeUndefined();
+  });
+
+  test("a running session, or an older page, leaves it to whoever has the rest", () => {
+    // While the turn is live the stream completes the row; an older page's
+    // result is in the newer pages already on screen.
+    for (const view of [
+      viewFromHistory(danglingDelegation, undefined, 0, { dangling: false }),
+      viewFromHistory(danglingDelegation),
+    ]) {
+      expect(view.items.some((it) => it.kind === "tool" && it.parent === "delegate")).toBe(false);
+    }
+  });
+
+  test("an answered call draws only the card its report already had", () => {
+    const view = viewFromHistory(
+      [
+        ...danglingDelegation,
+        {
+          role: "tool",
+          content: "[subagent report — child_id 4 · 2 tool calls, 3s]\n报告",
+          tool_call_id: "d1",
+          ts: 30,
+        },
+      ],
+      undefined,
+      0,
+      { dangling: true },
+    );
+    const cards = view.items.filter((it) => it.kind === "tool" && it.parent === "delegate");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ childId: 4, ok: true });
+  });
+
+  test("an unanswered answer_child closes the card it resumed", () => {
+    const view = viewFromHistory(
+      [
+        { role: "user", content: "委派子代理", ts: 10 },
+        {
+          role: "assistant",
+          content: "",
+          ts: 20,
+          tool_calls: [
+            {
+              id: "d1",
+              type: "function",
+              function: { name: "delegate", arguments: '{"task":"探索仓库"}' },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: "[subagent subagent (child_id 9) is waiting for you]\nQuestion: 用哪个 crate?",
+          tool_call_id: "d1",
+          ts: 30,
+        },
+        {
+          role: "assistant",
+          content: "",
+          ts: 40,
+          tool_calls: [
+            {
+              id: "a1",
+              type: "function",
+              function: { name: "answer_child", arguments: '{"child_id":9,"answer":"korei"}' },
+            },
+          ],
+        },
+      ],
+      undefined,
+      0,
+      { dangling: true },
+    );
+    const cards = view.items.filter((it) => it.kind === "tool" && it.parent === "delegate");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ childId: 9, content: "已中断", ok: false });
+    if (cards[0].kind === "tool") expect(cards[0].waiting).toBeUndefined();
+  });
+});
+
 describe("a subagent's own history replays onto its card", () => {
   // What `subagent_transcript` returns for a finished child: its system prompt,
   // the task it was handed, one tool round, a steer, the parent's answer.

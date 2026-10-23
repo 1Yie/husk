@@ -1,7 +1,7 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
-import { activeViewNow, refreshAgentChips, useAgentStore, useRunningKeys } from "@/stores/agent-store";
+import { activeViewNow, isRunningNow, refreshAgentChips, useAgentStore, useRunningKeys, viewNow } from "@/stores/agent-store";
 import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
 import {
   applyChangesFeed,
@@ -11,9 +11,10 @@ import {
 } from "@/features/chat/hooks/view-from-history";
 import { SUMMARY_TOOLS } from "@/features/chat/hooks/apply-event";
 import type { ChildSegment, StreamItem } from "@/features/chat/hooks/stream-view";
+import type { RunningChild } from "@/features/chat/hooks/running-children";
 import { loadReset, loadStamp } from "@/lib/load-probe";
 import { forgetToldFailures, markSessionRead, setSessionTitles } from "@/lib/notifications";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, subagentTranscript, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, subagentTranscript, activeChildren, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
 import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
@@ -138,6 +139,32 @@ async function hydrateChildTranscripts(
   }
 }
 
+/** Fetch the body a still-running child has so far and fold it onto the card
+ *  the reload seeded. The card stays OPEN: this is a head start on a turn that
+ *  is still streaming, so the live events keep appending to what lands here. */
+async function hydrateRunningChildTranscripts(
+  root: string,
+  id: number,
+  children: readonly RunningChild[],
+  apply: (
+    root: string,
+    id: number,
+    childId: number,
+    segments: ChildSegment[],
+    rows: StreamItem[],
+    opts?: { keepRunning?: boolean }
+  ) => void,
+) {
+  await Promise.allSettled(
+    children.map(async (child) => {
+      const { messages } = await subagentTranscript(root, id, child.childId);
+      if (messages.length === 0) return;
+      const { segments, rows } = childTranscriptCard(messages, child.name, child.childId);
+      apply(root, id, child.childId, segments, rows, { keepRunning: true });
+    }),
+  );
+}
+
 export function App() {
   useAppChromeGuards();
   const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: "", name: "", recents: [] });
@@ -160,6 +187,7 @@ export function App() {
   const prependItems = useAgentStore((s) => s.prependItems);
   const dropView = useAgentStore((s) => s.dropView);
   const applyChildTranscript = useAgentStore((s) => s.applyChildTranscript);
+  const seedRunningChildren = useAgentStore((s) => s.seedRunningChildren);
   const runningKeys = useRunningKeys();
 
   // The store keys every view by `root:id`, and it is the only place the active
@@ -236,6 +264,13 @@ export function App() {
       // lands in the same commit as the chat view (see handleSwitchWorkspace).
       alsoCommit?: () => void,
     ) => {
+      // A subagent still running when the webview reloaded lost every event
+      // that drew its card, and history keeps no row for a child that has not
+      // reported — the kernel's live registry is the only description left.
+      // Read before the fold: a `delegate` call history never answered is an
+      // interrupted child only when nothing is still running.
+      const live = await activeChildren(root, id).catch(() => ({ children: [] }));
+      const running = live.children.length > 0 || isRunningNow(root, id);
       // The changes panel is a session-level summary, not a page-level one: the
       // mounted page is only the newest slice, so the file list is rebuilt from
       // the whole log — in parallel, and a failure keeps the page-derived list
@@ -251,6 +286,7 @@ export function App() {
           // page indices → duplicate t{hi} turn/mark ids (multiple active
           // rail marks + key remount churn).
           (r.history_total ?? r.history.length) - r.history.length,
+          { dangling: !running },
         ),
         paged ? changesFeed(id, SUMMARY_TOOLS).catch(() => null) : null,
       ]);
@@ -274,8 +310,21 @@ export function App() {
       // its report, and its body arrives from the kernel afterwards. Off the
       // veil — the page never waits on it.
       void hydrateChildTranscripts(root, id, folded.items, applyChildTranscript);
+      // The cards the reload lost, redrawn from the live registry — a running
+      // child also brings back its 子代理 dock entry. Nothing to seed when the
+      // view was dropped by a switch in the meantime.
+      if (live.children.length > 0 && viewNow(root, id)) {
+        const seeded = live.children.map((c) => ({
+          childId: c.child_id,
+          name: c.label,
+          task: c.task,
+          waiting: c.waiting ?? undefined,
+        }));
+        seedRunningChildren(root, id, seeded);
+        void hydrateRunningChildTranscripts(root, id, seeded, applyChildTranscript);
+      }
     },
-    [applyChildTranscript, loadView, releaseLoading],
+    [applyChildTranscript, loadView, releaseLoading, seedRunningChildren],
   );
 
   // Non-null while the delete confirmation dialog is open — holds the row

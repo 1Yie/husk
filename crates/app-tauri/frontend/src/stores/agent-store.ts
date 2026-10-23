@@ -14,7 +14,7 @@ import { create } from "zustand";
 import * as agent from "@/lib/agent-ipc";
 import type { AgentEventEnvelope } from "@/types";
 import { applyEvents } from "@/features/chat/hooks/apply-event";
-import { hasRunningChildren } from "@/features/chat/hooks/running-children";
+import { hasRunningChildren, type RunningChild } from "@/features/chat/hooks/running-children";
 import {
   emptyView,
   type BgJob,
@@ -42,13 +42,14 @@ const provisionalView = (): SessionView => ({ ...emptyView(), provisional: true 
 /** Running-session keys. `AgentState::is_active` mirror — everything except
  *  Idle/Finished/Failed; a parked workspace's turn counts too, so its sidebar
  *  row keeps the orb while it streams in the background. */
+function isRunningState(state: SessionView["state"]): boolean {
+  return state !== null && state !== "Idle" && state !== "Finished" && !(typeof state === "object" && "Failed" in state);
+}
+
 function runningKeysOf(views: Map<string, SessionView>): Set<string> {
   const out = new Set<string>();
   for (const [k, v] of views) {
-    const s = v.state;
-    if (s !== null && s !== "Idle" && s !== "Finished" && !(typeof s === "object" && "Failed" in s)) {
-      out.add(k);
-    }
+    if (isRunningState(v.state)) out.add(k);
   }
   return out;
 }
@@ -117,8 +118,18 @@ interface AgentStore {
     id: number,
     childId: number,
     segments: ChildSegment[],
-    rows: StreamItem[]
+    rows: StreamItem[],
+    /** `keepRunning`: the card is still open. The body is applied so far, but
+     *  the card is NOT marked replayed — the live stream keeps appending. */
+    opts?: { keepRunning?: boolean }
   ) => void;
+  /** Redraw the cards of subagents the session is still running. A webview that
+   *  reloaded mid-turn lost every event that drew them, and history keeps no
+   *  row for a child that has not reported, so the kernel's live registry is
+   *  the only description left — without a card there is no 子代理 dock entry
+   *  either. A card already on screen is updated in place (its parked
+   *  question), never duplicated: the live stream may have drawn it first. */
+  seedRunningChildren: (root: string, id: number, children: readonly RunningChild[]) => void;
   /** Replace a session's background-job list — a `bg_list` seed or the list
    *  a `bg_control` call returned. Live updates arrive as `husk:bg_jobs`. */
   setBgJobs: (root: string, id: number, jobs: BgJob[]) => void;
@@ -259,7 +270,7 @@ export const useAgentStore = create<AgentStore>((set) => ({
       return { views: next, runningKeys: sameKeys(s.runningKeys, keys) ? s.runningKeys : keys };
     }),
 
-  applyChildTranscript: (root, id, childId, segments, rows) =>
+  applyChildTranscript: (root, id, childId, segments, rows, opts) =>
     set((s) => {
       const k = viewKey(root, id);
       const v = s.views.get(k);
@@ -269,11 +280,57 @@ export const useAgentStore = create<AgentStore>((set) => ({
       );
       const card = v.items[at];
       if (card?.kind !== "tool" || card.transcriptLoaded) return s;
+      // A running card's body is a snapshot of a turn still in flight: the live
+      // stream is already appending to it, and splicing the snapshot's rows in
+      // behind rows that arrived after it would break the segment indexes.
+      if (opts?.keepRunning && card.segments?.length) return s;
       const items = v.items.slice();
-      items[at] = { ...card, segments, transcriptLoaded: true };
+      items[at] = opts?.keepRunning ? { ...card, segments } : { ...card, segments, transcriptLoaded: true };
       // Right AFTER the card: the stream's fold walks items in order and
       // attaches each row to the child its `childId` names.
       items.splice(at + 1, 0, ...rows);
+      const next = new Map(s.views);
+      next.set(k, { ...v, items });
+      return { views: next };
+    }),
+
+  seedRunningChildren: (root, id, children) =>
+    set((s) => {
+      const k = viewKey(root, id);
+      const v = s.views.get(k);
+      if (!v || children.length === 0) return s;
+      const items = v.items.slice();
+      let touched = false;
+      for (const child of children) {
+        const at = items.findIndex(
+          (it) => it.kind === "tool" && it.parent === "delegate" && it.childId === child.childId,
+        );
+        if (at < 0) {
+          // No card at all — the child started before the webview reloaded, so
+          // nothing but this can draw it. `content` stays unset: it is running,
+          // which is also what keeps it in the 子代理 dock and its pill.
+          items.push({
+            kind: "tool",
+            name: child.name,
+            args: child.task,
+            parent: "delegate",
+            childId: child.childId,
+            ...(child.waiting ? { waiting: child.waiting } : {}),
+            startedAt: Date.now(),
+          });
+          touched = true;
+          continue;
+        }
+        const card = items[at];
+        if (card.kind !== "tool") continue;
+        // A card the live stream already drew keeps its body; only the parked
+        // question is newer than whatever it showed.
+        if (child.waiting && card.waiting !== child.waiting) {
+          items[at] = { ...card, waiting: child.waiting };
+          touched = true;
+        }
+      }
+      if (!touched) return s;
       const next = new Map(s.views);
       next.set(k, { ...v, items });
       return { views: next };
@@ -350,6 +407,15 @@ export function useHasView(root: string, id: number): boolean {
 /** A session's view outside React, whether or not it is the foreground one. */
 export function viewNow(root: string, id: number): SessionView | undefined {
   return useAgentStore.getState().views.get(viewKey(root, id));
+}
+
+/** Whether a session's turn is in flight, read outside React. A fold of
+ *  persisted history asks this to know whether the live stream will complete
+ *  the rows it sees: a `delegate` call with no result yet is only a child that
+ *  died with the process when nothing is running any more. */
+export function isRunningNow(root: string, id: number): boolean {
+  const v = useAgentStore.getState().views.get(viewKey(root, id));
+  return v ? isRunningState(v.state) : false;
 }
 
 /** Whether a session has a delegated subagent still running — a boolean, so a

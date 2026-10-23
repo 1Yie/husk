@@ -118,6 +118,30 @@ export function subagentTranscript(root: string, id: number, childId: number) {
   });
 }
 
+/** A delegated child a session is still running, as the kernel's live registry
+ *  knows it. After a webview reload this is the only description left: the
+ *  events that drew the card are gone, and history holds no row for a child
+ *  that has not reported yet. */
+export interface RunningChildInfo {
+  child_id: number;
+  /** The card label (`subagent`, `review #1`, …). */
+  label: string;
+  /** The instruction it was handed — the card's chip. */
+  task: string;
+  /** The question it parked on for the parent agent, while it waits. */
+  waiting?: string | null;
+}
+
+/** The session's running subagents. Empty when its actor is gone — a child
+ *  cannot outlive the process that ran it. */
+export function activeChildren(root: string, id: number) {
+  return invoke<{ children: RunningChildInfo[] }>("agent_session", {
+    op: "active_children",
+    id,
+    path: root,
+  });
+}
+
 /** One uncommitted file of the workspace's git worktree. `path` is relative to
  *  the workspace root; `diff` is HEAD against the bytes on disk (empty for a
  *  binary or an oversized file). */
