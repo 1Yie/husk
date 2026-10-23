@@ -191,6 +191,24 @@ impl App {
                     self.modal = None;
                 }
             }
+            UiEvent::QuestionTimedOut { request_id } => {
+                // Nobody answered in time — the agent decides on its own, so
+                // the parked card must go instead of waiting forever.
+                if matches!(&self.modal, Some(Modal::Question { request_id: r, .. }) if *r == request_id)
+                {
+                    self.modal = None;
+                    self.commit(Cell::Note("提问已超时，代理将自行决定后续".into()));
+                }
+            }
+            UiEvent::ApprovalTimedOut { request_id } => {
+                // The kernel auto-denied it; the tool result that follows
+                // already carries the reason, so this only closes the card.
+                if matches!(&self.modal, Some(Modal::Approval { request_id: r, .. }) if *r == request_id)
+                {
+                    self.modal = None;
+                    self.commit(Cell::Note("审批超时，已自动拒绝".into()));
+                }
+            }
             UiEvent::AssistantMessage(m) => {
                 self.pending_flush = None;
                 let elapsed = self

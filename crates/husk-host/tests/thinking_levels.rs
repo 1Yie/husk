@@ -59,6 +59,8 @@ id = "plain"
         track_dirty: false,
         context_window: None,
         compact_at: None,
+        approval_timeout: None,
+        question_timeout: None,
         model_input: Vec::new(),
         model_params: None,
         memory_enabled: false,

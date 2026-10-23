@@ -337,6 +337,13 @@ fn make_cfg(
         context_window: resolved.as_ref().and_then(|d| d.context_window),
         model_input: resolved.map(|d| d.input.clone()).unwrap_or_default(),
         compact_at: None,
+        // The same stored bounds the desktop shell's settings pane writes.
+        approval_timeout: Some(std::time::Duration::from_secs(
+            husk_host::prefs::load_default_preferences().approval_timeout_secs,
+        )),
+        question_timeout: Some(std::time::Duration::from_secs(
+            husk_host::prefs::load_default_preferences().question_timeout_secs,
+        )),
         model_params: Some(model_params),
         plugins: None,
         queued_prompts: meta.map(|m| m.queued_prompts.clone()).unwrap_or_default(),

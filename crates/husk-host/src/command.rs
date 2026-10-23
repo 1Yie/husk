@@ -104,6 +104,12 @@ pub enum UiCommand {
     /// new ratio only reached sessions spawned afterwards, so a running
     /// session kept the threshold it was born with.
     SetCompactAt { fraction: f32 },
+    /// Apply new waiting bounds to a LIVE session: how long an approval card
+    /// (`approval_secs`) or an `ask_question` card (`question_secs`) may sit
+    /// unanswered before the kernel gives up, `0` = never. Broadcast by
+    /// `SessionManager` when the settings default changes, for the same reason
+    /// `SetCompactAt` exists.
+    SetTimeouts { approval_secs: u64, question_secs: u64 },
     /// Park one follow-up prompt — appends to the queue, then drains right
     /// away when the session is idle. Distinct from `SetQueued` because a
     /// queue write that lands mid-turn is only processed after the turn:

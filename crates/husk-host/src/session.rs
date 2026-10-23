@@ -564,6 +564,13 @@ pub struct SessionConfig {
     pub model_input: Vec<String>,
     /// Compaction trigger fraction — `None` → the engine's `COMPACT_AT`.
     pub compact_at: Option<f32>,
+    /// How long a tool approval card may sit unanswered before the kernel
+    /// auto-denies it — `None` → the engine's own default, `Duration::ZERO`
+    /// → wait forever.
+    pub approval_timeout: Option<std::time::Duration>,
+    /// The same bound for an `ask_question` card — `None` → the kernel's
+    /// default, `Duration::ZERO` → wait forever.
+    pub question_timeout: Option<std::time::Duration>,
     /// Per-model wire settings from config (`maxTokens`, `samplingParams`,
     /// model-level `compat`). `None` → every adapter default applies.
     pub model_params: Option<agent_llm::ModelParams>,
@@ -1450,9 +1457,15 @@ impl SessionActor {
         );
         // `ask_question` emits its card through the session's event channel;
         // fan-out tools (batch items) emit ToolCallStarted/Finished on ui_tx.
-        tool_ctx.install_ask(Arc::new(agent_kernel::tools::registry::AskChannel::new(
-            Some(channels.event_tx.clone()),
+        let ask_channel = Arc::new(agent_kernel::tools::registry::AskChannel::new(Some(
+            channels.event_tx.clone(),
         )));
+        // A card nobody answers must not strand the turn forever — the user
+        // picks the bound in settings, and zero means "wait for me".
+        if let Some(timeout) = cfg.question_timeout {
+            ask_channel.set_timeout(timeout);
+        }
+        tool_ctx.install_ask(ask_channel);
         tool_ctx.install_ui(channels.event_tx.clone());
         let ctx = Arc::new(tool_ctx);
         let registry = Arc::new(registry);
@@ -1553,6 +1566,11 @@ impl SessionActor {
             cfg.compact_at
                 .unwrap_or(agent_kernel::compaction::COMPACT_AT),
         );
+        // Same rule for an approval card: a session left waiting on one must
+        // end its turn instead of hanging, unless the user chose "永不".
+        if let Some(timeout) = cfg.approval_timeout {
+            engine.set_approval_timeout(timeout);
+        }
         engine.set_model_input(cfg.model_input.clone());
         engine.set_model_params(cfg.model_params.clone().unwrap_or_default());
         if let Some(handle) = cfg.plugins.clone() {
@@ -1969,6 +1987,9 @@ impl SessionActor {
         info!("user prompt ({} chars)", text.len());
         // The user is back: the wake-up budget starts over.
         self.wakes_in_row = 0;
+        // A question that timed out in an earlier turn is spent — a fresh user
+        // prompt must not keep hearing about it.
+        self.ask_channel.reset_timed_out();
         let turn = self.begin_turn().await;
         let _ = self.io.ui_tx.send(UiEvent::UserPrompt(text.clone()));
 
@@ -3088,6 +3109,18 @@ impl SessionActor {
                 // on the next round instead of waiting for a respawn.
                 info!(fraction, "compaction ratio change requested");
                 self.engine.set_compact_at(fraction);
+            }
+            UiCommand::SetTimeouts {
+                approval_secs,
+                question_secs,
+            } => {
+                // Same live-apply rule as the compaction ratio: a running
+                // session must not keep the bounds it was born with.
+                info!(approval_secs, question_secs, "timeout change requested");
+                self.engine
+                    .set_approval_timeout(std::time::Duration::from_secs(approval_secs));
+                self.ask_channel
+                    .set_timeout(std::time::Duration::from_secs(question_secs));
             }
             UiCommand::Enqueue { text } => {
                 // Direct cmd_tx path (tests, internal callers). The app's IPC

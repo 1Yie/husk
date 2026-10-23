@@ -100,6 +100,8 @@ async fn model_sees_the_plugins_own_error_not_unknown_tool() {
         thinking_level_map: None,
         context_window: None,
         compact_at: None,
+        approval_timeout: None,
+        question_timeout: None,
         model_input: Vec::new(),
         model_params: None,
         memory_enabled: false,

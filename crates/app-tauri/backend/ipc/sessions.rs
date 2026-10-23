@@ -1510,6 +1510,7 @@ fn agent_session_inner(
         // SystemMessage in the chat stream).
         "get_default_prefs" => {
             let (permission_mode, thinking_level, agent_mode, compact_at) = mgr.default_prefs();
+            let (approval_timeout_secs, question_timeout_secs) = mgr.timeout_prefs();
             let (memory_enabled, memory_distill) = mgr.memory_prefs();
             let (active_provider, active_model) = mgr.default_model();
             let subagent = mgr.subagent_model();
@@ -1520,6 +1521,8 @@ fn agent_session_inner(
                 "agent_mode": agent_mode,
                 "default_workspace_mode": mgr.default_workspace_mode(),
                 "compact_at": compact_at,
+                "approval_timeout_secs": approval_timeout_secs,
+                "question_timeout_secs": question_timeout_secs,
                 "active_provider": active_provider,
                 "active_model": active_model,
                 "subagent_provider": subagent.as_ref().map(|(p, _)| p),
@@ -1559,6 +1562,10 @@ fn agent_session_inner(
                 .get("compact_at")
                 .and_then(|v| v.as_f64())
                 .map(|f| f as f32);
+            // Waiting bounds — seconds, `0` = never. Absent leaves the stored
+            // value alone, so the pane's single-row patch stays a patch.
+            let approval_timeout_secs = p.get("approval_timeout_secs").and_then(|v| v.as_u64());
+            let question_timeout_secs = p.get("question_timeout_secs").and_then(|v| v.as_u64());
             // Boot-only preference — stored so the NEXT launch opens in the
             // chosen mode; the running workspace is untouched.
             if let Some(v) = p.get("default_workspace_mode").and_then(|v| v.as_str()) {
@@ -1605,7 +1612,14 @@ fn agent_session_inner(
                 }
                 husk_host::sandbox_prefs::set(lim);
             }
-            mgr.set_default_prefs(permission_mode, thinking_level, agent_mode, compact_at);
+            mgr.set_default_prefs(
+                permission_mode,
+                thinking_level,
+                agent_mode,
+                compact_at,
+                approval_timeout_secs,
+                question_timeout_secs,
+            );
             // Default model — `active_provider`+`active_model` arrive as a
             // pair or not at all ("" on either clears the override). Own
             // setter so the save lands in one `default_preferences` write.

@@ -332,6 +332,14 @@ async fn main() -> anyhow::Result<()> {
         context_window,
         model_input,
         compact_at: None,
+        // One source with the shell's settings pane: a headless run must not
+        // wait longer on a card than the same session in the app would.
+        approval_timeout: Some(std::time::Duration::from_secs(
+            husk_host::prefs::load_default_preferences().approval_timeout_secs,
+        )),
+        question_timeout: Some(std::time::Duration::from_secs(
+            husk_host::prefs::load_default_preferences().question_timeout_secs,
+        )),
         model_params: Some(model_params),
         plugins: None,
         queued_prompts: Vec::new(),

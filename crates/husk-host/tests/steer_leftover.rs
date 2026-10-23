@@ -28,6 +28,8 @@ fn config(dir: &std::path::Path, provider: Arc<ScriptedProvider>) -> SessionConf
         thinking_level_map: None,
         context_window: None,
         compact_at: None,
+        approval_timeout: None,
+        question_timeout: None,
         model_input: Vec::new(),
         model_params: None,
         memory_enabled: false,

@@ -196,6 +196,8 @@ fn storage_boot_probe() {
             context_window: None,
             model_input: Vec::new(),
             compact_at: None,
+            approval_timeout: None,
+            question_timeout: None,
             model_params: None,
             plugins: None,
             queued_prompts: Vec::new(),

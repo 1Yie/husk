@@ -60,6 +60,14 @@ pub struct DefaultPreferences {
     /// Fraction of the context window that triggers compaction (0.70/0.80/0.90).
     #[serde(default = "default_pref_compact_at")]
     pub compact_at: f32,
+    /// Seconds a tool approval card may sit unanswered before the kernel
+    /// auto-denies it (`0` = wait forever). Matches the kernel's own 300 s.
+    #[serde(default = "default_pref_approval_timeout_secs")]
+    pub approval_timeout_secs: u64,
+    /// Seconds an `ask_question` card may sit unanswered before the agent
+    /// decides for itself (`0` = wait forever). Matches the kernel's 600 s.
+    #[serde(default = "default_pref_question_timeout_secs")]
+    pub question_timeout_secs: u64,
     /// Sandbox master switch — `true` = sandboxed; absent/`false` = process
     /// tools run through the loud `none` backend (default off). Rows written
     /// before `schema_version` 1 used absent to mean ON; see
@@ -136,6 +144,14 @@ pub const DEFAULT_PREFERENCES_VERSION: u32 = 1;
 /// The strictest mode: an untouched install asks before every edit/command.
 pub const DEFAULT_PERMISSION_MODE: &str = "default";
 
+/// Seconds an unanswered approval card waits before the kernel auto-denies it
+/// — the same 300 s the kernel falls back to.
+pub const DEFAULT_APPROVAL_TIMEOUT_SECS: u64 = 300;
+
+/// Seconds an unanswered `ask_question` card waits before the agent decides
+/// on its own — the same 600 s the kernel falls back to.
+pub const DEFAULT_QUESTION_TIMEOUT_SECS: u64 = 600;
+
 /// Bring a stored row up to [`DEFAULT_PREFERENCES_VERSION`]; `true` when it
 /// changed and must be written back.
 ///
@@ -159,6 +175,16 @@ fn default_pref_bool_true() -> bool {
 
 fn default_pref_compact_at() -> f32 {
     0.80
+}
+
+/// The kernel's own fallbacks, restated so the settings echo matches what a
+/// fresh session does before the user picks a value.
+fn default_pref_approval_timeout_secs() -> u64 {
+    DEFAULT_APPROVAL_TIMEOUT_SECS
+}
+
+fn default_pref_question_timeout_secs() -> u64 {
+    DEFAULT_QUESTION_TIMEOUT_SECS
 }
 
 fn default_pref_permission_mode() -> String {
@@ -192,6 +218,8 @@ impl Default for DefaultPreferences {
             agent_mode: default_pref_agent_mode(),
             default_workspace_mode: default_pref_workspace_mode(),
             compact_at: default_pref_compact_at(),
+            approval_timeout_secs: default_pref_approval_timeout_secs(),
+            question_timeout_secs: default_pref_question_timeout_secs(),
             sandbox_enabled: None,
             sandbox_network: None,
             sandbox_max_memory_mb: None,

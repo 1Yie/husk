@@ -390,6 +390,11 @@ pub struct SessionManager {
     /// Fraction of the context window that triggers compaction — the
     /// settings UI's 70/80/90% choices; applies to actors spawned after set.
     pub compact_at: f32,
+    /// Seconds an approval card may sit unanswered — the settings window's
+    /// default for new sessions, broadcast to live ones when it changes.
+    pub approval_timeout_secs: u64,
+    /// The same bound for an `ask_question` card.
+    pub question_timeout_secs: u64,
     /// Memory subsystem master switch — global default from the settings
     /// window; applies to sessions spawned after set.
     pub memory_enabled: bool,
@@ -732,6 +737,14 @@ impl SessionManager {
                     .as_ref()
                     .map(|d| d.compact_at)
                     .unwrap_or(agent_kernel::compaction::COMPACT_AT),
+                approval_timeout_secs: defaults
+                    .as_ref()
+                    .map(|d| d.approval_timeout_secs)
+                    .unwrap_or(crate::prefs::DEFAULT_APPROVAL_TIMEOUT_SECS),
+                question_timeout_secs: defaults
+                    .as_ref()
+                    .map(|d| d.question_timeout_secs)
+                    .unwrap_or(crate::prefs::DEFAULT_QUESTION_TIMEOUT_SECS),
                 memory_enabled: defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true),
                 memory_distill: defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true),
                 semantic_recall: defaults.as_ref().is_some_and(|d| d.semantic_recall),
@@ -787,6 +800,14 @@ impl SessionManager {
             .as_ref()
             .map(|d| d.compact_at)
             .unwrap_or(agent_kernel::compaction::COMPACT_AT);
+        let approval_timeout_secs = defaults
+            .as_ref()
+            .map(|d| d.approval_timeout_secs)
+            .unwrap_or(crate::prefs::DEFAULT_APPROVAL_TIMEOUT_SECS);
+        let question_timeout_secs = defaults
+            .as_ref()
+            .map(|d| d.question_timeout_secs)
+            .unwrap_or(crate::prefs::DEFAULT_QUESTION_TIMEOUT_SECS);
         let memory_enabled = defaults.as_ref().map(|d| d.memory_enabled).unwrap_or(true);
         let memory_distill = defaults.as_ref().map(|d| d.memory_distill).unwrap_or(true);
         let semantic_recall = defaults
@@ -840,6 +861,8 @@ impl SessionManager {
                 .map(|d| d.default_workspace_mode.clone())
                 .unwrap_or_else(|| "last".into()),
             compact_at,
+            approval_timeout_secs,
+            question_timeout_secs,
             memory_enabled,
             memory_distill,
             semantic_recall,
@@ -1276,6 +1299,12 @@ impl SessionManager {
             context_window,
             model_input,
             compact_at: Some(self.compact_at),
+            approval_timeout: Some(std::time::Duration::from_secs(
+                self.approval_timeout_secs,
+            )),
+            question_timeout: Some(std::time::Duration::from_secs(
+                self.question_timeout_secs,
+            )),
             memory_enabled: self.memory_enabled,
             memory_distill: self.memory_distill,
             model_params: Some(model_params),
@@ -2652,6 +2681,15 @@ impl SessionManager {
         )
     }
 
+    /// The settings-pane waiting bounds — `(approval_secs, question_secs)`,
+    /// `0` meaning "wait forever". Read from the STORED row for the same
+    /// reason as `default_prefs`: the manager's own copies follow the live
+    /// session once one is mirrored in.
+    pub fn timeout_prefs(&self) -> (u64, u64) {
+        let stored = crate::prefs::try_load_default_preferences().unwrap_or_default();
+        (stored.approval_timeout_secs, stored.question_timeout_secs)
+    }
+
     /// The「默认进入」preference — `last` (上次使用) | `build` (编程) |
     /// `office` (工作). Only the next launch obeys it: the current boot
     /// already picked its workspace.
@@ -2678,6 +2716,8 @@ impl SessionManager {
             agent_mode: stored.agent_mode,
             default_workspace_mode: self.default_workspace_mode.clone(),
             compact_at: self.compact_at,
+            approval_timeout_secs: self.approval_timeout_secs,
+            question_timeout_secs: self.question_timeout_secs,
             active_provider: self.default_provider.clone(),
             active_model: self.default_model.clone(),
             subagent_provider: self.subagent_model.as_ref().map(|(p, _)| p.clone()),
@@ -2721,6 +2761,8 @@ impl SessionManager {
         thinking_level: Option<String>,
         agent_mode: Option<String>,
         compact_at: Option<f32>,
+        approval_timeout_secs: Option<u64>,
+        question_timeout_secs: Option<u64>,
     ) {
         if let Some(f) = compact_at {
             self.compact_at = f.clamp(0.5, 0.95);
@@ -2728,6 +2770,17 @@ impl SessionManager {
             // override — a running session must not keep the threshold it
             // was spawned with.
             self.broadcast_compact_at(self.compact_at);
+        }
+        if let Some(s) = approval_timeout_secs {
+            self.approval_timeout_secs = s;
+        }
+        if let Some(s) = question_timeout_secs {
+            self.question_timeout_secs = s;
+        }
+        if approval_timeout_secs.is_some() || question_timeout_secs.is_some() {
+            // Same reach as the compaction ratio: a live session keeps the
+            // bounds it was born with unless the change is pushed into it.
+            self.broadcast_timeouts();
         }
         // Write the DEFAULTS row only. `self.permission_mode` /
         // `active_thinking_level` / `agent_mode` mirror the ACTIVE SESSION, so
@@ -2747,6 +2800,12 @@ impl SessionManager {
         }
         if let Some(f) = compact_at {
             prefs.compact_at = f.clamp(0.5, 0.95);
+        }
+        if let Some(s) = approval_timeout_secs {
+            prefs.approval_timeout_secs = s;
+        }
+        if let Some(s) = question_timeout_secs {
+            prefs.question_timeout_secs = s;
         }
         let _ = crate::prefs::save_default_preferences(&prefs);
         // A workspace pin outranks the default at spawn, so drop the pinned
@@ -2945,6 +3004,27 @@ impl SessionManager {
             let _ = handle
                 .cmd_tx
                 .try_send(crate::command::UiCommand::SetCompactAt { fraction: frac });
+        }
+    }
+
+    /// Push the waiting bounds into every LIVE actor — same reason as
+    /// `broadcast_compact_at`: the value is otherwise only read at spawn, so a
+    /// settings change would leave running sessions on the bounds they were
+    /// born with.
+    pub fn broadcast_timeouts(&self) {
+        let (approval_secs, question_secs) =
+            (self.approval_timeout_secs, self.question_timeout_secs);
+        let live = self
+            .handles
+            .values()
+            .chain(self.parked.values().flat_map(|m| m.values()));
+        for handle in live {
+            let _ = handle
+                .cmd_tx
+                .try_send(crate::command::UiCommand::SetTimeouts {
+                    approval_secs,
+                    question_secs,
+                });
         }
     }
 
@@ -4018,7 +4098,7 @@ max = "max"
         mgr.permission_mode = "bypassPermissions".into();
         mgr.agent_mode = "plan".into();
 
-        mgr.set_default_prefs(Some("acceptEdits".into()), None, None, None);
+        mgr.set_default_prefs(Some("acceptEdits".into()), None, None, None, None, None);
         // The live display is the session's, not the new default.
         assert_eq!(mgr.permission_mode, "bypassPermissions");
         assert_eq!(mgr.agent_mode, "plan");

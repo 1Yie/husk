@@ -35,6 +35,8 @@ async fn headless_approval_and_denial_release_the_running_turn() {
             context_window: None,
             model_input: Vec::new(),
             compact_at: None,
+            approval_timeout: None,
+            question_timeout: None,
             model_params: None,
             plugins: None,
             queued_prompts: Vec::new(),
@@ -96,12 +98,17 @@ async fn headless_questions_get_first_option_or_empty_answer() {
             .unwrap();
         assert!(matches!(ev, UiEvent::QuestionAsked { .. }));
         auto_decide(&ev, yes, &std::sync::Mutex::new(None), &ask);
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), run)
-                .await
-                .unwrap()
-                .unwrap(),
-            if yes { "first" } else { "" }
-        );
+        // A card nobody answers in time is a `TimedOut`, never an answer —
+        // the headless loop only asserts the answered path here.
+        let outcome = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .unwrap()
+            .unwrap();
+        match outcome {
+            agent_kernel::tools::host_slots::AskOutcome::Answered(a) => {
+                assert_eq!(a, if yes { "first" } else { "" })
+            }
+            other => panic!("expected an answer, got {other:?}"),
+        }
     }
 }

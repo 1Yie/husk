@@ -25,6 +25,8 @@ fn cfg(root: &std::path::Path, provider: Arc<ScriptedProvider>) -> SessionConfig
         thinking_level_map: None,
         context_window: None,
         compact_at: None,
+        approval_timeout: None,
+        question_timeout: None,
         model_input: vec![],
         model_params: None,
         plugins: None,
