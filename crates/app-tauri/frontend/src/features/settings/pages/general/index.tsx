@@ -10,7 +10,9 @@ import {
   Cpu,
   FileText,
   Globe,
+  Hourglass,
   Layers,
+  Question,
   ShieldCheck,
   Sparkles,
   SquarePen,
@@ -18,6 +20,7 @@ import {
   Volume,
   Zap,
 } from "@keyline-icons/react";
+import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SkeletonControl } from "@/components/ui/skeleton";
@@ -90,6 +93,17 @@ const COMPACT_AT_OPTIONS = [
   { value: "90", label: "90%" },
 ];
 
+/** One list for both waiting bounds — the backend reads them as seconds,
+ *  where 0 means the card may wait forever. */
+const TIMEOUT_OPTIONS = [
+  { value: "60", label: "1 分钟" },
+  { value: "120", label: "2 分钟" },
+  { value: "300", label: "5 分钟" },
+  { value: "600", label: "10 分钟" },
+  { value: "1800", label: "30 分钟" },
+  { value: "0", label: "永不" },
+];
+
 const SANDBOX_NETWORK_OPTIONS = [
   { value: "auto", label: "自动" },
   { value: "allow", label: "始终允许" },
@@ -131,6 +145,9 @@ function prefsToState(prefs: DefaultPrefs) {
     agentMode: prefs.agent_mode || "build",
     workspaceMode: prefs.default_workspace_mode || "last",
     compactAt: prefs.compact_at ? String(Math.round(prefs.compact_at * 100)) : "80",
+    // Absent falls back to the bound the backend itself applies.
+    approvalTimeout: String(prefs.approval_timeout_secs ?? 300),
+    questionTimeout: String(prefs.question_timeout_secs ?? 600),
     // absent = default-off — only an explicit true turns it on.
     sandboxEnabled: prefs.sandbox_enabled === true,
     blueprintEnabled: prefs.blueprint_enabled !== false,
@@ -157,6 +174,8 @@ export function GeneralPane() {
   const [agentMode, setAgentMode] = useState(init.agentMode);
   const [workspaceMode, setWorkspaceMode] = useState(init.workspaceMode);
   const [compactAt, setCompactAt] = useState(init.compactAt);
+  const [approvalTimeout, setApprovalTimeout] = useState(init.approvalTimeout);
+  const [questionTimeout, setQuestionTimeout] = useState(init.questionTimeout);
   const [providers, setProviders] = useState<Record<string, any>>(cached?.providers ?? {});
   const [sandboxEnabled, setSandboxEnabled] = useState(init.sandboxEnabled);
   const [blueprintEnabled, setBlueprintEnabled] = useState(init.blueprintEnabled);
@@ -188,6 +207,8 @@ export function GeneralPane() {
         setAgentMode(s.agentMode);
         setWorkspaceMode(s.workspaceMode);
         setCompactAt(s.compactAt);
+        setApprovalTimeout(s.approvalTimeout);
+        setQuestionTimeout(s.questionTimeout);
         setSandboxEnabled(s.sandboxEnabled);
         setBlueprintEnabled(s.blueprintEnabled);
         setDesktopNotify(s.desktopNotify);
@@ -208,6 +229,18 @@ export function GeneralPane() {
     if (cached) cached = { ...cached, prefs: { ...cached.prefs, ...patch } };
     return setDefaultPrefs(patch).catch((e) => console.error("save prefs failed:", e));
   };
+
+  /** Persist a waiting bound. A failed write is reported AND rolled back: a
+   *  select still showing a limit the host never took is worse than the error. */
+  const saveTimeout = (patch: Parameters<typeof setDefaultPrefs>[0], rollback: () => void) =>
+    setDefaultPrefs(patch)
+      .then(() => {
+        if (cached) cached = { ...cached, prefs: { ...cached.prefs, ...patch } };
+      })
+      .catch((e) => {
+        rollback();
+        toast.error("保存失败", { description: String(e) });
+      });
 
   // Flatten every provider's model list into one select — the value key
   // doubles as a lookup into `modelPairs` (model ids can contain `/`,
@@ -367,6 +400,59 @@ export function GeneralPane() {
                   }}
                   options={THINKING_OPTIONS}
                   ariaLabel="思考深度"
+                />
+              ) : (
+                <SkeletonControl />
+              )}
+            </SettingRow>
+          </KvListContent>
+        </KvList>
+      </SettingsSection>
+
+      <SettingsSection title="等待与超时">
+        <KvList>
+          <KvListContent>
+            <SettingRow
+              title="审批超时"
+              description="未响应的权限请求将按拒绝处理"
+              icon={<Hourglass className="h-4 w-4" />}
+              wideControl
+            >
+              {ready ? (
+                <SettingSelect
+                  value={approvalTimeout}
+                  onChange={(v) => {
+                    const prev = approvalTimeout;
+                    setApprovalTimeout(v);
+                    void saveTimeout({ approval_timeout_secs: Number(v) }, () =>
+                      setApprovalTimeout(prev),
+                    );
+                  }}
+                  options={TIMEOUT_OPTIONS}
+                  ariaLabel="审批超时"
+                />
+              ) : (
+                <SkeletonControl />
+              )}
+            </SettingRow>
+            <SettingRow
+              title="提问超时"
+              description="未回答的提问将交由代理自行判断"
+              icon={<Question className="h-4 w-4" />}
+              wideControl
+            >
+              {ready ? (
+                <SettingSelect
+                  value={questionTimeout}
+                  onChange={(v) => {
+                    const prev = questionTimeout;
+                    setQuestionTimeout(v);
+                    void saveTimeout({ question_timeout_secs: Number(v) }, () =>
+                      setQuestionTimeout(prev),
+                    );
+                  }}
+                  options={TIMEOUT_OPTIONS}
+                  ariaLabel="提问超时"
                 />
               ) : (
                 <SkeletonControl />

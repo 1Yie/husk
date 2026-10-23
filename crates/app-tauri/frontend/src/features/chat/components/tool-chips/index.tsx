@@ -276,6 +276,8 @@ export type ToolChipRow = {
     diff: string;
     resolved?: boolean;
     approved?: boolean;
+    /** Closed by the timeout rather than a verdict — the row says 审批超时. */
+    timedOut?: boolean;
   };
 };
 
@@ -653,16 +655,19 @@ export function ToolChips({
   const renderRow = (row: ToolChipRow, depth = 0) => {
     if (row.kind === "agent") return renderAgentRow(row);
     const rowOpen = isRowOpen(row);
-    const statusText =
-      row.approval && !row.approval.resolved
+    // A timed-out card was closed by nobody's verdict — it must not read as a
+    // plain 已中断, so the timeout is checked before the resolved branches.
+    const statusText = row.approval?.timedOut
+      ? "审批超时"
+      : row.approval && !row.approval.resolved
         ? "待批准"
         : row.status === "rejected"
           ? "已拒绝"
           : row.status === "aborted" || (row.approval?.resolved && !row.approval?.approved)
-          ? "已中断"
-          : row.status === "running"
-            ? "进行中"
-            : "完成";
+            ? "已中断"
+            : row.status === "running"
+              ? "进行中"
+              : "完成";
 
     const detailText = row.detail ? row.detail.join("\n").trim() : "";
     const isDiff =
@@ -719,7 +724,12 @@ export function ToolChips({
               </span>
             </TooltipSimple>
           ) : null}
-          <span className="text-neutral-500 shrink-0 text-[11px]">
+          <span
+            className={cn(
+              "shrink-0 text-[11px]",
+              row.approval?.timedOut ? "text-amber-600 dark:text-amber-400" : "text-neutral-500",
+            )}
+          >
             {statusText}
             {row.children && row.children.length > 0 ? ` · ${row.children.length} 项` : ""}
           </span>

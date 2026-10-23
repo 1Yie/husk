@@ -507,3 +507,68 @@ describe("delegated child streams route by child_id", () => {
     expect(tools[1]).toMatchObject({ name: "subagent", childId: 5, ok: false, content: "已中断" });
   });
 });
+
+describe("expired cards", () => {
+  test("a timed-out question clears its card and leaves a notice", () => {
+    const asked = applyEvents(emptyView(), [
+      { UserPrompt: "发布" },
+      { QuestionAsked: { request_id: 9, question: "用哪个分支？", options: [{ label: "main" }] } },
+    ]);
+    const expired = applyEvent(asked, { QuestionTimedOut: { request_id: 9 } });
+    expect(expired.pendingQuestion).toBeUndefined();
+    // The turn carries on without a reply, so the stream has to say why.
+    expect(expired.items.at(-1)).toMatchObject({
+      kind: "system",
+      text: "提问已超时，代理将自行决定后续",
+    });
+  });
+
+  test("a timeout naming another request leaves the live question untouched", () => {
+    const asked = applyEvents(emptyView(), [
+      { QuestionAsked: { request_id: 9, question: "用哪个分支？", options: [] } },
+    ]);
+    // Not even a notice: a stale id must not speak for the card still open.
+    expect(applyEvent(asked, { QuestionTimedOut: { request_id: 4 } })).toBe(asked);
+    expect(asked.pendingQuestion?.requestId).toBe(9);
+  });
+
+  test("a timed-out approval is marked apart from a refusal and keeps the mark", () => {
+    const asked = applyEvents(emptyView(), [
+      { UserPrompt: "改文件" },
+      { ToolCallStarted: { name: "fuzzy_patch", args_preview: "a.ts" } },
+      { StateChanged: { AwaitingToolConfirmation: { tool_name: "fuzzy_patch", diff_summary: "preview" } } },
+      { ApprovalRequested: { request_id: 11, tool_name: "fuzzy_patch", diff: "preview", fuzzy: false } },
+    ]);
+    expect(pendingApprovalOf(asked)?.requestId).toBe(11);
+
+    const expired = applyEvent(asked, { ApprovalTimedOut: { request_id: 11 } });
+    expect(pendingApprovalOf(expired)).toBeNull();
+    expect(expired.items.find((it) => it.kind === "tool" && it.approval)).toMatchObject({
+      approval: { resolved: true, approved: false, timedOut: true },
+    });
+
+    // The kernel follows the timeout with the call's own failed result; the
+    // mark has to survive it or the card falls back to reading as 已中断.
+    const finished = applyEvent(expired, {
+      ToolCallFinished: { name: "fuzzy_patch", ok: false, content: "审批超时，已自动拒绝" },
+    });
+    expect(finished.items.find((it) => it.kind === "tool" && it.name === "fuzzy_patch")).toMatchObject({
+      ok: false,
+      approval: { resolved: true, approved: false, timedOut: true },
+    });
+  });
+
+  test("a timed-out approval with no tool row of its own is marked too", () => {
+    const asked = applyEvents(emptyView(), [
+      { UserPrompt: "关联目录" },
+      { ApprovalRequested: { request_id: 12, tool_name: "associate_directory", diff: "", fuzzy: false } },
+    ]);
+    const expired = applyEvent(asked, { ApprovalTimedOut: { request_id: 12 } });
+    expect(pendingApprovalOf(expired)).toBeNull();
+    expect(expired.items.find((it) => it.kind === "approval")).toMatchObject({
+      resolved: true,
+      approved: false,
+      timedOut: true,
+    });
+  });
+});

@@ -59,6 +59,12 @@ export type UiEvent =
       };
     }
   | { QuestionAnswered: { request_id: number } }
+  /** The card sat unanswered past the configured bound — the agent decides
+   *  the rest of the turn on its own. */
+  | { QuestionTimedOut: { request_id: number } }
+  /** The approval card expired — the kernel auto-denied it and the tool call
+   *  fails closed. */
+  | { ApprovalTimedOut: { request_id: number } }
   | { UserPrompt: string }
   | { UserSteer: string }
   | { TextDelta: { text: string; parent?: string | null; child_id?: number | null } }

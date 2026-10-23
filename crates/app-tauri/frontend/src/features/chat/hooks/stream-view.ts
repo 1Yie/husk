@@ -87,6 +87,9 @@ export type StreamItem =
         actions?: ApprovalActions;
         resolved?: boolean;
         approved?: boolean;
+        /** Closed by the kernel's timeout, not by a verdict — the card says
+         *  「审批超时」 instead of reading as a plain refusal. */
+        timedOut?: boolean;
       };
     }
   | {
@@ -98,6 +101,8 @@ export type StreamItem =
       actions?: ApprovalActions;
       resolved?: boolean;
       approved?: boolean;
+      /** See the tool row's `approval.timedOut` — set by `ApprovalTimedOut`. */
+      timedOut?: boolean;
       hi?: number;
     }
   | {

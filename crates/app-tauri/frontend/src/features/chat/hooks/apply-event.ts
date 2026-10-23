@@ -697,6 +697,29 @@ function applyEventInto(
     }
     return { ...v, items, changes };
   }
+  if ("ApprovalTimedOut" in ev) {
+    // The card expired unanswered and the kernel auto-denied it. Marking it
+    // resolved keeps the composer strip off a dead request id; `timedOut` is
+    // what the card reads, since 已拒绝 would hide that nobody decided. The
+    // `ToolCallFinished(ok:false)` that follows spreads this approval object,
+    // so the mark survives the result landing.
+    const id = ev.ApprovalTimedOut.request_id;
+    let hit = false;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "tool" && it.approval?.requestId === id) {
+        items[i] = {
+          ...it,
+          approval: { ...it.approval, resolved: true, approved: false, timedOut: true },
+        };
+        hit = true;
+      } else if (it.kind === "approval" && it.requestId === id) {
+        items[i] = { ...it, resolved: true, approved: false, timedOut: true };
+        hit = true;
+      }
+    }
+    return hit ? { ...v, items } : v;
+  }
   if ("QuestionAsked" in ev) {
     const q = ev.QuestionAsked;
     return {
@@ -717,6 +740,21 @@ function applyEventInto(
       return { ...v, pendingQuestion: undefined };
     }
     return v;
+  }
+  if ("QuestionTimedOut" in ev) {
+    // Nobody answered in time, so the agent decides the rest on its own. The
+    // card goes away exactly as an answer would clear it — a stale id must not
+    // drop a newer question — and the stream says what happened, since the
+    // turn carries on without a user reply.
+    if (v.pendingQuestion?.requestId !== ev.QuestionTimedOut.request_id) return v;
+    closeOpenThinking(items);
+    items.push({
+      kind: "system",
+      text: "提问已超时，代理将自行决定后续",
+      standalone: !v.turnOpen,
+      ts: Date.now(),
+    });
+    return { ...v, pendingQuestion: undefined, items };
   }
   if ("AssistantMessage" in ev) {
     closeOpenThinking(items);

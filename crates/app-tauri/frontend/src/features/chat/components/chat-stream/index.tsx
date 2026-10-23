@@ -917,6 +917,7 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
                     diff: item.approval.diff || "",
                     resolved: item.approval.resolved,
                     approved: item.approval.approved,
+                    timedOut: item.approval.timedOut,
                   }
                 : undefined,
             }
@@ -932,6 +933,7 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
                 diff: item.diff,
                 resolved: item.resolved,
                 approved: item.approved,
+                timedOut: item.timedOut,
               },
             };
 
@@ -2905,11 +2907,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           onContextMenu={syncSelection}
           className="bg-white flex-1 min-h-0 w-full flex flex-col select-text relative"
         >
+      {/* The rail's lane stops where the floating composer starts, so the
+          strip can never be laid over it. */}
       <ChatTurnRail
         marks={marks}
         activeId={activeMarkId}
         onSelectMark={handleSelectMark}
         loading={loading}
+        bottomInset={composerH ?? (bottomPad ? bottomPad - 24 : 0)}
       />
 
       <div

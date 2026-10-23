@@ -694,6 +694,12 @@ export interface DefaultPrefs {
   subagent_thinking_level?: string | null;
   /** Fraction of the context window that triggers compaction — 0.7/0.8/0.9. */
   compact_at?: number;
+  /** How long a permission request may sit unanswered before it is denied —
+   *  seconds; 0 = wait forever. Applies to running sessions too. */
+  approval_timeout_secs?: number;
+  /** How long an `ask_question` card may sit unanswered before the agent
+   *  decides on its own — seconds; 0 = wait forever. */
+  question_timeout_secs?: number;
   /** Sandbox master switch — absent/true = sandboxed; false = every process
    *  tool runs through the loud unsandboxed `none` backend. */
   sandbox_enabled?: boolean;
