@@ -5,7 +5,7 @@
 
 mod files;
 mod migration;
-pub use files::SessionDatabase;
+pub use files::{SessionDatabase, ToolRow};
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -619,6 +619,79 @@ mod tests {
             .join("8.index.json");
         std::fs::remove_file(&index).unwrap();
         assert_eq!(test_store(&dir).tool_results(8, &["fuzzy_patch", "apply_patch"]).unwrap(), rows);
+    }
+
+    /// The subagent dock needs the failed calls too, and needs to point at the
+    /// row it read: `index` is the coordinate `history_page` slices in, so the
+    /// page the webview already holds answers `history[row.index]` — checked
+    /// here against a full page, and again after the index cache is gone.
+    #[test]
+    fn tool_rows_keep_failed_results_at_their_page_position() {
+        use agent_llm_core::types::ToolCall;
+        let call = |id: &str, name: &str, args: &str| ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: args.into(),
+        };
+        let mut a1 = ChatMessage::assistant("");
+        a1.tool_calls = Some(vec![call("c1", "fuzzy_patch", "{\"path\":\"a\"}"), call("c2", "smart_read", "{}")]);
+        let mut a2 = ChatMessage::assistant("");
+        a2.tool_calls = Some(vec![call("c3", "apply_patch", "{}"), call("c4", "fuzzy_patch", "{\"path\":\"b\"}")]);
+        let mut failed = ChatMessage::tool_result("c4", "refused");
+        failed.is_error = Some(true);
+        let history = vec![
+            ChatMessage::system("v1"),
+            ChatMessage::user("one"),
+            a1,
+            ChatMessage::tool_result("c1", "patched a"),
+            ChatMessage::tool_result("c2", "body"),
+            ChatMessage::user("two"),
+            a2,
+            ChatMessage::tool_result("c3", "updated b"),
+            failed,
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = test_store(&dir);
+        store.commit_turn(&history[..5], meta(8, 1)).unwrap();
+        // The next turn re-renders the system prompt — a `Replace` record.
+        let mut next = history.clone();
+        next[0] = ChatMessage::system("v2");
+        store.commit_turn(&next, meta(8, 2)).unwrap();
+
+        let rows = store.tool_rows(8, &["fuzzy_patch", "apply_patch"]).unwrap();
+        let summary: Vec<(&str, &str, &str, bool)> = rows
+            .iter()
+            .map(|r| (r.tool.as_str(), r.args.as_str(), r.content.as_str(), r.is_error))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("fuzzy_patch", "{\"path\":\"a\"}", "patched a", false),
+                ("apply_patch", "{}", "updated b", false),
+                ("fuzzy_patch", "{\"path\":\"b\"}", "refused", true),
+            ]
+        );
+
+        // Every row points at the page row it came from — the failed one is a
+        // result the changes panel never saw.
+        let (page, total, _, _) = store.load_history_page(8, None, 1000).unwrap();
+        assert_eq!(total, page.len());
+        for (row, call_id) in rows.iter().zip(["c1", "c3", "c4"]) {
+            let message = &page[row.index];
+            assert_eq!(message.tool_call_id.as_deref(), Some(call_id));
+            assert_eq!(message.content.clone().unwrap_or_default(), row.content);
+            assert_eq!(message.is_error == Some(true), row.is_error);
+        }
+
+        // A fresh handle rebuilds the same rows and positions from the journal.
+        let index = dir
+            .path()
+            .join("conversations")
+            .join(workspace_key(dir.path()))
+            .join("8.index.json");
+        std::fs::remove_file(&index).unwrap();
+        assert_eq!(test_store(&dir).tool_rows(8, &["fuzzy_patch", "apply_patch"]).unwrap(), rows);
     }
 
     /// An isolated store: temp db file + the tempdir as the workspace root.

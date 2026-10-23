@@ -239,29 +239,49 @@ fn is_turn(message: &ChatMessage) -> bool {
     crate::counts_as_turn(message)
 }
 
-/// [`SessionStore::tool_results`] over a history already in memory.
-fn tool_results_in(history: &[ChatMessage], tools: &[&str]) -> Vec<(String, String, String)> {
+/// One tool result a session's visible history carries: the call's tool and
+/// arguments beside the result body, plus where the result row sits in the
+/// history a page is sliced from — the same coordinate `history_page` uses, so
+/// a reader can point at the row it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolRow {
+    pub tool: String,
+    pub args: String,
+    pub content: String,
+    pub is_error: bool,
+    pub index: usize,
+}
+
+/// [`SessionStore::tool_rows`] over a history already in memory. `visible`
+/// yields the rows a page shows, in page order, and its enumeration *is* the
+/// page index — a recovery snapshot hides its synthetic rows, so counting the
+/// visible sequence is what keeps `index` in the caller's coordinate system.
+/// Calls are collected from the whole history, since an issuer row is never
+/// filtered out by anything but the page window.
+fn tool_rows_in<'a>(
+    history: &'a [ChatMessage],
+    visible: impl Iterator<Item = &'a ChatMessage>,
+    tools: &[&str],
+) -> Vec<ToolRow> {
     let mut calls: HashMap<&str, (&str, &str)> = HashMap::new();
-    let mut out = Vec::new();
     for m in history {
         for c in m.tool_calls.iter().flatten() {
             calls.insert(c.id.as_str(), (c.name.as_str(), c.arguments.as_str()));
         }
-        if m.is_error == Some(true) {
-            continue;
-        }
-        let Some(&(name, args)) = m.tool_call_id.as_deref().and_then(|id| calls.get(id)) else {
-            continue;
-        };
-        if tools.contains(&name) {
-            out.push((
-                name.to_string(),
-                args.to_string(),
-                m.content.clone().unwrap_or_default(),
-            ));
-        }
     }
-    out
+    visible
+        .enumerate()
+        .filter_map(|(index, m)| {
+            let &(name, args) = m.tool_call_id.as_deref().and_then(|id| calls.get(id))?;
+            tools.contains(&name).then(|| ToolRow {
+                tool: name.to_string(),
+                args: args.to_string(),
+                content: m.content.clone().unwrap_or_default(),
+                is_error: m.is_error == Some(true),
+                index,
+            })
+        })
+        .collect()
 }
 
 /// Content hash for the journal index — the same construction as
@@ -1056,25 +1076,33 @@ impl SessionStore {
         Ok((page.history, page.total, page.turns, page.turn_offset))
     }
 
-    /// Every ok result of a tool named in `tools`, oldest first, with the
-    /// arguments of the call that produced it: `(tool, args, content)`.
+    /// Every result of a tool named in `tools`, oldest first, with the
+    /// arguments of the call that produced it and its position in the visible
+    /// history — failures included, flagged by `is_error`.
     ///
     /// A canonical journal answers from the index — only the matching tool rows
     /// and the assistant rows that issued them are read, so the cost follows
     /// the number of results, not the length of the session. A live turn's
     /// recovery draft is already in memory and is filtered directly.
-    pub fn tool_results(
-        &self,
-        id: i64,
-        tools: &[&str],
-    ) -> std::io::Result<Vec<(String, String, String)>> {
+    pub fn tool_rows(&self, id: i64, tools: &[&str]) -> std::io::Result<Vec<ToolRow>> {
         let (snapshot, index) = self.recovery_and_index(id)?;
         if index.deleted {
             return Ok(Vec::new());
         }
         if let Some(snapshot) = snapshot {
-            return Ok(tool_results_in(&snapshot.history, tools));
+            // A live draft hides its recovery rows from `history_page`, so a
+            // reader must not see them either — and must not count them.
+            let hidden = &snapshot.recovery_rows;
+            let visible = snapshot
+                .history
+                .iter()
+                .enumerate()
+                .filter(|(at, _)| hidden.binary_search(at).is_err())
+                .map(|(_, message)| message);
+            return Ok(tool_rows_in(&snapshot.history, visible, tools));
         }
+        // The canonical index position is the page coordinate: `history_page`
+        // slices `index.messages` itself.
         let wanted: Vec<(usize, &str, usize)> = index
             .messages
             .iter()
@@ -1092,8 +1120,20 @@ impl SessionStore {
         let mut rows: Vec<usize> = wanted.iter().flat_map(|(at, _, by)| [*by, *at]).collect();
         rows.sort_unstable();
         rows.dedup();
-        let locations: Vec<Location> = rows.iter().map(|&i| index.messages[i].clone()).collect();
-        let read: HashMap<usize, ChatMessage> = rows
+        // `issuer` comes from the on-disk journal index, a cache written before
+        // the journal it describes: a stale or torn one can name a row this
+        // snapshot no longer has. Skip what is not there instead of panicking —
+        // the row simply drops out of the feed, as it already does below when
+        // its result cannot be read.
+        let mut present = Vec::with_capacity(rows.len());
+        let mut locations = Vec::with_capacity(rows.len());
+        for i in rows {
+            if let Some(location) = index.messages.get(i) {
+                present.push(i);
+                locations.push(location.clone());
+            }
+        }
+        let read: HashMap<usize, ChatMessage> = present
             .into_iter()
             .zip(self.messages(id, &locations)?)
             .collect();
@@ -1101,9 +1141,6 @@ impl SessionStore {
             .into_iter()
             .filter_map(|(at, name, by)| {
                 let result = read.get(&at)?;
-                if result.is_error == Some(true) {
-                    return None;
-                }
                 let call_id = result.tool_call_id.as_deref()?;
                 let args = read
                     .get(&by)?
@@ -1113,8 +1150,28 @@ impl SessionStore {
                     .find(|c| c.id == call_id)
                     .map(|c| c.arguments.clone())
                     .unwrap_or_default();
-                Some((name.to_string(), args, result.content.clone().unwrap_or_default()))
+                Some(ToolRow {
+                    tool: name.to_string(),
+                    args,
+                    content: result.content.clone().unwrap_or_default(),
+                    is_error: result.is_error == Some(true),
+                    index: at,
+                })
             })
+            .collect())
+    }
+    /// Every successful result of a tool named in `tools`, oldest first:
+    /// `(tool, args, content)` — the changes panel's view of [`Self::tool_rows`].
+    pub fn tool_results(
+        &self,
+        id: i64,
+        tools: &[&str],
+    ) -> std::io::Result<Vec<(String, String, String)>> {
+        Ok(self
+            .tool_rows(id, tools)?
+            .into_iter()
+            .filter(|row| !row.is_error)
+            .map(|row| (row.tool, row.args, row.content))
             .collect())
     }
     /// Checked paging: `expected_revision` must match the snapshot the page is
