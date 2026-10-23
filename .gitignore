@@ -16,6 +16,8 @@ dist-ssr/
 # Tauri generated schemas & build artifacts
 gen/
 **/gen/
+# ONNX Runtime built for x86_64-apple-darwin by scripts/build-onnxruntime-macos-x86_64.sh
+crates/app-tauri/onnxruntime/
 *.tsbuildinfo
 
 # Logs & Diagnostics

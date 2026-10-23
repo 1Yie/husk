@@ -5,7 +5,20 @@ fn main() {
     // forced a recompile.
     println!("cargo:rerun-if-changed=frontend/dist");
     link_compiler_rt_on_macos();
+    rpath_bundled_onnxruntime_on_intel_mac();
     tauri_build::build()
+}
+
+/// ort-sys ships no prebuilt ONNX Runtime for x86_64-apple-darwin, so that
+/// target links the dylib built by `scripts/build-onnxruntime-macos-x86_64.sh`
+/// (install name `@rpath/libonnxruntime.1.dylib`). The bundle copies it into
+/// `Contents/Frameworks`; ort-sys adds no rpath, so point the binary there.
+fn rpath_bundled_onnxruntime_on_intel_mac() {
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    if var("CARGO_CFG_TARGET_OS") != "macos" || var("CARGO_CFG_TARGET_ARCH") != "x86_64" {
+        return;
+    }
+    println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path/../Frameworks");
 }
 
 /// ONNX Runtime's CoreML objects call `__isPlatformVersionAtLeast`, which the
