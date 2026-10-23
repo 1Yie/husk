@@ -61,14 +61,13 @@ export const chatMarkdownComponents = {
   // overflow-x/y-auto inner + the global 6px scrollbar — no bespoke
   // scrollbar class, no wheel remapping.
   table: ({ children, ...props }: React.ComponentPropsWithoutRef<"table">) => (
-    <div className="my-4 w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs">
+    <div className="my-4 w-full max-w-full rounded-xl border border-neutral-200 bg-neutral-50 overflow-hidden shadow-2xs">
       <div className="w-full overflow-x-auto overflow-y-auto max-h-[400px] select-text">
-        {/* `w-full` only — cells wrap, so the table fits the card and only
-            overflows (→ inner x-scroll) when a single unbreakable token is
-            wider than a column. `min-w-max` here would force every table to
-            its fully-unwrapped width, guaranteeing overflow on any chat-
-            width table. */}
-        <table {...domProps(props, "w-full text-left text-[13px] border-collapse")}>
+        {/* `w-max min-w-full`: the table is as wide as its content wants and
+            never narrower than the card, so the x-scroller above can actually
+            scroll. A `w-full` table is pinned to the card and auto layout then
+            squeezes every column toward min-content. */}
+        <table {...domProps(props, "w-max min-w-full text-left text-[13px] border-collapse")}>
           {children}
         </table>
       </div>
@@ -86,7 +85,9 @@ export const chatMarkdownComponents = {
     <th
       {...domProps(
         props,
-        "px-4 py-2.5 text-left font-semibold text-neutral-800 text-xs tracking-wider uppercase whitespace-nowrap",
+        // Normal wrapping, forced: the bubble's `[overflow-wrap:anywhere]` is
+        // inherited into cells and a header must not break mid-word.
+        "px-4 py-2.5 text-left font-semibold text-neutral-800 text-xs tracking-wider uppercase whitespace-nowrap [overflow-wrap:normal] [word-break:normal]",
       )}
     >
       {renderWithTwemoji(children)}
@@ -106,7 +107,12 @@ export const chatMarkdownComponents = {
     <td
       {...domProps(
         props,
-        "px-4 py-2.5 text-neutral-700 leading-relaxed border-b border-neutral-100 last:border-b-0 align-top break-words",
+        // Word-boundary wrapping inside a sane cap: `break-words` (inheriting
+        // the bubble's `[overflow-wrap:anywhere]`) collapsed min-content to one
+        // character and wrapped cells per glyph; a floor keeps short cells from
+        // squeezing to nothing, the cap keeps a long one from stretching the
+        // table to the viewport.
+        "px-4 py-2.5 text-neutral-700 leading-relaxed border-b border-neutral-100 last:border-b-0 align-top [overflow-wrap:normal] [word-break:normal] whitespace-normal min-w-[6em] max-w-[32rem]",
       )}
     >
       {renderWithTwemoji(children)}
