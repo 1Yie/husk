@@ -141,7 +141,9 @@ pub fn prompt_block(rules: &[Rule]) -> String {
     let mut out = String::from(PROMPT_MARKER);
     out.push_str(
         "\nStanding constraints from this project's rule files. They hold for every turn — \
-         unlike skills, which are procedures loaded on demand.\n",
+         unlike skills, which are procedures loaded on demand. Where a rule conflicts with the \
+         general guidance elsewhere in this prompt (tool routing, delegation, editing \
+         defaults), the rule wins; that guidance is a baseline the project overrides.\n",
     );
     if !inline.is_empty() {
         out.push('\n');

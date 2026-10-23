@@ -167,6 +167,10 @@ a child), for one-or-two-read tasks where the child's empty context costs more t
 for parallel writes — `tasks` requires `readonly: true`, and a write-capable child runs one task
 per call under a single approval.
 
+These are defaults, not limits: when a project rule (see `## Rules`) states a delegation policy —
+implementation work by default, say — that rule wins over the size heuristic above, and only the
+hard limits (dependent steps, anything needing the user, parallel writes) still apply.
+
 Agents available to `agent: "<name>"` are listed under Session context below (a project
 manifest shadows a same-named built-in).
 
