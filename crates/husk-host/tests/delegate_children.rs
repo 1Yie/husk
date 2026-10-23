@@ -608,13 +608,13 @@ async fn child_transcript_is_saved_as_jsonl() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].contains("-s7-c"), "{names:?}");
+    assert!(names[0].starts_with("s7-c"), "{names:?}");
+    assert!(names[0].ends_with(".jsonl"), "{names:?}");
 
     let child: u64 = names[0]
-        .split("-c")
-        .nth(1)
-        .and_then(|rest| rest.split('-').next())
-        .expect("the child id leads the label")
+        .strip_prefix("s7-c")
+        .and_then(|rest| rest.strip_suffix(".jsonl"))
+        .expect("the file is named after exactly the session and the child")
         .parse()
         .expect("a numeric child id");
     let file = husk_host::subagents::find_transcript(&subs, 7, child)
