@@ -83,6 +83,7 @@ pub fn spec() -> ToolSpec {
         network: false,
         staged: true,
         review: Some(Arc::new(review)),
+        cancel_aware: false,
         exec: Arc::new(|args, ctx| exec(args, ctx).boxed()),
     }
 }

@@ -147,6 +147,7 @@ pub fn spec_submit() -> ToolSpec {
         network: false,
         staged: false,
         review: None,
+        cancel_aware: false,
         exec: Arc::new(|args, ctx| exec_submit(args, ctx).boxed()),
     }
 }

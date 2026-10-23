@@ -131,6 +131,7 @@ pub fn spec_complete() -> ToolSpec {
         network: false,
         staged: false,
         review: None,
+        cancel_aware: false,
         exec: Arc::new(|args, ctx| exec_complete(args, ctx).boxed()),
     }
 }
@@ -147,6 +148,7 @@ pub fn spec_blocked() -> ToolSpec {
         network: false,
         staged: false,
         review: None,
+        cancel_aware: false,
         exec: Arc::new(|args, ctx| exec_blocked(args, ctx).boxed()),
     }
 }

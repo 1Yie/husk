@@ -144,6 +144,7 @@ pub fn spec() -> ToolSpec {
         network: false,
         staged: false,
         review: None,
+        cancel_aware: false,
         exec,
     }
 }
@@ -209,6 +210,7 @@ pub fn search_spec() -> ToolSpec {
         network: false,
         staged: false,
         review: None,
+        cancel_aware: false,
         exec,
     }
 }

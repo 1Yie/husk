@@ -94,6 +94,7 @@ pub fn spec() -> ToolSpec {
         network: false,
         staged: false,
         review: None,
+        cancel_aware: false,
         exec,
     }
 }
