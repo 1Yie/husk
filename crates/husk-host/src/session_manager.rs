@@ -935,6 +935,12 @@ impl SessionManager {
         self.provider_name = provider_name;
         self.model_name = model_name;
 
+        // Leaving the outgoing workspace: its empty active session goes now,
+        // while `self.store` and `self.handles` still belong to it.
+        if canon != self.workspace_root {
+            self.discard_if_empty(self.active_id);
+        }
+
         // Park the outgoing workspace's handles keyed by its canonical
         // root — its actors keep running their turns (events stay tagged
         // with that root) and their command/approval endpoints stay live,
@@ -1476,6 +1482,11 @@ impl SessionManager {
         if !self.workspace_active {
             return;
         }
+        // Already sitting in an empty session — keep it rather than stacking
+        // another empty one behind it.
+        if self.is_discardable(self.active_id) {
+            return;
+        }
         self.restore_workspace_default_settings();
         let id = self.store.next_id();
         // Reserve the id in the index so the sidebar lists it immediately.
@@ -1520,6 +1531,9 @@ impl SessionManager {
     pub fn open_session(&mut self, id: i64) {
         if !self.workspace_active {
             return;
+        }
+        if id != self.active_id {
+            self.discard_if_empty(self.active_id);
         }
         // `self.metas` only refreshes on structural ops — a live session's
         // `persist_settings`/`persist_turn` lands on disk without touching
@@ -1705,10 +1719,58 @@ impl SessionManager {
             ..Default::default()
         });
         self.metas = self.store.list();
+        if id != self.active_id {
+            self.discard_if_empty(self.active_id);
+        }
         self.spawn_actor(new_id);
         self.active_id = new_id;
         let _ = self.store.set_last_active(new_id);
         Some(new_id)
+    }
+
+    /// Whether `id` is an empty session nobody has used yet: listed, not
+    /// pinned, no parked prompts, no persisted history, and no work in flight.
+    /// Any doubt — a store error, a live turn, a prompt still on its way to
+    /// the actor — keeps it.
+    fn is_discardable(&self, id: i64) -> bool {
+        if id == 0 {
+            return false;
+        }
+        let Some(meta) = self.store.meta(id) else {
+            return false;
+        };
+        if meta.pinned || !meta.queued_prompts.is_empty() {
+            return false;
+        }
+        if self.store.has_history(id).ok() != Some(false) {
+            return false;
+        }
+        match self.handles.get(&id) {
+            Some(h) => {
+                !h.running
+                    && h.pending_approval.load(std::sync::atomic::Ordering::Relaxed) == 0
+                    && h.queue.lock().is_ok_and(|q| q.is_empty())
+                    && h.cmd_tx.capacity() == h.cmd_tx.max_capacity()
+            }
+            None => true,
+        }
+    }
+
+    /// Drop an empty session being left behind, the same way `delete_session`
+    /// does, but leave `active_id` to the caller.
+    fn discard_if_empty(&mut self, id: i64) {
+        if !self.is_discardable(id) {
+            return;
+        }
+        if let Err(error) = self.store.remove(id) {
+            tracing::error!(%error, session=id, "empty session discard failed");
+            return;
+        }
+        if let Some(h) = self.handles.remove(&id) {
+            h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            h.shutdown.notify_one();
+        }
+        self.metas = self.store.list();
     }
 
     /// Discover + register every MCP server for `root`. `None` when there is
@@ -3893,6 +3955,62 @@ max = "max"
         let info = mgr.model_info();
         assert_eq!(info.active_provider, "openai");
         assert_eq!(info.active_model, "gpt-5");
+    }
+
+    /// An empty new session is only a placeholder: leaving it for another
+    /// session drops it from the store, so the sidebar never keeps it.
+    #[test]
+    fn leaving_an_empty_new_session_discards_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
+        let kept = mgr.store.next_id();
+        mgr.store
+            .upsert_meta(agent_store::SessionMeta { id: kept, title: "used".into(), ..Default::default() })
+            .unwrap();
+        mgr.store
+            .snapshot(kept, &[agent_llm::types::ChatMessage::user("hello")])
+            .unwrap();
+
+        mgr.new_session();
+        let empty = mgr.active_id;
+        assert!(mgr.store.list().iter().any(|m| m.id == empty));
+
+        mgr.open_session(kept);
+        assert_eq!(mgr.active_id, kept);
+        assert!(!mgr.store.list().iter().any(|m| m.id == empty));
+        assert!(mgr.store.list().iter().any(|m| m.id == kept));
+    }
+
+    /// Pressing 新建会话 again while already in an empty session keeps that
+    /// one — no second empty session stacks up behind it.
+    #[test]
+    fn new_session_twice_keeps_one_empty_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
+
+        mgr.new_session();
+        let first = mgr.active_id;
+        mgr.new_session();
+        assert_eq!(mgr.active_id, first);
+        assert_eq!(mgr.store.list().len(), 1);
+    }
+
+    /// A session with persisted history is never discarded when it is left.
+    #[test]
+    fn leaving_a_session_with_history_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
+
+        mgr.new_session();
+        let used = mgr.active_id;
+        mgr.store
+            .snapshot(used, &[agent_llm::types::ChatMessage::user("hello")])
+            .unwrap();
+
+        mgr.new_session();
+        assert_ne!(mgr.active_id, used);
+        mgr.open_session(used);
+        assert!(mgr.store.list().iter().any(|m| m.id == used));
     }
 
     /// A session that never picked its own settings falls back to the

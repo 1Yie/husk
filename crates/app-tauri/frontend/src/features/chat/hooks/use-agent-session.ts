@@ -54,8 +54,10 @@ export function useAgentSession() {
 
   const newSession = useCallback(async () => {
     const newId = await agent.newSession();
-    await refresh({ force: true });
-    return newId;
+    // The rows come back with the id so a caller that also judges the tree
+    // (the outgoing session's eviction) reuses this refresh, not a second one.
+    const rows = await refresh({ force: true });
+    return { id: newId, rows };
   }, [refresh]);
 
   const openSession = useCallback(

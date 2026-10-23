@@ -434,6 +434,7 @@ export function App() {
     // which restores the previous root and lowers the veil.
     const res = await switchWorkspace(path).catch(() => null);
     if (res) {
+      evictDiscarded(previousRoot, activeId);
       // The project tree is fetched now (it needs the switched `current`
       // flag) but committed with the chat view below, so the sidebar and the
       // conversation appear in one frame instead of the content leading.
@@ -474,6 +475,8 @@ export function App() {
     // Flip the pointer NOW — the clicked session's empty view +
     // skeleton replace the old content in the same frame instead of
     // the old conversation lingering through the whole kernel load.
+    const previousId = useAgentStore.getState().activeId;
+    const previousRoot = useAgentStore.getState().workspaceRoot;
     setActiveId(id);
     if (root && root !== useAgentStore.getState().workspaceRoot) {
       const res = await switchWorkspace(root).catch(() => null);
@@ -489,6 +492,7 @@ export function App() {
     }
     const r = await openSession(id).catch(() => null);
     loadStamp("ipc:openSession");
+    evictDiscarded(previousRoot, previousId);
     if (!r) {
       // Failed open — nothing to mount; drop the veil and the skeleton.
       setViewLoading(false);
@@ -531,11 +535,37 @@ export function App() {
     // be up — it starts true at boot and only the boot effect lowers it. That
     // effect is one-shot (`bootLoaded`), so a second session created later
     // would otherwise sit on the skeleton forever.
-    const newId = await newSession();
-    if (typeof newId === "number") {
-      setActiveId(newId);
+    const previousId = activeId;
+    const previousRoot = workspace.root;
+    // Skeleton first, then the greeting: the old turn tree stays up until the
+    // skeleton is showing, instead of being torn down in the click frame.
+    setViewLoading(true);
+    // A rejected IPC must still lower the veil — the skeleton can never stick.
+    const created = await newSession().catch(() => null);
+    if (created) {
+      if (typeof created.id === "number") {
+        setActiveId(created.id);
+      }
+      evictDiscarded(previousRoot, previousId, created.rows);
     }
     releaseLoading();
+  };
+
+  // Leaving an empty session discards it on the backend. Its cached view must
+  // go too, or a later mount of that key would resurface the dropped session.
+  // Only judged against a fresh tree that still lists the outgoing project —
+  // a failed refresh returns no rows and must not evict anything. A caller
+  // that has just refreshed the tree passes those rows to skip a second fetch.
+  const evictDiscarded = (root: string, id: number, rows?: ProjectOverview[]) => {
+    if (!id || !root) return;
+    const judge = (fresh: ProjectOverview[]) => {
+      const project = fresh.find((p) => p.root === root);
+      if (!project || project.sessions.some((s) => s.id === id)) return;
+      dropView(root, id);
+      forgetToldFailures(root, id);
+    };
+    if (rows) judge(rows);
+    else void refresh({ force: true }).then(judge);
   };
 
   const handleDeleteSession = (id: number) => {
