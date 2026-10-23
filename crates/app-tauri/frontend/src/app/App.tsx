@@ -14,6 +14,7 @@ import type { ChildSegment, StreamItem } from "@/features/chat/hooks/stream-view
 import type { RunningChild } from "@/features/chat/hooks/running-children";
 import { loadReset, loadStamp } from "@/lib/load-probe";
 import { forgetToldFailures, markSessionRead, setSessionTitles } from "@/lib/notifications";
+import { onOpenSettings, type SettingsTarget } from "@/lib/settings-bus";
 import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, subagentTranscript, activeChildren, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
@@ -344,6 +345,17 @@ export function App() {
   // mounted underneath, so closing it costs nothing (the old takeover
   // unmounted ChatPage and remounted the whole stream on return).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Which page the next open lands on — a `/skills` style command asks for a
+  // specific one; the sidebar gear always starts at 常规.
+  const [settingsPage, setSettingsPage] = useState<SettingsTarget>("general");
+  useEffect(
+    () =>
+      onOpenSettings((page) => {
+        setSettingsPage(page);
+        setSettingsOpen(true);
+      }),
+    [],
+  );
   // Changes/artifacts sidebar: open state, active tab and width all live in
   // `useDockStore` (see `features/chat/components/dock/state.ts`) — the page
   // reads it directly, so there is nothing to lift into the shell. The veil
@@ -738,7 +750,10 @@ export function App() {
           onSwitchWorkspace={(path) => void handleSwitchWorkspace(path)}
           onSwitchMode={(path) => void handleSwitchMode(path)}
           onRemoveWorkspace={requestRemoveWorkspace}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => {
+            setSettingsPage("general");
+            setSettingsOpen(true);
+          }}
         />
         }
       >
@@ -775,7 +790,7 @@ export function App() {
           every KV popup inside it. */}
       {settingsOpen && (
         <div className="fixed inset-0 z-40">
-          <SettingsPage onClose={() => setSettingsOpen(false)} />
+          <SettingsPage initialTab={settingsPage} onClose={() => setSettingsOpen(false)} />
         </div>
       )}
 

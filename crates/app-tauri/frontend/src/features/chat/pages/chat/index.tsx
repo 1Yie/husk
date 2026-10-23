@@ -80,6 +80,9 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // last message slid under it. Keying the observer to the node itself keeps
   // it honest across mounts.
   const [composerH, setComposerH] = useState(160);
+  // The composer's `/@/$` panel is open — it paints above the floating pills,
+  // which stand down for as long as it is up.
+  const [mentionOpen, setMentionOpen] = useState(false);
   const composerRoRef = useRef<ResizeObserver | null>(null);
   const measureComposer = useCallback((el: HTMLDivElement | null) => {
     composerRoRef.current?.disconnect();
@@ -409,6 +412,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               subagents={runningChildren}
               subagentsOpen={subagentsShown}
               onToggleSubagents={workspaceRoot ? handleToggleSubagents : undefined}
+              suppressPills={mentionOpen}
             />
 
             {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
@@ -418,8 +422,16 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               aria-hidden="true"
             />
 
-            <div ref={measureComposer} className="absolute inset-x-0 bottom-0 pointer-events-none z-20">
-              <ComposerBar view={view} workspaceRoot={workspaceRoot} sessionKey={sessionKey} officeMode={officeMode} />
+            {/* z-40: above the stream's floating pill row (z-30) — the command
+                panel must paint over it, not behind it. */}
+            <div ref={measureComposer} className="absolute inset-x-0 bottom-0 pointer-events-none z-40">
+              <ComposerBar
+                view={view}
+                workspaceRoot={workspaceRoot}
+                sessionKey={sessionKey}
+                officeMode={officeMode}
+                onMentionOpenChange={setMentionOpen}
+              />
             </div>
           </div>
 

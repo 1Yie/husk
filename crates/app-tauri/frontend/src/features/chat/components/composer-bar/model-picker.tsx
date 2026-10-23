@@ -160,6 +160,8 @@ export function ModelPicker({
   thinkingMap,
   effectiveThinkingLevels,
   onSelectThinkingLevel,
+  open: openProp,
+  onOpenChange,
 }: {
   activeModel: string;
   activeProvider: string;
@@ -170,9 +172,21 @@ export function ModelPicker({
   thinkingMap?: Record<string, string | null>;
   effectiveThinkingLevels: readonly { value: string; token: string }[];
   onSelectThinkingLevel: (level: string) => Promise<void>;
+  /** Controlled open state — `/model` opens the picker from the panel, which
+   *  the trigger alone cannot do. Uncontrolled when absent. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [view, setView] = useState<View>("root");
-  const [open, setOpen] = useState(false);
+  const [selfOpen, setSelfOpen] = useState(false);
+  const open = openProp ?? selfOpen;
+  const setOpen = (next: boolean) => {
+    setSelfOpen(next);
+    // A fresh open always starts at the summary — a half-drilled popover from
+    // a minute ago is not what the trigger's label promised.
+    if (!next) setView("root");
+    onOpenChange?.(next);
+  };
 
   // The active model's config entry — supplies the display name. `undefined`
   // when the model isn't in the configured list (a hand-encoded `/model`
@@ -205,15 +219,7 @@ export function ModelPicker({
   const thinkingAvailable = hasReasoning && tiers.length > 0;
 
   return (
-    <DropdownMenu
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        // A fresh open always starts at the summary — a half-drilled popover
-        // from a minute ago is not what the trigger's label promised.
-        if (!next) setView("root");
-      }}
-    >
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           aria-label={`当前模型: ${activeItem ? modelLabel(activeItem) : activeModel || "未选择"} (${activeProvider}/${activeModel})`}

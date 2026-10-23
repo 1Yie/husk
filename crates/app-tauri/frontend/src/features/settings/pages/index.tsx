@@ -64,8 +64,14 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
   },
 ];
 
-export function SettingsPage({ onClose }: { onClose: () => void }) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+export function SettingsPage({ onClose, initialTab = "general" }: {
+  onClose: () => void;
+  /** Where the overlay opens — a command can ask for 技能 / 记忆 directly. The
+   *  shell mounts this fresh on every open, so this is a starting point, not a
+   *  controlled value. */
+  initialTab?: SettingsTab;
+}) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [devUnlocked, setDevUnlocked] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   // Esc goes back to the workspace — same reflex as every full-screen pane.

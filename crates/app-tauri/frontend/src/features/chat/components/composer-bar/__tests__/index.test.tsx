@@ -8,6 +8,8 @@ import { useAgentStore } from "@/stores/agent-store";
 import { renderWithProviders } from "@/test/render";
 import { deferred, mockCommand, modelInfo, tauri } from "@/test/tauri";
 import { CONFIG_CHANGED_EVENT, type ModelInfo } from "@/lib/agent-ipc/sessions";
+import { useDockStore } from "@/features/chat/components/dock/state";
+import { onOpenSettings } from "@/lib/settings-bus";
 import { toast } from "sonner";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
@@ -300,5 +302,87 @@ describe("composer model picker sections", () => {
       "Model B",
       "Zeta One",
     ]);
+  });
+});
+
+describe("slash command panel", () => {
+  test("typing / groups the catalog under a 命令 header", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    await user.type(screen.getByRole("textbox"), "/");
+    expect(await screen.findByText("命令")).toBeInTheDocument();
+    // A command that takes an argument shows its placeholder.
+    expect(screen.getByText("<内容>")).toBeInTheDocument();
+    // A local command says what it does instead of promising an insert.
+    expect(screen.getByRole("option", { name: /^\/diff 查看改动 打开$/ })).toBeInTheDocument();
+  });
+
+  test("picking /diff opens the dock on 改动 and never sends", async () => {
+    const user = userEvent.setup();
+    useDockStore.setState({ open: false, tab: "artifacts" });
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/diff");
+    await user.click(screen.getByRole("option", { name: /^\/diff/ }));
+    expect(useDockStore.getState().open).toBe(true);
+    expect(useDockStore.getState().tab).toBe("changes");
+    // A local pick leaves no text behind.
+    expect(input).toHaveValue("");
+    expect(tauri.invoke.mock.calls.filter(([cmd]) => cmd === "agent_cmd")).toHaveLength(0);
+  });
+
+  test("Enter on a bare /model opens the model picker instead of sending", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/model");
+    // Dismiss the panel first: a bare local command is a submission, not a pick.
+    await user.keyboard("{Escape}");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("menu")).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /^模型/ })).toBeInTheDocument();
+    expect(input).toHaveValue("");
+    expect(tauri.invoke.mock.calls.filter(([cmd]) => cmd === "agent_cmd")).toHaveLength(0);
+  });
+
+  test("picking /remember inserts the command and leaves room for its argument", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/remember");
+    await user.click(screen.getByRole("option", { name: /^\/remember/ }));
+    expect(input).toHaveValue("/remember ");
+  });
+
+  test("picking /skills asks the shell to open 设置 on 技能", async () => {
+    const user = userEvent.setup();
+    const heard: string[] = [];
+    const off = onOpenSettings((page) => heard.push(page));
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/skills");
+    await user.click(screen.getByRole("option", { name: /^\/skills/ }));
+    off();
+    expect(heard).toEqual(["skills"]);
+    expect(input).toHaveValue("");
+  });
+
+  test("the panel reports its open state so the page can hide the pills", async () => {
+    const user = userEvent.setup();
+    const onMentionOpenChange = vi.fn();
+    renderWithProviders(
+      <ComposerBar view={emptyView()} sessionKey="/ws:1" onMentionOpenChange={onMentionOpenChange} />,
+    );
+    await loaded();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/");
+    expect(onMentionOpenChange).toHaveBeenLastCalledWith(true);
+    await user.keyboard("{Escape}");
+    expect(onMentionOpenChange).toHaveBeenLastCalledWith(false);
   });
 });

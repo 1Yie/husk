@@ -42,4 +42,10 @@ describe("dock pill", () => {
     fireEvent.click(screen.getByRole("button", { name: "侧栏" }));
     expect(onToggleDock).toHaveBeenCalledTimes(1);
   });
+
+  test("the row stands down while the composer's command panel is up", () => {
+    renderStream({ dockCount: 1, dockTab: "changes", suppressPills: true });
+    const row = screen.getByRole("button", { name: "侧栏" }).parentElement;
+    expect(row).toHaveClass("opacity-0", "pointer-events-none");
+  });
 });

@@ -22,8 +22,11 @@ import {
   GripVertical,
   CirclePen,
   ListPlus, MessagesSquare, Monitor } from "@keyline-icons/react";
-import { MentionPopup } from "@/features/chat/components/composer-bar/mention-popup";
+import { MentionPopup, type MentionRow } from "@/features/chat/components/composer-bar/mention-popup";
+import { BUILTIN_COMMANDS, localCommandOf } from "@/features/chat/components/composer-bar/commands";
 import { ModelPicker } from "@/features/chat/components/composer-bar/model-picker";
+import { useDockStore } from "@/features/chat/components/dock/state";
+import { openSettings } from "@/lib/settings-bus";
 import { AttachmentChips } from "@/features/chat/components/composer-bar/attachment-chips";
 import { TokenMirror } from "@/features/chat/components/composer-bar/token-mirror";
 import {
@@ -133,6 +136,7 @@ function ComposerBarContent({
   workspaceRoot,
   sessionKey,
   officeMode = false,
+  onMentionOpenChange,
 }: {
   view: SessionView;
   workspaceRoot?: string;
@@ -142,6 +146,9 @@ function ComposerBarContent({
    *  only place where「工作」appears in the mode dropdown (elsewhere it's a
    *  sidebar-level switch into office mode). */
   officeMode?: boolean;
+  /** The `/@/$` panel opened/closed — the page hides the floating pills
+   *  while it is up, and the panel paints above them. */
+  onMentionOpenChange?: (open: boolean) => void;
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<string>("default");
@@ -419,29 +426,9 @@ function ComposerBarContent({
     };
   }, [mentionTrigger, mentionQuery]);
 
-  // Static slash commands — dispatched by the kernel's CommandRegistry.
-  const BUILTIN_COMMANDS = useMemo(
-    () => [
-      { name: "clear", desc: "清空会话历史" },
-      { name: "compact", desc: "压缩上下文以释放 token" },
-      { name: "undo", desc: "回滚上一轮的文件修改" },
-      { name: "model", desc: "切换模型 /model <provider>/<model>" },
-      { name: "diff", desc: "查看本轮改动的文件" },
-      { name: "skills", desc: "列出工作区可用 skills" },
-    ],
-    [],
-  );
-
   // The rendered rows — what arrow keys + Enter act on.
-  const mentionRows = useMemo(() => {
-    if (!mention)
-      return [] as {
-        key: string;
-        label: string;
-        hint: string;
-        icon: "file" | "cmd" | "skill" | "plugin";
-        insert: string;
-      }[];
+  const mentionRows = useMemo((): MentionRow[] => {
+    if (!mention) return [];
     const q = mention.query.toLowerCase();
     if (mention.trigger === "@") {
       return files.map((f) => ({
@@ -449,17 +436,14 @@ function ComposerBarContent({
         label: f.name,
         hint: f.path,
         icon: "file" as const,
+        group: "file" as const,
         insert: `@${f.path}`,
       }));
     }
-    const rows: {
-      key: string;
-      label: string;
-      hint: string;
-      icon: "cmd" | "skill" | "plugin";
-      insert: string;
-    }[] = [];
+    const rows: MentionRow[] = [];
     if (mention.trigger === "/") {
+      // Builtin catalog — `send` rows reach the kernel as text, `local` rows
+      // drive the desktop UI and are never dispatched.
       for (const c of BUILTIN_COMMANDS) {
         if (q && !c.name.startsWith(q)) continue;
         rows.push({
@@ -467,7 +451,11 @@ function ComposerBarContent({
           label: `/${c.name}`,
           hint: c.desc,
           icon: "cmd",
-          insert: `/${c.name}`,
+          group: "command",
+          args: c.args,
+          local: c.kind === "local",
+          command: c.name,
+          insert: c.kind === "local" ? undefined : `/${c.name}`,
         });
       }
       // Plugin-declared commands — bare `/name` when unique across the
@@ -490,6 +478,7 @@ function ComposerBarContent({
           label: `/${spelling}`,
           hint: `${pc.description}${pc.pluginId ? ` · ${pc.pluginId}` : ""}`,
           icon: "plugin" as const,
+          group: "plugin" as const,
           insert: `/${spelling}`,
         });
       }
@@ -501,6 +490,7 @@ function ComposerBarContent({
         label: `$${s.name}`,
         hint: s.description || s.path,
         icon: "skill",
+        group: "skill",
         // `$`-triggered picks must insert the `$` token — a `/name` typed
         // mid-text is just a literal (the kernel only dispatches a
         // *leading* `/x`), while `$name` expands anywhere.
@@ -508,21 +498,66 @@ function ComposerBarContent({
       });
     }
     return rows;
-  }, [mention, files, skills, pluginCmds, BUILTIN_COMMANDS]);
+  }, [mention, files, skills, pluginCmds]);
 
-  const acceptMention = (row: { insert: string }) => {
+  // ---- local commands ---------------------------------------------------
+  // `model` / `diff` / `skills` / `memory` are UI actions: they open the
+  // composer's model picker, the 改动 dock or the matching settings page, and
+  // never reach the kernel as text.
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const runLocalCommand = (name: string) => {
+    if (name === "model") {
+      setModelPickerOpen(true);
+      return;
+    }
+    if (name === "diff") {
+      const dock = useDockStore.getState();
+      dock.setTab("changes");
+      dock.setOpen(true);
+      return;
+    }
+    if (name === "skills" || name === "memory") openSettings(name);
+  };
+
+  /** Drop the `/xxx` token the panel was filtering — a local pick leaves no
+   *  text behind. */
+  const dropMentionToken = () => {
     if (!mention) return;
     const el = document.querySelector<HTMLTextAreaElement>("textarea[data-composer]");
     const caret = el?.selectionStart ?? text.length;
-    const next = text.slice(0, mention.start) + row.insert + " " + text.slice(caret);
+    setText(text.slice(0, mention.start) + text.slice(caret));
+    setMention(null);
+  };
+
+  const acceptMention = (row: MentionRow) => {
+    if (!mention) return;
+    if (row.local) {
+      const command = row.command;
+      dropMentionToken();
+      if (command) runLocalCommand(command);
+      return;
+    }
+    const insert = row.insert;
+    if (insert === undefined) return;
+    const el = document.querySelector<HTMLTextAreaElement>("textarea[data-composer]");
+    const caret = el?.selectionStart ?? text.length;
+    const next = text.slice(0, mention.start) + insert + " " + text.slice(caret);
     setText(next);
     setMention(null);
     requestAnimationFrame(() => {
       el?.focus();
-      const pos = mention.start + row.insert.length + 1;
+      const pos = mention.start + insert.length + 1;
       el?.setSelectionRange(pos, pos);
     });
   };
+
+  // The page raises the composer above the floating pills while the panel is
+  // up — the pills themselves stand down (see `suppressPills` in ChatStream).
+  const mentionOpen = mention !== null;
+  useEffect(() => {
+    onMentionOpenChange?.(mentionOpen);
+  }, [mentionOpen, onMentionOpenChange]);
+  useEffect(() => () => onMentionOpenChange?.(false), [onMentionOpenChange]);
 
   const streaming = view.streaming;
 
@@ -599,6 +634,14 @@ function ComposerBarContent({
   const submit = async () => {
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return;
+    // A bare local command is a UI action, not a prompt — Enter runs it
+    // instead of sending the word to the kernel.
+    const localCommand = localCommandOf(trimmed);
+    if (localCommand) {
+      setText("");
+      runLocalCommand(localCommand.name);
+      return;
+    }
     // Inline attachments into the prompt — text files as fenced blocks
     // (mirrors the kernel's `@` mention expansion); images emit an
     // `<attached-image>` marker the kernel turns into real image parts
@@ -1357,6 +1400,8 @@ function ComposerBarContent({
                   activeProvider={activeProvider}
                   models={models}
                   onSelectModel={handleSelectModel}
+                  modelPickerOpen={modelPickerOpen}
+                  onModelPickerOpenChange={setModelPickerOpen}
                   hasReasoning={hasReasoning}
                   activeThinkingLevel={activeThinkingLevel}
                   thinkingMap={currentModelObj?.thinking_level_map ?? undefined}
@@ -1413,6 +1458,8 @@ function ComposerBarContent({
                 activeProvider={activeProvider}
                 models={models}
                 onSelectModel={handleSelectModel}
+                modelPickerOpen={modelPickerOpen}
+                onModelPickerOpenChange={setModelPickerOpen}
                 hasReasoning={hasReasoning}
                 activeThinkingLevel={activeThinkingLevel}
                 thinkingMap={currentModelObj?.thinking_level_map ?? undefined}
@@ -1602,15 +1649,9 @@ function ComposerTextarea({
   mention: { trigger: "@" | "/" | "$"; query: string; start: number } | null;
   mentionIndex: number;
   setMentionIndex: (i: number) => void;
-  mentionRows: {
-    key: string;
-    label: string;
-    hint: string;
-    icon: "file" | "cmd" | "skill" | "plugin";
-    insert: string;
-  }[];
+  mentionRows: MentionRow[];
   onRefreshMention: (value: string, caret: number) => void;
-  onAcceptMention: (row: { insert: string }) => void;
+  onAcceptMention: (row: MentionRow) => void;
   onDismissMention: () => void;
   /** Alt+↑ on an empty composer pops the newest parked prompt back into the
    *  draft — returns its text (null when the queue is empty). */
@@ -1933,6 +1974,8 @@ function ComposerToolbar({
   activeProvider,
   models,
   onSelectModel,
+  modelPickerOpen,
+  onModelPickerOpenChange,
   hasReasoning,
   activeThinkingLevel,
   thinkingMap,
@@ -1960,6 +2003,9 @@ function ComposerToolbar({
   activeProvider: string;
   models: agent.ModelItem[];
   onSelectModel: (provider: string, model: string) => Promise<void>;
+  /** The `/model` command opens this picker from outside its own trigger. */
+  modelPickerOpen: boolean;
+  onModelPickerOpenChange: (open: boolean) => void;
   hasReasoning: boolean;
   activeThinkingLevel: string;
   thinkingMap?: Record<string, string | null>;
@@ -2038,6 +2084,8 @@ function ComposerToolbar({
           activeProvider={activeProvider}
           models={models}
           onSelectModel={onSelectModel}
+          open={modelPickerOpen}
+          onOpenChange={onModelPickerOpenChange}
           hasReasoning={hasReasoning}
           activeThinkingLevel={activeThinkingLevel}
           thinkingMap={thinkingMap}

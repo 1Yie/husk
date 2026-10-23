@@ -54,16 +54,10 @@ import { readAttachment } from "@/lib/agent-ipc/sessions";
 import { retryTurn, undoLastTurn } from "@/lib/agent-ipc/commands";
 import { CompactionCard } from "@/features/chat/components/chat-stream/compaction-card";
 import { PlanCard } from "@/features/chat/components/chat-stream/plan-card";
+import { commandDesc } from "@/features/chat/components/composer-bar/commands";
 import type { PlanPayload } from "@/types";
 
-const BUILTIN_COMMANDS_DESC: Record<string, string> = {
-  clear: "清空会话历史",
-  compact: "压缩上下文以释放 token",
-  undo: "回滚上一轮的文件修改",
-  model: "切换模型 /model <provider>/<model>",
-  diff: "查看本轮改动的文件",
-  skills: "列出工作区可用 skills",
-};
+
 
 /** Image preview inside the `@`-chip tooltip — mounts on hover (Radix
  * portals content on open), resolves the staged path to a `data:` URL
@@ -128,7 +122,8 @@ function UserTokenChip({ token }: { token: string }) {
     const cmdText = clean.slice(1);
     const [cmdName, ...argsList] = cmdText.split(" ");
     const args = argsList.join(" ").trim();
-    const desc = BUILTIN_COMMANDS_DESC[cmdName];
+    // Same catalog the composer's `/` panel lists — one set of descriptions.
+    const desc = commandDesc(cmdName);
     return (
       <TooltipSimple
         content={
@@ -366,6 +361,9 @@ interface Props {
   /** The dock is open on the 子代理 view. */
   subagentsOpen?: boolean;
   onToggleSubagents?: () => void;
+  /** The composer's `/@/$` panel is up — the floating pills stand down so the
+   *  panel does not collide with them. */
+  suppressPills?: boolean;
   /** Fetch + prepend the next older page (scroll-top trigger). */
   /** Fetch + prepend the next older page. Resolves `true` when a
    * page actually landed — `false` (empty/end) clears the pending
@@ -1677,7 +1675,7 @@ const ChatTurn = memo(function ChatTurn({
   );
 });
 
-export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs, subagents, subagentsOpen, onToggleSubagents }: Props) {
+export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs, subagents, subagentsOpen, onToggleSubagents, suppressPills = false }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const [virtualApi, setVirtualApi] = useState<VirtualStepApi | null>(null);
@@ -3014,7 +3012,12 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             would make a lone button drift in from the right. */}
       <div
         style={{ bottom: `${(composerH ?? (bottomPad ? bottomPad - 24 : 140)) + 12}px` }}
-        className="absolute left-1/2 z-30 flex -translate-x-1/2 items-center"
+        className={cn(
+          "absolute left-1/2 z-30 flex -translate-x-1/2 items-center transition-opacity duration-200 ease-out",
+          // The composer's command panel takes this space — the row fades out
+          // rather than being painted through it.
+          suppressPills && "pointer-events-none opacity-0",
+        )}
       >
         {dockPillVisible && (
           <TooltipSimple
