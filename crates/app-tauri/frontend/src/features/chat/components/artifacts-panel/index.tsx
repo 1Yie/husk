@@ -69,9 +69,9 @@ function ActionButton({
         e.stopPropagation();
         onClick();
       }}
-      className="flex-none rounded p-1 text-neutral-400 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-700 dark:hover:text-neutral-200"
+      className="flex h-5 w-5 flex-none items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700 dark:hover:text-neutral-200"
     >
-      <Icon className="h-3.5 w-3.5" />
+      <Icon className="h-3 w-3" />
     </button>
   );
 }
@@ -92,7 +92,7 @@ function ArtifactRow({ artifact }: { artifact: Artifact }) {
             open();
           }
         }}
-        className="group relative flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_45%,transparent)]"
+        className="group relative flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
       >
         <span className="flex-none">
           <ExtIcon ext={artifact.ext} />
@@ -105,7 +105,7 @@ function ArtifactRow({ artifact }: { artifact: Artifact }) {
             nothing reflows when they appear (inline reveal twitched the
             whole list). The panel-toned backdrop keeps the name/dir text
             readable underneath. */}
-        <span className="absolute right-1 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded-md bg-[color-mix(in_srgb,var(--husk-panel)_85%,transparent)] p-0.5 backdrop-blur-sm group-hover:flex">
+        <span className="absolute right-1 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded-full bg-[color-mix(in_srgb,var(--husk-panel)_85%,transparent)] p-0.5 backdrop-blur-sm group-hover:flex">
           <ActionButton label="打开" icon={ExternalLink} onClick={open} />
           <ActionButton
             label="另存为"

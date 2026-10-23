@@ -111,7 +111,7 @@ function ActionButton({
           e.stopPropagation();
           onClick();
         }}
-        className="flex h-5 w-5 flex-none items-center justify-center rounded text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] hover:text-neutral-800 disabled:opacity-40"
+        className="flex h-5 w-5 flex-none items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-800 disabled:opacity-40"
       >
         {children}
       </button>
@@ -166,7 +166,7 @@ function JobRow({
             onToggle();
           }
         }}
-        className="group flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_45%,transparent)]"
+        className="group flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
       >
         <span className="flex-none text-neutral-500">
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
@@ -230,7 +230,7 @@ function JobRow({
             <span>{jobStateLabel(job)}</span>
             <span className="font-mono tabular-nums">{formatElapsed(jobElapsedMs(job, snapshotAt, now))}</span>
           </div>
-          <pre className="max-h-64 overflow-auto rounded-md border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n100)_70%,transparent)] px-2 py-1.5 font-mono text-[10.5px] leading-[1.45] whitespace-pre-wrap break-all text-neutral-600 select-text">
+          <pre className="max-h-64 overflow-auto rounded-[10px] bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] px-2.5 py-2 font-mono text-[10.5px] leading-[1.45] whitespace-pre-wrap break-all text-neutral-600 select-text">
             {restored
               ? job.log_tail?.trim() || "（未保存输出）"
               : error
@@ -291,7 +291,7 @@ export function JobsList({
           <button
             type="button"
             onClick={clearFinished}
-            className="rounded px-1.5 py-0.5 text-[11px] text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-700"
+            className="rounded-full px-2 py-0.5 text-[11px] text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] hover:text-neutral-800"
           >
             清除已结束
           </button>

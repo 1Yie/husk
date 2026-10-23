@@ -39,7 +39,7 @@ export function ChildSteerInput({ childId }: { childId: number }) {
           void send();
         }
       }}
-      className="h-7 rounded-lg px-2 text-[12px]"
+      className="h-7 rounded-full px-3 text-[12px]"
     />
   );
 }

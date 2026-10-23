@@ -49,7 +49,7 @@ const FileRow = memo(function FileRow({
         type="button"
         aria-expanded={open}
         onClick={() => onToggle(change.path)}
-        className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_45%,transparent)]"
+        className="group flex h-8 w-full items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
       >
         <span className="flex-none text-neutral-500">
           {open ? (
