@@ -18,7 +18,6 @@ import {
   Paperclip,
   X,
   Map as MapIcon,
-  Clock,
   GripVertical,
   CirclePen,
   ListPlus, MessagesSquare, Monitor } from "@keyline-icons/react";
@@ -29,6 +28,12 @@ import {
   toolbarDensity,
   type ToolbarDensity,
 } from "@/features/chat/components/composer-bar/toolbar-density";
+import {
+  buildPayload,
+  insertAt,
+  queuedPreview,
+  splitQueuedPayload,
+} from "@/features/chat/components/composer-bar/queued-payload";
 import { useDockStore } from "@/features/chat/components/dock/state";
 import { openSettings } from "@/lib/settings-bus";
 import { AttachmentChips } from "@/features/chat/components/composer-bar/attachment-chips";
@@ -54,6 +59,7 @@ import { toast } from "sonner";
 import {
   ClipboardPaste,
   Copy,
+  CornerDownRight,
   Image as ImageIcon,
   Scissors,
   TextSelect,
@@ -186,14 +192,24 @@ function ComposerBarContent({
   const pushQueued = useCallback((items: string[]) => {
     agent.setQueued(items).catch((e) => console.error("setQueued failed:", e));
   }, []);
-  // Inline edit — a queued row swaps to a textarea; Enter commits,
-  // Shift+Enter adds a newline, Esc cancels. Local draft only: the kernel's
-  // list stays untouched until the edit is committed.
-  const [editIdx, setEditIdx] = useState<number | null>(null);
-  const [editDraft, setEditDraft] = useState("");
+  // Editing a queued row pulls it OUT of the kernel queue and into the composer
+  // (see `beginEditQueued`). `index` is where it sat, so a cancel or a steered
+  // resubmit puts it back in place; `stash` is the draft the composer held
+  // before the edit began, restored once the edit is over.
+  type Draft = { text: string; attachments: Attachment[] };
+  const [editing, setEditing] = useState<{
+    index: number;
+    payload: string;
+    stash: Draft | null;
+  } | null>(null);
+  // Bumped whenever an edit ends, so attachment reads still in flight for it
+  // are dropped instead of landing in the composer afterwards.
+  const editSeq = useRef(0);
   useEffect(() => {
-    setEditIdx(null);
-    setEditDraft("");
+    // The edited payload left this session's queue, so it stays in the
+    // composer as an ordinary draft rather than going back to a foreign queue.
+    editSeq.current++;
+    setEditing(null);
   }, [sessionKey]);
   // ask_question — the answered id hides the strip (no echo event comes
   // back); the input holds a custom free-text answer.
@@ -646,24 +662,23 @@ function ComposerBarContent({
       runLocalCommand(localCommand.name);
       return;
     }
-    // Inline attachments into the prompt — text files as fenced blocks
-    // (mirrors the kernel's `@` mention expansion); images emit an
-    // `<attached-image>` marker the kernel turns into real image parts
-    // when the model declares vision (path is the staged workspace copy,
-    // so sandboxed tools can see it too); binaries stay path references.
-    const blocks = attachments
-      .map((a) =>
-        a.kind === "text" && a.content != null
-          ? `\n\n<attached-file path="${a.path}">\n\`\`\`\n${a.content}${a.truncated ? "\n… (truncated)" : ""}\n\`\`\``
-          : a.kind === "image"
-            ? `\n\n<attached-image path="${a.path}" name="${a.name.replace(/"/g, "")}"/>`
-            : `\n\n[attached binary: ${a.path} — binary file, not inlined]`,
-      )
-      .join("");
-    const payload = `${trimmed}${blocks}`;
-    setText("");
-    setAttachments([]);
+    // Attachments ride inside the prompt text — see `buildPayload` for the markers.
+    const payload = buildPayload(text, attachments);
+    const edit = editing;
+    // Submitting ends an edit: the composer goes back to the draft it held
+    // before the edit (empty when there was none).
+    setText(edit?.stash?.text ?? "");
+    setAttachments(edit?.stash?.attachments ?? []);
+    if (edit) {
+      editSeq.current++;
+      setEditing(null);
+    }
     if (streaming) {
+      if (edit) {
+        // Back at its own slot — an edit never moves the row to the end.
+        pushQueued(insertAt(shown, edit.index, payload));
+        return;
+      }
       // Queue it — delivered as a fresh Prompt the moment this turn ends.
       // Mid-turn steering is still one click away on the queued row.
       // `Enqueue` (not a whole-list write): the actor's deque is the source
@@ -675,6 +690,7 @@ function ComposerBarContent({
         // the message invisible and unprocessed.
         toast.error("入队失败——会话已不可用");
         setText(trimmed);
+        setAttachments(attachments);
       });
       return;
     }
@@ -687,6 +703,7 @@ function ComposerBarContent({
       // visible notice the message looks sent and the app looks wedged.
       toast.error("发送失败——会话已不可用，请重启会话");
       setText(trimmed);
+      setAttachments(attachments);
     }
   };
 
@@ -709,6 +726,8 @@ function ComposerBarContent({
 
   const removeQueued = (i: number) =>
     pushQueued(shown.filter((_, j) => j !== i));
+
+  const clearQueued = () => pushQueued([]);
 
   // Drag-to-reorder — pointer-based, NOT HTML5 DnD: WebKitGTK (Linux
   // webview) never fires dragstart/drop reliably. pointerdown on the grip
@@ -763,30 +782,52 @@ function ComposerBarContent({
     };
   }, [dragIdx, dragOrder, queued, pushQueued]);
 
-  /** Pop the LAST queued prompt back into the composer draft — Codex's
-   *  Alt+↑ gesture; the keyboard path for "edit what I just queued". */
-  const popQueuedToDraft = (): string | null => {
-    if (queued.length === 0) return null;
-    const last = queued[queued.length - 1];
-    pushQueued(queued.slice(0, -1));
-    return last;
+  /** 编辑 — the row leaves the kernel queue at once (a copy left behind would
+   *  drain as its own turn while the user is still editing it), and its text
+   *  and files load into the composer. Files are re-read so the chips show
+   *  current content; one that can no longer be read drops out. */
+  const beginEditQueued = (i: number) => {
+    const payload = shown[i];
+    if (editing || payload === undefined) return;
+    const draft = text.trim() !== "" || attachments.length > 0;
+    const seq = ++editSeq.current;
+    setEditing({ index: i, payload, stash: draft ? { text, attachments } : null });
+    pushQueued(shown.filter((_, j) => j !== i));
+    const parts = splitQueuedPayload(payload);
+    setText(parts.text);
+    setAttachments([]);
+    void Promise.all(
+      parts.paths.map((p) => agent.readAttachment(p.path).catch(() => null)),
+    ).then((loaded) => {
+      if (editSeq.current !== seq) return;
+      const found = loaded.filter((a): a is Attachment => a != null);
+      setAttachments((prev) => [
+        ...found,
+        ...prev.filter((a) => !found.some((f) => f.path === a.path)),
+      ]);
+    });
   };
 
-  /** Swap a queued row into its edit textarea. */
-  const beginEditQueued = (i: number) => {
-    setEditIdx(i);
-    setEditDraft(shown[i] ?? "");
+  /** 取消编辑 — the original payload goes back to its old slot (clamped by
+   *  `insertAt`), and the composer returns to the pre-edit draft. */
+  const cancelEdit = () => {
+    if (!editing) return;
+    editSeq.current++;
+    setEditing(null);
+    pushQueued(insertAt(shown, editing.index, editing.payload));
+    setText(editing.stash?.text ?? "");
+    setAttachments(editing.stash?.attachments ?? []);
   };
-  /** Enter commits — empty text deletes the row, unchanged text is a no-op. */
-  const commitEditQueued = (i: number) => {
-    const trimmed = editDraft.trim();
-    setEditIdx(null);
-    if (!trimmed) {
-      removeQueued(i);
-      return;
-    }
-    if (trimmed === (shown[i] ?? "").trim()) return;
-    pushQueued(shown.map((q, j) => (j === i ? trimmed : q)));
+
+  /** Alt+↑ — the keyboard path for "edit what I just queued": the LAST parked
+   *  prompt takes the same route as its 编辑 button. */
+  const popQueuedToDraft = (): boolean => {
+    if (editing || shown.length === 0) return false;
+    // Only from an empty draft — pulling a parked prompt over text the user is
+    // typing would bury that text under it.
+    if (text.trim() !== "" || attachments.length > 0) return false;
+    beginEditQueued(shown.length - 1);
+    return true;
   };
 
   const cancel = async () => {
@@ -991,7 +1032,7 @@ function ComposerBarContent({
         )}
       >
         <div className="max-w-3xl w-full mx-auto flex flex-col gap-2 pointer-events-auto">
-          {planReady || (pending && !isComputerApproval) || question || hasActiveTodos || queued.length > 0 || pendingSteers.length > 0 ? (
+          {planReady || (pending && !isComputerApproval) || question || hasActiveTodos || queued.length > 0 || pendingSteers.length > 0 || editing ? (
             /* Outer container with attached banner: the plan handoff, approval
                (Priority 1), ask_question and the active todo list (Priority 2)
                all render as rows of this one panel, so the composer reads as a
@@ -1251,116 +1292,177 @@ function ComposerBarContent({
                 </div>
               ) : null}
 
-              {pendingSteers.length > 0 || shown.length > 0 ? (
-                /* Steers in flight and queued follow-ups — parked drafts sent
-                   when the turn ends; approval-strip visual family. */
+              {pendingSteers.length > 0 || shown.length > 0 || editing ? (
+                /* Steers in flight, the queued follow-ups and the edit banner —
+                   one stack of small rows. The list scrolls past a few items so
+                   a long queue cannot push the composer off screen. */
                 <div className="flex flex-col gap-1.5 px-3 pt-0.5">
+                  {shown.length > 0 ? (
+                    <div className="flex items-center gap-2 select-none">
+                      <span className="text-xs font-medium text-neutral-800">排队消息</span>
+                      <span className="rounded-full bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-1.5 font-mono text-[10.5px] leading-4 tabular-nums text-neutral-600">
+                        {shown.length}
+                      </span>
+                      <span className="min-w-0 truncate text-[11px] text-neutral-400">
+                        回合结束后依次发送
+                      </span>
+                      {shown.length >= 2 ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="ml-auto h-6 px-2 text-[11px] text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                          onClick={clearQueued}
+                        >
+                          全部清空
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {editing ? (
+                    /* The edited prompt lives in the composer below; this row
+                       names it and offers the way back to its old slot. */
+                    <div className="flex items-center gap-2 rounded-lg border border-dashed border-[color-mix(in_srgb,var(--husk-black)_18%,transparent)] bg-[color-mix(in_srgb,var(--husk-black)_3%,transparent)] px-2.5 py-1 text-[12px] text-neutral-700 select-none">
+                      <CirclePen className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">
+                        正在编辑第 {editing.index + 1} 条排队消息
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0 h-6 px-2 text-[11px] text-neutral-600 hover:text-neutral-800 cursor-pointer"
+                        onClick={cancelEdit}
+                      >
+                        取消编辑
+                      </Button>
+                    </div>
+                  ) : null}
                   {pendingSteers.map((q, i) => (
                     /* Sent, waiting for the host to find it a home — a status
                        row only: no edit, no drag, no send, no delete. */
-                    <div key={`pending-steer-${i}`} className="flex items-center gap-1.5 pl-1 pr-0">
-                      <Clock className="h-3.5 w-3.5 text-neutral-300 shrink-0" />
-                      <span
-                        title={q}
-                        className="font-mono text-[11px] text-neutral-500 truncate min-w-0 flex-1"
-                      >
+                    <div
+                      key={`pending-steer-${i}`}
+                      className="flex items-center gap-2.5 rounded-lg border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] bg-[color-mix(in_srgb,var(--husk-black)_2%,transparent)] px-2.5 py-1.5 text-[12px] text-neutral-500 select-none"
+                    >
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-neutral-400 animate-pulse" />
+                      <span title={q} className="min-w-0 flex-1 truncate">
                         {q.split("\n")[0]}
                       </span>
                       <span className="shrink-0 text-[11px] text-neutral-400">等待插入</span>
                     </div>
                   ))}
                   {shown.length > 0 ? (
-                    <div className="flex items-center gap-2 text-xs text-neutral-600 font-medium select-none">
-                      <Clock className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-                      <span className="shrink-0 text-neutral-800 font-medium text-xs">
-                        排队消息
-                      </span>
-                      <span className="text-[11px] font-mono text-neutral-500">
-                        {shown.length} 条 · 回合结束后按序发送
-                      </span>
+                    <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+                      {shown.map((q, i) => {
+                        const preview = queuedPreview(q);
+                        return (
+                          <div
+                            key={i}
+                            ref={(el) => {
+                              if (el) rowRefs.current.set(i, el);
+                              else rowRefs.current.delete(i);
+                            }}
+                            className={cn(
+                              "group flex items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] bg-[color-mix(in_srgb,var(--husk-black)_2%,transparent)] py-1 pl-1.5 pr-1 text-[12px] transition-[opacity,border-color] hover:border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)]",
+                              dragIdx === i && "opacity-40",
+                            )}
+                          >
+                            {/* The order number holds the slot; the grip takes it over
+                                on hover, when the row can be dragged. */}
+                            <span className="relative flex h-5 w-5 shrink-0 items-center justify-center">
+                              <span
+                                className={cn(
+                                  "font-mono text-[10.5px] tabular-nums text-neutral-400 group-hover:hidden",
+                                  dragIdx === i && "hidden",
+                                )}
+                              >
+                                {i + 1}
+                              </span>
+                              <GripVertical
+                                onPointerDown={(e) => {
+                                  e.preventDefault();
+                                  setDragIdx(i);
+                                }}
+                                className={cn(
+                                  "absolute inset-0 m-auto h-3.5 w-3.5 hidden group-hover:block text-neutral-400 hover:text-neutral-600 cursor-grab active:cursor-grabbing touch-none",
+                                  dragIdx === i && "block",
+                                )}
+                              />
+                            </span>
+                            <span
+                              title={q}
+                              className="min-w-0 flex-1 truncate text-neutral-800"
+                            >
+                              {preview.head || "仅附件"}
+                            </span>
+                            {preview.moreLines > 0 ? (
+                              <span className="shrink-0 text-[10.5px] text-neutral-400">
+                                +{preview.moreLines} 行
+                              </span>
+                            ) : null}
+                            {preview.paths.length > 0 ? (
+                              <span className="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500">
+                                {preview.paths.slice(0, 2).map((p) => (
+                                  <span
+                                    key={p.path}
+                                    title={p.path}
+                                    className="inline-flex max-w-[96px] items-center gap-1 rounded bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] px-1 py-px"
+                                  >
+                                    {p.kind === "image" ? (
+                                      <Image className="h-3 w-3 shrink-0" />
+                                    ) : (
+                                      <Paperclip className="h-3 w-3 shrink-0" />
+                                    )}
+                                    <span className="truncate">{p.name}</span>
+                                  </span>
+                                ))}
+                                {preview.paths.length > 2 ? (
+                                  <span>+{preview.paths.length - 2}</span>
+                                ) : null}
+                              </span>
+                            ) : null}
+                            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                              <TooltipSimple content="立即发送（插入当前回合）">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label="立即发送"
+                                  className="h-6 w-6 text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                                  onClick={() => void steerNow(i)}
+                                >
+                                  <CornerDownRight className="h-3.5 w-3.5" />
+                                </Button>
+                              </TooltipSimple>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label="编辑"
+                                title={editing ? "先完成当前编辑" : "编辑（取回到输入框）"}
+                                disabled={editing !== null}
+                                className="h-6 w-6 text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                                onClick={() => beginEditQueued(i)}
+                              >
+                                <CirclePen className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label="移除"
+                                className="h-6 w-6 text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                                onClick={() => removeQueued(i)}
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   ) : null}
-                  {shown.map((q, i) => (
-                    <div
-                      key={i}
-                      ref={(el) => {
-                        if (el) rowRefs.current.set(i, el);
-                        else rowRefs.current.delete(i);
-                      }}
-                      className={cn(
-                        "flex items-center gap-1.5 pl-1 pr-0 rounded-md transition-opacity",
-                        dragIdx === i && "opacity-40",
-                      )}
-                    >
-                      <GripVertical
-                        onPointerDown={(e) => {
-                          e.preventDefault();
-                          setDragIdx(i);
-                        }}
-                        className="h-3.5 w-3.5 text-neutral-300 hover:text-neutral-500 cursor-grab active:cursor-grabbing shrink-0 touch-none"
-                      />
-                      {editIdx === i ? (
-                        /* Inline edit — same chip shell, textarea inside;
-                           Enter commits, Esc cancels, blur commits too. */
-                        <Textarea
-                          autoFocus
-                          value={editDraft}
-                          rows={1}
-                          onChange={(e) => setEditDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
-                              e.preventDefault();
-                              commitEditQueued(i);
-                            }
-                            if (e.key === "Escape") {
-                              e.preventDefault();
-                              setEditIdx(null);
-                            }
-                          }}
-                          onBlur={() => commitEditQueued(i)}
-                          shellClassName="flex-1 min-w-0 rounded-md"
-                          className="min-h-0 px-2 py-0.5 font-mono text-[11px] leading-snug text-neutral-700"
-                        />
-                      ) : (
-                        <span
-                          title="点击编辑 · Enter 保存 · Esc 取消"
-                          onClick={() => beginEditQueued(i)}
-                          className="font-mono text-[11px] text-neutral-600 truncate min-w-0 flex-1 bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] border border-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-2 py-0.5 rounded select-none cursor-text hover:border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)]"
-                        >
-                          {q.split("\n")[0]}
-                        </span>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="shrink-0 h-6 px-2 text-[11px] border-neutral-300 text-neutral-600 hover:bg-neutral-200 cursor-pointer"
-                        onClick={() => void steerNow(i)}
-                      >
-                        立即发送
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="编辑"
-                        title="编辑排队消息"
-                        className="text-neutral-500 hover:text-neutral-700"
-                        onClick={() => beginEditQueued(i)}
-                      >
-                        <CirclePen className="h-3 w-3" />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="移除"
-                        className="text-neutral-500 hover:text-neutral-700"
-                        onClick={() => removeQueued(i)}
-                      >
-                        <X className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))}
                 </div>
               ) : null}
 
@@ -1387,6 +1489,8 @@ function ComposerBarContent({
                   onAcceptMention={acceptMention}
                   onDismissMention={() => setMention(null)}
                   onPopQueued={popQueuedToDraft}
+                  onCancelEdit={cancelEdit}
+                  editing={editing !== null}
                   officeMode={officeMode}
                 />
 
@@ -1445,6 +1549,8 @@ function ComposerBarContent({
                 onAcceptMention={acceptMention}
                 onDismissMention={() => setMention(null)}
                 onPopQueued={popQueuedToDraft}
+                onCancelEdit={cancelEdit}
+                editing={editing !== null}
                 officeMode={officeMode}
               />
 
@@ -1635,6 +1741,8 @@ function ComposerTextarea({
   onAcceptMention,
   onDismissMention,
   onPopQueued,
+  onCancelEdit,
+  editing,
   officeMode,
 }: {
   value: string;
@@ -1657,9 +1765,13 @@ function ComposerTextarea({
   onRefreshMention: (value: string, caret: number) => void;
   onAcceptMention: (row: MentionRow) => void;
   onDismissMention: () => void;
-  /** Alt+↑ on an empty composer pops the newest parked prompt back into the
-   *  draft — returns its text (null when the queue is empty). */
-  onPopQueued: () => string | null;
+  /** Alt+↑ on an empty composer pulls the newest parked prompt back into the
+   *  composer for editing — false when there is nothing to pull. */
+  onPopQueued: () => boolean;
+  /** Esc while editing a queued prompt cancels the edit (only consumed when
+   *  no mention popup is open). */
+  onCancelEdit: () => void;
+  editing: boolean;
   /** 工作 mode — mention triggers are off, so the placeholder drops the
    *  `@`/`/`/`$` grammar hints. */
   officeMode?: boolean;
@@ -1820,9 +1932,8 @@ function ComposerTextarea({
               // Codex parity — Alt+↑ on an empty composer pops the newest
               // queued prompt back into the draft for editing.
               const popped = onPopQueued();
-              if (popped != null) {
+              if (popped) {
                 e.preventDefault();
-                onChange(popped);
                 return;
               }
             }
@@ -1848,6 +1959,11 @@ function ComposerTextarea({
                 onDismissMention();
                 return;
               }
+            }
+            if (editing && e.key === "Escape") {
+              e.preventDefault();
+              onCancelEdit();
+              return;
             }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

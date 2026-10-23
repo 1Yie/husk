@@ -2,12 +2,13 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { ComposerBar } from "../index";
+import { buildPayload } from "../queued-payload";
 import { applyEvents } from "@/features/chat/hooks/apply-event";
 import { emptyView, pendingApprovalOf } from "@/features/chat/hooks/stream-view";
 import { useAgentStore } from "@/stores/agent-store";
 import { renderWithProviders } from "@/test/render";
 import { deferred, mockCommand, modelInfo, tauri } from "@/test/tauri";
-import { CONFIG_CHANGED_EVENT, type ModelInfo } from "@/lib/agent-ipc/sessions";
+import { CONFIG_CHANGED_EVENT, type Attachment, type ModelInfo } from "@/lib/agent-ipc/sessions";
 import { useDockStore } from "@/features/chat/components/dock/state";
 import { onOpenSettings } from "@/lib/settings-bus";
 import { toast } from "sonner";
@@ -384,5 +385,106 @@ describe("slash command panel", () => {
     expect(onMentionOpenChange).toHaveBeenLastCalledWith(true);
     await user.keyboard("{Escape}");
     expect(onMentionOpenChange).toHaveBeenLastCalledWith(false);
+  });
+});
+
+describe("queued prompt editing", () => {
+  const queued = ["先看这个", "第二条", "第三条"];
+  // Mirrors the kernel echo: a SetQueued write lands in the store's view, the
+  // way `QueuedPrompts` does in production, so the strip re-renders from it.
+  const liveComposer = (items: string[]) => {
+    const seeded = { ...emptyView(), streaming: true, queuedPrompts: items };
+    useAgentStore.setState({ workspaceRoot: "/ws", activeId: 1 });
+    useAgentStore.getState().loadView("/ws", 1, seeded);
+    mockCommand("agent_cmd", (args) => {
+      const cmd = args?.cmd as { SetQueued?: { items: string[] } } | undefined;
+      if (cmd?.SetQueued) {
+        const items = cmd.SetQueued.items;
+        useAgentStore.setState((s) => {
+          const views = new Map(s.views);
+          views.set("/ws:1", applyEvents(views.get("/ws:1")!, [{ QueuedPrompts: { items } }]));
+          return { views };
+        });
+      }
+      return undefined;
+    });
+    const Live = () => {
+      const live = useAgentStore((s) => s.views.get("/ws:1"));
+      return <ComposerBar view={live ?? seeded} sessionKey="/ws:1" />;
+    };
+    return renderWithProviders(<Live />);
+  };
+  const setQueuedCalls = () =>
+    tauri.invoke.mock.calls
+      .filter(([cmd]) => cmd === "agent_cmd")
+      .map(([, args]) => (args as { cmd: { SetQueued?: { items: string[] } } }).cmd.SetQueued)
+      .filter((c): c is { items: string[] } => c !== undefined);
+  const editButton = (n: number) => screen.getAllByRole("button", { name: "编辑" })[n];
+
+  test("编辑 pulls the row out of the queue into the composer", async () => {
+    const user = userEvent.setup();
+    liveComposer(queued);
+    await loaded();
+    await user.click(editButton(1));
+    expect(setQueuedCalls().at(-1)).toEqual({ items: ["先看这个", "第三条"] });
+    expect(screen.getByRole("textbox")).toHaveValue("第二条");
+    expect(screen.getByText("正在编辑第 2 条排队消息")).toBeInTheDocument();
+  });
+
+  test("编辑 re-reads attachments by path and shows their chips", async () => {
+    const user = userEvent.setup();
+    const shot: Attachment = { path: "/ws/.husk/attachments/shot.png", name: "shot.png", kind: "image" };
+    mockCommand("agent_session", () => shot, "read_attachment");
+    liveComposer([buildPayload("看这张图", [shot])]);
+    await loaded();
+    await user.click(editButton(0));
+    expect(await screen.findByText("shot.png")).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("看这张图");
+  });
+
+  test("取消编辑 puts the original payload back at its index", async () => {
+    const user = userEvent.setup();
+    liveComposer(queued);
+    await loaded();
+    await user.click(editButton(1));
+    await user.click(screen.getByRole("button", { name: "取消编辑" }));
+    expect(setQueuedCalls().at(-1)).toEqual({ items: queued });
+    expect(screen.queryByText(/正在编辑/)).not.toBeInTheDocument();
+  });
+
+  test("submitting an edit while streaming reinserts it at its original index", async () => {
+    const user = userEvent.setup();
+    liveComposer(queued);
+    await loaded();
+    await user.click(editButton(1));
+    await user.clear(screen.getByRole("textbox"));
+    await user.type(screen.getByRole("textbox"), "改过的第二条");
+    await user.click(screen.getByRole("button", { name: "排队发送" }));
+    expect(setQueuedCalls().at(-1)).toEqual({ items: ["先看这个", "改过的第二条", "第三条"] });
+    expect(
+      tauri.invoke.mock.calls.filter(([cmd, args]) =>
+        cmd === "agent_cmd" && "Enqueue" in ((args as { cmd?: object })?.cmd ?? {})),
+    ).toHaveLength(0);
+  });
+
+  test("a draft typed before the edit comes back after the edit is submitted", async () => {
+    const user = userEvent.setup();
+    liveComposer(queued);
+    await loaded();
+    await user.type(screen.getByRole("textbox"), "我还没写完");
+    await user.click(editButton(0));
+    expect(screen.getByRole("textbox")).toHaveValue("先看这个");
+    await user.click(screen.getByRole("button", { name: "排队发送" }));
+    expect(screen.getByRole("textbox")).toHaveValue("我还没写完");
+    expect(screen.queryByText(/正在编辑/)).not.toBeInTheDocument();
+  });
+
+  test("only one row can be in edit at a time", async () => {
+    const user = userEvent.setup();
+    liveComposer(queued);
+    await loaded();
+    await user.click(editButton(0));
+    const others = screen.getAllByRole("button", { name: "编辑" });
+    expect(others.every((b) => b.hasAttribute("disabled"))).toBe(true);
   });
 });
