@@ -612,7 +612,8 @@ describe("conversation lifecycle through the event subscription", () => {
     }));
     const { container } = renderWithProviders(<Conversation />);
     await act(async () => { await vi.advanceTimersByTimeAsync(50); });
-    // top handle, prompt, at most 6 answer dashes, bottom handle
-    expect(container.querySelectorAll(".group\\/item").length).toBe(9);
+    // jsdom lays nothing out, so the rail's lane measures 0px and it falls back
+    // to its 9-row floor: top handle, a 5-row window, one `~` gap, bottom handle
+    expect(container.querySelectorAll(".group\\/item").length).toBe(8);
   });
 });
