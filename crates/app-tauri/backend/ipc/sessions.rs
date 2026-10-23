@@ -448,6 +448,34 @@ fn agent_session_inner(
         };
         return Ok(serde_json::json!({ "messages": messages }));
     }
+    // `active_children` — the subagents a session is still running. A webview
+    // that reloads mid-turn loses the events that drew their cards, and the
+    // history page holds no row for a child that has not reported yet, so a
+    // reopen would show neither the card nor the 子代理 dock entry. The kernel's
+    // live registry is the only description left; a session with no live actor
+    // has no children, so the answer is empty rather than stale.
+    if op == "active_children" {
+        let id = id.ok_or("active_children needs id")?;
+        let children = {
+            let m = state.lock().map_err(|e| e.to_string())?;
+            let root = match path.as_deref().filter(|p| !p.is_empty()) {
+                Some(given) => given.to_string(),
+                None => m.workspace_root.to_string_lossy().into_owned(),
+            };
+            m.active_children(&root, id)
+        };
+        return Ok(serde_json::json!({
+            "children": children
+                .iter()
+                .map(|c| serde_json::json!({
+                    "child_id": c.child_id,
+                    "label": c.label,
+                    "task": c.task,
+                    "waiting": c.waiting,
+                }))
+                .collect::<Vec<_>>(),
+        }));
+    }
     // Linked workspaces: the dirs this session may reach beyond its own root.
     // The manager keeps both layers (workspace-level grants survive the
     // session, session-level ones do not) and pushes the merged list into the

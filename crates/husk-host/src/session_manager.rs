@@ -2158,6 +2158,25 @@ impl SessionManager {
         agent_kernel::tools::delegate::steer_child(self.active_id, child_id, text)
     }
 
+    /// The running subagents of one session, with the label, task and question
+    /// a redrawn card needs. A webview that reloads mid-turn loses every event
+    /// that drew the cards, and history keeps no row for a child still running,
+    /// so the kernel's live registry is the only description left.
+    ///
+    /// Empty for a session with no live actor: a child cannot outlive the
+    /// process, and a parked workspace's session of the same number must not be
+    /// read through the active workspace's manager.
+    pub fn active_children(
+        &self,
+        root: &str,
+        id: i64,
+    ) -> Vec<agent_kernel::tools::delegate::ActiveChild> {
+        if self.handle_at(root, id).is_none() {
+            return Vec::new();
+        }
+        agent_kernel::tools::delegate::active_child_infos(id)
+    }
+
     /// Load a session's persisted history (for rebuilding a closed view).
     pub fn store_history(&self, id: i64) -> Option<Vec<agent_llm::types::ChatMessage>> {
         self.store.load_history(id)
