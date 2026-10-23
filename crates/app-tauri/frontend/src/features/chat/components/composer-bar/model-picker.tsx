@@ -15,9 +15,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { ReasoningEffort } from "@/components/ui/reasoning-effort";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { THINKING_LEVELS } from "@/lib/thinking";
 import { groupOptions } from "@/lib/group-options";
 import { cn } from "@/lib/utils";
+import type { ToolbarDensity } from "@/features/chat/components/composer-bar/toolbar-density";
 import {
   Bot,
   Brain,
@@ -162,6 +164,7 @@ export function ModelPicker({
   onSelectThinkingLevel,
   open: openProp,
   onOpenChange,
+  density = "full",
 }: {
   activeModel: string;
   activeProvider: string;
@@ -176,6 +179,8 @@ export function ModelPicker({
    *  the trigger alone cannot do. Uncontrolled when absent. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /** The toolbar's width tier — caps the name, then drops the tier's word. */
+  density?: ToolbarDensity;
 }) {
   const [view, setView] = useState<View>("root");
   const [selfOpen, setSelfOpen] = useState(false);
@@ -218,16 +223,28 @@ export function ModelPicker({
   }));
   const thinkingAvailable = hasReasoning && tiers.length > 0;
 
+  /** How much of the model name the trigger may print at this tier — the name
+   *  is the only thing on the toolbar row allowed to give way. */
+  const nameCap =
+    density === "full" ? "max-w-[140px]" : density === "compact" ? "max-w-[96px]" : "max-w-[72px]";
+  const activeTierToken =
+    tiers.find((l) => l.value === activeThinkingLevel)?.token ?? activeThinkingLevel;
+
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           aria-label={`当前模型: ${activeItem ? modelLabel(activeItem) : activeModel || "未选择"} (${activeProvider}/${activeModel})`}
-          className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer"
+          className={cn(
+            "flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer",
+            // Below full the chip keeps its size and lets the name truncate.
+            density !== "full" && "shrink-0",
+          )}
         >
           <span
             className={cn(
-              "truncate max-w-[140px]",
+              "truncate min-w-0",
+              nameCap,
               // No display name → the label IS the id; keep the old mono
               // look instead of re-styling an identifier as prose.
               (!activeItem || modelLabel(activeItem) === activeModel) && "font-mono text-[11.5px]",
@@ -235,21 +252,42 @@ export function ModelPicker({
           >
             {activeItem ? modelLabel(activeItem) : activeModel || "选择模型"}
           </span>
-          {thinkingAvailable && (
-            // The thinking level rides with the model — one control picks
-            // both what answers and how hard it thinks.
+          {/* The thinking level rides with the model — one control picks both
+              what answers and how hard it thinks. Below full its word is the
+              first thing to go: the icon and a tooltip say it in 12px. */}
+          {thinkingAvailable && density !== "tight" && (
             <span className="flex items-center gap-1 shrink-0 pl-1.5 border-l border-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)]">
-              <Brain
-                className={cn(
-                  "h-3 w-3 shrink-0",
-                  activeThinkingLevel === "off"
-                    ? "text-neutral-400"
-                    : "text-purple-600 dark:text-purple-400",
-                )}
-              />
-              <span className="truncate max-w-[5em] text-[11px] text-neutral-500">
-                {tiers.find((l) => l.value === activeThinkingLevel)?.token ?? activeThinkingLevel}
-              </span>
+              {density === "full" ? (
+                <>
+                  <Brain
+                    className={cn(
+                      "h-3 w-3 shrink-0",
+                      activeThinkingLevel === "off"
+                        ? "text-neutral-400"
+                        : "text-purple-600 dark:text-purple-400",
+                    )}
+                  />
+                  <span className="truncate max-w-[5em] text-[11px] text-neutral-500">
+                    {activeTierToken}
+                  </span>
+                </>
+              ) : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="flex items-center">
+                      <Brain
+                        className={cn(
+                          "h-3 w-3 shrink-0",
+                          activeThinkingLevel === "off"
+                            ? "text-neutral-400"
+                            : "text-purple-600 dark:text-purple-400",
+                        )}
+                      />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">思考：{activeTierToken}</TooltipContent>
+                </Tooltip>
+              )}
             </span>
           )}
           <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />

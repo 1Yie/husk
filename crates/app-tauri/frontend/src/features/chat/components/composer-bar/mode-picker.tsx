@@ -1,5 +1,11 @@
-// Agent-mode / permission-mode / thinking-level pickers — the three
-// dropdowns on the left of the composer toolbar.
+// Agent-mode / permission-mode pickers and the 关联工作区 grant menu — the left
+// side of the composer toolbar. A grant is not a mode, so it sits BESIDE the
+// permission picker rather than inside its choices, wearing the same pill chrome
+// so the row still reads as one group of controls.
+//
+// Every control follows the toolbar's density tier: labels when the row is wide,
+// icons when it is not, and one collapsed menu when even the icons would crowd
+// the row. Nothing shrinks below its icon — a squeezed pill is worse than none.
 
 import {
   DropdownMenu,
@@ -10,10 +16,10 @@ import {
   DropdownMenuItem,
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   ChevronsUpDown,
   Check,
-  Bot,
   FileText,
   Shield,
   PenLine,
@@ -25,10 +31,12 @@ import {
   Flag,
   Plus,
   Folders,
+  SlidersHorizontal,
 } from "@keyline-icons/react";
 import { useLinkedRoots } from "@/lib/linked-roots";
 import { LinkedRootRow } from "@/components/linked-roots";
 import { cn } from "@/lib/utils";
+import type { ToolbarDensity } from "@/features/chat/components/composer-bar/toolbar-density";
 import { useState } from "react";
 
 // Each mode carries its own icon so the trigger and the menu tell the modes
@@ -50,7 +58,86 @@ export const AGENT_MODES = [
   { value: "office", label: "工作", desc: "Word / Excel / PPT — 创建与编辑 Office 文档", icon: FileText },
 ] as const;
 
-/** The model picker's primary label: the `name` set in settings, falling back
+type ModeSpec = (typeof AGENT_MODES)[number] | (typeof PERMISSION_MODES)[number];
+
+/** Pill chrome shared by every left-hand control. `shrink-0` at every tier: a
+ *  pill allowed to shrink collapses into a bordered sliver with no label. */
+const PILL =
+  "flex shrink-0 items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer";
+
+/** Icon-only square: the same chrome with one glyph and neither label nor
+ *  chevron to crowd it. */
+const ICON_PILL = `${PILL} h-7 justify-center px-1.5`;
+
+/** A picker's trigger in its two tiers — labelled pill, or icon-only square
+ *  whose tooltip and aria-label carry the text the label gave up. Returns the
+ *  DropdownMenuTrigger itself so the caller keeps owning the menu content. */
+function PickerTrigger({
+  labelled,
+  ariaLabel,
+  iconLabel,
+  label,
+  icon,
+}: {
+  labelled: boolean;
+  /** The short name the trigger carries while its label is on screen. */
+  ariaLabel: string;
+  /** The full sentence the icon-only trigger carries instead — also its tooltip. */
+  iconLabel: string;
+  label: string;
+  icon: React.ReactNode;
+}) {
+  const trigger = (
+    <DropdownMenuTrigger asChild>
+      <button aria-label={labelled ? ariaLabel : iconLabel} className={labelled ? PILL : ICON_PILL}>
+        {icon}
+        {labelled && (
+          <>
+            <span className="truncate max-w-[7em]">{label}</span>
+            <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+          </>
+        )}
+      </button>
+    </DropdownMenuTrigger>
+  );
+  if (labelled) return trigger;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+      <TooltipContent side="top">{iconLabel}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** One mode choice: the mode's icon and label on the first line, what it means
+ *  underneath. Shared by every tier's menu, so the collapsed menu at the
+ *  tightest density reads exactly like the full ones. */
+function ModeItem({
+  mode,
+  active,
+  onSelect,
+}: {
+  mode: ModeSpec;
+  active: boolean;
+  onSelect: (value: string) => void;
+}) {
+  const Icon = mode.icon;
+  return (
+    <DropdownMenuItem
+      onClick={() => onSelect(mode.value)}
+      className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
+    >
+      <div className="flex items-center justify-between w-full">
+        <span className="flex items-center gap-1.5 font-medium text-xs text-neutral-800">
+          <Icon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+          {mode.label}
+        </span>
+        {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
+      </div>
+      <span className="text-[11px] text-neutral-500 leading-tight">{mode.desc}</span>
+    </DropdownMenuItem>
+  );
+}
 
 /** The composer toolbar's left-side pickers: agent mode and permission mode.
  *  The thinking level is NOT here — it lives in the model picker on the right,
@@ -65,6 +152,7 @@ export function ModePicker({
   switchMode,
   workspaceRoot,
   sessionId,
+  density = "full",
 }: {
   agentMode: string;
   agentModeLabel: string;
@@ -80,6 +168,8 @@ export function ModePicker({
    *  names one. Absent → the entry stays hidden. */
   workspaceRoot?: string;
   sessionId?: number;
+  /** The toolbar's own width tier (see toolbar-density.ts). */
+  density?: ToolbarDensity;
 }) {
   const ModeIcon = PERMISSION_MODES.find((m) => m.value === mode)?.icon ?? Shield;
   const AgentModeIcon = AGENT_MODES.find((m) => m.value === agentMode)?.icon ?? Hammer;
@@ -87,124 +177,139 @@ export function ModePicker({
   // Where a new grant lands: this session by default (a grant should not
   // outlive the task unless the user says so), remembered on request.
   const [addScope, setAddScope] = useState<"session" | "workspace">("session");
+  // `office` never appears in the agent-mode menu — it's a workspace-level mode
+  // switched from the sidebar tab, not a per-session pick.
+  const agentModes = AGENT_MODES.filter((m) => m.value !== "office");
+  const labelled = density === "full";
+
   return (
     <>
-        {/* Office mode is workspace-scoped — every session there is
-            `office` by construction, so neither the agent-mode nor the
-            permission picker applies. The thinking-level picker stays. */}
-        {!officeMode && (
+      {/* The tightest row cannot carry three borders: both modes fold into one
+          menu, as labelled sections so either choice stays one click away.
+          关联工作区 keeps its own button below — its menu is a list of grants,
+          not a mode choice, and folding it in would need a second level. */}
+      {!officeMode && density === "tight" && (
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label="代理模式"
-              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
-            >
-              <AgentModeIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-              <span className="truncate max-w-[7em]">{agentModeLabel}</span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-            </button>
-          </DropdownMenuTrigger>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <button aria-label="模式与权限" className={ICON_PILL}>
+                  <SlidersHorizontal className="h-3.5 w-3.5 text-neutral-500" />
+                </button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="top">模式与权限</TooltipContent>
+          </Tooltip>
           <DropdownMenuContent align="start" side="top" className="w-64">
             <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
               代理模式
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              {/* `office` never appears here — it's a workspace-level mode
-                  switched from the sidebar tab, not a per-session pick. */}
-              {AGENT_MODES.filter((m) => m.value !== "office").map((m) => {
-                const active = m.value === agentMode;
-                return (
-                  <DropdownMenuItem
-                    key={m.value}
-                    onClick={() => void switchAgentMode(m.value)}
-                    className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className="flex items-center gap-1.5 font-medium text-xs text-neutral-800">
-                        <m.icon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-                        {m.label}
-                      </span>
-                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                    </div>
-                    <span className="text-[11px] text-neutral-500 leading-tight">
-                      {m.desc}
-                    </span>
-                  </DropdownMenuItem>
-                );
-              })}
+              {agentModes.map((m) => (
+                <ModeItem
+                  key={m.value}
+                  mode={m}
+                  active={m.value === agentMode}
+                  onSelect={(value) => void switchAgentMode(value)}
+                />
+              ))}
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+              权限模式
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              {PERMISSION_MODES.map((m) => (
+                <ModeItem
+                  key={m.value}
+                  mode={m}
+                  active={m.value === mode}
+                  onSelect={(value) => void switchMode(value)}
+                />
+              ))}
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-        )}
+      )}
 
-        {!officeMode && (
+      {/* Office mode is workspace-scoped — every session there is `office` by
+          construction, so neither the agent-mode nor the permission picker
+          applies. The thinking-level picker stays. */}
+      {!officeMode && density !== "tight" && (
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label="权限模式"
-              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
-            >
-              <ModeIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-              <span className="truncate max-w-[7em]">{modeLabel}</span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-            </button>
-          </DropdownMenuTrigger>
+          <PickerTrigger
+            labelled={labelled}
+            ariaLabel="代理模式"
+            iconLabel={`代理模式：${agentModeLabel}`}
+            label={agentModeLabel}
+            icon={<AgentModeIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />}
+          />
+          <DropdownMenuContent align="start" side="top" className="w-64">
+            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+              代理模式
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              {agentModes.map((m) => (
+                <ModeItem
+                  key={m.value}
+                  mode={m}
+                  active={m.value === agentMode}
+                  onSelect={(value) => void switchAgentMode(value)}
+                />
+              ))}
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
+      {!officeMode && density !== "tight" && (
+        <DropdownMenu>
+          <PickerTrigger
+            labelled={labelled}
+            ariaLabel="权限模式"
+            iconLabel={`权限模式：${modeLabel}`}
+            label={modeLabel}
+            icon={<ModeIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />}
+          />
           <DropdownMenuContent align="start" side="top" className="w-64">
             <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
               权限模式
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              {PERMISSION_MODES.map((m) => {
-                const active = m.value === mode;
-                return (
-                  <DropdownMenuItem
-                    key={m.value}
-                    onClick={() => void switchMode(m.value)}
-                    className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className="flex items-center gap-1.5 font-medium text-xs text-neutral-800">
-                        <m.icon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-                        {m.label}
-                      </span>
-                      {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                    </div>
-                    <span className="text-[11px] text-neutral-500 leading-tight">
-                      {m.desc}
-                    </span>
-                  </DropdownMenuItem>
-                );
-              })}
+              {PERMISSION_MODES.map((m) => (
+                <ModeItem
+                  key={m.value}
+                  mode={m}
+                  active={m.value === mode}
+                  onSelect={(value) => void switchMode(value)}
+                />
+              ))}
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-        )}
+      )}
 
-        {/* A grant is not a mode: it sits BESIDE the permission picker rather
-            than inside its five choices. Same pill shape, so the toolbar still
-            reads as one row of controls. */}
-        {/* Re-read on open: a grant can land without this menu touching it —
-            the model's `link_workspace` call, or another window's change. The
-            hook only refetches on mount, so opening is the refresh point (and
-            nothing is fetched while the menu stays closed). */}
-        {!officeMode && links.ready && (
+      {/* Re-read on open: a grant can land without this menu touching it — the
+          model's `link_workspace` call, or another window's change. The hook
+          only refetches on mount, so opening is the refresh point (and nothing
+          is fetched while the menu stays closed). */}
+      {!officeMode && links.ready && (
         <DropdownMenu
           onOpenChange={(open) => {
             if (open) void links.reload();
           }}
         >
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label="关联工作区"
-              className="flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--husk-n200)_70%,transparent)] rounded-lg transition-colors border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] select-none cursor-pointer"
-            >
-              <Folders className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-              <span className="truncate max-w-[7em]">关联工作区</span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
-            </button>
-          </DropdownMenuTrigger>
+          <PickerTrigger
+            labelled={labelled}
+            ariaLabel="关联工作区"
+            iconLabel="关联工作区"
+            label="关联工作区"
+            icon={<Folders className="h-3.5 w-3.5 text-neutral-500 shrink-0" />}
+          />
           <DropdownMenuContent align="start" side="top" className="w-[22rem] p-1">
             <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
               关联工作区
@@ -259,8 +364,7 @@ export function ModePicker({
             </div>
           </DropdownMenuContent>
         </DropdownMenu>
-        )}
-
+      )}
     </>
   );
 }

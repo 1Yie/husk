@@ -25,6 +25,10 @@ import {
 import { MentionPopup, type MentionRow } from "@/features/chat/components/composer-bar/mention-popup";
 import { BUILTIN_COMMANDS, localCommandOf } from "@/features/chat/components/composer-bar/commands";
 import { ModelPicker } from "@/features/chat/components/composer-bar/model-picker";
+import {
+  toolbarDensity,
+  type ToolbarDensity,
+} from "@/features/chat/components/composer-bar/toolbar-density";
 import { useDockStore } from "@/features/chat/components/dock/state";
 import { openSettings } from "@/lib/settings-bus";
 import { AttachmentChips } from "@/features/chat/components/composer-bar/attachment-chips";
@@ -2020,12 +2024,31 @@ function ComposerToolbar({
 }) {
   const canSubmit = text.trim().length > 0 || hasAttachments;
 
+  // The row's own width decides the density — never the window's: the main
+  // column narrows when the sidebar or the dock widens, and nothing resizes the
+  // window when it does. Starts at `full` so the first paint is the labelled
+  // one, then settles after a single measurement.
+  const [density, setDensity] = useState<ToolbarDensity>("full");
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      const next = toolbarDensity(entry ? entry.contentRect.width : row.clientWidth);
+      // An unchanged tier bails out of the render.
+      setDensity((prev) => (prev === next ? prev : next));
+    });
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    // `min-w-0` on both groups is what lets a narrow window compress the row
-    // instead of pushing the model chip / send button off the right edge —
-    // `justify-between` alone pins the ends and lets the chips overflow.
-    <div className="flex items-center justify-between gap-2 pt-1">
-      <div className="flex items-center gap-1.5 min-w-0">
+    // The left group holds its size — every control inside it is `shrink-0` —
+    // and the right group is the one that gives way: only the model's name may
+    // truncate, so a narrow column never slides a label under a chevron.
+    <div ref={rowRef} data-density={density} className="flex items-center justify-between gap-2 pt-1">
+      <div className={cn("flex items-center gap-1.5 min-w-0", density !== "full" && "shrink-0")}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -2033,7 +2056,7 @@ function ComposerToolbar({
               size="icon-sm"
               aria-label="添加附件"
               className={cn(
-              "w-7 h-7 rounded-full bg-neutral-100 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] hover:text-neutral-800 hover:bg-neutral-200 dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)]",
+              "shrink-0 w-7 h-7 rounded-full bg-neutral-100 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] hover:text-neutral-800 hover:bg-neutral-200 dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)]",
               INK_MUTED,
             )}
             >
@@ -2075,10 +2098,11 @@ function ComposerToolbar({
           mode={mode}
           modeLabel={modeLabel}
           switchMode={switchMode}
+          density={density}
         />
       </div>
 
-      <div className="flex items-center gap-2 min-w-0 shrink-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1 justify-end">
         <ModelPicker
           activeModel={activeModel}
           activeProvider={activeProvider}
@@ -2091,6 +2115,7 @@ function ComposerToolbar({
           thinkingMap={thinkingMap}
           effectiveThinkingLevels={effectiveThinkingLevels}
           onSelectThinkingLevel={onSelectThinkingLevel}
+          density={density}
         />
 
         {streaming ? (
@@ -2100,7 +2125,7 @@ function ComposerToolbar({
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    className="w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)] dark:border-[var(--husk-n300)] flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
+                    className="shrink-0 w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)] dark:border-[var(--husk-n300)] flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
                     onClick={() => void submit()}
                     aria-label="排队发送"
                   >
@@ -2114,7 +2139,7 @@ function ComposerToolbar({
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="group relative w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)] dark:border-[var(--husk-n300)] flex items-center justify-center cursor-pointer transition-all shadow-xs"
+                className="group relative shrink-0 w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 border border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] dark:bg-[var(--husk-hover)] dark:hover:bg-[var(--husk-border)] dark:border-[var(--husk-n300)] flex items-center justify-center cursor-pointer transition-all shadow-xs"
                 onClick={() => void cancel()}
                 aria-label="中断回复"
               >
@@ -2134,7 +2159,7 @@ function ComposerToolbar({
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="w-8 h-8 rounded-full bg-neutral-900 hover:bg-black text-white flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
+                className="shrink-0 w-8 h-8 rounded-full bg-neutral-900 hover:bg-black text-white flex items-center justify-center cursor-pointer transition-all shadow-xs active:scale-95"
                 onClick={() => void submit()}
                 aria-label="发送"
               >
@@ -2147,7 +2172,7 @@ function ComposerToolbar({
           <button
             type="button"
             disabled
-            className="w-8 h-8 rounded-full bg-neutral-100 text-neutral-300 flex items-center justify-center cursor-not-allowed border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] dark:bg-[var(--husk-active)] dark:text-[var(--husk-focus)] dark:border-[var(--husk-border)] transition-all select-none"
+            className="shrink-0 w-8 h-8 rounded-full bg-neutral-100 text-neutral-300 flex items-center justify-center cursor-not-allowed border border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] dark:bg-[var(--husk-active)] dark:text-[var(--husk-focus)] dark:border-[var(--husk-border)] transition-all select-none"
             aria-label="无法发送 (请输入内容)"
           >
             <ArrowUp className="h-4 w-4" />
