@@ -18,18 +18,24 @@ xxhash-rust.workspace = true
 hnsw_rs = "0.3"
 tokio.workspace = true
 # Local sentence embeddings for recall. Pulls ONNX Runtime binaries plus a
-# ~250 MB model downloaded on first use, so it is opt-in: rustls keeps the
-# TLS stack out of the dependency tree (this crate forbids `reqwest`).
+# ~240 MB model downloaded on first use, so it is opt-in. The model files are
+# fetched by `memory/semantic_fetch`, not by fastembed's own hub client: that
+# one ignores proxies, trusts only a bundled root store, and promotes a
+# resumed download without checking it. `ureq` keeps the TLS stack out of the
+# dependency tree (this crate forbids `reqwest`) while offering the platform
+# verifier — which is what makes a corporate or local proxy's CA work.
 fastembed = { version = "7", optional = true, default-features = false, features = [
     "ort-download-binaries-rustls-tls",
-    "hf-hub-rustls-tls",
 ] }
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false }
+ureq = { version = "3", optional = true, features = ["platform-verifier"] }
+sha2 = { version = "0.10", optional = true }
 
 [features]
 default = []
 # Recall scored by a local multilingual embedding model instead of the
 # bag-of-hashed-tokens stand-in. See `memory::semantic`.
-semantic = ["dep:fastembed"]
+semantic = ["dep:fastembed", "dep:ort", "dep:ureq", "dep:sha2"]
 
 [dev-dependencies]
 tempfile = "3"

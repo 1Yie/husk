@@ -7,6 +7,8 @@
 
 pub mod distill;
 pub mod semantic;
+#[cfg(feature = "semantic")]
+mod semantic_fetch;
 pub mod store;
 
 pub use distill::{Summarizer, TurnDistiller, TurnRecord};

@@ -11,15 +11,15 @@
 //! dedupe and persona folding stay in the hash space. Here it only scores
 //! recall — see `MemoryStore::recall_scored`.
 //!
-//! Loading is lazy and off the caller's thread: the model is ~250 MB, fetched
-//! from HuggingFace on first use into the app's data directory, ~35 s once and
-//! ~1 s on later starts. Every query before it is ready — or after a failed
-//! load — simply uses the hash path.
+//! Loading is lazy and off the caller's thread: the model is ~240 MB, fetched
+//! into the app's data directory on first use, ~1 s on later starts. Every
+//! query before it is ready — or after a failed load — simply uses the hash
+//! path.
 //!
 //! The fetch is the one step a user waits on, so its state is observable
-//! ([`progress`]): the loader counts bytes that actually landed in the cache
-//! directory — `fastembed` reports no callback, but the files it writes do
-//! have a size — and the settings dialog draws that number.
+//! ([`progress`]). The transfer itself belongs to `semantic_fetch`, which
+//! reports real bytes: sized files that passed their check plus what has
+//! landed of the one in flight.
 
 /// Where the fetch/load stands, as the settings pane shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -43,35 +43,38 @@ pub enum Phase {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Progress {
     pub phase: Phase,
-    /// Bytes of the model present in the cache directory.
+    /// Bytes verified plus what has landed of the file in flight.
     pub bytes: u64,
-    /// The finished model's size — an estimate for the bar, never a promise.
+    /// The model's download size, from the file manifest.
     pub total: u64,
+    /// The file being fetched, while one is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 #[cfg(feature = "semantic")]
 mod imp {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Mutex, OnceLock};
 
-    use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+    use fastembed::{
+        EmbeddingModel, InitOptionsUserDefined, Pooling, QuantizationMode, TextEmbedding,
+        TokenizerFiles, UserDefinedEmbeddingModel,
+    };
 
     use super::{Phase, Progress};
+    use crate::memory::semantic_fetch::{self, Counters, FetchError};
 
-    /// Multilingual small model: 384 dims, quantized.
+    /// Multilingual small model: 384 dims, quantized. The identity recorded
+    /// with every vector the encoder produces.
     const MODEL: EmbeddingModel = EmbeddingModel::ParaphraseMLMiniLML12V2Q;
 
-    /// The finished model's size on disk, measured after a first fetch. Only
-    /// drives the progress bar — a wrong estimate shows as a bar that fills
-    /// early or late, never as a wrong number in the log.
-    const MODEL_BYTES: u64 = 241 * 1024 * 1024;
-
-    /// Below this fraction of [`MODEL_BYTES`] the weights are still arriving;
-    /// above it `try_new` is building the session.
-    const FETCHED: f64 = 0.98;
+    /// The context the encoder was trained on — `fastembed`'s own default, kept
+    /// so a model loaded from bytes behaves exactly like one it fetched itself.
+    const MAX_LENGTH: usize = 512;
 
     /// The settings switch, in front of the model. Off means "do not use the
     /// model even though it is loaded" — the weights stay in memory, so
@@ -81,52 +84,159 @@ mod imp {
     /// [`Phase`] as a byte — read by the settings poll, written by the loader.
     static PHASE: AtomicU8 = AtomicU8::new(0);
     static ERROR: Mutex<Option<String>> = Mutex::new(None);
-    /// Where the weights live. `fastembed` also honours `HF_HOME`, so the byte
-    /// counter resolves the same directory it writes to.
+    /// Where the weights live. Read once; a later `set_enabled` keeps it.
     static CACHE: OnceLock<PathBuf> = OnceLock::new();
 
-    /// Set once a load has been started — a failed load is not retried, or
-    /// every recall would pay for the same download attempt.
-    static STARTED: AtomicBool = AtomicBool::new(false);
+    /// Asks the fetch to stop. Checked between chunks, so a cancelled download
+    /// leaves its `.part` file for the next attempt to resume.
+    static CANCEL: AtomicBool = AtomicBool::new(false);
+    /// A loader thread is alive. A second start while one runs is folded into
+    /// [`RESPAWN`] instead of racing it for the same files.
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    static RESPAWN: AtomicBool = AtomicBool::new(false);
+
+    /// The weights were deleted by 卸载. A `OnceLock` cannot be emptied, so the
+    /// loaded encoder may still sit in memory — it must not keep scoring for a
+    /// model the user removed, and the next enable has to fetch again.
+    static REMOVED: AtomicBool = AtomicBool::new(false);
+
+    /// One ONNX Runtime per process, built once and reused. `fastembed` would
+    /// build its own per load, and the second one fails with "only one
+    /// environment" — which made every retry after a failed load impossible.
+    static ENVIRONMENT: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
+
+    /// Byte accounting shared with [`super::progress`].
+    static COUNTERS: Counters = Counters::new();
+
     /// The loaded model. `embed` needs `&mut`, and one caller at a time is
     /// fine: recall is a single query per message.
     static MODEL_READY: OnceLock<Mutex<TextEmbedding>> = OnceLock::new();
 
-    /// Start loading the model in the background, once per process. `cache_dir`
-    /// holds the weights between runs.
+    /// Start loading the model in the background. `cache_dir` holds the weights
+    /// between runs.
     pub fn init(cache_dir: PathBuf) {
-        if STARTED.swap(true, Ordering::SeqCst) {
+        let _ = CACHE.set(cache_dir);
+        let Some(dir) = CACHE.get().cloned() else {
+            return;
+        };
+        if MODEL_READY.get().is_some() && !REMOVED.load(Ordering::SeqCst) {
+            set_phase(Phase::Ready);
             return;
         }
-        let _ = CACHE.set(cache_dir.clone());
+        if RUNNING.swap(true, Ordering::SeqCst) {
+            RESPAWN.store(true, Ordering::SeqCst);
+            return;
+        }
+        CANCEL.store(false, Ordering::SeqCst);
         set_phase(Phase::Downloading);
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("semantic-embed".into())
-            .spawn(move || {
-                let started = std::time::Instant::now();
-                let options = TextInitOptions::new(MODEL).with_cache_dir(cache_dir);
-                match TextEmbedding::try_new(options) {
-                    Ok(model) => {
-                        let _ = MODEL_READY.set(Mutex::new(model));
-                        set_phase(Phase::Ready);
-                        tracing::info!(ms = started.elapsed().as_millis(), "semantic recall ready");
-                    }
-                    // Offline, a blocked host, a full disk: recall keeps
-                    // working on the hash vector. The dialog says why; the
-                    // chat keeps working.
-                    Err(error) => {
-                        if let Ok(mut slot) = ERROR.lock() {
-                            *slot = Some(error.to_string());
-                        }
-                        set_phase(Phase::Failed);
-                        tracing::warn!(
-                            %error,
-                            "semantic embedding model unavailable; recall stays on the hash vector"
-                        );
-                    }
-                }
-            })
-            .ok();
+            .spawn(move || run(dir));
+        if spawned.is_err() {
+            RUNNING.store(false, Ordering::SeqCst);
+            fail("无法启动模型加载线程".into());
+        }
+    }
+
+    fn run(cache_dir: PathBuf) {
+        let started = std::time::Instant::now();
+        // A panic in the loader used to leave the phase stuck at "downloading"
+        // with no error and no retry, which reads exactly like a hang.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load(&cache_dir)));
+        match outcome {
+            Ok(Ok(model)) => {
+                let _ = MODEL_READY.set(Mutex::new(model));
+                REMOVED.store(false, Ordering::SeqCst);
+                clear_error();
+                set_phase(Phase::Ready);
+                tracing::info!(ms = started.elapsed().as_millis(), "semantic recall ready");
+            }
+            // The user asked it to stop: not a failure, and the next attempt
+            // picks up from the bytes already verified.
+            Ok(Err(FetchError::Cancelled)) => {
+                clear_error();
+                set_phase(Phase::Idle);
+                tracing::info!("semantic model fetch cancelled");
+            }
+            Ok(Err(FetchError::Failed(message))) => fail(message),
+            Err(panic) => fail(format!("模型加载崩溃: {}", panic_message(&*panic))),
+        }
+        finish_run();
+    }
+
+    /// Clear the run flag, and honour a start that arrived while this one was
+    /// winding down (toggling off then on happens faster than a fetch aborts).
+    fn finish_run() {
+        RUNNING.store(false, Ordering::SeqCst);
+        if RESPAWN.swap(false, Ordering::SeqCst) && ENABLED.load(Ordering::Relaxed) {
+            if let Some(dir) = CACHE.get() {
+                init(dir.clone());
+            }
+        }
+    }
+
+    /// Fetch what is missing, then build the session from the bytes on disk.
+    fn load(cache_dir: &std::path::Path) -> Result<TextEmbedding, FetchError> {
+        let paths = semantic_fetch::ensure(cache_dir, &COUNTERS, &CANCEL)?;
+        set_phase(Phase::Loading);
+        let environment = environment().map_err(FetchError::Failed)?;
+        let read = |name: &str| {
+            let index = semantic_fetch::FILES
+                .iter()
+                .position(|file| file.name == name)
+                .unwrap_or(0);
+            std::fs::read(&paths[index])
+                .map_err(|e| FetchError::Failed(format!("无法读取 {name}: {e}")))
+        };
+        let tokenizer = TokenizerFiles {
+            tokenizer_file: read("tokenizer.json")?,
+            config_file: read("config.json")?,
+            special_tokens_map_file: read("special_tokens_map.json")?,
+            tokenizer_config_file: read("tokenizer_config.json")?,
+        };
+        // The pooling and quantization match what `fastembed` picks for this
+        // model when it fetches it itself.
+        let model = UserDefinedEmbeddingModel::new(read("model_optimized.onnx")?, tokenizer)
+            .with_pooling(Pooling::Mean)
+            .with_quantization(QuantizationMode::Static);
+        let options = InitOptionsUserDefined::new()
+            .with_environment(environment)
+            .with_max_length(MAX_LENGTH);
+        TextEmbedding::try_new_from_user_defined(model, options)
+            .map_err(|e| FetchError::Failed(format!("模型加载失败: {e}")))
+    }
+
+    fn environment() -> Result<ort::environment::Environment, String> {
+        ENVIRONMENT
+            .get_or_init(|| ort::environment::init().build().map_err(|e| e.to_string()))
+            .clone()
+    }
+
+    fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_else(|| "unknown panic".into())
+    }
+
+    fn fail(message: String) {
+        // Offline, a blocked host, a full disk: recall keeps working on the
+        // hash vector. The dialog says why; the chat keeps working.
+        tracing::warn!(
+            %message,
+            "semantic embedding model unavailable; recall stays on the hash vector"
+        );
+        if let Ok(mut slot) = ERROR.lock() {
+            *slot = Some(message);
+        }
+        set_phase(Phase::Failed);
+    }
+
+    fn clear_error() {
+        if let Ok(mut slot) = ERROR.lock() {
+            *slot = None;
+        }
     }
 
     fn set_phase(phase: Phase) {
@@ -152,51 +262,18 @@ mod imp {
         }
     }
 
-    /// Bytes of the model present in the cache directory. `hf-hub` writes into
-    /// the target directory as it streams, so this counts what actually
-    /// arrived rather than what was requested.
-    ///
-    /// Symlinks are skipped: the hub keeps the weights in `blobs/` and links
-    /// them from `snapshots/`, so following either the link or its metadata
-    /// (which does follow) counts the same file twice and pins the bar at 200%.
-    fn bytes_on_disk(dir: &Path) -> u64 {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return 0;
-        };
-        let mut total = 0;
-        for entry in entries.flatten() {
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_symlink() {
-                continue;
-            }
-            if kind.is_dir() {
-                total += bytes_on_disk(&entry.path());
-            } else {
-                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
-        total
-    }
-
-    /// Where the fetch currently is. Reads no model state: the phase says
-    /// whether the loader is running, the directory says how far it got.
+    /// Where the fetch currently is. Reads counters only — no directory walk,
+    /// so the settings pane can poll it while a download is running.
     pub fn progress() -> Progress {
         let mut phase = phase_of(PHASE.load(Ordering::Relaxed));
         if !ENABLED.load(Ordering::Relaxed) && phase != Phase::Failed {
             phase = Phase::Off;
         }
-        let bytes = CACHE.get().map(|d| bytes_on_disk(d)).unwrap_or(0);
-        // The weights are all there and `try_new` is still working — say so,
-        // instead of pinning the bar at 100% while nothing moves.
-        if phase == Phase::Downloading && bytes as f64 >= MODEL_BYTES as f64 * FETCHED {
-            phase = Phase::Loading;
-        }
         Progress {
             phase,
-            bytes,
-            total: MODEL_BYTES,
+            bytes: COUNTERS.bytes(),
+            total: semantic_fetch::total_bytes(),
+            file: COUNTERS.file(),
             error: ERROR.lock().ok().and_then(|e| e.clone()),
         }
     }
@@ -231,7 +308,9 @@ mod imp {
             return out;
         };
         let mut model = model.lock().unwrap_or_else(|e| e.into_inner());
-        match model.embed(texts.to_vec(), None) {
+        // The slice is handed over as-is: `embed` takes `AsRef<[S]>`, so the
+        // batch costs no copy of the texts.
+        match model.embed(texts, None) {
             Ok(vectors) => {
                 for (slot, vector) in out.iter_mut().zip(vectors) {
                     *slot = Some(vector);
@@ -254,31 +333,105 @@ mod imp {
 
     /// Whether a query right now would be scored semantically.
     pub fn is_ready() -> bool {
-        ENABLED.load(Ordering::Relaxed) && MODEL_READY.get().is_some()
+        ENABLED.load(Ordering::Relaxed)
+            && !REMOVED.load(Ordering::SeqCst)
+            && MODEL_READY.get().is_some()
     }
 
     /// Turn the switch on or off. Enabling starts the background load; the
     /// first recall after it completes is the first one scored semantically.
     pub fn set_enabled(on: bool, cache_dir: PathBuf) {
         ENABLED.store(on, Ordering::Relaxed);
+        // Remembered even when no load starts: `retry` needs it later.
+        let _ = CACHE.set(cache_dir.clone());
         if !on {
+            // A download the user just switched off must stop, not finish
+            // quietly in the background for another 240 MB.
+            CANCEL.store(true, Ordering::SeqCst);
             return;
         }
-        // A failed fetch is not permanent: flipping the switch back on retries
-        // it, so the dialog can show a fresh attempt instead of a dead switch.
+        // A failure stays a failure until someone asks for a retry. Every
+        // session spawn passes through here, and without the guard a machine
+        // with no route to the hub re-attempted a quarter-gigabyte download
+        // per session — the log filled with the same failure, and the one
+        // retry the user did ask for was indistinguishable from the noise.
         if phase_of(PHASE.load(Ordering::Relaxed)) == Phase::Failed {
-            STARTED.store(false, Ordering::SeqCst);
-            if let Ok(mut slot) = ERROR.lock() {
-                *slot = None;
-            }
+            return;
         }
         init(cache_dir);
+    }
+
+    /// Retry after a failure. Verified files are reused, so a failure in the
+    /// load rather than the fetch retries in about a second.
+    pub fn retry() {
+        let Some(dir) = CACHE.get().cloned() else {
+            return;
+        };
+        clear_error();
+        set_phase(Phase::Idle);
+        init(dir);
+    }
+
+    /// Stop a fetch in progress. Files that already verified stay; the partial
+    /// one keeps its `.part` so the next attempt resumes.
+    pub fn cancel() {
+        CANCEL.store(true, Ordering::SeqCst);
+        if !RUNNING.load(Ordering::SeqCst)
+            && phase_of(PHASE.load(Ordering::Relaxed)) == Phase::Downloading
+        {
+            set_phase(Phase::Idle);
+        }
     }
 
     /// Whether this build carries the model at all — the settings pane only
     /// offers the switch when it does.
     pub fn available() -> bool {
         true
+    }
+
+    /// The encoder's name, for the settings row. Deliberately NOT [`model_id`]:
+    /// that string is stored with every vector, and renaming it would throw
+    /// away the whole semantic index.
+    pub fn model_name() -> String {
+        "paraphrase-multilingual-MiniLM-L12-v2".into()
+    }
+
+    /// Whether the weights are already on this machine. The pane asks before
+    /// offering a download — a model that is on disk must not be fetched again
+    /// just because the switch was turned off and back on.
+    pub fn model_cached() -> bool {
+        CACHE
+            .get()
+            .is_some_and(|dir| crate::memory::semantic_fetch::present(dir))
+    }
+
+    /// 卸载 — delete the model files and stop using them. The weights are the
+    /// quarter gigabyte; the switch is not. Returns whether anything was there
+    /// to remove.
+    pub fn remove_model() -> bool {
+        CANCEL.store(true, Ordering::SeqCst);
+        ENABLED.store(false, Ordering::Relaxed);
+        REMOVED.store(true, Ordering::SeqCst);
+        COUNTERS.reset();
+        clear_error();
+        set_phase(Phase::Idle);
+        let Some(dir) = CACHE.get() else {
+            return false;
+        };
+        // Our own copy, and the old hub client's — both are model weights, and
+        // leaving the second one behind would quietly adopt it on the next
+        // enable, which is the opposite of what 卸载 means.
+        let mut removed = false;
+        for path in [
+            dir.join(semantic_fetch::REPO),
+            dir.join(format!("models--{}", semantic_fetch::REPO.replace('/', "--"))),
+        ] {
+            if std::fs::remove_dir_all(&path).is_ok() {
+                removed = true;
+            }
+        }
+        tracing::info!(removed, "semantic model removed");
+        removed
     }
 }
 
@@ -310,11 +463,16 @@ mod imp {
 
     pub fn set_enabled(_on: bool, _cache_dir: PathBuf) {}
 
+    pub fn retry() {}
+
+    pub fn cancel() {}
+
     pub fn progress() -> super::Progress {
         super::Progress {
             phase: super::Phase::Off,
             bytes: 0,
             total: 0,
+            file: None,
             error: None,
         }
     }
@@ -322,9 +480,24 @@ mod imp {
     pub fn available() -> bool {
         false
     }
+
+    pub fn model_name() -> String {
+        String::new()
+    }
+
+    pub fn model_cached() -> bool {
+        false
+    }
+
+    pub fn remove_model() -> bool {
+        false
+    }
 }
 
-pub use imp::{available, embed, embed_batch, init, is_ready, model_id, progress, set_enabled};
+pub use imp::{
+    available, cancel, embed, embed_batch, init, is_ready, model_cached, model_id, model_name,
+    progress, remove_model, retry, set_enabled,
+};
 
 #[cfg(test)]
 mod tests {
@@ -346,7 +519,7 @@ mod tests {
     }
 
     /// Turning it off stops semantic answers at once. Nothing here turns it
-    /// *on*: that starts a ~250 MB download.
+    /// *on*: that starts a download.
     #[test]
     fn turning_the_switch_off_stops_the_model() {
         set_enabled(false, std::env::temp_dir());

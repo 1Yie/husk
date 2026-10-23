@@ -1742,6 +1742,11 @@ fn agent_session_inner(
                 // Whether this build carries the encoder at all — a build
                 // without it must not draw a switch that can do nothing.
                 "semantic_available": agent_context::memory::semantic::available(),
+                // The model's name for the row, and whether its weights are
+                // already on disk — turning the switch back on must not offer
+                // a download the machine does not need.
+                "semantic_model": agent_context::memory::semantic::model_name(),
+                "semantic_cached": agent_context::memory::semantic::model_cached(),
                 "persona": [],
                 "facts": [],
                 "episodes": 0,
@@ -1776,6 +1781,22 @@ fn agent_session_inner(
             agent_context::memory::semantic::progress(),
         )
         .unwrap_or_default()),
+        // Retry after a failure and stop a fetch in progress. Both answer with
+        // the state they left, so the pane needs no extra round trip.
+        "semantic_retry" => {
+            agent_context::memory::semantic::retry();
+            Ok(serde_json::to_value(agent_context::memory::semantic::progress())
+                .unwrap_or_default())
+        }
+        "semantic_cancel" => {
+            agent_context::memory::semantic::cancel();
+            Ok(serde_json::to_value(agent_context::memory::semantic::progress())
+                .unwrap_or_default())
+        }
+        // 卸载: the weights are the quarter gigabyte, not the switch.
+        "semantic_remove" => Ok(serde_json::json!({
+            "removed": agent_context::memory::semantic::remove_model(),
+        })),
         "memory_set" => {
             let p = payload.clone().ok_or("memory_set needs payload")?;
             let key = p
