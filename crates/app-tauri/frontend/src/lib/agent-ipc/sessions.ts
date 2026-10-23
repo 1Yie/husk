@@ -107,6 +107,30 @@ export async function changesFeed(id: number, tools: readonly string[]) {
   });
 }
 
+/** One result of a named tool from the WHOLE persisted log. Unlike
+ *  `ChangeFeedRow` a failed call ships too — a delegated child that ended in
+ *  error still has a card — and `index` is the row's position in the full
+ *  visible history, the same coordinate `StreamItem.hi` / `historyStart` use. */
+export interface ToolFeedRow {
+  tool: string;
+  args: string;
+  content: string;
+  is_error: boolean;
+  index: number;
+}
+
+/** Every result of `tools` in the session, not just the mounted page's. The
+ *  子代理 sidebar lists the whole session while `open` returns only its newest
+ *  slice, so it rebuilds from here; `index` lets the caller point at the row the
+ *  view already holds instead of duplicating its card. */
+export async function toolRowsFeed(id: number, tools: readonly string[]) {
+  return invoke<{ rows: ToolFeedRow[] }>("agent_session", {
+    op: "tool_rows_feed",
+    id,
+    payload: { tools },
+  });
+}
+
 /** A delegated child's own history — the body its card replays after a reopen.
  *  `[]` when the child left none (parked, or cancelled before it answered). */
 export function subagentTranscript(root: string, id: number, childId: number) {
@@ -957,6 +981,11 @@ export interface MemoryOverview {
   /** whether this build carries the encoder at all — a build without it must
    *  not draw a switch that can do nothing. */
   semantic_available?: boolean;
+  /** the encoder's name, shown when the switch is on. */
+  semantic_model?: string;
+  /** the weights are already on disk — turning the switch on costs no download,
+   *  so it must not ask for one. */
+  semantic_cached?: boolean;
   persona: PersonaEntry[];
   facts: FactRow[];
   episodes: number;
@@ -969,19 +998,38 @@ export function getMemoryOverview() {
 }
 
 /** Where the local model's fetch is. Polled by the settings dialog while it
- *  runs — no store is opened for this, so it is cheap at 2 Hz. */
+ *  runs — no store is opened and no directory is walked for it, so it is cheap
+ *  at 2 Hz. */
 export interface SemanticProgress {
   phase: "off" | "idle" | "downloading" | "loading" | "ready" | "failed";
-  /** Bytes of the model already on disk. */
+  /** Bytes verified plus what has landed of the file in flight. */
   bytes: number;
-  /** The finished model's size — an estimate for the bar. */
+  /** The model's download size, from the backend's file manifest. */
   total: number;
-  /** Why the fetch or the load failed. */
+  /** The file being fetched, while one is. */
+  file?: string;
+  /** Why the fetch or the load failed — the backend's full error chain. */
   error?: string;
 }
 
 export function getSemanticProgress() {
   return invoke<SemanticProgress>("agent_session", { op: "semantic_progress" });
+}
+
+/** Try again after a failure, reusing every file that already verified. */
+export function retrySemanticRecall() {
+  return invoke<SemanticProgress>("agent_session", { op: "semantic_retry" });
+}
+
+/** Stop a fetch in progress; verified files stay, the partial one resumes. */
+export function cancelSemanticRecall() {
+  return invoke<SemanticProgress>("agent_session", { op: "semantic_cancel" });
+}
+
+/** Delete the downloaded model. `removed: false` means there was nothing on
+ *  disk to delete. */
+export function removeSemanticModel() {
+  return invoke<{ removed: boolean }>("agent_session", { op: "semantic_remove" });
 }
 
 /** Add or overwrite a persona entry (the manual `/remember` path). */

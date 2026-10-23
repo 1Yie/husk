@@ -1,6 +1,6 @@
 // SessionDock — the one right-hand sidebar. Everything a session produces
 // hangs off it: the files the agent changed (改动), the files it generated
-// (产物), the background jobs it started (后台) and the subagents still out
+// (产物), the background jobs it started (后台) and the subagents it delegated
 // (子代理), as tabs. It is independent of the workspace mode (编程 and 工作 both
 // get the same dock) and owns its own UI state — open, active tab, width —
 // persisted across sessions.
@@ -16,7 +16,7 @@ import { ArtifactsList } from "@/features/chat/components/artifacts-panel";
 import { JobsList } from "@/features/chat/components/jobs-panel";
 import { SubagentsList } from "@/features/chat/components/subagents-panel";
 import type { Artifact, BgJob, FileChange } from "@/features/chat/hooks/stream-view";
-import type { RunningChild } from "@/features/chat/hooks/running-children";
+import type { SessionChild } from "@/features/chat/hooks/running-children";
 import { DOCK_MIN_WIDTH, clampDockWidth, useDockStore, type DockTab } from "./state";
 
 const TAB_META: Record<DockTab, { Icon: typeof FileDiff; label: string; unit: string }> = {
@@ -46,10 +46,12 @@ function TabButton({
       aria-label={`${label}（${files} ${unit}）`}
       onClick={() => onSelect(tab)}
       className={cn(
-        "relative flex flex-none items-center gap-1.5 rounded-md px-2 py-1 text-[12px] transition-colors",
+        // The session sidebar's mode switch in miniature: a recessed track,
+        // the active tab a raised white capsule on it.
+        "relative flex h-6 flex-none items-center gap-1 rounded-full px-2.5 text-[12px] transition-all duration-150",
         active
-          ? "bg-[color-mix(in_srgb,var(--husk-n200)_75%,transparent)] font-medium text-neutral-800"
-          : "text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n200)_40%,transparent)] hover:text-neutral-700",
+          ? "bg-white font-medium text-neutral-800 shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-[var(--husk-hover)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.6)]"
+          : "text-neutral-500 hover:text-neutral-800",
       )}
     >
       <Icon className="h-3.5 w-3.5 flex-none" />
@@ -69,6 +71,7 @@ export function SessionDock({
   session = 0,
   onJobs,
   open: openProp,
+  snap = false,
   onClose,
 }: {
   changes: FileChange[];
@@ -76,8 +79,9 @@ export function SessionDock({
   /** The session's background jobs, and when that snapshot arrived. */
   jobs?: BgJob[];
   jobsAt?: number;
-  /** Delegated children still running — their rows and their steer boxes. */
-  subagents?: RunningChild[];
+  /** Every delegated child, finished ones included — their cards, and a
+   *  steer box on the ones still out. */
+  subagents?: SessionChild[];
   /** Which session the 后台 controls address. */
   root?: string;
   session?: number;
@@ -87,6 +91,9 @@ export function SessionDock({
    *  additionally ANDs in "has content" so an empty dock never occupies the
    *  column (a fresh session inherits the previous one's open flag). */
   open?: boolean;
+  /** Apply open/close instantly, without the slide — set by the page for the
+   *  commit that follows a session switch, which is a jump, not a toggle. */
+  snap?: boolean;
   /** A user close — the page uses it to suppress this session's auto-open. */
   onClose?: () => void;
 }) {
@@ -177,7 +184,7 @@ export function SessionDock({
         // anchoring, so a one-frame 300px re-flow of the stream threw the
         // reader's place by however much the text re-wrapped above them —
         // and the dock auto-opens mid-turn, on the first change.
-        resizing ? "" : "transition-[width] duration-300 ease-out",
+        resizing || snap ? "" : "transition-[width] duration-300 ease-out",
       )}
       style={{ width: open ? shownWidth : 0 }}
       aria-hidden={!open}
@@ -185,8 +192,8 @@ export function SessionDock({
       <aside
         style={{ width: shownWidth }}
         className={cn(
-          "relative flex h-full flex-none flex-col overflow-hidden border-l border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none",
-          resizing ? "" : "transition-transform duration-300 ease-out",
+          "relative flex h-full flex-none flex-col overflow-hidden border-l border-hairline bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none",
+          resizing || snap ? "" : "transition-transform duration-300 ease-out",
           open ? "translate-x-0" : "translate-x-full",
         )}
       >
@@ -211,8 +218,14 @@ export function SessionDock({
           )}
         />
 
-        <div className="flex h-9 w-full flex-none items-center gap-1 border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] pl-3 pr-2">
-          <div role="tablist" aria-label="侧栏" className="flex items-center gap-0.5">
+        {/* No rule under the header: the tab track already reads as the bar,
+            the same way the session sidebar's header carries its switch. */}
+        <div className="flex h-11 w-full flex-none items-center gap-2 pl-3 pr-2">
+          <div
+            role="tablist"
+            aria-label="侧栏"
+            className="no-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-full bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] p-0.5 dark:bg-[var(--husk-border)]"
+          >
             {tabs.map((t) => (
               <TabButton
                 key={t}
@@ -228,7 +241,7 @@ export function SessionDock({
             type="button"
             onClick={close}
             aria-label="关闭侧栏"
-            className="flex-none rounded p-1 text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)] hover:text-neutral-700"
+            className="flex h-6 w-6 flex-none items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] hover:text-neutral-800"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -238,9 +251,9 @@ export function SessionDock({
             `overflow-y: auto` and `overflow-x: visible` computes the X axis to
             `auto` too, which turns the whole dock into a horizontal scroll
             container. The horizontal scroller is the diff card itself. */}
-        <div className="w-full flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-1.5 py-1.5">
+        <div className="w-full flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 pb-3">
           {activeTab === null ? (
-            <div className="px-3 py-8 text-center text-[12px] text-neutral-400">
+            <div className="px-3 py-10 text-center text-[12px] text-neutral-400">
               本会话还没有文件产出
             </div>
           ) : activeTab === "changes" ? (
@@ -250,7 +263,7 @@ export function SessionDock({
           ) : activeTab === "jobs" ? (
             <JobsList jobs={jobs} snapshotAt={jobsAt} root={root} session={session} onJobs={(j) => onJobs?.(j)} />
           ) : (
-            <SubagentsList children={subagents} />
+            <SubagentsList children={subagents} root={root} session={session} />
           )}
         </div>
       </aside>

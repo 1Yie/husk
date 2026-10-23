@@ -464,8 +464,16 @@ describe("delegated child streams route by child_id", () => {
       { ReasoningDelta: { text: "先定位", parent: "subagent", child_id: 1 } },
       { TextDelta: { text: "找到了", parent: "subagent", child_id: 1 } },
     ]);
-    expect(cardsOf(v)[0]).toMatchObject({ liveReasoning: "先定位", live: "找到了" });
-    expect(cardsOf(v)[1]?.liveReasoning).toBeUndefined();
+    // Two runs of one body, in the order they arrived: the card draws the
+    // thinking where it happened, not as one block above everything.
+    expect(cardsOf(v)[0]).toMatchObject({
+      live: "找到了",
+      segments: [
+        { kind: "thinking", text: "先定位" },
+        { kind: "text", text: "找到了" },
+      ],
+    });
+    expect(cardsOf(v)[1]?.segments).toBeUndefined();
     expect(cardsOf(v)[1]?.live).toBeUndefined();
   });
 

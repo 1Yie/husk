@@ -19,6 +19,23 @@ fn change_feed_rows(rows: Vec<(String, String, String)>) -> Vec<serde_json::Valu
         .collect()
 }
 
+/// The rows `tool_rows_feed` ships, as the webview reads them. `index` is the
+/// history coordinate the page the webview holds is sliced in, so the dock can
+/// scroll to the row it came from instead of guessing.
+fn tool_rows_feed(rows: Vec<agent_store::ToolRow>) -> Vec<serde_json::Value> {
+    rows.into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "tool": row.tool,
+                "args": row.args,
+                "content": row.content,
+                "is_error": row.is_error,
+                "index": row.index,
+            })
+        })
+        .collect()
+}
+
 /// Persisted meta fields that seed a rebuilt view — read once per response
 /// instead of one full workspace scan per field.
 struct PersistedSeed {
@@ -418,6 +435,31 @@ fn agent_session_inner(
             None => Vec::new(),
         };
         return Ok(serde_json::json!({ "rows": change_feed_rows(rows) }));
+    }
+    // `tool_rows_feed` — every delegated child's tool result in the WHOLE
+    // persisted log, for the subagent sidebar. Same problem as `changes_feed`:
+    // the mounted page is only the newest `HISTORY_PAGE` messages, while the
+    // sidebar lists the session. Unlike it, a child's failed call still names
+    // the child, so failures ship too — and each row carries its history
+    // `index`, which lets the sidebar point at the row the webview already
+    // holds. Only the store handle is taken under the kernel lock.
+    if op == "tool_rows_feed" {
+        let id = id.ok_or("tool_rows_feed needs id")?;
+        let tools: Vec<&str> = payload
+            .as_ref()
+            .and_then(|p| p.get("tools"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|t| t.as_str()).collect())
+            .unwrap_or_default();
+        if tools.is_empty() {
+            return Err("tool_rows_feed needs tools".into());
+        }
+        let store = state.lock().map_err(|e| e.to_string())?.active_store();
+        let rows = match store {
+            Some(store) => store.tool_rows(id, &tools).map_err(|e| e.to_string())?,
+            None => Vec::new(),
+        };
+        return Ok(serde_json::json!({ "rows": tool_rows_feed(rows) }));
     }
     // `subagent_transcript` — one delegated child's saved history. A child is
     // identified by the pair the stream tagged it with: its session and its id,
@@ -2739,6 +2781,23 @@ mod tests {
         assert_eq!(rows[0]["tool"], "fuzzy_patch");
         assert_eq!(rows[0]["args"], "{\"path\":\"a.ts\"}");
         assert_eq!(rows[0]["content"], "patched a.ts");
+    }
+    /// The subagent sidebar reads failures and a position too: a failed call is
+    /// still a child's, and `index` is how it finds the row in its page.
+    #[test]
+    fn tool_rows_feed_carries_the_fields_the_webview_reads() {
+        let rows = tool_rows_feed(vec![agent_store::ToolRow {
+            tool: "delegate".into(),
+            args: "{\"agent\":\"explore\"}".into(),
+            content: "timed out".into(),
+            is_error: true,
+            index: 42,
+        }]);
+        assert_eq!(rows[0]["tool"], "delegate");
+        assert_eq!(rows[0]["args"], "{\"agent\":\"explore\"}");
+        assert_eq!(rows[0]["content"], "timed out");
+        assert_eq!(rows[0]["is_error"], true);
+        assert_eq!(rows[0]["index"], 42);
     }
     #[test]
     fn trace_workspace_guard_accepts_normalized_paths_and_rejects_other_workspaces() {

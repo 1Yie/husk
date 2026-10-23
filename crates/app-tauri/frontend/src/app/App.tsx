@@ -10,12 +10,12 @@ import {
   viewFromHistoryChunked,
 } from "@/features/chat/hooks/view-from-history";
 import { SUMMARY_TOOLS } from "@/features/chat/hooks/apply-event";
+import { childrenFromFeed, type RunningChild } from "@/features/chat/hooks/running-children";
 import type { ChildSegment, StreamItem } from "@/features/chat/hooks/stream-view";
-import type { RunningChild } from "@/features/chat/hooks/running-children";
 import { loadReset, loadStamp } from "@/lib/load-probe";
 import { forgetToldFailures, markSessionRead, setSessionTitles } from "@/lib/notifications";
 import { onOpenSettings, type SettingsTarget } from "@/lib/settings-bus";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, subagentTranscript, activeChildren, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, toolRowsFeed, subagentTranscript, activeChildren, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
 import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
@@ -278,20 +278,23 @@ export function App() {
       // rather than showing an empty panel. A page that already holds the whole
       // log has nothing to add, and the feed re-reads the full journal.
       const paged = (r.history_total ?? r.history.length) > r.history.length;
-      const [folded, feed] = await Promise.all([
-        viewFromHistoryChunked(
-          r.history,
-          r.usage,
-          // Global baseIndex — items[0] sits at historyStart in the full
-          // log, so hi = historyStart + i. baseIndex=0 collided with real
-          // page indices → duplicate t{hi} turn/mark ids (multiple active
-          // rail marks + key remount churn).
-          (r.history_total ?? r.history.length) - r.history.length,
-          { dangling: !running },
-        ),
+      // Global baseIndex — items[0] sits at historyStart in the full log, so
+      // hi = historyStart + i. baseIndex=0 collided with real page indices →
+      // duplicate t{hi} turn/mark ids (multiple active rail marks + key remount
+      // churn).
+      const historyStart = (r.history_total ?? r.history.length) - r.history.length;
+      const [folded, feed, childRows] = await Promise.all([
+        viewFromHistoryChunked(r.history, r.usage, historyStart, { dangling: !running }),
         paged ? changesFeed(id, SUMMARY_TOOLS).catch(() => null) : null,
+        // The 子代理 sidebar is a session-level list, and the page is only the
+        // newest slice: asked even when the page holds the whole log, because a
+        // child's `delegate` row and the `answer_child` that settles it can land
+        // on either side of the boundary. A failed read just leaves the list to
+        // the mounted page.
+        toolRowsFeed(id, ["delegate", "answer_child"]).catch(() => null),
       ]);
       if (feed) applyChangesFeed(folded, feed.rows);
+      if (childRows) folded.feedChildren = childrenFromFeed(childRows.rows);
       // Cold view rebuild — the parked queue is session state persisted in
       // SessionMeta; seed it so the composer shows the same rows the actor
       // still holds (live updates continue via QueuedPrompts events).
@@ -299,7 +302,7 @@ export function App() {
       loadStamp("fold");
       alsoCommit?.();
       loadView(root, id, folded, {
-        historyStart: (r.history_total ?? r.history.length) - r.history.length,
+        historyStart,
         historyTotal: r.history_total,
         turnTotal: r.turn_total,
         turnOffset: r.turn_offset,

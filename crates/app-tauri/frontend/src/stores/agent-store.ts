@@ -66,6 +66,11 @@ interface AgentStore {
    *  sessions are running — a selector returning a fresh Set re-renders on
    *  every batch. */
   runningKeys: ReadonlySet<string>;
+  /** Finished children the reader cleared out of each session's 子代理 view,
+   *  keyed `${root}:${id}` then by `childKey`. Outside the view because the
+   *  list itself is re-derived from the log on every event and from history on
+   *  every reopen — a set is what makes a clear stick. */
+  dismissedChildren: Map<string, ReadonlySet<string>>;
   /** Foreground session + the root it lives in. Set by the app shell. */
   workspaceRoot: string;
   activeId: number;
@@ -139,11 +144,16 @@ interface AgentStore {
   addPendingSteer: (root: string, id: number, text: string) => void;
   /** Retire one pending steer — the echo landed or the send failed. */
   dropPendingSteer: (root: string, id: number, text: string) => void;
+  /** Clear finished children from a session's 子代理 view: the running and
+   *  parked ones stay, the ended ones are not drawn again. The chat stream's
+   *  own delegate cards are untouched — they are the turn's record. */
+  dismissChildren: (root: string, id: number, keys: readonly string[]) => void;
 }
 
 export const useAgentStore = create<AgentStore>((set) => ({
   views: new Map(),
   runningKeys: EMPTY_KEYS,
+  dismissedChildren: new Map(),
   workspaceRoot: "",
   activeId: 0,
   gitInfo: null,
@@ -197,6 +207,11 @@ export const useAgentStore = create<AgentStore>((set) => ({
           inc.cacheWriteTokens > 0 || inc.contextWindow > 0;
         const usage = !hasReading && incomingReading ? inc : cur;
         const contextBreakdown = existing.contextBreakdown ?? view.contextBreakdown;
+        // The 子代理 list's whole-log snapshot is not derived from the live
+        // rows and does not go stale with them: a buffer minted before `open`
+        // answered has none, and without seeding it the sidebar would list only
+        // the children that happened to replay onto this page.
+        const feedChildren = existing.feedChildren ?? view.feedChildren;
         // Pagination is deliberately NOT seeded here. `historyStart` says
         // "items[0] is row historyStart of the full log", and a live buffer
         // built from events cannot promise that: its rows are whatever
@@ -220,6 +235,7 @@ export const useAgentStore = create<AgentStore>((set) => ({
         if (
           usage === existing.usage &&
           contextBreakdown === existing.contextBreakdown &&
+          feedChildren === existing.feedChildren &&
           historyStart === existing.historyStart &&
           historyTotal === existing.historyTotal &&
           turnTotal === existing.turnTotal &&
@@ -234,6 +250,7 @@ export const useAgentStore = create<AgentStore>((set) => ({
           ...existing,
           usage,
           contextBreakdown,
+          feedChildren,
           historyStart,
           historyTotal,
           turnTotal,
@@ -263,11 +280,25 @@ export const useAgentStore = create<AgentStore>((set) => ({
   dropView: (root, id) =>
     set((s) => {
       const k = viewKey(root, id);
-      if (!s.views.has(k)) return s;
+      // The session's cleared-child set goes with it: ids are never reused, so
+      // a set left behind could only ever hide a stranger's card.
+      let dismissed = s.dismissedChildren;
+      if (dismissed.has(k)) {
+        const copy = new Map(dismissed);
+        copy.delete(k);
+        dismissed = copy;
+      }
+      if (!s.views.has(k)) {
+        return dismissed === s.dismissedChildren ? s : { dismissedChildren: dismissed };
+      }
       const next = new Map(s.views);
       next.delete(k);
       const keys = runningKeysOf(next);
-      return { views: next, runningKeys: sameKeys(s.runningKeys, keys) ? s.runningKeys : keys };
+      return {
+        views: next,
+        runningKeys: sameKeys(s.runningKeys, keys) ? s.runningKeys : keys,
+        dismissedChildren: dismissed,
+      };
     }),
 
   applyChildTranscript: (root, id, childId, segments, rows, opts) =>
@@ -370,6 +401,24 @@ export const useAgentStore = create<AgentStore>((set) => ({
       });
       return { views: next };
     }),
+
+  dismissChildren: (root, id, keys) =>
+    set((s) => {
+      if (keys.length === 0) return s;
+      const k = viewKey(root, id);
+      const cur = s.dismissedChildren.get(k);
+      const next = new Set<string>(cur);
+      let added = false;
+      for (const key of keys) {
+        if (next.has(key)) continue;
+        next.add(key);
+        added = true;
+      }
+      if (!added) return s;
+      const map = new Map(s.dismissedChildren);
+      map.set(k, next);
+      return { dismissedChildren: map };
+    }),
 }));
 
 /** The foreground session's view — a stable reference until that session's own
@@ -429,6 +478,12 @@ export function useHasRunningChildren(root: string, id: number): boolean {
 
 export function useRunningKeys(): ReadonlySet<string> {
   return useAgentStore((s) => s.runningKeys);
+}
+
+/** The children a session's reader cleared out of the 子代理 view — a stable
+ *  Set while nothing is cleared, so the derived list keeps its identity. */
+export function useDismissedChildren(root: string, id: number): ReadonlySet<string> {
+  return useAgentStore((s) => s.dismissedChildren.get(viewKey(root, id)) ?? EMPTY_KEYS);
 }
 
 /** Header chips: git state, the active model's window size and its $/1M. */

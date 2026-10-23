@@ -307,9 +307,17 @@ function appendChildText(
   if (i < 0) return false;
   const it = items[i];
   if (it.kind !== "tool") return false;
-  // Reasoning is its own stream, drawn apart from the answer prose.
+  // Reasoning is its own run, drawn by the same thinking row the main turn
+  // uses — in the body, where it happened, not above the whole card.
   if (reasoning) {
-    items[i] = { ...it, liveReasoning: (it.liveReasoning ?? "") + text };
+    const segments = [...(it.segments ?? [])];
+    const last = segments[segments.length - 1];
+    if (last?.kind === "thinking") {
+      segments[segments.length - 1] = { kind: "thinking", text: last.text + text };
+    } else {
+      segments.push({ kind: "thinking", text });
+    }
+    items[i] = { ...it, segments };
     return true;
   }
   const segments = [...(it.segments ?? [])];
@@ -509,8 +517,8 @@ function applyEventInto(
   }
   if ("ReasoningDelta" in ev && ev.ReasoningDelta.parent) {
     const { parent, text, child_id } = ev.ReasoningDelta;
-    // A child's reasoning stays on the card's 思考 block — never in its prose
-    // and never in the turn's own thinking row.
+    // A child's reasoning joins the child's own body as a thinking run — never
+    // its prose, and never the turn's thinking row.
     appendChildText(items, child_id ?? undefined, parent, text, true);
     return { ...v, items };
   }

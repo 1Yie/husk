@@ -8,6 +8,7 @@ import {
   viewFromHistoryChunked,
 } from "../view-from-history";
 import { SUMMARY_TOOLS } from "../apply-event";
+import { extractChildren } from "../running-children";
 import type { ChatMessage } from "@/types";
 
 const history: ChatMessage[] = [
@@ -299,6 +300,41 @@ describe("a delegated child survives reopening", () => {
     }
   });
 
+  /** An `answer_child` call followed by the result the kernel returns for it. */
+  const answerChild = (result: string, isError = false): ChatMessage[] => [
+    ...delegation("[subagent reviewer (child_id 7) is waiting for you]\n需要确认分支"),
+    {
+      role: "assistant",
+      content: "",
+      ts: 40,
+      tool_calls: [
+        {
+          id: "a1",
+          type: "function",
+          function: { name: "answer_child", arguments: '{"child_id":7,"answer":"用 main"}' },
+        },
+      ],
+    },
+    { role: "tool", content: result, tool_call_id: "a1", is_error: isError, ts: 50 },
+  ];
+
+  test("answer_child's report settles the card it resumed", () => {
+    // Its result is the child's next outcome, not an acknowledgement: the card
+    // must read 已完成 with the new body instead of keeping the parked question
+    // and reading as a report the child never wrote.
+    const view = viewFromHistory(answerChild("[subagent report — child_id 7 · 2 tool calls, 4s]\n已切到 main"));
+    expect(extractChildren(view)).toMatchObject([{ childId: 7, status: "done", report: "已切到 main" }]);
+    const card = view.items.find((it) => it.kind === "tool" && it.parent === "delegate");
+    if (card?.kind === "tool") {
+      expect(card.segments).toContainEqual({ kind: "text", text: "> 主代理回复：用 main", muted: true });
+    }
+  });
+
+  test("answer_child's cancel marker settles the card as interrupted", () => {
+    const view = viewFromHistory(answerChild("[subagent cancelled — child_id 7]", true));
+    expect(extractChildren(view)).toMatchObject([{ childId: 7, status: "aborted" }]);
+  });
+
   test("a finished report's header names the child it came from", () => {
     const view = viewFromHistory(
       delegation("[subagent report — child_id 12 · 4 tool calls, 9s]\n结论：无问题"),
@@ -507,6 +543,26 @@ describe("a subagent's own history replays onto its card", () => {
     expect(card.segments).toEqual([
       { kind: "text", text: "先看目录" },
       { kind: "tool", index: 0 },
+    ]);
+  });
+
+  test("the child's reasoning replays where it happened", () => {
+    const card = childTranscriptCard(
+      [
+        { role: "assistant", content: "", reasoning: "先定位入口", ts: 20 },
+        { role: "tool", content: "3 hits", ts: 30 },
+        { role: "assistant", content: "找到三处", reasoning: "再核对一遍", ts: 40 },
+      ],
+      "review #1",
+      9,
+    );
+    // One thinking run per round, ahead of the text and calls it produced —
+    // the same order the live stream appended its runs in.
+    expect(card.segments).toEqual([
+      { kind: "thinking", text: "先定位入口" },
+      { kind: "tool", index: 0 },
+      { kind: "thinking", text: "再核对一遍" },
+      { kind: "text", text: "找到三处" },
     ]);
   });
 });

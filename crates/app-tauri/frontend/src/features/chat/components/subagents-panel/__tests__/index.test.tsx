@@ -1,24 +1,43 @@
-// The 子代理 view: one row per running child, and the steer each one takes.
+// The 子代理 view: one card per delegated child. The ones still out take a
+// steer; the ones that ended keep their verdict and report.
 
-import { screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 import { SubagentsList } from "@/features/chat/components/subagents-panel";
+import { applyEvents } from "@/features/chat/hooks/apply-event";
+import { extractChildren, type SessionChild } from "@/features/chat/hooks/running-children";
+import { emptyView } from "@/features/chat/hooks/stream-view";
+import { viewFromHistory } from "@/features/chat/hooks/view-from-history";
+import { useAgentStore } from "@/stores/agent-store";
+import { TestResizeObserver } from "@/test/dom";
 import { renderWithProviders } from "@/test/render";
 import { mockCommand, tauri } from "@/test/tauri";
 import { WAITING_STEER_HINT } from "@/lib/subagents";
+import type { ChatMessage, UiEvent } from "@/types";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
-const child = (childId: number, name: string, task: string) => ({ childId, name, task });
+const child = (childId: number, name: string, task: string, extra: Partial<SessionChild> = {}): SessionChild => ({
+  childId,
+  name,
+  task,
+  status: "running",
+  ...extra,
+});
+
+/** The 子代理 body as the dock mounts it — the clear addresses this session. */
+const list = (children: SessionChild[]) => (
+  <SubagentsList children={children} root="/project" session={1} />
+);
+
+const dismissed = () => [...(useAgentStore.getState().dismissedChildren.get("/project:1") ?? [])];
 
 describe("子代理 view", () => {
-  test("gives each running child a row: its name, its task and 运行中", () => {
+  test("gives each running child a card: its name, its task and 运行中", () => {
     renderWithProviders(
-      <SubagentsList
-        children={[child(1, "review #1", "检查鉴权"), child(2, "review #2", "看性能")]}
-      />,
+      list([child(1, "review #1", "检查鉴权"), child(2, "review #2", "看性能")]),
     );
     expect(screen.getByText("review #1")).toBeInTheDocument();
     expect(screen.getByText("检查鉴权")).toBeInTheDocument();
@@ -26,9 +45,42 @@ describe("子代理 view", () => {
     expect(screen.getAllByText("运行中")).toHaveLength(2);
   });
 
+  test("a task the 3-line clamp cuts opens in a scrollable panel, not a native title", async () => {
+    const long = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 步：把鉴权中间件从头看完`).join("\n");
+    // Testing Library collapses whitespace when matching, the box does not.
+    const shown = long.split("\n").join(" ");
+    renderWithProviders(list([child(8, "review #1", long)]));
+    const line = screen.getByText(shown);
+    // jsdom lays nothing out: declare the box as cut, then let the panel measure.
+    Object.defineProperties(line, {
+      scrollHeight: { configurable: true, value: 240 },
+      clientHeight: { configurable: true, value: 54 },
+    });
+    act(() => TestResizeObserver.resize(line));
+
+    // The webview's own `title` bubble is what painted over the whole window.
+    expect(line).not.toHaveAttribute("title");
+    fireEvent.pointerEnter(line);
+    fireEvent.pointerMove(line);
+
+    await waitFor(() => expect(screen.getAllByText(shown)).toHaveLength(2));
+    const [, panel] = screen.getAllByText(shown);
+    expect(panel.className).toContain("overflow-y-auto");
+    expect(panel.className).toContain("max-h-[min(20rem,");
+  });
+
+  test("a task that fits stays quiet on hover", async () => {
+    renderWithProviders(list([child(9, "review #1", "检查鉴权")]));
+    const task = screen.getByText("检查鉴权");
+    expect(task).not.toHaveAttribute("title");
+    fireEvent.pointerEnter(task);
+    fireEvent.pointerMove(task);
+    await waitFor(() => expect(screen.getAllByText("检查鉴权")).toHaveLength(1));
+  });
+
   test("a steer typed against a child reaches the kernel", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<SubagentsList children={[child(3, "review #1", "检查鉴权")]} />);
+    renderWithProviders(list([child(3, "review #1", "检查鉴权")]));
     const box = screen.getByPlaceholderText("插话…");
     await user.type(box, "先看中间件{Enter}");
     expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", {
@@ -42,7 +94,7 @@ describe("子代理 view", () => {
   test("a rejected steer is reported and the draft kept", async () => {
     mockCommand("agent_cmd", () => Promise.reject(new Error("session gone")));
     const user = userEvent.setup();
-    renderWithProviders(<SubagentsList children={[child(3, "review #1", "检查鉴权")]} />);
+    renderWithProviders(list([child(3, "review #1", "检查鉴权")]));
     const box = screen.getByPlaceholderText("插话…");
     await user.type(box, "先看中间件{Enter}");
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("插话失败：Error: session gone"));
@@ -51,12 +103,116 @@ describe("子代理 view", () => {
 
   test("a parked child shows its question and says the steer waits", () => {
     renderWithProviders(
-      <SubagentsList
-        children={[{ ...child(4, "review #1", "检查鉴权"), waiting: "用哪条分支？" }]}
-      />,
+      list([child(4, "review #1", "检查鉴权", { status: "waiting", waiting: "用哪条分支？" })]),
     );
     expect(screen.getByText("等待主代理回复")).toBeInTheDocument();
     expect(screen.getByText("用哪条分支？")).toBeInTheDocument();
     expect(screen.getByText(WAITING_STEER_HINT)).toBeInTheDocument();
+  });
+
+  test("a finished child stays: its verdict, its report on demand, no steer", () => {
+    renderWithProviders(
+      list([child(5, "review #1", "检查鉴权", { status: "done", report: "结论：无问题" })]),
+    );
+    expect(screen.getByText("已完成")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("插话…")).not.toBeInTheDocument();
+    expect(screen.queryByText("结论：无问题")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "报告" }));
+    expect(screen.getByText("结论：无问题")).toBeInTheDocument();
+  });
+
+  test("a live report reaches the panel without the kernel's header", () => {
+    // The card keeps the raw result; only what the panel draws is stripped.
+    const view = applyEvents(emptyView(), [
+      { UserPrompt: "委派" },
+      { ToolCallStarted: { name: "review #1", args_preview: "检查鉴权", parent: "delegate", child_id: 5 } },
+      {
+        ToolCallFinished: {
+          name: "review #1",
+          ok: true,
+          content: "[subagent report — child_id 5 · 132 tool calls, 758s]\n结论：无问题",
+          parent: "delegate",
+          child_id: 5,
+        },
+      },
+    ] as UiEvent[]);
+    const { container } = renderWithProviders(list(extractChildren(view)));
+    fireEvent.click(screen.getByRole("button", { name: "报告" }));
+    expect(screen.getByText("结论：无问题")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("[subagent report");
+  });
+
+  test("a batch result's marker and header stay out of every panel report", () => {
+    const history: ChatMessage[] = [
+      { role: "user", content: "并行委派", ts: 10 },
+      {
+        role: "assistant",
+        content: "",
+        ts: 20,
+        tool_calls: [
+          { id: "d2", type: "function", function: { name: "delegate", arguments: '{"tasks":["看鉴权","看性能"]}' } },
+        ],
+      },
+      {
+        role: "tool",
+        content:
+          "[delegate — 2 children]\n" +
+          "── [0] ok · 3s ──\n[subagent report — child_id 21 · 2 tool calls, 3s]\n鉴权没问题\n" +
+          "── [1] ok · 5s ──\n[subagent report — child_id 22 · 1 tool calls, 5s]\n性能可以",
+        tool_call_id: "d2",
+        ts: 30,
+      },
+    ];
+    const { container } = renderWithProviders(list(extractChildren(viewFromHistory(history))));
+    for (const button of screen.getAllByRole("button", { name: "报告" })) fireEvent.click(button);
+    expect(screen.getByText("鉴权没问题")).toBeInTheDocument();
+    expect(screen.getByText("性能可以")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("[subagent report");
+    expect(container.textContent).not.toContain("── [");
+  });
+
+  test("failed and aborted children read as such", () => {
+    renderWithProviders(
+      list([child(6, "a #1", "x", { status: "failed", report: "超时" }), child(7, "b #2", "y", { status: "aborted" })]),
+    );
+    expect(screen.getByText("失败")).toBeInTheDocument();
+    expect(screen.getByText("已中断")).toBeInTheDocument();
+  });
+
+  test("children still out lead; the ended ones follow under 已结束, newest first", () => {
+    const { container } = renderWithProviders(
+      list([
+        child(1, "old #1", "x", { status: "done" }),
+        child(2, "live #2", "y"),
+        child(3, "new #3", "z", { status: "done" }),
+      ]),
+    );
+    const names = [...container.querySelectorAll("[data-child-status] .font-mono")].map((n) => n.textContent);
+    expect(names).toEqual(["live #2", "new #3", "old #1"]);
+    expect(screen.getByText("已结束")).toBeInTheDocument();
+  });
+});
+
+describe("清除已结束", () => {
+  beforeEach(() => useAgentStore.setState({ dismissedChildren: new Map() }));
+
+  const mixed = () => [
+    child(1, "live #1", "跑着"),
+    child(2, "parked #2", "等着", { status: "waiting", waiting: "用哪条分支？" }),
+    child(3, "done #3", "做完了", { status: "done", report: "结论：无问题" }),
+    child(4, "failed #4", "炸了", { status: "failed", report: "超时" }),
+    child(5, "stopped #5", "断了", { status: "aborted" }),
+  ];
+
+  test("clears every ended child and keeps the ones still out", () => {
+    renderWithProviders(list(mixed()));
+    fireEvent.click(screen.getByRole("button", { name: "清除已结束" }));
+    // The running and the parked child are the ones a steer can still reach.
+    expect(dismissed()).toEqual(["c5", "c4", "c3"]);
+  });
+
+  test("nothing to clear, no button", () => {
+    renderWithProviders(list(mixed().slice(0, 2)));
+    expect(screen.queryByRole("button", { name: "清除已结束" })).toBeNull();
   });
 });

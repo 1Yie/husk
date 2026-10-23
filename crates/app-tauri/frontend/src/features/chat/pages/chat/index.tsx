@@ -1,6 +1,6 @@
 // Chat page — the conversation column of the main window: window title
 // bar (with the git/usage meter), the scrollable stream, and the composer.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Plus } from "@keyline-icons/react";
 import { toast } from "sonner";
 import { TitleBar } from "@/components/title-bar";
@@ -9,13 +9,16 @@ import { SessionDock } from "@/features/chat/components/dock";
 import { useDockStore } from "@/features/chat/components/dock/state";
 import { ComposerBar } from "@/features/chat/components/composer-bar";
 import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/components/workspace-welcome";
-import { useActiveView, useAgentChips, useAgentStore, useHasMoreHistory, useHasView, viewNow } from "@/stores/agent-store";
-import { listBgJobs, openPath, saveArtifact, statPaths } from "@/lib/agent-ipc/index";
+import { useActiveView, useAgentChips, useAgentStore, useDismissedChildren, useHasMoreHistory, useHasView, viewNow } from "@/stores/agent-store";
+import { listBgJobs, openPath, saveArtifact, sendPrompt, statPaths } from "@/lib/agent-ipc/index";
 import { jobTone, summarizeJobs } from "@/lib/bg-jobs";
 import { dockPill } from "@/lib/dock-pill";
 import { isAppInFront } from "@/lib/desktop-notify";
 import { useWorkspaceChanges } from "@/features/chat/hooks/use-workspace-changes";
-import { extractRunningChildren } from "@/features/chat/hooks/running-children";
+import {
+  sessionChildren as sessionChildrenOf,
+  withoutDismissed,
+} from "@/features/chat/hooks/running-children";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Document extensions that pop the ready-toast — the office deliverable.
@@ -167,8 +170,21 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     };
   }, [workspaceRoot, sessionId, hasView, writeJobs]);
   const jobsSummary = useMemo(() => summarizeJobs(view.bgJobs), [view.bgJobs]);
-  // Delegated children still out — the composer's own capsule names them.
-  const runningChildren = useMemo(() => extractRunningChildren(view), [view]);
+  // Every delegated child of the session, finished ones included: the 子代理
+  // view and its capsule stay after a child reports, and come back on reopen
+  // because the cards are rebuilt from the persisted log. The list is
+  // session-level, so it also carries the children of history above the mounted
+  // page (the session-level feed) — otherwise a long session would list only
+  // the children of its newest page.
+  // The ones the reader cleared are dropped here, at the single point the list
+  // is derived: the dock, the count and the capsule then agree, and a cleared
+  // child cannot come back through the next event. The stream's own delegate
+  // cards are the turn's record and are untouched.
+  const dismissedChildren = useDismissedChildren(workspaceRoot, sessionId);
+  const sessionChildren = useMemo(
+    () => withoutDismissed(sessionChildrenOf(view), dismissedChildren),
+    [view, dismissedChildren],
+  );
 
   // The dock is one sidebar for every list, so "has content" is the sum —
   // and which view to reveal follows whatever actually appeared.
@@ -184,11 +200,23 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   const workspaceChanges = useWorkspaceChanges(workspaceRoot);
   const changes = workspaceChanges.repo ? workspaceChanges.files : view.changes;
   const filesCount = changes.length + artifacts.length;
-  const panelCount = filesCount + view.bgJobs.length + runningChildren.length;
+  const panelCount = filesCount + view.bgJobs.length + sessionChildren.length;
   // The dock's own open flag AND its content — an empty sidebar hides itself,
   // so a fresh session never lands on 「本会话还没有文件产出」 just because the
   // previous one left the dock open (the flag is persisted).
   const dockVisible = dockOpen && panelCount > 0;
+  // A session switch changes which dock state applies — that is a jump, not a
+  // user toggle, so the dock must not slide. Snap from the layout effect (before
+  // paint) until the next frame, then restore the animation for in-session toggles.
+  const [dockSnap, setDockSnap] = useState(false);
+  const prevSessionKeyRef = useRef(sessionKey);
+  useLayoutEffect(() => {
+    if (prevSessionKeyRef.current === sessionKey) return;
+    prevSessionKeyRef.current = sessionKey;
+    setDockSnap(true);
+    const frame = requestAnimationFrame(() => setDockSnap(false));
+    return () => cancelAnimationFrame(frame);
+  }, [sessionKey]);
   // The jobs pill speaks for the 后台 view; the dock pill for the file views.
   // Each reads as open only while the dock shows its own view, so the two
   // never both claim the sidebar. With no files the dock falls back to 后台
@@ -200,7 +228,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // empty too.
   const subagentsShown =
     dockVisible &&
-    runningChildren.length > 0 &&
+    sessionChildren.length > 0 &&
     (dockTab === "subagents" || (filesCount === 0 && view.bgJobs.length === 0));
   // Which view the pill names: the last FILE view — 后台 is a detour, so the
   // label does not jump while it is up — if it still has content.
@@ -306,6 +334,10 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     dismissedRef.current = true;
   }, []);
 
+  const handleCompact = useCallback(() => {
+    sendPrompt("/compact").catch(() => toast.error("压缩失败——会话已不可用"));
+  }, []);
+
   const seenArtifactsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     seenArtifactsRef.current = new Set(artifacts.map((a) => a.path));
@@ -349,6 +381,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
         contextWindowHint={contextWindowHint}
         modelCost={modelCost}
         onShowRaw={onShowRaw}
+        onCompact={handleCompact}
         noWorkspace={!workspaceRoot}
         // Zero sessions — session-scoped chips (ctx/tokens/cost/rate) would
         // only show config defaults; git is workspace-level and stays.
@@ -409,7 +442,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               jobs={jobsSummary}
               jobsOpen={jobsShown}
               onToggleJobs={workspaceRoot ? handleToggleJobs : undefined}
-              subagents={runningChildren}
+              subagents={sessionChildren}
               subagentsOpen={subagentsShown}
               onToggleSubagents={workspaceRoot ? handleToggleSubagents : undefined}
               suppressPills={mentionOpen}
@@ -443,11 +476,12 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
             artifacts={artifacts}
             jobs={view.bgJobs}
             jobsAt={view.bgJobsAt}
-            subagents={runningChildren}
+            subagents={sessionChildren}
             root={workspaceRoot}
             session={sessionId}
             onJobs={writeJobs}
             open={dockVisible}
+            snap={dockSnap}
             onClose={handleDockClosed}
           />
         </div>

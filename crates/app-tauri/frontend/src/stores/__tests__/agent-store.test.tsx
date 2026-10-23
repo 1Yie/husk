@@ -236,6 +236,23 @@ describe("persisted history and live state", () => {
     expect(v.runTotal).toBe(9);
   });
 
+  test("a live buffer takes the open page's session-level children", () => {
+    // The whole-log feed snapshot is not derived from the live rows, so a
+    // buffer minted before `open` answered must still adopt it — otherwise the
+    // 子代理 list is only whatever this page happened to replay.
+    useAgentStore.getState().loadView("/project", 1, {
+      ...emptyView(),
+      items: [{ kind: "assistant" as const, text: "实时", streaming: false }],
+    });
+    const feedChildren = [{ childId: 12, name: "subagent", task: "探索仓库", status: "done" as const, hi: 2 }];
+    useAgentStore.getState().loadView("/project", 1, { ...emptyView(), feedChildren });
+    expect(activeViewNow().items).toHaveLength(1);
+    expect(activeViewNow().feedChildren).toBe(feedChildren);
+    // A later open that carries none keeps the seeded one.
+    useAgentStore.getState().loadView("/project", 1, emptyView());
+    expect(activeViewNow().feedChildren).toBe(feedChildren);
+  });
+
   test("older pages prepend once, keep live rows, and update history availability", () => {
     const live = { kind: "assistant" as const, text: "最新内容", streaming: true, hi: 5 };
     useAgentStore.getState().loadView("/project", 1, { ...emptyView(), items: [live] }, { historyStart: 5, turnOffset: 2 });
@@ -496,5 +513,24 @@ describe("a subagent still running when the webview reloaded", () => {
       useAgentStore.getState().applyChildTranscript("/project", 1, 7, segments, rows, { keepRunning: true }),
     );
     expect(viewNow("/project", 1)).toBe(snapshot);
+  });
+});
+
+describe("cleared subagent cards", () => {
+  test("a clear is remembered per session, and outlives the events that rebuild the list", () => {
+    useAgentStore.getState().dismissChildren("/project", 1, ["c3", "h9"]);
+    expect([...useAgentStore.getState().dismissedChildren.get("/project:1")!]).toEqual(["c3", "h9"]);
+    // A session that cleared nothing keeps no set at all.
+    expect(useAgentStore.getState().dismissedChildren.get("/project:2")).toBeUndefined();
+    // Clearing again is a no-op, so a selector holding the Set is not disturbed.
+    const set = useAgentStore.getState().dismissedChildren.get("/project:1");
+    useAgentStore.getState().dismissChildren("/project", 1, ["c3"]);
+    expect(useAgentStore.getState().dismissedChildren.get("/project:1")).toBe(set);
+  });
+
+  test("the session's set goes with the session", () => {
+    useAgentStore.getState().dismissChildren("/project", 1, ["c3"]);
+    useAgentStore.getState().dropView("/project", 1);
+    expect(useAgentStore.getState().dismissedChildren.has("/project:1")).toBe(false);
   });
 });

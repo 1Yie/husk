@@ -135,6 +135,25 @@ describe("unified session dock", () => {
     fireEvent.pointerUp(window);
   });
 
+  test("a snapped switch applies open and shut without the slide", () => {
+    const { container, rerender } = render(
+      <SessionDock changes={[change("a.ts")]} artifacts={[]} open={false} snap />,
+    );
+    const frame = container.firstElementChild as HTMLElement;
+    const aside = frame.firstElementChild as HTMLElement;
+    // A session switch is a jump: neither the column nor the slide animates.
+    expect(frame.className).not.toMatch(/transition/);
+    expect(aside.className).not.toMatch(/transition/);
+    rerender(<SessionDock changes={[change("a.ts")]} artifacts={[]} open snap />);
+    expect(frame.style.width).toBe(`${DOCK_DEFAULT_WIDTH}px`);
+    expect(frame.className).not.toMatch(/transition/);
+    expect(aside.className).not.toMatch(/transition/);
+    // Without the snap the same change keeps its animation.
+    rerender(<SessionDock changes={[change("a.ts")]} artifacts={[]} open={false} />);
+    expect(frame.className).toMatch(/transition-\[width\]/);
+    expect(aside.className).toMatch(/transition-transform/);
+  });
+
   test("background jobs get their own 后台 view", () => {
     const job: BgJob = {
       id: "bg-1",
@@ -255,7 +274,7 @@ describe("unified session dock", () => {
       <SessionDock
         changes={[change("a.ts")]}
         artifacts={[]}
-        subagents={[{ childId: 1, name: "review #1", task: "检查鉴权" }]}
+        subagents={[{ childId: 1, name: "review #1", task: "检查鉴权", status: "running" }]}
       />,
     );
     fireEvent.click(screen.getByRole("tab", { name: "子代理（1 个）" }));
@@ -273,11 +292,26 @@ describe("unified session dock", () => {
       <SessionDock
         changes={[change("a.ts")]}
         artifacts={[artifact("b.pdf")]}
-        subagents={[{ childId: 2, name: "review #1", task: "检查鉴权" }]}
+        subagents={[{ childId: 2, name: "review #1", task: "检查鉴权", status: "running" }]}
       />,
     );
     fireEvent.click(screen.getByRole("tab", { name: /子代理/ }));
     expect(useDockStore.getState()).toMatchObject({ tab: "subagents", filesTab: "artifacts" });
+  });
+
+  test("a finished child keeps the 子代理 view: verdict and report, no steer", () => {
+    renderWithProviders(
+      <SessionDock
+        changes={[]}
+        artifacts={[]}
+        subagents={[{ childId: 3, name: "review #1", task: "检查鉴权", status: "done", report: "结论：无问题" }]}
+      />,
+    );
+    expect(screen.getByRole("tab", { name: "子代理（1 个）" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("已完成")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("插话…")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "报告" }));
+    expect(screen.getByText("结论：无问题")).toBeInTheDocument();
   });
 
   test("a stored 子代理 view falls back once the children are gone", () => {

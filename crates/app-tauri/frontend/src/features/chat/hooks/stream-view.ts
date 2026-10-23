@@ -3,14 +3,17 @@
 // reopened session). Pure data: no React, no IPC.
 
 import type { AgentState, ApprovalActions, PlanPayload } from "@/types";
+import type { SessionChild } from "@/features/chat/hooks/running-children";
 
 /** One run inside a delegated child's body. A text run is the child's streamed
- *  answer; a tool run points at the child's `children` entry by index, so a
- *  tool's data is stored once. */
+ *  answer, a thinking run its reasoning — both drawn where they happened; a tool
+ *  run points at the child's `children` entry by index, so a tool's data is
+ *  stored once. */
 export type ChildSegment =
   /** `muted` = a side note (a steer sent to the child, a notice), drawn quieter
    *  than the child's own answer prose. */
   | { kind: "text"; text: string; muted?: boolean }
+  | { kind: "thinking"; text: string }
   | { kind: "tool"; index: number };
 
 export type StreamItem =
@@ -62,16 +65,22 @@ export type StreamItem =
       ts?: number;
       /** A delegated child's streamed answer text, before its report lands. */
       live?: string;
-      /** The same child's streamed reasoning trace. */
-      liveReasoning?: string;
-      /** A delegated child's body in arrival order: text runs interleaved with
-       *  its own tool calls, so the card reads top-to-bottom like a session. */
+      /** A delegated child's body in arrival order: reasoning, text and its own
+       *  tool calls interleaved, so the card reads top-to-bottom like a turn. */
       segments?: ChildSegment[];
       /** Set on calls emitted inside another tool (`batch_execute`
        * items) — the stream nests them under the parent capsule. */
       parent?: string;
       /** Set on a delegated subagent's card: the id a `SteerChild` names. */
       childId?: number;
+      /** Set on a delegated subagent's card: its place in the `delegate` batch
+       *  (0-based, input order). The card's `hi` is the PARENT row's index, so
+       *  every child of one batch shares it — this is the other half of the
+       *  child's identity, and the fallback whenever the persisted log lost the
+       *  `child_id` its report header carries. Also stamped on each
+       *  `batch_execute` item folded out of history, where every item shares its
+       *  capsule's `hi` in exactly the same way. */
+      childIndex?: number;
       /** A delegated child's own history was fetched and folded onto this
        *  card — replaying it again would duplicate its rows. */
       transcriptLoaded?: boolean;
@@ -140,6 +149,31 @@ export type StreamItem =
       ts?: number;
       hi?: number;
     };
+
+/** The child's own half of its identity: the `child_id` its report header
+ *  names, or — when the log lost it, or the child has not reported — its place
+ *  in the batch. Two children of one `delegate` share their parent row's `hi`,
+ *  so this is what tells the siblings apart — and the items nested under one
+ *  `batch_execute` capsule need that same half for the same reason. */
+export function childIdentity(childId: number | undefined, childIndex: number | undefined): string {
+  return childId != null ? `c${childId}` : `i${childIndex ?? 0}`;
+}
+
+/** The id a tool chip's row carries — the key its open state is held by, and
+ *  its React key. `hi` (global history index) survives a prepended page and
+ *  `idx` is the live-only fallback. A nested item needs its own half too: its
+ *  `hi` is the PARENT row's index, so the children of one `delegate` batch — and
+ *  the items of one `batch_execute` capsule — all carried one id, so opening one
+ *  card opened every sibling and their keys collided. `childIndex` is what
+ *  marks such an item, and the letters in that half also keep it clear of the
+ *  live path's `tool-<idx>`. */
+export function toolRowId(item: Extract<StreamItem, { kind: "tool" }>, idx: number): string {
+  if (item.hi == null) return `tool-${idx}`;
+  if (item.childIndex != null) {
+    return `tool-${item.hi}-${childIdentity(item.childId, item.childIndex)}`;
+  }
+  return `tool-${item.hi}`;
+}
 
 /** How a file landed in the changes panel (add/update/delete). */
 export type ChangeKind = "add" | "update" | "delete";
@@ -323,6 +357,13 @@ export interface SessionView {
    *  when the list arrived, the base the running clocks tick from. */
   bgJobs: BgJob[];
   bgJobsAt: number;
+  /** The session's delegated children as folded out of the whole-log
+   *  `tool_rows_feed` when it was opened — a snapshot taken beside the page,
+   *  not a live list. `sessionChildren` merges it with the mounted page's
+   *  cards into the 子代理 sidebar's list; every entry carries the `delegate`
+   *  row's global `hi` so the merge can tell which card the page already has.
+   *  Absent when the feed read failed. */
+  feedChildren?: SessionChild[];
 }
 
 export const emptyView = (): SessionView => ({

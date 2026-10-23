@@ -13,7 +13,8 @@ vi.mock("@/features/chat/components/chat-stream/markdown-stream", () => ({
 }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
-const child = (childId: number, name: string, task: string) => ({ childId, name, task });
+const child = (childId: number, name: string, task: string) =>
+  ({ childId, name, task, status: "running" }) as const;
 
 function renderStream(props: Partial<ComponentProps<typeof ChatStream>> = {}) {
   return renderWithProviders(<ChatStream view={emptyView()} sessionKey="/project:1" {...props} />);
@@ -32,6 +33,30 @@ describe("subagent capsule", () => {
     const pill = screen.getByRole("button", { name: "子代理" });
     expect(pill.textContent).toContain("2 个子代理运行中");
     expect(pill.getAttribute("data-compact")).toBeNull();
+  });
+
+  test("stays after every child ended, with the verdict instead of the orb", () => {
+    renderStream({
+      subagents: [
+        { childId: 1, name: "review #1", task: "检查鉴权", status: "done", report: "无问题" },
+        { childId: 2, name: "review #2", task: "看性能", status: "done" },
+      ],
+    });
+    const pill = screen.getByRole("button", { name: "子代理" });
+    expect(pill.textContent).toContain("2 个子代理已完成");
+    expect(pill.getAttribute("data-subagents-tone")).toBe("ok");
+  });
+
+  test("a failed child turns the settled capsule red", () => {
+    renderStream({
+      subagents: [
+        { childId: 1, name: "review #1", task: "检查鉴权", status: "done" },
+        { childId: 2, name: "review #2", task: "看性能", status: "failed" },
+      ],
+    });
+    const pill = screen.getByRole("button", { name: "子代理" });
+    expect(pill.textContent).toContain("1 个子代理未完成");
+    expect(pill.getAttribute("data-subagents-tone")).toBe("failed");
   });
 
   test("clicking it opens the 子代理 view instead of a popover", () => {
@@ -56,12 +81,27 @@ describe("subagent capsule", () => {
     expect(pill.getAttribute("aria-pressed")).toBe("true");
   });
 
-  test("yields to the pill ahead of it", () => {
+  test("folds when it is the last of two", () => {
     renderStream({
       subagents: [child(1, "review #1", "检查鉴权")],
       jobs: { text: "1 个任务运行中", tone: "running" },
       onToggleJobs: () => {},
     });
+    expect(screen.getByRole("button", { name: "子代理" }).getAttribute("data-compact")).toBe("true");
+    expect(screen.getByRole("button", { name: "后台任务" }).getAttribute("data-compact")).toBeNull();
+  });
+
+  test("three capsules up: dock and jobs speak, the subagents capsule folds", () => {
+    renderStream({
+      subagents: [child(1, "review #1", "检查鉴权")],
+      jobs: { text: "1 个任务运行中", tone: "running" },
+      onToggleJobs: () => {},
+      dockCount: 1,
+      dockTab: "changes",
+      onToggleDock: () => {},
+    });
+    expect(screen.getByRole("button", { name: "侧栏" }).getAttribute("data-compact")).toBeNull();
+    expect(screen.getByRole("button", { name: "后台任务" }).getAttribute("data-compact")).toBeNull();
     expect(screen.getByRole("button", { name: "子代理" }).getAttribute("data-compact")).toBe("true");
   });
 
@@ -109,6 +149,8 @@ describe("subagent capsule", () => {
     renderWithProviders(<ChatStream view={view} sessionKey="/project:1" />);
     // The tools phase is collapsed until asked — the chip list is its body.
     fireEvent.click(screen.getByRole("button", { name: /次工具调用/ }));
+    // The child's card is closed too: its body is a transcript, opened by hand.
+    fireEvent.click(screen.getByRole("button", { name: /review #1/ }));
     expect(screen.getByText("找到三处")).toBeInTheDocument();
     expect(screen.getByText("smart_grep")).toBeInTheDocument();
   });

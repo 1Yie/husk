@@ -1,9 +1,10 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "@keyline-icons/react";
 import { Bot, Clock, CornerDownRight, FileText, MessageSquare } from "lucide-react";
-import { AssistantStatus } from "@/features/chat/components/assistant-status/index";
+import { ThinkingBlock } from "@/features/chat/components/chat-stream/turn-blocks";
 import { Orb } from "@/features/chat/components/agent-orb/index";
 import { DiffView } from "@/features/chat/components/diff-view/index";
+import { reportBody } from "@/features/chat/hooks/report-text";
 import type { ChildSegment } from "@/features/chat/hooks/stream-view";
 import { TodoView } from "@/features/chat/components/todo-view/index";
 import { highlightCodeToHtml } from "@/lib/syntax-highlight";
@@ -257,13 +258,10 @@ export type ToolChipRow = {
   kind?: "agent";
   /** On an agent card: the id a `SteerChild` names to reach this child. */
   childId?: number;
-  /** On an agent card: the child's streamed reasoning, drawn as its own 思考
-   *  block — separate from its answer prose. */
-  reasoning?: string;
   /** On an agent card: it parked on a question for the parent agent. */
   waiting?: string;
-  /** On an agent card: its body in arrival order — text runs and tool runs
-   * (by index into `children`) interleaved, like a session's own steps. */
+  /** On an agent card: its body in arrival order — reasoning, text and tool
+   *  runs (by index into `children`) interleaved, like a turn's own steps. */
   segments?: ChildSegment[];
   chip: string;
   detail?: string[];
@@ -413,10 +411,8 @@ export function ToolChips({
   const isRowOpen = (row: ToolChipRow) => {
     if (closedRows.has(row.id)) return false;
     if (openRows.has(row.id)) return true;
-    // An agent card is open until the reader closes it: watching a subagent
-    // work is the point, and auto-collapsing when it finishes would yank the
-    // report away mid-read.
-    if (row.kind === "agent") return true;
+    // An agent card is closed until the reader opens it — a child's body is a
+    // whole transcript, and opening it unasked buries the turn that spawned it.
     if (row.approval && !row.approval.resolved) return true;
     if (row.label === "todo" || row.uiType === "todo") return true;
     return false;
@@ -443,7 +439,9 @@ export function ToolChips({
   if (rows.length === 0) return null;
 
   /** A subagent reads as a small card, not a tool line: agent name, the task
-   *  it was handed, then whatever it has streamed so far (or its report). */
+   *  it was handed, then its transcript in arrival order (or its report). The
+   *  body is closed until the reader opens it — a child's transcript is long,
+   *  and opening it unasked buries the turn that spawned it. */
   function renderAgentRow(row: ToolChipRow) {
     const rowOpen = isRowOpen(row);
     const body = row.detail ? row.detail.join("\n").trim() : "";
@@ -489,9 +487,13 @@ export function ToolChips({
       }
       return "";
     })();
+    // The body is the raw tool result; the kernel's `[subagent report — …]`
+    // header (and a batch section marker) is metadata for the parent model, so
+    // it never reaches the reader. Stripped here only — `row.detail` keeps it.
+    const reportText = reportBody(body);
     // The report is the child's own answer, drawn under its body whenever the
     // body was streamed live — the two are separate deliverables.
-    const report = !running && body && body !== lastText ? body : "";
+    const report = !running && reportText && body !== lastText ? reportText : "";
     /** Answer prose — one type size for every run of the card. */
     const prose = (text: string, key?: string) => (
       <div key={key} className="text-[12.5px] leading-relaxed text-neutral-700 select-text">
@@ -511,14 +513,15 @@ export function ToolChips({
       </div>
     );
     // The child's body in arrival order — consecutive tool segments collapse
-    // into ONE group, so a phase of calls sits between two paragraphs.
+    // into ONE group, so a phase of calls sits between two paragraphs, and a
+    // thinking run sits exactly where the reasoning happened.
     const segments: ChildSegment[] =
       row.segments && row.segments.length > 0
-        ? row.segments.some((s) => s.kind === "text") || !row.detail?.length
+        ? row.segments.some((s) => s.kind === "text") || !row.detail?.length || !reportText
           ? row.segments
           : // A finished child whose report was never streamed as text: the
             // report is its last text run, so it is not dropped.
-            [...row.segments, { kind: "text" as const, text: body }]
+            [...row.segments, { kind: "text" as const, text: reportText }]
         : [];
     const blocks: React.ReactNode[] = [];
     let toolRun: ToolChipRow[] = [];
@@ -534,6 +537,18 @@ export function ToolChips({
         return;
       }
       flushTools();
+      if (seg.kind === "thinking") {
+        // The main turn's own thinking row, drawn where the reasoning happened.
+        // A run is still arriving only while nothing followed it.
+        blocks.push(
+          <ThinkingBlock
+            key={`thinking-${i}`}
+            text={seg.text}
+            done={!running || i < segments.length - 1}
+          />,
+        );
+        return;
+      }
       blocks.push(
         seg.muted ? <MutedNote key={`note-${i}`} text={seg.text} /> : prose(seg.text, `text-${i}`),
       );
@@ -597,20 +612,12 @@ export function ToolChips({
           <RowDetail open={rowOpen}>
             {/* One vertical rhythm for the whole card: prose 12.5px, meta 11px. */}
             <div className="flex flex-col gap-2.5 px-2.5 pb-2.5">
-              {row.reasoning ? (
-                // The main chat's own thinking row, not a second design: live
-                // 「思考中」 while the child streams, 「思考过程」 once it settles.
-                <AssistantStatus
-                  mode={running ? "thinking" : "thought"}
-                  thinkingText={row.reasoning}
-                />
-              ) : null}
               {segments.length > 0 ? (
                 blocks
               ) : (
                 <>
-                  {body ? (
-                    prose(body)
+                  {reportText ? (
+                    prose(reportText)
                   ) : running ? (
                     <div className="text-[11px] text-neutral-500">等待子代理输出…</div>
                   ) : null}

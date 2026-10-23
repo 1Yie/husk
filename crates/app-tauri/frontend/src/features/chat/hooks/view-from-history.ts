@@ -166,6 +166,10 @@ function batchChildren(rawArgs: string, content: string) {
       // chips render 已拒绝 instead of the misleading 已中断.
       uiType: status === "rejected" ? "rejected" : undefined,
       parent: "batch_execute",
+      // Every item of one batch rides the capsule's `hi`, so its place in
+      // `calls[]` is the other half of its row id — without it the siblings
+      // shared one id and opening one expanded them all.
+      childIndex: idx,
     });
   }
   return items;
@@ -184,7 +188,9 @@ function answerChildArgs(rawArgs: string): { childId?: number; answer: string } 
   }
 }
 
-function answerChildId(rawArgs: string): number | undefined {
+/** The child an `answer_child` row resumed; exported for the 子代理 sidebar,
+ *  which clears that child's waiting state out of the session-level feed. */
+export function answerChildId(rawArgs: string): number | undefined {
   return answerChildArgs(rawArgs).childId;
 }
 
@@ -233,8 +239,10 @@ const CANCELLED_BODY = "已中断";
 /** Rebuild a delegation's nested child items from the persisted args
  * (`task`/`tasks`) and result text (`── [i] ok · 3s ──` sections for the
  * parallel form; the bare report for a single child) — live-only events, so
- * without this a reopened session would show the parent capsule alone. */
-function delegateChildren(rawArgs: string, content: string, isError: boolean) {
+ * without this a reopened session would show the parent capsule alone.
+ * Exported for the 子代理 sidebar, which folds the same cards out of the
+ * session-level tool feed. */
+export function delegateChildren(rawArgs: string, content: string, isError: boolean) {
   let tasks: string[] = [];
   let agent: string | undefined;
   try {
@@ -254,6 +262,10 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
     ok: boolean;
     parent: string;
     childId?: number;
+    /** The child's place in the batch — every child shares the parent row's
+     *  `hi`, so this is what makes its card id unique (and, when the report
+     *  lost its `child_id`, its only identity). */
+    childIndex: number;
     waiting?: string;
   }[] = [];
   if (total <= 1) {
@@ -276,6 +288,7 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
       // cancelled or failed child must not reload green.
       ok: !isError && !cancelled,
       parent: "delegate",
+      childIndex: 0,
       childId: waiting
         ? Number(waiting[2])
         : finished
@@ -309,6 +322,7 @@ function delegateChildren(rawArgs: string, content: string, isError: boolean) {
       content: interrupted ? CANCELLED_BODY : body || undefined,
       ok: !interrupted && status.startsWith("ok"),
       parent: "delegate",
+      childIndex: idx,
       childId: finished ? Number(finished[1]) : cancelled ? Number(cancelled[1]) : undefined,
     });
   }
@@ -335,6 +349,7 @@ function danglingDelegateCards(
   ok: boolean;
   parent: string;
   childId?: number;
+  childIndex: number;
 }[] {
   if (tool === "delegate") {
     let tasks: string[] = [];
@@ -356,6 +371,9 @@ function danglingDelegateCards(
       ok: false,
       parent: "delegate",
       childId: undefined,
+      // No report ever named this child — its place in the batch is all the
+      // log can say, and it still keeps its card's id off its siblings'.
+      childIndex: i,
     }));
   }
   return [
@@ -367,6 +385,7 @@ function danglingDelegateCards(
       ok: false,
       parent: "delegate",
       childId: answerChildId(rawArgs),
+      childIndex: 0,
     },
   ];
 }
@@ -430,6 +449,10 @@ export function childTranscriptCard(
       segments.push({ kind: "tool", index });
       continue;
     }
+    // The round's reasoning, drawn before the text and calls it produced —
+    // the same order the live stream appended its runs in.
+    const reasoning = (m.reasoning ?? "").trim();
+    if (reasoning) segments.push({ kind: "thinking", text: reasoning });
     const text = stripCallEcho(m.content ?? "").trim();
     if (text) pushText(text);
   }
@@ -710,9 +733,14 @@ function foldMessage(
           for (let i = v.items.length - 1; i >= 0; i--) {
             const card = v.items[i];
             if (card.kind !== "tool" || card.parent !== "delegate" || card.childId !== childId) continue;
+            // `answer_child` does not return an acknowledgement — its result IS
+            // the resumed child's next outcome: a report, a cancel marker, or
+            // another park. Read it as such, or the card keeps the stale parked
+            // body and reads as a finished report that was never produced.
+            const [next] = delegateChildren("", m.content ?? "", m.is_error === true);
             v.items[i] = {
               ...card,
-              waiting: undefined,
+              ...(next ? { content: next.content, ok: next.ok, waiting: next.waiting } : { waiting: undefined }),
               segments: [
                 ...(card.segments ?? []),
                 { kind: "text" as const, text: `> 主代理回复：${answer}`, muted: true },
