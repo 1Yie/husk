@@ -60,7 +60,7 @@ function limits(a: SubagentItem): string[] {
   ].filter((x): x is string => !!x);
 }
 
-/* ============================ SubAgent ============================ */
+/* ============================ 子代理 ============================ */
 
 export function SubagentPane({ ov, reload }: { ov: AgentOverview | null; reload: () => void }) {
   const [filter, setFilter] = useState<Filter>("all");

@@ -51,7 +51,7 @@ const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; ico
       { key: "skills", label: "技能", icon: <Sparkles className="h-4 w-4 shrink-0" /> },
       { key: "plugins", label: "插件", icon: <Plug className="h-4 w-4 shrink-0" /> },
       { key: "mcp", label: "MCP", icon: <Wrench className="h-4 w-4 shrink-0" /> },
-      { key: "subagent", label: "SubAgent", icon: <Bot className="h-4 w-4 shrink-0" /> },
+      { key: "subagent", label: "子代理", icon: <Bot className="h-4 w-4 shrink-0" /> },
     ],
   },
   {
