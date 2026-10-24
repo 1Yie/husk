@@ -66,15 +66,25 @@ export interface RawHistoryPage {
   history_revision: string;
   history_start: number;
   history_end: number;
+  history_anchor_len: number;
+  history_anchor: string;
   turn_total: number;
   turn_offset: number;
 }
 
 /** At most 40 raw trace records. `before` is an exclusive message index;
- * omitting it reads the newest page. Guard session ids with their workspace. */
-export function historyRawPage(id: number, root: string, before?: number, revision?: string) {
+ * omitting it reads the newest page. `anchor` is the prefix a previous page
+ * was sliced under: appends keep it valid, a rewrite of it is rejected.
+ * Guard session ids with their workspace. */
+export function historyRawPage(
+  id: number,
+  root: string,
+  before?: number,
+  anchor?: { len: number; revision: string },
+) {
   return invoke<RawHistoryPage>("agent_session", {
-    op: "history_raw", id, path: root, payload: { before, revision },
+    op: "history_raw", id, path: root,
+    payload: { before, anchor_len: anchor?.len, anchor: anchor?.revision },
   });
 }
 
@@ -903,6 +913,12 @@ export function checkUpdate() {
  *  as `update-progress` events. */
 export function installUpdate() {
   return invoke<{ mode: InstallMode }>("install_update");
+}
+
+/** Abort the running download. Resolves once the backend has wound down, so a
+ *  fresh `checkUpdate` is accepted. Nothing running is not an error. */
+export function cancelUpdate() {
+  return invoke<void>("cancel_update");
 }
 
 /** Restart into the installed update. Only valid after `installUpdate` resolved.

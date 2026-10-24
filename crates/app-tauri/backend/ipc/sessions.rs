@@ -462,11 +462,13 @@ fn agent_session_inner(
         return Ok(serde_json::json!({ "rows": tool_rows_feed(rows) }));
     }
     // `subagent_transcript` — one delegated child's saved history. A child is
-    // identified by the pair the stream tagged it with: its session and its id,
-    // because child ids restart with each process. The directory is the one
-    // `SubagentHost::persist` writes to (the workspace state dir), so the file a
-    // child left behind is exactly the one this reads. Only the root read takes
-    // the kernel lock — the file I/O below is plain disk work.
+    // identified by the pair the stream tagged it with: its session and its id.
+    // A new process starts its child ids past every transcript on disk, so an id
+    // no longer repeats across processes — but the session is still part of the
+    // key, since two sessions in one workspace can each have a child 3. The
+    // directory is the one `SubagentHost::persist` writes to (the workspace state
+    // dir), so the file a child left behind is exactly the one this reads. Only the
+    // root read takes the kernel lock — the file I/O below is plain disk work.
     if op == "subagent_transcript" {
         let id = id.ok_or("subagent_transcript needs id")?;
         let child_id = payload
@@ -776,13 +778,21 @@ fn agent_session_inner(
                 .and_then(|p| p.get("before"))
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
-            let revision = payload
+            // Both halves of the anchor are needed to check it; a partial one
+            // is ignored rather than guessed at.
+            let anchor_len = payload
                 .as_ref()
-                .and_then(|p| p.get("revision"))
+                .and_then(|p| p.get("anchor_len"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let anchor = payload
+                .as_ref()
+                .and_then(|p| p.get("anchor"))
                 .and_then(|v| v.as_str());
-            // The revision is captured from the same snapshot as the page.
+            let anchor = anchor_len.zip(anchor);
+            // The anchor is checked against the same snapshot as the page.
             let page = mgr
-                .store_history_page_checked(id, before, RAW_HISTORY_PAGE, revision)
+                .store_history_page_checked(id, before, RAW_HISTORY_PAGE, anchor)
                 .map_err(|e| e.to_string())?;
             let end = before.unwrap_or(page.total).min(page.total);
             Ok(serde_json::json!({
@@ -791,6 +801,8 @@ fn agent_session_inner(
                 "history": page.history,
                 "history_total": page.total,
                 "history_revision": page.revision,
+                "history_anchor_len": page.anchor_len,
+                "history_anchor": page.anchor,
                 "turn_total": page.turns,
                 "turn_offset": page.turn_offset,
             }))

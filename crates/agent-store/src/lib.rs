@@ -61,8 +61,9 @@ pub fn is_stale_revision(error: &std::io::Error) -> bool {
 }
 
 /// The paged history changed under the caller: another window committed or
-/// checkpointed a different revision between this caller's read and its
-/// `expected_revision` check. Refreshing the page is the only safe recovery.
+/// rewrote a prefix the caller anchored its page on between that caller's
+/// read and its `expected_anchor` check. Refreshing the page is the only safe
+/// recovery.
 #[derive(Debug)]
 struct StaleHistoryPage;
 
@@ -164,9 +165,10 @@ pub struct DistillUsage {
 
 /// One checked page of a session's *effective* history — the recovery draft
 /// when it is still valid for the canonical journal, otherwise the journal
-/// itself. `revision` is the 16-char hex revision of the exact snapshot the
-/// page was sliced from, so a caller can detect a same-length rewrite without
-/// rereading (or trusting) the whole history.
+/// itself. `anchor_len` / `anchor` identify a stable prefix of that history:
+/// appends leave it unchanged, so a caller can keep paging older while the
+/// history grows, and a rewrite of the prefix is detected without rereading
+/// the whole history.
 #[derive(Debug, Clone, Default)]
 pub struct HistoryPageSnapshot {
     /// The requested slice, oldest `before`-bounded page of the snapshot.
@@ -177,8 +179,13 @@ pub struct HistoryPageSnapshot {
     pub turns: usize,
     /// Ordinal of the first turn inside `history` (turns before it).
     pub turn_offset: usize,
-    /// `format!("{:016x}", revision)` — hex, never a JS number.
+    /// Revision of the whole snapshot — hex, never a JS number.
     pub revision: String,
+    /// Length of the prefix `anchor` covers: the page's end minus its last
+    /// message, which is the only one a live draft may rewrite in place.
+    pub anchor_len: usize,
+    /// `format!("{:016x}", revision)` of the first `anchor_len` messages.
+    pub anchor: String,
 }
 
 /// A session's last-known token usage, persisted inside `SessionMeta`.

@@ -289,6 +289,33 @@ fn tool_rows_in<'a>(
 fn message_hash(message: &ChatMessage) -> std::io::Result<u64> {
     Ok(xxhash_rust::xxh3::xxh3_64(&serde_json::to_vec(message)?))
 }
+
+/// Revision of a message sequence from its per-message hashes — the one
+/// construction behind the canonical index, a draft's prefix and an anchor.
+/// Zero for an empty sequence.
+fn revision_of_hashes(hashes: impl IntoIterator<Item = u64>) -> u64 {
+    let bytes: Vec<u8> = hashes.into_iter().flat_map(u64::to_le_bytes).collect();
+    if bytes.is_empty() {
+        return 0;
+    }
+    xxhash_rust::xxh3::xxh3_64(&bytes)
+}
+
+/// Refuses a page whose expected prefix no longer matches the history it
+/// would be sliced from: the prefix must still fit and hash to `revision`.
+fn check_anchor(
+    expected: Option<(usize, &str)>,
+    total: usize,
+    prefix: impl Fn(usize) -> u64,
+) -> std::io::Result<()> {
+    let Some((len, revision)) = expected else {
+        return Ok(());
+    };
+    if len > total || format!("{:016x}", prefix(len)) != revision {
+        return Err(std::io::Error::other(StaleHistoryPage));
+    }
+    Ok(())
+}
 fn journal_index(journal: &Path, index: &Path) -> std::io::Result<JournalIndex> {
     journal_index_rebuilt(journal, index).map(|(index, _)| index)
 }
@@ -555,15 +582,7 @@ impl SessionStore {
     /// the same construction as `history_revision_of`, without loading any
     /// message bodies. This is what keeps paging O(page), not O(history).
     fn index_revision(index: &JournalIndex) -> u64 {
-        if index.messages.is_empty() {
-            return 0;
-        }
-        let hashes: Vec<u8> = index
-            .messages
-            .iter()
-            .flat_map(|m| m.hash.to_le_bytes())
-            .collect();
-        xxhash_rust::xxh3::xxh3_64(&hashes)
+        revision_of_hashes(index.messages.iter().map(|m| m.hash))
     }
     /// The recovery snapshot is valid only when it still describes the exact
     /// canonical journal state it was checkpointed against. Both the monotonic
@@ -996,19 +1015,27 @@ impl SessionStore {
         Ok(messages)
     }
     /// Slice the *effective* history (valid recovery draft, else the journal)
-    /// and report the exact revision of the snapshot the slice came from.
-    /// Canonical reads use the cached index offsets and hashes, so the full
-    /// history is never loaded just to derive the revision.
+    /// and report the revision of the snapshot the slice came from, plus the
+    /// prefix anchor paging continues against. Canonical reads use the cached
+    /// index offsets and hashes, so the full history is never loaded just to
+    /// derive a revision.
+    ///
+    /// `expected_anchor` is checked against the same snapshot the page is
+    /// sliced from, so a caller paging a stale view gets a refresh error
+    /// instead of a silently inconsistent splice.
     fn history_page(
         &self,
         id: i64,
         before: Option<usize>,
         count: usize,
+        expected_anchor: Option<(usize, &str)>,
     ) -> std::io::Result<HistoryPageSnapshot> {
         let (snapshot, index) = self.recovery_and_index(id)?;
         if index.deleted {
+            check_anchor(expected_anchor, 0, |_| 0)?;
             return Ok(HistoryPageSnapshot {
                 revision: format!("{:016x}", 0u64),
+                anchor: format!("{:016x}", 0u64),
                 ..HistoryPageSnapshot::default()
             });
         }
@@ -1032,6 +1059,12 @@ impl SessionStore {
                     .collect()
             };
             let total = visible.len();
+            let hashes = visible
+                .iter()
+                .map(|message| message_hash(message))
+                .collect::<std::io::Result<Vec<u64>>>()?;
+            let prefix = |len: usize| revision_of_hashes(hashes[..len].iter().copied());
+            check_anchor(expected_anchor, total, prefix)?;
             let end = before.unwrap_or(total).min(total);
             let start = end.saturating_sub(count);
             let turns = visible.iter().filter(|m| is_turn(m)).count();
@@ -1045,10 +1078,13 @@ impl SessionStore {
                 turns,
                 turn_offset,
                 revision: format!("{revision:016x}"),
+                anchor_len: end.saturating_sub(1),
+                anchor: format!("{:016x}", prefix(end.saturating_sub(1))),
             });
         }
-        let revision = Self::index_revision(&index);
         let total = index.messages.len();
+        let prefix = |len: usize| revision_of_hashes(index.messages[..len].iter().map(|m| m.hash));
+        check_anchor(expected_anchor, total, prefix)?;
         let end = before.unwrap_or(total).min(total);
         let start = end.saturating_sub(count);
         let turns = index.messages.iter().filter(|m| m.turn).count();
@@ -1063,7 +1099,9 @@ impl SessionStore {
             total,
             turns,
             turn_offset,
-            revision: format!("{revision:016x}"),
+            revision: format!("{:016x}", Self::index_revision(&index)),
+            anchor_len: end.saturating_sub(1),
+            anchor: format!("{:016x}", prefix(end.saturating_sub(1))),
         })
     }
     pub fn load_history_page(
@@ -1072,7 +1110,7 @@ impl SessionStore {
         before: Option<usize>,
         count: usize,
     ) -> std::io::Result<(Vec<ChatMessage>, usize, usize, usize)> {
-        let page = self.history_page(id, before, count)?;
+        let page = self.history_page(id, before, count, None)?;
         Ok((page.history, page.total, page.turns, page.turn_offset))
     }
 
@@ -1174,23 +1212,17 @@ impl SessionStore {
             .map(|row| (row.tool, row.args, row.content))
             .collect())
     }
-    /// Checked paging: `expected_revision` must match the snapshot the page is
-    /// sliced from, so a caller paging a stale view gets a refresh error
-    /// instead of a silently inconsistent splice.
+    /// Checked paging: `expected_anchor` is `(len, revision)` of a prefix the
+    /// caller already holds. Appends leave it valid, so paging older stays
+    /// possible while a turn runs; a rewrite of that prefix is refused.
     pub fn load_history_page_checked(
         &self,
         id: i64,
         before: Option<usize>,
         count: usize,
-        expected_revision: Option<&str>,
+        expected_anchor: Option<(usize, &str)>,
     ) -> std::io::Result<HistoryPageSnapshot> {
-        let page = self.history_page(id, before, count)?;
-        if let Some(expected) = expected_revision {
-            if page.revision != expected {
-                return Err(std::io::Error::other(StaleHistoryPage));
-            }
-        }
-        Ok(page)
+        self.history_page(id, before, count, expected_anchor)
     }
     pub fn snapshot(&self, id: i64, history: &[ChatMessage]) -> std::io::Result<()> {
         self.write_with(id, true, |w| w.history(history))
@@ -2137,35 +2169,94 @@ mod tests {
     }
 
     #[test]
-    fn checked_paging_detects_a_same_length_history_rewrite() {
+    fn checked_paging_refuses_a_rewrite_of_the_anchored_prefix() {
         let (_dir, store) = store();
         let meta = empty_meta(1);
         let first = vec![ChatMessage::user("q"), ChatMessage::assistant("one")];
         let first_revision = store.commit_turn_checked(&first, meta.clone(), 0).unwrap();
-        let first_hex = format!("{first_revision:016x}");
-        let page = store
-            .load_history_page_checked(1, None, 10, Some(&first_hex))
-            .unwrap();
-        assert_eq!(page.revision, first_hex);
+        let page = store.load_history_page_checked(1, None, 10, None).unwrap();
+        assert_eq!(page.revision, format!("{first_revision:016x}"));
         assert_eq!(page.total, 2);
         assert_eq!(page.turns, 1);
         assert_eq!(page.history.len(), 2);
+        assert_eq!(page.anchor, prefix_hex(&first, 1));
 
-        // Same length, different content => different revision.
-        let second = vec![ChatMessage::user("q"), ChatMessage::assistant("two")];
-        let second_revision = store
-            .commit_turn_checked(&second, meta, first_revision)
+        // A rewrite of the first message (same length) invalidates the anchor.
+        let rewritten = vec![ChatMessage::user("other"), ChatMessage::assistant("one")];
+        store
+            .commit_turn_checked(&rewritten, meta, first_revision)
             .unwrap();
         let error = store
-            .load_history_page_checked(1, None, 10, Some(&first_hex))
+            .load_history_page_checked(1, None, 10, Some((page.anchor_len, &page.anchor)))
             .unwrap_err();
         assert!(crate::is_stale_page(&error));
-        let second_hex = format!("{second_revision:016x}");
-        let page = store
-            .load_history_page_checked(1, None, 10, Some(&second_hex))
+    }
+
+    /// `len` messages of `history`, hashed the way the store anchors them.
+    fn prefix_hex(history: &[ChatMessage], len: usize) -> String {
+        let hashes = history[..len]
+            .iter()
+            .map(|m| super::message_hash(m).unwrap());
+        format!("{:016x}", super::revision_of_hashes(hashes))
+    }
+
+    #[test]
+    fn appends_leave_the_anchored_prefix_pageable() {
+        let (_dir, store) = store();
+        let meta = empty_meta(1);
+        let first = vec![ChatMessage::user("q1"), ChatMessage::assistant("a1")];
+        let revision = store.commit_turn_checked(&first, meta.clone(), 0).unwrap();
+        let page = store.load_history_page_checked(1, None, 1, None).unwrap();
+        assert_eq!(page.history[0].content.as_deref(), Some("a1"));
+        assert_eq!(page.anchor, prefix_hex(&first, 1));
+        let anchor = Some((page.anchor_len, page.anchor.as_str()));
+
+        // A journal commit appends a turn: the anchor still pages older.
+        let mut committed = first.clone();
+        committed.extend([ChatMessage::user("q2"), ChatMessage::assistant("a2")]);
+        let revision = store
+            .commit_turn_checked(&committed, meta.clone(), revision)
             .unwrap();
-        assert_eq!(page.revision, second_hex);
-        assert_eq!(page.history.last().unwrap().content.as_deref(), Some("two"));
+        let older = store
+            .load_history_page_checked(1, Some(1), 1, anchor)
+            .unwrap();
+        assert_eq!(older.history[0].content.as_deref(), Some("q1"));
+        assert_eq!(older.total, 4);
+
+        // A draft checkpoint appends one more message: the anchor still holds.
+        let mut draft = committed.clone();
+        draft.push(ChatMessage::user("q3"));
+        store
+            .checkpoint_turn_checked(&draft, meta, revision)
+            .unwrap();
+        let older = store
+            .load_history_page_checked(1, Some(2), 2, anchor)
+            .unwrap();
+        assert_eq!(older.history.len(), 2);
+        assert_eq!(older.total, 5);
+    }
+
+    #[test]
+    fn anchor_survives_a_live_draft_rewriting_its_last_message() {
+        let (_dir, store) = store();
+        let meta = empty_meta(1);
+        let base = vec![ChatMessage::user("q"), ChatMessage::assistant("draft")];
+        let base_revision = store
+            .checkpoint_turn_checked(&base, meta.clone(), 0)
+            .unwrap();
+        let page = store.load_history_page_checked(1, None, 10, None).unwrap();
+        assert_eq!(page.anchor_len, 1);
+        assert_eq!(page.anchor, prefix_hex(&base, 1));
+
+        // Streaming rewrites the draft's last message in place: same length.
+        let streamed = vec![ChatMessage::user("q"), ChatMessage::assistant("draft, more")];
+        store
+            .checkpoint_turn_checked(&streamed, meta, base_revision)
+            .unwrap();
+        let older = store
+            .load_history_page_checked(1, None, 10, Some((page.anchor_len, &page.anchor)))
+            .unwrap();
+        assert_eq!(older.history.last().unwrap().content.as_deref(), Some("draft, more"));
     }
 
     #[test]

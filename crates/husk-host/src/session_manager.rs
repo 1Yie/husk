@@ -2302,20 +2302,21 @@ impl SessionManager {
         self.store.load_history_page(id, before, count)
     }
 
-    /// Trace pagination must use one immutable history revision, including
-    /// recovery snapshots whose last message can change without growing.
+    /// Trace pagination continues from a stable prefix, not the whole history:
+    /// appends keep an older page valid, while rewriting the anchored prefix
+    /// is refused. `anchor` is `(len, revision)` from a previous page.
     pub fn store_history_page_checked(
         &self,
         id: i64,
         before: Option<usize>,
         count: usize,
-        expected_revision: Option<&str>,
+        anchor: Option<(usize, &str)>,
     ) -> std::io::Result<agent_store::HistoryPageSnapshot> {
         if !self.workspace_active {
             return Err(std::io::Error::other("请先选择工作区"));
         }
         self.store
-            .load_history_page_checked(id, before, count, expected_revision)
+            .load_history_page_checked(id, before, count, anchor)
     }
 
     /// A session's persisted meta — usage meter, run/task counts and parked
