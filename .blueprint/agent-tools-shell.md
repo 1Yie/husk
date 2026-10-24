@@ -5,7 +5,7 @@ forbidden_deps = ["agent-kernel", "agent-coding", "husk-host"]
 
 进程工具：命令执行、测试运行器、后台服务与后台任务，含沙盒配置派生与风险分级。
 
-关键词：bash, test runner, services, background jobs, bg_run, sandbox config, command risk, process limits, linked roots
+关键词：bash, test runner, services, background jobs, bg_run, sandbox config, command risk, process limits, linked roots, scratch space, readonly chain
 
 ## 职责
 - `bash`（bash.rs）、`smart_test_runner`（test_runner.rs）、后台服务（services.rs）与后台任务 `bg_run`（bg.rs）
@@ -13,6 +13,8 @@ forbidden_deps = ["agent-kernel", "agent-coding", "husk-host"]
 - 沙盒配置派生（sandbox_cfg.rs）与命令风险分级（risk.rs）；office 包复用其 sandbox_cfg / util
 - `sandbox_cfg::prepare(ctx, command, timeout)` 是进程工具唯一的审计入口：把主根、关联根的读写划分交给 `audit_command_rooted`，再把关联根按访问级别并入 `extra_ro_mounts` / `extra_rw_mounts`。四个调用方（bash / test_runner / bg_run / office）都走它，所以「一次测试运行」不会比「一次 shell 运行」少一层边界
 - `risk::classify_in` 比 `classify` 多知道一件事：**有没有东西真的在约束这条命令**。沙盒关着（`none` 后端或没装后端）时，写到主根与所有读写关联根之外的命令升级为 `RequiresApproval`——那时没有任何机制阻止它，问一句比默默执行好
+- 什么时候**不**该问（这也是判定的一部分）：整条命令都由只读程序组成（`cd` 也算，它只挪动 shell）时，它读到哪儿都不是授权问题——读依赖源码是正当的 shell 工作。写重定向只在落进暂存区（`/tmp`、`/var/tmp`、`/dev/null`）时算「没有留下要授权的东西」，`2>/dev/null` 不该把一条读命令变成问题
+- `Review.deny`：`refuse_unconfined_write` 已经认定这条命令跑不了（无沙盒 + 写到授权范围外），就在 review 阶段填 `deny`——先弹卡再拒绝是让用户点一次没有意义的确认
 
 ## 不做
 - 不依赖内核；工具泛型到 `SandboxCtx` / `WorkspaceCtx`
@@ -22,5 +24,6 @@ forbidden_deps = ["agent-kernel", "agent-coding", "husk-host"]
 
 ## 对外契约
 - 命令风险经 `Review.risk` 提供给权限门，按 action 分级：list/status/logs/wait 只读，run 走命令分级；沙盒限额由宿主经扩展槽注入
+- `Review.deny` 里的文字就是模型看到的失败结果，必须说清「为什么跑不了」和「怎么才能跑」（关联目录 / 用文件工具），否则模型只会重试
 - 后台任务按 owner 注册（`BgRegistrySlot`，子代理共享，供父会话查看与停止）；完成通知的 sink 按上下文安装（`install_notifier`，不共享），子代理的任务不会向父回合上报
 - 任务结束即释放 pid，注册表只对存活任务发信号

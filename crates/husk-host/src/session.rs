@@ -1387,6 +1387,8 @@ impl SessionActor {
         // notice goes first: whenever the wake lands, the text is already on
         // the channel for the actor to take.
         let (wake_tx, wake_rx) = mpsc::channel::<()>(1);
+        // Detached children report through the same channel and wake as bg jobs,
+        // so one shared hook serves both installs.
         {
             let notice = notice_tx.clone();
             let ui = channels.event_tx.clone();
@@ -1394,7 +1396,7 @@ impl SessionActor {
             // Said once per run of overflow, not once per lost notice: a burst
             // of finishes would otherwise print the same line a dozen times.
             let overflow_told = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            agent_tools_shell::bg::install_notifier(&mut tool_ctx, move |text| {
+            let notify: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |text| {
                 // A full channel is 32 unread notices — tell the user rather
                 // than lose the report silently; the job list still shows it.
                 if notice.try_send(text).is_err() {
@@ -1409,6 +1411,12 @@ impl SessionActor {
                 }
                 // One pending wake is enough: the actor drains the channel.
                 let _ = wake.try_send(());
+            });
+            let bg_notify = notify.clone();
+            agent_tools_shell::bg::install_notifier(&mut tool_ctx, move |text| bg_notify(text));
+            let child_notify = notify.clone();
+            agent_kernel::tools::delegate::install_child_notifier(&mut tool_ctx, move |text| {
+                child_notify(text)
             });
         }
         let memory_handle = agent_coding::remember::MemoryHandle::default();
@@ -1444,6 +1452,22 @@ impl SessionActor {
             subagent_thinking.as_deref(),
             &conversation,
         )));
+        // Child ids are persisted — in transcript file names and in this session's
+        // log — and the counter restarts with each process. Starting past every
+        // transcript on disk keeps a new child from reusing an id an old one owns.
+        agent_kernel::tools::delegate::reserve_child_ids(crate::subagents::max_child_id(
+            &crate::subagents::transcript_dir(&cfg.paths.workspace_dir(&cfg.workspace_root)),
+        ));
+        // One gate for the session and every child it spawns: a child is
+        // bounded by the mode and rules the user set here, and a switch made
+        // mid-run reaches the children already out.
+        let permissions = Arc::new(std::sync::RwLock::new(
+            agent_kernel::permissions::PermissionGate::from_mode_str(&cfg.permission_mode)
+                .with_policy(
+                    "computer",
+                    Arc::new(agent_coding::computer_policy::ComputerPolicy),
+                ),
+        ));
         tool_ctx.install_subagent(
             agent_kernel::tools::delegate::SubagentSpawner::new(
                 child_route.clone(),
@@ -1453,7 +1477,11 @@ impl SessionActor {
             .with_policy(agent_coding::policy::coding_policy_factory(
                 cfg.workspace_root.clone(),
             ))
-            .with_host(Arc::new(crate::subagents::HuskSubagents)),
+            .with_host(Arc::new(crate::subagents::HuskSubagents))
+            // A child runs under this session's gate, and an escalation it hits
+            // is answered by the person reading this stream.
+            .with_parent_gate(permissions.clone())
+            .with_child_approvals(true),
         );
         // `ask_question` emits its card through the session's event channel;
         // fan-out tools (batch items) emit ToolCallStarted/Finished on ui_tx.
@@ -1551,13 +1579,7 @@ impl SessionActor {
             registry: Arc::new(office_reg),
             allow_plugins: true,
         });
-        engine.set_permissions(
-            agent_kernel::permissions::PermissionGate::from_mode_str(&cfg.permission_mode)
-                .with_policy(
-                    "computer",
-                    Arc::new(agent_coding::computer_policy::ComputerPolicy),
-                ),
-        );
+        engine.set_permissions_shared(permissions.clone());
         engine.set_agent_mode(cfg.agent_mode.clone());
         engine.set_thinking_level_map(cfg.thinking_level_map.clone());
         engine.set_model_thinking_level(cfg.thinking_level.clone());

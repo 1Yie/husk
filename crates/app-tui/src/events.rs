@@ -143,6 +143,7 @@ impl App {
                 diff,
                 fuzzy,
                 actions,
+                ..
             } => {
                 // The terminal has no room for per-action buttons: take the
                 // first offer (a session link) when auto-approving, so a
@@ -200,7 +201,7 @@ impl App {
                     self.commit(Cell::Note("提问已超时，代理将自行决定后续".into()));
                 }
             }
-            UiEvent::ApprovalTimedOut { request_id } => {
+            UiEvent::ApprovalTimedOut { request_id, .. } => {
                 // The kernel auto-denied it; the tool result that follows
                 // already carries the reason, so this only closes the card.
                 if matches!(&self.modal, Some(Modal::Approval { request_id: r, .. }) if *r == request_id)

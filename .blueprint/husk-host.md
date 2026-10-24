@@ -6,7 +6,7 @@ invariants = ["会话装配是宿主职责，内核与 agent-coding 不感知产
 
 Husk 宿主层：把内核装配成产品——会话、命令面、模式表、沙盒偏好。
 
-关键词：session assembly, session manager, session actor, commands, agent mode, sandbox prefs, subagents, subagent defaults, todo store, office root, system prompt, background jobs, memory distill, recall delta, recall prune, job log tail, semantic recall, turn budget, repeat guard, observation ledger, linked workspaces, link policy, link hub, scope grant
+关键词：session assembly, session manager, session actor, commands, agent mode, sandbox prefs, subagents, child approval, subagent defaults, todo store, office root, system prompt, background jobs, memory distill, recall delta, recall prune, job log tail, semantic recall, turn budget, repeat guard, observation ledger, linked workspaces, link policy, link hub, scope grant
 
 ## 职责
 - `SessionActor` / `SessionConfig` / `SessionManager`（session.rs / session_manager.rs）：装配 provider、registry、ctx、plugins、skills、sandbox、memory
@@ -14,11 +14,13 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 沙盒偏好（sandbox_prefs.rs）、插件适配（plugins.rs）、子代理宿主（subagents.rs）
 - 关联工作区的策略（link_policy.rs）：`validate` 是唯一的准入判断（拒绝 `/`、`$HOME`、系统目录、包含工作区的祖先、应用数据与凭据目录及其祖先），`normalize` 让列表 canonical、按路径去重（同一路径取更宽的那份，嵌套路径**保留**——`scope_of` 取最具体根，所以只读父 + 读写子必须两条都在，否则等于把父级整棵树放开），`grant_target` 把「卡片上的文件」折成「要授予的目录」（项目根 → 目录本身 → 父目录），`same_path` 让已消失的目录仍能被取消关联
 - 关联工作区的唯一写路径（links.rs）：`LinkHub` 一个工作区一份，经 `hub_for` 按 canonical 根共享——IPC 菜单、`link_workspace` 工具、越界卡片三处都调它，所以规则不会分叉。grant / revoke / set_access 各自是**带锁的读改写**（`SessionStore::update_prefs` / `update_session_links`），并发的授权不会互相覆盖；读回时逐条再跑 `validate`（手改的 prefs、旧版本写入、被换成指向 `~/.ssh` 的目录都不算数）；一次改动 `refresh` **该工作区所有活会话**的句柄并推 notice——否则「取消关联」只对当前窗口生效，别的窗口还能写
+- 子代理的授权范围：装配时建一份 `PermissionGate`，**同一个 `Arc`** 既交给引擎（`set_permissions_shared`）也交给 `SubagentSpawner::with_parent_gate`，所以子代理按本会话的模式与规则跑，中途切模式连已派发的子代理一起生效；`with_child_approvals(true)` 声明这里有人能点卡——没人看的运行（CLI、测试）不声明，子代理就越界即拒。子代理的 instructions 里带本会话的关联根清单，否则它会以为别的仓库根本不存在
 - 授权槽 `ScopeGrantSlot`（session.rs 装配）：内核问「这个路径能给吗」时，actor 把它转给同一个 `LinkHub`，所以引擎的重试立刻能看到新范围。它和 `link_workspace` 工具、以及「拒绝即提问」共用同一段逻辑——一条授权路径，不是三条
-- 判决透传：`UiCommand::ToolDecision { request_id, approved, action }` 由 IPC 直接写进引擎的判决槽（不经命令泵），`action` 原样带到 `ToolVerdict`——卡上的「关联（本会话）」靠它变成一次真实授权
+- 判决透传：`UiCommand::ToolDecision { request_id, approved, action }` 由 IPC 直接写进引擎的判决槽（不经命令泵），`action` 原样带到 `ToolVerdict`——卡上的「关联（本会话）」靠它变成一次真实授权。写之前先问内核 `deliver_child_decision`：这张卡可能是某个子代理画的，那一下属于它的引擎，而不是本会话的回合
 - 子代理模型路由（child_route.rs）：把所有已配置 provider 的模型并入内核 `ChildRoute` 的模型表（父 provider 用裸 id，全部 provider 用 `provider/model`），经 `RoutedProvider` 按键分发；全局子代理默认模型写入路由的 `model`
 - 子代理显式设置的三层优先级：manifest `model:` / `thinking:` > 全局子代理默认模型与思考等级 > 父会话的模型与等级。模型与思考等级互相独立——一个子代理可以沿用父会话的模型却想得更少。等级在 `install` 里与默认模型一样写进 `ChildRoute`，且必须写在「无默认模型就 return」之前
-- 子代理的预算来自内核常量（超时 15 分钟、不设轮次上限），宿主没有出口：它是一个独立的 agent，不是受会话预算节制的工具。系统提示里的预算文案随这些常量走，改一处必须改另一处
+- 子代理的预算来自内核常量（不设超时、不设轮次上限），宿主没有出口：它是一个独立的 agent，不是受会话预算节制的工具。系统提示里的预算文案随这些常量走，改一处必须改另一处
+- 子代理编号：进程启动后先 `reserve_child_ids(max_child_id(...))`，从一个会话已有记录之后开始编号——编号写进 transcript 文件名与会话日志，重用会让新子代理顶掉旧记录
 - 系统提示词资产（assets/kernel-system-prompt.md）、办公根目录（office.rs）、待办存储（todo_store.rs）、全局偏好（prefs.rs）。提示里有一段常驻的「如何在需要别的目录时申请」——它必须在没有任何关联时也存在，否则模型不知道这条路
 - 提示词缓存布局：系统提示固定指令在前、会话上下文在后且会话中不改写（模式块除外），每条消息相关的记忆作为隐藏 user 行随消息发送；会话在回合结束与历史改写时通知保活（`WarmingControl`）
 - 记忆注入记账：会话按历史索引记录已下发的事实 id 与已携带的 persona（`injected_facts` / `injected_persona`），召回行只发增量——同一事实一个会话只出现一次，会话中途 `remember` 的偏好在下一轮以同一行补发；persona 记账以 `<scope>:<key>` 为键，同名不同作用域是两条；`/retry`、`/clear`、`/compact` 回滚历史时同步丢弃对应记账
@@ -44,6 +46,7 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 不把关联工作区放进进程级 `sandbox_prefs`：那样一个会话的许可会漏给同进程的所有会话
 - 不复制一份授权逻辑：`link_workspace` 工具、越界卡片的按钮、composer 菜单，走的都是 `links::LinkHub` + `link_policy`
 - 不让授权只对一个会话生效：写授权就等于写「这个工作区的活会话都该知道」，`refresh` 是唯一出口
+- 不替子代理决定能做什么：范围来自本会话的门，宿主只负责让它落地并把人能看见的卡接到人手上
 
 ## 对外契约
 - `SessionManager` / `SessionActor` 以 `UiCommand` 驱动、`UiEvent` 回流；`base_registries()` 组装完整工具集（patch 工具与 `serena` 元工具在此经 `agent_coding::blueprint::guard_patch` 包装，`.blueprint/` 只能由 `blueprint_edit` 写入；观察工具经 `agent_coding::observe::{read, grep, list, bash}` 包装以追加注记；记忆读写工具 `remember` / `memory_search` 同在这里注册）。观察包装**不得**把 `ToolError::OutOfScope` 拍平成 `Failed`——那会把授权卡吞掉

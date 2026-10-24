@@ -28,6 +28,11 @@ impl SubagentHost for HuskSubagents {
         let Ok(root) = ctx.root() else {
             return out;
         };
+        // The grants the session holds, so a child knows it may read a linked
+        // repository instead of concluding the path does not exist. It sees
+        // the same slots the tools resolve against, so this cannot go stale.
+        let linked = agent_capabilities::WorkspaceCtx::linked_roots(&*ctx);
+        out.push_str(&crate::session::linked_roots_block(&linked));
         if spec.inherits_instructions() {
             if let Some(paths) = ctx.paths() {
                 append_repo_instructions(&mut out, &paths.config_file("AGENTS.md"), "user");
@@ -350,10 +355,49 @@ pub fn transcript_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("subagents")
 }
 
+/// The largest child id any saved transcript in `dir` carries, or 0 when there is
+/// none. Covers both naming forms of [`find_transcript`]; a name that matches
+/// neither is ignored, as a read would ignore it.
+pub fn max_child_id(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let is_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let mut max = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(stem) = name.strip_suffix(".jsonl") else {
+            continue;
+        };
+        // A stamped name leads with the write stamp; the `s{session}-c{child}` pair
+        // follows it. Anything else is not a transcript this scheme wrote.
+        let scoped = match stem.split_once('-') {
+            Some((stamp, rest)) if stamp.len() == TRANSCRIPT_STAMP_WIDTH && is_digits(stamp) => {
+                rest
+            }
+            _ => stem,
+        };
+        let mut parts = scoped.splitn(3, '-');
+        let (Some(session), Some(child)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let session_ok = session.strip_prefix('s').is_some_and(is_digits);
+        let child_id = child
+            .strip_prefix('c')
+            .filter(|c| is_digits(c))
+            .and_then(|c| c.parse::<u64>().ok());
+        if let (true, Some(child_id)) = (session_ok, child_id) {
+            max = max.max(child_id);
+        }
+    }
+    max
+}
+
 /// Write one child's full history into `dir` as JSONL, one message per line.
 ///
 /// The name carries both ids because neither alone is unique: the directory
-/// outlives the process, and child ids restart with each one. A child is written
+/// outlives the process, and child ids restart with each one (see
+/// [`max_child_id`] for how a new process starts past them). A child is written
 /// several times over its life — when it parks, when it is torn down, when its
 /// turn ends — and every write lands on the same file, so what a reader finds is
 /// always the child's latest history and never a second copy of an older one.
@@ -1005,5 +1049,25 @@ mod tests {
         let msgs = load_transcript(&found).unwrap();
         assert_eq!(msgs.len(), 1, "the older history is gone: {msgs:?}");
         assert_eq!(msgs[0].content.as_deref(), Some("second"));
+    }
+
+    /// A new process must start its child ids past every transcript on disk, from
+    /// whichever session wrote it and under either naming form. Names that match
+    /// neither form contribute nothing.
+    #[test]
+    fn max_child_id_is_the_largest_id_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let subs = transcript_dir(dir.path());
+        assert_eq!(max_child_id(&subs), 0, "a missing dir has no ids");
+
+        persist_transcript(&subs, 3, 4, &[ChatMessage::user("a")]);
+        persist_transcript(&subs, 9, 11, &[ChatMessage::user("b")]);
+        persist_transcript(&subs, 9, 2, &[ChatMessage::user("c")]);
+        std::fs::write(subs.join(format!("{:015}-s1-c30-old.jsonl", 5)), "{}").unwrap();
+        std::fs::write(subs.join(format!("{:015}-1-subagent.jsonl", 6)), "{}").unwrap();
+        std::fs::write(subs.join("s9-c99.jsonl.tmp"), "{}").unwrap();
+        std::fs::write(subs.join("notes.txt"), "{}").unwrap();
+
+        assert_eq!(max_child_id(&subs), 30);
     }
 }

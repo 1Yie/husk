@@ -162,6 +162,17 @@ fn agent_cmd_inner(
                 "审批 #{request_id} 已失效，当前等待的请求是 #{waiting}"
             ));
         }
+        // A delegated child draws its card on this session's stream, so the
+        // click arrives here — but the engine waiting on it is the child's.
+        // Hand it over before the session's own slot: request ids are minted
+        // process-wide, so a hit is unambiguous.
+        if agent_kernel::tools::delegate::deliver_child_decision(
+            *request_id,
+            *approved,
+            action.clone(),
+        ) {
+            return Ok(());
+        }
         // The pickup wait must not hold the kernel lock: the event forwarder
         // takes it on every state change, so this very approval's transition
         // would queue behind it.
