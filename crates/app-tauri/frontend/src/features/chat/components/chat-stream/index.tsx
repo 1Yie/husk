@@ -2905,7 +2905,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     pills.push({
       key: "jobs",
       label: "后台任务",
-      tooltip: jobsOpen ? "关闭后台任务" : `后台任务 · ${jobs.text}`,
+      tooltip: jobsOpen ? "收起后台任务" : `后台任务 · ${jobs.text}`,
       onClick: onToggleJobs,
       pressed: jobsOpen,
       data: { "data-jobs-tone": jobs.tone },
@@ -2915,8 +2915,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         <span className="flex h-4 w-4 flex-none items-center justify-center">
           {jobs.tone === "running" ? (
             // The orb's own travel, not a spinner: the same family of motion
-            // as the session's activity glyphs.
-            <Orb variant="B2" size={16} className="text-sky-600 dark:text-sky-400" />
+            // as the session's activity glyphs. The 20px glyph overhangs the
+            // 16px lane by 2px a side, so the collapsed width does not move.
+            <Orb variant="B2" size={20} className="-m-[2px] text-sky-600 dark:text-sky-400" />
           ) : jobs.tone === "failed" ? (
             <CircleX className="h-4 w-4 text-rose-600 dark:text-rose-400" />
           ) : (
@@ -2942,7 +2943,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     pills.push({
       key: "subagents",
       label: "子代理",
-      tooltip: subagentsOpen ? "关闭子代理" : `子代理 · ${subagentPill.text}`,
+      tooltip: subagentsOpen ? "收起子代理" : `子代理 · ${subagentPill.text}`,
       onClick: onToggleSubagents,
       pressed: subagentsOpen,
       // In its own 16px box like the jobs glyph, so every capsule's collapsed
@@ -2951,7 +2952,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       icon: (
         <span className="flex h-4 w-4 flex-none items-center justify-center">
           {subagentPill.tone === "running" ? (
-            <Orb variant="G2" size={16} label="子代理" className="text-violet-600 dark:text-violet-400" />
+            <Orb
+              variant="G2"
+              size={24}
+              label="子代理"
+              // The helix's dots are 2px at this size; the negative margin keeps the
+              // 16px box and its collapsed width while the sphere gets room.
+              className="-m-1.5 text-violet-600 dark:text-violet-400"
+            />
           ) : subagentPill.tone === "failed" ? (
             <CircleX className="h-4 w-4 text-rose-600 dark:text-rose-400" />
           ) : (

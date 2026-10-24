@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 import { SubagentsList } from "@/features/chat/components/subagents-panel";
 import { applyEvents } from "@/features/chat/hooks/apply-event";
+import { agentRowsByChild } from "@/features/chat/hooks/agent-rows";
 import { extractChildren, type SessionChild } from "@/features/chat/hooks/running-children";
 import { emptyView } from "@/features/chat/hooks/stream-view";
 import { viewFromHistory } from "@/features/chat/hooks/view-from-history";
@@ -18,6 +19,10 @@ import { WAITING_STEER_HINT } from "@/lib/subagents";
 import type { ChatMessage, UiEvent } from "@/types";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+// Markdown is a separate surface; the transcript's own text is what these read.
+vi.mock("@/features/chat/components/chat-stream/markdown-stream", () => ({
+  MemoStreamdown: ({ text }: { text: string }) => <div>{text}</div>,
+}));
 
 const child = (childId: number, name: string, task: string, extra: Partial<SessionChild> = {}): SessionChild => ({
   childId,
@@ -67,6 +72,24 @@ describe("子代理 view", () => {
     const [, panel] = screen.getAllByText(shown);
     expect(panel.className).toContain("overflow-y-auto");
     expect(panel.className).toContain("max-h-[min(20rem,");
+  });
+
+  test("a task measured before its font settled re-measures on hover", async () => {
+    const long = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 步：把鉴权中间件从头看完`).join("\n");
+    const shown = long.split("\n").join(" ");
+    renderWithProviders(list([child(10, "review #1", long)]));
+    const line = screen.getByText(shown);
+    // The first measurement read the fallback font as fitting; nothing resizes
+    // the box once the real font lands, so the observer never fires again.
+    expect(screen.getAllByText(shown)).toHaveLength(1);
+    Object.defineProperties(line, {
+      scrollHeight: { configurable: true, value: 240 },
+      clientHeight: { configurable: true, value: 54 },
+    });
+    fireEvent.pointerEnter(line);
+    fireEvent.pointerMove(line);
+
+    await waitFor(() => expect(screen.getAllByText(shown)).toHaveLength(2));
   });
 
   test("a task that fits stays quiet on hover", async () => {
@@ -190,6 +213,96 @@ describe("子代理 view", () => {
     const names = [...container.querySelectorAll("[data-child-status] .font-mono")].map((n) => n.textContent);
     expect(names).toEqual(["live #2", "new #3", "old #1"]);
     expect(screen.getByText("已结束")).toBeInTheDocument();
+  });
+});
+
+describe("工作过程", () => {
+  // A running child with its own card: one streamed sentence, then a tool call
+  // still out. The card is what the page builds from the stream items.
+  const working = () => {
+    const rows = agentRowsByChild([
+      {
+        kind: "tool",
+        name: "review #1",
+        args: "检查鉴权",
+        parent: "delegate",
+        childId: 7,
+        childIndex: 0,
+        hi: 3,
+        segments: [
+          { kind: "text", text: "先看入口文件" },
+          { kind: "tool", index: 0 },
+        ],
+      },
+      { kind: "tool", name: "smart_grep", args: "pattern: auth", parent: "review #1", childId: 7, childIndex: 0, hi: 3 },
+    ]);
+    return rows;
+  };
+
+  test("collapsed by default: the glance shows the running tool, not the transcript", () => {
+    renderWithProviders(
+      <SubagentsList children={[child(7, "review #1", "检查鉴权")]} childRows={working()} root="/project" session={1} />,
+    );
+    const toggle = screen.getByRole("button", { name: /工作过程/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("先看入口文件")).not.toBeInTheDocument();
+    expect(screen.getByText(/1 次调用/)).toBeInTheDocument();
+  });
+
+  test("expanding shows the child's text and its tool call", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <SubagentsList children={[child(7, "review #1", "检查鉴权")]} childRows={working()} root="/project" session={1} />,
+    );
+    await user.click(screen.getByRole("button", { name: /工作过程/ }));
+    expect(screen.getByRole("button", { name: /工作过程/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("先看入口文件")).toBeInTheDocument();
+    expect(screen.getByText("smart_grep")).toBeInTheDocument();
+  });
+
+  test("an ended child's report sits in the transcript once expanded", async () => {
+    const user = userEvent.setup();
+    const done = agentRowsByChild([
+      {
+        kind: "tool",
+        name: "review #1",
+        args: "检查鉴权",
+        parent: "delegate",
+        childId: 9,
+        content: "[subagent report — child_id 9 · 1 tool calls, 2s]\n结论：无问题",
+        ok: true,
+        childIndex: 0,
+        hi: 4,
+      },
+    ]);
+    renderWithProviders(
+      <SubagentsList
+        children={[child(9, "review #1", "检查鉴权", { status: "done", report: "结论：无问题" })]}
+        childRows={done}
+        root="/project"
+        session={1}
+      />,
+    );
+    expect(screen.queryByText("结论：无问题")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /工作过程/ }));
+    // The body and the 报告 section both carry the report for a card that never
+    // streamed its answer — the same deliverable shown twice, as the chat card does.
+    expect(screen.getByText("报告")).toBeInTheDocument();
+    expect(screen.getAllByText("结论：无问题").length).toBeGreaterThan(0);
+  });
+
+  test("a feed-only child keeps its report under 报告", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <SubagentsList children={[child(6, "a #1", "x", { status: "done", report: "结论：只剩报告" })]} root="/project" session={1} />,
+    );
+    await user.click(screen.getByRole("button", { name: "报告" }));
+    expect(screen.getByText("结论：只剩报告")).toBeInTheDocument();
+  });
+
+  test("a live child with no card shows no 工作过程 section", () => {
+    renderWithProviders(list([child(5, "review #1", "检查鉴权")]));
+    expect(screen.queryByRole("button", { name: /工作过程/ })).not.toBeInTheDocument();
   });
 });
 

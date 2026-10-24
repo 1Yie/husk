@@ -19,6 +19,7 @@ import {
   sessionChildren as sessionChildrenOf,
   withoutDismissed,
 } from "@/features/chat/hooks/running-children";
+import { agentRowsByChild } from "@/features/chat/hooks/agent-rows";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Document extensions that pop the ready-toast — the office deliverable.
@@ -185,6 +186,9 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
     () => withoutDismissed(sessionChildrenOf(view), dismissedChildren),
     [view, dismissedChildren],
   );
+  // Each child's own card, for the sidebar's 工作过程. Built from the mounted items,
+  // so it covers the children of this page; a feed-only child has no card.
+  const childRows = useMemo(() => agentRowsByChild(view?.items ?? []), [view?.items]);
 
   // The dock is one sidebar for every list, so "has content" is the sum —
   // and which view to reveal follows whatever actually appeared.
@@ -477,6 +481,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
             jobs={view.bgJobs}
             jobsAt={view.bgJobsAt}
             subagents={sessionChildren}
+            childRows={childRows}
             root={workspaceRoot}
             session={sessionId}
             onJobs={writeJobs}

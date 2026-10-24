@@ -1331,7 +1331,7 @@ function ComposerBarContent({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="shrink-0 h-6 px-2 text-[11px] text-neutral-600 hover:text-neutral-800 cursor-pointer"
+                        className="shrink-0 h-7 px-2.5 text-xs text-neutral-600 hover:text-neutral-800 cursor-pointer"
                         onClick={cancelEdit}
                       >
                         取消编辑
@@ -1364,7 +1364,7 @@ function ComposerBarContent({
                               else rowRefs.current.delete(i);
                             }}
                             className={cn(
-                              "group flex items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] bg-[color-mix(in_srgb,var(--husk-black)_2%,transparent)] py-1 pl-1.5 pr-1 text-[12px] transition-[opacity,border-color] hover:border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)]",
+                              "group relative flex min-h-8 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--husk-black)_7%,transparent)] bg-[color-mix(in_srgb,var(--husk-black)_2%,transparent)] py-1 pl-1.5 pr-1 text-[12px] transition-[opacity,border-color] hover:border-[color-mix(in_srgb,var(--husk-black)_14%,transparent)]",
                               dragIdx === i && "opacity-40",
                             )}
                           >
@@ -1422,41 +1422,46 @@ function ComposerBarContent({
                                 ) : null}
                               </span>
                             ) : null}
-                            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                            <div className="absolute inset-y-0 right-0 flex items-center gap-0.5 rounded-r-lg bg-[linear-gradient(to_right,transparent,color-mix(in_srgb,var(--husk-black)_2%,var(--husk-panel))_1.5rem)] pl-6 pr-1 opacity-0 transition-opacity pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
                               <TooltipSimple content="立即发送（插入当前回合）">
                                 <Button
                                   type="button"
                                   variant="ghost"
                                   size="icon-sm"
                                   aria-label="立即发送"
-                                  className="h-6 w-6 text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                                  className="h-7 w-7 rounded-md text-neutral-500 hover:text-neutral-800 cursor-pointer"
                                   onClick={() => void steerNow(i)}
                                 >
                                   <CornerDownRight className="h-3.5 w-3.5" />
                                 </Button>
                               </TooltipSimple>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon-sm"
-                                aria-label="编辑"
-                                title={editing ? "先完成当前编辑" : "编辑（取回到输入框）"}
-                                disabled={editing !== null}
-                                className="h-6 w-6 text-neutral-500 hover:text-neutral-800 cursor-pointer"
-                                onClick={() => beginEditQueued(i)}
-                              >
-                                <CirclePen className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon-sm"
-                                aria-label="移除"
-                                className="h-6 w-6 text-neutral-500 hover:text-neutral-800 cursor-pointer"
-                                onClick={() => removeQueued(i)}
-                              >
-                                <X className="h-3.5 w-3.5" />
-                              </Button>
+                              <TooltipSimple content={editing ? "先完成当前编辑" : "编辑（取回到输入框）"}>
+                                <span className="inline-flex">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label="编辑"
+                                    disabled={editing !== null}
+                                    className="h-7 w-7 rounded-md text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                                    onClick={() => beginEditQueued(i)}
+                                  >
+                                    <CirclePen className="h-3.5 w-3.5" />
+                                  </Button>
+                                </span>
+                              </TooltipSimple>
+                              <TooltipSimple content="移除">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label="移除"
+                                  className="h-7 w-7 rounded-md text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                                  onClick={() => removeQueued(i)}
+                                >
+                                  <X className="h-4 w-4" />
+                                </Button>
+                              </TooltipSimple>
                             </div>
                           </div>
                         );

@@ -17,6 +17,7 @@ import { JobsList } from "@/features/chat/components/jobs-panel";
 import { SubagentsList } from "@/features/chat/components/subagents-panel";
 import type { Artifact, BgJob, FileChange } from "@/features/chat/hooks/stream-view";
 import type { SessionChild } from "@/features/chat/hooks/running-children";
+import type { ToolChipRow } from "@/features/chat/components/tool-chips/index";
 import { DOCK_MIN_WIDTH, clampDockWidth, useDockStore, type DockTab } from "./state";
 
 const TAB_META: Record<DockTab, { Icon: typeof FileDiff; label: string; unit: string }> = {
@@ -67,6 +68,7 @@ export function SessionDock({
   jobs = [],
   jobsAt = 0,
   subagents = [],
+  childRows,
   root = "",
   session = 0,
   onJobs,
@@ -82,6 +84,8 @@ export function SessionDock({
   /** Every delegated child, finished ones included — their cards, and a
    *  steer box on the ones still out. */
   subagents?: SessionChild[];
+  /** Each child's own card by id — the transcript behind its 工作过程. */
+  childRows?: Map<number, ToolChipRow>;
   /** Which session the 后台 controls address. */
   root?: string;
   session?: number;
@@ -263,7 +267,7 @@ export function SessionDock({
           ) : activeTab === "jobs" ? (
             <JobsList jobs={jobs} snapshotAt={jobsAt} root={root} session={session} onJobs={(j) => onJobs?.(j)} />
           ) : (
-            <SubagentsList children={subagents} root={root} session={session} />
+            <SubagentsList children={subagents} childRows={childRows} root={root} session={session} />
           )}
         </div>
       </aside>
