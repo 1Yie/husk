@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock("@/lib/agent-ipc/sessions", () => ({
+  cancelUpdate: vi.fn(),
   checkUpdate: vi.fn(),
   installUpdate: vi.fn(),
   relaunchApp: vi.fn(),
 }));
 
-import { checkUpdate, installUpdate, relaunchApp, type InstallMode, type UpdateCheck } from "@/lib/agent-ipc/sessions";
+import { cancelUpdate, checkUpdate, installUpdate, relaunchApp, type InstallMode, type UpdateCheck } from "@/lib/agent-ipc/sessions";
 import { canInstall, useUpdateStore } from "../update-store";
 
 const NEWER: UpdateCheck = {
@@ -28,6 +29,7 @@ describe("update store", () => {
     vi.resetAllMocks();
     vi.mocked(checkUpdate).mockResolvedValue(NEWER);
     vi.mocked(installUpdate).mockResolvedValue({ mode: "installed" });
+    vi.mocked(cancelUpdate).mockResolvedValue(undefined);
     vi.mocked(relaunchApp).mockResolvedValue(undefined);
     useUpdateStore.setState({ state: { status: "idle" }, open: false, snoozed: null, checking: false });
   });
@@ -92,7 +94,7 @@ describe("update store", () => {
     expect(store().open).toBe(true);
   });
 
-  it("a download can be closed and the restart prompt comes back", async () => {
+  it("a download keeps the dialog open after it finishes", async () => {
     await store().check({ silent: true });
     let finish!: (value: { mode: InstallMode }) => void;
     vi.mocked(installUpdate).mockImplementation(
@@ -106,6 +108,85 @@ describe("update store", () => {
     await running;
     expect(store().state.status).toBe("ready");
     expect(store().open).toBe(true);
+  });
+
+  it("closing during the download cancels it, and the cancelled run never shows as failed", async () => {
+    await store().check({ silent: true });
+    let fail!: (reason: string) => void;
+    vi.mocked(installUpdate).mockImplementation(
+      () => new Promise<{ mode: InstallMode }>((_, reject) => { fail = reject; }),
+    );
+    const running = store().install();
+    store().dismiss();
+    expect(cancelUpdate).toHaveBeenCalledTimes(1);
+    expect(store().state.status).toBe("available");
+    expect(store().open).toBe(false);
+    expect(store().snoozed).toBeNull();
+    fail("已取消下载");
+    await running;
+    expect(store().state.status).toBe("available");
+    expect(store().open).toBe(false);
+  });
+
+  it("a successful install that lands after the cancel still becomes ready", async () => {
+    await store().check({ silent: true });
+    let finish!: (value: { mode: InstallMode }) => void;
+    vi.mocked(installUpdate).mockImplementation(
+      () => new Promise<{ mode: InstallMode }>((resolve) => { finish = resolve; }),
+    );
+    const running = store().install();
+    store().dismiss();
+    finish({ mode: "installed" });
+    await running;
+    expect(store().state.status).toBe("ready");
+    expect(store().open).toBe(true);
+  });
+
+  it("a check while the download runs reopens the dialog without asking the backend", async () => {
+    await store().check({ silent: true });
+    vi.mocked(installUpdate).mockImplementation(() => new Promise<{ mode: InstallMode }>(() => {}));
+    void store().install();
+    store().setOpen(false);
+    vi.mocked(checkUpdate).mockClear();
+    const info = await store().check();
+    expect(checkUpdate).not.toHaveBeenCalled();
+    expect(info?.latest).toBe("0.4.0");
+    expect(store().open).toBe(true);
+    expect(store().state.status).toBe("installing");
+  });
+
+  it("after a cancel, check reopens the dialog as available and install starts a fresh download", async () => {
+    await store().check({ silent: true });
+    vi.mocked(installUpdate).mockImplementationOnce(() => new Promise<{ mode: InstallMode }>(() => {}));
+    void store().install();
+    store().dismiss();
+    vi.mocked(installUpdate).mockResolvedValueOnce({ mode: "installed" });
+    const info = await store().check();
+    expect(info?.latest).toBe("0.4.0");
+    expect(store().state.status).toBe("available");
+    expect(store().open).toBe(true);
+    await store().install();
+    expect(installUpdate).toHaveBeenCalledTimes(2);
+    expect(store().state.status).toBe("ready");
+  });
+
+  it("a fresh install right after a cancel waits for the backend to release its slot", async () => {
+    await store().check({ silent: true });
+    vi.mocked(installUpdate).mockImplementationOnce(() => new Promise<{ mode: InstallMode }>(() => {}));
+    void store().install();
+    let releaseCancel!: () => void;
+    vi.mocked(cancelUpdate).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseCancel = resolve; }),
+    );
+    store().dismiss();
+    vi.mocked(installUpdate).mockResolvedValueOnce({ mode: "installed" });
+    const running = store().install();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(installUpdate).toHaveBeenCalledTimes(1);
+    releaseCancel();
+    await running;
+    expect(installUpdate).toHaveBeenCalledTimes(2);
+    expect(store().state.status).toBe("ready");
   });
 
   it("verify and install are not dismissible", async () => {
@@ -149,12 +230,15 @@ describe("update store", () => {
     expect(relaunchApp).toHaveBeenCalledTimes(1);
   });
 
-  it("a ready update is not checked over", async () => {
+  it("a ready update is not checked over, and the check reopens its dialog", async () => {
     await store().check({ silent: true });
     await store().install();
-    expect(await store().check()).toBeNull();
+    store().setOpen(false);
+    const info = await store().check();
+    expect(info?.latest).toBe("0.4.0");
     expect(checkUpdate).toHaveBeenCalledTimes(1);
     expect(store().state.status).toBe("ready");
+    expect(store().open).toBe(true);
   });
 
   it("records the install mode and says a staged installer runs on restart", async () => {

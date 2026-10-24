@@ -1,12 +1,15 @@
-// What the dialog lets the user leave: a download keeps running in the
-// background, so its window may close; the installer and the ready-to-restart
-// prompt may not — they have nothing else to do and hold the only way forward.
+// What the dialog lets the user leave: closing during the download cancels it;
+// the installer and the ready-to-restart prompt may not be closed — they have
+// nothing else to do and hold the only way forward.
 
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/features/chat/components/chat-stream/markdown-stream", () => ({
   MemoStreamdown: ({ text }: { text: string }) => <div>{text}</div>,
+}));
+vi.mock("@/lib/agent-ipc/sessions", () => ({
+  cancelUpdate: vi.fn(async () => {}),
 }));
 
 import { UpdateDialog } from "../update-dialog";
@@ -28,10 +31,11 @@ function show(state: UpdateState) {
 }
 
 describe("update dialog dismissal", () => {
-  it("can be closed while the package downloads", () => {
+  it("can be closed while the package downloads, and the button says it cancels", () => {
     show({ status: "installing", info: INFO, progress: { phase: "download", downloaded: 1, total: 2 } });
     expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "稍后" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消下载" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "稍后" })).toBeNull();
   });
 
   it("hides both close affordances while the installer runs", () => {

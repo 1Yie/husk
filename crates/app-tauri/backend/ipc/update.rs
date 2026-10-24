@@ -22,18 +22,26 @@
 //! on drop, including error and cancellation paths.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tauri::{AppHandle, Emitter as _, State};
 use tokio::io::AsyncWriteExt as _;
+use tokio::sync::Notify;
 
 const LATEST: &str = "https://api.github.com/repos/1Yie/husk/releases/latest";
 /// Only assets served from this repo's releases are ever downloaded.
 const DOWNLOAD_PREFIX: &str = "https://github.com/1Yie/husk/releases/download/";
 pub const PROGRESS_EVENT: &str = "update-progress";
+/// The error a cancelled download reports. The frontend treats it as a
+/// user-initiated stop, not a failed install.
+pub const DOWNLOAD_CANCELLED: &str = "已取消下载";
+/// How long `cancel_update` waits for the running operation to wind down, and
+/// how often it checks.
+const CANCEL_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Asset {
@@ -85,11 +93,14 @@ fn prepared_matches(prepared: &Prepared, asset: &Asset) -> bool {
 }
 
 /// The one piece of mutable update state. `busy` is set by [`begin_op`] for the
-/// duration of an operation and cleared by the returned guard's `Drop`.
+/// duration of an operation and cleared by the returned guard's `Drop`. `cancel`
+/// is set only while `install_update` downloads; [`cancel_update`] uses it to
+/// stop that download and nothing after it.
 #[derive(Default)]
 struct UpdateInner {
     asset: Option<Asset>,
     prepared: Option<Prepared>,
+    cancel: Option<Arc<Notify>>,
     busy: bool,
 }
 
@@ -362,7 +373,13 @@ pub async fn install_update(
         }
     }
 
-    let outcome = run_install(&app, &asset).await?;
+    let cancel = Arc::new(Notify::new());
+    lock(&state).cancel = Some(cancel.clone());
+    let download = until_cancelled(&cancel, download_asset(&app, &asset)).await;
+    // The download phase is over (done, failed or cancelled). Clear the handle
+    // now so a late cancel cannot reach verification or installation.
+    lock(&state).cancel = None;
+    let outcome = finish_install(&app, &asset, download?).await?;
     {
         let mut inner = lock(&state);
         inner.prepared = Some(Prepared {
@@ -382,9 +399,61 @@ struct InstallOutcome {
     path: Option<PathBuf>,
 }
 
-async fn run_install(app: &AppHandle, asset: &Asset) -> Result<InstallOutcome, String> {
+/// Cancel the download of the running `install_update`. Returns once the
+/// operation has wound down (or after [`CANCEL_WAIT`]), so a following
+/// `check_update` is not rejected as busy. Does nothing if nothing is running.
+/// Takes no `begin_op`: it must run while `install_update` holds the slot.
+#[tauri::command]
+pub async fn cancel_update(state: State<'_, UpdateState>) -> Result<(), String> {
+    cancel_running(&state).await;
+    Ok(())
+}
+
+async fn cancel_running(state: &UpdateState) {
+    let deadline = std::time::Instant::now() + CANCEL_WAIT;
+    loop {
+        {
+            let mut inner = lock(state);
+            if !inner.busy {
+                return;
+            }
+            // `notify_one` stores a permit when the download has not started
+            // waiting yet, so the signal cannot be lost.
+            if let Some(cancel) = inner.cancel.take() {
+                cancel.notify_one();
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(CANCEL_POLL).await;
+    }
+}
+
+/// Runs `work` until it finishes or `cancel` is signalled. Dropping `work` on
+/// cancel is what aborts the download and removes its partial file.
+async fn until_cancelled<T>(
+    cancel: &Notify,
+    work: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::select! {
+        _ = cancel.notified() => Err(DOWNLOAD_CANCELLED.into()),
+        result = work => result,
+    }
+}
+
+async fn download_asset(app: &AppHandle, asset: &Asset) -> Result<Download, String> {
+    download(asset, |done, total| emit(app, "download", done, total)).await
+}
+
+/// Verify and install a finished download. Not cancellable: interrupting these
+/// would leave the system half-updated.
+async fn finish_install(
+    app: &AppHandle,
+    asset: &Asset,
+    download: Download,
+) -> Result<InstallOutcome, String> {
     // The download directory handle lives through verification *and* install.
-    let download = download(asset, |done, total| emit(app, "download", done, total)).await?;
     emit(app, "verify", asset.size, asset.size);
     verify(download.path(), asset).await?;
     emit(app, "install", asset.size, asset.size);
@@ -1587,6 +1656,41 @@ mod tests {
         let second = begin_op(&state).unwrap();
         drop(second);
         assert!(begin_op(&state).is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_idle_update_returns_at_once() {
+        let state = UpdateState::default();
+        let started = std::time::Instant::now();
+        cancel_running(&state).await;
+        assert!(started.elapsed() < CANCEL_WAIT);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_stalled_download_aborts_it_and_removes_the_partial() {
+        let body = vec![0u8; 8192];
+        let asset = asset_for(
+            serve_stalled(8192, 1024).await,
+            &body,
+            "husk-test-cancel.deb",
+        );
+        let dir = new_download_dir().unwrap();
+        let http = client().unwrap();
+        let cancel = Notify::new();
+        let cancel_later = async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            cancel.notify_one();
+        };
+        let (result, ()) = tokio::join!(
+            until_cancelled(&cancel, fetch_with(&http, &dir, &asset, |_, _| {})),
+            cancel_later,
+        );
+        assert_eq!(result.unwrap_err(), DOWNLOAD_CANCELLED);
+        // The half-written package is still on disk until its directory goes.
+        let path = dir.path().to_path_buf();
+        assert!(path.join("husk-test-cancel.deb").exists());
+        drop(dir);
+        assert!(!path.exists());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import {
+  cancelUpdate,
   checkUpdate,
   installUpdate,
   relaunchApp,
@@ -35,6 +36,14 @@ export function canInstall(src: UpdateCheck): boolean {
  * again (a manual check from About still shows it), but a newer one is. */
 const IGNORED_KEY = "husk.update.ignored";
 
+/** Install runs, numbered. `runs` is the latest one started; `liveRun` is the
+ *  one whose failure may still reach the UI (0 once the user cancelled it). */
+let runs = 0;
+let liveRun = 0;
+/** The backend cancel in flight, or null when none is; a check or install waits for it
+ *  so the backend is idle. */
+let pendingCancel: Promise<void> | null = null;
+
 interface UpdateStore {
   state: UpdateState;
   open: boolean;
@@ -61,10 +70,17 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
   setOpen: (open) => set({ open }),
 
   check: async ({ silent = false } = {}) => {
-    const { status } = get().state;
-    if (get().checking || status === "installing" || status === "ready") return null;
+    const { state } = get();
+    // The download or the restart prompt already owns the dialog: bring it back
+    // with the current release instead of asking the backend, which is busy.
+    if (state.status === "installing" || state.status === "ready") {
+      set({ open: true });
+      return state.info;
+    }
+    if (get().checking) return null;
     set({ checking: true });
     try {
+      if (pendingCancel) await pendingCancel;
       const info = await checkUpdate();
       if (info.is_newer && info.latest) {
         if (info.prepared_mode) {
@@ -91,6 +107,8 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
     const { state } = get();
     if (state.status === "installing" || state.status === "idle") return;
     const { info } = state;
+    const run = ++runs;
+    liveRun = run;
     set({
       state: {
         status: "installing",
@@ -99,11 +117,19 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
       },
     });
     try {
+      // A cancel still in flight holds the backend's busy slot: wait until it is released.
+      if (pendingCancel) await pendingCancel;
       const { mode } = await installUpdate();
+      // Only the newest run may finish the dialog. A success that lands after a
+      // cancel is still accepted: the backend has the update prepared.
+      if (run !== runs) return;
       // Ready is the restart prompt: bring the dialog back even when the user
       // closed it mid-download — the new version only starts through it.
       set({ state: { status: "ready", info, mode }, open: true });
     } catch (e) {
+      // A cancelled download reports "已取消下载"; the user chose that, so it is
+      // not a failure. Only a run still live may show an error.
+      if (run !== liveRun) return;
       set({ state: { status: "failed", info, error: String(e) } });
     }
   },
@@ -122,11 +148,24 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
 
   dismiss: () => {
     const { state } = get();
-    // A download is background work — closing only hides the progress. Verify,
-    // install and the ready-to-restart prompt are not: there is nothing to do
-    // while they run, and ready is the one door back into the new version.
+    // Verify, install and the ready-to-restart prompt are not dismissible: there
+    // is nothing to do while they run, and ready is the one door back into the
+    // new version.
     if (state.status === "ready") return;
-    if (state.status === "installing" && state.progress.phase !== "download") return;
+    if (state.status === "installing") {
+      if (state.progress.phase !== "download") return;
+      // Closing mid-download cancels it (the partial package is removed). It is
+      // not "稍后", so nothing is snoozed: the About button brings it back.
+      liveRun = 0;
+      const cancel: Promise<void> = cancelUpdate()
+        .catch(() => {})
+        .finally(() => {
+          if (pendingCancel === cancel) pendingCancel = null;
+        });
+      pendingCancel = cancel;
+      set({ state: { status: "available", info: state.info }, open: false });
+      return;
+    }
     // "稍后": only this session. An installed update stays installed; the new
     // version simply starts on the next launch.
     set({ open: false, snoozed: "info" in state ? state.info.latest : get().snoozed });

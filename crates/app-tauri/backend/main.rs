@@ -612,6 +612,7 @@ fn main() {
             ipc::commands::paste_clipboard,
             ipc::update::check_update,
             ipc::update::install_update,
+            ipc::update::cancel_update,
             ipc::update::relaunch_app,
             ipc::overlay::stop_computer_control,
             ipc::sessions::agent_session,

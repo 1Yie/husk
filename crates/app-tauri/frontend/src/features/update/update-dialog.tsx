@@ -36,10 +36,10 @@ export function UpdateDialog() {
   const { info } = state;
   const installing = state.status === "installing";
   const ready = state.status === "ready";
-  // Downloading is background work: the window may close and the update keeps
-  // going. Verifying, installing, and the "restart to finish" prompt are not —
-  // there is nothing else to do with them, and the ready state is the only way
-  // back into the restarted app.
+  // Closing during the download cancels it, and the About page's "检查更新"
+  // brings the dialog back. Verifying, installing, and the "restart to finish"
+  // prompt are not closable — there is nothing else to do with them, and the
+  // ready state is the only way back into the restarted app.
   const settled = installing && state.progress.phase !== "download";
   const dismissible = !ready && !settled;
   const progress = installing ? state.progress : null;
@@ -129,7 +129,7 @@ export function UpdateDialog() {
           )}
           {dismissible && (
             <Button variant="outline" size="sm" onClick={onDismiss}>
-              稍后
+              {installing ? "取消下载" : "稍后"}
             </Button>
           )}
           {ready ? (
