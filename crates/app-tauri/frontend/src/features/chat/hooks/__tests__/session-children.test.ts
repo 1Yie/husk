@@ -316,7 +316,7 @@ describe("sessionChildren", () => {
     const view = {
       ...page,
       feedChildren: childrenFromFeed([
-        feedRow(5, "delegate", '{"task":"探索仓库"}', "[subagent reviewer (child_id 7) is waiting for you]\n需要确认分支"),
+        feedRow(6, "delegate", '{"task":"探索仓库"}', "[subagent reviewer (child_id 7) is waiting for you]\n需要确认分支"),
         feedRow(
           12,
           "answer_child",
@@ -350,6 +350,32 @@ describe("sessionChildren", () => {
       ]),
     };
     expect(sessionChildren(view).map((c) => [c.childId, c.status])).toEqual([[7, "running"]]);
+  });
+
+  test("a live card and the feed's settled child of a reused id are two children", () => {
+    // Ids restart with each process: the old transcript's child 1 finished, and a
+    // new child 1 is running now. The feed's copy must not absorb the live one.
+    const view = {
+      ...applyEvents(emptyView(), [card(1)] as UiEvent[]),
+      feedChildren: childrenFromFeed([
+        feedRow(10, "delegate", '{"task":"x"}', "[subagent report — child_id 1 · 1 tool calls, 1s]\nold"),
+      ]),
+    };
+    expect(sessionChildren(view).map((c) => [c.childId, c.status])).toEqual([
+      [1, "done"],
+      [1, "running"],
+    ]);
+  });
+
+  test("an unsettled feed child and its live card are one child, running", () => {
+    const view = {
+      ...applyEvents(emptyView(), [card(3)] as UiEvent[]),
+      feedChildren: childrenFromFeed([
+        feedRow(5, "delegate", '{"task":"x"}', "[subagent reviewer (child_id 3) is waiting for you]\n问"),
+      ]),
+    };
+    expect(sessionChildren(view)).toMatchObject([{ childId: 3, status: "running" }]);
+    expect(sessionChildren(view)).toHaveLength(1);
   });
 
   test("an id-less parallel child is matched by its row, not listed twice", () => {
@@ -392,6 +418,17 @@ describe("withoutDismissed", () => {
     const feed = childrenFromFeed([feedRow(4, "delegate", '{"tasks":["鉴权"]}', "子代理完成")]);
     const view = { ...emptyView(), feedChildren: feed };
     expect(withoutDismissed(sessionChildren(view), new Set(["h4-i0"]))).toEqual([]);
+  });
+
+  test("clearing an old child by its row leaves the new child with the same id", () => {
+    const view = {
+      ...applyEvents(emptyView(), [card(1)] as UiEvent[]),
+      feedChildren: childrenFromFeed([
+        feedRow(10, "delegate", '{"task":"x"}', "[subagent report — child_id 1 · 1 tool calls, 1s]\nold"),
+      ]),
+    };
+    const out = withoutDismissed(sessionChildren(view), new Set(["h10-c1"]));
+    expect(out.map((c) => [c.childId, c.status])).toEqual([[1, "running"]]);
   });
 
   test("two id-less children of one batch are cleared apart", () => {

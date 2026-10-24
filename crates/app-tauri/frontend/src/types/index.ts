@@ -64,7 +64,7 @@ export type UiEvent =
   | { QuestionTimedOut: { request_id: number } }
   /** The approval card expired — the kernel auto-denied it and the tool call
    *  fails closed. */
-  | { ApprovalTimedOut: { request_id: number } }
+  | { ApprovalTimedOut: { request_id: number; child_id?: number | null } }
   | { UserPrompt: string }
   | { UserSteer: string }
   | { TextDelta: { text: string; parent?: string | null; child_id?: number | null } }
@@ -96,6 +96,9 @@ export type UiEvent =
         /** Alternatives to 允许/拒绝 — a grant the host offers when a tool
          *  refused a path. Empty or absent means an ordinary card. */
         actions?: ApprovalAction[];
+        /** The delegated child that asked, when the card belongs to one. It
+         *  drew on this stream, so the card is drawn on that child's row. */
+        child_id?: number | null;
       };
     }
   | { AssistantMessage: string }

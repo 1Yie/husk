@@ -166,8 +166,13 @@ export function childrenFromFeed(rows: readonly ToolFeedRow[]): SessionChild[] {
  *
  *  `hi` alone is the PARENT's index: every child of one batch shares it, so a
  *  child with no id also carries its place in that batch — without it clearing
- *  one card cleared its siblings, and the merge read two children as one. */
+ *  one card cleared its siblings, and the merge read two children as one.
+ *
+ *  The id alone is not a child's identity either: ids restart with each process,
+ *  so a session's old transcript can hold a child with the same id as a new one.
+ *  `hi` is what tells those apart, so it leads whenever the child has one. */
 export function childKey(c: SessionChild): string {
+  if (c.hi != null) return `h${c.hi}-${childIdentity(c.childId, c.childIndex)}`;
   return c.childId != null ? `c${c.childId}` : `h${c.hi}-${childIdentity(undefined, c.childIndex)}`;
 }
 
@@ -205,13 +210,13 @@ export function sessionChildren(view: SessionView): SessionChild[] {
   const merged: SessionChild[] = [];
   const claimed = new Set<string>();
   for (const fed of feed) {
-    const key = childKey(fed);
-    claimed.add(key);
-    const page = onPage.get(key);
+    claimed.add(childKey(fed));
+    const page = onPage.get(childKey(fed)) ?? liveTwinOf(fed, mounted);
     if (!page) {
       merged.push(fed);
       continue;
     }
+    claimed.add(childKey(page));
     // A settled reading wins over an open one: the page may still hold the
     // parked card whose `delegate` row it has, while the feed already saw the
     // `answer_child` that finished it. Between two settled readings the page
@@ -222,6 +227,15 @@ export function sessionChildren(view: SessionView): SessionChild[] {
   // which the persisted log has no row for yet.
   for (const c of mounted) if (!claimed.has(childKey(c))) merged.push(c);
   return merged;
+}
+
+/** A live card (no `hi`, drawn from events) that is the same child as an
+ *  unsettled feed row with the same id — the card catching up with its own row.
+ *  A settled feed child is a different child from a live card reusing its id:
+ *  ids restart with each process, so the old one must not absorb the new one. */
+function liveTwinOf(fed: SessionChild, mounted: SessionChild[]): SessionChild | undefined {
+  if (fed.childId == null || isSettled(fed)) return undefined;
+  return mounted.find((c) => c.hi === undefined && c.childId === fed.childId);
 }
 
 /** Still out: a steer can reach it. */

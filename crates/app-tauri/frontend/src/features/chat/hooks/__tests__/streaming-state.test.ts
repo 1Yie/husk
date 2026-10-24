@@ -335,6 +335,33 @@ test("a cancelled batch leaves no child card spinning", () => {
   expect(tools.find((it) => it.kind === "tool" && it.name === "smart_grep")).toMatchObject({ ok: false });
 });
 
+test("a delegate child outlives its parent turn until its own finish", () => {
+  // A parallel `delegate` returns once one child parks, and its siblings keep
+  // running detached. The kernel closes each child card itself, so a settled
+  // turn must leave the card and its own nested rows open.
+  const view = applyEvents(emptyView(), [
+    { UserPrompt: "并行检查" },
+    { StateChanged: "Reasoning" },
+    { ToolCallStarted: { name: "delegate", args_preview: "2 tasks" } },
+    { ToolCallStarted: { name: "subagent #2", args_preview: "x", parent: "delegate", child_id: 6 } },
+    { ToolCallStarted: { name: "list_dir", args_preview: ".", parent: "subagent #2", child_id: 6 } },
+    { ToolCallStarted: { name: "bash", args_preview: "ls" } },
+  ]);
+
+  const settled = applyEvents(view, [{ StateChanged: "Finished" }]);
+  const tool = (v: typeof settled, name: string) =>
+    v.items.find((it) => it.kind === "tool" && it.name === name);
+  expect(tool(settled, "bash")).toMatchObject({ ok: false, content: "已中断" });
+  expect(tool(settled, "subagent #2")).toMatchObject({ childId: 6 });
+  expect(tool(settled, "subagent #2")?.content).toBeUndefined();
+  expect(tool(settled, "list_dir")?.content).toBeUndefined();
+
+  const finished = applyEvents(settled, [
+    { ToolCallFinished: { name: "subagent #2", ok: true, content: "done", parent: "delegate", child_id: 6 } },
+  ]);
+  expect(tool(finished, "subagent #2")).toMatchObject({ ok: true, content: "done" });
+});
+
 test("a mid-turn compaction does not split the answer into two bubbles", () => {
   // Auto-compaction folds its card into the RUNNING turn, right behind the
   // draft it interrupted. Text must extend the draft, not the card, or one
@@ -578,5 +605,37 @@ describe("expired cards", () => {
       approved: false,
       timedOut: true,
     });
+  });
+});
+
+describe("a child's approval card", () => {
+  /// The parent and a child can both be running `bash`; the verdict names only
+  /// the one that asked, so the card must land on that child's row.
+  test("lands on the child's own row, not the parent's same-named call", () => {
+    const view = applyEvents(emptyView(), [
+      { UserPrompt: "派活" },
+      { ToolCallStarted: { name: "bash", args_preview: "cargo build" } },
+      { ToolCallStarted: { name: "subagent #1", parent: "delegate", args_preview: "改一下", child_id: 4 } },
+      { ToolCallStarted: { name: "bash", parent: "subagent #1", args_preview: "rm -rf build", child_id: 4 } },
+      {
+        ApprovalRequested: {
+          request_id: 21,
+          tool_name: "bash",
+          diff: "rm -rf build",
+          fuzzy: false,
+          child_id: 4,
+        },
+      },
+    ]);
+    const tools = view.items.filter((it) => it.kind === "tool");
+    // The parent's own bash row is untouched…
+    expect(tools.find((it) => it.name === "bash" && it.childId === undefined)?.approval).toBeUndefined();
+    // …and the child's carries the card, so the composer strip answers the
+    // request the child is parked on.
+    expect(tools.find((it) => it.name === "bash" && it.childId === 4)?.approval).toMatchObject({
+      requestId: 21,
+      resolved: false,
+    });
+    expect(pendingApprovalOf(view)?.requestId).toBe(21);
   });
 });

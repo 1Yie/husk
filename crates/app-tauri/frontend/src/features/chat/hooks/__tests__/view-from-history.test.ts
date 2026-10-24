@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import {
   applyChangesFeed,
   childTranscriptCard,
+  delegateChildren,
   opensUserTurn,
   steerTextOf,
   viewFromHistory,
@@ -482,6 +483,54 @@ describe("a child that died with the process", () => {
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ childId: 9, content: "已中断", ok: false });
     if (cards[0].kind === "tool") expect(cards[0].waiting).toBeUndefined();
+  });
+});
+
+describe("a parallel delegation's detached children", () => {
+  const args = '{"tasks":["a","b"],"readonly":true}';
+  const result =
+    "parallel delegation — 0 ok, 0 failed, 1 waiting, 1 running of 2 read-only subagents:\n\n" +
+    "── [0] waiting · 1s ──\n[subagent subagent #1 (child_id 5) is waiting for you]\nQuestion: 哪个分支？\n\nReply with answer_child …\n\n" +
+    "── [1] running ──\n[subagent subagent #2 (child_id 6) is still running — its report will arrive as a notice]\n";
+  const delegation: ChatMessage[] = [
+    { role: "user", content: "并行看看", ts: 10 },
+    {
+      role: "assistant",
+      content: "",
+      ts: 20,
+      tool_calls: [{ id: "d2", type: "function", function: { name: "delegate", arguments: args } }],
+    },
+    { role: "tool", content: result, tool_call_id: "d2", ts: 30 },
+  ];
+  const settled: ChatMessage = {
+    role: "system",
+    notice: "host",
+    content: "[subagent subagent #2 (child_id 6) finished in the background]\n[subagent report — child_id 6 · 2 tool calls, 3s]\n完成",
+  };
+  const cardOf = (view: ReturnType<typeof viewFromHistory>, childId: number) =>
+    view.items.find((it) => it.kind === "tool" && it.parent === "delegate" && it.childId === childId);
+
+  test("a waiting child is parked and a running child has no body yet", () => {
+    const items = delegateChildren(args, result, false);
+    expect(items).toMatchObject([
+      { childId: 5, waiting: expect.stringContaining("哪个分支") },
+      { childId: 6 },
+    ]);
+    expect(items[1].content).toBeUndefined();
+  });
+
+  test("a host notice settles the running child's card in place", () => {
+    const view = viewFromHistory([...delegation, settled]);
+    expect(cardOf(view, 6)).toMatchObject({ ok: true, content: expect.stringContaining("完成") });
+    // The notice draws no row of its own.
+    expect(view.items.filter((it) => it.kind === "system")).toHaveLength(0);
+  });
+
+  test("a running child with no notice reads 已中断 once nothing is running", () => {
+    const view = viewFromHistory(delegation, undefined, 0, { dangling: true });
+    expect(cardOf(view, 6)).toMatchObject({ ok: false, content: "已中断" });
+    // The parked child is still waiting, not cancelled.
+    expect(cardOf(view, 5)).toMatchObject({ waiting: expect.stringContaining("哪个分支") });
   });
 });
 

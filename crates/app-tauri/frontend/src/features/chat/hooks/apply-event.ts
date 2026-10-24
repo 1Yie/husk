@@ -161,14 +161,26 @@ function settleOpenApprovals(items: StreamItem[]): StreamItem[] {
 
 /** Fail every tool card still waiting for its result. Tools run inside the
  * turn, so a settled turn has none in flight: an open card is one it left
- * behind — typically the children of a `batch_execute` or `delegate` whose
- * dispatch a cancel dropped, which never get a `ToolCallFinished` of their
- * own. Left open they would spin forever. */
+ * behind — typically the children of a `batch_execute` whose dispatch a cancel
+ * dropped, which never get a `ToolCallFinished` of their own. Left open they
+ * would spin forever. Delegate child cards live across parent turns, so they
+ * are skipped: the kernel closes each with its own finish event. */
 function settleOpenTools(items: StreamItem[]): StreamItem[] {
+  // A child's own tool rows carry its `childId` too: while the child's card is
+  // open, those rows are still running, so they are skipped with it.
+  const openChildIds = new Set<number>();
+  for (const it of items) {
+    if (it.kind === "tool" && it.content === undefined && it.parent === "delegate" && it.childId != null) {
+      openChildIds.add(it.childId);
+    }
+  }
   let changed = false;
   const now = Date.now();
   const next = items.map((it) => {
-    if (it.kind === "tool" && it.content === undefined) {
+    if (it.kind !== "tool" || it.content !== undefined) return it;
+    const inFlightChild =
+      it.childId != null && (it.parent === "delegate" || openChildIds.has(it.childId));
+    if (!inFlightChild) {
       changed = true;
       return { ...it, content: "已中断", ok: false, ts: now };
     }
@@ -675,9 +687,18 @@ function applyEventInto(
     const changes = [...v.changes];
     if (a.diff) recordFileChanges(changes, a.tool_name, a.diff, a.fuzzy, true);
     let attached = false;
+    // A child's card belongs to that child's own row: two children (or a
+    // child and the parent) can be running the same tool, and the verdict
+    // names only the one that asked.
+    const childId = a.child_id ?? undefined;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      if (it.kind === "tool" && it.name === a.tool_name && it.content === undefined) {
+      if (
+        it.kind === "tool" &&
+        it.name === a.tool_name &&
+        it.content === undefined &&
+        it.childId === childId
+      ) {
         items[i] = {
           ...it,
           approval: {

@@ -60,6 +60,13 @@ function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return true;
 }
 
+/** Index of the LAST item matching `pred`, or -1 — a repeated child id names the
+ *  newest card, which is the one the page is still drawing. */
+function lastIndexWhere<T>(items: readonly T[], pred: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i--) if (pred(items[i])) return i;
+  return -1;
+}
+
 interface AgentStore {
   views: Map<string, SessionView>;
   /** Kept in sync with `views` so its IDENTITY is stable while the same
@@ -280,8 +287,9 @@ export const useAgentStore = create<AgentStore>((set) => ({
   dropView: (root, id) =>
     set((s) => {
       const k = viewKey(root, id);
-      // The session's cleared-child set goes with it: ids are never reused, so
-      // a set left behind could only ever hide a stranger's card.
+      // The session's cleared-child set belongs to this session's view and goes
+      // with it. Its keys carry the delegate row's index, so a key still names
+      // one child even when a restarted process reused its id.
       let dismissed = s.dismissedChildren;
       if (dismissed.has(k)) {
         const copy = new Map(dismissed);
@@ -306,7 +314,8 @@ export const useAgentStore = create<AgentStore>((set) => ({
       const k = viewKey(root, id);
       const v = s.views.get(k);
       if (!v) return s;
-      const at = v.items.findIndex(
+      const at = lastIndexWhere(
+        v.items,
         (it) => it.kind === "tool" && it.parent === "delegate" && it.childId === childId,
       );
       const card = v.items[at];
@@ -333,7 +342,8 @@ export const useAgentStore = create<AgentStore>((set) => ({
       const items = v.items.slice();
       let touched = false;
       for (const child of children) {
-        const at = items.findIndex(
+        const at = lastIndexWhere(
+          items,
           (it) => it.kind === "tool" && it.parent === "delegate" && it.childId === child.childId,
         );
         if (at < 0) {

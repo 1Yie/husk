@@ -294,7 +294,14 @@ export function App() {
         toolRowsFeed(id, ["delegate", "answer_child"]).catch(() => null),
       ]);
       if (feed) applyChangesFeed(folded, feed.rows);
-      if (childRows) folded.feedChildren = childrenFromFeed(childRows.rows);
+      // With nothing running, a feed child still reading running died with its
+      // process — no notice will ever settle it, so it reads as cancelled.
+      if (childRows) {
+        const feed = childrenFromFeed(childRows.rows);
+        folded.feedChildren = running
+          ? feed
+          : feed.map((c) => (c.status === "running" ? { ...c, status: "aborted" as const } : c));
+      }
       // Cold view rebuild — the parked queue is session state persisted in
       // SessionMeta; seed it so the composer shows the same rows the actor
       // still holds (live updates continue via QueuedPrompts events).

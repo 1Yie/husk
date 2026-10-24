@@ -221,6 +221,16 @@ function delegateChildLabel(agent: string | undefined, index: number, total: num
  *  can still draw the waiting card against the right child. */
 const WAITING_REPORT = /^\[subagent (.+?) \(child_id (\d+)\) is waiting for you\]/;
 
+/** A detached child still out when its parallel `delegate` returned: its section
+ *  reads `[subagent <label> (child_id N) is still running …]`, and its report
+ *  arrives later as a host notice. The id is the only way to name its card. */
+const RUNNING_REPORT = /^\[subagent (.+?) \(child_id (\d+)\) is still running/;
+
+/** A detached child's settlement, delivered later as a host notice: the header
+ *  says how it ended, and the text after it is the report, error, or question. */
+const BACKGROUND_NOTICE =
+  /^\[subagent (.+?) \(child_id (\d+)\) (finished in the background|failed in the background|is waiting for you)\]/;
+
 /** A finished child's report opens with `[subagent report — child_id N · K tool
  *  calls, Xs]` — the only place the persisted log still names the child, and
  *  the id its card needs to replay the transcript afterwards. */
@@ -310,6 +320,13 @@ export function delegateChildren(rawArgs: string, content: string, isError: bool
     if (nl < 0) continue;
     const status = rest.slice(0, nl).trim();
     const body = rest.slice(nl + 2).replace(/^\n/, "").trim();
+    // A parked child's section: the card is waiting, and its question is the body
+    // — the same reading the single-child form gives its early return.
+    const waiting = body.match(WAITING_REPORT);
+    // A detached child still out has no report yet. Its card stays unsettled —
+    // `content` unset — so it reads as running, and its report later arrives as
+    // a host notice rather than a row.
+    const running = body.match(RUNNING_REPORT);
     const finished = body.match(CHILD_REPORT);
     const cancelled = body.match(CHILD_CANCELLED);
     // Either signal marks it: the status word alone is enough when a log lost
@@ -317,13 +334,22 @@ export function delegateChildren(rawArgs: string, content: string, isError: bool
     const interrupted = cancelled != null || status.startsWith("cancelled");
     items.push({
       kind: "tool" as const,
-      name: delegateChildLabel(agent, idx, total),
+      name: waiting ? waiting[1] : delegateChildLabel(agent, idx, total),
       args: tasks[idx] ? extractArgsPreview(JSON.stringify(tasks[idx])) : "",
-      content: interrupted ? CANCELLED_BODY : body || undefined,
+      content: running ? undefined : interrupted ? CANCELLED_BODY : body || undefined,
       ok: !interrupted && status.startsWith("ok"),
       parent: "delegate",
       childIndex: idx,
-      childId: finished ? Number(finished[1]) : cancelled ? Number(cancelled[1]) : undefined,
+      childId: waiting
+        ? Number(waiting[2])
+        : running
+          ? Number(running[2])
+          : finished
+            ? Number(finished[1])
+            : cancelled
+              ? Number(cancelled[1])
+              : undefined,
+      waiting: waiting ? body.slice(waiting[0].length).trim() : undefined,
     });
   }
   return items;
@@ -508,6 +534,7 @@ export function viewFromHistory(
   for (const m of history) indexToolCalls(idToTool, m);
   const answered = answeredCalls(history);
   history.forEach((m, i) => foldMessage(v, idToTool, m, baseIndex + i, answered, opts?.dangling === true));
+  if (opts?.dangling === true) closeOrphanedChildCards(v);
   return v;
 }
 
@@ -538,6 +565,7 @@ export async function viewFromHistoryChunked(
     foldMessage(v, idToTool, history[i], baseIndex + i, answered, opts?.dangling === true);
     if (i % 24 === 23) await new Promise((r) => setTimeout(r, 0));
   }
+  if (opts?.dangling === true) closeOrphanedChildCards(v);
   return v;
 }
 
@@ -610,6 +638,41 @@ function indexToolCalls(idToTool: Map<string, ToolInfo>, m: ChatMessage) {
   }
 }
 
+/** Once nothing is running, a delegate card still reading running is a detached
+ *  child whose process died — it can no longer finish, so it reads as interrupted. */
+function closeOrphanedChildCards(v: SessionView) {
+  for (let i = 0; i < v.items.length; i++) {
+    const card = v.items[i];
+    if (card.kind !== "tool" || card.parent !== "delegate") continue;
+    if (card.content !== undefined || card.waiting != null) continue;
+    v.items[i] = { ...card, content: CANCELLED_BODY, ok: false };
+  }
+}
+
+/** A host notice → the delegate card it settles. The newest card with that id is
+ *  the live one, as with `answer_child`; a notice names no card of its own. */
+function settleBackgroundChild(v: SessionView, content: string) {
+  const hit = content.match(BACKGROUND_NOTICE);
+  if (!hit) return;
+  const childId = Number(hit[2]);
+  for (let i = v.items.length - 1; i >= 0; i--) {
+    const card = v.items[i];
+    if (card.kind !== "tool" || card.parent !== "delegate" || card.childId !== childId) continue;
+    if (hit[3] === "is waiting for you") {
+      const [next] = delegateChildren("", content, false);
+      v.items[i] = { ...card, content: next?.content, ok: next?.ok ?? card.ok, waiting: next?.waiting };
+    } else {
+      v.items[i] = {
+        ...card,
+        content: content.slice(hit[0].length).trim(),
+        ok: hit[3] === "finished in the background",
+        waiting: undefined,
+      };
+    }
+    return;
+  }
+}
+
 /** Fold one persisted message into the view's item list — shared by the
  * sync and time-sliced builders. */
 /** Text the model reads in front of a mid-turn steer. The kernel writes it;
@@ -673,6 +736,9 @@ function foldMessage(
           /* malformed row — skip rather than break the whole replay */
         }
       }
+      // A detached child's settlement lands on its card in place — it draws no row
+      // of its own, the same as the live stream.
+      else if (m.notice === "host") settleBackgroundChild(v, m.content ?? "");
       return;
     }
     if (m.role === "tool") {
