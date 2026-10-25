@@ -1080,6 +1080,7 @@ impl LlmProvider for RigProvider {
         let reasoning_replay =
             self.kind == WireKind::Responses && needs_reasoning_replay(&compat, effort);
         let chat_history = to_rig_messages(messages, self.kind, &compat, reasoning_replay);
+        let show_summary = effort.is_some() && !reasoning_replay;
 
         // ---------- request ----------
         // Temperature is optional: several backends reject extreme values
@@ -1123,7 +1124,11 @@ impl LlmProvider for RigProvider {
                     additional.insert("max_output_tokens".into(), json!(cap));
                 }
                 if let Some(eff) = effort {
-                    additional.insert("reasoning".into(), json!({ "effort": eff }));
+                    let mut reasoning = json!({ "effort": eff });
+                    if show_summary {
+                        reasoning["summary"] = json!("auto");
+                    }
+                    additional.insert("reasoning".into(), reasoning);
                 }
                 self.apply_prompt_cache_params(&mut additional, &compat, retention);
             }
@@ -1134,15 +1139,27 @@ impl LlmProvider for RigProvider {
                     .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
                 max_tokens = Some(cap as u64);
                 if let Some(eff) = effort {
-                    additional.insert("thinking".into(), json!({ "type": "adaptive" }));
+                    let mut thinking = json!({ "type": "adaptive" });
+                    if show_summary {
+                        thinking["display"] = json!("summarized");
+                    }
+                    additional.insert("thinking".into(), thinking);
                     additional.insert("output_config".into(), json!({ "effort": eff }));
                 }
             }
             WireKind::Gemini => {
-                if let Some(budget) = effort.and_then(gemini_thinking_budget) {
+                let budget = effort.and_then(gemini_thinking_budget);
+                if budget.is_some() || show_summary {
+                    let mut config = Map::new();
+                    if let Some(budget) = budget {
+                        config.insert("thinkingBudget".into(), json!(budget));
+                    }
+                    if show_summary {
+                        config.insert("includeThoughts".into(), json!(true));
+                    }
                     additional.insert(
                         "generationConfig".into(),
-                        json!({ "thinkingConfig": { "thinkingBudget": budget } }),
+                        json!({ "thinkingConfig": config }),
                     );
                 }
             }
@@ -1171,19 +1188,26 @@ impl LlmProvider for RigProvider {
         if let Some(observer) = &self.usage_observer {
             observer.reset();
         }
+        let fallback: Option<SummaryFallback> = if show_summary {
+            let mut plain = request.clone();
+            drop_summary_params(&mut plain, self.kind);
+            let plain_model = self.build_model(model, &compat, retention, reasoning_replay)?;
+            Some(Box::pin(
+                async move { open_stream(&plain_model, plain).await },
+            ))
+        } else {
+            None
+        };
         let rig_model = self.build_model(model, &compat, retention, reasoning_replay)?;
-        let rig_stream: StreamingCompletionResponse = match &rig_model {
-            RigModel::Compat(m) => m.stream(request).await,
-            RigModel::Responses(m) => m.stream(request).await,
-            RigModel::Anthropic(m) => m.stream(request).await,
-            RigModel::Gemini(m) => m.stream(request).await,
-        }
-        .map_err(|e| anyhow::anyhow!("{}", map_completion_error(&e)))?;
+        let rig_stream = open_stream(&rig_model, request)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", map_completion_error(&e)))?;
 
         Ok(map_rig_stream(
             rig_stream,
             self.kind,
             self.usage_observer.clone(),
+            fallback,
         ))
     }
 }
@@ -1983,7 +2007,7 @@ impl MapState {
                 // Complete block supersedes deltas on the same correlator —
                 // emit only when no deltas streamed for it.
                 if !self.reasoning_ids.contains(&id) {
-                    let text = reasoning.display_text();
+                    let text = visible_reasoning_text(&reasoning);
                     if !text.is_empty() {
                         out.push(StreamChunk::ReasoningDelta(text));
                     }
@@ -2139,23 +2163,119 @@ impl MapState {
     }
 }
 
+/// The same request without the ask for a visible reasoning summary; opened
+/// only if the backend refuses the request that carried it.
+type SummaryFallback = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<StreamingCompletionResponse, CompletionError>>
+            + Send,
+    >,
+>;
+
+async fn open_stream(
+    model: &RigModel,
+    request: CompletionRequest,
+) -> Result<StreamingCompletionResponse, CompletionError> {
+    match model {
+        RigModel::Compat(m) => m.stream(request).await,
+        RigModel::Responses(m) => m.stream(request).await,
+        RigModel::Anthropic(m) => m.stream(request).await,
+        RigModel::Gemini(m) => m.stream(request).await,
+    }
+}
+
+/// Remove the summary switches `chat_stream` adds, leaving effort/budget alone.
+fn drop_summary_params(request: &mut CompletionRequest, kind: WireKind) {
+    let Some(params) = request
+        .additional_params
+        .as_mut()
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    match kind {
+        WireKind::Responses => {
+            if let Some(reasoning) = params.get_mut("reasoning").and_then(Value::as_object_mut) {
+                reasoning.remove("summary");
+            }
+        }
+        WireKind::Anthropic => {
+            if let Some(thinking) = params.get_mut("thinking").and_then(Value::as_object_mut) {
+                thinking.remove("display");
+            }
+        }
+        WireKind::Gemini => {
+            if let Some(config) = params
+                .get_mut("generationConfig")
+                .and_then(Value::as_object_mut)
+            {
+                if let Some(thinking) = config
+                    .get_mut("thinkingConfig")
+                    .and_then(Value::as_object_mut)
+                {
+                    thinking.remove("includeThoughts");
+                }
+                if config
+                    .get("thinkingConfig")
+                    .and_then(Value::as_object)
+                    .is_some_and(Map::is_empty)
+                {
+                    config.remove("thinkingConfig");
+                }
+                if config.is_empty() {
+                    params.remove("generationConfig");
+                }
+            }
+        }
+        WireKind::Compat => {}
+    }
+}
+
+/// The backend answered 400/422: it did not like something in the request,
+/// which is what an unsupported summary switch looks like. Anything else
+/// (auth, quota, outage) would fail the plain request the same way.
+fn is_rejected_request(e: &CompletionError) -> bool {
+    let msg = map_completion_error(e);
+    msg.starts_with("provider HTTP 400") || msg.starts_with("provider HTTP 422")
+}
+
+/// The readable part of a finished reasoning block. Encrypted and redacted
+/// payloads are opaque replay tokens, not text for the user.
+fn visible_reasoning_text(reasoning: &Reasoning) -> String {
+    reasoning
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            ReasoningContent::Text { text, .. } => Some(text.as_str()),
+            ReasoningContent::Summary(summary) => Some(summary.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// rig `StreamingCompletionResponse` → our `StreamChunk` stream.
 fn map_rig_stream(
     stream: StreamingCompletionResponse,
     kind: WireKind,
     usage_observer: Option<Arc<UsageObserver>>,
+    fallback: Option<SummaryFallback>,
 ) -> BoxStream<StreamChunk> {
     struct S {
         inner: StreamingCompletionResponse,
         map: MapState,
         pending: std::collections::VecDeque<anyhow::Result<StreamChunk>>,
         drained: bool,
+        fallback: Option<SummaryFallback>,
+        started: bool,
     }
     let init = S {
         inner: stream,
         map: MapState::with_observer(kind, usage_observer),
         pending: std::collections::VecDeque::new(),
         drained: false,
+        fallback,
+        started: false,
     };
     Box::pin(futures::stream::unfold(init, |mut s| async move {
         loop {
@@ -2163,7 +2283,20 @@ fn map_rig_stream(
                 return Some((c, s));
             }
             match s.inner.next().await {
+                // SSE surfaces a refused request as the stream's first item.
+                Some(Err(e)) if !s.started && s.fallback.is_some() && is_rejected_request(&e) => {
+                    let open = s.fallback.take().expect("checked above");
+                    match open.await {
+                        Ok(plain) => s.inner = plain,
+                        Err(e) => {
+                            for c in s.map.map_one(Err(e)) {
+                                s.pending.push_back(Ok(c));
+                            }
+                        }
+                    }
+                }
                 Some(item) => {
+                    s.started = true;
                     for c in s.map.map_one(item) {
                         s.pending.push_back(Ok(c));
                     }
@@ -2562,6 +2695,83 @@ mod tests {
             }
         ));
         assert_eq!(observer.cache_write(), 0);
+    }
+
+    fn reasoning_block(content: Vec<ReasoningContent>) -> StreamedAssistantContent {
+        StreamedAssistantContent::Reasoning {
+            reasoning: Reasoning { id: None, content },
+            id: "r".into(),
+        }
+    }
+
+    /// A finished reasoning block shows its text and summaries; encrypted and
+    /// redacted payloads are replay tokens and never reach the user.
+    #[test]
+    fn opaque_reasoning_payloads_are_not_shown() {
+        let mut m = MapState::new(WireKind::Anthropic);
+        let seen = m.map_one(Ok(reasoning_block(vec![
+            ReasoningContent::Redacted {
+                data: "c2VjcmV0LWJsb2I=".into(),
+            },
+            ReasoningContent::Encrypted("gAAAAAB-enc".into()),
+        ])));
+        assert!(seen.is_empty(), "{seen:?}");
+
+        let seen = m.map_one(Ok(reasoning_block(vec![
+            ReasoningContent::Summary("looked at the tests".into()),
+            ReasoningContent::Encrypted("gAAAAAB-enc".into()),
+        ])));
+        assert_eq!(seen.len(), 1);
+        assert!(matches!(&seen[0], StreamChunk::ReasoningDelta(t) if t == "looked at the tests"));
+    }
+
+    /// The fallback request keeps effort and budget and loses only the summary asks.
+    #[test]
+    fn dropping_summary_params_keeps_the_effort_settings() {
+        let request = |extra: Value| CompletionRequest {
+            model: None,
+            preamble: None,
+            chat_history: Vec::new(),
+            documents: Vec::new(),
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: Some(extra),
+            output_schema: None,
+            record_telemetry_content: false,
+        };
+
+        let mut r = request(json!({"reasoning": {"effort": "high", "summary": "auto"}}));
+        drop_summary_params(&mut r, WireKind::Responses);
+        assert_eq!(
+            r.additional_params,
+            Some(json!({"reasoning": {"effort": "high"}}))
+        );
+
+        let mut r = request(json!({
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": "high"},
+        }));
+        drop_summary_params(&mut r, WireKind::Anthropic);
+        assert_eq!(
+            r.additional_params,
+            Some(json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}))
+        );
+
+        let mut r = request(json!({"generationConfig": {"thinkingConfig": {
+            "thinkingBudget": 8192, "includeThoughts": true}}}));
+        drop_summary_params(&mut r, WireKind::Gemini);
+        assert_eq!(
+            r.additional_params,
+            Some(json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}}))
+        );
+
+        // No budget of its own: the emptied config goes away entirely.
+        let mut r =
+            request(json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}));
+        drop_summary_params(&mut r, WireKind::Gemini);
+        assert_eq!(r.additional_params, Some(json!({})));
     }
 
     #[test]
