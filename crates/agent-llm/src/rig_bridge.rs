@@ -62,6 +62,10 @@ use serde_json::{json, Map, Value};
 use crate::compat::ProviderCompat;
 use crate::config::{ProviderConfig, ProviderKind};
 use crate::provider::{BoxStream, Capabilities, LlmProvider, ModelParams};
+use crate::responses_state::{
+    Exchange as ResponsesExchange, ReplayPlan as ResponsesReplayPlan,
+    RequestContext as ResponsesContext, RequestPolicy as ResponsesPolicy,
+};
 use crate::types::{ChatMessage, HarmonyStripper, ImageRef, NoticeKind, Role, StreamChunk};
 use crate::usage::UsageObserver;
 
@@ -335,7 +339,7 @@ impl From<CompatUsage> for rig_core::completion::Usage {
 // RigProvider
 // ================================================================
 
-/// Which rig wire a provider speaks. Mirrors `ProviderKind` one-to-one —
+/// Which rig wire a provider speaks. Codex shares Responses normalization;
 /// kept as a separate enum so the bridge never has to depend on config
 /// serialization details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,7 +354,7 @@ impl WireKind {
     fn from(kind: ProviderKind) -> Self {
         match kind {
             ProviderKind::OpenaiCompat => Self::Compat,
-            ProviderKind::OpenaiResponses => Self::Responses,
+            ProviderKind::OpenaiResponses | ProviderKind::OpenaiCodexResponses => Self::Responses,
             ProviderKind::Anthropic => Self::Anthropic,
             ProviderKind::Gemini => Self::Gemini,
         }
@@ -413,6 +417,8 @@ struct SsePatchClient {
     reasoning_replay: bool,
     /// Patch inbound `response.*` frames — the Responses wire only.
     repair_sse: bool,
+    responses: Option<Arc<ResponsesContext>>,
+    websocket: Option<Arc<crate::codex_transport::CodexTransport>>,
     pulse: Pulse,
 }
 
@@ -422,6 +428,8 @@ impl Default for SsePatchClient {
             inner: reqwest::Client::new(),
             reasoning_replay: false,
             repair_sse: false,
+            responses: None,
+            websocket: None,
             pulse: Pulse::default(),
         }
     }
@@ -437,12 +445,26 @@ impl SsePatchClient {
     ) -> http_client::Request<bytes::Bytes> {
         let (parts, body) = req.into_parts();
         let body: bytes::Bytes = body.into();
-        let body = match self.reasoning_replay {
+        let mut body = match self.reasoning_replay {
             true => patch_responses_body(&body)
                 .map(bytes::Bytes::from)
                 .unwrap_or(body),
             false => body,
         };
+        // Legacy repairs target synthesized/id-less history. Insert the
+        // authoritative provider items afterwards so neither their encrypted
+        // reasoning nor their exact field set is rewritten by that dialect.
+        if let Some(context) = &self.responses {
+            if let Ok(mut value) = serde_json::from_slice::<Value>(&body) {
+                context.patch(&mut value);
+                if self.websocket.is_some() {
+                    crate::codex_transport::patch_request(&mut value);
+                }
+                if let Ok(patched) = serde_json::to_vec(&value) {
+                    body = patched.into();
+                }
+            }
+        }
         http_client::Request::from_parts(parts, body)
     }
 }
@@ -494,27 +516,38 @@ impl HttpClientExt for SsePatchClient {
         let req = self.repair(req);
         let inner = self.inner.clone();
         let (repair_sse, pulse) = (self.repair_sse, self.pulse.clone());
+        let websocket = self.websocket.clone();
+        let exchange = self
+            .responses
+            .as_ref()
+            .map(|context| context.exchange.clone());
         async move {
-            HttpClientExt::send_streaming(&inner, req)
-                .await
-                .map(move |resp| {
-                    let (parts, body) = resp.into_parts();
-                    let resp = http_client::Response::from_parts(parts, pulse_stream(body, pulse));
-                    if repair_sse {
-                        patch_streaming_response(resp)
-                    } else {
-                        resp
-                    }
-                })
+            let response = match websocket {
+                Some(websocket) => match websocket.send(&req).await? {
+                    Some(response) => Ok(response),
+                    None => HttpClientExt::send_streaming(&inner, req).await,
+                },
+                None => HttpClientExt::send_streaming(&inner, req).await,
+            };
+            response.map(move |resp| {
+                let (parts, body) = resp.into_parts();
+                let resp = http_client::Response::from_parts(parts, pulse_stream(body, pulse));
+                if repair_sse {
+                    patch_streaming_response(resp, exchange)
+                } else {
+                    resp
+                }
+            })
         }
     }
 }
 
 fn patch_streaming_response(
     resp: http_client::StreamingResponse,
+    exchange: Option<Arc<ResponsesExchange>>,
 ) -> http_client::StreamingResponse {
     let (parts, body) = resp.into_parts();
-    http_client::Response::from_parts(parts, patch_sse_stream(body))
+    http_client::Response::from_parts(parts, observe_sse_stream(body, exchange))
 }
 
 // ================================================================
@@ -740,9 +773,15 @@ fn lead_steps_with_reasoning(items: &mut Vec<Value>) -> bool {
 
 /// One line at a time: complete lines are patched as they arrive, a partial
 /// tail stays buffered until its `\n` lands or the stream ends.
+#[cfg(test)]
 fn patch_sse_stream(inner: BoxedStream) -> BoxedStream {
+    observe_sse_stream(inner, None)
+}
+
+fn observe_sse_stream(inner: BoxedStream, exchange: Option<Arc<ResponsesExchange>>) -> BoxedStream {
     struct St {
         inner: BoxedStream,
+        exchange: Option<Arc<ResponsesExchange>>,
         buf: Vec<u8>,
         pending: std::collections::VecDeque<http_client::Result<bytes::Bytes>>,
         done: bool,
@@ -750,6 +789,7 @@ fn patch_sse_stream(inner: BoxedStream) -> BoxedStream {
     let s = futures::stream::unfold(
         St {
             inner,
+            exchange,
             buf: Vec::new(),
             pending: std::collections::VecDeque::new(),
             done: false,
@@ -767,6 +807,9 @@ fn patch_sse_stream(inner: BoxedStream) -> BoxedStream {
                         st.buf.extend_from_slice(&chunk);
                         while let Some(pos) = st.buf.iter().position(|&b| b == b'\n') {
                             let line: Vec<u8> = st.buf.drain(..=pos).collect();
+                            if let Some(exchange) = &st.exchange {
+                                exchange.observe_line(&line);
+                            }
                             st.pending
                                 .push_back(Ok(bytes::Bytes::from(patch_sse_line(&line))));
                         }
@@ -776,8 +819,14 @@ fn patch_sse_stream(inner: BoxedStream) -> BoxedStream {
                         st.done = true;
                         if !st.buf.is_empty() {
                             let tail = std::mem::take(&mut st.buf);
+                            if let Some(exchange) = &st.exchange {
+                                exchange.observe_line(&tail);
+                            }
                             st.pending
                                 .push_back(Ok(bytes::Bytes::from(patch_sse_line(&tail))));
+                        }
+                        if let Some(exchange) = &st.exchange {
+                            exchange.observe_line(b"\n");
                         }
                     }
                 }
@@ -845,6 +894,8 @@ pub struct RigProvider {
     id: &'static str,
     /// Optional per-session cache-write sink (host UI/cost accounting).
     usage_observer: Option<Arc<UsageObserver>>,
+    responses_origin: String,
+    websocket: Option<Arc<crate::codex_transport::CodexTransport>>,
     /// Prompt-cache routing key (`prompt_cache_key`, session-affinity headers).
     /// One conversation owns one key: the caller passes that conversation's
     /// identity to `new`, so a provider rebuilt mid-conversation keeps it.
@@ -911,14 +962,36 @@ impl RigProvider {
             }
             ok
         });
+        let cache_key = conversation.map_or_else(new_cache_key, conversation_key);
+        let websocket = if cfg.kind == ProviderKind::OpenaiCodexResponses {
+            Some(Arc::new(crate::codex_transport::CodexTransport::new(
+                cache_key.clone(),
+                user_agent
+                    .as_deref()
+                    .unwrap_or(crate::factory::client_user_agent()),
+            )?))
+        } else {
+            None
+        };
         Ok(Self {
+            websocket,
             usage_observer,
-            cache_key: conversation.map_or_else(new_cache_key, conversation_key),
+            responses_origin: crate::responses_state::origin(
+                &cfg.base_url,
+                &api_key,
+                &cfg.headers,
+                cfg.user_agent.as_deref(),
+                cfg.auth_header.unwrap_or(true),
+            ),
+            cache_key,
             affinity_headers: custom_affinity_headers(&cfg.session_affinity_headers),
             first_party: is_first_party(&cfg.base_url),
             user_agent,
             id: match kind {
                 WireKind::Compat => "openai_completions",
+                WireKind::Responses if cfg.kind == ProviderKind::OpenaiCodexResponses => {
+                    "openai_codex_responses"
+                }
                 WireKind::Responses => "openai_responses",
                 WireKind::Anthropic => "anthropic",
                 WireKind::Gemini => "gemini",
@@ -943,10 +1016,10 @@ impl RigProvider {
         self
     }
 
-    /// OpenAI prompt-cache routing (`prompt_cache_key`) and extended retention
-    /// (`prompt_cache_retention: "24h"`). Sent to OpenAI itself, and to any
-    /// deployment that declares `supportsLongCacheRetention` when long
-    /// retention is requested — other shims may reject unknown fields.
+    /// Responses cache routing is part of its standard protocol, including
+    /// gateways; vendor-specific affinity headers are not a substitute.
+    /// Legacy Chat Completions shims retain their conservative opt-in policy.
+    /// Extended `24h` retention still requires explicit deployment support.
     fn apply_prompt_cache_params(
         &self,
         additional: &mut Map<String, Value>,
@@ -957,7 +1030,10 @@ impl RigProvider {
             return;
         }
         let long = retention.long(compat);
-        if self.base_url.contains("api.openai.com") || long {
+        let openai_host = reqwest::Url::parse(&self.base_url)
+            .ok()
+            .is_some_and(|url| url.host_str() == Some("api.openai.com"));
+        if self.kind == WireKind::Responses || openai_host || long {
             additional.insert("prompt_cache_key".into(), json!(self.cache_key));
         }
         if long {
@@ -975,6 +1051,7 @@ impl RigProvider {
         retention: CacheRetention,
         reasoning_replay: bool,
         pulse: &Pulse,
+        responses: Option<&Arc<ResponsesContext>>,
     ) -> anyhow::Result<RigModel> {
         let mut headers = HeaderMap::new();
         // Sticky routing so a multi-node gateway serves this conversation from
@@ -1006,6 +1083,8 @@ impl RigProvider {
             inner: self.http.clone(),
             reasoning_replay,
             repair_sse,
+            responses: if repair_sse { responses.cloned() } else { None },
+            websocket: self.websocket.clone(),
             pulse: pulse.clone(),
         };
         Ok(match self.kind {
@@ -1129,6 +1208,8 @@ impl LlmProvider for RigProvider {
         let compat = params.compat_with(self.compat.as_ref());
         let effort = reasoning_effort.filter(|_| compat.supports_reasoning_effort.unwrap_or(true));
         let retention = CacheRetention::from_env();
+        let allow_temperature = compat.supports_temperature.unwrap_or(true)
+            && (effort.is_none() || self.caps.temperature_with_reasoning);
 
         // ---------- messages ----------
         // A thinking-mode backend that declares reasoning replay wants each
@@ -1136,19 +1217,82 @@ impl LlmProvider for RigProvider {
         // itself must not receive a synthesized one.
         let reasoning_replay =
             self.kind == WireKind::Responses && needs_reasoning_replay(&compat, effort);
-        let chat_history = to_rig_messages(messages, self.kind, &compat, reasoning_replay);
+        let responses = if self.kind == WireKind::Responses {
+            // An explicit text-thinking dialect predates opaque Responses
+            // replay and must keep its declared historical wire shape.
+            let native_replay = !compat.requires_thinking_as_text.unwrap_or(false);
+            let replay_messages = if native_replay { messages } else { &[] };
+            let sampling = params
+                .sampling_params
+                .as_ref()
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if sampling
+                .get("prompt_cache_options")
+                .is_some_and(|v| !v.is_null())
+                && sampling
+                    .get("prompt_cache_retention")
+                    .is_some_and(|v| !v.is_null())
+            {
+                return Err(anyhow::anyhow!("Responses prompt_cache_options and prompt_cache_retention are mutually exclusive; configure only one"));
+            }
+            let effective_effort = if compat.supports_reasoning_effort == Some(false) {
+                None
+            } else {
+                match sampling.get("reasoning") {
+                    Some(reasoning) => reasoning.get("effort").and_then(Value::as_str),
+                    None => effort,
+                }
+            }
+            .map(str::to_string);
+            // Explicit sampling overrides win; do not silently reinterpret
+            // their request-level reasoning as per-turn configuration items.
+            let update_effort = if native_replay
+                && compat.supports_mid_convo_effort == Some(true)
+                && !sampling.contains_key("reasoning")
+            {
+                effort
+            } else {
+                None
+            };
+            Some(Arc::new(ResponsesContext::new(
+                self.responses_origin.clone(),
+                model,
+                replay_messages,
+                effective_effort.as_deref(),
+                update_effort,
+                sampling,
+                ResponsesPolicy {
+                    temperature: allow_temperature,
+                    reasoning: compat.supports_reasoning_effort.unwrap_or(true),
+                },
+            )))
+        } else {
+            None
+        };
+        let chat_history = if let Some(context) = &responses {
+            to_rig_messages_with_plan(
+                messages,
+                self.kind,
+                &compat,
+                reasoning_replay,
+                Some(&context.replay),
+            )
+        } else {
+            to_rig_messages(messages, self.kind, &compat, reasoning_replay)
+        };
         let show_summary = effort.is_some() && !reasoning_replay;
 
         // ---------- request ----------
         // Temperature is optional: several backends reject extreme values
         // (devin upstream-errors on temperature=0), and Anthropic rejects it
         // while thinking is enabled — only send when meaningful.
-        let temperature =
-            if temperature > 0.0 && !(effort.is_some() && !self.caps.temperature_with_reasoning) {
-                Some(temperature as f64)
-            } else {
-                None
-            };
+        let temperature = if temperature > 0.0 && allow_temperature {
+            Some(temperature as f64)
+        } else {
+            None
+        };
 
         // Output cap. Compat wires disagree on the field name, so the cap is
         // pushed through `additional_params` under whatever name the dialect
@@ -1176,12 +1320,24 @@ impl LlmProvider for RigProvider {
                 self.apply_prompt_cache_params(&mut additional, &compat, retention);
             }
             WireKind::Responses => {
-                // Responses API caps at `max_output_tokens`.
-                if let Some(cap) = max_tokens.take() {
-                    additional.insert("max_output_tokens".into(), json!(cap));
+                // Rig maps CompletionRequest.max_tokens to max_output_tokens.
+                // Putting it in additional_params silently loses it when Rig
+                // deserializes its strongly typed AdditionalParameters.
+                // Preserve Husk's existing bool-as-policy semantics on both
+                // OpenAI APIs (this is not Pi's accepts-the-store-field flag).
+                if let Some(store) = compat.supports_store {
+                    additional.insert("store".into(), json!(store));
                 }
                 if let Some(eff) = effort {
-                    let mut reasoning = json!({ "effort": eff });
+                    let wire_effort = if responses
+                        .as_ref()
+                        .is_some_and(|context| context.replay.update_effort.is_some())
+                    {
+                        "medium"
+                    } else {
+                        eff
+                    };
+                    let mut reasoning = json!({ "effort": wire_effort });
                     if show_summary {
                         reasoning["summary"] = json!("auto");
                     }
@@ -1196,12 +1352,30 @@ impl LlmProvider for RigProvider {
                     .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
                 max_tokens = Some(cap as u64);
                 if let Some(eff) = effort {
-                    let mut thinking = json!({ "type": "adaptive" });
+                    // Preserve the existing adaptive default, but respect an
+                    // explicit declaration for older budget-based models.
+                    let mut thinking = if compat.force_adaptive_thinking == Some(false) {
+                        let wanted = match eff {
+                            "low" => 1_024,
+                            "medium" => 8_192,
+                            "high" => 16_384,
+                            _ => cap.saturating_sub(1),
+                        };
+                        let budget = wanted.min(cap.saturating_sub(1));
+                        if budget < 1_024 {
+                            return Err(anyhow::anyhow!(
+                                "Anthropic budget thinking requires max_tokens > 1024; got {cap}"
+                            ));
+                        }
+                        json!({ "type": "enabled", "budget_tokens": budget })
+                    } else {
+                        additional.insert("output_config".into(), json!({ "effort": eff }));
+                        json!({ "type": "adaptive" })
+                    };
                     if show_summary {
                         thinking["display"] = json!("summarized");
                     }
                     additional.insert("thinking".into(), thinking);
-                    additional.insert("output_config".into(), json!({ "effort": eff }));
                 }
             }
             WireKind::Gemini => {
@@ -1221,10 +1395,24 @@ impl LlmProvider for RigProvider {
                 }
             }
         }
-        // `samplingParams` merges last so its keys win (pi semantics).
-        if let Some(extra) = params.sampling_params.as_ref().and_then(|v| v.as_object()) {
-            for (k, v) in extra {
-                additional.insert(k.clone(), v.clone());
+        // Explicit overrides win. Responses applies them after Rig's typed
+        // conversion: valid API fields such as text.verbosity alone otherwise
+        // fail that conversion, and newer cache fields silently disappear.
+        if self.kind != WireKind::Responses {
+            if let Some(extra) = params.sampling_params.as_ref().and_then(|v| v.as_object()) {
+                for (k, v) in extra {
+                    additional.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        if !allow_temperature {
+            additional.remove("temperature");
+            if let Some(config) = additional
+                .get_mut("generationConfig")
+                .and_then(Value::as_object_mut)
+            {
+                config.remove("temperature");
             }
         }
 
@@ -1249,15 +1437,28 @@ impl LlmProvider for RigProvider {
         let fallback: Option<SummaryFallback> = if show_summary {
             let mut plain = request.clone();
             drop_summary_params(&mut plain, self.kind);
-            let plain_model =
-                self.build_model(model, &compat, retention, reasoning_replay, &pulse)?;
+            let plain_model = self.build_model(
+                model,
+                &compat,
+                retention,
+                reasoning_replay,
+                &pulse,
+                responses.as_ref(),
+            )?;
             Some(Box::pin(
                 async move { open_stream(&plain_model, plain).await },
             ))
         } else {
             None
         };
-        let rig_model = self.build_model(model, &compat, retention, reasoning_replay, &pulse)?;
+        let rig_model = self.build_model(
+            model,
+            &compat,
+            retention,
+            reasoning_replay,
+            &pulse,
+            responses.as_ref(),
+        )?;
         let rig_stream = open_stream(&rig_model, request)
             .await
             .map_err(|e| anyhow::anyhow!("{}", map_completion_error(&e)))?;
@@ -1269,6 +1470,7 @@ impl LlmProvider for RigProvider {
             fallback,
             pulse,
             self.keepalive_every,
+            responses,
         ))
     }
 }
@@ -1635,6 +1837,16 @@ fn to_rig_messages(
     compat: &ProviderCompat,
     reasoning_replay: bool,
 ) -> Vec<RigMessage> {
+    to_rig_messages_with_plan(messages, kind, compat, reasoning_replay, None)
+}
+
+fn to_rig_messages_with_plan(
+    messages: &[ChatMessage],
+    kind: WireKind,
+    compat: &ProviderCompat,
+    reasoning_replay: bool,
+    replay: Option<&ResponsesReplayPlan>,
+) -> Vec<RigMessage> {
     // Pairing ledger — assistant call ids that still need results. Orphan
     // results are dropped; dangling calls get a placeholder at the end.
     // Declared call ids still awaiting a result — HashSet membership plus a
@@ -1665,7 +1877,7 @@ fn to_rig_messages(
         };
     }
 
-    for m in messages {
+    for (message_index, m) in messages.iter().enumerate() {
         // UI-only rows — render metadata, never context.
         if m.role == Role::System && m.notice.as_ref().is_some_and(NoticeKind::is_ui_only) {
             continue;
@@ -1720,13 +1932,25 @@ fn to_rig_messages(
             }
             Role::Assistant => {
                 flush_tool_images!();
+                let group = replay.and_then(|plan| plan.group(message_index));
                 let mut content: Vec<AssistantContent> = Vec::new();
+                // A real provider id anchors the raw output group at the final
+                // wire boundary. Never mint an id for ordinary GPT history.
+                if let Some(id) = group.and_then(|group| group.reasoning_id()) {
+                    content.push(AssistantContent::Reasoning(Reasoning {
+                        id: Some(id.to_string()),
+                        content: vec![ReasoningContent::Text {
+                            text: REASONING_PLACEHOLDER.into(),
+                            signature: None,
+                        }],
+                    }));
+                }
                 if let Some(t) = &m.content {
                     if !t.is_empty() {
                         content.push(AssistantContent::Text(RigText::new(t.clone())));
                     }
                 }
-                if let Some(reasoning) = &m.reasoning {
+                if let Some(reasoning) = m.reasoning.as_ref().filter(|_| group.is_none()) {
                     if !reasoning.is_empty() {
                         match kind {
                             // Native replay: rig serializes these back as
@@ -1785,7 +2009,12 @@ fn to_rig_messages(
                     }));
                 }
                 if !content.is_empty() {
-                    out.push(RigMessage::Assistant { id: None, content });
+                    out.push(RigMessage::Assistant {
+                        id: group
+                            .and_then(|group| group.message_id())
+                            .map(str::to_string),
+                        content,
+                    });
                 }
             }
             Role::Tool => {
@@ -1860,7 +2089,13 @@ fn to_rig_messages(
         });
     }
 
-    merge_consecutive(out)
+    // Responses output ids belong to individual assistant turns. Merging
+    // their content would discard the second turn's identity and phase.
+    if kind == WireKind::Responses {
+        out
+    } else {
+        merge_consecutive(out)
+    }
 }
 
 /// Anthropic requires strict user/assistant alternation; consecutive same-
@@ -1951,6 +2186,9 @@ fn tool_defs(raw: Option<Value>) -> Vec<ToolDefinition> {
             parameters: params,
         });
     }
+    // Registry/plugin discovery order is not a tool capability. Canonicalize
+    // it once here so equivalent tool sets have the same cache prefix.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
@@ -1978,6 +2216,7 @@ struct MapState {
     /// reasoning delta correlator ids seen — a complete `Reasoning` block for
     /// a known id supersedes its deltas and must not double-emit.
     reasoning_ids: HashSet<String>,
+    responses_exchange: Option<Arc<ResponsesExchange>>,
     done: bool,
     /// Swallow mid-stream JSON/decode errors (shims leaking non-JSON framing
     /// frames — the data-frame case the retired adapter absorbed).
@@ -2005,6 +2244,7 @@ impl MapState {
             slot_saw_deltas: HashSet::new(),
             next_slot: 0,
             reasoning_ids: HashSet::new(),
+            responses_exchange: None,
             done: false,
             swallow_decode_errors: matches!(kind, WireKind::Compat | WireKind::Responses),
             text_chars: 0,
@@ -2156,6 +2396,13 @@ impl MapState {
                     };
                     if let Some(observer) = &self.usage_observer {
                         observer.set_cache_write(cache_write);
+                    }
+                    if let Some(state) = self
+                        .responses_exchange
+                        .as_ref()
+                        .and_then(|exchange| exchange.state())
+                    {
+                        out.push(StreamChunk::ProviderState(state));
                     }
                     out.push(StreamChunk::Done {
                         prompt_tokens: Some(prompt_tokens as u32),
@@ -2329,6 +2576,7 @@ fn map_rig_stream(
     fallback: Option<SummaryFallback>,
     pulse: Pulse,
     keepalive_every: std::time::Duration,
+    responses: Option<Arc<ResponsesContext>>,
 ) -> BoxStream<StreamChunk> {
     struct S {
         inner: StreamingCompletionResponse,
@@ -2340,9 +2588,11 @@ fn map_rig_stream(
         pulse: Pulse,
         beats_seen: u64,
     }
+    let mut map = MapState::with_observer(kind, usage_observer);
+    map.responses_exchange = responses.map(|context| context.exchange.clone());
     let init = S {
         inner: stream,
-        map: MapState::with_observer(kind, usage_observer),
+        map,
         pending: std::collections::VecDeque::new(),
         drained: false,
         fallback,
@@ -2625,6 +2875,7 @@ mod tests {
             images: Vec::new(),
             reasoning: None,
             duration_ms: None,
+            provider_state: None,
         }
     }
 

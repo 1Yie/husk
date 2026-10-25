@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 /// Every `pub` field on `ProviderCompat`, in declaration order. Adding a row
 /// is deliberate: the new field must be wired or explicitly debt-listed.
 const COMPAT_FIELDS: &[&str] = &[
+    "supports_temperature",
     "supports_store",
     "supports_developer_role",
     "supports_reasoning_effort",
@@ -37,6 +38,8 @@ const COMPAT_FIELDS: &[&str] = &[
     "supports_strict_mode",
     "supports_openai_grammar_tools",
     "supports_long_cache_retention",
+    "open_router_routing",
+    "vercel_gateway_routing",
     "supports_eager_tool_input_streaming",
     "supports_cache_control_on_tools",
     "force_adaptive_thinking",
@@ -67,8 +70,6 @@ const KNOWN_DEAD: &[&str] = &[
     "supports_strict_mode",
     "supports_openai_grammar_tools",
     "supports_eager_tool_input_streaming",
-    "force_adaptive_thinking",
-    "supports_mid_convo_effort",
     "allow_empty_signature",
     "supports_strict_tools",
     "allowed_fallback_models",
@@ -120,8 +121,8 @@ fn every_compat_field_is_wired_or_listed_as_debt() {
     // that owns `ProviderCompat`, and in the kernel. The last two are
     // dependencies, so ask cargo where their sources are.
     src_files(&manifest.join("src"), &mut files);
-    for dep in ["agent-kernel", "agent-llm-core"] {
-        let dir = dependency_src(dep);
+    let contract_dir = dependency_src("agent-llm-core");
+    for dir in [dependency_src("agent-kernel"), contract_dir.clone()] {
         src_files(&dir, &mut files);
     }
     let sources: Vec<String> = files
@@ -131,6 +132,26 @@ fn every_compat_field_is_wired_or_listed_as_debt() {
 
     let dead: HashSet<&str> = KNOWN_DEAD.iter().copied().collect();
     let fields: HashSet<&str> = COMPAT_FIELDS.iter().copied().collect();
+    let contract =
+        std::fs::read_to_string(contract_dir.join("compat.rs")).expect("compat schema readable");
+    let body = contract
+        .split_once("pub struct ProviderCompat {")
+        .expect("compat struct exists")
+        .1
+        .split_once("\n}")
+        .expect("compat struct ends")
+        .0;
+    let declared: HashSet<&str> = body
+        .lines()
+        .filter_map(|line| {
+            let (name, _) = line.trim().strip_prefix("pub ")?.split_once(':')?;
+            Some(name.trim())
+        })
+        .collect();
+    assert_eq!(
+        fields, declared,
+        "the wiring inventory must cover every actual ProviderCompat field"
+    );
     assert_eq!(
         fields.len(),
         COMPAT_FIELDS.len(),

@@ -22,6 +22,9 @@ toml.workspace = true
 toml_edit = "0.25"
 keyring.workspace = true
 rig-core = "0.42.0"
+# HTTP upgrade uses reqwest/rustls (including its proxy support); tungstenite
+# handles WebSocket framing, masking and control frames, not a second TLS stack.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 sha2 = "0.10"
 tempfile = "3"
 

@@ -839,6 +839,8 @@ pub enum ProviderKind {
     OpenaiCompat,
     #[serde(rename = "openai_responses", alias = "openai-responses")]
     OpenaiResponses,
+    #[serde(rename = "openai_codex_responses", alias = "openai-codex-responses")]
+    OpenaiCodexResponses,
     #[serde(rename = "anthropic")]
     Anthropic,
     #[serde(rename = "gemini")]
@@ -1077,67 +1079,139 @@ pub const BACKUP_KEEP: usize = 5;
 /// comment attached to `api_key` survives when only `base_url` changes.
 fn merge_into_toml(existing: &str, cfg: &AppConfig) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = existing.parse().map_err(|e| format!("{e}"))?;
+    // The old typed projection tells us which keys the schema owns. Comparing
+    // it with the new projection distinguishes a cleared optional from an
+    // unknown, hand-written key that must survive the save.
+    let previous: AppConfig = toml::from_str(existing).map_err(|e| e.to_string())?;
+    let previous = toml::to_string_pretty(&previous).map_err(|e| e.to_string())?;
+    let previous: toml_edit::DocumentMut = previous.parse().map_err(|e| format!("{e}"))?;
     let fresh = toml::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     let fresh: toml_edit::DocumentMut = fresh.parse().map_err(|e| format!("{e}"))?;
-    prune_keyed(doc.as_table_mut(), fresh.as_table());
-    merge_table(doc.as_table_mut(), fresh.as_table());
-    Ok(doc.to_string())
+    merge_table(
+        doc.as_table_mut(),
+        fresh.as_table(),
+        Some(previous.as_table()),
+        ConfigTable::Fields,
+    );
+    let merged = doc.to_string();
+    // Never replace a valid file with an unparseable merge (e.g. duplicate
+    // aliases). Fail before making a backup or touching the original file.
+    toml::from_str::<AppConfig>(&merged).map_err(|e| e.to_string())?;
+    Ok(merged)
 }
 
-/// Maps whose keys are user-chosen ids, not schema fields: `providers`, and
-/// inside each provider its `headers` / `model_overrides`. The config owns
-/// every entry, so an id missing from the new config was renamed or deleted
-/// and must leave the file too — merging alone would keep the old entry and
-/// a rename would show up as a second provider.
-fn prune_keyed(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
-    fn prune(dst: &mut toml_edit::Table, src: &toml_edit::Table, key: &str) {
-        let Some(d) = dst.get_mut(key).and_then(|i| i.as_table_like_mut()) else {
-            return;
-        };
-        let keep = src.get(key).and_then(|i| i.as_table_like());
-        let gone: Vec<String> = d
-            .iter()
-            .map(|(k, _)| k.to_string())
-            .filter(|k| !keep.is_some_and(|s| s.contains_key(k)))
-            .collect();
-        for k in gone {
-            d.remove(&k);
+#[derive(Clone, Copy)]
+enum ConfigTable {
+    /// Struct fields have serde aliases and may contain unknown keys.
+    Fields,
+    /// Provider / model-override ids are literal keys whose values are structs.
+    Entries,
+    /// Header names and arbitrary JSON keys are literal, fully modeled data.
+    Values,
+}
+
+impl ConfigTable {
+    fn child(self, key: &str) -> Self {
+        match self {
+            Self::Entries => Self::Fields,
+            Self::Values => Self::Values,
+            Self::Fields => match key {
+                "providers" | "model_overrides" => Self::Entries,
+                "compat" | "cost" | "input_limits" | "images" | "resize" | "prompt_cache" => {
+                    Self::Fields
+                }
+                _ => Self::Values,
+            },
         }
     }
-    prune(dst, src, "providers");
-    let (Some(dp), Some(sp)) = (
-        dst.get_mut("providers").and_then(|i| i.as_table_mut()),
-        src.get("providers").and_then(|i| i.as_table()),
-    ) else {
-        return;
-    };
-    for (id, d) in dp.iter_mut() {
-        let (Some(d), Some(s)) = (
-            d.as_table_mut(),
-            sp.get(id.get()).and_then(|i| i.as_table()),
-        ) else {
-            continue;
+
+    /// Write under the spelling already in the file instead of leaving a
+    /// camelCase alias behind and adding a duplicate snake_case field.
+    fn stored_key(self, table: &dyn toml_edit::TableLike, key: &str) -> String {
+        if table.contains_key(key) || !matches!(self, Self::Fields) {
+            return key.to_string();
+        }
+        let extra: &[&str] = match key {
+            "kind" => &["type", "api"],
+            "max_tokens" => &["max_output_tokens"],
+            _ => &[],
         };
-        prune(d, s, "headers");
-        prune(d, s, "model_overrides");
+        for alias in extra {
+            if table.contains_key(alias) {
+                return (*alias).to_string();
+            }
+        }
+        let mut words = key.split('_');
+        let mut camel = words.next().unwrap_or_default().to_string();
+        for word in words {
+            let mut chars = word.chars();
+            if let Some(first) = chars.next() {
+                camel.extend(first.to_uppercase());
+                camel.extend(chars);
+            }
+        }
+        // ProviderCompat's pi spelling retains the OpenAI acronym.
+        if key == "supports_openai_grammar_tools" {
+            camel = "supportsOpenAIGrammarTools".into();
+        }
+        if table.contains_key(&camel) {
+            camel
+        } else {
+            key.to_string()
+        }
     }
 }
 
-fn merge_table(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
-    // Keys the schema no longer emits (e.g. an emptied optional) are removed,
-    // but only those the schema itself owns; unknown keys are not in `src`
-    // and are left alone by never being visited here.
+fn merge_table(
+    dst: &mut dyn toml_edit::TableLike,
+    src: &dyn toml_edit::TableLike,
+    previous: Option<&dyn toml_edit::TableLike>,
+    kind: ConfigTable,
+) {
+    if let Some(previous) = previous {
+        for (key, old) in previous.iter() {
+            if src.contains_key(key) {
+                continue;
+            }
+            let stored = kind.stored_key(dst, key);
+            // A removed struct table may contain unmodeled keys. Clear only
+            // its modeled fields; maps, in contrast, own all of their entries.
+            if matches!(kind, ConfigTable::Fields) {
+                if let (Some(d), Some(p)) = (
+                    dst.get_mut(&stored).and_then(|i| i.as_table_like_mut()),
+                    old.as_table_like(),
+                ) {
+                    merge_table(d, &toml_edit::Table::new(), Some(p), kind.child(key));
+                    if !d.is_empty() {
+                        continue;
+                    }
+                }
+            }
+            dst.remove(&stored);
+        }
+    }
     for (key, item) in src.iter() {
-        match (dst.get_mut(key), item) {
-            (Some(toml_edit::Item::Table(d)), toml_edit::Item::Table(s)) => merge_table(d, s),
+        let stored = kind.stored_key(dst, key);
+        let old = previous
+            .and_then(|p| p.get(key))
+            .and_then(|i| i.as_table_like());
+        if let (Some(d), Some(s)) = (
+            dst.get_mut(&stored).and_then(|i| i.as_table_like_mut()),
+            item.as_table_like(),
+        ) {
+            // TableLike also handles hand-written inline tables without
+            // throwing away their comments or unknown compatibility flags.
+            merge_table(d, s, old, kind.child(key));
+            continue;
+        }
+        match (dst.get_mut(&stored), item) {
             (Some(toml_edit::Item::Value(d)), toml_edit::Item::Value(s)) => {
-                // Replace the value, keep the decor (the comment around it).
                 let decor = d.decor().clone();
                 *d = s.clone();
                 *d.decor_mut() = decor;
             }
             _ => {
-                dst.insert(key, item.clone());
+                dst.insert(&stored, item.clone());
             }
         }
     }
@@ -1488,6 +1562,243 @@ high = "high"
             "{secrets:?}"
         );
         assert_eq!(secrets.len(), 2, "{secrets:?}");
+    }
+
+    #[test]
+    fn save_resets_provider_compat_and_headers_to_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.gateway]
+kind = "openai_completions"
+base_url = "https://gateway.invalid/v1"
+user_agent = "test-client/1.0"
+session_affinity_headers = ["x-custom-session"]
+
+[providers.gateway.compat]
+supports_store = false
+send_session_affinity_headers = true
+session_affinity_format = "opencode"
+
+[providers.gateway.headers]
+X-Custom = "old"
+"#,
+        )
+        .unwrap();
+
+        let mut cfg = AppConfig::load_file(&path).unwrap();
+        let provider = cfg.providers.get_mut("gateway").unwrap();
+        provider.compat = None;
+        provider.user_agent = None;
+        provider.session_affinity_headers.clear();
+        provider.headers.clear();
+        AppConfig::save_to(&path, &cfg).unwrap();
+
+        let back = AppConfig::load_file(&path).unwrap();
+        let provider = &back.providers["gateway"];
+        assert_eq!(
+            provider.compat, None,
+            "compatibility defaults must survive a reload"
+        );
+        assert_eq!(provider.user_agent, None);
+        assert!(provider.session_affinity_headers.is_empty());
+        assert!(provider.headers.is_empty());
+    }
+
+    #[test]
+    fn save_updates_aliased_provider_compat_and_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.gateway]
+kind = "openai_completions"
+base_url = "https://gateway.invalid/v1"
+userAgent = "test-client/1.0"
+sessionAffinityHeaders = ["x-old-session"]
+
+[providers.gateway.compat]
+supportsStore = false
+sendSessionAffinityHeaders = true
+sessionAffinityFormat = "opencode"
+"#,
+        )
+        .unwrap();
+
+        let mut cfg = AppConfig::load_file(&path).unwrap();
+        let provider = cfg.providers.get_mut("gateway").unwrap();
+        provider.user_agent = Some("test-client/2.0".into());
+        provider.session_affinity_headers = vec!["x-new-session".into()];
+        provider.compat.as_mut().unwrap().supports_store = Some(true);
+        AppConfig::save_to(&path, &cfg).unwrap();
+
+        let back = AppConfig::load_file(&path).expect("saved aliases must not duplicate fields");
+        let provider = &back.providers["gateway"];
+        assert_eq!(provider.user_agent.as_deref(), Some("test-client/2.0"));
+        assert_eq!(provider.session_affinity_headers, ["x-new-session"]);
+        assert_eq!(provider.compat.as_ref().unwrap().supports_store, Some(true));
+
+        // A second edit must remain possible, including clearing aliases.
+        let mut cfg = back;
+        let provider = cfg.providers.get_mut("gateway").unwrap();
+        provider.compat = None;
+        provider.user_agent = None;
+        provider.session_affinity_headers.clear();
+        AppConfig::save_to(&path, &cfg).unwrap();
+        let back = AppConfig::load_file(&path).unwrap();
+        assert_eq!(back.providers["gateway"].compat, None);
+        assert_eq!(back.providers["gateway"].user_agent, None);
+        assert!(back.providers["gateway"]
+            .session_affinity_headers
+            .is_empty());
+    }
+
+    #[test]
+    fn save_clears_individual_inline_compat_fields_and_preserves_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+my_note = "keep root"
+[providers.gateway]
+kind = "openai_completions"
+base_url = "https://gateway.invalid/v1"
+my_note = "keep provider"
+compat = { supportsStore = false, maxTokensField = "max_tokens", sendSessionAffinityHeaders = true, future_flag = "keep compat" } # keep inline comment
+"#,
+        )
+        .unwrap();
+        let mut cfg = AppConfig::load_file(&path).unwrap();
+        let compat = cfg
+            .providers
+            .get_mut("gateway")
+            .unwrap()
+            .compat
+            .as_mut()
+            .unwrap();
+        compat.supports_store = None;
+        compat.max_tokens_field = None;
+        compat.send_session_affinity_headers = Some(false);
+        AppConfig::save_to(&path, &cfg).unwrap();
+
+        let back = AppConfig::load_file(&path).unwrap();
+        let compat = back.providers["gateway"].compat.as_ref().unwrap();
+        assert_eq!(compat.supports_store, None);
+        assert_eq!(compat.max_tokens_field, None);
+        assert_eq!(compat.send_session_affinity_headers, Some(false));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep inline comment"), "{text}");
+        let doc: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(doc["my_note"].as_str(), Some("keep root"));
+        assert_eq!(
+            doc["providers"]["gateway"]["my_note"].as_str(),
+            Some("keep provider")
+        );
+        assert_eq!(
+            doc["providers"]["gateway"]["compat"]["future_flag"].as_str(),
+            Some("keep compat")
+        );
+
+        cfg.providers.get_mut("gateway").unwrap().compat = None;
+        AppConfig::save_to(&path, &cfg).unwrap();
+        let back = AppConfig::load_file(&path).unwrap();
+        assert_eq!(
+            back.providers["gateway"].compat,
+            Some(ProviderCompat::default())
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("future_flag"), "{text}");
+    }
+
+    #[test]
+    fn save_keeps_provider_ids_and_header_names_literal_in_inline_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers]
+old_gateway = { kind = "openai_completions", base_url = "https://old.invalid/v1" }
+myGateway = { type = "openai_completions", baseUrl = "https://gateway.invalid/v1", headers = { user_agent = "old snake", userAgent = "old camel", "X-Remove" = "old" }, compat = { supportsOpenAIGrammarTools = false }, my_note = "keep inline" }
+"#,
+        )
+        .unwrap();
+        let mut cfg = AppConfig::load_file(&path).unwrap();
+        cfg.providers.remove("old_gateway");
+        cfg.providers.insert(
+            "my_gateway".into(),
+            ProviderConfig {
+                base_url: "https://second.invalid/v1".into(),
+                ..Default::default()
+            },
+        );
+        let provider = cfg.providers.get_mut("myGateway").unwrap();
+        provider.headers.remove("X-Remove");
+        provider
+            .headers
+            .insert("user_agent".into(), "new snake".into());
+        provider
+            .headers
+            .insert("userAgent".into(), "new camel".into());
+        provider
+            .compat
+            .as_mut()
+            .unwrap()
+            .supports_openai_grammar_tools = Some(true);
+        AppConfig::save_to(&path, &cfg).unwrap();
+
+        let back = AppConfig::load_file(&path).unwrap();
+        assert_eq!(back.providers.len(), 2);
+        assert!(back.providers.contains_key("my_gateway"));
+        assert!(!back.providers.contains_key("old_gateway"));
+        let provider = &back.providers["myGateway"];
+        assert_eq!(provider.headers.len(), 2);
+        assert_eq!(provider.headers["user_agent"], "new snake");
+        assert_eq!(provider.headers["userAgent"], "new camel");
+        assert_eq!(
+            provider
+                .compat
+                .as_ref()
+                .unwrap()
+                .supports_openai_grammar_tools,
+            Some(true)
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("keep inline"), "{text}");
+    }
+
+    #[test]
+    fn save_adds_compat_and_headers_to_inline_providers() {
+        for original in [
+            "[providers]\ngateway = { type = \"openai_compat\", baseUrl = \"https://gateway.invalid/v1\" }\n",
+            "providers = { gateway = { type = \"openai_compat\", baseUrl = \"https://gateway.invalid/v1\" } }\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, original).unwrap();
+            let mut cfg = AppConfig::load_file(&path).unwrap();
+            let provider = cfg.providers.get_mut("gateway").unwrap();
+            provider.compat = Some(ProviderCompat {
+                supports_store: Some(false),
+                send_session_affinity_headers: Some(true),
+                ..Default::default()
+            });
+            provider.headers.insert("X-Custom".into(), "new".into());
+            provider.user_agent = Some("test-client/1.0".into());
+            provider.session_affinity_headers = vec!["x-custom-session".into()];
+            AppConfig::save_to(&path, &cfg).unwrap();
+
+            let back = AppConfig::load_file(&path).unwrap();
+            assert_eq!(
+                serde_json::to_value(&back.providers["gateway"]).unwrap(),
+                serde_json::to_value(&cfg.providers["gateway"]).unwrap(),
+                "new tables in an inline provider must survive a reload: {original}"
+            );
+        }
     }
 
     /// A hand-written comment and a key the schema does not model must survive

@@ -109,3 +109,23 @@ test("explicit header names load as 自定义 rather than as a dialect", async (
     "x-acme-session",
   );
 });
+
+test("Codex WebSocket kind and account headers survive provider editing", async () => {
+  const { user, dialog } = await openEditor({
+    Codex: {
+      kind: "openai_codex_responses",
+      base_url: "https://chatgpt.com/backend-api/codex",
+      api_key: "••••",
+      models: [],
+      headers: { "chatgpt-account-id": "fixture-account", "x-gateway-custom": "kept" },
+    },
+  });
+  expect(within(dialog).getByRole("button", { name: "OpenAI Codex (WebSocket)" })).toBeInTheDocument();
+  await user.click(within(dialog).getByRole("button", { name: "保存" }));
+  await waitFor(() => expect(lastSaved()).toBeTruthy());
+  expect(lastSaved().providers.Codex).toMatchObject({
+    kind: "openai_codex_responses",
+    base_url: "https://chatgpt.com/backend-api/codex",
+    headers: { "chatgpt-account-id": "fixture-account", "x-gateway-custom": "kept" },
+  });
+});

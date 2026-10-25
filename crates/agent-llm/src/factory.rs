@@ -128,13 +128,22 @@ impl ProviderFactory {
     /// Same, from an already-resolved [`ModelConfig`] (i.e. with
     /// `modelOverrides` applied) — what the engine holds after a model switch.
     pub fn model_params_from(model: &ModelConfig) -> ModelParams {
+        let compat = if model.reasoning == Some(false) {
+            // A model capability is stronger than a caller's effort hint or
+            // the protocol's reasoning-enabled baseline. No model-name guesses.
+            let mut compat = model.compat.clone().unwrap_or_default();
+            compat.supports_reasoning_effort = Some(false);
+            Some(compat)
+        } else {
+            model.compat.clone()
+        };
         ModelParams {
             max_tokens: model.max_tokens.map(|v| v.min(u32::MAX as u64) as u32),
             sampling_params: model.sampling_params.clone(),
             // The model's own `compat`; the provider's is merged in by the
             // provider at request time (`ModelParams::compat_with`), so a
             // provider-level change still reaches a resolved model.
-            compat: model.compat.clone(),
+            compat,
         }
     }
 }

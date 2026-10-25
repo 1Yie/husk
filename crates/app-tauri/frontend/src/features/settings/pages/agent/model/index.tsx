@@ -31,6 +31,7 @@ import { FallbackChain } from "./fallback-chain";
 const KIND_OPTIONS = [
   { value: "openai_completions", label: "OpenAI Chat Completions" },
   { value: "openai_responses", label: "OpenAI Responses" },
+  { value: "openai_codex_responses", label: "OpenAI Codex (WebSocket)" },
   { value: "anthropic", label: "Anthropic (Claude)" },
   { value: "gemini", label: "Google Gemini" },
 ];
@@ -38,6 +39,7 @@ const KIND_OPTIONS = [
 const DEFAULT_BASES: Record<string, string> = {
   openai_completions: "https://api.openai.com/v1",
   openai_responses: "https://api.openai.com/v1",
+  openai_codex_responses: "https://chatgpt.com/backend-api/codex",
   anthropic: "https://api.anthropic.com",
   // rig appends `/v1beta/models/...` itself; a `/v1beta` suffix here doubles it.
   gemini: "https://generativelanguage.googleapis.com",

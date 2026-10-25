@@ -359,6 +359,11 @@ impl LlmProvider for SilentThenAnswer {
             Ok(StreamChunk::Keepalive),
             Ok(StreamChunk::Keepalive),
             Ok(StreamChunk::ContentDelta("the answer".into())),
+            Ok(StreamChunk::ProviderState(agent_llm::ProviderState {
+                origin: "fixture-origin".into(),
+                model: "m".into(),
+                data: "opaque-snapshot-fixture".into(),
+            })),
             Ok(StreamChunk::Done {
                 prompt_tokens: None,
                 completion_tokens: None,
@@ -366,6 +371,47 @@ impl LlmProvider for SilentThenAnswer {
             }),
         ])))
     }
+}
+
+#[tokio::test]
+async fn a_completed_opaque_only_round_is_preserved_for_recovery() {
+    use futures::StreamExt;
+
+    let (_dir, store, checkpoint, _output) = setup();
+    let system = ChatMessage::system("system");
+    let request = vec![system.clone(), ChatMessage::user("task")];
+    checkpoint.begin(std::slice::from_ref(&system), "task", meta());
+    checkpoint.drain().await;
+    let state = agent_llm::ProviderState {
+        origin: "fixture-origin".into(),
+        model: "m".into(),
+        data: "opaque-only-fixture".into(),
+    };
+    let scripted = Arc::new(agent_testkit::ScriptedProvider::new());
+    scripted.push_script(vec![
+        StreamChunk::ProviderState(state.clone()),
+        StreamChunk::Done {
+            prompt_tokens: Some(1024),
+            completion_tokens: Some(8),
+            cached_tokens: None,
+        },
+    ]);
+    let provider = checkpoint.wrap(scripted);
+    let mut stream = provider
+        .chat_stream("m", &request, None, 0.0, None, &ModelParams::EMPTY)
+        .await
+        .unwrap();
+    while let Some(chunk) = stream.next().await {
+        chunk.unwrap();
+    }
+    drop(stream);
+    checkpoint.drain().await;
+    let history = store.load_history(1).unwrap();
+    let opaque = history
+        .iter()
+        .find(|message| message.provider_state.as_ref() == Some(&state));
+    assert!(opaque.is_some(), "a completed opaque reasoning item is semantic context, not an empty keepalive: {history:?}");
+    assert_eq!(opaque.unwrap().content, None);
 }
 
 /// A keep-alive carries no content: it passes through untouched and leaves no
@@ -403,5 +449,17 @@ async fn keepalive_is_forwarded_but_never_drafted() {
             .iter()
             .any(|m| m.role == Role::Assistant && m.content.as_deref() == Some("the answer")),
         "the answer never reached the draft: {after:?}"
+    );
+    let answer = after
+        .iter()
+        .find(|m| m.role == Role::Assistant && m.content.as_deref() == Some("the answer"))
+        .unwrap();
+    assert_eq!(
+        answer
+            .provider_state
+            .as_ref()
+            .map(|state| state.data.as_str()),
+        Some("opaque-snapshot-fixture"),
+        "completed provider replay state must survive a crash-recovery draft"
     );
 }

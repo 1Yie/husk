@@ -135,6 +135,145 @@ async fn first_request(
 }
 
 #[tokio::test]
+async fn anthropic_can_explicitly_select_budget_thinking_without_affecting_other_wires() {
+    for adaptive in [false, true] {
+        let (base, seen) = server(|_| REFUSED).await;
+        let mut cfg = config(ProviderKind::Anthropic, base, false);
+        cfg.compat = Some(ProviderCompat {
+            force_adaptive_thinking: Some(adaptive),
+            ..Default::default()
+        });
+        let provider = ProviderFactory::build(&cfg).unwrap();
+        let params = ModelParams {
+            max_tokens: Some(4096),
+            ..ModelParams::EMPTY
+        };
+        if let Ok(mut stream) = provider
+            .chat_stream(
+                "configured-claude",
+                &[ChatMessage::user("hi")],
+                None,
+                0.7,
+                Some("high"),
+                &params,
+            )
+            .await
+        {
+            while stream.next().await.is_some() {}
+        }
+        let body = seen
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("the server saw no request");
+        assert_eq!(body["max_tokens"], 4096);
+        if adaptive {
+            assert_eq!(body["thinking"]["type"], "adaptive");
+            assert_eq!(body["output_config"]["effort"], "high");
+        } else {
+            assert_eq!(
+                body["thinking"]["type"], "enabled",
+                "explicit non-adaptive models must not receive adaptive thinking"
+            );
+            let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
+            assert!((1024..4096).contains(&budget));
+            assert!(body.get("output_config").is_none());
+        }
+        assert!(
+            body.get("temperature").is_none(),
+            "Anthropic thinking still excludes temperature"
+        );
+        assert!(body.get("reasoning").is_none());
+    }
+}
+
+#[tokio::test]
+async fn an_impossible_anthropic_budget_is_reported_without_disabling_thinking() {
+    let (base, seen) = server(|_| REFUSED).await;
+    let mut cfg = config(ProviderKind::Anthropic, base, false);
+    cfg.compat = Some(ProviderCompat {
+        force_adaptive_thinking: Some(false),
+        ..Default::default()
+    });
+    let provider = ProviderFactory::build(&cfg).unwrap();
+    let params = ModelParams {
+        max_tokens: Some(1024),
+        ..ModelParams::EMPTY
+    };
+    let error = match provider
+        .chat_stream(
+            "budget-model",
+            &[ChatMessage::user("hi")],
+            None,
+            0.0,
+            Some("high"),
+            &params,
+        )
+        .await
+    {
+        Ok(_) => panic!("an invalid thinking budget must not be sent or silently disabled"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("max_tokens > 1024"));
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_temperature_opt_out_is_enforced_on_every_protocol() {
+    for kind in [
+        ProviderKind::OpenaiCompat,
+        ProviderKind::OpenaiResponses,
+        ProviderKind::Anthropic,
+        ProviderKind::Gemini,
+    ] {
+        let (base, seen) = server(|_| REFUSED).await;
+        let mut cfg = config(kind, base, false);
+        cfg.compat = Some(ProviderCompat {
+            supports_temperature: Some(false),
+            force_adaptive_thinking: Some(true),
+            supports_mid_convo_effort: Some(true),
+            ..Default::default()
+        });
+        let provider = ProviderFactory::build(&cfg).unwrap();
+        let params = ModelParams {
+            sampling_params: Some(serde_json::json!({"temperature":0.6})),
+            ..ModelParams::EMPTY
+        };
+        if let Ok(mut stream) = provider
+            .chat_stream(
+                "configured-model",
+                &[ChatMessage::user("hi")],
+                None,
+                0.7,
+                None,
+                &params,
+            )
+            .await
+        {
+            while stream.next().await.is_some() {}
+        }
+        let body = seen
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("the server saw no request");
+        assert!(body.get("temperature").is_none(), "{kind:?}: {body}");
+        assert!(
+            body["generationConfig"].get("temperature").is_none(),
+            "{kind:?}: {body}"
+        );
+        if kind != ProviderKind::Anthropic {
+            assert!(
+                body.get("thinking").is_none(),
+                "Claude thinking must not leak to {kind:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn each_wire_asks_for_a_summary_when_thinking_is_on() {
     let body = first_request(ProviderKind::OpenaiResponses, Some("high"), false).await;
     assert_eq!(body["reasoning"]["effort"], "high", "{body}");

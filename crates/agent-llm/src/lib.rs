@@ -5,8 +5,10 @@
 //! one wire entry in the rig bridge.
 
 pub mod cache_warm;
+mod codex_transport;
 pub mod config;
 pub mod factory;
+mod responses_state;
 mod rig_bridge;
 pub mod usage;
 
@@ -18,7 +20,7 @@ pub use agent_llm_core::{
     BoxStream, Capabilities, EgressMasker, LlmProvider, ModelParams, ProviderCompat,
     UnavailableProvider,
 };
-pub use agent_llm_core::{ChatMessage, Role, StreamChunk, ToolCall};
+pub use agent_llm_core::{ChatMessage, ProviderState, Role, StreamChunk, ToolCall};
 pub use cache_warm::{WarmingControl, WarmingProvider};
 pub use config::{
     AppConfig, ConfigWarning, CostTier, ImageLimits, ImageResize, InputLimits, ModelConfig,

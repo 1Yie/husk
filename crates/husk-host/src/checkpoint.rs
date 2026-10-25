@@ -441,6 +441,7 @@ impl TurnCheckpoint {
         if message.content.as_ref().is_some_and(|s| !s.is_empty())
             || message.reasoning.as_ref().is_some_and(|s| !s.is_empty())
             || message.tool_calls.is_some()
+            || message.provider_state.is_some()
         {
             active.history.push(message);
         }
@@ -798,6 +799,10 @@ impl Stream for CheckpointStream {
                         self.flush();
                     }
                     StreamChunk::Error(_) => self.flush(),
+                    StreamChunk::ProviderState(state) => {
+                        self.message.provider_state = Some(state.clone());
+                        self.dirty = true;
+                    }
                     StreamChunk::Keepalive => {}
                 }
                 if self.first_chunk {
