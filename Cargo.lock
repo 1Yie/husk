@@ -31,7 +31,7 @@ dependencies = [
 [[package]]
 name = "agent-capabilities"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "agent-computer",
  "agent-paths",
@@ -69,7 +69,7 @@ dependencies = [
 [[package]]
 name = "agent-computer"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "anyhow",
  "ashpd 0.13.13",
@@ -109,7 +109,7 @@ dependencies = [
 [[package]]
 name = "agent-ipc"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei.git?branch=main#79af9b43f375dbac7fb31732b677e76cba477cc8"
+source = "git+https://github.com/1Yie/korei.git?branch=main#a2e7887dd1aa3e6a2623484cdbf0133320c36075"
 dependencies = [
  "serde",
  "serde_json",
@@ -119,7 +119,7 @@ dependencies = [
 [[package]]
 name = "agent-kernel"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei.git?branch=main#79af9b43f375dbac7fb31732b677e76cba477cc8"
+source = "git+https://github.com/1Yie/korei.git?branch=main#a2e7887dd1aa3e6a2623484cdbf0133320c36075"
 dependencies = [
  "agent-ipc",
  "agent-llm-core",
@@ -161,7 +161,7 @@ dependencies = [
 [[package]]
 name = "agent-llm-core"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei.git?branch=main#79af9b43f375dbac7fb31732b677e76cba477cc8"
+source = "git+https://github.com/1Yie/korei.git?branch=main#a2e7887dd1aa3e6a2623484cdbf0133320c36075"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -177,7 +177,7 @@ dependencies = [
 [[package]]
 name = "agent-paths"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "dirs",
 ]
@@ -185,7 +185,7 @@ dependencies = [
 [[package]]
 name = "agent-plugin"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "agent-llm-core",
  "agent-paths",
@@ -211,7 +211,7 @@ dependencies = [
 [[package]]
 name = "agent-sandbox"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -224,7 +224,7 @@ dependencies = [
 [[package]]
 name = "agent-skills"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "dirs",
  "serde_json",
@@ -247,7 +247,7 @@ dependencies = [
 [[package]]
 name = "agent-testkit"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei.git?branch=main#79af9b43f375dbac7fb31732b677e76cba477cc8"
+source = "git+https://github.com/1Yie/korei.git?branch=main#a2e7887dd1aa3e6a2623484cdbf0133320c36075"
 dependencies = [
  "agent-llm-core",
  "anyhow",
@@ -260,7 +260,7 @@ dependencies = [
 [[package]]
 name = "agent-tool"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei.git?branch=main#79af9b43f375dbac7fb31732b677e76cba477cc8"
+source = "git+https://github.com/1Yie/korei.git?branch=main#a2e7887dd1aa3e6a2623484cdbf0133320c36075"
 dependencies = [
  "agent-llm-core",
  "futures",
@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "agent-tools-computer"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "agent-capabilities",
  "agent-computer",
@@ -290,7 +290,7 @@ dependencies = [
 [[package]]
 name = "agent-tools-fs"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "agent-capabilities",
  "agent-tool",
@@ -318,7 +318,7 @@ dependencies = [
 [[package]]
 name = "agent-tools-office"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "agent-capabilities",
  "agent-sandbox",
@@ -335,7 +335,7 @@ dependencies = [
 [[package]]
 name = "agent-tools-serena"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "agent-capabilities",
  "agent-tool",
@@ -350,7 +350,7 @@ dependencies = [
 [[package]]
 name = "agent-tools-shell"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "agent-capabilities",
  "agent-sandbox",
@@ -366,7 +366,7 @@ dependencies = [
 [[package]]
 name = "agent-tools-web"
 version = "0.1.0"
-source = "git+https://github.com/1Yie/korei-ext.git?branch=main#81b36721c5ccd410e7933c602c440a0672ac834a"
+source = "git+https://github.com/1Yie/korei-ext.git?branch=main#244e0e794b62753af3c993cd24cfcffaad338167"
 dependencies = [
  "agent-capabilities",
  "agent-llm-core",
