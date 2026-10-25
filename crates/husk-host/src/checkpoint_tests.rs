@@ -336,3 +336,72 @@ async fn streamed_writes_keep_the_turn_start_stamp() {
     checkpoint.drain().await;
     assert_eq!(store.meta(1).unwrap().updated_at, 42);
 }
+
+/// A provider that sits silent behind keep-alives and then answers.
+struct SilentThenAnswer;
+
+#[async_trait::async_trait]
+impl LlmProvider for SilentThenAnswer {
+    fn id(&self) -> &'static str {
+        "silent"
+    }
+
+    async fn chat_stream(
+        &self,
+        _model: &str,
+        _messages: &[ChatMessage],
+        _tools: Option<serde_json::Value>,
+        _temperature: f32,
+        _reasoning_effort: Option<&str>,
+        _params: &ModelParams,
+    ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        Ok(Box::pin(futures::stream::iter([
+            Ok(StreamChunk::Keepalive),
+            Ok(StreamChunk::Keepalive),
+            Ok(StreamChunk::ContentDelta("the answer".into())),
+            Ok(StreamChunk::Done {
+                prompt_tokens: None,
+                completion_tokens: None,
+                cached_tokens: None,
+            }),
+        ])))
+    }
+}
+
+/// A keep-alive carries no content: it passes through untouched and leaves no
+/// empty assistant row in the draft, and the answer behind it still lands.
+#[tokio::test]
+async fn keepalive_is_forwarded_but_never_drafted() {
+    use futures::StreamExt;
+
+    let (_dir, store, checkpoint, _output) = setup();
+    let system = ChatMessage::system("system");
+    let request = vec![system.clone(), ChatMessage::user("task")];
+    checkpoint.begin(std::slice::from_ref(&system), "task", meta());
+    checkpoint.drain().await;
+    let provider = checkpoint.wrap(Arc::new(SilentThenAnswer));
+    let mut stream = provider
+        .chat_stream("m", &request, None, 0.0, None, &ModelParams::EMPTY)
+        .await
+        .unwrap();
+
+    let first = stream.next().await.unwrap().unwrap();
+    assert!(matches!(first, StreamChunk::Keepalive));
+    checkpoint.drain().await;
+    let before = store.load_history(1).unwrap();
+    assert!(
+        before.iter().all(|m| m.role != Role::Assistant),
+        "a keep-alive wrote an empty assistant draft: {before:?}"
+    );
+
+    while stream.next().await.is_some() {}
+    drop(stream);
+    checkpoint.drain().await;
+    let after = store.load_history(1).unwrap();
+    assert!(
+        after
+            .iter()
+            .any(|m| m.role == Role::Assistant && m.content.as_deref() == Some("the answer")),
+        "the answer never reached the draft: {after:?}"
+    );
+}

@@ -358,10 +358,40 @@ impl WireKind {
 }
 
 // ================================================================
-// SsePatchClient — byte-level repair for out-of-contract Responses SSE
+// SsePatchClient — the HTTP client every wire goes through
 // ================================================================
 
-/// `reqwest::Client` wrapper used only for the Responses wire. Some
+/// How long a stream may stay quiet before its mapper checks the byte pulse.
+/// Far below the sampler's idle ceiling, so one missed check costs nothing.
+const KEEPALIVE_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Count of body chunks one request's connection has delivered. Keep-alive
+/// pings and SSE comments never survive rig's decoder — a model that thinks
+/// without showing it produces no item above the transport at all — so this is
+/// the only place the stream can tell "alive but silent" from "wedged".
+#[derive(Clone, Debug, Default)]
+struct Pulse(Arc<std::sync::atomic::AtomicU64>);
+
+impl Pulse {
+    fn beat(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn count(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Counts every body chunk as it leaves the socket, before anything parses it.
+fn pulse_stream(inner: BoxedStream, pulse: Pulse) -> BoxedStream {
+    Box::pin(inner.map(move |item| {
+        pulse.beat();
+        item
+    }))
+}
+
+/// `reqwest::Client` wrapper for all four wires: it feeds the stream's pulse,
+/// and on the Responses wire it also repairs the bytes. Some
 /// OpenAI-compatible gateways (observed: devin-style shims) stream `response.*`
 /// frames whose `response` object omits `created_at` — a field rig's typed
 /// `ResponseChunk` decode requires. The terminal `response.completed` frame
@@ -381,6 +411,9 @@ struct SsePatchClient {
     /// reasoning replay: a backend that resolves item ids server-side (OpenAI
     /// itself) treats a synthesized item as an error rather than a hint.
     reasoning_replay: bool,
+    /// Patch inbound `response.*` frames — the Responses wire only.
+    repair_sse: bool,
+    pulse: Pulse,
 }
 
 impl Default for SsePatchClient {
@@ -388,6 +421,8 @@ impl Default for SsePatchClient {
         Self {
             inner: reqwest::Client::new(),
             reasoning_replay: false,
+            repair_sse: false,
+            pulse: Pulse::default(),
         }
     }
 }
@@ -458,10 +493,19 @@ impl HttpClientExt for SsePatchClient {
         // method, so the reasoning repair has to run here as well as on `send`.
         let req = self.repair(req);
         let inner = self.inner.clone();
+        let (repair_sse, pulse) = (self.repair_sse, self.pulse.clone());
         async move {
             HttpClientExt::send_streaming(&inner, req)
                 .await
-                .map(patch_streaming_response)
+                .map(move |resp| {
+                    let (parts, body) = resp.into_parts();
+                    let resp = http_client::Response::from_parts(parts, pulse_stream(body, pulse));
+                    if repair_sse {
+                        patch_streaming_response(resp)
+                    } else {
+                        resp
+                    }
+                })
         }
     }
 }
@@ -787,10 +831,10 @@ fn patch_sse_line(line: &[u8]) -> Vec<u8> {
 
 /// A rig completion-model handle, one enum arm per wire.
 enum RigModel {
-    Compat(openai::completion::GenericCompletionModel<CompatExt>),
+    Compat(openai::completion::GenericCompletionModel<CompatExt, SsePatchClient>),
     Responses(openai::responses_api::ResponsesCompletionModel<SsePatchClient>),
-    Anthropic(anthropic::completion::CompletionModel),
-    Gemini(gemini::completion::CompletionModel),
+    Anthropic(anthropic::completion::CompletionModel<SsePatchClient>),
+    Gemini(gemini::completion::CompletionModel<SsePatchClient>),
 }
 
 /// Provider backed by rig-core. Holds only client-construction inputs —
@@ -824,6 +868,7 @@ pub struct RigProvider {
     compat: Option<ProviderCompat>,
     http: reqwest::Client,
     caps: Capabilities,
+    keepalive_every: std::time::Duration,
 }
 
 impl RigProvider {
@@ -886,7 +931,16 @@ impl RigProvider {
             compat: cfg.compat.clone(),
             http,
             caps,
+            keepalive_every: KEEPALIVE_EVERY,
         })
+    }
+
+    /// Shorten the quiet period after which a live-but-silent stream reports
+    /// `Keepalive`. Only tests need to: the default is tuned for real upstreams.
+    #[doc(hidden)]
+    pub fn with_keepalive_every(mut self, every: std::time::Duration) -> Self {
+        self.keepalive_every = every;
+        self
     }
 
     /// OpenAI prompt-cache routing (`prompt_cache_key`) and extended retention
@@ -920,6 +974,7 @@ impl RigProvider {
         compat: &ProviderCompat,
         retention: CacheRetention,
         reasoning_replay: bool,
+        pulse: &Pulse,
     ) -> anyhow::Result<RigModel> {
         let mut headers = HeaderMap::new();
         // Sticky routing so a multi-node gateway serves this conversation from
@@ -947,7 +1002,12 @@ impl RigProvider {
                 headers.insert(name, value);
             }
         }
-        let http = self.http.clone();
+        let wire = |repair_sse: bool, reasoning_replay: bool| SsePatchClient {
+            inner: self.http.clone(),
+            reasoning_replay,
+            repair_sse,
+            pulse: pulse.clone(),
+        };
         Ok(match self.kind {
             WireKind::Compat => {
                 if self.auth_header && !self.api_key.is_empty() {
@@ -958,7 +1018,7 @@ impl RigProvider {
                 let b = client::Client::<CompatExt>::builder()
                     .base_url(&self.base_url)
                     .http_headers(headers)
-                    .http_client(http);
+                    .http_client(wire(false, false));
                 let client = b
                     .api_key(Nothing)
                     .build()
@@ -974,13 +1034,10 @@ impl RigProvider {
                 let b = openai::Client::builder()
                     .base_url(&self.base_url)
                     .http_headers(headers)
-                    // `SsePatchClient` repairs out-of-contract terminal frames
-                    // on the byte stream before rig's SSE decoder sees them —
-                    // see its docs. `send`/`send_multipart` delegate as-is.
-                    .http_client(SsePatchClient {
-                        inner: http,
-                        reasoning_replay,
-                    });
+                    // Repairs out-of-contract terminal frames on the byte
+                    // stream before rig's SSE decoder sees them — see
+                    // `SsePatchClient`. `send`/`send_multipart` delegate as-is.
+                    .http_client(wire(true, reasoning_replay));
                 let client = if self.auth_header && !self.api_key.is_empty() {
                     b.api_key(BearerAuth::from(self.api_key.clone())).build()
                 } else {
@@ -1003,7 +1060,7 @@ impl RigProvider {
                 let b = anthropic::Client::builder()
                     .base_url(&self.base_url)
                     .http_headers(headers)
-                    .http_client(http);
+                    .http_client(wire(false, false));
                 let b = if self.auth_header && !self.api_key.is_empty() {
                     b.api_key(anthropic::client::AnthropicKey::from(self.api_key.clone()))
                 } else {
@@ -1032,7 +1089,7 @@ impl RigProvider {
                 let b = gemini::Client::builder()
                     .base_url(&self.base_url)
                     .http_headers(headers)
-                    .http_client(http);
+                    .http_client(wire(false, false));
                 let client = if self.auth_header && !self.api_key.is_empty() {
                     b.api_key(gemini::client::GeminiApiKey::from(self.api_key.clone()))
                         .build()
@@ -1188,17 +1245,19 @@ impl LlmProvider for RigProvider {
         if let Some(observer) = &self.usage_observer {
             observer.reset();
         }
+        let pulse = Pulse::default();
         let fallback: Option<SummaryFallback> = if show_summary {
             let mut plain = request.clone();
             drop_summary_params(&mut plain, self.kind);
-            let plain_model = self.build_model(model, &compat, retention, reasoning_replay)?;
+            let plain_model =
+                self.build_model(model, &compat, retention, reasoning_replay, &pulse)?;
             Some(Box::pin(
                 async move { open_stream(&plain_model, plain).await },
             ))
         } else {
             None
         };
-        let rig_model = self.build_model(model, &compat, retention, reasoning_replay)?;
+        let rig_model = self.build_model(model, &compat, retention, reasoning_replay, &pulse)?;
         let rig_stream = open_stream(&rig_model, request)
             .await
             .map_err(|e| anyhow::anyhow!("{}", map_completion_error(&e)))?;
@@ -1208,6 +1267,8 @@ impl LlmProvider for RigProvider {
             self.kind,
             self.usage_observer.clone(),
             fallback,
+            pulse,
+            self.keepalive_every,
         ))
     }
 }
@@ -2255,11 +2316,19 @@ fn visible_reasoning_text(reasoning: &Reasoning) -> String {
 }
 
 /// rig `StreamingCompletionResponse` → our `StreamChunk` stream.
+///
+/// While rig has nothing to hand over, the connection's [`Pulse`] tells a
+/// model that is thinking without showing it (bytes keep arriving — pings,
+/// comments, events rig does not surface) from a dead socket (nothing does):
+/// the first earns a `Keepalive`, the second earns nothing, and the sampler's
+/// idle ceiling takes it from there.
 fn map_rig_stream(
     stream: StreamingCompletionResponse,
     kind: WireKind,
     usage_observer: Option<Arc<UsageObserver>>,
     fallback: Option<SummaryFallback>,
+    pulse: Pulse,
+    keepalive_every: std::time::Duration,
 ) -> BoxStream<StreamChunk> {
     struct S {
         inner: StreamingCompletionResponse,
@@ -2268,6 +2337,8 @@ fn map_rig_stream(
         drained: bool,
         fallback: Option<SummaryFallback>,
         started: bool,
+        pulse: Pulse,
+        beats_seen: u64,
     }
     let init = S {
         inner: stream,
@@ -2276,13 +2347,27 @@ fn map_rig_stream(
         drained: false,
         fallback,
         started: false,
+        pulse,
+        beats_seen: 0,
     };
-    Box::pin(futures::stream::unfold(init, |mut s| async move {
+    Box::pin(futures::stream::unfold(init, move |mut s| async move {
         loop {
             if let Some(c) = s.pending.pop_front() {
                 return Some((c, s));
             }
-            match s.inner.next().await {
+            let next = match tokio::time::timeout(keepalive_every, s.inner.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    let beats = s.pulse.count();
+                    if beats != s.beats_seen {
+                        s.beats_seen = beats;
+                        return Some((Ok(StreamChunk::Keepalive), s));
+                    }
+                    continue;
+                }
+            };
+            s.beats_seen = s.pulse.count();
+            match next {
                 // SSE surfaces a refused request as the stream's first item.
                 Some(Err(e)) if !s.started && s.fallback.is_some() && is_rejected_request(&e) => {
                     let open = s.fallback.take().expect("checked above");

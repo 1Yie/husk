@@ -798,6 +798,7 @@ impl Stream for CheckpointStream {
                         self.flush();
                     }
                     StreamChunk::Error(_) => self.flush(),
+                    StreamChunk::Keepalive => {}
                 }
                 if self.first_chunk {
                     self.first_chunk = false;
