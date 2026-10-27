@@ -2251,7 +2251,9 @@ mod tests {
             None
         );
         assert_eq!(
-            s.persona_in(PersonaScope::Global, "style").unwrap().as_deref(),
+            s.persona_in(PersonaScope::Global, "style")
+                .unwrap()
+                .as_deref(),
             Some("global value")
         );
         assert!(!s

@@ -574,7 +574,7 @@ fn agent_session_inner(
         if let Some(result) = target {
             // A refusal (`/`, `$HOME`, a system dir, an ancestor of the app's
             // own data) reaches the caller as the reason to show.
-            result.map_err(|e| e)?;
+            result?;
         }
         let (workspace, session) = mgr.link_layers(&root, id);
         return Ok(serde_json::json!({
