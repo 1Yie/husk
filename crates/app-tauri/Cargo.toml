@@ -30,6 +30,7 @@ tokio.workspace = true
 reqwest.workspace = true
 rfd = "0.15"
 png = "0.17"
+portable-pty = "0.9"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-single-instance = "2"
 xxhash-rust.workspace = true
@@ -46,6 +47,9 @@ tempfile = "3"
 # NSUserNotificationCenter backend on macOS.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 notify-rust = "4.18.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"

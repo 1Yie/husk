@@ -10,6 +10,7 @@ mod dev_config;
 mod ipc;
 mod kernel;
 mod logging;
+mod terminal;
 #[cfg(target_os = "linux")]
 mod webview_recovery;
 
@@ -511,6 +512,7 @@ fn main() {
     );
 
     builder
+        .manage(terminal::TerminalState::default())
         // System clipboard access for image paste (see `paste_clipboard`).
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
@@ -599,6 +601,11 @@ fn main() {
         // the glow + HUD die with the process, or when the user clicks the
         // HUD's stop button.
         .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                window
+                    .state::<terminal::TerminalState>()
+                    .destroy_owner(window.label());
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
@@ -607,6 +614,12 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            ipc::workspace_files::workspace_list_files,
+            ipc::workspace_files::workspace_preview_file,
+            ipc::terminal::terminal_open,
+            ipc::terminal::terminal_write,
+            ipc::terminal::terminal_resize,
+            ipc::terminal::terminal_close,
             ipc::commands::agent_cmd,
             ipc::commands::get_ui_stats,
             ipc::commands::paste_clipboard,
@@ -618,8 +631,24 @@ fn main() {
             ipc::sessions::agent_session,
             ipc::sessions::mcp_probe,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Husk");
+        .build(tauri::generate_context!())
+        .expect("error while building Husk")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                let state = app.state::<terminal::TerminalState>();
+                if !state.shutdown_complete() {
+                    api.prevent_exit();
+                    if state.start_shutdown() {
+                        let state = state.inner().clone();
+                        let app = app.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            state.shutdown();
+                            app.exit(code.unwrap_or(0));
+                        });
+                    }
+                }
+            }
+        });
 }
 
 /// Husk draws its own chrome. Use GTK's built-in theme by default instead
