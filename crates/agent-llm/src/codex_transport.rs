@@ -24,6 +24,7 @@ use tokio_tungstenite::{
 type Socket = WebSocketStream<reqwest::Upgraded>;
 const MAX_CONNECTION_AGE: Duration = Duration::from_secs(55 * 60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const REUSE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const BETA: &str = "responses_websockets=2026-02-06";
 
 /// Codex uses stateless Responses and requires a top-level instruction. Keep
@@ -98,6 +99,57 @@ struct Connection {
     handshake: Handshake,
     opened: Instant,
     previous: Option<Continuation>,
+}
+
+impl Connection {
+    /// A successful turn does not guarantee its socket is still usable. Check
+    /// the peer before submitting the next generation: a failed ping/pong is
+    /// safe to abandon, unlike a failed response.create write.
+    async fn ready_for_reuse(&mut self) -> bool {
+        let nonce = generate_key().into_bytes();
+        let probe = async {
+            if self
+                .socket
+                .send(Message::Ping(nonce.clone().into()))
+                .await
+                .is_err()
+            {
+                return false;
+            }
+            loop {
+                match self.socket.next().await {
+                    Some(Ok(Message::Pong(payload))) if payload[..] == nonce[..] => {
+                        return true;
+                    }
+                    Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
+                    Some(Ok(Message::Ping(payload))) => {
+                        if self.socket.send(Message::Pong(payload)).await.is_err() {
+                            return false;
+                        }
+                    }
+                    // A previous response.done can still be queued after the
+                    // terminal event. It is not an answer to this fresh nonce.
+                    Some(Ok(Message::Text(text)))
+                        if self.is_previous_response_event(text.as_bytes()) => {}
+                    Some(Ok(Message::Binary(bytes))) if self.is_previous_response_event(&bytes) => {
+                    }
+                    _ => return false,
+                }
+            }
+        };
+        tokio::time::timeout(REUSE_PROBE_TIMEOUT, probe)
+            .await
+            .unwrap_or(false)
+    }
+
+    fn is_previous_response_event(&self, bytes: &[u8]) -> bool {
+        let Some(previous) = &self.previous else {
+            return false;
+        };
+        serde_json::from_slice::<Value>(bytes).is_ok_and(|event| {
+            event.pointer("/response/id").and_then(Value::as_str) == Some(previous.id.as_str())
+        })
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -243,10 +295,16 @@ impl CodexTransport {
         if guard.sse_fallback {
             return Ok(None);
         }
-        let connection = guard
+        let mut connection = guard
             .connection
             .take()
             .filter(|c| c.handshake == handshake && c.opened.elapsed() < MAX_CONNECTION_AGE);
+        if let Some(cached) = connection.as_mut() {
+            if !cached.ready_for_reuse().await {
+                tracing::debug!("Discarding inactive Codex WebSocket before response.create");
+                connection = None;
+            }
+        }
         let reused = connection.is_some();
         let mut connection = match connection {
             Some(connection) => connection,

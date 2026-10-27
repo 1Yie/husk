@@ -1,5 +1,6 @@
 //! Public ProviderFactory → real local WebSocket → normalized stream tests.
 //! These are protocol fixtures, not live Codex authentication or cache hits.
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,6 +25,9 @@ use tokio_tungstenite::{
 #[derive(Clone)]
 enum Step {
     Complete(Value),
+    CompleteThenClose(Value, Arc<tokio::sync::Notify>),
+    CompleteThenStall(Value, Arc<tokio::sync::Notify>),
+    CompleteThenControl(Value),
     Done(Value),
     LateDone(Value),
     Ping(Value),
@@ -40,6 +44,7 @@ struct Server {
     base: String,
     headers: Arc<Mutex<Vec<HeaderMap>>>,
     frames: Arc<Mutex<Vec<Value>>>,
+    probes: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Server {
@@ -59,7 +64,10 @@ impl Server {
         let frames = Arc::new(Mutex::new(Vec::new()));
         let captured_headers = headers.clone();
         let captured_frames = frames.clone();
+        let probes = Arc::new(AtomicUsize::new(0));
+        let captured_probes = probes.clone();
         let task = tokio::spawn(async move {
+            let mut stalled_sockets = Vec::new();
             for turns in connections {
                 let (socket, _) = listener.accept().await.unwrap();
                 let h = captured_headers.clone();
@@ -70,17 +78,39 @@ impl Server {
                 })
                 .await
                 .unwrap();
+                let mut keep_open = false;
                 for step in turns {
-                    let next = ws.next().await.unwrap().unwrap();
-                    let text = next.into_text().unwrap();
+                    let text = loop {
+                        match ws.next().await.unwrap().unwrap() {
+                            Message::Text(text) => break text,
+                            Message::Ping(payload) => {
+                                captured_probes.fetch_add(1, Ordering::Relaxed);
+                                ws.send(Message::Pong(payload)).await.unwrap();
+                            }
+                            Message::Pong(_) => {}
+                            other => panic!("expected a create event, got {other:?}"),
+                        }
+                    };
                     let frame: Value = serde_json::from_str(&text).unwrap();
                     assert_eq!(frame["type"], "response.create");
                     captured_frames.lock().unwrap().push(frame);
                     let ping = matches!(&step, Step::Ping(_));
                     let done_alias = matches!(&step, Step::Done(_));
                     let late_done = matches!(&step, Step::LateDone(_));
+                    let close_after = match &step {
+                        Step::CompleteThenClose(_, closed) => Some(closed.clone()),
+                        _ => None,
+                    };
+                    let stall_after = match &step {
+                        Step::CompleteThenStall(_, ready) => Some(ready.clone()),
+                        _ => None,
+                    };
+                    let controls_after = matches!(&step, Step::CompleteThenControl(_));
                     match step {
                         Step::Complete(response)
+                        | Step::CompleteThenClose(response, _)
+                        | Step::CompleteThenStall(response, _)
+                        | Step::CompleteThenControl(response)
                         | Step::Done(response)
                         | Step::LateDone(response)
                         | Step::Ping(response) => {
@@ -130,6 +160,21 @@ impl Server {
                             ))
                             .await
                             .unwrap();
+                            if let Some(closed) = close_after {
+                                ws.close(None).await.unwrap();
+                                closed.notify_one();
+                            }
+                            if controls_after {
+                                ws.send(Message::Ping(vec![4, 2].into())).await.unwrap();
+                                ws.send(Message::text(
+                                    json!({"type":"response.done","sequence_number":4,"response":response}).to_string(),
+                                )).await.unwrap();
+                            }
+                            if let Some(ready) = stall_after {
+                                keep_open = true;
+                                ready.notify_one();
+                                break;
+                            }
                         }
                         Step::Reject(code) => {
                             ws.send(Message::text(json!({"type":"error","status":400,"error":{"code":code,"message":"fixture rejection"}}).to_string())).await.unwrap();
@@ -182,12 +227,18 @@ impl Server {
                         }
                     }
                 }
+                if keep_open {
+                    // Model a dead intermediary: TCP stays established, but
+                    // the peer stops reading/responding to any WS frames.
+                    stalled_sockets.push(ws);
+                }
             }
         });
         Self {
             base,
             headers,
             frames,
+            probes,
             task,
         }
     }
@@ -340,6 +391,154 @@ async fn reuses_socket_and_only_sends_appended_history_after_persisted_reload() 
     assert_eq!(frames[1]["previous_response_id"], "resp_1");
     assert_eq!(frames[1]["input"].as_array().unwrap().len(), 1);
     assert_eq!(frames[1]["input"][0]["role"], "user");
+    assert_eq!(server.probes.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn completed_connection_closed_by_peer_reconnects_before_next_create() {
+    let closed = Arc::new(tokio::sync::Notify::new());
+    let server = Server::new(vec![
+        vec![Step::CompleteThenClose(
+            response("resp_1", output("first")),
+            closed.clone(),
+        )],
+        vec![Step::Complete(response("resp_2", output("second")))],
+    ])
+    .await;
+    let provider = server.provider();
+    let mut h = history();
+    let first = run(&provider, &h, &ModelParams::EMPTY).await.unwrap();
+    h.push(assistant(&first));
+    h.push(ChatMessage::user("next"));
+    tokio::time::timeout(Duration::from_secs(2), closed.notified())
+        .await
+        .unwrap();
+
+    let chunks = run(&provider, &h, &ModelParams::EMPTY).await.unwrap();
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| matches!(chunk, StreamChunk::Done { .. })),
+        "next message must not require a manual retry after an idle peer close: {chunks:?}"
+    );
+    assert_eq!(assistant(&chunks).content.as_deref(), Some("second"));
+    let frames = server.frames();
+    assert_eq!(
+        frames.len(),
+        2,
+        "each generation must be submitted only once"
+    );
+    assert_eq!(server.headers.lock().unwrap().len(), 2);
+    assert!(frames[1].get("previous_response_id").is_none());
+    assert!(frames[1]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| { item["encrypted_content"] == "sealed-wss-fixture" }));
+}
+
+#[tokio::test]
+async fn completed_connection_silently_stalled_reconnects_with_full_context() {
+    let stalled = Arc::new(tokio::sync::Notify::new());
+    let server = Server::new(vec![
+        vec![Step::CompleteThenStall(
+            response("resp_1", output("first")),
+            stalled.clone(),
+        )],
+        vec![Step::Complete(response("resp_2", output("second")))],
+    ])
+    .await;
+    let provider = server.provider();
+    let mut h = history();
+    h.push(assistant(
+        &run(&provider, &h, &ModelParams::EMPTY).await.unwrap(),
+    ));
+    h.push(ChatMessage::user("next"));
+    tokio::time::timeout(Duration::from_secs(2), stalled.notified())
+        .await
+        .unwrap();
+
+    let chunks = run(&provider, &h, &ModelParams::EMPTY).await.unwrap();
+    assert_eq!(
+        assistant(&chunks).content.as_deref(),
+        Some("second"),
+        "{chunks:?}"
+    );
+    assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Done { .. })));
+    let frames = server.frames();
+    assert_eq!(
+        frames.len(),
+        2,
+        "a probe must not submit a generation to the stalled socket"
+    );
+    assert_eq!(server.headers.lock().unwrap().len(), 2);
+    assert!(frames[1].get("previous_response_id").is_none());
+    assert!(frames[1]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| { item["encrypted_content"] == "sealed-wss-fixture" }));
+}
+
+#[tokio::test]
+async fn reuse_probe_handles_prior_terminal_and_server_ping_without_losing_chain() {
+    let server = Server::new(vec![vec![
+        Step::CompleteThenControl(response("resp_1", output("first"))),
+        Step::Complete(response("resp_2", output("second"))),
+    ]])
+    .await;
+    let provider = server.provider();
+    let mut h = history();
+    h.push(assistant(
+        &run(&provider, &h, &ModelParams::EMPTY).await.unwrap(),
+    ));
+    h.push(ChatMessage::user("next"));
+
+    let chunks = run(&provider, &h, &ModelParams::EMPTY).await.unwrap();
+    assert_eq!(assistant(&chunks).content.as_deref(), Some("second"));
+    assert_eq!(server.headers.lock().unwrap().len(), 1);
+    assert_eq!(server.probes.load(Ordering::Relaxed), 1);
+    let frames = server.frames();
+    assert_eq!(frames[1]["previous_response_id"], "resp_1");
+    assert_eq!(frames[1]["input"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn cancelling_stalled_probe_releases_connection_and_next_request_starts_fresh() {
+    let stalled = Arc::new(tokio::sync::Notify::new());
+    let server = Server::new(vec![
+        vec![Step::CompleteThenStall(
+            response("resp_1", output("first")),
+            stalled.clone(),
+        )],
+        vec![Step::Complete(response("resp_2", output("second")))],
+    ])
+    .await;
+    let provider = server.provider();
+    let mut h = history();
+    h.push(assistant(
+        &run(&provider, &h, &ModelParams::EMPTY).await.unwrap(),
+    ));
+    h.push(ChatMessage::user("next"));
+    tokio::time::timeout(Duration::from_secs(2), stalled.notified())
+        .await
+        .unwrap();
+
+    assert!(tokio::time::timeout(
+        Duration::from_millis(50),
+        run(&provider, &h, &ModelParams::EMPTY),
+    )
+    .await
+    .is_err());
+    let chunks = run(&provider, &h, &ModelParams::EMPTY).await.unwrap();
+    assert_eq!(assistant(&chunks).content.as_deref(), Some("second"));
+    let frames = server.frames();
+    assert_eq!(
+        frames.len(),
+        2,
+        "cancelled probe must not have submitted response.create"
+    );
+    assert!(frames[1].get("previous_response_id").is_none());
 }
 
 #[tokio::test]
