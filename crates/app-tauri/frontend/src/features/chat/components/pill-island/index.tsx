@@ -37,7 +37,9 @@ const PILL_BUTTON = cn(
   "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
   // One look whether the panel behind it is open or closed — an open panel is
   // not a selected tab. Hover is the only state change.
-  "bg-white text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 dark:bg-[var(--husk-active)] dark:text-neutral-300 dark:hover:bg-[var(--husk-hover)]",
+  // Foreground tokens already follow the theme; a second neutral inversion
+  // makes small dark-mode labels nearly the same colour as the capsule.
+  "bg-white text-text-secondary hover:bg-neutral-50 hover:text-text-primary dark:bg-[var(--husk-active)] dark:hover:bg-[var(--husk-hover)]",
 );
 
 /** The capsules above the composer as one row. Spacing is the row's `gap`, so

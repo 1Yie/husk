@@ -36,6 +36,15 @@ describe("PillIsland", () => {
     expect(compact("a")).toBeNull();
   });
 
+  test("uses theme foreground tokens without overriding the configured UI font", () => {
+    renderWithProviders(<PillIsland pills={[pill("后台任务")]} />);
+    const button = screen.getByRole("button", { name: "后台任务" });
+    expect(button).toHaveClass("text-text-secondary", "hover:text-text-primary");
+    expect(button.className).not.toMatch(/\bdark:(?:hover:)?text-neutral-/);
+    expect(button).not.toHaveClass("font-mono");
+    expect(button).not.toHaveClass("font-sans");
+  });
+
   test("two capsules: the second folds", () => {
     renderWithProviders(<PillIsland pills={[pill("a"), pill("b")]} />);
     expect(compact("a")).toBeNull();

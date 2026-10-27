@@ -15,6 +15,10 @@ const Toaster = ({ ...props }: ToasterProps) => {
         classNames: {
           toast:
             "group toast group-[.toaster]:bg-white group-[.toaster]:text-neutral-950 group-[.toaster]:border-neutral-200 group-[.toaster]:shadow-popup",
+          // Bound title and description together, without clipping sibling
+          // actions or Sonner's close button outside the toast border.
+          content:
+            "min-w-0 max-h-[min(12rem,calc(100dvh-6rem))] overflow-y-auto overscroll-contain [overflow-wrap:anywhere]",
           description: "group-[.toast]:text-neutral-500",
           actionButton:
             "group-[.toast]:bg-neutral-900 group-[.toast]:text-neutral-50",

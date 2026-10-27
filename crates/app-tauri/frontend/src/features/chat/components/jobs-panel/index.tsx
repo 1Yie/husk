@@ -20,9 +20,20 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { Orb } from "@/features/chat/components/agent-orb";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
-import { bgJobLogs, controlBgJob, type BgJobAction } from "@/lib/agent-ipc/sessions";
-import { formatElapsed, jobElapsedMs, jobStateLabel, jobTone, type JobTone } from "@/lib/bg-jobs";
+import {
+  bgJobLogs,
+  controlBgJob,
+  type BgJobAction,
+} from "@/lib/agent-ipc/sessions";
+import {
+  formatElapsed,
+  jobElapsedMs,
+  jobStateLabel,
+  jobTone,
+  type JobTone,
+} from "@/lib/bg-jobs";
 
 /** How often an expanded running job's log tail is re-read. */
 const LOG_POLL_MS = 2000;
@@ -33,17 +44,29 @@ function ToneIcon({ tone }: { tone: JobTone }) {
     case "running":
       // B4 in the row, B2 in the pill: the panel shows one job at a time and
       // gets the denser glyph; the pill speaks for the whole session.
-      return <Orb variant="B4" size={14} className="flex-none text-sky-600 dark:text-sky-400" />;
+      return (
+        <Orb
+          variant="B4"
+          size={14}
+          className="flex-none text-sky-600 dark:text-sky-400"
+        />
+      );
     case "paused":
       return <CirclePause className={cn(cls, "text-neutral-400")} />;
     case "ok":
       // One step below the other state glyphs, for the same reason as the
       // pill's check: the filled circle reads heavier at an equal size.
-      return <CircleCheck className="h-3 w-3 flex-none text-emerald-600 dark:text-emerald-400" />;
+      return (
+        <CircleCheck className="h-3 w-3 flex-none text-emerald-600 dark:text-emerald-400" />
+      );
     case "failed":
-      return <CircleX className={cn(cls, "text-rose-600 dark:text-rose-400")} />;
+      return (
+        <CircleX className={cn(cls, "text-rose-600 dark:text-rose-400")} />
+      );
     default:
-      return <Square className={cn(cls, "text-amber-600 dark:text-amber-400")} />;
+      return (
+        <Square className={cn(cls, "text-amber-600 dark:text-amber-400")} />
+      );
   }
 }
 
@@ -169,10 +192,17 @@ function JobRow({
         className="group flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]"
       >
         <span className="flex-none text-neutral-500">
-          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          {open ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronRight className="h-3 w-3" />
+          )}
         </span>
         <ToneIcon tone={tone} />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-neutral-700" title={job.command}>
+        <span
+          className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-neutral-700"
+          title={job.command}
+        >
           {job.command}
         </span>
         {!job.has_own_sink && (
@@ -185,37 +215,61 @@ function JobRow({
           <span
             className={cn(
               "font-mono text-[10.5px] tabular-nums",
-              tone === "failed" ? "text-rose-600 dark:text-rose-400" : "text-neutral-400",
+              tone === "failed"
+                ? "text-rose-600 dark:text-rose-400"
+                : "text-neutral-400",
             )}
           >
-            {live ? formatElapsed(jobElapsedMs(job, snapshotAt, now)) : jobStateLabel(job)}
+            {live
+              ? formatElapsed(jobElapsedMs(job, snapshotAt, now))
+              : jobStateLabel(job)}
           </span>
         </span>
         <span className="hidden flex-none items-center gap-0.5 group-hover:flex group-focus-within:flex">
           {restored ? (
             // The record has no process behind it — the only thing to do with
             // it is drop it from the list.
-            <ActionButton label="移除记录" disabled={busy} onClick={() => act("remove")}>
+            <ActionButton
+              label="移除记录"
+              disabled={busy}
+              onClick={() => act("remove")}
+            >
               <X className="h-3 w-3" />
             </ActionButton>
           ) : (
             <>
               {job.state.kind === "running" && (
-                <ActionButton label="暂停" disabled={busy} onClick={() => act("pause")}>
+                <ActionButton
+                  label="暂停"
+                  disabled={busy}
+                  onClick={() => act("pause")}
+                >
                   <Pause className="h-3 w-3" />
                 </ActionButton>
               )}
               {job.state.kind === "paused" && (
-                <ActionButton label="继续" disabled={busy} onClick={() => act("resume")}>
+                <ActionButton
+                  label="继续"
+                  disabled={busy}
+                  onClick={() => act("resume")}
+                >
                   <Play className="h-3 w-3" />
                 </ActionButton>
               )}
               {live ? (
-                <ActionButton label="终止" disabled={busy} onClick={() => act("kill")}>
+                <ActionButton
+                  label="终止"
+                  disabled={busy}
+                  onClick={() => act("kill")}
+                >
                   <Square className="h-3 w-3" />
                 </ActionButton>
               ) : (
-                <ActionButton label="移除" disabled={busy} onClick={() => act("remove")}>
+                <ActionButton
+                  label="移除"
+                  disabled={busy}
+                  onClick={() => act("remove")}
+                >
                   <X className="h-3 w-3" />
                 </ActionButton>
               )}
@@ -228,17 +282,35 @@ function JobRow({
           <div className="mb-1 flex items-center gap-2 text-[10.5px] text-neutral-400">
             <span className="font-mono">{job.id}</span>
             <span>{jobStateLabel(job)}</span>
-            <span className="font-mono tabular-nums">{formatElapsed(jobElapsedMs(job, snapshotAt, now))}</span>
+            <span className="font-mono tabular-nums">
+              {formatElapsed(jobElapsedMs(job, snapshotAt, now))}
+            </span>
           </div>
-          <pre className="max-h-64 overflow-auto rounded-[10px] bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] px-2.5 py-2 font-mono text-[10.5px] leading-[1.45] whitespace-pre-wrap break-all text-neutral-600 select-text">
-            {restored
-              ? job.log_tail?.trim() || "（未保存输出）"
-              : error
-                ? `读取日志失败：${error}`
-                : tail === null
-                  ? "读取中…"
-                  : tail.trim() || "（暂无输出）"}
-          </pre>
+          {!restored && !error && tail === null ? (
+            <div
+              className="max-h-64 overflow-hidden rounded-[10px] bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] px-2.5 py-2"
+              role="status"
+              aria-label="正在读取后台日志"
+              aria-busy="true"
+            >
+              <div
+                className="space-y-2 animate-pulse motion-reduce:animate-none"
+                aria-hidden="true"
+              >
+                <Skeleton className="h-2.5 w-4/5 rounded-sm" />
+                <Skeleton className="h-2.5 w-3/5 rounded-sm" />
+                <Skeleton className="h-2.5 w-2/3 rounded-sm" />
+              </div>
+            </div>
+          ) : (
+            <pre className="max-h-64 overflow-auto rounded-[10px] bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] px-2.5 py-2 font-mono text-[10.5px] leading-[1.45] whitespace-pre-wrap break-all text-neutral-600 select-text">
+              {restored
+                ? job.log_tail?.trim() || "（未保存输出）"
+                : error
+                  ? `读取日志失败：${error}`
+                  : tail?.trim() || "（暂无输出）"}
+            </pre>
+          )}
         </div>
       )}
     </div>
@@ -268,13 +340,14 @@ export function JobsList({
   // — so "清除已结束" covers both kinds of ended row.
   const finished = jobs.filter((j) => j.state.kind === "done");
   const clearFinished = () => {
-    void Promise.allSettled(finished.map((j) => controlBgJob(root, session, j.id, "remove"))).then(
-      (results) => {
-        const last = results.reverse().find((r) => r.status === "fulfilled");
-        if (last && last.status === "fulfilled") onJobs(last.value.jobs);
-        if (results.some((r) => r.status === "rejected")) toast.error("部分任务未能移除");
-      },
-    );
+    void Promise.allSettled(
+      finished.map((j) => controlBgJob(root, session, j.id, "remove")),
+    ).then((results) => {
+      const last = results.reverse().find((r) => r.status === "fulfilled");
+      if (last && last.status === "fulfilled") onJobs(last.value.jobs);
+      if (results.some((r) => r.status === "rejected"))
+        toast.error("部分任务未能移除");
+    });
   };
   const toggle = (id: string) =>
     setOpened((prev) => {
