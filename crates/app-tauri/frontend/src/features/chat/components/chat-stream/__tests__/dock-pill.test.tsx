@@ -31,9 +31,10 @@ describe("dock pill", () => {
     expect(pill).toContain("−4");
   });
 
-  test("names the file count when the active view is 产物", () => {
+  test("names the file count without dimming the inherited foreground", () => {
     renderStream({ dockCount: 3, dockTab: "artifacts" });
     expect(screen.getByRole("button", { name: "侧栏" }).textContent).toContain("3 个文件");
+    expect(screen.getByText("3 个文件").className).not.toMatch(/\bopacity-/);
   });
 
   test("pressing it asks the page to toggle the sidebar", () => {

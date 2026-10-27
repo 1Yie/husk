@@ -350,7 +350,7 @@ test("a delegate child outlives its parent turn until its own finish", () => {
 
   const settled = applyEvents(view, [{ StateChanged: "Finished" }]);
   const tool = (v: typeof settled, name: string) =>
-    v.items.find((it) => it.kind === "tool" && it.name === name);
+    v.items.filter((it) => it.kind === "tool").find((it) => it.name === name);
   expect(tool(settled, "bash")).toMatchObject({ ok: false, content: "已中断" });
   expect(tool(settled, "subagent #2")).toMatchObject({ childId: 6 });
   expect(tool(settled, "subagent #2")?.content).toBeUndefined();

@@ -2,7 +2,8 @@
 // a wrong height used to draw the strip over the composer and swallow clicks.
 
 import type { ComponentProps } from "react";
-import { fireEvent } from "@testing-library/react";
+import { act, fireEvent } from "@testing-library/react";
+import { beginLayoutResize } from "@/lib/layout-resize";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { ChatTurnRail, type RailMark } from "@/features/chat/components/chat-stream/chat-turn-rail";
 import { renderWithProviders } from "@/test/render";
@@ -18,20 +19,29 @@ const FITTING_ROWS = Math.floor((LANE_H - TRACK_PAD) / ROW_H);
 let reportedHeight: number | null = LANE_H;
 
 class SizingResizeObserver implements ResizeObserver {
+  static instances = new Set<SizingResizeObserver>();
+  private target: Element | undefined;
   private callback: ResizeObserverCallback;
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback;
+    SizingResizeObserver.instances.add(this);
   }
   observe(target: Element) {
+    this.target = target;
     if (reportedHeight == null) return;
     const entry = { target, contentRect: { height: reportedHeight } as DOMRectReadOnly };
     this.callback([entry as ResizeObserverEntry], this);
   }
   unobserve() {}
-  disconnect() {}
+  disconnect() { SizingResizeObserver.instances.delete(this); }
+  resize(height: number) {
+    if (!this.target) return;
+    this.callback([{ target: this.target, contentRect: { height } } as ResizeObserverEntry], this);
+  }
 }
 
 beforeEach(() => {
+  SizingResizeObserver.instances.clear();
   reportedHeight = LANE_H;
   vi.stubGlobal("ResizeObserver", SizingResizeObserver);
 });
@@ -68,6 +78,20 @@ function rowsOf(root: HTMLElement): HTMLElement[] {
 }
 
 describe("turn rail", () => {
+  test("splitter previews do not rebuild the rail window until release", () => {
+    const { container } = renderRail();
+    const root = container.firstElementChild as HTMLElement;
+    const before = rowsOf(root).length;
+    Object.defineProperty(root, "clientHeight", { value: 96, configurable: true });
+    const release = beginLayoutResize();
+    try {
+      act(() => { for (const observer of SizingResizeObserver.instances) observer.resize(96); });
+      expect(rowsOf(root)).toHaveLength(before);
+    } finally {
+      act(release);
+    }
+    expect(rowsOf(root).length).toBeLessThanOrEqual(9);
+  });
   test("claims only the rows its lane has", () => {
     const { container } = renderRail();
     const root = container.firstElementChild as HTMLElement;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { TooltipSimple } from "@/components/ui/tooltip";
+import { isLayoutResizing, onLayoutResizeEnd } from "@/lib/layout-resize";
 
 /** Row height; the strip slides in whole rows. */
 const ROW_H = 11;
@@ -88,14 +89,22 @@ export function ChatTurnRail({
   useEffect(() => {
     const root = rootEl;
     if (!root) return;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      const next = rowsForHeight(entry ? entry.contentRect.height : root.clientHeight);
+    const measure = (height: number) => {
+      const next = rowsForHeight(height);
       // Unchanged counts bail out of the render.
       setRowBudget((prev) => (prev === next ? prev : next));
+    };
+    const observer = new ResizeObserver((entries) => {
+      if (isLayoutResizing()) return;
+      const entry = entries[entries.length - 1];
+      measure(entry ? entry.contentRect.height : root.clientHeight);
     });
     observer.observe(root);
-    return () => observer.disconnect();
+    const unsubscribe = onLayoutResizeEnd(() => measure(root.clientHeight));
+    return () => {
+      unsubscribe();
+      observer.disconnect();
+    };
   }, [rootEl]);
 
   useEffect(() => {

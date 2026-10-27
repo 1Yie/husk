@@ -1,13 +1,39 @@
-
-import { memo, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, startTransition, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  memo,
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+  startTransition,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import { createStepMeasurements, stepBoxHeight as boxHeight } from "./step-measurements";
+import { isLayoutResizing, onLayoutResizeEnd } from "@/lib/layout-resize";
+export { scrollAnchorDelta } from "./step-measurements";
 import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
-import { toolRowId, type SessionView, type StreamItem } from "@/features/chat/hooks/stream-view";
+import {
+  toolRowId,
+  type SessionView,
+  type StreamItem,
+} from "@/features/chat/hooks/stream-view";
 import {
   AssistantStatus,
   formatElapsed,
 } from "@/features/chat/components/assistant-status/index";
-import { ChatSkeleton, OlderPageSkeleton } from "@/features/chat/components/chat-skeleton/index";
-import { ToolChips, toolActivityPreview, type ToolChipRow } from "@/features/chat/components/tool-chips/index";
+import {
+  ChatSkeleton,
+  OlderPageSkeleton,
+} from "@/features/chat/components/chat-skeleton/index";
+import {
+  ToolChips,
+  toolActivityPreview,
+  type ToolChipRow,
+} from "@/features/chat/components/tool-chips/index";
 import {
   Check,
   Copy,
@@ -22,7 +48,10 @@ import {
 } from "@keyline-icons/react";
 import { chatMarkdownComponents } from "@/features/chat/components/chat-stream/markdown-components";
 import { TooltipSimple } from "@/components/ui/tooltip";
-import { ChatTurnRail, type RailMark } from "@/features/chat/components/chat-stream/chat-turn-rail";
+import {
+  ChatTurnRail,
+  type RailMark,
+} from "@/features/chat/components/chat-stream/chat-turn-rail";
 import { opensTurn, railHistoryBoundary } from "./rail-history";
 import {
   ContextMenu,
@@ -43,9 +72,19 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { requestQuote, selectionWithin } from "@/lib/selection-bus";
 import { cn } from "@/lib/utils";
-import { CircleCheck, CircleX, FileDiff, Package, PanelRightClose, PanelRightOpen } from "lucide-react";
+import {
+  CircleCheck,
+  CircleX,
+  FileDiff,
+  Package,
+  PanelRightClose,
+  PanelRightOpen,
+} from "lucide-react";
 import { Orb } from "@/features/chat/components/agent-orb";
-import { PillIsland, type IslandPill } from "@/features/chat/components/pill-island";
+import {
+  PillIsland,
+  type IslandPill,
+} from "@/features/chat/components/pill-island";
 import type { JobsSummary } from "@/lib/bg-jobs";
 import { summarizeChildren } from "@/lib/subagents";
 import type { SessionChild } from "@/features/chat/hooks/running-children";
@@ -58,8 +97,6 @@ import { PlanCard } from "@/features/chat/components/chat-stream/plan-card";
 import { ThinkingBlock } from "@/features/chat/components/chat-stream/turn-blocks";
 import { commandDesc } from "@/features/chat/components/composer-bar/commands";
 import type { PlanPayload } from "@/types";
-
-
 
 /** Image preview inside the `@`-chip tooltip — mounts on hover (Radix
  * portals content on open), resolves the staged path to a `data:` URL
@@ -132,9 +169,13 @@ function UserTokenChip({ token }: { token: string }) {
           <div className="flex flex-col gap-1 text-left max-w-xs py-0.5">
             <div className="flex items-center gap-1.5">
               <Terminal className="h-3.5 w-3.5 text-violet-400 dark:text-violet-600 shrink-0" />
-              <span className="font-semibold text-neutral-100">指令 /{cmdName}</span>
+              <span className="font-semibold text-neutral-100">
+                指令 /{cmdName}
+              </span>
             </div>
-            {desc && <span className="text-[11.5px] text-neutral-300">{desc}</span>}
+            {desc && (
+              <span className="text-[11.5px] text-neutral-300">{desc}</span>
+            )}
             {args && (
               <div className="font-mono text-[11px] text-neutral-500 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
                 参数: {args}
@@ -162,7 +203,9 @@ function UserTokenChip({ token }: { token: string }) {
           <div className="flex flex-col gap-1 text-left max-w-xs py-0.5">
             <div className="flex items-center gap-1.5">
               <Sparkles className="h-3.5 w-3.5 text-amber-400 dark:text-amber-600 shrink-0" />
-              <span className="font-semibold text-neutral-100">技能 ${skillName}</span>
+              <span className="font-semibold text-neutral-100">
+                技能 ${skillName}
+              </span>
             </div>
             {args && (
               <div className="font-mono text-[11px] text-neutral-500 bg-[color-mix(in_srgb,var(--husk-n950)_70%,transparent)] rounded px-1.5 py-0.5 border border-[color-mix(in_srgb,var(--husk-n700)_60%,transparent)]">
@@ -186,12 +229,18 @@ function UserTokenChip({ token }: { token: string }) {
 
 const userMarkdownComponents = {
   ...chatMarkdownComponents,
-  inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<"code">) => {
+  inlineCode: ({
+    children,
+    ...props
+  }: React.ComponentPropsWithoutRef<"code">) => {
     const text =
       typeof children === "string"
         ? children.trim()
         : Array.isArray(children)
-          ? children.map((c) => (typeof c === "string" ? c : "")).join("").trim()
+          ? children
+              .map((c) => (typeof c === "string" ? c : ""))
+              .join("")
+              .trim()
           : "";
     if (text.startsWith("@") || text.startsWith("/") || text.startsWith("$")) {
       return <UserTokenChip token={text} />;
@@ -220,10 +269,14 @@ const UserMemoStreamdown = memo(function UserMemoStreamdown({
  * fenced-content blocks, and `/skill`/`$skill` into a skill-prompt
  * preamble — that text is for the model. The user bubble shows only the
  * compact `@path` / `/name` chip. */
-const WORKSPACE_FILE_BLOCK = /\s*`<workspace-file path="([^"]+)">`\s*```\n[\s\S]*?```\s*/g;
-const ATTACHED_FILE_BLOCK = /\s*<attached-file path="([^"]+)">\s*```[\s\S]*?```\s*/g;
-const ATTACHED_REF_BLOCK = /\s*\[attached (?:image|text|any): ([^\]]+?)(?: — [^\]]+)?\]\s*/g;
-const ATTACHED_IMAGE_RE = /\s*<attached-image path="([^"]+)"(?:\s+name="([^"]*)")?\s*\/>\s*/g;
+const WORKSPACE_FILE_BLOCK =
+  /\s*`<workspace-file path="([^"]+)">`\s*```\n[\s\S]*?```\s*/g;
+const ATTACHED_FILE_BLOCK =
+  /\s*<attached-file path="([^"]+)">\s*```[\s\S]*?```\s*/g;
+const ATTACHED_REF_BLOCK =
+  /\s*\[attached (?:image|text|any): ([^\]]+?)(?: — [^\]]+)?\]\s*/g;
+const ATTACHED_IMAGE_RE =
+  /\s*<attached-image path="([^"]+)"(?:\s+name="([^"]*)")?\s*\/>\s*/g;
 const SKILL_PROMPT_RE =
   /^The user invoked the `([/$][^\s`]+)` skill\. Follow its instructions exactly\.\n\n---\n[\s\S]*$/;
 
@@ -238,7 +291,10 @@ function collapsePromptArtifacts(md: string): string {
     .replace(ATTACHED_FILE_BLOCK, (_m, p) => `\`@${p}\` `)
     .replace(ATTACHED_REF_BLOCK, (_m, p) => `\`@${p}\` `)
     .replace(ATTACHED_IMAGE_RE, (_m, p) => `\`@${p}\` `)
-    .replace(/`(@[^`]+)` \((?:outside workspace|not found|binary file) — [^)]+\)/g, "`$1`")
+    .replace(
+      /`(@[^`]+)` \((?:outside workspace|not found|binary file) — [^)]+\)/g,
+      "`$1`",
+    )
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
@@ -284,7 +340,10 @@ function EmptyGreeting() {
 
 function getUserPreview(userText?: string): string {
   if (!userText) return "用户提问";
-  return collapsePromptArtifacts(userText).replace(/[`]/g, "").replace(/\s+/g, " ").trim();
+  return collapsePromptArtifacts(userText)
+    .replace(/[`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getAssistantPreview(steps: AssistantStep[]): string {
@@ -415,6 +474,15 @@ type AssistantStep =
  *  root get their real TurnStep. Placeholders carry the rail target ids. */
 interface VirtualStepApi {
   observe: (el: Element, onChange: (visible: boolean) => void) => () => void;
+  /** Track a mounted step's height. A change to a step lying wholly above
+   *  the viewport is given back to scrollTop — see `scrollAnchorDelta`. */
+  measure: (
+    el: HTMLElement,
+    height: number,
+    onHeight: (height: number) => void,
+  ) => () => void;
+  /** A history prepend/reveal has already restored the viewport. */
+  settle: () => void;
   /** Synchronous "is this inside the window the reader will see?" — read in
    *  a step's first layout pass so the steps on screen mount BEFORE the
    *  first paint. The observer's first report only arrives after a frame,
@@ -532,7 +600,7 @@ function TurnFooter({
     <div
       className={cn(
         "flex items-center gap-1.5 text-[11px] text-neutral-500 select-none",
-        align === "end" ? "justify-end" : "justify-start"
+        align === "end" ? "justify-end" : "justify-start",
       )}
     >
       {copyText != null && copyText.trim() !== "" && (
@@ -649,7 +717,12 @@ interface TurnSpan {
 /** Fold items[start..] into turn spans, appended to `out`. Identical
  * output to the old single-pass `parseTurns`, just callable on a tail
  * slice so untouched leading turns can be reused by reference. */
-function foldTurnSpans(items: StreamItem[], start: number, end: number, out: TurnSpan[]) {
+function foldTurnSpans(
+  items: StreamItem[],
+  start: number,
+  end: number,
+  out: TurnSpan[],
+) {
   let currentTurn: Turn | null = null;
   let turnStart = start;
 
@@ -668,11 +741,11 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
   // Stable id: `hi` (global history index) survives prepended pages;
   // `ts` (message timestamp) does too; index is the live-only fallback.
   const turnId = (item: StreamItem, idx: number) =>
-    item.hi != null
-      ? `t${item.hi}`
-      : item.kind === "user" && item.ts != null
+    item.hi == null
+      ? item.kind === "user" && item.ts != null
         ? `ts${item.ts}`
-        : `i${idx}`;
+        : `i${idx}`
+      : `t${item.hi}`;
 
   const ensureTurn = (item: StreamItem, idx: number) => {
     if (!currentTurn) {
@@ -774,13 +847,13 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
         text: item.text,
         done: item.done,
         startedAt: item.startedAt,
-          // Settled span — `ts` is stamped when the block closes (live:
-          // `closeOpenThinking`; replay: persisted `m.ts`), so the figure
-          // survives a session switch that reuses the cached view.
-          elapsedMs:
-            item.done && item.ts != null && item.startedAt != null
-              ? item.ts - item.startedAt
-              : undefined,
+        // Settled span — `ts` is stamped when the block closes (live:
+        // `closeOpenThinking`; replay: persisted `m.ts`), so the figure
+        // survives a session switch that reuses the cached view.
+        elapsedMs:
+          item.done && item.ts != null && item.startedAt != null
+            ? item.ts - item.startedAt
+            : undefined,
       });
       continue;
     }
@@ -821,13 +894,16 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
         {
           // A delegated child's id names its card exactly; the label is only
           // the fallback (two children can share one).
-          const byId = item.parent !== "delegate" && item.childId != null
-            ? childRows.get(item.childId)
-            : undefined;
+          const byId =
+            item.parent !== "delegate" && item.childId != null
+              ? childRows.get(item.childId)
+              : undefined;
           const findParent = (rows: ToolChipRow[]): ToolChipRow | null => {
             for (let j = rows.length - 1; j >= 0; j--) {
               if (rows[j].label === item.parent) return rows[j];
-              const nested = rows[j].children ? findParent(rows[j].children!) : null;
+              const nested = rows[j].children
+                ? findParent(rows[j].children!)
+                : null;
               if (nested) return nested;
             }
             return null;
@@ -846,39 +922,43 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
           };
           const parentRow = byId ?? scanTurn();
           if (parentRow) {
-              const child: ToolChipRow = {
-                id: toolRowId(item, idx),
-                // A subagent is a second agent, not a tool call: give it its
-                // own card so it does not read as one more line in the list.
-                kind: item.parent === "delegate" ? "agent" : undefined,
-                // A delegated child's own card: carry its id and its ordered body so
-                // a running card can show text and tool runs interleaved.
-                childId: item.parent === "delegate" ? item.childId : undefined,
-                segments: item.parent === "delegate" ? item.segments : undefined,
-                label: item.name,
-                chip:
-                  item.parent === "delegate"
-                    ? (item.args ?? "")
-                    : item.args && item.args !== item.name
-                      ? item.args
-                      : "",
-                status:
-                  item.uiType === "rejected"
-                    ? "rejected"
-                    : item.content === undefined
-                      ? "running"
-                      : item.ok === false
-                        ? "aborted"
-                        : "done",
-                // Finished → the report; still running → whatever answer text
-                // it streamed (its reasoning rides its own segments).
-                detail: item.content ? [item.content] : item.live ? [item.live] : undefined,
-                waiting: item.waiting,
-                uiType: item.uiType,
-              };
-              if (child.childId != null) childRows.set(child.childId, child);
-              parentRow.children = [...(parentRow.children ?? []), child];
-              continue;
+            const child: ToolChipRow = {
+              id: toolRowId(item, idx),
+              // A subagent is a second agent, not a tool call: give it its
+              // own card so it does not read as one more line in the list.
+              kind: item.parent === "delegate" ? "agent" : undefined,
+              // A delegated child's own card: carry its id and its ordered body so
+              // a running card can show text and tool runs interleaved.
+              childId: item.parent === "delegate" ? item.childId : undefined,
+              segments: item.parent === "delegate" ? item.segments : undefined,
+              label: item.name,
+              chip:
+                item.parent === "delegate"
+                  ? (item.args ?? "")
+                  : item.args && item.args !== item.name
+                    ? item.args
+                    : "",
+              status:
+                item.uiType === "rejected"
+                  ? "rejected"
+                  : item.content === undefined
+                    ? "running"
+                    : item.ok === false
+                      ? "aborted"
+                      : "done",
+              // Finished → the report; still running → whatever answer text
+              // it streamed (its reasoning rides its own segments).
+              detail: item.content
+                ? [item.content]
+                : item.live
+                  ? [item.live]
+                  : undefined,
+              waiting: item.waiting,
+              uiType: item.uiType,
+            };
+            if (child.childId != null) childRows.set(child.childId, child);
+            parentRow.children = [...(parentRow.children ?? []), child];
+            continue;
           }
           // No parent found — fall through and draw it as a top-level row
           // rather than dropping the event.
@@ -924,7 +1004,11 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
               id: `approval-${item.requestId}`,
               label: item.toolName,
               chip: "请求批准",
-              status: item.resolved ? (item.approved ? "done" : "aborted") : "running",
+              status: item.resolved
+                ? item.approved
+                  ? "done"
+                  : "aborted"
+                : "running",
               detail: item.diff ? [item.diff] : undefined,
               uiType: item.diff ? "diff" : undefined,
               approval: {
@@ -937,7 +1021,8 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
             };
 
       // A child card is findable by id from anywhere later in this turn.
-      if (row.kind === "agent" && row.childId != null) childRows.set(row.childId, row);
+      if (row.kind === "agent" && row.childId != null)
+        childRows.set(row.childId, row);
       if (lastStep?.type === "tools") {
         lastStep.rows.push(row);
         // The step's clock anchors on its FIRST tool — later calls in the
@@ -968,7 +1053,13 @@ function foldTurnSpans(items: StreamItem[], start: number, end: number, out: Tur
  * Strings shared with the items compare by reference, so this is cheap. */
 function sameShape(a: unknown, b: unknown): boolean {
   if (a === b) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (
+    typeof a !== "object" ||
+    typeof b !== "object" ||
+    a === null ||
+    b === null
+  )
+    return false;
   if (Array.isArray(a)) {
     if (!Array.isArray(b) || a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (!sameShape(a[i], b[i])) return false;
@@ -978,7 +1069,13 @@ function sameShape(a: unknown, b: unknown): boolean {
   const ka = Object.keys(a);
   if (ka.length !== Object.keys(b).length) return false;
   for (const k of ka) {
-    if (!sameShape((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false;
+    if (
+      !sameShape(
+        (a as Record<string, unknown>)[k],
+        (b as Record<string, unknown>)[k],
+      )
+    )
+      return false;
   }
   return true;
 }
@@ -1039,9 +1136,15 @@ const STEP_LABEL: Record<AssistantStep["type"], string> = {
 /** Rail dashes per answer — longer answers fold step runs into one dash. */
 const MAX_STEP_MARKS = 6;
 
-const stepMarkCache = new WeakMap<AssistantStep, { preview: string; weight: number }>();
+const stepMarkCache = new WeakMap<
+  AssistantStep,
+  { preview: string; weight: number }
+>();
 
-function stepMarkInfo(step: AssistantStep): { preview: string; weight: number } {
+function stepMarkInfo(step: AssistantStep): {
+  preview: string;
+  weight: number;
+} {
   let info = stepMarkCache.get(step);
   if (!info) {
     info = { preview: stepPreview(step), weight: stepWeight(step) };
@@ -1055,7 +1158,10 @@ function stepPreview(step: AssistantStep): string {
   const raw = getAssistantPreview([step]);
   const cut = clipPreview(raw);
   // The mark's own label names the block, so the "思考: " prefix is dropped.
-  return cut.replace(/^(思考|工具):\s*/, "").replace(/\s+/g, " ").trim();
+  return cut
+    .replace(/^(思考|工具):\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** Rail tooltips get one line: 160 characters, then an ellipsis. */
@@ -1100,7 +1206,13 @@ function sliceAtBoundary(text: string, max: number): string {
   return head;
 }
 
-function CappedAssistantText({ text, animating }: { text: string; animating?: boolean }) {
+function CappedAssistantText({
+  text,
+  animating,
+}: {
+  text: string;
+  animating?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const capped = !animating && !expanded && text.length > MAX_TEXT_CHARS;
   const shown = capped ? sliceAtBoundary(text, MAX_TEXT_CHARS) : text;
@@ -1177,11 +1289,11 @@ const TurnStep = memo(
         !PLAIN_MARKUP.test(step.text);
 
       return (
-        <div
-          className="w-full min-w-0 text-[14px] text-neutral-900 [&_p]:max-w-none"
-        >
+        <div className="w-full min-w-0 text-[14px] text-neutral-900 [&_p]:max-w-none">
           {plain ? (
-            <div className="whitespace-pre-wrap leading-relaxed break-words">{step.text}</div>
+            <div className="whitespace-pre-wrap leading-relaxed break-words">
+              {step.text}
+            </div>
           ) : (
             <CappedAssistantText text={step.text} animating={isAnimating} />
           )}
@@ -1199,13 +1311,13 @@ const TurnStep = memo(
       // Settled span — replayed rows carry ts + rewound startedAt;
       // live rows bank startedAt and stamp ts on finish.
       const elapsedMs =
-        !toolsLive && step.startedAt != null && (step.phaseEnd ?? step.endedAt) != null
+        !toolsLive &&
+        step.startedAt != null &&
+        (step.phaseEnd ?? step.endedAt) != null
           ? (step.phaseEnd ?? step.endedAt)! - step.startedAt
           : undefined;
       return (
-        <div
-          className="flex w-full min-w-0 flex-col items-start gap-2"
-        >
+        <div className="flex w-full min-w-0 flex-col items-start gap-2">
           {/* ONE row across the whole phase — mode flips tools →
            *  tools_done only when the next step lands (or the turn
            *  ends), so the orb rides through consecutive calls. The
@@ -1248,9 +1360,7 @@ const TurnStep = memo(
 
     if (step.type === "compaction") {
       return (
-        <div
-          className="w-full min-w-0"
-        >
+        <div className="w-full min-w-0">
           <CompactionCard
             before={step.before}
             after={step.after}
@@ -1265,9 +1375,7 @@ const TurnStep = memo(
 
     if (step.type === "plan") {
       return (
-        <div
-          className="w-full min-w-0"
-        >
+        <div className="w-full min-w-0">
           <PlanCard plan={step.plan} />
         </div>
       );
@@ -1311,9 +1419,10 @@ function recallStepHeight(scope: string, id: string): number | undefined {
 }
 
 function rememberStepHeight(scope: string, id: string, height: number) {
-  if (height <= 0) return;
+  if (!Number.isFinite(height) || height < 0) return;
   let bucket = stepHeights.get(scope);
-  if (bucket) stepHeights.delete(scope); // re-insert below: touch = youngest
+  if (bucket)
+    stepHeights.delete(scope); // re-insert below: touch = youngest
   else bucket = new Map();
   stepHeights.set(scope, bucket);
   if (!bucket.has(id)) stepHeightEntries += 1;
@@ -1328,7 +1437,13 @@ function rememberStepHeight(scope: string, id: string, height: number) {
 
 /** Keys that scroll the stream — a reader gesture, same as a wheel. */
 const SCROLL_KEYS = new Set([
-  "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ",
+  "ArrowUp",
+  "ArrowDown",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  " ",
 ]);
 
 /** The dock pill's glyph pair. At rest it shows what the sidebar HOLDS (a
@@ -1366,7 +1481,10 @@ const STEP_OVERSCAN = 600;
 function estimateStepHeight(step: AssistantStep): number {
   switch (step.type) {
     case "text":
-      return Math.max(28, Math.min(520, 28 + Math.ceil(step.text.length / 72) * 22));
+      return Math.max(
+        28,
+        Math.min(520, 28 + Math.ceil(step.text.length / 72) * 22),
+      );
     case "plan":
       return 104;
     case "compaction":
@@ -1402,13 +1520,21 @@ const VirtualStep = memo(function VirtualStep({
   scope: string;
 }) {
   const api = useContext(VirtualStepContext);
-  const [mounted, setMounted] = useState(() => typeof IntersectionObserver === "undefined");
+  const [mounted, setMounted] = useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
   const id = `chat-turn-${turnId}-step-${stepIdx}`;
   const [height, setHeight] = useState(
     () => recallStepHeight(scope, id) ?? estimateStepHeight(step),
   );
   const wrapRef = useRef<HTMLDivElement>(null);
   const measuredRef = useRef(height);
+  // The placeholder height the real node replaces — read by the mount's
+  // anchoring pass without making that effect depend on `height`.
+  const placeholderRef = useRef(height);
+  placeholderRef.current = height;
+  const mountedRef = useRef(mounted);
+  mountedRef.current = mounted;
   const unmountTimerRef = useRef<number | null>(null);
   // The live tail never unmounts: a reader scrolled away from a streaming
   // step would otherwise freeze it at a stale height, and the jump back to
@@ -1443,17 +1569,19 @@ const VirtualStep = memo(function VirtualStep({
       // Hysteresis: a fast scroll must not mount/unmount the same step on
       // every frame. Keep it until it has been out of the overscan for a
       // moment; a re-entry cancels the pending unmount.
-      if (unmountTimerRef.current != null) return;
+      if (!mountedRef.current || unmountTimerRef.current != null) return;
       unmountTimerRef.current = window.setTimeout(() => {
         unmountTimerRef.current = null;
         if (liveRef.current) return;
+        // A scroll correction can invalidate an older visibility report.
+        // Recheck the actual window before replacing content with a spacer.
+        const el = wrapRef.current;
+        if (!el || !mountedRef.current || isLayoutResizing() || api.isNear(el)) return;
         // Flush the measured height in the SAME commit as the unmount so
         // swapping the real node for its placeholder cannot move the scroll.
-        const measured = wrapRef.current?.offsetHeight ?? 0;
-        if (measured > 0) {
-          measuredRef.current = measured;
-          setHeight(measured);
-        }
+        const measured = boxHeight(el);
+        measuredRef.current = measured;
+        setHeight(measured);
         setMounted(false);
       }, 1200);
     });
@@ -1461,7 +1589,8 @@ const VirtualStep = memo(function VirtualStep({
 
   useEffect(
     () => () => {
-      if (unmountTimerRef.current != null) window.clearTimeout(unmountTimerRef.current);
+      if (unmountTimerRef.current != null)
+        window.clearTimeout(unmountTimerRef.current);
     },
     [],
   );
@@ -1470,23 +1599,27 @@ const VirtualStep = memo(function VirtualStep({
     if (!mounted) return;
     const el = wrapRef.current;
     if (!el) return;
-    const actual = el.offsetHeight;
+    const actual = boxHeight(el);
     measuredRef.current = actual;
     rememberStepHeight(scope, id, actual);
+    const track = (h: number) => {
+      measuredRef.current = h;
+      rememberStepHeight(scope, id, h);
+    };
+    // The shared observer batches mount swaps and later growth together.
+    if (api) return api.measure(el, placeholderRef.current, track);
     const ro = new ResizeObserver(() => {
-      const el2 = wrapRef.current;
-      if (!el2) return;
-      measuredRef.current = el2.offsetHeight;
-      rememberStepHeight(scope, id, el2.offsetHeight);
+      if (wrapRef.current) track(boxHeight(wrapRef.current));
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [mounted, id, scope]);
+  }, [mounted, id, scope, api]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (mounted) return;
     // Freeze the placeholder at the last measured height so unmounting a
-    // visible step cannot change the scroll height.
+    // visible step cannot change the scroll height. Layout effect: a passive
+    // one let the wrong height paint for a frame.
     if (height !== measuredRef.current) setHeight(measuredRef.current);
   }, [mounted, height]);
 
@@ -1632,7 +1765,7 @@ const ChatTurn = memo(function ChatTurn({
         </div>
       )}
       {/* ts falls back to the prompt's for text-less turns;
-        * hidden while this turn streams. */}
+       * hidden while this turn streams. */}
       {turn.steps.length > 0 &&
         !streaming &&
         (turn.assistantTs ?? turn.ts) != null && (
@@ -1642,12 +1775,18 @@ const ChatTurn = memo(function ChatTurn({
               ts={(turn.assistantTs ?? turn.ts) as number}
               copyText={copyText}
               durationMs={
-                turn.assistantTs != null && turn.ts != null && turn.assistantTs > turn.ts
+                turn.assistantTs != null &&
+                turn.ts != null &&
+                turn.assistantTs > turn.ts
                   ? turn.assistantTs - turn.ts
                   : undefined
               }
               onRetry={retryable ? () => void retryTurn() : undefined}
-              onUndo={retryable && hasFileChanges ? () => void undoLastTurn() : undefined}
+              onUndo={
+                retryable && hasFileChanges
+                  ? () => void undoLastTurn()
+                  : undefined
+              }
             />
           </div>
         )}
@@ -1655,11 +1794,34 @@ const ChatTurn = memo(function ChatTurn({
   );
 });
 
-export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionKey, hasMore, onLoadOlder, dockOpen, dockCount = 0, dockTab, dockAdds = 0, dockDels = 0, onToggleDock, jobs, jobsOpen, onToggleJobs, subagents, subagentsOpen, onToggleSubagents, suppressPills = false }: Props) {
+export function ChatStream({
+  view,
+  bottomPad = 128,
+  composerH,
+  loading,
+  sessionKey,
+  hasMore,
+  onLoadOlder,
+  dockOpen,
+  dockCount = 0,
+  dockTab,
+  dockAdds = 0,
+  dockDels = 0,
+  onToggleDock,
+  jobs,
+  jobsOpen,
+  onToggleJobs,
+  subagents,
+  subagentsOpen,
+  onToggleSubagents,
+  suppressPills = false,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const [virtualApi, setVirtualApi] = useState<VirtualStepApi | null>(null);
   const pinnedRef = useRef(true);
+  // A programmatic smooth scroll (rail jump, scroll-to-bottom) is running.
+  const isSmoothScrollingRef = useRef(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   // Index of the last user item seen — a newly appended one means the
   // user just submitted, which always re-pins to the bottom.
@@ -1674,13 +1836,33 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const root = scrollRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
     const callbacks = new Map<Element, (visible: boolean) => void>();
+    const isNear = (el: Element) => {
+      // Follow the final bottom viewport, not a stale pre-snap scrollTop.
+      const rootRect = root.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const top = r.top - rootRect.top + root.scrollTop;
+      const viewTop = pinnedRef.current
+        ? Math.max(0, root.scrollHeight - root.clientHeight)
+        : root.scrollTop;
+      return top + r.height >= viewTop - STEP_OVERSCAN &&
+        top <= viewTop + root.clientHeight + STEP_OVERSCAN;
+    };
     const io = new IntersectionObserver(
       (entries) => {
-        for (const entry of entries) callbacks.get(entry.target)?.(entry.isIntersecting);
+        if (isLayoutResizing()) return;
+        for (const entry of entries)
+          callbacks.get(entry.target)?.(entry.isIntersecting);
       },
       { root, rootMargin: `${STEP_OVERSCAN}px 0px ${STEP_OVERSCAN}px 0px` },
     );
+    // Bottom-follow and smooth rail jumps own their own final alignment.
+    const measurements = createStepMeasurements(
+      root,
+      () => !pinnedRef.current && !isSmoothScrollingRef.current,
+    );
     setVirtualApi({
+      measure: measurements.observe,
+      settle: measurements.settle,
       observe: (el, onChange) => {
         callbacks.set(el, onChange);
         io.observe(el);
@@ -1689,25 +1871,17 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           io.unobserve(el);
         };
       },
-      isNear: (el) => {
-        // Content-space offset of the step vs the window the reader WILL
-        // see: while following the bottom (every open/switch lands there),
-        // that is the bottom of the column, not the pre-snap scrollTop.
-        const rootRect = root.getBoundingClientRect();
-        const r = el.getBoundingClientRect();
-        const top = r.top - rootRect.top + root.scrollTop;
-        const bottom = top + r.height;
-        const viewTop = pinnedRef.current
-          ? Math.max(0, root.scrollHeight - root.clientHeight)
-          : root.scrollTop;
-        return (
-          bottom >= viewTop - STEP_OVERSCAN &&
-          top <= viewTop + root.clientHeight + STEP_OVERSCAN
-        );
-      },
+      isNear,
+    });
+    const unsubscribe = onLayoutResizeEnd(() => {
+      for (const [el, onChange] of callbacks) {
+        if (el.isConnected) onChange(isNear(el));
+      }
     });
     return () => {
+      unsubscribe();
       io.disconnect();
+      measurements.disconnect();
       callbacks.clear();
     };
   }, []);
@@ -1732,7 +1906,12 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const onKey = (e: KeyboardEvent) => {
       if (!SCROLL_KEYS.has(e.key)) return;
       const t = e.target as HTMLElement | null;
-      if (t?.closest("input, textarea, select, [contenteditable='true'], [role='textbox']")) return;
+      if (
+        t?.closest(
+          "input, textarea, select, [contenteditable='true'], [role='textbox']",
+        )
+      )
+        return;
       noteUserScroll();
     };
     document.addEventListener("keydown", onKey, true);
@@ -1816,7 +1995,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     // fetch whose restore then lands AFTER the landing snap — committing
     // in the same batch and overwriting it, so the session opened at a
     // mid-list anchor instead of the newest message.
-    if (!el || !onLoadOlder || !hasMore || !landed || fetchingRef.current) return false;
+    if (!el || !onLoadOlder || !hasMore || !landed || fetchingRef.current)
+      return false;
     fetchingRef.current = true;
     setFetching(true);
     restoreRef.current = { top: el.scrollTop, height: el.scrollHeight };
@@ -1874,7 +2054,10 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // reuse every old span at its shifted offset so all existing Turn
   // objects keep their identity — a full refold used to invalidate every
   // ChatTurn memo, re-rendering the entire history on each page fetch.
-  const parseCacheRef = useRef<{ items: StreamItem[]; spans: TurnSpan[] } | null>(null);
+  const parseCacheRef = useRef<{
+    items: StreamItem[];
+    spans: TurnSpan[];
+  } | null>(null);
   const turns = useMemo(() => {
     const items = view.items;
     const spans: TurnSpan[] = [];
@@ -1884,7 +2067,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       const delta = items.length - prev.items.length;
       // `delta === items.length` when the previous items were empty —
       // `items[delta]` is out of bounds there, so read it once.
-      const boundary = delta > 0 && delta < items.length ? items[delta] : undefined;
+      const boundary =
+        delta > 0 && delta < items.length ? items[delta] : undefined;
       // Pure prepend? `prev.items[0]` resurfacing at index `delta` means
       // the old array shifted right wholesale. Fold only the new head —
       // when the splice lands mid-turn (boundary isn't a `user` item),
@@ -2033,7 +2217,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       window.cancelIdleCallback ?? ((id: number) => window.clearTimeout(id));
     const id = schedule(() =>
       startTransition(() =>
-        setHiddenTop((h) => Math.max(backfillFloor, (h ?? hidden) - BACKFILL_CHUNK)),
+        setHiddenTop((h) =>
+          Math.max(backfillFloor, (h ?? hidden) - BACKFILL_CHUNK),
+        ),
       ),
     );
     if (hidden - BACKFILL_CHUNK <= backfillFloor) loadStamp("backfill-done");
@@ -2076,7 +2262,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     revealRestoreRef.current = null;
     if (!r || !el) return;
     el.scrollTop = r.top + (el.scrollHeight - r.height);
-  }, [hidden]);
+    virtualApi?.settle();
+  }, [hidden, virtualApi]);
 
   // The stream must always leave the reader something to scroll with. A column
   // with no scroll range emits no scroll event at all, and BOTH ways older
@@ -2165,7 +2352,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // its own indicator sits scrolled-away in the old turn.
   const lastUserIdx = view.items.reduce(
     (acc, it, i) => (it.kind === "user" ? i : acc),
-    -1
+    -1,
   );
   const hasActiveItem = view.items.slice(lastUserIdx + 1).some((i) => {
     if (i.kind === "thinking" && !i.done) return true;
@@ -2182,7 +2369,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   // phase start.
   const pendingCompactionAt = view.items.reduce<number | undefined>(
     (acc, it) => (it.kind === "compaction" && it.pending ? it.ts : acc),
-    undefined
+    undefined,
   );
   const compacting = view.state === "Compacting";
 
@@ -2212,14 +2399,19 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     const openTurns = Math.max(0, unloaded - (boundaryTurn ? 1 : 0));
     const PH_CAP = 120;
     const boundaryRows = boundaryTurn ? 1 : 0;
-    const openRows = Math.max(0, Math.min(openTurns * 2, PH_CAP - boundaryRows));
+    const openRows = Math.max(
+      0,
+      Math.min(openTurns * 2, PH_CAP - boundaryRows),
+    );
     for (let i = 0; i < openRows; i++) {
       // Exact two-rows-per-turn pairing while the range fits; even mapping
       // back onto the real ordinal range once the cap compresses it.
       const phIndex =
         openRows === openTurns * 2
           ? Math.floor(i / 2)
-          : Math.round((i / Math.max(1, openRows - 1)) * Math.max(0, openTurns - 1));
+          : Math.round(
+              (i / Math.max(1, openRows - 1)) * Math.max(0, openTurns - 1),
+            );
       list.push({
         id: `mark-ph-${i}`,
         type: "placeholder",
@@ -2273,7 +2465,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           type: "user",
           turnId: turn.id,
           targetId: `chat-turn-${turn.id}-user`,
-          previewTitle: turn.steer ? `用户插话 · 第 ${Math.max(1, turnNum)} 轮` : `用户提问 #${turnNum}`,
+          previewTitle: turn.steer
+            ? `用户插话 · 第 ${Math.max(1, turnNum)} 轮`
+            : `用户提问 #${turnNum}`,
           previewSnippet: clipPreview(userPreview),
           len: userPreview.length,
         });
@@ -2295,7 +2489,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           const step = turn.steps[from];
           const isStreaming = view.streaming && isLastTurn && to === n;
           let len = 0;
-          for (let k = from; k < to; k++) len += stepMarkInfo(turn.steps[k]).weight;
+          for (let k = from; k < to; k++)
+            len += stepMarkInfo(turn.steps[k]).weight;
           const extra = to - from - 1;
           list.push({
             id: `mark-${turn.id}-step-${from}`,
@@ -2317,7 +2512,10 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             isStreaming,
           });
         }
-      } else if (idx === turns.length - 1 && (view.streaming || showReplyWait)) {
+      } else if (
+        idx === turns.length - 1 &&
+        (view.streaming || showReplyWait)
+      ) {
         list.push({
           id: `mark-${turn.id}-assistant-waiting`,
           type: "assistant",
@@ -2340,15 +2538,25 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     });
 
     return list;
-  }, [turns, view.streaming, showReplyWait, view.historyStart, view.turnOffset, view.turnTotal]);
+  }, [
+    turns,
+    view.streaming,
+    showReplyWait,
+    view.historyStart,
+    view.turnOffset,
+    view.turnTotal,
+  ]);
 
   // Preview text changes on every delta; geometry only changes when the
   // rendered content grows or marks mount/unmount. Keep the observers and
   // measurement callbacks stable while their inputs follow the latest render.
   const marksRef = useRef(marks);
   marksRef.current = marks;
-  const markTargets = marks.map((mark) => `${mark.id}:${mark.targetId}`).join("\n");
+  const markTargets = marks
+    .map((mark) => `${mark.id}:${mark.targetId}`)
+    .join("\n");
   const measureMarks = useCallback(() => {
+    if (isLayoutResizing()) return;
     const el = scrollRef.current;
     if (!el) return;
     const containerTop = el.getBoundingClientRect().top;
@@ -2395,15 +2603,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     // the user has actually landed anyway. Consume + drop it instead.
     if (!r || !el || !landed) return;
     el.scrollTop = r.top + (el.scrollHeight - r.height);
+    virtualApi?.settle();
     measureMarks();
-  }, [view.historyStart, view.items, measureMarks, landed]);
+  }, [view.historyStart, view.items, measureMarks, landed, virtualApi]);
 
   const [activeMarkId, setActiveMarkId] = useState<string>("mark-top");
   /** Index of `activeMarkId` inside `marks` — `updateActiveMark` starts its
    *  walk here, so a scroll frame measures one or two marks instead of all. */
   const activeIdxRef = useRef(0);
-
-  const isSmoothScrollingRef = useRef(false);
 
   // Absolute scroll-content offsets per mark — measured ONCE after each
   // layout commit, not per scroll event. The old version did N×
@@ -2417,7 +2624,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const turnsRef = useRef(turns);
   turnsRef.current = turns;
   const updateActiveMark = useCallback(() => {
-    if (isSmoothScrollingRef.current) return;
+    if (isSmoothScrollingRef.current || isLayoutResizing()) return;
     const el = scrollRef.current;
     const marks = marksRef.current;
     if (!el || marks.length === 0) return;
@@ -2504,7 +2711,13 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     let debounce = 0;
     let pinFrame = 0;
     let fillFrame = 0;
-    const ro = new ResizeObserver(() => {
+    const geometryChanged = () => {
+      if (isLayoutResizing()) {
+        // Keep the visible bottom following the *real* viewport during a split
+        // resize, without reconciling virtual steps or rail state every frame.
+        if (pinnedRef.current) el.scrollTop = el.scrollHeight;
+        return;
+      }
       // Growth below the viewport → re-anchor the bottom while following.
       // The pin's own scroll events can't clear follow-mode anymore (only
       // a real gesture can), so the landing converges frame by frame. One
@@ -2512,7 +2725,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       if (pinnedRef.current && !pinFrame) {
         pinFrame = requestAnimationFrame(() => {
           pinFrame = 0;
-          if (pinnedRef.current) el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+          if (pinnedRef.current && !isLayoutResizing())
+            el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
         });
       }
       // A column or viewport that changed height without the window resizing
@@ -2521,7 +2735,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       if (!fillFrame) {
         fillFrame = requestAnimationFrame(() => {
           fillFrame = 0;
-          ensureScrollableRef.current();
+          if (!isLayoutResizing()) ensureScrollableRef.current();
         });
       }
       // A layout change moves every mark below it: re-measure AND re-derive
@@ -2532,11 +2746,14 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         measureMarks();
         updateActiveMark();
       }, 250);
-    });
+    };
+    const ro = new ResizeObserver(geometryChanged);
+    const unsubscribe = onLayoutResizeEnd(geometryChanged);
     ro.observe(col);
     // The viewport too: the dock shrinks the scroller, not the column.
     ro.observe(el);
     return () => {
+      unsubscribe();
       window.clearTimeout(debounce);
       cancelAnimationFrame(pinFrame);
       cancelAnimationFrame(fillFrame);
@@ -2572,7 +2789,11 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       view.historyStart != null &&
       view.historyStart < prev.start;
     keyStartRef.current = { start: view.historyStart, session: sessionKey };
-    if (lastUserKey !== null && lastUserKey !== lastUserIdxRef.current && !prepended) {
+    if (
+      lastUserKey !== null &&
+      lastUserKey !== lastUserIdxRef.current &&
+      !prepended
+    ) {
       pinnedRef.current = true;
       endRef.current?.scrollIntoView({ block: "end" });
     }
@@ -2589,6 +2810,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
 
   const markRafRef = useRef(0);
   const onScroll = () => {
+    // A split preview expands the frozen viewport and can clamp scrollTop.
+    // That programmatic scroll is not the reader returning to the bottom.
+    if (isLayoutResizing()) return;
     const el = scrollRef.current;
     if (!el) return;
     if (el.scrollTop < 480) {
@@ -2672,10 +2896,18 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       // field (a view built before it existed) this falls back to
       // estimating a message index from the average turn length.
       const ordinal = mark.phIndex ?? 0;
-      const loadedUser = turnsRef.current.reduce((n, t) => n + (opensTurn(t) ? 1 : 0), 0);
-      const unloadedNow = Math.max(0, (viewRef.current.turnTotal ?? loadedUser) - loadedUser);
+      const loadedUser = turnsRef.current.reduce(
+        (n, t) => n + (opensTurn(t) ? 1 : 0),
+        0,
+      );
+      const unloadedNow = Math.max(
+        0,
+        (viewRef.current.turnTotal ?? loadedUser) - loadedUser,
+      );
       const start = viewRef.current.historyStart ?? 0;
-      const approx = Math.round((ordinal + 0.5) * (start / Math.max(1, unloadedNow)));
+      const approx = Math.round(
+        (ordinal + 0.5) * (start / Math.max(1, unloadedNow)),
+      );
       void (async () => {
         // Page up until the dot's region is actually in. The old loop had
         // two traps: a blind 12-iteration cap that gave up mid-way — after
@@ -2696,7 +2928,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         for (let i = 0; i < 400; i++) {
           const cur = viewRef.current;
           const hs = cur.historyStart ?? 0;
-          const inYet = cur.turnOffset != null ? cur.turnOffset <= ordinal : hs <= approx;
+          const inYet =
+            cur.turnOffset == null ? hs <= approx : cur.turnOffset <= ordinal;
           if (inYet || hs <= 0) break; // region in / session start reached
           if (fetchingRef.current) {
             await nextFrame(); // a page is already loading — let it land
@@ -2712,15 +2945,21 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         const loaded = turnsRef.current;
         let target: (typeof loaded)[number] | undefined;
         const off = viewRef.current.turnOffset;
-        if (off != null) {
-          const userTurns = loaded.filter(opensTurn);
-          const idx = Math.min(Math.max(ordinal - off, 0), userTurns.length - 1);
-          target = userTurns[idx] ?? loaded[0];
+        if (off == null) {
+          target =
+            loaded.find((t) => t.hi != null && t.hi >= approx) ??
+            loaded[loaded.length - 1];
         } else {
-          target = loaded.find((t) => t.hi != null && t.hi >= approx)
-            ?? loaded[loaded.length - 1];
+          const userTurns = loaded.filter(opensTurn);
+          const idx = Math.min(
+            Math.max(ordinal - off, 0),
+            userTurns.length - 1,
+          );
+          target = userTurns[idx] ?? loaded[0];
         }
-        const el = target ? document.getElementById(`chat-turn-${target.id}`) : null;
+        const el = target
+          ? document.getElementById(`chat-turn-${target.id}`)
+          : null;
         if (el) {
           pinnedRef.current = false;
           setIsAtBottom(false);
@@ -2768,7 +3007,9 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       return;
     }
     // Trimmed off the mounted window — mount down to its turn, then land.
-    const turnIdx = mark.turnId ? turns.findIndex((t) => t.id === mark.turnId) : -1;
+    const turnIdx = mark.turnId
+      ? turns.findIndex((t) => t.id === mark.turnId)
+      : -1;
     if (turnIdx >= 0 && turnIdx < hidden) {
       revealTrimmed(turnIdx);
       requestAnimationFrame(() => {
@@ -2793,7 +3034,6 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
       }, 500);
     }
   };
-
 
   // ---- Right-click menu -------------------------------------------------
   // The native context menu is suppressed app-wide; the stream gets its own
@@ -2866,7 +3106,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
   const jobsPillVisible = !!onToggleJobs && !!jobs;
   // The subagents' capsule: it says how many children are out, and opens the
   // dock's 子代理 view where each of them can be read and steered.
-  const subagentPill = subagents && subagents.length > 0 ? summarizeChildren(subagents) : null;
+  const subagentPill =
+    subagents && subagents.length > 0 ? summarizeChildren(subagents) : null;
   // The row's capsules in their fixed order; PillIsland decides which of them
   // speak and which wait as icons.
   const pills: IslandPill[] = [];
@@ -2875,10 +3116,15 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
     pills.push({
       key: "dock",
       label: "侧栏",
-      tooltip: dockOpen ? `关闭侧栏（${what} ${dockCount}）` : `打开侧栏 · ${what} ${dockCount}`,
+      tooltip: dockOpen
+        ? `关闭侧栏（${what} ${dockCount}）`
+        : `打开侧栏 · ${what} ${dockCount}`,
       onClick: onToggleDock,
       pressed: dockOpen,
-      data: { "data-dock-state": dockOpen ? "open" : "closed", "data-dock-tab": dockTab ?? undefined },
+      data: {
+        "data-dock-state": dockOpen ? "open" : "closed",
+        "data-dock-tab": dockTab ?? undefined,
+      },
       // The sidebar's state, not just a badge: the glyph follows what the
       // pill would show, and an “open the sidebar” arrow on hover.
       icon: <DockGlyph open={!!dockOpen} tab={dockTab} />,
@@ -2895,7 +3141,7 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             </span>
           </>
         ) : (
-          <span className="flex-none whitespace-nowrap font-mono tabular-nums opacity-70">
+          <span className="flex-none whitespace-nowrap font-mono tabular-nums">
             {dockCount} 个文件
           </span>
         ),
@@ -2917,7 +3163,11 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
             // The orb's own travel, not a spinner: the same family of motion
             // as the session's activity glyphs. The 20px glyph overhangs the
             // 16px lane by 2px a side, so the collapsed width does not move.
-            <Orb variant="B2" size={20} className="-m-[2px] text-sky-600 dark:text-sky-400" />
+            <Orb
+              variant="B2"
+              size={20}
+              className="-m-[2px] text-sky-600 dark:text-sky-400"
+            />
           ) : jobs.tone === "failed" ? (
             <CircleX className="h-4 w-4 text-rose-600 dark:text-rose-400" />
           ) : (
@@ -2972,7 +3222,8 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
         <span
           className={cn(
             "flex-none whitespace-nowrap",
-            subagentPill.tone === "failed" && "text-rose-600 dark:text-rose-400",
+            subagentPill.tone === "failed" &&
+              "text-rose-600 dark:text-rose-400",
           )}
         >
           {subagentPill.text}
@@ -2991,103 +3242,113 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           onContextMenu={syncSelection}
           className="bg-white flex-1 min-h-0 w-full flex flex-col select-text relative"
         >
-      {/* The rail's lane stops where the floating composer starts, so the
+          {/* The rail's lane stops where the floating composer starts, so the
           strip can never be laid over it. */}
-      <ChatTurnRail
-        marks={marks}
-        activeId={activeMarkId}
-        onSelectMark={handleSelectMark}
-        loading={loading}
-        bottomInset={composerH ?? (bottomPad ? bottomPad - 24 : 0)}
-      />
+          <ChatTurnRail
+            marks={marks}
+            activeId={activeMarkId}
+            onSelectMark={handleSelectMark}
+            loading={loading}
+            bottomInset={composerH ?? (bottomPad ? bottomPad - 24 : 0)}
+          />
 
-      <div
-        className="stream-scroll"
-        ref={scrollRef}
-        onScroll={onScroll}
-        onWheel={noteUserScroll}
-        onTouchStart={noteUserScroll}
-        // Middle-click autoscroll is a reader scroll too (keyboard paging
-        // is caught at document level — see the SCROLL_KEYS effect).
-        onPointerDown={noteMiddleClick}
-      >
-        {/* pl-11 reserves the rail lane — only once the rail renders
+          <div
+            className="stream-scroll"
+            data-terminal-scroll
+            data-terminal-pinned={isAtBottom}
+            ref={scrollRef}
+            onScroll={onScroll}
+            onWheel={noteUserScroll}
+            onTouchStart={noteUserScroll}
+            // Middle-click autoscroll is a reader scroll too (keyboard paging
+            // is caught at document level — see the SCROLL_KEYS effect).
+            onPointerDown={noteMiddleClick}
+          >
+            {/* pl-11 reserves the rail lane — only once the rail renders
             (content or loading); an empty session keeps symmetric
             padding so the greeting stays centred. */}
-        <div
-          className={cn(
-            "max-w-3xl w-full mx-auto pr-4 pt-4 flex shrink-0 flex-col gap-4 min-h-full",
-            loading || view.items.length > 0 ? "pl-11" : "pl-4",
-          )}
-        >
-          {loading ? (
-            // Loading = skeleton INSTEAD of content — the old
-            // session's turns must never linger under it.
-            <ChatSkeleton />
-          ) : (
-            <>
-              {view.items.length === 0 && !view.streaming && (
-                <EmptyGreeting />
+            <div
+              className={cn(
+                "max-w-3xl w-full mx-auto pr-4 pt-4 flex shrink-0 flex-col gap-4 min-h-full",
+                loading || view.items.length > 0 ? "pl-11" : "pl-4",
               )}
+            >
+              {loading ? (
+                // Loading = skeleton INSTEAD of content — the old
+                // session's turns must never linger under it.
+                <ChatSkeleton />
+              ) : (
+                <>
+                  {view.items.length === 0 && !view.streaming && (
+                    <EmptyGreeting />
+                  )}
 
-              {hasMore &&
-                (fetching ? (
-                  // Skeleton rows stand in for the incoming page — reads
-                  // as content resolving above the fold, not a label.
-                  <OlderPageSkeleton />
-                ) : (
-                  <div className="flex justify-center py-1" aria-live="polite">
-                    <span className="text-[11px] text-muted-foreground/60">
-                      继续上滑加载更早的消息
-                    </span>
-                  </div>
-                ))}
+                  {hasMore &&
+                    (fetching ? (
+                      // Skeleton rows stand in for the incoming page — reads
+                      // as content resolving above the fold, not a label.
+                      <OlderPageSkeleton />
+                    ) : (
+                      <div
+                        className="flex justify-center py-1"
+                        aria-live="polite"
+                      >
+                        <span className="text-[11px] text-muted-foreground/60">
+                          继续上滑加载更早的消息
+                        </span>
+                      </div>
+                    ))}
 
-              <VirtualStepContext.Provider value={virtualApi}>
-                {visibleTurns.map((turn, turnIdx) => {
-                  const isLast = turnIdx === visibleTurns.length - 1;
-                  return (
-                    <ChatTurn
-                      key={turn.id}
-                      turn={turn}
-                      isLast={isLast}
-                      retryable={turnIdx === lastAnswerIdx}
-                      streaming={view.streaming && isLast}
-                      scope={sessionKey ?? ""}
-                    />
-                  );
-                })}
-              </VirtualStepContext.Provider>
+                  <VirtualStepContext.Provider value={virtualApi}>
+                    {visibleTurns.map((turn, turnIdx) => {
+                      const isLast = turnIdx === visibleTurns.length - 1;
+                      return (
+                        <ChatTurn
+                          key={turn.id}
+                          turn={turn}
+                          isLast={isLast}
+                          retryable={turnIdx === lastAnswerIdx}
+                          streaming={view.streaming && isLast}
+                          scope={sessionKey ?? ""}
+                        />
+                      );
+                    })}
+                  </VirtualStepContext.Provider>
 
-            {/* Turn-running clock — visible for the WHOLE streaming turn, not
+                  {/* Turn-running clock — visible for the WHOLE streaming turn, not
                 just the pre-first-delta wait. Anchored on `view.turnStartedAt`
                 (stamped on UserPrompt) so it reads as "this turn has been
                 running Xs" and survives a session switch; the per-phase rows
                 above still show their own thinking/tools durations. */}
-            {view.streaming && (view.turnStartedAt != null || compacting) && (
-              <div id="chat-reply-wait">
-                <AssistantStatus
-                  mode={compacting ? "compacting" : "reply"}
-                  thinkingText=""
-                  startedAt={compacting ? pendingCompactionAt : view.turnStartedAt}
-                />
-              </div>
-            )}
+                  {view.streaming &&
+                    (view.turnStartedAt != null || compacting) && (
+                      <div id="chat-reply-wait">
+                        <AssistantStatus
+                          mode={compacting ? "compacting" : "reply"}
+                          thinkingText=""
+                          startedAt={
+                            compacting
+                              ? pendingCompactionAt
+                              : view.turnStartedAt
+                          }
+                        />
+                      </div>
+                    )}
 
-            {/* Dedicated bottom block spacer: guarantees that when scrolled to the bottom,
+                  {/* Dedicated bottom block spacer: guarantees that when scrolled to the bottom,
                 the latest message and status indicator are never blocked by the floating composer card */}
-            <div
-              style={{ height: Math.max(bottomPad, 180) }}
-              className="w-full flex-none pointer-events-none select-none"
-              aria-hidden="true"
-            />
-            <div id="chat-stream-end" ref={endRef} />
-            </>
-          )}
-        </div>
-      </div>
+                  <div
+                    style={{ height: Math.max(bottomPad, 180) }}
+                    className="w-full flex-none pointer-events-none select-none"
+                    aria-hidden="true"
+                  />
+                  <div id="chat-stream-end" ref={endRef} />
+                </>
+              )}
+            </div>
+          </div>
 
-      {/* One centered floating row above the composer, two behaviours:
+          {/* One centered floating row above the composer, two behaviours:
           · with a pill up (the jobs pill, the subagents capsule, the dock
             pill, or several side by side), `width`/`margin` animate — the row
             grows to the right and the pills slide left to make room for the
@@ -3096,50 +3357,52 @@ export function ChatStream({ view, bottomPad = 128, composerH, loading, sessionK
           · with no pill, the arrow IS the row, so it keeps its own width and
             only fades, rising out of the composer's edge; a growing margin
             would make a lone button drift in from the right. */}
-      <div
-        style={{ bottom: `${(composerH ?? (bottomPad ? bottomPad - 24 : 140)) + 12}px` }}
-        className={cn(
-          "absolute left-1/2 z-30 flex -translate-x-1/2 select-none items-center transition-opacity duration-200 ease-out",
-          // The composer's command panel takes this space — the row fades out
-          // rather than being painted through it.
-          suppressPills && "pointer-events-none opacity-0",
-        )}
-      >
-        <PillIsland pills={pills} />
-        <div
-          className={cn(
-            // No `overflow-hidden`: it would clip the round button's shadow.
-            // The button fades out as the box collapses, so it never shows
-            // outside the reserved space.
-            "flex-none transition-all duration-200 ease-out",
-            anyPill
-              ? // Beside the pill: the slot grows from zero, the pill yields
-                // to the right edge it just opened up.
-                !isAtBottom
-                ? "ml-2 w-8 opacity-100"
-                : "pointer-events-none ml-0 w-0 opacity-0"
-              : // Alone: the button keeps its width so the row's centre never
-                // moves — it only fades, rising from the composer's edge.
-                cn(
-                  "ml-0 w-8",
-                  isAtBottom
-                    ? "pointer-events-none translate-y-2 opacity-0"
-                    : "translate-y-0 opacity-100",
-                ),
-          )}
-        >
-          <TooltipSimple content="回到底部" side="top">
-            <button
-              type="button"
-              onClick={scrollToBottom}
-              aria-label="回到底部"
-              className="w-8 h-8 rounded-full bg-white dark:bg-[var(--husk-active)] hover:bg-neutral-50 dark:hover:bg-[var(--husk-hover)] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+          <div
+            style={{
+              bottom: `${(composerH ?? (bottomPad ? bottomPad - 24 : 140)) + 12}px`,
+            }}
+            className={cn(
+              "absolute left-1/2 z-30 flex -translate-x-1/2 select-none items-center transition-opacity duration-200 ease-out",
+              // The composer's command panel takes this space — the row fades out
+              // rather than being painted through it.
+              suppressPills && "pointer-events-none opacity-0",
+            )}
+          >
+            <PillIsland pills={pills} />
+            <div
+              className={cn(
+                // No `overflow-hidden`: it would clip the round button's shadow.
+                // The button fades out as the box collapses, so it never shows
+                // outside the reserved space.
+                "flex-none transition-all duration-200 ease-out",
+                anyPill
+                  ? // Beside the pill: the slot grows from zero, the pill yields
+                    // to the right edge it just opened up.
+                    isAtBottom
+                    ? "pointer-events-none ml-0 w-0 opacity-0"
+                    : "ml-2 w-8 opacity-100"
+                  : // Alone: the button keeps its width so the row's centre never
+                    // moves — it only fades, rising from the composer's edge.
+                    cn(
+                      "ml-0 w-8",
+                      isAtBottom
+                        ? "pointer-events-none translate-y-2 opacity-0"
+                        : "translate-y-0 opacity-100",
+                    ),
+              )}
             >
-              <ArrowDown className="h-4 w-4" />
-            </button>
-          </TooltipSimple>
-        </div>
-      </div>
+              <TooltipSimple content="回到底部" side="top">
+                <button
+                  type="button"
+                  onClick={scrollToBottom}
+                  aria-label="回到底部"
+                  className="w-8 h-8 rounded-full bg-white dark:bg-[var(--husk-active)] hover:bg-neutral-50 dark:hover:bg-[var(--husk-hover)] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </button>
+              </TooltipSimple>
+            </div>
+          </div>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent className="min-w-[160px]">
