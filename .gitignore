@@ -66,4 +66,7 @@ crates/app-desktop/
 __pycache__/
 
 # Agent runtime scratch (task logs, review output, session artifacts)
-.pi/
+.pi/*
+!.pi/rules/
+.pi/rules/*
+!.pi/rules/20-frontend-design.md
