@@ -41,7 +41,6 @@
   min-height: 0;
   min-width: 0;
   color: var(--husk-fg);
-  background: var(--husk-bg);
   font-size: 12px;
 }
 .workspace-files button {

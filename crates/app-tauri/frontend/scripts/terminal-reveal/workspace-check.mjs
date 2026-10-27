@@ -57,6 +57,14 @@ try {
         await more.click();
         const item = page.getByRole("menuitem", { name: /^子代理/ });
         await item.waitFor();
+        const typography = await item.evaluate((node) => {
+          const style = getComputedStyle(node);
+          const icon = getComputedStyle(node.querySelector("svg"));
+          return { fontSize: style.fontSize, lineHeight: style.lineHeight, gap: style.columnGap, iconWidth: icon.width };
+        });
+        assert.deepEqual(typography, { fontSize: "12px", lineHeight: "16px", gap: "8px", iconWidth: "14px" },
+          "overflow items must match the compact terminal menus, not generic menu typography");
+        await page.screenshot({ path: `/tmp/workspace-overflow-${mode}.png` });
         await item.click();
         const selected = page.getByRole("tab", { name: /^子代理/ });
         await selected.waitFor();
@@ -72,6 +80,13 @@ try {
       if (width === 640) assert.equal(await more.count(), 0, "wide panels restore all tabs");
       if (width === 320) await page.screenshot({ path: `/tmp/workspace-welcome-${mode}.png` });
     }
+    await page.getByRole("tab", { name: "文件", exact: true }).click();
+    const files = page.locator(".workspace-files");
+    await files.waitFor();
+    assert.equal(await files.evaluate((node) => getComputedStyle(node).backgroundColor), "rgba(0, 0, 0, 0)",
+      "the file browser must let the containing sidebar own its background");
+    await page.screenshot({ path: `/tmp/workspace-files-background-${mode}.png` });
+    await page.getByRole("button", { name: "工作区工具" }).click();
   }
   assert.deepEqual(errors, []);
   console.log("Workspace: 10 theme/width checks, overflow selection, keyboard dismissal and focus passed.");

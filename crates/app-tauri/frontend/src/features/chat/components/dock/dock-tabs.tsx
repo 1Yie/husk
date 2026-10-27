@@ -131,6 +131,7 @@ export function DockTabs({ tabs, counts, active, onSelect }: {
               {hidden.map((tab) => {
                 const { Icon, label } = META[tab];
                 return <DropdownMenuItem key={tab} aria-label={labelFor(tab, counts[tab])}
+                  className="gap-2 text-xs"
                   onSelect={() => { selectedFromMenu.current = tab; onSelect(tab); }}>
                   <Icon className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>{label}</span>
