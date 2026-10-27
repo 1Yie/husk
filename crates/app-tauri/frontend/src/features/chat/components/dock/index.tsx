@@ -8,59 +8,46 @@
 // The frame is the dock's; the tab bodies are `ChangesList` / `ArtifactsList`
 // / `JobsList` / `SubagentsList`.
 
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bot, FileDiff, Package, SquareTerminal, X } from "lucide-react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import { DockTabs } from "./dock-tabs";
+import { WorkspaceTools } from "./workspace-tools";
+import "./dock.css";
+import { DirectoryLoadingSkeleton } from "@/features/workspace-files/loading";
 import { cn } from "@/lib/utils";
 import { ChangesList } from "@/features/chat/components/changes-panel";
 import { ArtifactsList } from "@/features/chat/components/artifacts-panel";
 import { JobsList } from "@/features/chat/components/jobs-panel";
 import { SubagentsList } from "@/features/chat/components/subagents-panel";
-import type { Artifact, BgJob, FileChange } from "@/features/chat/hooks/stream-view";
+import type {
+  Artifact,
+  BgJob,
+  FileChange,
+} from "@/features/chat/hooks/stream-view";
 import type { SessionChild } from "@/features/chat/hooks/running-children";
 import type { ToolChipRow } from "@/features/chat/components/tool-chips/index";
-import { DOCK_MIN_WIDTH, clampDockWidth, useDockStore, type DockTab } from "./state";
+import {
+  DOCK_MIN_WIDTH,
+  availableDockTabs,
+  clampDockWidth,
+  resolveDockTab,
+  useDockStore,
+  type DockTab,
+} from "./state";
 
-const TAB_META: Record<DockTab, { Icon: typeof FileDiff; label: string; unit: string }> = {
-  changes: { Icon: FileDiff, label: "改动", unit: "个文件" },
-  artifacts: { Icon: Package, label: "产物", unit: "个文件" },
-  jobs: { Icon: SquareTerminal, label: "后台", unit: "个任务" },
-  subagents: { Icon: Bot, label: "子代理", unit: "个" },
-};
+const WorkspaceFiles = lazy(() =>
+  import("@/features/workspace-files").then((module) => ({
+    default: module.WorkspaceFiles,
+  })),
+);
 
-function TabButton({
-  tab,
-  active,
-  files,
-  onSelect,
-}: {
-  tab: DockTab;
-  active: boolean;
-  files: number;
-  onSelect: (tab: DockTab) => void;
-}) {
-  const { Icon, label, unit } = TAB_META[tab];
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      aria-label={`${label}（${files} ${unit}）`}
-      onClick={() => onSelect(tab)}
-      className={cn(
-        // The session sidebar's mode switch in miniature: a recessed track,
-        // the active tab a raised white capsule on it.
-        "relative flex h-6 flex-none items-center gap-1 rounded-full px-2.5 text-[12px] transition-all duration-150",
-        active
-          ? "bg-white font-medium text-neutral-800 shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-[var(--husk-hover)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.6)]"
-          : "text-neutral-500 hover:text-neutral-800",
-      )}
-    >
-      <Icon className="h-3.5 w-3.5 flex-none" />
-      <span>{label}</span>
-      <span className="font-mono text-[10.5px] tabular-nums text-neutral-400">{files}</span>
-    </button>
-  );
-}
 
 export function SessionDock({
   changes,
@@ -75,6 +62,8 @@ export function SessionDock({
   open: openProp,
   snap = false,
   onClose,
+  onOpenWorkspace,
+  officeMode = false,
 }: {
   changes: FileChange[];
   artifacts: Artifact[];
@@ -91,23 +80,25 @@ export function SessionDock({
   session?: number;
   /** A control call's returned list — written back to the session's view. */
   onJobs?: (jobs: BgJob[]) => void;
-  /** Whether the sidebar is shown. Defaults to the store flag; the page
-   *  additionally ANDs in "has content" so an empty dock never occupies the
-   *  column (a fresh session inherits the previous one's open flag). */
+  /** Whether the sidebar is shown. Defaults to the store flag. Workspace
+   *  tools are available even without session-generated content. */
   open?: boolean;
   /** Apply open/close instantly, without the slide — set by the page for the
    *  commit that follows a session switch, which is a jump, not a toggle. */
   snap?: boolean;
   /** A user close — the page uses it to suppress this session's auto-open. */
   onClose?: () => void;
+  onOpenWorkspace?: () => void;
+  officeMode?: boolean;
 }) {
   const storeOpen = useDockStore((s) => s.open);
   const open = openProp ?? storeOpen;
   const tab = useDockStore((s) => s.tab);
   const width = useDockStore((s) => s.width);
-  const setOpen = useDockStore((s) => s.setOpen);
   const setTab = useDockStore((s) => s.setTab);
   const setWidth = useDockStore((s) => s.setWidth);
+  const browserOpen = useDockStore((s) => s.browserOpen);
+  const closeBrowser = useDockStore((s) => s.closeBrowser);
 
   // Width is dragged; a CSS transition would fight the pointer, so the slide
   // is switched off for the duration of the drag. The live width stays local
@@ -115,11 +106,30 @@ export function SessionDock({
   // per pointermove was a synchronous storage write every frame.
   const [resizing, setResizing] = useState(false);
   const [dragWidth, setDragWidth] = useState<number | null>(null);
-  const dragRef = useRef<{ x: number; width: number; next: number; frame: number } | null>(null);
+  const dragRef = useRef<{
+    x: number;
+    width: number;
+    next: number;
+    frame: number;
+  } | null>(null);
   const shownWidth = dragWidth ?? width;
+  const wasOpen = useRef(open);
+
+  // The persistent title-bar toggle is the close control. Notify the page
+  // before its auto-open effect runs, so a manual close stays closed.
+  useLayoutEffect(() => {
+    if (wasOpen.current && !open) onClose?.();
+    wasOpen.current = open;
+  }, [open, onClose]);
 
   useEffect(() => {
-    if (!resizing) return;
+    if (!resizing || !open) {
+      if (resizing) {
+        setDragWidth(null);
+        setResizing(false);
+      }
+      return;
+    }
     const move = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d) return;
@@ -145,12 +155,17 @@ export function SessionDock({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
+    window.addEventListener("lostpointercapture", up, true);
     return () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
+      window.removeEventListener("lostpointercapture", up, true);
+      const d = dragRef.current;
+      dragRef.current = null;
+      if (d) cancelAnimationFrame(d.frame);
     };
-  }, [resizing, setWidth]);
+  }, [open, resizing, setWidth]);
 
   const startDrag = (e: ReactPointerEvent) => {
     e.preventDefault();
@@ -158,27 +173,18 @@ export function SessionDock({
     setResizing(true);
   };
 
-  const close = () => {
-    setOpen(false);
-    onClose?.();
-  };
-
-  // Only tabs that have something in them: a tab whose whole content is
-  // "暂无…" is noise.
-  const tabs: DockTab[] = [];
-  if (changes.length > 0) tabs.push("changes");
-  if (artifacts.length > 0) tabs.push("artifacts");
-  if (jobs.length > 0) tabs.push("jobs");
-  if (subagents.length > 0) tabs.push("subagents");
   const counts: Record<DockTab, number> = {
+    tools: 0,
+    files: 0,
     changes: changes.length,
     artifacts: artifacts.length,
     jobs: jobs.length,
     subagents: subagents.length,
   };
+  const tabs = availableDockTabs(counts, { browserOpen, officeMode });
   // The stored tab can point at the list that just emptied (a new session,
   // /clear) — fall back to whichever one is on screen.
-  const activeTab: DockTab | null = tabs.includes(tab) ? tab : (tabs[0] ?? null);
+  const activeTab = resolveDockTab(tab, counts, { browserOpen, officeMode });
 
   return (
     <div
@@ -188,16 +194,23 @@ export function SessionDock({
         // anchoring, so a one-frame 300px re-flow of the stream threw the
         // reader's place by however much the text re-wrapped above them —
         // and the dock auto-opens mid-turn, on the first change.
-        resizing || snap ? "" : "transition-[width] duration-300 ease-out",
+        resizing || snap
+          ? ""
+          : "transition-[width] duration-300 ease-out motion-reduce:transition-none",
       )}
       style={{ width: open ? shownWidth : 0 }}
       aria-hidden={!open}
+      {...(!open ? { inert: "" } : {})}
     >
       <aside
+        id="workspace-tools-sidebar"
+        aria-label="工作区工具侧栏"
         style={{ width: shownWidth }}
         className={cn(
           "relative flex h-full flex-none flex-col overflow-hidden border-l border-hairline bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none",
-          resizing || snap ? "" : "transition-transform duration-300 ease-out",
+          resizing || snap
+            ? ""
+            : "transition-transform duration-300 ease-out motion-reduce:transition-none",
           open ? "translate-x-0" : "translate-x-full",
         )}
       >
@@ -210,53 +223,52 @@ export function SessionDock({
           aria-valuenow={shownWidth}
           aria-valuemin={DOCK_MIN_WIDTH}
           tabIndex={0}
+          data-resizing={resizing && open ? "" : undefined}
           onPointerDown={startDrag}
           onKeyDown={(e) => {
             if (e.key === "ArrowLeft") setWidth(width + 24);
             else if (e.key === "ArrowRight") setWidth(width - 24);
           }}
-          className={cn(
-            "absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize",
-            "hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)]",
-            resizing && "bg-[color-mix(in_srgb,var(--husk-n300)_80%,transparent)]",
-          )}
+          className="workspace-dock__separator absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize"
         />
 
-        {/* No rule under the header: the tab track already reads as the bar,
-            the same way the session sidebar's header carries its switch. */}
-        <div className="flex h-11 w-full flex-none items-center gap-2 pl-3 pr-2">
-          <div
-            role="tablist"
-            aria-label="侧栏"
-            className="no-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-full bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] p-0.5 dark:bg-[var(--husk-border)]"
-          >
-            {tabs.map((t) => (
-              <TabButton
-                key={t}
-                tab={t}
-                active={activeTab === t}
-                files={counts[t]}
-                onSelect={setTab}
-              />
-            ))}
-          </div>
-          <span className="flex-1" />
-          <button
-            type="button"
-            onClick={close}
-            aria-label="关闭侧栏"
-            className="flex h-6 w-6 flex-none items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] hover:text-neutral-800"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        {tabs.length > 0 && (
+          <DockTabs tabs={tabs} counts={counts} active={activeTab} onSelect={setTab} />
+        )}
 
         {/* `overflow-x-hidden` is load-bearing, not cosmetic: a box with
             `overflow-y: auto` and `overflow-x: visible` computes the X axis to
             `auto` too, which turns the whole dock into a horizontal scroll
             container. The horizontal scroller is the diff card itself. */}
-        <div className="w-full flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 pb-3">
-          {activeTab === null ? (
+        <div
+          className={cn(
+            "w-full flex-1 min-h-0",
+            activeTab === "files"
+              ? "overflow-hidden"
+              : activeTab === "tools"
+                ? "overflow-y-auto overflow-x-hidden"
+                : "overflow-y-auto overflow-x-hidden px-2 pt-1.5 pb-3",
+          )}
+        >
+          {activeTab === "tools" ? (
+            <WorkspaceTools
+              root={root}
+              hasChanges={changes.length > 0}
+              officeMode={officeMode}
+              onReview={() => setTab("changes")}
+              onFiles={() => setTab("files")}
+              onOpenWorkspace={onOpenWorkspace}
+            />
+          ) : activeTab === "files" ? (
+            <Suspense fallback={<DirectoryLoadingSkeleton header />}>
+              <WorkspaceFiles
+                key={root}
+                root={root}
+                onOpenWorkspace={onOpenWorkspace}
+                onBack={closeBrowser}
+              />
+            </Suspense>
+          ) : activeTab === null ? (
             <div className="px-3 py-10 text-center text-[12px] text-neutral-400">
               本会话还没有文件产出
             </div>
@@ -265,9 +277,20 @@ export function SessionDock({
           ) : activeTab === "artifacts" ? (
             <ArtifactsList artifacts={artifacts} />
           ) : activeTab === "jobs" ? (
-            <JobsList jobs={jobs} snapshotAt={jobsAt} root={root} session={session} onJobs={(j) => onJobs?.(j)} />
+            <JobsList
+              jobs={jobs}
+              snapshotAt={jobsAt}
+              root={root}
+              session={session}
+              onJobs={(j) => onJobs?.(j)}
+            />
           ) : (
-            <SubagentsList children={subagents} childRows={childRows} root={root} session={session} />
+            <SubagentsList
+              children={subagents}
+              childRows={childRows}
+              root={root}
+              session={session}
+            />
           )}
         </div>
       </aside>

@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/features/chat/components/chat-stream";
 import { SessionDock } from "@/features/chat/components/dock";
-import { useDockStore } from "@/features/chat/components/dock/state";
+import { resolveDockTab, useDockStore } from "@/features/chat/components/dock/state";
 import { ComposerBar } from "@/features/chat/components/composer-bar";
 import { WorkspaceWelcome, type RecentWorkspace } from "@/features/chat/components/workspace-welcome";
 import { useActiveView, useAgentChips, useAgentStore, useDismissedChildren, useHasMoreHistory, useHasView, viewNow } from "@/stores/agent-store";
@@ -194,6 +194,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // and which view to reveal follows whatever actually appeared.
   const dockOpen = useDockStore((s) => s.open);
   const dockTab = useDockStore((s) => s.tab);
+  const browserOpen = useDockStore((s) => s.browserOpen);
   const setDockOpen = useDockStore((s) => s.setOpen);
   const setDockTab = useDockStore((s) => s.setTab);
   const filesTab = useDockStore((s) => s.filesTab);
@@ -201,14 +202,16 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // log: a reopened session replays part of its history, so its folded list
   // shrinks while the tree it changed is still dirty. `repo: false` = a plain
   // folder has no git to ask, and the session's own list is all there is.
-  const workspaceChanges = useWorkspaceChanges(workspaceRoot);
-  const changes = workspaceChanges.repo ? workspaceChanges.files : view.changes;
-  const filesCount = changes.length + artifacts.length;
-  const panelCount = filesCount + view.bgJobs.length + sessionChildren.length;
-  // The dock's own open flag AND its content — an empty sidebar hides itself,
-  // so a fresh session never lands on 「本会话还没有文件产出」 just because the
-  // previous one left the dock open (the flag is persisted).
-  const dockVisible = dockOpen && panelCount > 0;
+  const workspaceChanges = useWorkspaceChanges(officeMode ? "" : workspaceRoot);
+  const changes = officeMode ? [] : workspaceChanges.repo ? workspaceChanges.files : view.changes;
+  const visibleDockTab = resolveDockTab(dockTab, {
+    changes: changes.length,
+    artifacts: artifacts.length,
+    jobs: view.bgJobs.length,
+    subagents: sessionChildren.length,
+  }, { browserOpen, officeMode });
+  // The tools view is useful even for an empty workspace/session.
+  const dockVisible = dockOpen;
   // A session switch changes which dock state applies — that is a jump, not a
   // user toggle, so the dock must not slide. Snap from the layout effect (before
   // paint) until the next frame, then restore the animation for in-session toggles.
@@ -226,14 +229,12 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // never both claim the sidebar. With no files the dock falls back to 后台
   // whatever tab is stored, so that counts as shown too.
   const jobsShown =
-    dockVisible && view.bgJobs.length > 0 && (dockTab === "jobs" || filesCount === 0);
+    dockVisible && visibleDockTab === "jobs";
   // The subagents pill speaks for the 子代理 view — same rule as 后台. Subagents
   // are the dock's last view, so "no files" only lands on them when 后台 is
   // empty too.
   const subagentsShown =
-    dockVisible &&
-    sessionChildren.length > 0 &&
-    (dockTab === "subagents" || (filesCount === 0 && view.bgJobs.length === 0));
+    dockVisible && visibleDockTab === "subagents";
   // Which view the pill names: the last FILE view — 后台 is a detour, so the
   // label does not jump while it is up — if it still has content.
   const { tab: activeDockTab, count: activeDockCount } = dockPill({
@@ -269,7 +270,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   }, [activeDockCount, activeDockTab, dockOpen, setDockOpen, setDockTab]);
   // The dock pill toggles the file views; from 后台 it switches back to them
   // instead of closing a sidebar the user did not open for files.
-  const dockFilesShown = dockVisible && !jobsShown && !subagentsShown;
+  const dockFilesShown = dockVisible && (visibleDockTab === "changes" || visibleDockTab === "artifacts");
   const handleToggleDock = useCallback(() => {
     if (dockFilesShown) {
       // Closing by hand is a decision, not a pause: it silences the auto-open.
@@ -391,6 +392,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
         // only show config defaults; git is workspace-level and stays.
         noSession={sessionsEmpty}
       />
+      <div className="flex flex-1 min-h-0">
       {!workspaceRoot ? (
         workspaceReady ? (
           <WorkspaceWelcome
@@ -424,7 +426,6 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
         // title bar spans the full width, so the panel can't cover the
         // window controls. The dock's wrapper animates its width so the
         // stream re-flows smoothly instead of jumping.
-        <div className="flex flex-1 min-h-0">
           <div className="relative flex-1 min-w-0 flex flex-col transition-[flex-basis,margin] duration-300 ease-out">
             <ChatStream
               // Remount per session — scroll position, pin state, landing
@@ -461,7 +462,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
 
             {/* z-40: above the stream's floating pill row (z-30) — the command
                 panel must paint over it, not behind it. */}
-            <div ref={measureComposer} className="absolute inset-x-0 bottom-0 pointer-events-none z-40">
+            <div ref={measureComposer} data-terminal-composer className="absolute inset-x-0 bottom-0 pointer-events-none z-40">
               <ComposerBar
                 view={view}
                 workspaceRoot={workspaceRoot}
@@ -472,7 +473,8 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
             </div>
           </div>
 
-          {/* The unified dock: 改动 + 产物 + 后台 + 子代理 in one sidebar, either
+      )}
+          {/* The unified dock: 工具 + 改动 + 产物 + 后台 + 子代理 in one sidebar, either
               mode. It reads its own open/tab/width from the dock store; the
               page only feeds content and the manual-close dismissal. */}
           <SessionDock
@@ -488,9 +490,10 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
             open={dockVisible}
             snap={dockSnap}
             onClose={handleDockClosed}
+            onOpenWorkspace={onOpenWorkspace}
+            officeMode={officeMode}
           />
         </div>
-      )}
     </>
   );
 }

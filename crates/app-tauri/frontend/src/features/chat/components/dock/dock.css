@@ -1,0 +1,30 @@
+.workspace-dock__separator {
+  touch-action: none;
+}
+
+.workspace-dock__separator::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: transparent;
+  transition: background-color 120ms;
+}
+
+.workspace-dock__separator:hover::after,
+.workspace-dock__separator:focus-visible::after,
+.workspace-dock__separator[data-resizing]::after {
+  background: var(--husk-accent);
+}
+
+.workspace-dock__separator:focus-visible {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-dock__separator::after {
+    transition: none;
+  }
+}
