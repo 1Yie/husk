@@ -1,6 +1,9 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutStore } from "@/app/layout/layout-store";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
+
+import { TerminalDock } from "@/features/terminal/terminal-dock";
 import { activeViewNow, isRunningNow, refreshAgentChips, useAgentStore, useRunningKeys, viewNow } from "@/stores/agent-store";
 import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
 import {
@@ -777,6 +780,7 @@ export function App() {
   return (
     <>
       <MainLayout
+        terminal={<TerminalDock cwd={workspace.root || undefined} />}
         sidebar={
         <SessionSidebar
           projects={sidebarProjects}
@@ -794,6 +798,7 @@ export function App() {
             setSettingsPage("general");
             setSettingsOpen(true);
           }}
+          onToggleTerminal={useLayoutStore.getState().toggleTerminal}
         />
         }
       >

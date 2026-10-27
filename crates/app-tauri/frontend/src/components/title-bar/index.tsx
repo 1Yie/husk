@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { WindowControls } from "@/components/window-controls";
+import { LeftSidebarToggle, RightSidebarToggle } from "@/components/layout-controls";
 import { useCurrencySymbol } from "@/lib/appearance";
 import { formatCacheRate } from "@/lib/cache-rate";
 import { GitBranch, Zap, BarChartHorizontalStart, Database } from "@keyline-icons/react";
@@ -417,6 +418,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
       data-tauri-drag-region="deep"
       className="flex items-center h-9 flex-none bg-white border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] select-none px-3 justify-between"
     >
+      <LeftSidebarToggle />
       {!noWorkspace && (
       <div className="flex items-center min-w-0 max-w-[500px]">
         <TooltipSimple content={title} side="bottom">
@@ -458,6 +460,7 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
         </div>
       )}
 
+      <RightSidebarToggle />
       <WindowControls />
     </div>
   );

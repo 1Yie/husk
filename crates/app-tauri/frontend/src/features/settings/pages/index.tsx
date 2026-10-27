@@ -17,6 +17,7 @@ import {
   Plug,
   SlidersHorizontal,
   Sparkles,
+  Terminal,
   Wrench,
   ChartColumn,
 } from "@keyline-icons/react";
@@ -26,45 +27,119 @@ import { isMac } from "@/lib/platform";
 import { GeneralPane } from "@/features/settings/pages/general/index";
 import { DeveloperPane } from "@/features/settings/pages/general/developer";
 import { AppearanceSettings } from "@/features/settings/pages/appearance/index";
+import { TerminalSettings } from "@/features/settings/pages/terminal/index";
 import { StatsPane } from "@/features/settings/pages/stats/index";
 import { AboutSettings } from "@/features/settings/pages/about/index";
-import { AgentSettings, type AgentTab } from "@/features/settings/pages/agent/index";
+import {
+  AgentSettings,
+  type AgentTab,
+} from "@/features/settings/pages/agent/index";
 import { getDevConfig } from "@/lib/agent-ipc/sessions";
 
-type SettingsTab = "general" | "appearance" | "developer" | "stats" | AgentTab | "about";
+type SettingsTab =
+  | "general"
+  | "appearance"
+  | "terminal"
+  | "developer"
+  | "stats"
+  | AgentTab
+  | "about";
 
-const NAV_GROUPS: { label: string; items: { key: SettingsTab; label: string; icon: React.ReactNode }[] }[] = [
+const NAV_GROUPS: {
+  label: string;
+  items: { key: SettingsTab; label: string; icon: React.ReactNode }[];
+}[] = [
   {
     label: "基础设置",
     items: [
-      { key: "general", label: "常规", icon: <SlidersHorizontal className="h-4 w-4 shrink-0" /> },
-      { key: "appearance", label: "外观", icon: <Palette className="h-4 w-4 shrink-0" /> },
+      {
+        key: "general",
+        label: "常规",
+        icon: <SlidersHorizontal className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "appearance",
+        label: "外观",
+        icon: <Palette className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "terminal",
+        label: "终端",
+        icon: <Terminal className="h-4 w-4 shrink-0" />,
+      },
     ],
   },
   {
     label: "智能体",
     items: [
-      { key: "instructions", label: "指令", icon: <FileText className="h-4 w-4 shrink-0" /> },
-      { key: "rules", label: "规则", icon: <ListCheck className="h-4 w-4 shrink-0" /> },
-      { key: "model", label: "模型", icon: <Cpu className="h-4 w-4 shrink-0" /> },
-      { key: "memory", label: "记忆", icon: <Brain className="h-4 w-4 shrink-0" /> },
-      { key: "skills", label: "技能", icon: <Sparkles className="h-4 w-4 shrink-0" /> },
-      { key: "plugins", label: "插件", icon: <Plug className="h-4 w-4 shrink-0" /> },
-      { key: "mcp", label: "MCP", icon: <Wrench className="h-4 w-4 shrink-0" /> },
-      { key: "subagent", label: "子代理", icon: <Bot className="h-4 w-4 shrink-0" /> },
+      {
+        key: "instructions",
+        label: "指令",
+        icon: <FileText className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "rules",
+        label: "规则",
+        icon: <ListCheck className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "model",
+        label: "模型",
+        icon: <Cpu className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "memory",
+        label: "记忆",
+        icon: <Brain className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "skills",
+        label: "技能",
+        icon: <Sparkles className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "plugins",
+        label: "插件",
+        icon: <Plug className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "mcp",
+        label: "MCP",
+        icon: <Wrench className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "subagent",
+        label: "子代理",
+        icon: <Bot className="h-4 w-4 shrink-0" />,
+      },
     ],
   },
   {
     label: "系统",
     items: [
-      { key: "stats", label: "统计", icon: <ChartColumn className="h-4 w-4 shrink-0" /> },
-      { key: "developer", label: "开发者选项", icon: <FlaskConical className="h-4 w-4 shrink-0" /> },
-      { key: "about", label: "关于", icon: <Info className="h-4 w-4 shrink-0" /> },
+      {
+        key: "stats",
+        label: "统计",
+        icon: <ChartColumn className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "developer",
+        label: "开发者选项",
+        icon: <FlaskConical className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "about",
+        label: "关于",
+        icon: <Info className="h-4 w-4 shrink-0" />,
+      },
     ],
   },
 ];
 
-export function SettingsPage({ onClose, initialTab = "general" }: {
+export function SettingsPage({
+  onClose,
+  initialTab = "general",
+}: {
   onClose: () => void;
   /** Where the overlay opens — a command can ask for 技能 / 记忆 directly. The
    *  shell mounts this fresh on every open, so this is a starting point, not a
@@ -98,7 +173,9 @@ export function SettingsPage({ onClose, initialTab = "general" }: {
     contentRef.current?.scrollTo({ top: 0 });
   }, [activeTab]);
 
-  const tabMeta = NAV_GROUPS.flatMap((g) => g.items).find((i) => i.key === activeTab);
+  const tabMeta = NAV_GROUPS.flatMap((g) => g.items).find(
+    (i) => i.key === activeTab,
+  );
 
   return (
     <div className="relative flex h-full w-full bg-white overflow-hidden select-none">
@@ -145,53 +222,57 @@ export function SettingsPage({ onClose, initialTab = "general" }: {
                 {g.items
                   .filter((item) => item.key !== "developer" || devUnlocked)
                   .map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => setActiveTab(item.key)}
-                    className={cn(
-                      "w-full flex items-center gap-2.5 h-9 rounded-lg px-3 text-[13px] transition-all cursor-pointer",
-                      activeTab === item.key
-                        ? // Same recipe as the session sidebar's active row:
-                          // 6% black wash + bright text — the vars lift it in
-                          // both themes, no dark: override needed.
-                          "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
-                        : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] font-normal"
-                    )}
-                  >
-                    {item.icon}
-                    <span>{item.label}</span>
-                  </button>
-                ))}
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => setActiveTab(item.key)}
+                      className={cn(
+                        "w-full flex items-center gap-2.5 h-9 rounded-lg px-3 text-[13px] transition-all cursor-pointer",
+                        activeTab === item.key
+                          ? // Same recipe as the session sidebar's active row:
+                            // 6% black wash + bright text — the vars lift it in
+                            // both themes, no dark: override needed.
+                            "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
+                          : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] font-normal",
+                      )}
+                    >
+                      {item.icon}
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
               </div>
             ))}
           </div>
         </div>
-
       </aside>
 
-        {/* Content — big page title + grouped setting rows. */}
-        <div ref={contentRef} className="flex-1 min-h-0 min-w-0 overflow-y-auto bg-white no-scrollbar">
-          <div className="w-full max-w-3xl mx-auto px-6 sm:px-10 py-8 pb-16">
-            <h1 className="text-xl font-semibold text-neutral-900 mb-6 tracking-tight">
-              {tabMeta?.label}
-            </h1>
+      {/* Content — big page title + grouped setting rows. */}
+      <div
+        ref={contentRef}
+        className="flex-1 min-h-0 min-w-0 overflow-y-auto bg-white no-scrollbar"
+      >
+        <div className="w-full max-w-3xl mx-auto px-6 sm:px-10 py-8 pb-16">
+          <h1 className="text-xl font-semibold text-neutral-900 mb-6 tracking-tight">
+            {tabMeta?.label}
+          </h1>
 
-            {activeTab === "general" ? (
-              <GeneralPane />
-            ) : activeTab === "stats" ? (
-              <StatsPane />
-            ) : activeTab === "developer" ? (
-              <DeveloperPane />
-            ) : activeTab === "appearance" ? (
-              <AppearanceSettings />
-            ) : activeTab === "about" ? (
-              <AboutSettings />
-            ) : (
-              <AgentSettings tab={activeTab as AgentTab} />
-            )}
-          </div>
+          {activeTab === "general" ? (
+            <GeneralPane />
+          ) : activeTab === "stats" ? (
+            <StatsPane />
+          ) : activeTab === "developer" ? (
+            <DeveloperPane />
+          ) : activeTab === "appearance" ? (
+            <AppearanceSettings />
+          ) : activeTab === "terminal" ? (
+            <TerminalSettings />
+          ) : activeTab === "about" ? (
+            <AboutSettings />
+          ) : (
+            <AgentSettings tab={activeTab as AgentTab} />
+          )}
         </div>
+      </div>
     </div>
   );
 }

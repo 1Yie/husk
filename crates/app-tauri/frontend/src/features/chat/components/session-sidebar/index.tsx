@@ -1,4 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
+import { TerminalToggle } from "@/components/layout-controls";
 import iconUrl from "@/assets/husk-icon.png";
 import {
   Plus,
@@ -34,7 +35,10 @@ import {
   saveArtifact,
   type RecentArtifact,
 } from "@/lib/agent-ipc/index";
-import { useActiveViewSelector, useHasRunningChildren } from "@/stores/agent-store";
+import {
+  useActiveViewSelector,
+  useHasRunningChildren,
+} from "@/stores/agent-store";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -62,7 +66,11 @@ import {
   TooltipTrigger,
   TooltipSimple,
 } from "@/components/ui/tooltip";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
@@ -180,6 +188,8 @@ interface Props {
   onSwitchMode?: (path: string) => void;
   onRemoveWorkspace?: (project: ProjectOverview) => void;
   onOpenSettings?: () => void;
+  onToggleTerminal?: () => void;
+  terminalOpen?: boolean;
   /** Per-row session actions — see `SessionActions`. */
   actions?: SessionActions;
 }
@@ -201,10 +211,15 @@ export interface SessionActions {
   delete?: (id: number) => void;
 }
 
-
 /** Placeholder rows shaped like a session row — drawn while the project list
  * is still loading, so the sidebar doesn't say "no sessions" before it knows. */
-function SidebarRowSkeleton({ rows, small = false }: { rows: number; small?: boolean }) {
+function SidebarRowSkeleton({
+  rows,
+  small = false,
+}: {
+  rows: number;
+  small?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-0.5 animate-pulse" aria-hidden="true">
       {Array.from({ length: rows }, (_, i) => (
@@ -232,6 +247,8 @@ export function SessionSidebar({
   onSwitchMode,
   onRemoveWorkspace,
   onOpenSettings,
+  onToggleTerminal,
+  terminalOpen,
   actions = {},
 }: Props) {
   const notifications = useNotifications();
@@ -246,7 +263,8 @@ export function SessionSidebar({
   // Rows are named the way the desktop toast was — one headline rule, fed by
   // the title index the app shell keeps current.
   const sessionTitles = useSessionTitles();
-  const titleFor = (n: AppNotification): string => notificationHeadline(n, sessionTitles);
+  const titleFor = (n: AppNotification): string =>
+    notificationHeadline(n, sessionTitles);
   const openNotification = (n: AppNotification) => {
     if (n.root === undefined || n.session === undefined) {
       markRead(n.id);
@@ -291,7 +309,7 @@ export function SessionSidebar({
   // workspace's project starts expanded by default.
   const currentRoot = projects.find((p) => p.current)?.root;
   const [expanded, setExpanded] = useState<Set<string>>(() =>
-    currentRoot ? new Set([currentRoot]) : new Set()
+    currentRoot ? new Set([currentRoot]) : new Set(),
   );
   // When the current workspace changes (first tree load lands async, or a
   // switch lands), its project opens by default. A manual collapse still
@@ -324,7 +342,9 @@ export function SessionSidebar({
     officeMode ? view.artifacts.length : 0,
   );
   const sessionsStamp = officeMode
-    ? (officeProject?.sessions.map((s) => `${s.id}:${s.updated_at}`).join("|") ?? "")
+    ? (officeProject?.sessions
+        .map((s) => `${s.id}:${s.updated_at}`)
+        .join("|") ?? "")
     : "";
   const [officeFiles, setOfficeFiles] = useState<RecentArtifact[] | null>(null);
   useEffect(() => {
@@ -424,7 +444,12 @@ export function SessionSidebar({
         >
           {isMac && <div className="w-[55px] shrink-0" />}
 
-          <img src={iconUrl} alt="" draggable={false} className="h-4 w-4 shrink-0" />
+          <img
+            src={iconUrl}
+            alt=""
+            draggable={false}
+            className="h-4 w-4 shrink-0"
+          />
           <span className="text-[12px] font-semibold text-neutral-700 tracking-tight">
             Husk
           </span>
@@ -467,36 +492,43 @@ export function SessionSidebar({
                     whatever it wraps. Wrapping the trigger directly overwrote the
                     tab's `active` state, so the selected label fell back to grey.
                     The hover wrapper keeps that attribute off the trigger. */}
-                <TooltipSimple content="编程 — 在项目中读写代码、运行命令" side="bottom">
+                <TooltipSimple
+                  content="编程 — 在项目中读写代码、运行命令"
+                  side="bottom"
+                >
                   <span className="inline-flex" data-nodrag>
-                  <TabsTrigger
-                    value="build"
-                    data-nodrag
-                    aria-label="切换到编程模式"
-                    className="relative h-[22px] w-12 gap-1 rounded px-0 py-0 text-[11px] font-normal text-neutral-500 transition-none hover:text-neutral-700 data-[state=active]:bg-transparent data-[state=active]:text-neutral-800 data-[state=active]:shadow-none"
-                  >
-                    <Code className="h-3 w-3" />
-                    编程
-                  </TabsTrigger>
+                    <TabsTrigger
+                      value="build"
+                      data-nodrag
+                      aria-label="切换到编程模式"
+                      className="relative h-[22px] w-12 gap-1 rounded px-0 py-0 text-[11px] font-normal text-text-secondary transition-none hover:text-neutral-700 data-[state=active]:bg-transparent data-[state=active]:text-neutral-800 data-[state=active]:shadow-none"
+                    >
+                      <Code className="h-3 w-3" />
+                      编程
+                    </TabsTrigger>
                   </span>
                 </TooltipSimple>
                 {/* A disabled button swallows pointer events, so the hint hangs on a
                     wrapper that stays hoverable while the tab itself is disabled. */}
                 <TooltipSimple
-                  content={officeProject ? "工作 — 创建与编辑 Word / Excel / PPT" : "尚无工作目录"}
+                  content={
+                    officeProject
+                      ? "工作 — 创建与编辑 Word / Excel / PPT"
+                      : "尚无工作目录"
+                  }
                   side="bottom"
                 >
                   <span className="inline-flex" data-nodrag>
-                  <TabsTrigger
-                    value="office"
-                    data-nodrag
-                    aria-label="切换到工作模式"
-                    disabled={!officeProject}
-                    className="relative h-[22px] w-12 gap-1 rounded px-0 py-0 text-[11px] font-normal text-neutral-500 transition-none hover:text-neutral-700 disabled:opacity-100 data-[state=active]:bg-transparent data-[state=active]:text-neutral-800 data-[state=active]:shadow-none"
-                  >
-                    <FileText className="h-3 w-3" />
-                    工作
-                  </TabsTrigger>
+                    <TabsTrigger
+                      value="office"
+                      data-nodrag
+                      aria-label="切换到工作模式"
+                      disabled={!officeProject}
+                      className="relative h-[22px] w-12 gap-1 rounded px-0 py-0 text-[11px] font-normal text-text-secondary transition-none hover:text-neutral-700 disabled:opacity-100 data-[state=active]:bg-transparent data-[state=active]:text-neutral-800 data-[state=active]:shadow-none"
+                    >
+                      <FileText className="h-3 w-3" />
+                      工作
+                    </TabsTrigger>
                   </span>
                 </TooltipSimple>
               </TabsList>
@@ -520,7 +552,7 @@ export function SessionSidebar({
                 {recents.length === 0 && !projectsLoaded ? (
                   <SidebarRowSkeleton rows={3} />
                 ) : recents.length === 0 ? (
-                  <div className="pl-7 h-8 flex items-center shrink-0 flex-none text-[13px] text-neutral-500">
+                  <div className="pl-7 h-8 flex items-center shrink-0 flex-none text-[13px] text-text-secondary">
                     暂无会话
                   </div>
                 ) : (
@@ -530,7 +562,9 @@ export function SessionSidebar({
                       row={row}
                       root={root}
                       hint={current ? undefined : project}
-                      isActive={current && (activeId ? row.id === activeId : row.active)}
+                      isActive={
+                        current && (activeId ? row.id === activeId : row.active)
+                      }
                       live={current}
                       pinMark="global"
                       onOpen={() => onOpenSession(root, row.id)}
@@ -547,10 +581,12 @@ export function SessionSidebar({
               no project tree shows there). "+" starts a session in the
               active workspace either way; the folder picks a project dir
               and so only exists in build mode. */}
-          <div className={cn(
-            "flex-none flex items-center justify-between px-4 pb-1",
-            officeMode ? "pt-3" : "pt-2",
-          )}>
+          <div
+            className={cn(
+              "flex-none flex items-center justify-between px-4 pb-1",
+              officeMode ? "pt-3" : "pt-2",
+            )}
+          >
             <span className="text-[13px] font-medium text-neutral-600">
               {officeMode ? "会话" : "项目"}
             </span>
@@ -601,12 +637,16 @@ export function SessionSidebar({
                tree owns the remaining scroller — the same "header then
                contents" split the 项目 tree gives build mode. */
             <>
-              <div data-tauri-drag-region="false" className="flex-none max-h-[45%] overflow-y-auto">
+              <div
+                data-tauri-drag-region="false"
+                className="flex-none max-h-[45%] overflow-y-auto"
+              >
                 <div className="flex flex-col gap-0.5 px-2 pb-1">
                   {!projectsLoaded && !officeProject ? (
                     <SidebarRowSkeleton rows={2} />
-                  ) : officeProject && officeProject.sessions.every((s) => s.archived) ? (
-                    <div className="pl-7 h-8 flex items-center text-[13px] text-neutral-500">
+                  ) : officeProject &&
+                    officeProject.sessions.every((s) => s.archived) ? (
+                    <div className="pl-7 h-8 flex items-center text-[13px] text-text-secondary">
                       暂无会话
                     </div>
                   ) : (
@@ -623,14 +663,22 @@ export function SessionSidebar({
                 </div>
               </div>
               <div className="flex-none flex items-center px-4 pt-2 pb-1">
-                <span className="text-[13px] font-medium text-neutral-600">产物</span>
+                <span className="text-[13px] font-medium text-neutral-600">
+                  产物
+                </span>
               </div>
               {/* Same scroller rules as the project list — `false` outer,
                   `deep` inner so the empty tail still drags the window. */}
-              <div data-tauri-drag-region="false" className="flex-1 min-h-0 overflow-y-auto transform-gpu">
-                <div data-tauri-drag-region="deep" className="min-h-full flex flex-col gap-0.5 px-2 pb-2">
+              <div
+                data-tauri-drag-region="false"
+                className="flex-1 min-h-0 overflow-y-auto transform-gpu"
+              >
+                <div
+                  data-tauri-drag-region="deep"
+                  className="min-h-full flex flex-col gap-0.5 px-2 pb-2"
+                >
                   {artifactGroups.length === 0 ? (
-                    <div className="pl-7 h-8 flex items-center text-[13px] text-neutral-500">
+                    <div className="pl-7 h-8 flex items-center text-[13px] text-text-secondary">
                       暂无产物
                     </div>
                   ) : (
@@ -653,14 +701,20 @@ export function SessionSidebar({
                 drag region here makes scrollbar drags move the window. The
                 inner wrapper re-enables `deep` so row gaps and the empty tail
                 still drag the window (rows opt out themselves). */
-            <div data-tauri-drag-region="false" className="flex-1 min-h-0 overflow-y-auto transform-gpu">
-              <div data-tauri-drag-region="deep" className="min-h-full flex flex-col gap-0.5 px-2 pb-2">
+            <div
+              data-tauri-drag-region="false"
+              className="flex-1 min-h-0 overflow-y-auto transform-gpu"
+            >
+              <div
+                data-tauri-drag-region="deep"
+                className="min-h-full flex flex-col gap-0.5 px-2 pb-2"
+              >
                 {projectList.length === 0 && !projectsLoaded ? (
                   <SidebarRowSkeleton rows={3} />
                 ) : projectList.length === 0 ? (
                   // Same inset as 暂无会话 — the two empty states are the same kind
                   // of thing, so they read at the same level.
-                  <div className="pl-7 h-8 flex items-center text-[13px] text-neutral-500">
+                  <div className="pl-7 h-8 flex items-center text-[13px] text-text-secondary">
                     暂无项目
                   </div>
                 ) : (
@@ -685,7 +739,11 @@ export function SessionSidebar({
         </div>
 
         <div className="h-11 px-4 flex items-center select-none flex-none bg-panel">
-          <div data-nodrag data-tauri-drag-region="false" className="flex items-center gap-3.5">
+          <div
+            data-nodrag
+            data-tauri-drag-region="false"
+            className="flex items-center gap-3.5"
+          >
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -724,7 +782,11 @@ export function SessionSidebar({
                   通知
                 </TooltipContent>
               </Tooltip>
-              <PopoverContent side="top" align="start" className="w-72 p-0 text-xs overflow-hidden">
+              <PopoverContent
+                side="top"
+                align="start"
+                className="w-72 p-0 text-xs overflow-hidden"
+              >
                 <div className="flex items-center justify-between px-3 pt-2.5 pb-2">
                   <div className="font-semibold text-neutral-800">通知</div>
                   <div className="flex items-center gap-2.5">
@@ -732,7 +794,7 @@ export function SessionSidebar({
                       <button
                         type="button"
                         onClick={() => markAllRead()}
-                        className="text-[11px] text-neutral-500 hover:text-neutral-700 transition-colors cursor-pointer"
+                        className="text-[11px] text-text-secondary hover:text-neutral-700 transition-colors cursor-pointer"
                       >
                         全部已读
                       </button>
@@ -741,7 +803,7 @@ export function SessionSidebar({
                       <button
                         type="button"
                         onClick={() => clearAll()}
-                        className="text-[11px] text-neutral-500 hover:text-neutral-700 transition-colors cursor-pointer"
+                        className="text-[11px] text-text-secondary hover:text-neutral-700 transition-colors cursor-pointer"
                       >
                         清空
                       </button>
@@ -749,9 +811,12 @@ export function SessionSidebar({
                   </div>
                 </div>
                 {notifications.length === 0 ? (
-                  <div className="px-3 pb-3 text-neutral-500">暂无通知。</div>
+                  <div className="px-3 pb-3 text-text-secondary">暂无通知。</div>
                 ) : (
-                  <div data-tauri-drag-region="false" className="max-h-64 overflow-y-auto border-t border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]">
+                  <div
+                    data-tauri-drag-region="false"
+                    className="max-h-64 overflow-y-auto border-t border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
+                  >
                     {notifications.map((n) => (
                       <button
                         key={n.id}
@@ -764,22 +829,29 @@ export function SessionSidebar({
                         <span
                           className={cn(
                             "mt-1.5 h-1.5 w-1.5 flex-none rounded-full",
-                            n.read ? "bg-transparent" : NOTIFY_DOT[n.kind]
+                            n.read ? "bg-transparent" : NOTIFY_DOT[n.kind],
                           )}
                         />
                         <span className="min-w-0 flex-1">
-                          <span className={cn("block truncate", n.read ? "text-neutral-500" : "text-neutral-800 font-medium")}>
+                          <span
+                            className={cn(
+                              "block truncate",
+                              n.read
+                                ? "text-text-secondary"
+                                : "text-neutral-800 font-medium",
+                            )}
+                          >
                             {titleFor(n)}
                           </span>
                           {n.body && (
                             <span
-                              className="block line-clamp-2 break-words text-neutral-500 mt-0.5"
+                              className="block line-clamp-2 break-words text-text-secondary mt-0.5"
                               title={n.body}
                             >
                               {n.body}
                             </span>
                           )}
-                          <span className="block text-neutral-500 mt-0.5 text-[10.5px]">
+                          <span className="block text-text-secondary mt-0.5 text-[10.5px]">
                             {notifyStamp(n.ts)}
                           </span>
                         </span>
@@ -790,6 +862,17 @@ export function SessionSidebar({
               </PopoverContent>
             </Popover>
           </div>
+          {/* The terminal is a panel of the main column, not an app-level
+              setting like the two on the left — it sits at the far end. */}
+          {onToggleTerminal && (
+            <div
+              data-nodrag
+              data-tauri-drag-region="false"
+              className="ml-auto flex items-center"
+            >
+              <TerminalToggle open={terminalOpen} onToggle={onToggleTerminal} />
+            </div>
+          )}
         </div>
       </aside>
     </TooltipProvider>
@@ -844,11 +927,15 @@ function SessionList({
           data-tauri-drag-region="false"
           onClick={() => setShowArchived((v) => !v)}
           className={cn(
-            "flex-none flex items-center gap-1 pl-7 text-neutral-500 hover:text-neutral-700",
+            "flex-none flex items-center gap-1 pl-7 text-text-secondary hover:text-neutral-700",
             small ? "h-7 text-[12px]" : "h-8 text-[13px]",
           )}
         >
-          {showArchived ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          {showArchived ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronRight className="h-3 w-3" />
+          )}
           已归档 {archived.length}
         </button>
       )}
@@ -883,7 +970,8 @@ function SessionItem({
   onOpen: () => void;
   actions: SessionActions;
 }) {
-  const displayTitle = row.title === "new session" ? "新会话" : row.title || `会话 ${row.id}`;
+  const displayTitle =
+    row.title === "new session" ? "新会话" : row.title || `会话 ${row.id}`;
   const [menuOpen, setMenuOpen] = useState(false);
   // A row whose session delegated work reads differently from one merely
   // streaming: the orb names which of the two is going on.
@@ -908,7 +996,12 @@ function SessionItem({
     SubTrigger: typeof DropdownMenuSubTrigger;
     SubContent: typeof DropdownMenuSubContent;
   }) => {
-    const item = (icon: ReactNode, label: string, run: () => void, danger = false) => (
+    const item = (
+      icon: ReactNode,
+      label: string,
+      run: () => void,
+      danger = false,
+    ) => (
       <M.Item
         className={cn(
           "gap-2 text-xs cursor-pointer",
@@ -927,8 +1020,12 @@ function SessionItem({
     const icon = "h-3.5 w-3.5";
     return (
       <>
-        {actions.rename && item(<Pen className={icon} />, "重命名", () => actions.rename?.(root, row))}
-        {!row.archived && pinMark === "single" &&
+        {actions.rename &&
+          item(<Pen className={icon} />, "重命名", () =>
+            actions.rename?.(root, row),
+          )}
+        {!row.archived &&
+          pinMark === "single" &&
           item(
             <Bookmark className={cn(icon, row.pinned && "fill-current")} />,
             row.pinned ? "取消置顶" : "置顶",
@@ -937,7 +1034,12 @@ function SessionItem({
         {!row.archived && pinMark !== "single" && (
           <M.Sub>
             <M.SubTrigger className="gap-2 text-xs">
-              <Bookmark className={cn(icon, (row.pinned || row.pinned_global) && "fill-current")} />
+              <Bookmark
+                className={cn(
+                  icon,
+                  (row.pinned || row.pinned_global) && "fill-current",
+                )}
+              />
               置顶
             </M.SubTrigger>
             <M.SubContent className="min-w-[140px]">
@@ -954,18 +1056,31 @@ function SessionItem({
             </M.SubContent>
           </M.Sub>
         )}
-        {live && actions.fork && item(<GitFork className={icon} />, "Fork 会话", () => actions.fork?.(row.id))}
+        {live &&
+          actions.fork &&
+          item(<GitFork className={icon} />, "Fork 会话", () =>
+            actions.fork?.(row.id),
+          )}
         <M.Separator />
         {item(<Copy className={icon} />, "复制会话 ID", copyId)}
         {actions.exportRecord &&
-          item(<Download className={icon} />, "导出记录", () => actions.exportRecord?.(root, row.id))}
+          item(<Download className={icon} />, "导出记录", () =>
+            actions.exportRecord?.(root, row.id),
+          )}
         <M.Separator />
         {item(
           <Archive className={icon} />,
           row.archived ? "取消归档" : "归档",
           () => actions.archive?.(root, row, !row.archived),
         )}
-        {live && actions.delete && item(<Bin className={icon} />, "删除会话", () => actions.delete?.(row.id), true)}
+        {live &&
+          actions.delete &&
+          item(
+            <Bin className={icon} />,
+            "删除会话",
+            () => actions.delete?.(row.id),
+            true,
+          )}
       </>
     );
   };
@@ -985,7 +1100,7 @@ function SessionItem({
         isActive
           ? "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
           : "text-neutral-600 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] hover:text-neutral-900 font-normal",
-        row.archived && "text-neutral-400",
+        row.archived && "text-text-secondary",
       )}
     >
       <span className="flex-1 min-w-0 truncate text-left">{displayTitle}</span>
@@ -993,7 +1108,7 @@ function SessionItem({
         <Bookmark className="h-3 w-3 flex-none fill-current text-amber-500 dark:text-amber-400" />
       )}
       {hint && (
-        <span className="flex-none max-w-[64px] truncate text-[11px] text-neutral-500">
+        <span className="flex-none max-w-[64px] truncate text-[11px] text-text-secondary">
           {hint}
         </span>
       )}
@@ -1128,10 +1243,14 @@ function OfficeFileGroup({
             )}
           </span>
           <span className="text-neutral-500 shrink-0">
-            {open ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
+            {open ? (
+              <FolderOpen className="h-4 w-4" />
+            ) : (
+              <Folder className="h-4 w-4" />
+            )}
           </span>
           <span className="font-medium truncate flex-1 min-w-0">{label}</span>
-          <span className="flex-none text-[11px] text-neutral-500 tabular-nums">
+          <span className="flex-none text-[11px] text-text-secondary tabular-nums">
             {count}
           </span>
         </div>
@@ -1164,8 +1283,10 @@ function OfficeFileGroup({
                     )}
                   </span>
                   <ExtIcon ext={t.rep} />
-                  <span className="flex-1 min-w-0 truncate text-[12px]">{t.label}</span>
-                  <span className="flex-none text-[11px] text-neutral-500 tabular-nums">
+                  <span className="flex-1 min-w-0 truncate text-[12px]">
+                    {t.label}
+                  </span>
+                  <span className="flex-none text-[11px] text-text-secondary tabular-nums">
                     {t.files.length}
                   </span>
                 </div>
@@ -1211,7 +1332,7 @@ function OfficeFileRow({ file }: { file: RecentArtifact }) {
       <ExtIcon ext={file.name.split(".").pop() ?? ""} />
       <span className="flex-1 min-w-0 truncate">{file.name}</span>
       {dir && (
-        <span className="flex-none max-w-[72px] truncate text-[11px] text-neutral-500">
+        <span className="flex-none max-w-[72px] truncate text-[11px] text-text-secondary">
           {dir}
         </span>
       )}
@@ -1235,7 +1356,9 @@ function OfficeFileRow({ file }: { file: RecentArtifact }) {
           onClick={(e) => {
             e.stopPropagation();
             void saveArtifact(file.path).catch((err) =>
-              toast.error(`另存为失败：${err instanceof Error ? err.message : err}`),
+              toast.error(
+                `另存为失败：${err instanceof Error ? err.message : err}`,
+              ),
             );
           }}
           className="flex h-5 w-5 items-center justify-center rounded-full text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
@@ -1248,7 +1371,9 @@ function OfficeFileRow({ file }: { file: RecentArtifact }) {
           onClick={(e) => {
             e.stopPropagation();
             void revealPath(file.path).catch((err) =>
-              toast.error(`打开文件夹失败：${err instanceof Error ? err.message : err}`),
+              toast.error(
+                `打开文件夹失败：${err instanceof Error ? err.message : err}`,
+              ),
             );
           }}
           className="flex h-5 w-5 items-center justify-center rounded-full text-neutral-500 hover:bg-[color-mix(in_srgb,var(--husk-n300)_60%,transparent)] hover:text-neutral-700"
@@ -1288,9 +1413,7 @@ function ProjectItem({
       <div
         data-nodrag
         data-tauri-drag-region="false"
-        className={cn(
-          open && "sticky top-0 z-10 bg-panel pb-0.5"
-        )}
+        className={cn(open && "sticky top-0 z-10 bg-panel pb-0.5")}
       >
         <TooltipSimple content={project.root} side="right" sideOffset={8}>
           <div
@@ -1315,9 +1438,15 @@ function ProjectItem({
               )}
             </span>
             <span className="text-neutral-500 shrink-0">
-              {open ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
+              {open ? (
+                <FolderOpen className="h-4 w-4" />
+              ) : (
+                <Folder className="h-4 w-4" />
+              )}
             </span>
-            <span className="font-medium truncate flex-1 min-w-0">{project.name}</span>
+            <span className="font-medium truncate flex-1 min-w-0">
+              {project.name}
+            </span>
             {/* Hover actions float over the count badge / current dot —
                 `invisible`-in-flow used to reserve ~40px of dead space on
                 every row. */}
@@ -1357,7 +1486,7 @@ function ProjectItem({
             </span>
             {/* Archived sessions are out of sight, so out of the count too. */}
             {project.sessions.some((s) => !s.archived) && (
-              <span className="flex-none text-[11px] text-neutral-500 tabular-nums">
+              <span className="flex-none text-[11px] text-text-secondary tabular-nums">
                 {project.sessions.filter((s) => !s.archived).length}
               </span>
             )}
@@ -1373,7 +1502,7 @@ function ProjectItem({
           {project.sessions.length === 0 && !projectsLoaded ? (
             <SidebarRowSkeleton rows={2} small />
           ) : project.sessions.length === 0 ? (
-            <div className="pl-7 h-7 flex items-center text-[12px] text-neutral-500">
+            <div className="pl-7 h-7 flex items-center text-[12px] text-text-secondary">
               暂无对话记录
             </div>
           ) : (

@@ -172,6 +172,9 @@ body {
        right-side scrollbar is hidden in favor of the custom left-side turn rail.
        Symmetric horizontal padding ensures perfect centering with the bottom composer. */
     @apply flex-1 min-h-0 overflow-y-scroll px-4 py-4 flex flex-col items-center;
+    /* Virtual-step measurement and history restores own scroll anchoring.
+       A browser's native correction must not add the same delta again. */
+    overflow-anchor: none;
     scrollbar-width: none;
     -ms-overflow-style: none;
   }
