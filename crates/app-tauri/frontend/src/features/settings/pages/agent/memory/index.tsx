@@ -4,6 +4,7 @@
 // this workspace's.
 
 import { SkeletonKvRows } from "@/components/ui/skeleton";
+import { useDelayedFlag } from "@/hooks/use-delayed-flag";
 import { toast } from "sonner";
 import { useEffect, useId, useState } from "react";
 import {
@@ -90,20 +91,7 @@ const confidenceTone = (c: number) => (c >= 0.8 ? "success" : c >= 0.5 ? "neutra
 /** Bytes → whole megabytes, the unit the semantic row reports in. */
 const toMb = (bytes: number) => Math.round(bytes / (1024 * 1024));
 
-/** Whether `active` has held for `ms`. A busy hint on a step that ends in a blink
- *  would only flash, so it stays hidden until the wait is real. */
-function useDelayedFlag(active: boolean, ms = 300) {
-  const [elapsed, setElapsed] = useState(false);
-  useEffect(() => {
-    if (!active) {
-      setElapsed(false);
-      return;
-    }
-    const timer = setTimeout(() => setElapsed(true), ms);
-    return () => clearTimeout(timer);
-  }, [active, ms]);
-  return active && elapsed;
-}
+// Shared with sidebar paging: fast requests must not flash a busy indicator.
 
 const PREVIEW_COUNT = 5;
 

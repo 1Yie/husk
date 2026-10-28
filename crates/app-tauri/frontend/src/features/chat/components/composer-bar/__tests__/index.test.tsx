@@ -277,6 +277,123 @@ describe("composer message lifecycle", () => {
   });
 });
 
+describe("composer IME keyboard handling", () => {
+  const imeEvents = [
+    { label: "active composition", isComposing: true, keyCode: 13 },
+    { label: "WebKit compositionend before keydown", isComposing: false, keyCode: 229 },
+  ];
+  const commands = () => tauri.invoke.mock.calls.filter(([command]) => command === "agent_cmd");
+  const confirmIme = (input: HTMLElement, event: typeof imeEvents[number], key = "Enter") => {
+    fireEvent.compositionStart(input);
+    // macOS WebKit can end composition before delivering its final keydown.
+    if (!event.isComposing) fireEvent.compositionEnd(input);
+    const unhandled = fireEvent.keyDown(input, { key, isComposing: event.isComposing, keyCode: event.keyCode });
+    if (event.isComposing) fireEvent.compositionEnd(input);
+    return unhandled;
+  };
+
+  test.each(imeEvents.flatMap((event) => [false, true].map((streaming) => ({ ...event, streaming }))))(
+    "$label does not send or enqueue while streaming=$streaming and preserves the draft",
+    async (event) => {
+      renderWithProviders(<ComposerBar view={{ ...emptyView(), streaming: event.streaming }} sessionKey="/ws:1" />);
+      await loaded();
+      const input = screen.getByRole("textbox");
+      fireEvent.change(input, { target: { value: "确认中文草稿" } });
+      const unhandled = confirmIme(input, event);
+      expect(commands()).toHaveLength(0);
+      expect(input).toHaveValue("确认中文草稿");
+      expect(unhandled).toBe(true); // Do not prevent the input method's default behavior.
+
+      fireEvent.keyDown(input, { key: "Enter", isComposing: false, keyCode: 13 });
+      const payload = { text: "确认中文草稿" };
+      expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", {
+        cmd: event.streaming ? { Enqueue: payload } : { Prompt: payload },
+      });
+      expect(commands()).toHaveLength(1);
+      expect(input).toHaveValue("");
+    },
+  );
+
+  test("Shift+Enter inserts a newline instead of sending", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "第一行");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(input).toHaveValue("第一行\n");
+    expect(commands()).toHaveLength(0);
+  });
+
+  test.each(imeEvents.flatMap((event) => ["Enter", "Tab"].map((acceptKey) => ({ ...event, acceptKey }))))(
+    "$label leaves mention candidates alone, then ordinary $acceptKey accepts",
+    async (event) => {
+      const user = userEvent.setup();
+      renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+      await loaded();
+      const input = screen.getByRole("textbox");
+      await user.type(input, "/rem");
+      const candidate = await screen.findByRole("option", { name: /^\/remember/ });
+      const unhandled = confirmIme(input, event);
+      expect(input).toHaveValue("/rem");
+      expect(candidate).toBeInTheDocument();
+      expect(unhandled).toBe(true);
+      expect(commands()).toHaveLength(0);
+
+      fireEvent.keyDown(input, { key: event.acceptKey, keyCode: event.acceptKey === "Enter" ? 13 : 9 });
+      expect(input).toHaveValue("/remember ");
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(commands()).toHaveLength(0);
+    },
+  );
+
+  test.each(imeEvents)("$label does not navigate or dismiss mentions", async (event) => {
+    const user = userEvent.setup();
+    renderWithProviders(<ComposerBar view={emptyView()} sessionKey="/ws:1" />);
+    await loaded();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/");
+    const options = await screen.findAllByRole("option");
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    for (const key of ["ArrowDown", "ArrowUp", "Escape", "Tab"]) {
+      expect(confirmIme(input, event, key)).toBe(true);
+      expect(input).toHaveValue("/");
+      expect(options[0]).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("listbox")).toBeInTheDocument();
+    }
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(options[1]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(input).toHaveValue("/");
+    expect(commands()).toHaveLength(0);
+  });
+
+  test.each(imeEvents)("$label does not submit a custom answer, then ordinary Enter replies", async (event) => {
+    const view = applyEvents(emptyView(), [
+      { QuestionAsked: { request_id: 4, question: "选择范围", options: [] } },
+    ]);
+    renderWithProviders(<ComposerBar view={view} sessionKey="/ws:1" />);
+    await loaded();
+    const input = screen.getByPlaceholderText("自定义回答…");
+    fireEvent.change(input, { target: { value: "当前项目" } });
+    const unhandled = confirmIme(input, event);
+    expect(commands()).toHaveLength(0);
+    expect(input).toHaveValue("当前项目");
+    expect(screen.getByText("选择范围")).toBeInTheDocument();
+    expect(unhandled).toBe(true);
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: false, keyCode: 13 });
+    expect(tauri.invoke).toHaveBeenCalledWith("agent_cmd", {
+      cmd: { AnswerQuestion: { request_id: 4, answer: "当前项目" } },
+    });
+    expect(commands()).toHaveLength(1);
+    expect(screen.queryByText("选择范围")).not.toBeInTheDocument();
+  });
+});
+
 describe("composer model picker sections", () => {
   test("models are grouped under their provider, sections in alphabetical order", async () => {
     const user = userEvent.setup();

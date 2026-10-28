@@ -6,6 +6,13 @@
   --ss-label-dim: rgba(29, 29, 29, 0.4);
   --ss-tick: rgba(0, 0, 0, 0.176);
   --ss-thumb-shadow: 0 1px 1px rgba(0, 0, 0, 0.1);
+  --ss-accent: #006aff;
+  --ss-blue-start: #2d96ff;
+  --ss-blue-end: #0844bd;
+  --ss-fast-start: #bd74ff;
+  --ss-fast-end: #6423c9;
+  --ss-fast-feather: 48px;
+  --ss-active-tick: #66a6ff;
 
   position: relative;
   /* The rail fills its container; the geometry is measured in the component. */
@@ -14,6 +21,11 @@
   user-select: none;
   touch-action: none;
   font-family: inherit;
+}
+
+.root[data-accent="purple"] {
+  --ss-accent: #9333ea;
+  --ss-active-tick: #c084fc;
 }
 
 .root[data-theme="dark"] {
@@ -103,9 +115,142 @@
   bottom: 0;
   left: 0;
   border-radius: 16px;
-  background: linear-gradient(90deg, #006aff, #0059d4);
+  overflow: hidden;
+  background: linear-gradient(90deg, var(--ss-blue-start), var(--ss-blue-end));
   box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.16);
   pointer-events: none;
+}
+
+.fastFill {
+  position: absolute;
+  inset: 0 calc(-1 * var(--ss-fast-feather)) 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--ss-fast-start), var(--ss-fast-end));
+  box-shadow: inherit;
+  /* Overscan moves the transparent feather outside the rail at rest, so no
+     blue seam remains after the wave settles. Only transform is animated. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 var(--ss-fast-feather));
+  mask-image: linear-gradient(90deg, transparent, #000 var(--ss-fast-feather));
+  transform: translateX(100%);
+  transition: transform 1200ms cubic-bezier(0.22, 0.8, 0.28, 1);
+  pointer-events: none;
+}
+
+.root[data-accent="purple"] .fastFill {
+  transform: translateX(calc(-1 * var(--ss-fast-feather)));
+}
+
+.railEffects {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  pointer-events: none;
+}
+
+.frontSparkles {
+  position: absolute;
+  inset: 0 0 0 calc(var(--ss-fast-feather) * 0.35);
+  animation: ss-fast-front-glow 1200ms linear both;
+  pointer-events: none;
+}
+
+.frontSparkles::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  width: 64px;
+  height: 48px;
+  background: radial-gradient(ellipse, rgba(239, 220, 255, 0.24), transparent 70%);
+}
+
+.frontStar {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.95);
+  clip-path: polygon(50% 0, 63% 36%, 100% 50%, 63% 64%, 50% 100%, 37% 64%, 0 50%, 37% 36%);
+  filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.6));
+  opacity: 0;
+  animation: ss-fast-front-twinkle 600ms ease-out 2 both;
+}
+
+@keyframes ss-fast-front-glow {
+  0%, 100% { opacity: 0; }
+  10%, 80% { opacity: 1; }
+}
+
+@keyframes ss-fast-front-twinkle {
+  0% { opacity: 0; transform: translate(0, 3px); }
+  35% { opacity: 1; transform: translate(0, 0); }
+  100% { opacity: 0; transform: translate(-4px, -5px); }
+}
+
+.ambientPass {
+  position: absolute;
+  right: 0;
+  left: 0;
+  animation: ss-fast-star-pass linear both;
+  pointer-events: none;
+}
+
+.fastPoints {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  animation: ss-fast-points-appear 500ms ease-out both;
+}
+
+@keyframes ss-fast-points-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fastPoint {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 250, 255, 0.9);
+  box-shadow: 0 0 3px rgba(239, 218, 255, 0.35);
+  animation: ss-fast-point ease-in-out infinite;
+}
+
+@keyframes ss-fast-point {
+  0%, 100% { opacity: 0.08; }
+  45% { opacity: 0.65; }
+  65% { opacity: 0.18; }
+}
+
+.ambientPass::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 22px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255, 245, 255, 0.6), transparent);
+}
+
+.ambientStar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(255, 250, 255, 0.95);
+  clip-path: polygon(50% 0, 63% 36%, 100% 50%, 63% 64%, 50% 100%, 37% 64%, 0 50%, 37% 36%);
+  filter: drop-shadow(0 0 2px rgba(241, 218, 255, 0.7));
+}
+
+@keyframes ss-fast-star-pass {
+  0% { opacity: 0; transform: translateX(100%); }
+  12% { opacity: 0.9; }
+  75% { opacity: 0.75; }
+  100% { opacity: 0; transform: translateX(-26px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fastFill { transition: none; }
+  .frontSparkles { display: none; animation: none; }
+  .frontStar { animation: none; }
+  .ambientPass { display: none; animation: none; }
+  .fastPoints { display: none; }
+  .fastPoint { animation: none; }
 }
 
 .thumb {
@@ -131,7 +276,7 @@
 }
 
 .tick[data-active="true"] {
-  background: #66a6ff;
+  background: var(--ss-active-tick);
 }
 
 .tick[data-on-thumb="true"] {
@@ -139,6 +284,6 @@
 }
 
 .track:focus-visible {
-  outline: 2px solid #006aff;
+  outline: 2px solid var(--ss-accent);
   outline-offset: 3px;
 }

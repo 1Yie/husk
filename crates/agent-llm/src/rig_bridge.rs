@@ -60,7 +60,8 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::compat::ProviderCompat;
-use crate::config::{ProviderConfig, ProviderKind};
+use crate::config::{ModelConfig, ProviderConfig, ProviderKind};
+use crate::fast_mode::WireSettings;
 use crate::provider::{BoxStream, Capabilities, LlmProvider, ModelParams};
 use crate::responses_state::{
     Exchange as ResponsesExchange, ReplayPlan as ResponsesReplayPlan,
@@ -420,6 +421,8 @@ struct SsePatchClient {
     responses: Option<Arc<ResponsesContext>>,
     websocket: Option<Arc<crate::codex_transport::CodexTransport>>,
     pulse: Pulse,
+    /// Non-Responses overlays, applied after the SDK's typed conversion.
+    fast_params: Map<String, Value>,
 }
 
 impl Default for SsePatchClient {
@@ -431,6 +434,7 @@ impl Default for SsePatchClient {
             responses: None,
             websocket: None,
             pulse: Pulse::default(),
+            fast_params: Map::new(),
         }
     }
 }
@@ -459,6 +463,22 @@ impl SsePatchClient {
                 context.patch(&mut value);
                 if self.websocket.is_some() {
                     crate::codex_transport::patch_request(&mut value);
+                }
+                if let Ok(patched) = serde_json::to_vec(&value) {
+                    body = patched.into();
+                }
+            }
+        }
+        if !self.fast_params.is_empty() {
+            if let Ok(mut value) = serde_json::from_slice::<Value>(&body) {
+                if let Some(object) = value.as_object_mut() {
+                    for (key, value) in &self.fast_params {
+                        if value.is_null() {
+                            object.remove(key);
+                        } else {
+                            object.insert(key.clone(), value.clone());
+                        }
+                    }
                 }
                 if let Ok(patched) = serde_json::to_vec(&value) {
                     body = patched.into();
@@ -894,7 +914,6 @@ pub struct RigProvider {
     id: &'static str,
     /// Optional per-session cache-write sink (host UI/cost accounting).
     usage_observer: Option<Arc<UsageObserver>>,
-    responses_origin: String,
     websocket: Option<Arc<crate::codex_transport::CodexTransport>>,
     /// Prompt-cache routing key (`prompt_cache_key`, session-affinity headers).
     /// One conversation owns one key: the caller passes that conversation's
@@ -915,6 +934,8 @@ pub struct RigProvider {
     api_key: String,
     auth_header: bool,
     headers: HashMap<String, String>,
+    models: HashMap<String, ModelConfig>,
+    fast_mode: bool,
     kind: WireKind,
     compat: Option<ProviderCompat>,
     http: reqwest::Client,
@@ -938,6 +959,25 @@ impl RigProvider {
         conversation: Option<&str>,
     ) -> anyhow::Result<Self> {
         let kind = WireKind::from(cfg.kind);
+        let ids: HashSet<&str> = cfg
+            .models
+            .iter()
+            .map(|m| m.id())
+            .chain(
+                cfg.model_overrides
+                    .iter()
+                    .flat_map(|overrides| overrides.keys().map(String::as_str)),
+            )
+            .collect();
+        let mut models = HashMap::new();
+        for id in ids {
+            let model = cfg.model_opts(id);
+            if let Some(fast) = &model.fast_mode {
+                fast.validate()
+                    .map_err(|error| anyhow::anyhow!("model {id:?}: {error}"))?;
+            }
+            models.insert(id.to_string(), model);
+        }
         let caps = match kind {
             WireKind::Compat | WireKind::Responses => Capabilities::all(),
             WireKind::Anthropic => Capabilities {
@@ -976,13 +1016,6 @@ impl RigProvider {
         Ok(Self {
             websocket,
             usage_observer,
-            responses_origin: crate::responses_state::origin(
-                &cfg.base_url,
-                &api_key,
-                &cfg.headers,
-                cfg.user_agent.as_deref(),
-                cfg.auth_header.unwrap_or(true),
-            ),
             cache_key,
             affinity_headers: custom_affinity_headers(&cfg.session_affinity_headers),
             first_party: is_first_party(&cfg.base_url),
@@ -1000,12 +1033,21 @@ impl RigProvider {
             api_key,
             auth_header: cfg.auth_header.unwrap_or(true),
             headers: cfg.headers.clone(),
+            models,
+            fast_mode: false,
             kind,
             compat: cfg.compat.clone(),
             http,
             caps,
             keepalive_every: KEEPALIVE_EVERY,
         })
+    }
+
+    /// Enable Fast only for models with explicit profiles. Thinking and the
+    /// underlying base configuration are unchanged.
+    pub fn with_fast_mode(mut self, enabled: bool) -> Self {
+        self.fast_mode = enabled;
+        self
     }
 
     /// Shorten the quiet period after which a live-but-silent stream reports
@@ -1046,7 +1088,7 @@ impl RigProvider {
     /// rebuild — which we do per call anyway.
     fn build_model(
         &self,
-        model: &str,
+        settings: &WireSettings,
         compat: &ProviderCompat,
         retention: CacheRetention,
         reasoning_replay: bool,
@@ -1071,7 +1113,7 @@ impl RigProvider {
             }
         }
         // Configured headers last so they can override the defaults.
-        for (k, v) in &self.headers {
+        for (k, v) in &settings.headers {
             if let (Ok(name), Ok(value)) = (
                 HeaderName::from_bytes(k.as_bytes()),
                 HeaderValue::from_str(v),
@@ -1086,7 +1128,13 @@ impl RigProvider {
             responses: if repair_sse { responses.cloned() } else { None },
             websocket: self.websocket.clone(),
             pulse: pulse.clone(),
+            fast_params: if repair_sse {
+                Map::new()
+            } else {
+                settings.fast_params.clone()
+            },
         };
+        let model = &settings.model;
         Ok(match self.kind {
             WireKind::Compat => {
                 if self.auth_header && !self.api_key.is_empty() {
@@ -1203,6 +1251,15 @@ impl LlmProvider for RigProvider {
         reasoning_effort: Option<&str>,
         params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        let settings = WireSettings::resolve(
+            model,
+            params.sampling_params.as_ref(),
+            &self.headers,
+            self.models.get(model),
+            self.fast_mode,
+            self.kind == WireKind::Anthropic,
+        );
+        let model = settings.model.as_str();
         // Model-level `compat` merged over the provider's — `maxTokensField`
         // and `supportsReasoningEffort` are commonly declared per model.
         let compat = params.compat_with(self.compat.as_ref());
@@ -1222,12 +1279,7 @@ impl LlmProvider for RigProvider {
             // replay and must keep its declared historical wire shape.
             let native_replay = !compat.requires_thinking_as_text.unwrap_or(false);
             let replay_messages = if native_replay { messages } else { &[] };
-            let sampling = params
-                .sampling_params
-                .as_ref()
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
+            let sampling = settings.sampling.clone();
             if sampling
                 .get("prompt_cache_options")
                 .is_some_and(|v| !v.is_null())
@@ -1257,7 +1309,15 @@ impl LlmProvider for RigProvider {
                 None
             };
             Some(Arc::new(ResponsesContext::new(
-                self.responses_origin.clone(),
+                // Fast headers may route to another gateway account without
+                // changing the model id. Opaque history cannot cross accounts.
+                crate::responses_state::origin(
+                    &self.base_url,
+                    &self.api_key,
+                    &settings.headers,
+                    self.user_agent.as_deref(),
+                    self.auth_header,
+                ),
                 model,
                 replay_messages,
                 effective_effort.as_deref(),
@@ -1399,10 +1459,8 @@ impl LlmProvider for RigProvider {
         // conversion: valid API fields such as text.verbosity alone otherwise
         // fail that conversion, and newer cache fields silently disappear.
         if self.kind != WireKind::Responses {
-            if let Some(extra) = params.sampling_params.as_ref().and_then(|v| v.as_object()) {
-                for (k, v) in extra {
-                    additional.insert(k.clone(), v.clone());
-                }
+            for (k, v) in &settings.sampling {
+                additional.insert(k.clone(), v.clone());
             }
         }
 
@@ -1438,7 +1496,7 @@ impl LlmProvider for RigProvider {
             let mut plain = request.clone();
             drop_summary_params(&mut plain, self.kind);
             let plain_model = self.build_model(
-                model,
+                &settings,
                 &compat,
                 retention,
                 reasoning_replay,
@@ -1452,7 +1510,7 @@ impl LlmProvider for RigProvider {
             None
         };
         let rig_model = self.build_model(
-            model,
+            &settings,
             &compat,
             retention,
             reasoning_replay,

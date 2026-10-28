@@ -38,6 +38,29 @@ async function openEditor(configProviders: any = providers) {
   return { user, dialog };
 }
 
+test("technical provider fields keep literal text defaults and save URL and JSON unchanged", async () => {
+  const { user, dialog } = await openEditor();
+  const baseUrl = within(dialog).getByDisplayValue(providers.OpenCodeGo.base_url);
+  const headers = within(dialog).getByPlaceholderText(/"X-Title": "my-app"/);
+  for (const field of [baseUrl, within(dialog).getByPlaceholderText("max_tokens"), headers]) {
+    expect(field).toHaveAttribute("autocorrect", "off");
+    expect(field).toHaveAttribute("autocapitalize", "none");
+    expect(field).toHaveAttribute("spellcheck", "false");
+  }
+
+  const url = "https://gw.example.invalid/v1";
+  await user.clear(baseUrl);
+  await user.type(baseUrl, url);
+  await user.click(headers);
+  await user.paste('{"X-Model":"qwen3-coder:32b"}');
+  await user.click(within(dialog).getByRole("button", { name: "保存" }));
+  await waitFor(() => expect(lastSaved()).toBeTruthy());
+  expect(lastSaved().providers.OpenCodeGo).toMatchObject({
+    base_url: url,
+    headers: { "X-Model": "qwen3-coder:32b" },
+  });
+});
+
 test("a stored dialect and User-Agent come back unchanged after a save", async () => {
   const { user, dialog } = await openEditor();
   // The editor shows what the config holds — camelCase keys included, which is

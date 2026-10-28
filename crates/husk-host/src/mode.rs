@@ -39,8 +39,9 @@ impl AgentMode {
         }
     }
 
-    /// One-paragraph instruction substituted into the system prompt —
-    /// the model needs to know its mode's contract, not just its tool set.
+    /// Complete contract rendered into each foreground request's live state —
+    /// the model needs its current mode's instructions, not just a tool schema
+    /// or the mode it had when the session was born.
     pub fn prompt_block(&self) -> &'static str {
         match self {
             Self::Build => "Mode: build — full tool set. Read, edit, run, verify.",

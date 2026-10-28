@@ -1,3 +1,4 @@
+use agent_ipc::UiEvent;
 use std::{collections::HashMap, sync::Arc};
 
 use husk_host::{
@@ -42,7 +43,7 @@ id = "plain"
 "#,
     )
     .unwrap();
-    let (mut actor, _channels) = SessionActor::spawn(SessionConfig {
+    let (mut actor, mut channels) = SessionActor::spawn(SessionConfig {
         workspace_root: root.clone(),
         paths,
         provider: Arc::new(agent_testkit::ScriptedProvider::new()),
@@ -68,6 +69,8 @@ id = "plain"
         queued_prompts: Vec::new(),
         plugins: None,
     });
+    while channels.event_rx.try_recv().is_some() {}
+    let original_history_len = actor.history_len();
     let level = actor.thinking_writer();
     assert_eq!(level.read().unwrap().as_deref(), Some("xhigh"));
     actor
@@ -83,10 +86,31 @@ id = "plain"
         })
         .await;
     assert_eq!(level.read().unwrap().as_deref(), Some("low"));
+    actor
+        .handle(UiCommand::SetPermissionMode {
+            mode: "bypass".into(),
+        })
+        .await;
+    actor
+        .handle(UiCommand::SetAgentMode {
+            mode: "plan".into(),
+        })
+        .await;
     assert_eq!(
-        actor.history().last().unwrap().content.as_deref(),
-        Some("已设置思考推理强度: low")
+        actor.history_len(),
+        original_history_len,
+        "settings must not append chat history"
     );
+    while let Some(event) = channels.event_rx.try_recv() {
+        assert!(
+            !matches!(event, UiEvent::SystemMessage(_)),
+            "settings must not create a chat notice: {event:?}"
+        );
+        assert!(
+            !matches!(event, UiEvent::UserPrompt(_)),
+            "settings must not create a user turn"
+        );
+    }
 
     let store = agent_store::SessionStore::open(&root).unwrap();
     let persisted = store

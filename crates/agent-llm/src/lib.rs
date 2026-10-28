@@ -8,6 +8,7 @@ pub mod cache_warm;
 mod codex_transport;
 pub mod config;
 pub mod factory;
+mod fast_mode;
 mod responses_state;
 mod rig_bridge;
 pub mod usage;
@@ -23,9 +24,9 @@ pub use agent_llm_core::{
 pub use agent_llm_core::{ChatMessage, ProviderState, Role, StreamChunk, ToolCall};
 pub use cache_warm::{WarmingControl, WarmingProvider};
 pub use config::{
-    AppConfig, ConfigWarning, CostTier, ImageLimits, ImageResize, InputLimits, ModelConfig,
-    ModelCost, ModelEntry, ModelOverride, PromptCache, ProviderConfig, ProviderKind,
-    THINKING_LEVELS,
+    AppConfig, ConfigWarning, CostTier, FastMode, FastModeConfig, ImageLimits, ImageResize,
+    InputLimits, ModelConfig, ModelCost, ModelEntry, ModelOverride, PromptCache, ProviderConfig,
+    ProviderKind, THINKING_LEVELS,
 };
 pub use factory::ProviderFactory;
 pub use rig_bridge::RigProvider;

@@ -1,7 +1,7 @@
 +++
 owns = ["crates/husk-host/**"]
 forbidden_deps = ["app-cli", "app-tui", "tauri*", "ratatui*"]
-invariants = ["会话装配是宿主职责，内核与 agent-coding 不感知产品", "沙盒限额是进程级共享真相源，经 SwitchableSandbox 注入", "交互式会话不设工具轮次上限；无人值守的续跑由 MAX_WAKES_IN_ROW 把关，失控循环由 RepeatGuard 叫停", "记忆注入以 (scope,key) 记账；召回与语义推理不得占用异步 worker", "关联工作区按会话生效，绝不进进程级 sandbox_prefs::LIMITS；只经会话 ctx 的 LinkedRoots 槽注入", "关联根先经 link_policy::validate：不接受 /、$HOME 本身、系统目录、包含应用数据或凭据目录的祖先、不存在的路径", "授权只有一条写路径（links::LinkHub）：写入前校验、读回再校验、带锁读改写、改动刷新该工作区所有活会话", "link_policy::normalize 保留嵌套根：只读父 + 读写子不得合并成父级可写"]
+invariants = ["会话装配是宿主职责，内核与 agent-coding 不感知产品", "沙盒限额是进程级共享真相源，经 SwitchableSandbox 注入", "交互式会话不设工具轮次上限；无人值守的续跑由 MAX_WAKES_IN_ROW 把关，失控循环由 RepeatGuard 叫停", "记忆注入以 (scope,key) 记账；召回与语义推理不得占用异步 worker", "关联工作区按会话生效，绝不进进程级 sandbox_prefs::LIMITS；只经会话 ctx 的 LinkedRoots 槽注入", "关联根先经 link_policy::validate：不接受 /、$HOME 本身、系统目录、包含应用数据或凭据目录的祖先、不存在的路径", "授权只有一条写路径（links::LinkHub）：写入前校验、读回再校验、带锁读改写、改动刷新该工作区所有活会话", "link_policy::normalize 保留嵌套根：只读父 + 读写子不得合并成父级可写", "ProjectsSnapshot保留build完整列表兼容；sidebar源只搬运项目身份/store句柄与current/office/parked actor覆盖，打开其它store与读取meta必须在manager锁外；不在宿主复制Tauri的分页缓存", "仅sidebar_sources/SidebarProjectSource::row将title与preview（含live）各限512个Unicode标量，提供同一sidebar_text投影供shell覆盖使用；不改store、完整build或标题编辑数据", "live_context 只装饰前台 provider（spawn、reload、fallback 共用装配出口）：每次 chat_stream 从引擎同一 mode/gate Arc 与 LinkedRoots snapshot 渲染可信当前状态，仅改 wire 副本；最新真实用户任务与最新完整采样轮显式保留，其余历史仅复用内核 estimator/fitter 整理，不保护整个用户回合、不重排存活历史；checkpoint 在外看真实历史，context_breakdown 的独立请求 observer 在 live 变换后、warming 前共享 checkpoint 的统计 sink，独立 checkpoint 包装仍观测实际入参；warming 在内捕获实际请求并经无 observer 的侧路重放；不持久化 live state、不升级 Host notice、不向 distill 或 child route 注入父契约"]
 +++
 
 Husk 宿主层：把内核装配成产品——会话、命令面、模式表、沙盒偏好。
@@ -22,7 +22,7 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 子代理的预算来自内核常量（不设超时、不设轮次上限），宿主没有出口：它是一个独立的 agent，不是受会话预算节制的工具。系统提示里的预算文案随这些常量走，改一处必须改另一处
 - 子代理编号：进程启动后先 `reserve_child_ids(max_child_id(...))`，从一个会话已有记录之后开始编号——编号写进 transcript 文件名与会话日志，重用会让新子代理顶掉旧记录
 - 系统提示词资产（assets/kernel-system-prompt.md）、办公根目录（office.rs）、待办存储（todo_store.rs）、全局偏好（prefs.rs）。提示里有一段常驻的「如何在需要别的目录时申请」——它必须在没有任何关联时也存在，否则模型不知道这条路
-- 提示词缓存布局：系统提示固定指令在前、会话上下文在后且会话中不改写（模式块除外），每条消息相关的记忆作为隐藏 user 行随消息发送；会话在回合结束与历史改写时通知保活（`WarmingControl`）
+- 提示词缓存布局：固定指令在前，可刷新目录与会话上下文在后；mode / permission / linked roots 不改写出生系统提示，由 `live_context` 在每次前台请求中从引擎共享槽生成可信 system 说明，仅修改 wire 副本。`foreground_provider` 统一 spawn / reload / fallback 的 `checkpoint(context(warming(provider)))` 装配：checkpoint 只看真实历史，warming 捕获并重放实际 wire 快照；独立 compaction / distill / child route 不注入父 contract。动态路径在 JSON 引用前后均脱敏；附加状态后的消息预算复用内核 estimator/fitter，仅整理 wire 副本，完整状态和最新任务/输出不能静默截断。mode/gate/roots 各槽及已生成的 schema 不是跨槽原子快照，不从 schema 推断模式，不在宿主重建 registry。每条消息相关的记忆作为隐藏 user 行随消息发送；会话在回合结束与历史改写时通知保活（`WarmingControl`）
 - 记忆注入记账：会话按历史索引记录已下发的事实 id 与已携带的 persona（`injected_facts` / `injected_persona`），召回行只发增量——同一事实一个会话只出现一次，会话中途 `remember` 的偏好在下一轮以同一行补发；persona 记账以 `<scope>:<key>` 为键，同名不同作用域是两条；`/retry`、`/clear`、`/compact` 回滚历史时同步丢弃对应记账
 - 观察注记与历史同寿命：根上下文装一份 `ObservationLedger`，`forget_after`（`/clear`、`/retry`、`/compact`、hook 改写历史）整份清空——「你看过了」只对仍在上下文里的结果成立。子代理各拿自己的一份
 - 召回行修剪（`prune_recall_rows_in`）：`/compact` 前只留最近两条召回行，被删行的记账与其索引一起前移。压缩本来就要重写历史，所以这是唯一不额外损失 prompt cache 的时机；自动压缩发生在内核内部，宿主不介入

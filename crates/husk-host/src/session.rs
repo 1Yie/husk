@@ -266,11 +266,10 @@ fn replace_block(content: &str, name: &str, block: &str) -> String {
     format!("{head}\n{block}\n{tail}")
 }
 
-/// The `<!-- linked -->` region — the directories outside the workspace this
-/// session may reach. Each carries its access and the one rule the model has
-/// to keep: a relative path still means the workspace, so a linked file is
-/// named by absolute path. Empty means none, and the region then says nothing
-/// — a session with no grants should not spend prompt on the concept.
+/// Child instructions' linked-workspace snapshot (foreground requests instead
+/// use `live_context`). Each root carries its access and the path rule: relative
+/// paths still mean the workspace, so a linked file is named by absolute path.
+/// An empty child snapshot adds no block.
 pub(crate) fn linked_roots_block(roots: &[agent_capabilities::LinkedRoot]) -> String {
     if roots.is_empty() {
         return String::new();
@@ -296,15 +295,6 @@ pub(crate) fn linked_roots_block(roots: &[agent_capabilities::LinkedRoot]) -> St
          same call unchanged — if they declined, work inside what you reach.\n",
     );
     out
-}
-
-/// The `<!-- permission -->` region — one bullet naming the gate's mode. The
-/// live gate is what approves calls, so the prompt's copy is rewritten from it
-/// on every switch rather than left at the value the session was spawned with.
-fn permission_block(mode: &str) -> String {
-    format!(
-        "- Permission mode: {mode}  (default | acceptEdits | auto | dontAsk | bypassPermissions)"
-    )
 }
 
 /// Swap the recalled-memory region of a system prompt.
@@ -480,7 +470,7 @@ fn append_prompt_tail(out: &mut String, root: &Path, paths: &agent_paths::AppPat
 /// Where the re-rendered tail starts: the first of the two markers. The rules
 /// marker stands on its own because a workspace with rules but no AGENTS.md
 /// has no instructions section to find.
-fn prompt_tail_start(prompt: &str) -> Option<usize> {
+pub(crate) fn prompt_tail_start(prompt: &str) -> Option<usize> {
     ["\n\n## User instructions — ", crate::rules::PROMPT_MARKER]
         .iter()
         .filter_map(|marker| prompt.find(marker))
@@ -545,10 +535,10 @@ pub struct SessionConfig {
     pub provider_name: String,
     pub model: String,
     pub temperature: f32,
-    /// Permission mode label substituted into the prompt.
+    /// Initial permission gate mode (rendered live at the request boundary).
     pub permission_mode: String,
     /// Agent mode (`build` | `plan` | `goal`) — governs the tool registry
-    /// and the turn contract; substituted into the prompt.
+    /// and the turn contract; rendered live at the request boundary.
     pub agent_mode: String,
     /// Whether to seed the tracker with git-dirty files (`AllDirty` mode).
     pub track_dirty: bool,
@@ -742,6 +732,9 @@ pub struct SessionActor {
     /// moment a `SetModel` arrives, ahead of the pump (which waits behind a
     /// running turn); the actor keeps it in step on every switch it applies.
     model_slot: Arc<std::sync::RwLock<(String, String)>>,
+    /// Accepted preference (manager writes immediately); provider changes wait for a turn boundary.
+    fast_mode: Arc<std::sync::RwLock<bool>>,
+    applied_fast_mode: bool,
     /// Forwards `UiCommand::Steer` texts into the engine's steer channel. The
     /// engine drains it between rounds; whatever it leaves behind when a turn
     /// ends is read back by the actor itself (`drain_queue` / `run`) and run
@@ -805,6 +798,8 @@ pub struct SessionActor {
     /// on every flush.
     turn_started_at: Option<u64>,
     checkpoint: Option<Arc<TurnCheckpoint>>,
+    /// Request-only state from the engine's live mode/gate and tool root slots.
+    live_context: Arc<crate::live_context::LiveContext>,
     /// Per-session cache-write sink shared with the provider and the
     /// checkpoint relay (the shared `StreamChunk::Done` has no write slot).
     usage_observer: Option<Arc<agent_llm::UsageObserver>>,
@@ -889,8 +884,17 @@ pub(crate) fn unobserved_provider_from(
     provider_name: &str,
     conversation: &str,
 ) -> Option<Arc<dyn agent_llm::LlmProvider>> {
+    unobserved_fast_provider_from(app, provider_name, conversation, false)
+}
+
+fn unobserved_fast_provider_from(
+    app: &agent_llm::AppConfig,
+    provider_name: &str,
+    conversation: &str,
+    fast_mode: bool,
+) -> Option<Arc<dyn agent_llm::LlmProvider>> {
     let provider = app.providers.get(provider_name)?;
-    agent_llm::ProviderFactory::build_with_conversation(provider, None, Some(conversation)).ok()
+    agent_llm::ProviderFactory::build_with_fast_mode(provider, None, Some(conversation), fast_mode).ok()
 }
 
 /// Wrap the foreground session provider in prompt-cache warming when the
@@ -917,6 +921,23 @@ fn warmed_provider(
     )
 }
 
+/// One foreground assembly exit for spawn, reload/model switches and fallback.
+/// Checkpoint sees the real history; live state touches only its request copy;
+/// the independent breakdown observer and warming (when installed underneath)
+/// see the actual wire request. Compaction bypasses the foreground observer;
+/// side providers and child routes must never pass through this function.
+fn foreground_provider(
+    provider: Arc<dyn agent_llm::LlmProvider>,
+    context: &Arc<crate::live_context::LiveContext>,
+    checkpoint: Option<&Arc<TurnCheckpoint>>,
+) -> Arc<dyn agent_llm::LlmProvider> {
+    match checkpoint {
+        Some(checkpoint) => checkpoint
+            .wrap_recovery(context.wrap_observed(provider, Some(checkpoint.breakdown_observer()))),
+        None => context.wrap(provider),
+    }
+}
+
 /// The session model's resolved config (overrides folded in), when the
 /// provider config describes it.
 fn resolved_model(cfg: &SessionConfig) -> Option<agent_llm::ModelConfig> {
@@ -924,6 +945,25 @@ fn resolved_model(cfg: &SessionConfig) -> Option<agent_llm::ModelConfig> {
     let pcfg = app.providers.get(&cfg.provider_name)?;
     pcfg.find_model(&cfg.model)?;
     Some(pcfg.model_opts(&cfg.model))
+}
+
+/// Host-owned keyed session preference. Legacy sessions have no entry and stay off.
+pub(crate) fn read_fast_mode(store: &agent_store::SessionStore, id: i64) -> bool {
+    store.read_state(id, "husk:fast_mode").ok().flatten()
+        .and_then(|bytes| serde_json::from_slice::<bool>(&bytes).ok())
+        .unwrap_or(false)
+}
+
+pub(crate) fn write_fast_mode(
+    store: &agent_store::SessionStore,
+    id: i64,
+    enabled: bool,
+) -> std::io::Result<()> {
+    store.write_state(id, "husk:fast_mode", if enabled { b"true" } else { b"false" })
+}
+
+pub(crate) fn supports_fast_mode(cfg: &agent_llm::AppConfig, provider: &str, model: &str) -> bool {
+    cfg.providers.get(provider).is_some_and(|p| p.model_opts(model).fast_mode.is_some())
 }
 
 impl SessionActor {
@@ -1078,11 +1118,6 @@ impl SessionActor {
                 "{{WORKSPACE_ROOT}}",
                 &cfg.workspace_root.display().to_string(),
             )
-            .replace("{{PERMISSION_MODE}}", &cfg.permission_mode)
-            .replace(
-                "{{AGENT_MODE}}",
-                crate::mode::AgentMode::from_str(&cfg.agent_mode).prompt_block(),
-            )
             .replace("{{WORKSPACE_TREE}}", &workspace_tree)
             .replace("{{GIT_STATUS}}", &git_status);
 
@@ -1163,16 +1198,8 @@ impl SessionActor {
             if let Some(sys) = history.get_mut(0) {
                 if let Some(c) = sys.content.take() {
                     let mut c = set_memory_block(&c, &initial_memory_block);
-                    // The mode and permission the session runs with are
-                    // settings, not history: re-stamp them from this spawn's
-                    // config so a reopened conversation cannot describe a
-                    // registry it no longer dispatches against.
-                    c = replace_block(
-                        &c,
-                        "mode",
-                        crate::mode::AgentMode::from_str(&cfg.agent_mode).prompt_block(),
-                    );
-                    c = replace_block(&c, "permission", &permission_block(&cfg.permission_mode));
+                    // Mode/permission/links are supplied on every foreground
+                    // request, even for legacy prompts without any markers.
                     if let Some(idx) = prompt_tail_start(&c) {
                         c.truncate(idx);
                         append_prompt_tail(&mut c, &cfg.workspace_root, &cfg.paths);
@@ -1204,15 +1231,6 @@ impl SessionActor {
         let links = crate::links::hub_for(&cfg.workspace_root, &cfg.paths);
         let linked_roots = Arc::new(agent_capabilities::LinkedRoots::default());
         linked_roots.set(links.effective(session_id));
-        if let Some(sys) = history.get_mut(0) {
-            if let Some(c) = sys.content.take() {
-                sys.content = Some(replace_block(
-                    &c,
-                    "linked",
-                    &linked_roots_block(&linked_roots.snapshot()),
-                ));
-            }
-        }
         // The distiller and the spend it records are both built here: the
         // recorder needs the store handle, which exists only from this point.
         let distill_ctx = DistillCtx {
@@ -1508,12 +1526,8 @@ impl SessionActor {
             resolved_model(&cfg).as_ref(),
             &warming,
         );
-        let provider = checkpoint.as_ref().map_or_else(
-            || warmed.clone(),
-            |checkpoint| checkpoint.wrap(warmed.clone()),
-        );
         let mut engine = Engine::new(
-            provider,
+            cfg.provider.clone(),
             registry.clone(),
             ctx.clone(),
             cfg.model.clone(),
@@ -1602,6 +1616,19 @@ impl SessionActor {
         let ask_channel = engine.ask_channel();
         let permissions_slot = engine.permissions_writer();
         let thinking_slot = engine.thinking_level_shared();
+        let live_context = crate::live_context::LiveContext::new(
+            &cfg.workspace_root,
+            engine.agent_mode_writer(),
+            permissions_slot.clone(),
+            linked_roots.clone(),
+            engine.context_window(),
+        );
+        live_context.set_prompt(history.first());
+        engine.set_provider(foreground_provider(
+            warmed,
+            &live_context,
+            checkpoint.as_ref(),
+        ));
         // This session's loop guard, layered under the plugin chain whenever
         // one is installed — see `SessionActor::set_hooks`.
         let repeat_guard: Arc<crate::repeat_guard::RepeatGuard> = Arc::new(Default::default());
@@ -1641,6 +1668,9 @@ impl SessionActor {
             cancel: cancel.clone(),
         };
 
+        let initial_fast_mode = store.as_ref().is_some_and(|store| read_fast_mode(store, session_id))
+            && agent_llm::AppConfig::load(&cfg.paths.config_dir, None).ok()
+                .is_some_and(|app| supports_fast_mode(&app, &cfg.provider_name, &cfg.model));
         (
             Self {
                 history,
@@ -1663,6 +1693,8 @@ impl SessionActor {
                     cfg.provider_name.clone(),
                     cfg.model.clone(),
                 ))),
+                fast_mode: Arc::new(std::sync::RwLock::new(initial_fast_mode)),
+                applied_fast_mode: false,
                 child_route,
                 child_base,
                 subagent_model,
@@ -1694,6 +1726,7 @@ impl SessionActor {
                 history_revision,
                 turn_started_at: None,
                 checkpoint,
+                live_context,
                 usage_observer: None,
                 warming,
                 last_usage: None,
@@ -1881,6 +1914,7 @@ impl SessionActor {
     /// Resolved provider keys for the egress masker. Installed before the
     /// actor runs so the first request is already scrubbed.
     pub fn set_secrets(&mut self, secrets: Vec<String>) {
+        self.live_context.set_secrets(secrets.clone());
         self.engine.set_secrets(secrets);
     }
 
@@ -1893,10 +1927,8 @@ impl SessionActor {
         let chain = chain
             .into_iter()
             .map(|(name, provider)| {
-                let provider = self.checkpoint.as_ref().map_or_else(
-                    || provider.clone(),
-                    |checkpoint| checkpoint.wrap(provider.clone()),
-                );
+                let provider =
+                    foreground_provider(provider, &self.live_context, self.checkpoint.as_ref());
                 (name, provider)
             })
             .collect();
@@ -1915,11 +1947,10 @@ impl SessionActor {
 
     /// Swap one `<!-- name -->` region of the rendered system prompt.
     ///
-    /// The prompt is rendered once per spawn and heads the provider's prompt
-    /// cache, so a setting the user flips mid-session rewrites its own region
-    /// instead of rebuilding the whole text. Marker-located: matching the old
-    /// block by content would silently no-op on a session resumed from a build
-    /// that worded it differently.
+    /// Refreshable catalogs (e.g. blueprint) update only their own region so
+    /// the fixed instruction prefix remains cached. Mode, permission and links
+    /// never use this path: they are request-only live state. Marker-located:
+    /// matching old content would no-op on differently worded legacy prompts.
     fn rewrite_prompt_block(&mut self, name: &str, block: &str) {
         let Some(sys) = self.history.first_mut() else {
             return;
@@ -2006,6 +2037,7 @@ impl SessionActor {
     /// Shared Prompt/Steer-between-turns path — extracted so `Steer` doesn't
     /// need a recursive `handle` call (async recursion requires boxing).
     async fn run_prompt(&mut self, text: String) {
+        self.sync_fast_mode();
         info!("user prompt ({} chars)", text.len());
         // The user is back: the wake-up budget starts over.
         self.wakes_in_row = 0;
@@ -2161,6 +2193,10 @@ impl SessionActor {
     /// Run the model and settle the turn — shared by a user prompt and a
     /// background wake-up.
     async fn run_engine_turn(&mut self, input: TurnInput, turn: u32) {
+        // Hook rewrites and the refreshable catalogs can change the prompt
+        // between turns. Track its complete identity solely to distinguish a
+        // session sample from the kernel's independent compaction request.
+        self.live_context.set_prompt(self.history.first());
         // A wake-up carries no user intent: it is not a task the distiller
         // can learn a correction from, so only a prompt is distilled.
         let was_prompt = matches!(&input, TurnInput::Prompt(_));
@@ -2561,6 +2597,20 @@ impl SessionActor {
         self.session_id
     }
 
+    pub fn fast_mode_writer(&self) -> Arc<std::sync::RwLock<bool>> {
+        self.fast_mode.clone()
+    }
+
+    /// Rebuild only between turns. Mid-turn ACKs accept/persist the preference,
+    /// not a mutation of the provider currently servicing the request.
+    fn sync_fast_mode(&mut self) {
+        let requested = *self.fast_mode.read().unwrap();
+        if requested != self.applied_fast_mode {
+            let (provider, model) = (self.provider_name.clone(), self.model.clone());
+            self.apply_model_switch(&provider, &model);
+        }
+    }
+
     /// Read-only history snapshot (persistence + multi-session handoff).
     pub fn history(&self) -> &[ChatMessage] {
         &self.history
@@ -2695,10 +2745,20 @@ impl SessionActor {
         // provider instead of being reset under it.
         let mut next_distill: Option<DistillCtx> = None;
         if let Ok(cfg) = agent_llm::AppConfig::load(&self.paths.config_dir, None) {
+            let supported = supports_fast_mode(&cfg, provider, model);
+            let mut preference = self.fast_mode.write().unwrap();
+            if !supported && *preference {
+                *preference = false;
+                if let Some(store) = &self.store {
+                    let _ = write_fast_mode(store, self.session_id, false);
+                }
+            }
+            self.applied_fast_mode = *preference && supported;
+            drop(preference);
             // Every provider's key is scrubbed, not just the active one: a
             // prompt can carry any configured key, and a switch must not leave
             // the previous provider's mask in place.
-            self.engine.set_secrets(cfg.resolved_secrets());
+            self.set_secrets(cfg.resolved_secrets());
             if let Some(pcfg) = cfg.providers.get(provider) {
                 // Same rule as spawn: an unbuildable provider is replaced by one
                 // that fails with the reason. Keeping the previous provider here
@@ -2708,13 +2768,15 @@ impl SessionActor {
                     provider,
                     self.usage_observer.as_ref(),
                     Some(&self.conversation),
+                    self.applied_fast_mode,
                 );
                 // The old model's warm entry is no use to the new one.
                 self.warming.cancel();
                 // Warming is side traffic: on its own instance, so a replay
                 // cannot overwrite the foreground round's cache-write figure.
-                let side = unobserved_provider_from(&cfg, provider, &self.conversation)
-                    .unwrap_or_else(|| built.clone());
+                let side = unobserved_fast_provider_from(
+                    &cfg, provider, &self.conversation, self.applied_fast_mode,
+                ).unwrap_or_else(|| built.clone());
                 let resolved = pcfg
                     .find_model(model)
                     .is_some()
@@ -2726,10 +2788,8 @@ impl SessionActor {
                     resolved.as_ref(),
                     &self.warming,
                 );
-                let parent_provider = self.checkpoint.as_ref().map_or_else(
-                    || warmed.clone(),
-                    |checkpoint| checkpoint.wrap(warmed.clone()),
-                );
+                let parent_provider =
+                    foreground_provider(warmed, &self.live_context, self.checkpoint.as_ref());
                 self.engine.set_provider(parent_provider);
                 self.set_fallbacks(
                     provider,
@@ -2738,6 +2798,7 @@ impl SessionActor {
                         provider,
                         self.usage_observer.as_ref(),
                         Some(&self.conversation),
+                        self.applied_fast_mode,
                     ),
                 );
                 // Post-turn distillation follows the model in use: same side
@@ -2782,8 +2843,25 @@ impl SessionActor {
                         route.model_params = agent_llm::ModelParams::EMPTY;
                     }
                 }
+            } else {
+                let (unavailable, _) = crate::session_manager::choose_session_provider(
+                    &cfg, provider, self.usage_observer.as_ref(), Some(&self.conversation), false,
+                );
+                self.warming.cancel();
+                self.engine.set_provider(foreground_provider(
+                    unavailable.clone(), &self.live_context, self.checkpoint.as_ref(),
+                ));
+                self.set_fallbacks(provider, Vec::new());
+                self.child_base.provider = unavailable.clone();
+                next_distill = Some(DistillCtx {
+                    provider: unavailable,
+                    model: model.to_string(),
+                    params: agent_llm::ModelParams::EMPTY,
+                });
             }
         }
+        self.live_context
+            .set_context_window(self.engine.context_window());
         // The parent's model changes unconditionally, so the children's base must too.
         self.child_base.model = model.to_string();
         self.engine.set_model(model.to_string());
@@ -2977,6 +3055,7 @@ impl SessionActor {
     /// intercept + the `on_user_input` hook chain, then `run_prompt`. Kept
     /// out of the `match` so `Retry` can re-enter it without recursion.
     async fn handle_prompt(&mut self, text: String) {
+        self.sync_fast_mode();
         if self
             .store
             .as_ref()
@@ -3164,9 +3243,11 @@ impl SessionActor {
                 info!(%provider, %model, "hot-swap requested");
                 self.apply_model_switch(&provider, &model);
                 self.persist_settings();
-                let line = format!("已切换模型至: {model} ({provider})");
-                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                self.history.push(ChatMessage::notice(line));
+            }
+            UiCommand::SetFastMode { enabled: _ } => {
+                // Manager already durably accepted this shared preference. Read
+                // the latest value so rapid queued toggles cannot resurrect an old one.
+                self.sync_fast_mode();
             }
             UiCommand::ReloadModel => {
                 // A config write re-reads `config.toml` into every live actor,
@@ -3194,10 +3275,6 @@ impl SessionActor {
                     Some(level.clone())
                 });
                 self.persist_settings();
-                let actual = self.engine.thinking_level().unwrap_or_else(|| "off".into());
-                let line = format!("已设置思考推理强度: {actual}");
-                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                self.history.push(ChatMessage::notice(line));
             }
             UiCommand::SetPermissionMode { mode } => {
                 info!(%mode, "permission mode switch");
@@ -3209,12 +3286,6 @@ impl SessionActor {
                     gate.set_mode(parsed);
                 }
                 self.persist_settings();
-                let line = format!("权限模式已切换为: {}", parsed.label());
-                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                self.history.push(ChatMessage::notice(line));
-                // The prompt carries the gate's mode too — a stale copy would
-                // tell the model it is judged by rules the gate no longer has.
-                self.rewrite_prompt_block("permission", &permission_block(parsed.as_str()));
             }
             UiCommand::SetBlueprintEnabled { enabled } => {
                 self.set_blueprint_enabled(enabled);
@@ -3223,21 +3294,6 @@ impl SessionActor {
                 let new = crate::mode::AgentMode::from_str(&mode);
                 self.engine.set_agent_mode(new.as_str());
                 self.persist_settings();
-                // Rewrite the mode block inside the rendered system prompt —
-                // the contract text must match the registry the next round
-                // actually dispatches against. Located by marker, not by the
-                // old text: a session resumed from an older build carries
-                // wording this build would never match.
-                self.rewrite_prompt_block("mode", new.prompt_block());
-                let label = match new {
-                    crate::mode::AgentMode::Build => "构建",
-                    crate::mode::AgentMode::Plan => "计划",
-                    crate::mode::AgentMode::Goal => "目标",
-                    crate::mode::AgentMode::Office => "办公",
-                };
-                let line = format!("模式已切换为: {label}");
-                let _ = self.io.ui_tx.send(UiEvent::SystemMessage(line.clone()));
-                self.history.push(ChatMessage::notice(line));
             }
             UiCommand::Cancel => {
                 // P0-C4: set the shared flag the engine polls between chunks
@@ -3474,36 +3530,40 @@ mod tests {
         for ph in [
             "{{DATE}}",
             "{{WORKSPACE_ROOT}}",
-            "{{PERMISSION_MODE}}",
             "{{WORKSPACE_TREE}}",
             "{{GIT_STATUS}}",
             "{{SKILLS_BLOCK}}",
             "{{SUBAGENTS_BLOCK}}",
             "{{BLUEPRINT_BLOCK}}",
             "{{MEMORY_BLOCK}}",
-            "{{AGENT_MODE}}",
+
         ] {
             assert!(session.contains(ph), "{ph} missing");
         }
         // The regions a live session rewrites carry markers: content-matched
         // replacement goes stale on a prompt resumed from an older build.
         for marker in [
-            ("<!-- permission -->", "<!-- /permission -->"),
             ("<!-- blueprint -->", "<!-- /blueprint -->"),
             ("<!-- memory -->", "<!-- /memory -->"),
-            ("<!-- mode -->", "<!-- /mode -->"),
         ] {
             assert!(session.contains(marker.0), "{} missing", marker.0);
             assert!(session.contains(marker.1), "{} missing", marker.1);
         }
-        // The mode block is last, and it is what a mode switch rewrites.
-        assert!(session.contains("<!-- mode -->\n{{AGENT_MODE}}\n<!-- /mode -->"));
-        assert!(session.trim_end().ends_with("<!-- /mode -->"));
+        // Mutable truth belongs to the request-only current state, never a
+        // session-birth placeholder or a rewritten fixed prefix.
+        for stale in [
+            "{{AGENT_MODE}}",
+            "{{PERMISSION_MODE}}",
+            "<!-- mode -->",
+            "<!-- permission -->",
+            "<!-- linked -->",
+        ] {
+            assert!(!SYSTEM_PROMPT_TEMPLATE.contains(stale), "{stale}");
+        }
+        assert!(session.contains("Current session state"));
     }
 
-    /// A live mode or permission switch must not depend on the wording it
-    /// replaces: a resumed session carries whatever the build that spawned it
-    /// wrote. `replace_block` locates its region by marker for exactly that.
+    /// Catalog/blueprint refreshes must not depend on the previous wording.
     #[test]
     fn rewrites_regions_by_marker_not_by_content() {
         let prompt = "a\n<!-- mode -->\nMode: build — old wording\n<!-- /mode -->\nb";
@@ -3514,17 +3574,6 @@ mod tests {
         assert!(out.ends_with("<!-- /mode -->\nb"), "{out}");
         // No marker → untouched, never a half-mangled prompt.
         assert_eq!(replace_block("no markers", "mode", "x"), "no markers");
-    }
-
-    /// The permission region renders the gate's canonical wire label, so the
-    /// prompt and the gate name the same mode.
-    #[test]
-    fn permission_block_names_the_wire_label() {
-        let block = permission_block(agent_kernel::permissions::PermissionMode::Bypass.as_str());
-        assert!(
-            block.starts_with("- Permission mode: bypassPermissions"),
-            "{block}"
-        );
     }
 
     #[test]
@@ -3632,3 +3681,11 @@ mod tests {
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod session_tests;
+
+#[cfg(test)]
+#[path = "session_live_context_tests.rs"]
+mod live_context_tests;
+
+#[cfg(test)]
+#[path = "session_fast_mode_tests.rs"]
+mod fast_mode_tests;

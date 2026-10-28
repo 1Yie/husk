@@ -2249,7 +2249,13 @@ mod tests {
         assert_eq!(page.anchor, prefix_hex(&base, 1));
 
         // Streaming rewrites the draft's last message in place: same length.
-        let streamed = vec![ChatMessage::user("q"), ChatMessage::assistant("draft, more")];
+        let mut streamed = base.clone();
+        streamed[1].content = Some("draft, more".into());
+        assert_eq!(
+            serde_json::to_value(&streamed[0]).unwrap(),
+            serde_json::to_value(&base[0]).unwrap(),
+            "streaming must preserve the anchored prefix"
+        );
         store
             .checkpoint_turn_checked(&streamed, meta, base_revision)
             .unwrap();

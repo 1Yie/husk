@@ -90,6 +90,17 @@ impl ProviderFactory {
         observer: Option<Arc<crate::usage::UsageObserver>>,
         conversation: Option<&str>,
     ) -> Result<Arc<dyn LlmProvider>, FactoryError> {
+        Self::build_with_fast_mode(cfg, observer, conversation, false)
+    }
+
+    /// Build with a conversation-local Fast toggle. Only explicitly configured
+    /// models change their wire requests; existing constructors default to off.
+    pub fn build_with_fast_mode(
+        cfg: &ProviderConfig,
+        observer: Option<Arc<crate::usage::UsageObserver>>,
+        conversation: Option<&str>,
+        fast_mode: bool,
+    ) -> Result<Arc<dyn LlmProvider>, FactoryError> {
         let key = match crate::config::AppConfig::resolve_secret(cfg) {
             SecretResolution::Resolved(s) | SecretResolution::Plaintext(s) => s,
             SecretResolution::Unavailable(why) => {
@@ -107,6 +118,7 @@ impl ProviderFactory {
             );
         }
         RigProvider::new(cfg, key, http_client(), observer, conversation)
+            .map(|p| p.with_fast_mode(fast_mode))
             .map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
             .map_err(FactoryError::Build)
     }

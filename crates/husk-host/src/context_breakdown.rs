@@ -7,11 +7,81 @@
 //! the proportions have to be right.
 
 use agent_llm::types::{ChatMessage, NoticeKind, Role};
+use agent_llm::{BoxStream, Capabilities, LlmProvider, ModelParams, StreamChunk};
 use agent_store::ContextBreakdown;
+use std::sync::{Arc, Mutex};
 
 /// UI-only extension accompanying a `Usage` event: the estimated prompt
 /// composition of the round that produced it.
 pub(crate) const CONTEXT_BREAKDOWN: &str = "husk:context_breakdown";
+
+/// Request-only statistics, independent of checkpoint history/recovery. Place
+/// the observer after wire transforms and before warming; replays must bypass
+/// it so they cannot overwrite the latest foreground sample's composition.
+#[derive(Default)]
+pub(crate) struct RequestObserver {
+    latest: Mutex<Option<ContextBreakdown>>,
+}
+
+impl RequestObserver {
+    pub(crate) fn latest(&self) -> Option<ContextBreakdown> {
+        *self.latest.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn wrap(self: &Arc<Self>, inner: Arc<dyn LlmProvider>) -> Arc<dyn LlmProvider> {
+        Arc::new(ObservedProvider {
+            inner,
+            observer: self.clone(),
+        })
+    }
+}
+
+struct ObservedProvider {
+    inner: Arc<dyn LlmProvider>,
+    observer: Arc<RequestObserver>,
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for ObservedProvider {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn native_tool_calls(&self) -> bool {
+        self.inner.native_tool_calls()
+    }
+
+    async fn chat_stream(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        tools: Option<serde_json::Value>,
+        temperature: f32,
+        reasoning_effort: Option<&str>,
+        params: &ModelParams,
+    ) -> anyhow::Result<BoxStream<StreamChunk>> {
+        let breakdown = estimate(messages, tools.as_ref(), crate::session::is_memory_context);
+        *self
+            .observer
+            .latest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(breakdown);
+        self.inner
+            .chat_stream(
+                model,
+                messages,
+                tools,
+                temperature,
+                reasoning_effort,
+                params,
+            )
+            .await
+    }
+}
 
 /// Flat vision cost per attached image — same figure the kernel budgets.
 const IMAGE_TOKENS: u32 = 1100;

@@ -20,17 +20,26 @@ describe("API Key visibility", () => {
     const user = userEvent.setup();
     render(<Editor />);
     const input = screen.getByLabelText("API Key");
+    const expectLiteralEditing = () => {
+      expect(input).toHaveAttribute("autocorrect", "off");
+      expect(input).toHaveAttribute("autocapitalize", "none");
+      expect(input).toHaveAttribute("spellcheck", "false");
+      expect(input).toHaveAttribute("autocomplete", "off");
+    };
     input.focus();
     await user.paste(TEST_KEY);
     expect(input).toHaveAttribute("type", "password");
     expect(input).toHaveValue(TEST_KEY);
+    expectLiteralEditing();
     await user.click(screen.getByRole("button", { name: "显示 API Key" }));
     expect(input).toHaveAttribute("type", "text");
     expect(input).toHaveValue(TEST_KEY);
     expect(input).toHaveFocus();
+    expectLiteralEditing();
     await user.click(screen.getByRole("button", { name: "隐藏 API Key" }));
     expect(input).toHaveAttribute("type", "password");
     expect(input).toHaveValue(TEST_KEY);
+    expectLiteralEditing();
     expect(tauri.invoke).not.toHaveBeenCalled();
   });
 

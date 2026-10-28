@@ -129,9 +129,12 @@ export function notificationsNow(): readonly AppNotification[] {
 /** Feed the session names — called by the app shell whenever its project
  *  list changes. A no-op when nothing was renamed, added or removed. */
 export function setSessionTitles(
-  projects: readonly { root: string; sessions: readonly { id: number; title: string }[] }[]
+  projects: readonly { root: string; sessions: readonly { id: number; title: string }[] }[],
+  partial = false,
 ) {
-  const next = new Map<string, string>();
+  // A sidebar page is not an exhaustive catalog. Retain names already learned
+  // from other pages so a poll cannot erase a notification's known title.
+  const next = partial ? new Map(titles) : new Map<string, string>();
   for (const p of projects) {
     for (const s of p.sessions) next.set(target({ root: p.root, session: s.id }), s.title);
   }

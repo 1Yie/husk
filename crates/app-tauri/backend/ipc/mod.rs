@@ -13,6 +13,7 @@ pub mod layer_shell;
 pub mod macos_notifications;
 pub mod overlay;
 pub mod sessions;
+mod sidebar;
 pub mod terminal;
 pub mod update;
 pub mod workspace_files;

@@ -18,7 +18,7 @@ import type { ChildSegment, StreamItem } from "@/features/chat/hooks/stream-view
 import { loadReset, loadStamp } from "@/lib/load-probe";
 import { forgetToldFailures, markSessionRead, setSessionTitles } from "@/lib/notifications";
 import { onOpenSettings, type SettingsTarget } from "@/lib/settings-bus";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, exportSession, historyPage, changesFeed, toolRowsFeed, subagentTranscript, activeChildren, onNotificationClick, type WorkspaceInfo } from "@/lib/agent-ipc/index";
+import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, sessionTitle as readSessionTitle, exportSession, historyPage, changesFeed, toolRowsFeed, subagentTranscript, activeChildren, onNotificationClick, sidebarRow, type WorkspaceInfo } from "@/lib/agent-ipc/index";
 import type { ProjectOverview } from "@/types";
 import type { SessionRow } from "@/types";
 import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
@@ -207,10 +207,14 @@ export function App() {
   // stale view re-fetches the SAME page and duplicates it (→ duplicate `hi`
   // → several black marks in the rail). The store is read AT CALL TIME — the
   // ref this used to need is exactly what `activeViewNow()` returns.
-  const { projects, sessions, loaded: sessionsLoaded, refresh, fetchProjects, commit, newSession, openSession } = useAgentSession();
+  const { projects, sessions, loaded: sessionsLoaded, error: sidebarError, refresh, invalidate,
+    newSession, openSession, recents: sidebarRecents, active: sidebarActive, paging } = useAgentSession();
   // The notification center names sessions in the bell AND in desktop toasts,
   // which fire outside any render — it keeps its own copy of the titles.
-  useEffect(() => setSessionTitles(projects), [projects]);
+  useEffect(() => setSessionTitles(projects.map((p) => ({ ...p, sessions:
+    [...new Map([...sidebarRecents.filter((e) => e.root === p.root).map((e) => e.row), ...p.sessions]
+      .map((r) => [r.id, r])).values()],
+  })), true), [projects, sidebarRecents]);
   // True while a session/workspace switch is fetching history + rebuilding
   // the view — the stream renders a skeleton instead of a stale/empty pane.
   // Starts true: before the boot load raises it, an unloaded view would paint
@@ -348,7 +352,7 @@ export function App() {
   // Same pattern for the fork confirmation — duplicating a session's
   // history is additive but irreversible, so it confirms first.
   const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
-  const [pendingRemoveWs, setPendingRemoveWs] = useState<ProjectOverview | null>(null);
+  const [pendingRemoveWs, setPendingRemoveWs] = useState<(ProjectOverview & { running?: boolean }) | null>(null);
   // Rename dialog — the row being renamed (with its workspace) + the draft.
   const [pendingRename, setPendingRename] = useState<{ root: string; row: SessionRow } | null>(null);
   // Archive confirmation — the row being archived and its workspace.
@@ -407,6 +411,7 @@ export function App() {
   }, []);
 
   const handlePickWorkspace = async () => {
+    invalidate();
     setViewLoading(true);
     // A rejected IPC must still lower the veil — otherwise it blocks the
     // whole window with no way out.
@@ -432,6 +437,7 @@ export function App() {
   // (project row, recents, folder picker) keeps to the sidebar and chat pane.
   const handleSwitchWorkspace = async (path: string, { veil = false } = {}) => {
     if (!path || path === workspace.root) return;
+    invalidate();
     // Flip the mode NOW — the tab (and `officeMode`, which derives from the
     // root) follows the click at once; only the content waits on the kernel
     // load. Same pattern as `handleOpenSession`. Rolled back on failure so
@@ -445,19 +451,13 @@ export function App() {
     const res = await switchWorkspace(path).catch(() => null);
     if (res) {
       evictDiscarded(previousRoot, activeId);
-      // The project tree is fetched now (it needs the switched `current`
-      // flag) but committed with the chat view below, so the sidebar and the
-      // conversation appear in one frame instead of the content leading.
-      const tree = await fetchProjects();
-      const commitTree = () => {
-        if (tree) commit(tree);
-      };
+      // The new summary rebases only pages the user had already opened. A
+      // workspace switch must never request the legacy full conversation list.
+      await refresh({ force: true });
       setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
       setActiveId(res.active);
       if (res.history.length > 0) {
-        await mountLoadedView(res.root, res.active, res, commitTree);
-      } else {
-        commitTree();
+        await mountLoadedView(res.root, res.active, res);
       }
       void getWorkspaceInfo().then((ws) => {
         if (ws) setWorkspace(ws);
@@ -477,6 +477,7 @@ export function App() {
   // active workspace first — its actors get parked (kept alive), not
   // killed, so a running turn survives the switch.
   const handleOpenSession = async (root: string, id: number) => {
+    invalidate();
     loadReset();
     // Opening the conversation is what "read" means — the bell counts what the
     // user has not looked at, and the sidebar row is the other way in.
@@ -522,8 +523,6 @@ export function App() {
   const openSessionRef = useRef(handleOpenSession);
   openSessionRef.current = handleOpenSession;
   const bootLoaded = useRef(false);
-  // Boot resolved with an empty workspace — see the boot effect's empty arm.
-  const bootEmpty = useRef(false);
   const bootSessionLoad = useRef<Promise<unknown>>(Promise.resolve());
   useEffect(() => {
     if (!wsReady || !sessionsLoaded) return;
@@ -556,29 +555,26 @@ export function App() {
       if (typeof created.id === "number") {
         setActiveId(created.id);
       }
-      evictDiscarded(previousRoot, previousId, created.rows);
+      evictDiscarded(previousRoot, previousId);
     }
     releaseLoading();
   };
 
   // Leaving an empty session discards it on the backend. Its cached view must
   // go too, or a later mount of that key would resurface the dropped session.
-  // Only judged against a fresh tree that still lists the outgoing project —
-  // a failed refresh returns no rows and must not evict anything. A caller
-  // that has just refreshed the tree passes those rows to skip a second fetch.
-  const evictDiscarded = (root: string, id: number, rows?: ProjectOverview[]) => {
+  // An unloaded row is not a deleted session. Check that single identity in
+  // its own workspace instead of treating a paged project as a complete list.
+  const evictDiscarded = (root: string, id: number) => {
     if (!id || !root) return;
-    const judge = (fresh: ProjectOverview[]) => {
-      const project = fresh.find((p) => p.root === root);
-      if (!project || project.sessions.some((s) => s.id === id)) return;
+    void sidebarRow(root, id).then(({ known_project, row }) => {
+      if (!known_project || row) return;
       dropView(root, id);
       forgetToldFailures(root, id);
-    };
-    if (rows) judge(rows);
-    else void refresh({ force: true }).then(judge);
+    }).catch(() => {}); // Failure is not evidence of deletion.
   };
 
   const handleDeleteSession = (id: number) => {
+    invalidate();
     setViewLoading(true);
     // Evict the cached view NOW — `loadView` never overwrites an existing
     // entry, so a stale buffer would resurface the deleted session the
@@ -624,20 +620,18 @@ export function App() {
   // is idempotent for a live actor; it only re-reads the store here.
   useEffect(() => {
     if (bootLoaded.current) return;
-    if (sessions.length === 0) {
-      // Nothing to resume. `viewLoading` starts true so an unloaded view can
-      // never paint the empty greeting for a session that does have turns;
-      // with zero sessions the welcome page mounts instead and there is
-      // nothing to wait for. Guarded by its own ref so a sidebar refresh
-      // while the workspace is empty does not re-run the release (which
-      // re-reads the header chips).
-      if (sessionsLoaded && !bootEmpty.current) {
-        bootEmpty.current = true;
-        releaseLoading();
-      }
+    // Only a successful summary can declare no active session. A local pointer
+    // may already belong to a user-initiated new/open; never replace it with a
+    // short-lived older summary, or confuse a failed/unresolved read with empty.
+    if (!sessionsLoaded || sidebarError || activeId) return;
+    if (!sidebarActive) {
+      // Archived rows are still selectable in the sidebar, but there is no
+      // conversation to resume/send to. Resolve boot and show the welcome CTA.
+      bootLoaded.current = true;
+      releaseLoading();
       return;
     }
-    const current = sessions.find((s) => s.active) ?? sessions[0];
+    const current = sidebarActive.row; // May be outside page 1, even archived.
     // The canonical root from the project tree — `workspace.root` state may
     // still be empty this early in the boot sequence. Wait for it: the view is
     // filed under `root:id`, and if the reader's root differs (even empty) the
@@ -654,12 +648,12 @@ export function App() {
     }).catch(() => releaseLoading());
     setActiveId(current.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions, workspace.root, projects, sessionsLoaded, releaseLoading]);
+  }, [sessions, sidebarActive, workspace.root, projects, sessionsLoaded, sidebarError, activeId, releaseLoading]);
 
   const activeSession =
-    sessions.find((s) => (activeId ? s.id === activeId : s.active)) || sessions[0];
+    sessions.find((s) => (activeId ? s.id === activeId : s.active));
   const sessionTitle =
-    sessions.length === 0
+    !activeSession
       ? "" // zero sessions: no phantom "新会话" in the title bar
       : activeSession?.title === "new session" || !activeSession?.title
         ? "新会话"
@@ -685,6 +679,7 @@ export function App() {
   const requestRemoveWorkspace = (p: ProjectOverview) => setPendingRemoveWs(p);
 
   const doRemoveWorkspace = async (root: string) => {
+    invalidate();
     const res = await removeWorkspace(root).catch(() => null);
     void refresh({ force: true });
     if (res?.removed_active) {
@@ -696,6 +691,7 @@ export function App() {
 
   // Meta edits: run, then re-read the tree; failures surface as a toast.
   const editSession = (op: Promise<unknown>) => {
+    invalidate();
     void op
       .then(() => void refresh({ force: true }))
       .catch((e) => toast.error(String(e)));
@@ -703,8 +699,12 @@ export function App() {
 
   const sessionActions: SessionActions = {
     rename: (root, row) => {
-      setRenameDraft(row.title === "new session" ? "" : row.title);
-      setPendingRename({ root, row });
+      // Sidebar titles are display projections, not editor drafts. Fetch only
+      // this title on demand, so opening/saving cannot silently truncate it.
+      void readSessionTitle(root, row.id).then(({ title }) => {
+        setRenameDraft(title === "new session" ? "" : title);
+        setPendingRename({ root, row });
+      }).catch((e) => toast.error(String(e)));
     },
     pin: (root, id, pinned) => editSession(pinSession(root, id, pinned)),
     pinGlobal: (root, id, pinned) => editSession(pinSessionGlobal(root, id, pinned)),
@@ -742,6 +742,7 @@ export function App() {
   };
 
   const doFork = (id: number) => {
+    invalidate();
     // Backend activates the fork — mirror it locally + rebuild the
     // stream view from the copied history.
     setViewLoading(true);
@@ -762,14 +763,19 @@ export function App() {
   // events) makes the orb appear the moment a turn starts instead of up
   // to 2s later. Keys are `root:id` — no collision across projects, so a
   // background workspace's running turn keeps its orb too.
+  const runningRoots = new Set([...runningKeys].map((key) => key.slice(0, key.lastIndexOf(":"))));
   const sidebarProjects = projects.map((p) => ({
     ...p,
+    running: p.running || runningRoots.has(p.root),
     sessions: p.sessions.map((s) => ({
       ...s,
       running: s.running || runningKeys.has(`${p.root}:${s.id}`),
     })),
   }));
 
+  // A missing workspace is also not a welcome until the summary resolves;
+  // a local user-selected pointer always wins over a stale no-active summary.
+  const noActiveSession = sessionsLoaded && !sidebarError && !sidebarActive && !activeId;
   // Office mode IS a workspace (the `~/.local/share/husk/office`
   // pseudo-workspace) — the composer only offers「办公」in its mode
   // dropdown while that workspace is active; everywhere else switching
@@ -784,6 +790,11 @@ export function App() {
         sidebar={
         <SessionSidebar
           projects={sidebarProjects}
+          recents={sidebarRecents.map((e) => ({ ...e, row: { ...e.row,
+            running: e.row.running || runningKeys.has(`${e.root}:${e.row.id}`) } }))}
+          paging={paging}
+          error={sidebarError}
+          onRetry={() => void refresh({ force: true })}
           projectsLoaded={sessionsLoaded}
           activeId={activeId}
           hasWorkspace={wsReady && !!workspace.root}
@@ -809,14 +820,14 @@ export function App() {
           loading={viewLoading}
           sessionKey={`${workspace.root}:${activeId}`}
           sessionId={activeId}
-          sessionsEmpty={sessionsLoaded && sessions.length === 0}
+          sessionsEmpty={noActiveSession}
           onNewSession={handleNewSession}
           onLoadOlder={handleLoadOlder}
           onShowRaw={handleShowRaw}
           onOpenWorkspace={handlePickWorkspace}
           recents={workspace.recents}
           onOpenRecent={(path) => void handleSwitchWorkspace(path)}
-          workspaceReady={wsReady}
+          workspaceReady={wsReady && noActiveSession}
         />
       </MainLayout>
 
@@ -895,7 +906,7 @@ export function App() {
           <DialogHeader>
             <DialogTitle className="text-base">移除项目</DialogTitle>
             <DialogDescription>
-              {pendingRemoveWs?.sessions.some((r) => r.running)
+              {(pendingRemoveWs?.running || pendingRemoveWs?.sessions.some((r) => r.running))
                 ? `项目「${pendingRemoveWs?.name}」有任务正在运行，移除会立即中断这些任务。`
                 : `确定从列表中移除项目「${pendingRemoveWs?.name}」吗？`}
               会话记录会保留，重新打开该文件夹即可恢复。

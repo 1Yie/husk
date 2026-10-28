@@ -157,12 +157,15 @@ const DropdownMenuItem = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Item>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & {
     inset?: boolean;
+    /** Header controls keep their own height instead of adding row padding. */
+    density?: "default" | "compact";
   }
->(({ className, inset, ...props }, ref) => (
+>(({ className, inset, density = "default", ...props }, ref) => (
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none transition-colors  focus:text-neutral-900 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      "relative flex cursor-default select-none items-center rounded-lg text-sm outline-none transition-colors  focus:text-neutral-900 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      density === "compact" ? "p-0" : "px-2 py-1.5",
       SURFACE_OVERLAY_FOCUS,
       inset && "pl-8",
       className

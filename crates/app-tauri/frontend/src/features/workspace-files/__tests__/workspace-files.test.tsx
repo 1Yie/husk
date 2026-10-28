@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderWithProviders as render } from "@/test/render";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryListing, FilePreview, WorkspaceEntry } from "../types";
 import { codeHighlightPlugin } from "@/lib/syntax-highlight";
@@ -24,6 +25,21 @@ function deferred<T>() {
 beforeEach(() => { invoke.mockReset(); });
 
 describe("workspace files", () => {
+  it("keeps the same toolbar and icon size when entering and leaving a file preview", async () => {
+    invoke.mockImplementation(command => Promise.resolve(command === "workspace_list_files"
+      ? listing([entry("main.ts")]) : text("main.ts", "export const value = 1;")));
+    render(<WorkspaceFiles root="/fixture" onBack={vi.fn()} />);
+    const back = screen.getByRole("button", { name: "返回侧栏" });
+    const headerClass = back.closest("header")!.className;
+    const iconSize = back.querySelector("svg")!.getAttribute("width");
+    fireEvent.click(await screen.findByRole("button", { name: "main.ts" }));
+    const nestedBack = screen.getByRole("button", { name: "返回文件列表" });
+    expect(nestedBack.querySelector("svg")).toHaveAttribute("width", iconSize);
+    expect(nestedBack.closest("header")).toHaveClass(headerClass, { exact: true });
+    fireEvent.click(nestedBack);
+    expect(screen.getByRole("button", { name: "返回侧栏" }).closest("header")).toHaveClass(headerClass, { exact: true });
+  });
+
   it("shows directory skeleton rows while the listing is pending", async () => {
     const pending = deferred<DirectoryListing>();
     invoke.mockReturnValueOnce(pending.promise);

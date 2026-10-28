@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 export * from "./item-list";
+export { AdvancedFields } from "./advanced-fields";
 
 /* ------------------------------------------------------------------ */
 /* Controls                                                            */

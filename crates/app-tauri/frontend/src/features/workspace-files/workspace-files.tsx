@@ -6,6 +6,7 @@ import { ArrowLeft, ChevronDown, ChevronRight, Folder, Link, Maximize2, RefreshC
 import { WorkspaceFileIcon } from "./file-icon";
 import { CodeLoadingSkeleton, DirectoryLoadingSkeleton } from "./loading";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { TooltipSimple } from "@/components/ui/tooltip";
 import { codeHighlightPlugin, normalizeLanguage, type HighlightResult, type HighlightToken } from "@/lib/syntax-highlight";
 import type { DirectoryListing, FilePreview, WorkspaceEntry } from "./types";
 import "./workspace-files.css";
@@ -18,6 +19,30 @@ export interface WorkspaceFilesProps {
 
 type DirectoryState = { listing?: DirectoryListing; error?: string; loading?: boolean };
 type PreviewState = { file?: FilePreview; path?: string; error?: string; loading?: boolean };
+
+function WorkspaceFilesHeader({ name, path, onBack, backLabel, icon, children }: {
+  name: string;
+  path: string;
+  onBack?: () => void;
+  backLabel: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <header className="workspace-files-header">
+      {onBack && <TooltipSimple content={backLabel}>
+        <button type="button" className="workspace-files-header-action" onClick={onBack} aria-label={backLabel}>
+          <ArrowLeft size={14} aria-hidden="true" />
+        </button>
+      </TooltipSimple>}
+      {icon}
+      <TooltipSimple content={path}>
+        <span className="workspace-files-name">{name}</span>
+      </TooltipSimple>
+      {children}
+    </header>
+  );
+}
 
 function sizeLabel(size: number) {
   if (size < 1024) return `${size} B`;
@@ -277,33 +302,39 @@ function WorkspaceBrowser({ root, onBack }: { root: string; onBack?: () => void 
   }
 
   return <section className="workspace-files" aria-label="预览工作区文件" data-view={preview.path ? "preview" : "tree"}>
-    {!preview.path && <header className="workspace-files-header">
-      {onBack && <button type="button" onClick={onBack} aria-label="返回侧栏" title="返回侧栏">
-        <ArrowLeft size={14} aria-hidden="true" />
-      </button>}
-      <span className="workspace-files-name" title={root}>{root.split(/[\\/]/).filter(Boolean).pop() ?? root}</span>
-      <button onClick={refresh} title="刷新文件" aria-label="刷新文件"><RefreshCw size={14} /></button>
-    </header>}
+    {!preview.path && <WorkspaceFilesHeader
+      name={root.split(/[\\/]/).filter(Boolean).pop() ?? root}
+      path={root} onBack={onBack} backLabel="返回侧栏"
+    >
+      <TooltipSimple content="刷新文件">
+        <button type="button" className="workspace-files-header-action" onClick={refresh} aria-label="刷新文件">
+          <RefreshCw size={14} aria-hidden="true" />
+        </button>
+      </TooltipSimple>
+    </WorkspaceFilesHeader>}
     {!preview.path ? (
       <div ref={tree} className="workspace-files-tree" aria-label="工作区目录">{renderDirectory("", 0)}</div>
     ) : (
     <section className="workspace-files-preview" aria-label="文件预览">
-      <header className="workspace-files-header workspace-files-editor-header">
-        <button type="button" onClick={backToFiles} aria-label="返回文件列表" title="返回文件列表">
-          <ArrowLeft size={15} aria-hidden="true" />
-        </button>
-        <WorkspaceFileIcon name={preview.path} className="workspace-files-editor-icon" />
-        <span className="workspace-files-name" title={preview.path}>
-          {preview.path.split("/").pop()}
-        </span>
+      <WorkspaceFilesHeader
+        name={preview.path.split("/").pop() ?? preview.path}
+        path={preview.path} onBack={backToFiles} backLabel="返回文件列表"
+        icon={<WorkspaceFileIcon name={preview.path} className="workspace-files-editor-icon" />}
+      >
         {preview.file && <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild><button title="展开预览" aria-label="展开预览"><Maximize2 size={14} /></button></DialogTrigger>
+          <TooltipSimple content="展开预览">
+            <DialogTrigger asChild>
+              <button type="button" className="workspace-files-header-action" aria-label="展开预览">
+                <Maximize2 size={14} aria-hidden="true" />
+              </button>
+            </DialogTrigger>
+          </TooltipSimple>
           <DialogContent className="workspace-files-dialog" aria-describedby={undefined}>
             <DialogTitle className="workspace-files-dialog-title" title={preview.path}>{preview.path}</DialogTitle>
             {dialogOpen && <PreviewBody file={preview.file} large />}
           </DialogContent>
         </Dialog>}
-      </header>
+      </WorkspaceFilesHeader>
       <div className="workspace-files-breadcrumbs" aria-label="文件路径" title={preview.path}>
         {preview.path.split("/").join(" › ")}
       </div>

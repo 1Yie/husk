@@ -98,6 +98,38 @@ fn the_prompt_separates_observation_from_execution_and_asks_for_reuse() {
     assert!(p.contains("`bash` is a fallback for what the file tools cannot do, not a retry"));
 }
 
+#[test]
+fn the_prompt_prefers_semantic_navigation_without_changing_tool_boundaries() {
+    let p = SYSTEM_PROMPT_TEMPLATE;
+    for guidance in [
+        "call `blueprint` locate **before reading code**",
+        "when `serena` is among your available tools and the call is permitted",
+        "`get_symbols_overview` for a named source file",
+        "`find_symbol` for a named function/class/method",
+        "Before behavior changes or renames, inspect `find_referencing_symbols`",
+        "`tool: \"serena_list_tools\"`",
+        "`arguments: {\"name\": \"<tool>\"}`",
+        "a narrow `smart_read` range",
+        "Use smart tools for docs/configs, exact text checks and linked repositories",
+        "Serena currently indexes only the main workspace root, not linked roots",
+        "unavailable, permission-restricted, unsupported for the language, or a call fails",
+        "fall back reasonably to `smart_read` (`outline` for structure) / `smart_grep`",
+        "do not block progress, bypass restrictions, or repeat failing calls",
+        "`serena` remains mutation-class and cannot be batched, even for navigation or catalog discovery",
+        "A plan-mode registry does not carry them at all",
+        "2+, independent         → batch_execute — ALWAYS, one call",
+        "**Do not batch dependent operations.**",
+        "absolute paths only",
+    ] {
+        assert!(p.contains(guidance), "missing {guidance}");
+    }
+    // The routing table and the decision tree must agree with the prose.
+    assert!(p.contains("| `serena` | When available and permitted:"));
+    assert!(p.contains("Main-root semantic navigation, serena available + permitted"));
+    assert!(p.contains("linked roots or semantic fallback"));
+    assert!(!p.contains("| `smart_grep`, `list_dir` | Locating code:"));
+}
+
 /// `grep -C` without the shell: hits come back with their surroundings.
 #[tokio::test]
 async fn grep_context_returns_surrounding_lines() {

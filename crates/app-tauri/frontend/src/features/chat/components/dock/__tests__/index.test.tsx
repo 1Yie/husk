@@ -211,7 +211,7 @@ describe("unified session dock", () => {
       entries: [],
       truncated: false,
     }));
-    render(<SessionDock root="/fixture" changes={[]} artifacts={[]} />);
+    renderWithProviders(<SessionDock root="/fixture" changes={[]} artifacts={[]} />);
     expect(screen.queryByRole("tab")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "预览工作区文件" }));
     expect(await screen.findByRole("tab", { name: "文件" })).toHaveAttribute(
@@ -230,7 +230,7 @@ describe("unified session dock", () => {
       entries: [],
       truncated: false,
     }));
-    render(
+    renderWithProviders(
       <SessionDock
         root="/fixture"
         changes={[change("a.ts")]}

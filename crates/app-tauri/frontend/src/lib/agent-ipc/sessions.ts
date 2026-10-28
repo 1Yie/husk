@@ -1,13 +1,43 @@
 // Agent session ops — `agent_session` invokes (sidebar list/new/open).
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ChatMessage, ProjectOverview, SessionRow } from "@/types";
+import type { ChatMessage, ProjectOverview, SessionRow, ProjectSessionRow, SidebarPage, SidebarSummary } from "@/types";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Sidebar project tree — every recent workspace with its full conversation
  * list; the active workspace is first and carries the live running flags. */
 export function listProjects() {
   return invoke<ProjectOverview[]>("agent_session", { op: "projects" });
+}
+
+export function sidebarSummary(force = false) {
+  return invoke<SidebarSummary>("agent_session", { op: "sidebar", payload: { force } });
+}
+
+/** Cursors are opaque and generation/root/filter bound; at most 30 rows. */
+export function sidebarPage(root: string, archived: boolean, generation: string, cursor?: string | null) {
+  return invoke<SidebarPage>("agent_session", {
+    op: "sidebar_page", path: root, payload: { archived, generation, cursor, limit: 30 },
+  });
+}
+
+/** Refresh only rows already displayed; each call is bounded to 30 ids. */
+export function sidebarRows(root: string, generation: string, ids: number[]) {
+  return invoke<{ generation: string; rows: ProjectSessionRow[]; missing: number[] }>("agent_session", {
+    op: "sidebar_rows", path: root, payload: { generation, ids },
+  });
+}
+
+/** Existence is never inferred from an unloaded page. */
+export function sidebarRow(root: string, id: number) {
+  return invoke<{ known_project: boolean; row: ProjectSessionRow | null }>("agent_session", {
+    op: "sidebar_row", path: root, id,
+  });
+}
+
+/** Full title for an explicit edit, not the sidebar's bounded display value. */
+export function sessionTitle(root: string, id: number) {
+  return invoke<{ title: string }>("agent_session", { op: "session_title", path: root, id });
 }
 
 export async function newSession() {
@@ -367,16 +397,24 @@ export function pickLinkDir() {
 }
 
 export function pickWorkspace() {
-  return invoke<WorkspaceSwitchResult | null>("agent_session", { op: "pick_workspace" });
+  return invoke<WorkspaceSwitchResult | null>("agent_session", { op: "pick_workspace", payload: { sidebar: true } });
 }
 
 export function switchWorkspace(path: string) {
-  return invoke<WorkspaceSwitchResult>("agent_session", { op: "switch_workspace", path });
+  return invoke<WorkspaceSwitchResult>("agent_session", { op: "switch_workspace", path, payload: { sidebar: true } });
 }
 
 /** Drop a project from recents; running turns die with it. */
 export function removeWorkspace(path: string) {
   return invoke<{ removed_active: boolean }>("agent_session", { op: "remove_workspace", path });
+}
+
+/** Explicit per-model wire mapping. Fast never implies a lower thinking tier. */
+export interface FastModeConfig {
+  mode: "priority" | "speed" | "model" | "custom";
+  model?: string;
+  params?: Record<string, unknown>;
+  headers?: Record<string, string>;
 }
 
 export interface ModelItem {
@@ -386,6 +424,7 @@ export interface ModelItem {
   reasoning?: boolean;
   thinking_level_map?: Record<string, string | null>;
   available_levels?: string[];
+  supports_fast_mode?: boolean;
   context_window?: number;
   /** $/1M tokens — from the model's config `cost` block. Absent when the
    * model carries no pricing; the header cost chip hides itself then. */
@@ -410,6 +449,7 @@ export interface ModelInfo {
   active_provider: string;
   active_model: string;
   active_thinking_level?: string;
+  active_fast_mode?: boolean;
   active_permission_mode?: string;
   /** `build` | `plan` | `goal` — the composer's agent-mode picker. */
   active_agent_mode?: string;
@@ -419,6 +459,13 @@ export interface ModelInfo {
 
 export function getModelInfo() {
   return invoke<ModelInfo>("agent_session", { op: "model_info" });
+}
+
+/** Acknowledged by the host after applying the session preference. */
+export function setFastMode(enabled: boolean, id?: number, root?: string) {
+  return invoke<{ fast_mode: boolean }>("agent_session", {
+    op: "set_fast_mode", id, path: root, payload: { enabled },
+  });
 }
 
 /** A discovered MCP/plugin manifest (listing only — the server is never

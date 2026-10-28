@@ -197,6 +197,35 @@ export interface ProjectOverview {
   sessions: ProjectSessionRow[];
 }
 
+/** Sidebar metadata is independent of loaded pages (and of chat history paging). */
+export interface SidebarProject extends Omit<ProjectOverview, "sessions"> {
+  /** Non-archived total, including rows not yet requested. */
+  total: number;
+  archived_total: number;
+  /** Includes parked/off-page actors, not inferred from the current page. */
+  running?: boolean;
+}
+export interface SidebarEntry {
+  root: string;
+  project: string;
+  current: boolean;
+  row: ProjectSessionRow;
+}
+export interface SidebarSummary {
+  generation: string;
+  projects: SidebarProject[];
+  /** All global pins, followed by the six newest other non-archived rows. */
+  recents: SidebarEntry[];
+  active: SidebarEntry | null;
+}
+export interface SidebarPage {
+  generation: string;
+  root: string;
+  archived: boolean;
+  rows: ProjectSessionRow[];
+  next_cursor: string | null;
+}
+
 /** Persisted message — mirrors `agent_llm::types::ChatMessage` on the wire.
  * `content` serializes as a plain string (None → ""), `tool_calls` uses the
  * OpenAI wire shape `{id, type:"function", function:{name, arguments}}`. */

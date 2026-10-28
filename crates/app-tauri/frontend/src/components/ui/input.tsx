@@ -7,10 +7,20 @@ export interface InputProps
   extends React.InputHTMLAttributes<HTMLInputElement> {}
 
 const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, type, ...props }, ref) => {
+  ({
+    className,
+    type,
+    autoCorrect = "off",
+    autoCapitalize = "none",
+    spellCheck = false,
+    ...props
+  }, ref) => {
     return (
       <input
         type={type}
+        autoCorrect={autoCorrect}
+        autoCapitalize={autoCapitalize}
+        spellCheck={spellCheck}
         className={cn(
           // `ring-neutral-950/10` never emits a color — `neutral-950` maps
           // to a bare `var(--husk-n950)`, and Tailwind can't apply the `/10`

@@ -24,7 +24,26 @@ impl SubagentHost for HuskSubagents {
     }
 
     fn instructions(&self, ctx: &ToolCtx, spec: &ChildSpec) -> String {
-        let mut out = String::new();
+        // Host tool guidance is part of the child's contract, not a repo
+        // instruction file. Keep it even when context_files is false. The
+        // parent context cannot tell us the child's final filtered tool set.
+        let mut out = String::from(
+            "\n\n## Host tool guidance\n\n\
+             For behavior changes or cross-module work, call `blueprint` locate before reading code. \
+             Use `serena` only if it appears in this child's available tools and the call is permitted. \
+             In the main indexed workspace root, prefer `get_symbols_overview` for a source file's \
+             structure and `find_symbol` for named-symbol navigation; inspect `find_referencing_symbols` \
+             before behavior changes or renames. Use `tool: \"serena_list_tools\"` to discover the actual \
+             tools, then `arguments: {\"name\": \"<tool>\"}` for a tool's schema instead of guessing. \
+             Read only the relevant symbol body or a narrow `smart_read` range after locating it.\n\n\
+             Use smart tools for docs/configs, exact text and linked repositories: Serena indexes only \
+             the main workspace root, not linked roots. If unavailable, permission-restricted, unsupported \
+             for the language, or a call fails, fall back to `smart_read` (`outline` for structure) / \
+             `smart_grep` without blocking progress or repeating failing calls. Never bypass `readonly` \
+             or `tools` restrictions to reach Serena. Batch 2+ independent batchable observations with \
+             `batch_execute` when available; `serena` remains mutation-class and cannot be batched, \
+             even for navigation or catalog discovery. Existing approval boundaries still apply.\n",
+        );
         let Ok(root) = ctx.root() else {
             return out;
         };
@@ -701,6 +720,120 @@ pub fn split_agent(content: &str) -> (Option<String>, Option<String>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_navigation_guidance_survives_context_files_false_and_tool_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "PROJECT-INSTRUCTIONS").unwrap();
+        let ctx = ToolCtx::new().with_workspace(dir.path());
+        for readonly in [false, true] {
+            let spec = ChildSpec {
+                name: "scout".into(),
+                prompt: None,
+                tools: Some(vec!["smart_read".into(), "smart_grep".into()]),
+                readonly,
+                model: None,
+                thinking: None,
+                inherit_instructions: Some(false),
+            };
+            let out = HuskSubagents.instructions(&ctx, &spec);
+            for guidance in [
+                "## Host tool guidance",
+                "call `blueprint` locate before reading code",
+                "Use `serena` only if it appears in this child's available tools and the call is permitted",
+                "`get_symbols_overview`",
+                "`find_symbol`",
+                "`find_referencing_symbols` before behavior changes or renames",
+                "`tool: \"serena_list_tools\"`",
+                "`arguments: {\"name\": \"<tool>\"}`",
+                "a narrow `smart_read` range",
+                "docs/configs, exact text and linked repositories",
+                "the main workspace root, not linked roots",
+                "fall back to `smart_read` (`outline` for structure) / `smart_grep`",
+                "without blocking progress or repeating failing calls",
+                "Never bypass `readonly` or `tools` restrictions to reach Serena",
+                "2+ independent batchable observations",
+                "`serena` remains mutation-class and cannot be batched",
+                "Existing approval boundaries still apply",
+            ] {
+                assert!(out.contains(guidance), "missing {guidance}: {out}");
+            }
+            assert!(!out.contains("PROJECT-INSTRUCTIONS"), "{out}");
+        }
+    }
+
+    #[test]
+    fn host_navigation_guidance_keeps_linked_roots_and_inherited_user_rules() {
+        use agent_capabilities::{LinkedRoot, LinkedRoots, RootAccess};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = agent_paths::AppPaths::new(dir.path().join("husk"), dir.path(), ".husk");
+        let user_file = paths.config_file("AGENTS.md");
+        std::fs::create_dir_all(user_file.parent().unwrap()).unwrap();
+        std::fs::write(&user_file, "USER-INSTRUCTIONS").unwrap();
+        std::fs::write(root.join("AGENTS.md"), "PROJECT-INSTRUCTIONS").unwrap();
+        for (rules_dir, name, body) in [
+            (
+                crate::rules::global_rules_dir(&paths),
+                "user-navigation.md",
+                "USER-STANDING-RULE",
+            ),
+            (
+                crate::rules::workspace_rules_dir(&root, &paths),
+                "navigation.md",
+                "PROJECT-STANDING-RULE",
+            ),
+        ] {
+            std::fs::create_dir_all(&rules_dir).unwrap();
+            std::fs::write(rules_dir.join(name), body).unwrap();
+        }
+        let linked_path = dir.path().join("linked-repo");
+        let linked = Arc::new(LinkedRoots::default());
+        linked.set(vec![LinkedRoot {
+            path: linked_path.clone(),
+            access: RootAccess::Read,
+        }]);
+        let mut ctx = ToolCtx::new().with_workspace(&root);
+        ctx.install_paths(paths);
+        ctx.install_linked_roots(linked);
+        let mut spec = ChildSpec {
+            name: "reviewer".into(),
+            prompt: None,
+            tools: Some(vec!["smart_read".into(), "smart_grep".into()]),
+            readonly: true,
+            model: None,
+            thinking: None,
+            inherit_instructions: Some(true),
+        };
+        let out = HuskSubagents.instructions(&ctx, &spec);
+        for carried in [
+            "## Host tool guidance",
+            "## Linked workspaces",
+            linked_path.to_str().unwrap(),
+            "USER-INSTRUCTIONS",
+            "PROJECT-INSTRUCTIONS",
+            "USER-STANDING-RULE",
+            "PROJECT-STANDING-RULE",
+        ] {
+            assert!(out.contains(carried), "missing {carried}: {out}");
+        }
+
+        spec.inherit_instructions = Some(false);
+        let without_files = HuskSubagents.instructions(&ctx, &spec);
+        assert!(without_files.contains("## Host tool guidance"));
+        assert!(without_files.contains(linked_path.to_str().unwrap()));
+        for omitted in [
+            "USER-INSTRUCTIONS",
+            "PROJECT-INSTRUCTIONS",
+            "USER-STANDING-RULE",
+            "PROJECT-STANDING-RULE",
+        ] {
+            assert!(!without_files.contains(omitted), "{without_files}");
+        }
+    }
 
     #[test]
     fn frontmatter_reads_tools_and_readonly() {

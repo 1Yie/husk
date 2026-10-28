@@ -143,9 +143,27 @@ fn distillation_follows_the_session_model() {
     ]);
     provider.push_script(distill_script(90, 25));
 
+    // This fixture injects its provider rather than configuring an HTTP
+    // provider. Exercise the documented model-only path when configuration
+    // cannot load; a loadable config missing `test` correctly makes it
+    // unavailable instead of silently reusing another provider.
+    let mut session_config = config(dir.path(), provider.clone(), "m1");
+    session_config.paths = agent_paths::AppPaths::new(
+        dir.path().join("config"),
+        dir.path().join("data"),
+        ".husk",
+    );
+    std::fs::create_dir_all(&session_config.paths.config_dir).unwrap();
+    std::fs::write(
+        session_config.paths.config_dir.join("config.toml"),
+        "providers = [",
+    )
+    .unwrap();
+    assert!(agent_llm::AppConfig::load(&session_config.paths.config_dir, None).is_err());
+
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (mut actor, _channels) =
-        rt.block_on(async { SessionActor::spawn(config(dir.path(), provider.clone(), "m1")) });
+        rt.block_on(async { SessionActor::spawn(session_config) });
     rt.block_on(actor.handle(UiCommand::Prompt {
         text: "first".into(),
     }));

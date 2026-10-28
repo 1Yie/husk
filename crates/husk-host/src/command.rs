@@ -57,6 +57,10 @@ pub enum UiCommand {
     /// every actor at the ACTIVE session's model, and the next `persist_*`
     /// stamped that hijack into their metas.
     ReloadModel,
+    /// Wake a durably accepted host preference; never accepted by `agent_cmd`.
+    /// The actor reads the latest shared value, not stale queued toggle payloads.
+    #[serde(skip)]
+    SetFastMode { enabled: bool },
     /// Switch the permission mode for the *next* tool dispatch —
     /// `default` / `acceptEdits` / `auto` / `dontAsk` / `bypassPermissions`.
     /// The session rebuilds its `PermissionGate` from the label (same

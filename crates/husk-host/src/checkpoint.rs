@@ -52,7 +52,7 @@ pub(crate) struct TurnCheckpoint {
     usage: Mutex<Option<Arc<agent_llm::UsageObserver>>>,
     /// Estimated composition of the latest request — relayed after the
     /// `Usage` event that request produced.
-    breakdown: Mutex<Option<agent_store::ContextBreakdown>>,
+    breakdown: Arc<crate::context_breakdown::RequestObserver>,
 }
 
 struct State {
@@ -119,7 +119,7 @@ impl TurnCheckpoint {
             barriers: Mutex::new(std::collections::HashMap::new()),
             next_barrier: std::sync::atomic::AtomicU64::new(0),
             usage: Mutex::new(None),
-            breakdown: Mutex::new(None),
+            breakdown: Arc::new(crate::context_breakdown::RequestObserver::default()),
             writing: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             written: tokio::sync::Notify::new(),
@@ -160,7 +160,11 @@ impl TurnCheckpoint {
     /// Composition of the latest request — persisted beside its usage so a
     /// reopened session's context card keeps the split.
     pub(crate) fn last_breakdown(&self) -> Option<agent_store::ContextBreakdown> {
-        *self.breakdown.lock().unwrap_or_else(|e| e.into_inner())
+        self.breakdown.latest()
+    }
+
+    pub(crate) fn breakdown_observer(&self) -> Arc<crate::context_breakdown::RequestObserver> {
+        self.breakdown.clone()
     }
 
     fn usage_cache_write(&self) -> Option<u32> {
@@ -394,7 +398,19 @@ impl TurnCheckpoint {
         }
     }
 
+    /// Standalone checkpoints have no wire transform: observe actual input.
+    /// Session assembly uses `wrap_recovery` with the observer further inward.
+    #[allow(dead_code)] // Retain the standalone entry point, covered by checkpoint tests.
     pub(crate) fn wrap(self: &Arc<Self>, provider: Arc<dyn LlmProvider>) -> Arc<dyn LlmProvider> {
+        self.wrap_recovery(self.breakdown.wrap(provider))
+    }
+
+    /// Foreground assembly installs the shared observer further inward, after
+    /// live state/fitting. Recovery must continue to see the real history here.
+    pub(crate) fn wrap_recovery(
+        self: &Arc<Self>,
+        provider: Arc<dyn LlmProvider>,
+    ) -> Arc<dyn LlmProvider> {
         Arc::new(CheckpointProvider {
             provider,
             checkpoint: self.clone(),
@@ -698,15 +714,6 @@ impl LlmProvider for CheckpointProvider {
         params: &ModelParams,
     ) -> anyhow::Result<BoxStream<StreamChunk>> {
         self.checkpoint.drain().await;
-        *self
-            .checkpoint
-            .breakdown
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(crate::context_breakdown::estimate(
-            messages,
-            tools.as_ref(),
-            crate::session::is_memory_context,
-        ));
         let generation = self.checkpoint.request(messages, self.native_tool_calls());
         self.checkpoint.flush().await;
         let stream = self

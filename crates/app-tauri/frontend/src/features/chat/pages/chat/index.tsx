@@ -53,8 +53,8 @@ interface ChatPageProps {
   onOpenRecent?: (path: string) => void;
   /** Boot not resolved — keep the skeleton instead of the empty pane. */
   workspaceReady?: boolean;
-  /** Session list resolved and the workspace has ZERO sessions — show the
-   *  empty state instead of a composer that would send to nothing. */
+  /** A successful summary confirms no active session (archives may remain) —
+   *  show welcome instead of a composer that would send to nothing. */
   sessionsEmpty?: boolean;
   /** The empty state's CTA — creates the workspace's next session. */
   onNewSession?: () => void;
@@ -404,7 +404,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
           <div className="flex-1 min-h-0" />
         )
       ) : sessionsEmpty ? (
-        // Every session deleted — the welcome layout with its CTA swapped
+        // No active session — the welcome layout with its CTA swapped
         // to 「新建会话」: greeting, activity stats, capability cards and
         // composer sigils all come along unchanged. Recents stay off —
         // 「最近打开」belongs to the no-workspace screen; the current

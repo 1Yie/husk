@@ -409,14 +409,23 @@ export function resolveTerminalPalette(
   };
 }
 
-/** A chosen family keeps the app's code font behind it, so CJK and missing
- *  glyphs fall back to something monospaced rather than the browser default. */
+/** Keep the chosen/app code font primary (including the system ui-monospace).
+ *  The bundled JetBrains Mono is Nerd Font Mono: use its cell-aligned icons
+ *  before the final generic monospace, without changing the app's code font. */
 export function resolveTerminalFont(
   fontFamily: string,
   codeFont: string | undefined,
 ): string {
-  const fallback = codeFont || "ui-monospace, monospace";
-  return fontFamily ? `${fontFamily}, ${fallback}` : fallback;
+  const families = [fontFamily, codeFont || "ui-monospace, monospace"]
+    // A quoted family name may itself contain commas.
+    .flatMap((list) => list.match(/(?:"[^"]*"|'[^']*'|[^,])+/g) ?? [])
+    .map((family) => family.trim())
+    .filter((family) => family && family.toLowerCase() !== "monospace");
+  const hasNerdFont = families.some(
+    (family) => family.replace(/^["']|["']$/g, "").toLowerCase() === "jetbrains mono",
+  );
+  if (!hasNerdFont) families.push('"JetBrains Mono"');
+  return [...families, "monospace"].join(", ");
 }
 
 export function isAppDark(): boolean {

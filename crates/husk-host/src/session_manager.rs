@@ -27,6 +27,8 @@ pub struct ModelDetails {
     #[serde(default)]
     pub reasoning: bool,
     #[serde(default)]
+    pub supports_fast_mode: bool,
+    #[serde(default)]
     pub thinking_level_map: Option<HashMap<String, Option<String>>>,
     #[serde(default)]
     pub available_levels: Vec<String>,
@@ -52,6 +54,8 @@ pub struct SessionModelInfo {
     pub active_model: String,
     #[serde(default)]
     pub active_thinking_level: Option<String>,
+    #[serde(default)]
+    pub active_fast_mode: bool,
     #[serde(default)]
     pub active_permission_mode: Option<String>,
     /// Active agent mode (`build` | `plan` | `goal`) — the composer's
@@ -133,6 +137,54 @@ pub struct ProjectsSnapshot {
     projects: Vec<SnapshotProject>,
 }
 
+/// Memory-only capture. Resolving project paths/recents and opening stores is
+/// deliberately deferred until the shell has released its manager mutex.
+pub struct SidebarSeed {
+    workspace_root: std::path::PathBuf,
+    workspace_active: bool,
+    store: Arc<SessionStore>,
+    active_id: i64,
+    live: HashMap<i64, (String, bool)>,
+    parked: HashMap<String, HashMap<i64, (String, bool)>>,
+}
+
+/// A shell's lock-free sidebar input, not another cache. `project.sessions` is
+/// empty; the shell chooses whether to list or read individual metas.
+pub struct SidebarProjectSource {
+    pub project: ProjectOverview,
+    pub store: Option<Arc<SessionStore>>,
+    pub live: HashMap<i64, (String, bool)>,
+    pub active_id: i64,
+}
+
+pub const SIDEBAR_TEXT_CHARS: usize = 512;
+
+/// Sidebar-only text projection: bound each field without splitting UTF-8.
+/// These are Unicode scalars, not bytes; full-list/edit paths keep the original.
+pub fn sidebar_text(text: &str) -> String {
+    text.chars().take(SIDEBAR_TEXT_CHARS).collect()
+}
+
+impl SidebarProjectSource {
+    pub fn row(&self, meta: SessionMeta) -> ProjectSessionRow {
+        let live = self.live.get(&meta.id);
+        ProjectSessionRow {
+            id: meta.id,
+            title: sidebar_text(&meta.title),
+            preview: sidebar_text(
+                live.map(|(preview, _)| preview.as_str())
+                    .unwrap_or(&meta.preview),
+            ),
+            updated_at: meta.updated_at,
+            active: self.project.current && meta.id == self.active_id,
+            running: live.is_some_and(|(_, running)| *running),
+            pinned: meta.pinned,
+            pinned_global: meta.pinned_global,
+            archived: meta.archived,
+        }
+    }
+}
+
 struct SnapshotProject {
     root: String,
     name: String,
@@ -165,6 +217,30 @@ impl StoreRef {
 }
 
 impl ProjectsSnapshot {
+    /// Call after releasing the manager lock: opening an inactive store reads
+    /// its workspace row. The result owns only handles and live projections.
+    pub fn sidebar_sources(self) -> Vec<SidebarProjectSource> {
+        self.projects
+            .into_iter()
+            .map(|p| SidebarProjectSource {
+                store: p.store.open(),
+                live: p
+                    .live
+                    .into_iter()
+                    .map(|(id, (preview, running))| (id, (sidebar_text(&preview), running)))
+                    .collect(),
+                active_id: p.active_id,
+                project: ProjectOverview {
+                    root: p.root,
+                    name: p.name,
+                    last_opened: p.last_opened,
+                    current: p.current,
+                    office: p.office,
+                    sessions: Vec::new(),
+                },
+            })
+            .collect()
+    }
     /// Read every project's session list from disk. No manager state is
     /// touched, so this must run without the manager lock.
     pub fn build(self) -> Vec<ProjectOverview> {
@@ -207,6 +283,67 @@ impl ProjectsSnapshot {
                 }
             })
             .collect()
+    }
+}
+
+impl SidebarSeed {
+    /// Resolve outside the manager lock. The old full-list API uses this same
+    /// project/office/parked identity logic, but does not use a paging cache.
+    pub fn snapshot(self) -> ProjectsSnapshot {
+        let canon = self
+            .workspace_root
+            .canonicalize()
+            .unwrap_or(self.workspace_root);
+        let office_root = crate::office::office_root().map(|p| p.canonicalize().unwrap_or(p));
+        let recents = crate::prefs::load_recent_workspaces();
+        let office_current = self.workspace_active && office_root.as_ref() == Some(&canon);
+        let mut out = Vec::new();
+        if self.workspace_active {
+            out.push(SnapshotProject {
+                root: canon.to_string_lossy().into_owned(),
+                name: project_name(&canon),
+                last_opened: 0,
+                current: true,
+                office: office_current,
+                store: StoreRef::Open(self.store),
+                live: self.live,
+                active_id: self.active_id,
+            });
+        }
+        if !office_current {
+            if let Some(root) = &office_root {
+                let key = root.to_string_lossy().into_owned();
+                out.push(SnapshotProject {
+                    live: self.parked.get(&key).cloned().unwrap_or_default(),
+                    root: key,
+                    name: project_name(root),
+                    last_opened: 0,
+                    current: false,
+                    office: true,
+                    store: StoreRef::Existing(root.clone()),
+                    active_id: 0,
+                });
+            }
+        }
+        for w in recents {
+            let canon = w.path.canonicalize().unwrap_or(w.path);
+            let root = canon.to_string_lossy().into_owned();
+            if let Some(existing) = out.iter_mut().find(|p| p.root == root) {
+                existing.last_opened = w.last_opened;
+                continue;
+            }
+            out.push(SnapshotProject {
+                live: self.parked.get(&root).cloned().unwrap_or_default(),
+                root,
+                name: w.name,
+                last_opened: w.last_opened,
+                current: false,
+                office: false,
+                store: StoreRef::Existing(canon),
+                active_id: 0,
+            });
+        }
+        ProjectsSnapshot { projects: out }
     }
 }
 
@@ -289,6 +426,7 @@ pub struct SessionHandle {
     /// `model_info` so the UI shows the session's actual value, which may
     /// differ from the stored default after a prefs change.
     pub thinking_level: Arc<std::sync::RwLock<Option<String>>>,
+    pub fast_mode: Arc<std::sync::RwLock<bool>>,
     /// The session's live `(provider, model)`. `SetModel` writes it here
     /// before the command reaches the pump, so `model_info` answers with the
     /// new pick at once instead of after the running turn drains the queue.
@@ -465,7 +603,11 @@ impl SessionManager {
             return crate::session::bg_snapshot(&h.bg_restored, &h.bg_jobs);
         }
         let saved = self.bg_store(root).and_then(|s| s.load_bg_jobs(id));
-        serde_json::Value::Array(saved.map(crate::session::restored_bg_jobs).unwrap_or_default())
+        serde_json::Value::Array(
+            saved
+                .map(crate::session::restored_bg_jobs)
+                .unwrap_or_default(),
+        )
     }
 
     /// Drop one restored entry from a session's job record, returning the list
@@ -501,18 +643,16 @@ impl SessionManager {
         if self.workspace_root.to_string_lossy() == root {
             return Some(self.store.clone());
         }
-        SessionStore::open(std::path::Path::new(root)).ok().map(Arc::new)
+        SessionStore::open(std::path::Path::new(root))
+            .ok()
+            .map(Arc::new)
     }
     // ---- linked workspaces ------------------------------------------------
 
     /// The roots session `id` may reach beyond its workspace: what the
     /// workspace remembered plus what this session was granted, normalized.
     /// Read from the store, so it answers for a session with no live actor.
-    pub fn effective_links(
-        &self,
-        root: &str,
-        id: i64,
-    ) -> Vec<agent_capabilities::LinkedRoot> {
+    pub fn effective_links(&self, root: &str, id: i64) -> Vec<agent_capabilities::LinkedRoot> {
         self.links_hub(root).effective(id)
     }
 
@@ -1053,82 +1193,24 @@ impl SessionManager {
     /// that holds the manager behind a lock takes this under it and calls
     /// [`ProjectsSnapshot::build`] after letting go.
     pub fn projects_snapshot(&self) -> ProjectsSnapshot {
-        let canon = self
-            .workspace_root
-            .canonicalize()
-            .unwrap_or_else(|_| self.workspace_root.clone());
-        let office_root = crate::office::office_root().map(|p| p.canonicalize().unwrap_or(p));
-        let office_is_current =
-            self.workspace_active && office_root.as_ref().is_some_and(|o| *o == canon);
-        let recents = self.recent_workspaces();
+        self.sidebar_seed().snapshot()
+    }
 
-        let mut out = Vec::new();
-        if self.workspace_active {
-            out.push(SnapshotProject {
-                root: canon.to_string_lossy().into_owned(),
-                name: project_name(&canon),
-                last_opened: 0,
-                current: true,
-                office: office_is_current,
-                store: StoreRef::Open(self.store.clone()),
-                live: live_overlay(Some(&self.handles)),
-                active_id: self.active_id,
-            });
+    /// No filesystem calls. Tauri resolves this seed and reads session data
+    /// outside its manager lock, including on the two-second sidebar poll.
+    pub fn sidebar_seed(&self) -> SidebarSeed {
+        SidebarSeed {
+            workspace_root: self.workspace_root.clone(),
+            workspace_active: self.workspace_active,
+            store: self.store.clone(),
+            active_id: self.active_id,
+            live: live_overlay(Some(&self.handles)),
+            parked: self
+                .parked
+                .iter()
+                .map(|(root, handles)| (root.clone(), live_overlay(Some(handles))))
+                .collect(),
         }
-
-        // Office entry — pinned right after the current project. When office
-        // IS the current workspace the entry above already carries it (with
-        // `current: true`), so nothing is injected twice.
-        if !office_is_current {
-            if let Some(o) = office_root.as_ref() {
-                let key = o.to_string_lossy().into_owned();
-                let last_opened = recents
-                    .iter()
-                    .find(|w| w.path.canonicalize().unwrap_or_else(|_| w.path.clone()) == *o)
-                    .map(|w| w.last_opened)
-                    .unwrap_or(0);
-                out.push(SnapshotProject {
-                    live: live_overlay(self.parked.get(&key)),
-                    root: key,
-                    name: project_name(o),
-                    last_opened,
-                    current: false,
-                    office: true,
-                    store: StoreRef::Existing(o.clone()),
-                    active_id: 0,
-                });
-            }
-        }
-
-        for w in recents {
-            let w_canon = w.path.canonicalize().unwrap_or_else(|_| w.path.clone());
-            // Office came out as its own entry above — a recents row for the
-            // same path would double-list it as a regular project.
-            if office_root.as_ref().is_some_and(|o| *o == w_canon) {
-                continue;
-            }
-            if self.workspace_active && w_canon == canon {
-                // Already first — borrow its recency stamp instead of
-                // listing the same project twice.
-                out[0].last_opened = w.last_opened;
-                continue;
-            }
-            // Parked handles = this workspace's actors are still live —
-            // overlay their real running/preview so the sidebar orb stays
-            // on a turn the user switched away from mid-flight.
-            let root = w_canon.to_string_lossy().into_owned();
-            out.push(SnapshotProject {
-                live: live_overlay(self.parked.get(&root)),
-                root,
-                name: w.name,
-                last_opened: w.last_opened,
-                current: false,
-                office: false,
-                store: StoreRef::Existing(w_canon),
-                active_id: 0,
-            });
-        }
-        ProjectsSnapshot { projects: out }
     }
 
     /// Per-session usage records across every known workspace — the settings
@@ -1256,11 +1338,17 @@ impl SessionManager {
         let conversation = crate::session::conversation_key(id, &self.workspace_root);
         // Never substitute another vendor here: an unbuildable session provider
         // fails its turns with the reason instead (see `choose_session_provider`).
+        let fast_mode = crate::session::read_fast_mode(&self.store, id)
+            && crate::session::supports_fast_mode(&self.provider_cfg, &sess_provider, &sess_model);
+        if !fast_mode && crate::session::read_fast_mode(&self.store, id) {
+            let _ = crate::session::write_fast_mode(&self.store, id, false);
+        }
         let (provider, unavailable) = choose_session_provider(
             &self.provider_cfg,
             &sess_provider,
             Some(&usage_observer),
             Some(&conversation),
+            fast_mode,
         );
         let model = sess_model.clone();
         let mentry = self
@@ -1305,12 +1393,8 @@ impl SessionManager {
             context_window,
             model_input,
             compact_at: Some(self.compact_at),
-            approval_timeout: Some(std::time::Duration::from_secs(
-                self.approval_timeout_secs,
-            )),
-            question_timeout: Some(std::time::Duration::from_secs(
-                self.question_timeout_secs,
-            )),
+            approval_timeout: Some(std::time::Duration::from_secs(self.approval_timeout_secs)),
+            question_timeout: Some(std::time::Duration::from_secs(self.question_timeout_secs)),
             memory_enabled: self.memory_enabled,
             memory_distill: self.memory_distill,
             model_params: Some(model_params),
@@ -1338,6 +1422,7 @@ impl SessionManager {
                 )));
         }
         let cmd_tx = actor.command_sender();
+        let fast_mode_slot = actor.fast_mode_writer();
         let decision = actor.decision_writer();
         let ask = actor.ask_channel();
         let permissions = actor.permissions_writer();
@@ -1364,6 +1449,7 @@ impl SessionManager {
                 &sess_provider,
                 Some(&usage_observer),
                 Some(&conversation),
+                fast_mode,
             ),
         );
         actor.set_blueprint_enabled(self.blueprint_enabled);
@@ -1456,6 +1542,7 @@ impl SessionManager {
                 permissions,
                 agent_mode,
                 thinking_level,
+                fast_mode: fast_mode_slot,
                 model: model_slot,
                 steer_tx,
                 queue,
@@ -1722,6 +1809,8 @@ impl SessionManager {
         if id != self.active_id {
             self.discard_if_empty(self.active_id);
         }
+        let fast_mode = crate::session::read_fast_mode(&self.store, id);
+        let _ = crate::session::write_fast_mode(&self.store, new_id, fast_mode);
         self.spawn_actor(new_id);
         self.active_id = new_id;
         let _ = self.store.set_last_active(new_id);
@@ -1745,10 +1834,17 @@ impl SessionManager {
         if self.store.has_history(id).ok() != Some(false) {
             return false;
         }
+        // An explicit composer preference is durable even before the first
+        // prompt; switching away must not silently delete that choice.
+        if crate::session::read_fast_mode(&self.store, id) {
+            return false;
+        }
         match self.handles.get(&id) {
             Some(h) => {
                 !h.running
-                    && h.pending_approval.load(std::sync::atomic::Ordering::Relaxed) == 0
+                    && h.pending_approval
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        == 0
                     && h.queue.lock().is_ok_and(|q| q.is_empty())
                     && h.cmd_tx.capacity() == h.cmd_tx.max_capacity()
             }
@@ -2534,6 +2630,24 @@ impl SessionManager {
     /// to every live actor. Returns `(notified, live)`.
     pub fn apply_loaded_config(&mut self, cfg: AppConfig) -> (usize, usize) {
         self.provider_cfg = cfg;
+        let normalize = |handle: &SessionHandle, store: Option<&SessionStore>| {
+            let (provider, model) = handle.model.read().unwrap().clone();
+            if !crate::session::supports_fast_mode(&self.provider_cfg, &provider, &model) {
+                *handle.fast_mode.write().unwrap() = false;
+                if let Some(store) = store {
+                    let _ = crate::session::write_fast_mode(store, handle.id, false);
+                }
+            }
+        };
+        for handle in self.handles.values() {
+            normalize(handle, Some(&self.store));
+        }
+        for (root, handles) in &self.parked {
+            let store = SessionStore::open_existing(std::path::Path::new(root));
+            for handle in handles.values() {
+                normalize(handle, store.as_ref());
+            }
+        }
         if !self.active_model_is_configured() {
             let (_, model, provider) = resolve_provider(&self.provider_cfg);
             self.provider_name = provider;
@@ -2576,6 +2690,44 @@ impl SessionManager {
         (notified, live)
     }
 
+    /// Accept an active-session preference without blocking on a running turn.
+    /// The ACK means persisted + queued; the actor swaps providers at a safe boundary.
+    pub fn set_fast_mode(
+        &mut self,
+        id: Option<i64>,
+        root: Option<&str>,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        if id.is_some_and(|id| id != self.active_id)
+            || !matches!(self.session_target(root), SessionTarget::Active)
+        {
+            return Err("fast mode target is no longer the active session/workspace".into());
+        }
+        self.reload_model_config();
+        let handle = self.active().ok_or("no active session")?;
+        let (provider, model) = handle.model.read().unwrap().clone();
+        let enabled = enabled && crate::session::supports_fast_mode(&self.provider_cfg, &provider, &model);
+        // Reserve first: failure must not leave a persisted preference with no wakeup.
+        let permit = handle.cmd_tx.clone().try_reserve_owned().map_err(|e| e.to_string())?;
+        crate::session::write_fast_mode(&self.store, self.active_id, enabled).map_err(|e| e.to_string())?;
+        *handle.fast_mode.write().unwrap() = enabled;
+        permit.send(crate::command::UiCommand::SetFastMode { enabled });
+        Ok(enabled)
+    }
+
+    fn normalize_active_fast_mode(&self, provider: &str, model: &str) -> bool {
+        let requested = self.active().map(|h| *h.fast_mode.read().unwrap())
+            .unwrap_or_else(|| crate::session::read_fast_mode(&self.store, self.active_id));
+        let enabled = requested && crate::session::supports_fast_mode(&self.provider_cfg, provider, model);
+        if requested && !enabled {
+            if let Some(handle) = self.active() {
+                *handle.fast_mode.write().unwrap() = false;
+            }
+            let _ = crate::session::write_fast_mode(&self.store, self.active_id, false);
+        }
+        enabled
+    }
+
     /// Model info (active provider, active model, active thinking level, configured models list, config path).
     pub fn model_info(&mut self) -> SessionModelInfo {
         // Pick up an edit in `config.toml` (and pass it on to live actors) so no
@@ -2598,6 +2750,7 @@ impl SessionManager {
                         model: m.id().to_string(),
                         name: Some(m.name().to_string()),
                         reasoning,
+                        supports_fast_mode: d.fast_mode.is_some(),
                         thinking_level_map,
                         available_levels,
                         context_window: d.context_window,
@@ -2611,6 +2764,7 @@ impl SessionManager {
                     model: dm.clone(),
                     name: Some(dm.clone()),
                     reasoning: false,
+                    supports_fast_mode: pcfg.model_opts(dm).fast_mode.is_some(),
                     thinking_level_map: None,
                     available_levels: Vec::new(),
                     context_window: None,
@@ -2623,6 +2777,7 @@ impl SessionManager {
                     model: self.model_name.clone(),
                     name: Some(self.model_name.clone()),
                     reasoning: false,
+                    supports_fast_mode: pcfg.model_opts(&self.model_name).fast_mode.is_some(),
                     thinking_level_map: None,
                     available_levels: Vec::new(),
                     context_window: None,
@@ -2670,6 +2825,9 @@ impl SessionManager {
                     model: active_model.clone(),
                     name: Some(active_model.clone()),
                     reasoning: false,
+                    supports_fast_mode: crate::session::supports_fast_mode(
+                        &self.provider_cfg, &active_provider, &active_model,
+                    ),
                     thinking_level_map: None,
                     available_levels: Vec::new(),
                     context_window: None,
@@ -2710,10 +2868,12 @@ impl SessionManager {
                 .to_string_lossy()
                 .to_string(),
         );
+        let active_fast_mode = self.normalize_active_fast_mode(&active_provider, &active_model);
         SessionModelInfo {
             active_provider,
             active_model,
             active_thinking_level,
+            active_fast_mode,
             active_permission_mode: live_mode.or_else(|| Some(self.permission_mode.clone())),
             // Same rule as the gate/level above. Reporting the manager-level
             // default here made plan mode look workspace-wide: a plan ran in
@@ -3107,6 +3267,7 @@ impl SessionManager {
     /// Update active model & provider in manager metadata and pin the pair
     /// for this workspace.
     pub fn set_model(&mut self, provider: String, model: String) {
+        self.normalize_active_fast_mode(&provider, &model);
         self.provider_name = provider.clone();
         self.model_name = model.clone();
         self.pin_workspace_pref(|p| {
@@ -3318,13 +3479,14 @@ pub(crate) fn build_fallback_chain(
     primary: &str,
     observer: Option<&Arc<agent_llm::UsageObserver>>,
     conversation: Option<&str>,
+    fast_mode: bool,
 ) -> Vec<(String, Arc<dyn agent_llm::LlmProvider>)> {
     cfg.fallback_chain
         .iter()
         .filter(|name| name.as_str() != primary)
         .filter_map(|name| {
             let pcfg = cfg.providers.get(name)?;
-            let p = ProviderFactory::build_with_conversation(pcfg, observer.cloned(), conversation)
+            let p = ProviderFactory::build_with_fast_mode(pcfg, observer.cloned(), conversation, fast_mode)
                 .ok()?;
             Some((name.clone(), p))
         })
@@ -3346,6 +3508,7 @@ pub(crate) fn choose_session_provider(
     session_provider: &str,
     observer: Option<&Arc<agent_llm::UsageObserver>>,
     conversation: Option<&str>,
+    fast_mode: bool,
 ) -> (Arc<dyn agent_llm::LlmProvider>, Option<String>) {
     let Some(pcfg) = cfg.providers.get(session_provider) else {
         let reason = format!("provider `{session_provider}` is not in the config");
@@ -3354,7 +3517,7 @@ pub(crate) fn choose_session_provider(
             Some(reason),
         );
     };
-    match ProviderFactory::build_with_conversation(pcfg, observer.cloned(), conversation) {
+    match ProviderFactory::build_with_fast_mode(pcfg, observer.cloned(), conversation, fast_mode) {
         Ok(p) => (p, None),
         Err(e) => {
             let reason = format!("provider `{session_provider}`: {e}");
@@ -3476,6 +3639,7 @@ max = "max"
                 )),
                 agent_mode: Arc::new(std::sync::RwLock::new("build".to_string())),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                fast_mode: Arc::default(),
                 model: Arc::default(),
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -3610,7 +3774,7 @@ max = "max"
             ..Default::default()
         };
 
-        let (provider, reason) = choose_session_provider(&cfg, "openai", None, None);
+        let (provider, reason) = choose_session_provider(&cfg, "openai", None, None, false);
         assert_eq!(
             provider.id(),
             "unavailable",
@@ -3638,7 +3802,7 @@ max = "max"
             providers,
             ..Default::default()
         };
-        let (provider, reason) = choose_session_provider(&cfg, "gone", None, None);
+        let (provider, reason) = choose_session_provider(&cfg, "gone", None, None, false);
         assert_eq!(provider.id(), "unavailable");
         assert!(reason.expect("reason").contains("gone"));
     }
@@ -3671,7 +3835,7 @@ max = "max"
             ..Default::default()
         };
 
-        let chain = build_fallback_chain(&cfg, "primary", None, None);
+        let chain = build_fallback_chain(&cfg, "primary", None, None, false);
         let names: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["third", "second"]);
     }
@@ -3834,6 +3998,7 @@ max = "max"
                     )),
                     agent_mode: Arc::new(std::sync::RwLock::new(mode)),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                    fast_mode: Arc::default(),
                     model: Arc::default(),
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -3918,6 +4083,7 @@ max = "max"
                     )),
                     agent_mode: Arc::new(std::sync::RwLock::new("build".to_string())),
                     thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                    fast_mode: Arc::default(),
                     model: Arc::default(),
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -3966,7 +4132,11 @@ max = "max"
         let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), test_paths());
         let kept = mgr.store.next_id();
         mgr.store
-            .upsert_meta(agent_store::SessionMeta { id: kept, title: "used".into(), ..Default::default() })
+            .upsert_meta(agent_store::SessionMeta {
+                id: kept,
+                title: "used".into(),
+                ..Default::default()
+            })
             .unwrap();
         mgr.store
             .snapshot(kept, &[agent_llm::types::ChatMessage::user("hello")])
@@ -4074,6 +4244,7 @@ max = "max"
                 )),
                 agent_mode: Arc::new(std::sync::RwLock::new("plan".to_string())),
                 thinking_level: Arc::new(std::sync::RwLock::new(None)),
+                fast_mode: Arc::default(),
                 model: Arc::default(),
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -4371,10 +4542,7 @@ max = "max"
             })
         };
         let started = std::time::Instant::now();
-        assert_eq!(
-            deliver_decision(&slot, 7, true, None),
-            Ok::<(), String>(())
-        );
+        assert_eq!(deliver_decision(&slot, 7, true, None), Ok::<(), String>(()));
         assert!(started.elapsed() < DECISION_PICKUP);
         engine.join().unwrap();
     }
@@ -4418,6 +4586,89 @@ max = "max"
         let row = &tree[0].sessions[0];
         assert_eq!(row.preview, "live");
         assert!(row.running && row.active);
+    }
+
+    #[test]
+    fn the_sidebar_source_preserves_office_and_parked_overlays_without_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::open_at(dir.path(), &dir.path().join("rows")).unwrap());
+        let meta = SessionMeta {
+            id: 1,
+            title: "persisted".into(),
+            ..Default::default()
+        };
+        store.upsert_meta(meta.clone()).unwrap();
+        let snapshot = ProjectsSnapshot {
+            projects: vec![SnapshotProject {
+                root: "office".into(),
+                name: "办公".into(),
+                last_opened: 0,
+                current: false,
+                office: true,
+                store: StoreRef::Open(store),
+                live: HashMap::from([(1, ("parked preview".into(), true))]),
+                active_id: 0,
+            }],
+        };
+        let sources = snapshot.sidebar_sources();
+        assert!(sources[0].project.office);
+        assert!(sources[0].project.sessions.is_empty());
+        let row = sources[0].row(meta);
+        assert_eq!(row.preview, "parked preview");
+        assert!(row.running && !row.active);
+    }
+
+    #[test]
+    fn sidebar_projection_limits_unicode_text_but_preserves_store_and_full_build() {
+        for text in [
+            "long English title ".repeat(100),
+            "中文会话".repeat(300),
+            "🙂🦀".repeat(700),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let store =
+                Arc::new(SessionStore::open_at(dir.path(), &dir.path().join("rows")).unwrap());
+            store
+                .upsert_meta(SessionMeta {
+                    id: 1,
+                    title: text.clone(),
+                    preview: text.clone(),
+                    ..Default::default()
+                })
+                .unwrap();
+            let snapshot = |live: bool| ProjectsSnapshot {
+                projects: vec![SnapshotProject {
+                    root: "r".into(),
+                    name: "r".into(),
+                    last_opened: 0,
+                    current: true,
+                    office: false,
+                    store: StoreRef::Open(store.clone()),
+                    active_id: 1,
+                    live: if live {
+                        HashMap::from([(1, (text.clone(), true))])
+                    } else {
+                        HashMap::new()
+                    },
+                }],
+            };
+            let expected: String = text.chars().take(512).collect();
+            for live in [false, true] {
+                let sources = snapshot(live).sidebar_sources();
+                let projected = sources[0].row(store.meta(1).unwrap());
+                assert_eq!(projected.title, expected);
+                assert_eq!(projected.preview, expected);
+                assert!(sources[0]
+                    .live
+                    .values()
+                    .all(|(preview, _)| preview.chars().count() <= 512));
+                let full = snapshot(live).build();
+                assert_eq!(full[0].sessions[0].title, text);
+                assert_eq!(full[0].sessions[0].preview, text);
+            }
+            assert_eq!(store.meta(1).unwrap().title, text);
+            assert_eq!(store.list()[0].preview, text);
+        }
     }
 
     /// A record from a previous run cannot claim a job is still going: the
@@ -4470,3 +4721,7 @@ max = "max"
         assert_eq!(kept.last().unwrap()["id"], "bg-79@79");
     }
 }
+
+#[cfg(test)]
+#[path = "session_manager_fast_mode_tests.rs"]
+mod fast_mode_tests;

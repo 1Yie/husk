@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { GlobalTooltip } from "../tooltip";
+import { GlobalTooltip, TooltipProvider, TooltipSimple } from "../tooltip";
 
 const SHOW_DELAY_MS = 250;
 /** Mirrors HOVER_GRACE_MS in tooltip.tsx: how long the pointer gets to cross the
@@ -138,5 +138,30 @@ describe("GlobalTooltip native-title bubble", () => {
     expect(screen.getByText("short hint")).toBeInTheDocument();
     expect(anchor.hasAttribute("title")).toBe(false);
     expect(anchor.getAttribute("data-tooltip")).toBe("short hint");
+  });
+
+  test.each(["open", "closed", "checked", "unchecked"])("a Radix %s control never leaks its native title", (state) => {
+    render(<>
+      <button data-state={state} title="菜单提示">menu control</button>
+      <GlobalTooltip />
+    </>);
+    const anchor = screen.getByRole("button", { name: "menu control" });
+    showBubble(anchor);
+    expect(anchor).not.toHaveAttribute("title");
+    expect(screen.getByText("菜单提示")).toBeInTheDocument();
+  });
+
+  test("an explicit shared Tooltip suppresses native title without a second fallback bubble", () => {
+    render(<TooltipProvider>
+      <TooltipSimple content="统一提示">
+        <button title="旧原生提示">explicit tooltip</button>
+      </TooltipSimple>
+      <GlobalTooltip />
+    </TooltipProvider>);
+    const anchor = screen.getByRole("button", { name: "explicit tooltip" });
+    showBubble(anchor);
+    expect(anchor).not.toHaveAttribute("title");
+    expect(anchor).toHaveAttribute("data-husk-tooltip-trigger");
+    expect(screen.queryByText("旧原生提示")).not.toBeInTheDocument();
   });
 });

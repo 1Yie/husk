@@ -25,7 +25,10 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Download, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
-import type { ProjectOverview, ProjectSessionRow, SessionRow } from "@/types";
+import type { ProjectOverview, ProjectSessionRow, SessionRow, SidebarEntry } from "@/types";
+import type { SidebarPaging } from "@/features/chat/hooks/use-agent-session";
+import { useDelayedFlag } from "@/hooks/use-delayed-flag";
+import { loadOnDownwardWheel, loadOnPageKey, loadReachedPage, SidebarPageTail } from "./pagination";
 import { Orb } from "@/features/chat/components/agent-orb/index";
 import { ExtIcon } from "@/features/chat/components/artifacts-panel";
 import {
@@ -166,9 +169,12 @@ function artCategory(f: RecentArtifact): string {
 }
 
 interface Props {
-  /** Project tree — active workspace first, then recent ones, each with its
-   * full conversation list (`SessionManager::projects_overview`). */
-  projects: ProjectOverview[];
+  /** Metadata totals are independent of each project's loaded rows. */
+  projects: (ProjectOverview & { total?: number; archived_total?: number })[];
+  recents?: SidebarEntry[];
+  paging?: SidebarPaging;
+  error?: string;
+  onRetry?: () => void;
   /** The first project list has landed. Until it has, an empty `projects`
    * means "still loading", not "no sessions" — the lists draw placeholder
    * rows instead of the empty-state text. */
@@ -236,6 +242,10 @@ function SidebarRowSkeleton({
 
 export function SessionSidebar({
   projects,
+  recents: summaryRecents,
+  paging,
+  error,
+  onRetry,
   projectsLoaded = true,
   activeId,
   version: propVersion,
@@ -251,6 +261,7 @@ export function SessionSidebar({
   terminalOpen,
   actions = {},
 }: Props) {
+  const initialBusyShown = useDelayedFlag(!projectsLoaded);
   const notifications = useNotifications();
   const unreadCount = useUnreadCount();
   // The office pseudo-workspace arrives in the same project list flagged
@@ -281,6 +292,7 @@ export function SessionSidebar({
   // Archived sessions are out; office sessions too — modes are separate: the
   // 会话 list is build-mode content, office sessions show on the 工作 tab.
   const recents = useMemo(() => {
+    if (summaryRecents) return summaryRecents;
     const all = projectList.flatMap((p) =>
       p.sessions
         .filter((s) => !s.archived)
@@ -302,7 +314,7 @@ export function SessionSidebar({
     const pinned = all.filter((e) => e.row.pinned_global);
     const rest = all.filter((e) => !e.row.pinned_global).slice(0, RECENT_LIMIT);
     return [...pinned, ...rest];
-  }, [projectList]);
+  }, [projectList, summaryRecents]);
 
   // Projects open/close independently — opening one reveals its full
   // conversation list without switching the active workspace. The current
@@ -550,7 +562,7 @@ export function SessionSidebar({
               </div>
               <div className="flex-none flex flex-col gap-0.5 px-2 pb-1">
                 {recents.length === 0 && !projectsLoaded ? (
-                  <SidebarRowSkeleton rows={3} />
+                  initialBusyShown ? <SidebarRowSkeleton rows={3} /> : null
                 ) : recents.length === 0 ? (
                   <div className="pl-7 h-8 flex items-center shrink-0 flex-none text-[13px] text-text-secondary">
                     暂无会话
@@ -640,11 +652,17 @@ export function SessionSidebar({
               <div
                 data-tauri-drag-region="false"
                 className="flex-none max-h-[45%] overflow-y-auto"
+                data-testid="sidebar-office-scroll"
+                tabIndex={0}
+                onScroll={(event) => loadReachedPage(event, paging)}
+                onWheel={(event) => loadOnDownwardWheel(event, paging)}
+                onKeyDown={(event) => loadOnPageKey(event, paging)}
               >
                 <div className="flex flex-col gap-0.5 px-2 pb-1">
+                  {error && <button type="button" onClick={onRetry} className="pl-7 text-[12px] text-text-secondary">会话列表加载失败，重试</button>}
                   {!projectsLoaded && !officeProject ? (
-                    <SidebarRowSkeleton rows={2} />
-                  ) : officeProject &&
+                    initialBusyShown ? <SidebarRowSkeleton rows={2} /> : null
+                  ) : !paging && officeProject &&
                     officeProject.sessions.every((s) => s.archived) ? (
                     <div className="pl-7 h-8 flex items-center text-[13px] text-text-secondary">
                       暂无会话
@@ -653,6 +671,9 @@ export function SessionSidebar({
                     <SessionList
                       sessions={officeProject?.sessions ?? []}
                       root={officeProject?.root ?? ""}
+                      paging={paging}
+                      total={officeProject?.total}
+                      archivedTotal={officeProject?.archived_total}
                       activeId={activeId}
                       live
                       pinMark="single"
@@ -704,13 +725,19 @@ export function SessionSidebar({
             <div
               data-tauri-drag-region="false"
               className="flex-1 min-h-0 overflow-y-auto transform-gpu"
+              data-testid="sidebar-project-scroll"
+              tabIndex={0}
+              onScroll={(event) => loadReachedPage(event, paging)}
+              onWheel={(event) => loadOnDownwardWheel(event, paging)}
+              onKeyDown={(event) => loadOnPageKey(event, paging)}
             >
               <div
                 data-tauri-drag-region="deep"
                 className="min-h-full flex flex-col gap-0.5 px-2 pb-2"
               >
+                {error && <button type="button" onClick={onRetry} className="pl-7 text-[12px] text-text-secondary">会话列表加载失败，重试</button>}
                 {projectList.length === 0 && !projectsLoaded ? (
-                  <SidebarRowSkeleton rows={3} />
+                  initialBusyShown ? <SidebarRowSkeleton rows={3} /> : null
                 ) : projectList.length === 0 ? (
                   // Same inset as 暂无会话 — the two empty states are the same kind
                   // of thing, so they read at the same level.
@@ -722,6 +749,7 @@ export function SessionSidebar({
                     <ProjectItem
                       key={p.root}
                       project={p}
+                      paging={paging}
                       open={expanded.has(p.root)}
                       activeId={activeId}
                       projectsLoaded={projectsLoaded}
@@ -884,6 +912,9 @@ export function SessionSidebar({
 function SessionList({
   sessions,
   root,
+  paging,
+  total,
+  archivedTotal,
   activeId,
   live,
   small = false,
@@ -893,6 +924,9 @@ function SessionList({
 }: {
   sessions: ProjectSessionRow[];
   root: string;
+  paging?: SidebarPaging;
+  total?: number;
+  archivedTotal?: number;
   activeId?: number;
   /** The rows belong to the active workspace (fork/delete available). */
   live: boolean;
@@ -903,8 +937,15 @@ function SessionList({
   actions: SessionActions;
 }) {
   const [showArchived, setShowArchived] = useState(false);
+  useEffect(() => {
+    if (!root) return;
+    const stopVisible = paging?.ensurePage(root);
+    const stopArchived = showArchived ? paging?.ensurePage(root, true) : undefined;
+    return () => { stopVisible?.(); stopArchived?.(); };
+  }, [paging?.ensurePage, paging?.generation, root, showArchived]);
   const visible = sessions.filter((s) => !s.archived);
   const archived = sessions.filter((s) => s.archived);
+  const archiveCount = archivedTotal ?? archived.length;
   const item = (s: ProjectSessionRow) => (
     <SessionItem
       key={s.id}
@@ -919,8 +960,12 @@ function SessionList({
   );
   return (
     <>
+      {/* The active row can live outside the prefix, including in archives. */}
+      {!showArchived && archived.filter((s) => s.active).map(item)}
       {visible.map(item)}
-      {archived.length > 0 && (
+      {paging?.get(root).loaded && (total ?? visible.length) === 0 && <div className="pl-7 h-7 flex items-center text-[12px] text-text-secondary">暂无对话记录</div>}
+      <SidebarPageTail root={root} paging={paging} />
+      {archiveCount > 0 && (
         <button
           type="button"
           data-nodrag
@@ -936,10 +981,11 @@ function SessionList({
           ) : (
             <ChevronRight className="h-3 w-3" />
           )}
-          已归档 {archived.length}
+          已归档 {archiveCount}
         </button>
       )}
       {showArchived && archived.map(item)}
+      {showArchived && <SidebarPageTail root={root} archived paging={paging} />}
     </>
   );
 }
@@ -1389,6 +1435,7 @@ function OfficeFileRow({ file }: { file: RecentArtifact }) {
  * projects expose a hover "switch to this project" action. */
 function ProjectItem({
   project,
+  paging,
   open,
   activeId,
   projectsLoaded,
@@ -1398,7 +1445,8 @@ function ProjectItem({
   onRemoveWorkspace,
   actions,
 }: {
-  project: ProjectOverview;
+  project: ProjectOverview & { total?: number; archived_total?: number };
+  paging?: SidebarPaging;
   open: boolean;
   activeId?: number;
   projectsLoaded: boolean;
@@ -1485,9 +1533,9 @@ function ProjectItem({
               )}
             </span>
             {/* Archived sessions are out of sight, so out of the count too. */}
-            {project.sessions.some((s) => !s.archived) && (
+            {(project.total ?? project.sessions.filter((s) => !s.archived).length) > 0 && (
               <span className="flex-none text-[11px] text-text-secondary tabular-nums">
-                {project.sessions.filter((s) => !s.archived).length}
+                {project.total ?? project.sessions.filter((s) => !s.archived).length}
               </span>
             )}
             {project.current && (
@@ -1499,9 +1547,9 @@ function ProjectItem({
 
       {open && (
         <div className="flex flex-col gap-0.5">
-          {project.sessions.length === 0 && !projectsLoaded ? (
+          {!paging && project.sessions.length === 0 && !projectsLoaded ? (
             <SidebarRowSkeleton rows={2} small />
-          ) : project.sessions.length === 0 ? (
+          ) : !paging && project.sessions.length === 0 ? (
             <div className="pl-7 h-7 flex items-center text-[12px] text-text-secondary">
               暂无对话记录
             </div>
@@ -1509,6 +1557,9 @@ function ProjectItem({
             <SessionList
               sessions={project.sessions}
               root={project.root}
+              paging={paging}
+              total={project.total}
+              archivedTotal={project.archived_total}
               activeId={activeId}
               live={project.current}
               small

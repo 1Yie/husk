@@ -64,9 +64,17 @@ test("跟随应用 takes the app's colours and switches with the theme", () => {
   expect(resolveTerminalPalette("dracula", false).background).toBe("#282a36");
 });
 
-test("a chosen font keeps the code font behind it", () => {
-  expect(resolveTerminalFont('"Fira Code"', "ui-monospace, monospace")).toBe(
-    '"Fira Code", ui-monospace, monospace',
-  );
-  expect(resolveTerminalFont("", "Menlo")).toBe("Menlo");
+test.each([
+  ['"Fira Code"', "ui-monospace, monospace", '"Fira Code", ui-monospace, "JetBrains Mono", monospace'],
+  ['"SF Mono", Menlo', "Consolas", '"SF Mono", Menlo, Consolas, "JetBrains Mono", monospace'],
+  ["", "Menlo", 'Menlo, "JetBrains Mono", monospace'],
+  ["", 'ui-monospace, "SFMono-Regular", monospace', 'ui-monospace, "SFMono-Regular", "JetBrains Mono", monospace'],
+  ["", undefined, 'ui-monospace, "JetBrains Mono", monospace'],
+  ["", "", 'ui-monospace, "JetBrains Mono", monospace'],
+  ['"Fira Code"', undefined, '"Fira Code", ui-monospace, "JetBrains Mono", monospace'],
+  ['"JetBrains Mono"', "Menlo", '"JetBrains Mono", Menlo, monospace'],
+  ["", '"JetBrains Mono", monospace', '"JetBrains Mono", monospace'],
+  ['"A, monospace, B"', "monospace", '"A, monospace, B", "JetBrains Mono", monospace'],
+])("terminal font %s follows code font %s with bundled Nerd glyphs before monospace", (chosen, code, expected) => {
+  expect(resolveTerminalFont(chosen!, code)).toBe(expected);
 });

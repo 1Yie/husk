@@ -372,6 +372,101 @@ async fn codex_handshake_and_json_preserve_final_wire_parameters() {
 }
 
 #[tokio::test]
+async fn fast_priority_and_custom_overlays_survive_responses_websocket_conversion() {
+    let server = Server::new(vec![vec![Step::Complete(response(
+        "resp_fast",
+        output("fast answer"),
+    ))]])
+    .await;
+    let mut cfg = server.config();
+    cfg.models = vec![serde_json::from_value::<agent_llm::ModelConfig>(json!({
+        "id":"fixture-gpt",
+        "samplingParams":{"service_tier":"auto","top_p":0.8},
+        "fastMode":{"mode":"priority","params":{"gateway_fast":{"enabled":true}},
+            "headers":{"x-fast":"enabled"}}
+    }))
+    .unwrap()
+    .into()];
+    let provider =
+        ProviderFactory::build_with_fast_mode(&cfg, None, Some("fixture-conversation"), true)
+            .unwrap();
+    let params = ProviderFactory::model_params(&cfg, "fixture-gpt");
+    let chunks = run(&provider, &history(), &params).await.unwrap();
+    assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Done { .. })));
+    let frame = &server.frames()[0];
+    assert_eq!(frame["service_tier"], "priority");
+    assert_eq!(frame["top_p"], 0.8);
+    assert_eq!(frame["gateway_fast"], json!({"enabled":true}));
+    assert_eq!(frame["reasoning"]["effort"], "medium");
+    assert!(frame.get("fast_mode").is_none());
+    assert!(frame.get("fastMode").is_none());
+    assert_eq!(server.headers.lock().unwrap()[0]["x-fast"], "enabled");
+}
+
+#[tokio::test]
+async fn fast_wire_model_is_the_replay_identity_and_off_drops_other_model_items() {
+    assert_fast_replay_isolation(
+        json!({"mode":"model","model":"configured-highspeed"}),
+        "configured-highspeed",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn fast_route_headers_isolate_opaque_replay_when_the_model_stays_the_same() {
+    assert_fast_replay_isolation(
+        json!({"mode":"custom","headers":{"x-gateway-account":"fast"}}),
+        "fixture-gpt",
+    )
+    .await;
+}
+
+async fn assert_fast_replay_isolation(profile: Value, fast_model: &str) {
+    let server = Server::new(vec![
+        vec![
+            Step::Complete(response("resp_fast_1", output("first"))),
+            Step::Complete(response("resp_fast_2", output("second"))),
+        ],
+        vec![Step::Complete(response("resp_normal", output("normal")))],
+    ])
+    .await;
+    let mut cfg = server.config();
+    cfg.models = vec![serde_json::from_value::<agent_llm::ModelConfig>(json!({
+        "id":"fixture-gpt", "fastMode":profile
+    }))
+    .unwrap()
+    .into()];
+    let provider =
+        ProviderFactory::build_with_fast_mode(&cfg, None, Some("fixture-conversation"), true)
+            .unwrap();
+    let mut h = history();
+    let first = assistant(&run(&provider, &h, &ModelParams::EMPTY).await.unwrap());
+    assert_eq!(first.provider_state.as_ref().unwrap().model, fast_model);
+    h.push(first);
+    h.push(ChatMessage::user("continue fast"));
+    let second = assistant(&run(&provider, &h, &ModelParams::EMPTY).await.unwrap());
+    assert_eq!(second.provider_state.as_ref().unwrap().model, fast_model);
+    h.push(second);
+    h.push(ChatMessage::user("now use normal"));
+    let off =
+        ProviderFactory::build_with_fast_mode(&cfg, None, Some("fixture-conversation"), false)
+            .unwrap();
+    let normal = assistant(&run(&off, &h, &ModelParams::EMPTY).await.unwrap());
+    assert_eq!(normal.provider_state.as_ref().unwrap().model, "fixture-gpt");
+    let frames = server.frames();
+    assert_eq!(frames[0]["model"], fast_model);
+    assert_eq!(frames[1]["model"], fast_model);
+    assert_eq!(frames[1]["previous_response_id"], "resp_fast_1");
+    assert_eq!(frames[2]["model"], "fixture-gpt");
+    assert!(frames[2].get("previous_response_id").is_none());
+    assert!(!frames[2]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["encrypted_content"] == "sealed-wss-fixture"));
+}
+
+#[tokio::test]
 async fn reuses_socket_and_only_sends_appended_history_after_persisted_reload() {
     let server = Server::new(vec![vec![
         Step::Complete(response("resp_1", output("hello"))),

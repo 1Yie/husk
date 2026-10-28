@@ -92,12 +92,82 @@ fn working_directory(cwd: Option<String>) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+#[cfg(unix)]
+fn select_unix_shell(
+    environment_shell: Option<String>,
+    account_shell: impl FnOnce() -> Option<String>,
+) -> String {
+    environment_shell
+        .filter(|shell| is_executable_shell(shell))
+        .or_else(|| account_shell().filter(|shell| is_executable_shell(shell)))
+        .unwrap_or_else(|| "/bin/sh".into())
+}
+
+#[cfg(unix)]
+fn is_executable_shell(shell: &str) -> bool {
+    if !Path::new(shell).is_absolute() || !Path::new(shell).is_file() {
+        return false;
+    }
+    let Ok(path) = std::ffi::CString::new(shell) else {
+        return false;
+    };
+    // SAFETY: path is a live, NUL-terminated C string. Check this user's access,
+    // not just permission bits (which would miss ACLs and other restrictions).
+    unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
+}
+
+#[cfg(unix)]
+fn account_login_shell() -> Option<String> {
+    // portable-pty's get_shell uses non-reentrant getpwuid and also accepts
+    // relative paths. Resolve the account ourselves, without shared passwd data.
+    const MAX_BUFFER: usize = 1024 * 1024;
+    // SAFETY: sysconf/getuid take no pointers and have no preconditions.
+    let suggested = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    let uid = unsafe { libc::getuid() };
+    let mut length = if suggested > 0 {
+        (suggested as usize).clamp(1024, MAX_BUFFER)
+    } else {
+        1024
+    };
+    loop {
+        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut buffer = vec![0u8; length];
+        let mut result = std::ptr::null_mut();
+        // SAFETY: all output pointers are valid for the call; buffer has the
+        // advertised length. No passwd fields are read until success is checked.
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status == libc::ERANGE && length < MAX_BUFFER {
+            length = (length * 2).min(MAX_BUFFER);
+            continue;
+        }
+        if status != 0 || result.is_null() {
+            return None;
+        }
+        // SAFETY: a successful getpwuid_r with a non-null result initialized entry.
+        let entry = unsafe { entry.assume_init() };
+        if entry.pw_shell.is_null() {
+            return None;
+        }
+        // SAFETY: pw_shell is a NUL-terminated string in the still-live buffer.
+        // Copy it before dropping the buffer; the IPC shell field is UTF-8.
+        return unsafe { std::ffi::CStr::from_ptr(entry.pw_shell) }
+            .to_str()
+            .ok()
+            .map(str::to_owned);
+    }
+}
+
 fn shell_command() -> (CommandBuilder, String) {
     #[cfg(unix)]
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| Path::new(s).is_absolute() && Path::new(s).is_file())
-        .unwrap_or_else(|| "/bin/sh".into());
+    let shell = select_unix_shell(std::env::var("SHELL").ok(), account_login_shell);
     #[cfg(windows)]
     let shell = std::env::var("COMSPEC")
         .ok()
@@ -109,9 +179,24 @@ fn shell_command() -> (CommandBuilder, String) {
                 .to_string_lossy()
                 .into_owned()
         });
+    shell_command_for(shell)
+}
+
+fn shell_command_for(shell: String) -> (CommandBuilder, String) {
     let mut cmd = CommandBuilder::new(&shell);
     #[cfg(unix)]
-    cmd.arg("-i");
+    {
+        // Only known shells get -l: /bin/sh may be dash, and wrappers/other
+        // shells must keep their existing -i invocation rather than guess flags.
+        if matches!(
+            Path::new(&shell).file_name().and_then(|name| name.to_str()),
+            Some("zsh" | "bash" | "fish")
+        ) {
+            cmd.arg("-l");
+        }
+        cmd.arg("-i");
+        cmd.env("SHELL", &shell);
+    }
     #[cfg(windows)]
     cmd.args(["/D", "/Q"]);
     cmd.env("TERM", "xterm-256color");
@@ -562,6 +647,8 @@ fn readable(fd: std::os::fd::RawFd) -> std::io::Result<bool> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::mpsc::{self, Receiver};
     use std::time::Instant;
 
@@ -614,6 +701,141 @@ mod tests {
             "PTY did not output {needle:?}: {:?}",
             String::from_utf8_lossy(&bytes)
         )
+    }
+
+    fn fake_shell(root: &Path, name: &str, executable: bool) -> String {
+        let path = root.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(
+            &path,
+            std::fs::Permissions::from_mode(if executable { 0o700 } else { 0o600 }),
+        )
+        .unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn valid_environment_shell_wins_without_querying_the_account() {
+        let directory = tempfile::tempdir().unwrap();
+        let shell = fake_shell(directory.path(), "explicit-shell", true);
+        assert_eq!(
+            select_unix_shell(Some(shell.clone()), || panic!("must not query the account")),
+            shell
+        );
+    }
+
+    #[test]
+    fn missing_or_invalid_environment_shell_uses_the_account_shell() {
+        let directory = tempfile::tempdir().unwrap();
+        let account = fake_shell(directory.path(), "account-shell", true);
+        let not_executable = fake_shell(directory.path(), "not-executable", false);
+        for environment in [
+            None,
+            Some(String::new()),
+            Some("relative-shell".into()),
+            Some(directory.path().to_str().unwrap().into()),
+            Some(directory.path().join("missing").to_str().unwrap().into()),
+            Some("/invalid\0shell".into()),
+            Some(not_executable),
+        ] {
+            assert_eq!(
+                select_unix_shell(environment.clone(), || Some(account.clone())),
+                account,
+                "environment shell: {environment:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_invalid_account_shell_falls_back_to_bin_sh() {
+        let directory = tempfile::tempdir().unwrap();
+        let not_executable = fake_shell(directory.path(), "not-executable", false);
+        for account in [
+            None,
+            Some(String::new()),
+            Some("relative-shell".into()),
+            Some(directory.path().to_str().unwrap().into()),
+            Some(directory.path().join("missing").to_str().unwrap().into()),
+            Some("/invalid\0shell".into()),
+            Some(not_executable),
+        ] {
+            assert_eq!(select_unix_shell(None, || account), "/bin/sh");
+        }
+    }
+
+    #[test]
+    fn known_shells_start_login_and_interactive_but_other_shells_keep_only_i() {
+        for shell in ["/bin/zsh", "/opt/homebrew/bin/bash", "/usr/local/bin/fish"] {
+            let (command, selected) = shell_command_for(shell.into());
+            assert_eq!(selected, shell);
+            assert_eq!(command.get_argv(), &[shell, "-l", "-i"]);
+        }
+        for shell in ["/bin/sh", "/bin/dash", "/usr/local/bin/shell-wrapper"] {
+            let (command, _) = shell_command_for(shell.into());
+            assert_eq!(command.get_argv(), &[shell, "-i"]);
+        }
+    }
+
+    #[test]
+    fn shell_command_preserves_the_environment_and_sets_child_terminal_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let shell = fake_shell(directory.path(), "shell-wrapper", true);
+        let inherited = CommandBuilder::new("/bin/sh");
+        let (command, _) = shell_command_for(shell.clone());
+        for (key, value) in inherited.iter_full_env_as_str() {
+            if !["SHELL", "TERM", "COLORTERM"].contains(&key) {
+                assert_eq!(command.get_env(key), Some(OsStr::new(value)), "{key}");
+            }
+        }
+        assert_eq!(command.get_env("SHELL"), Some(OsStr::new(&shell)));
+        assert_eq!(command.get_env("TERM"), Some(OsStr::new("xterm-256color")));
+        assert_eq!(command.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
+        let mut overrides: Vec<_> = command
+            .iter_extra_env_as_str()
+            .map(|(key, _)| key)
+            .collect();
+        overrides.sort_unstable();
+        assert_eq!(overrides, ["COLORTERM", "SHELL", "TERM"]);
+    }
+
+    #[test]
+    fn real_pty_shell_fixture_receives_login_args_and_the_selected_shell_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let shell = fake_shell(directory.path(), "bash", true);
+        // The interpreter is /bin/sh with a script, never the user's real shell/rc files.
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\nprintf 'args:%s,%s\\nshell:%s\\nterm:%s,%s\\npath:%s\\nfixture-ready\\n' \"$1\" \"$2\" \"$SHELL\" \"$TERM\" \"$COLORTERM\" \"$PATH\"\ncat\n",
+        )
+        .unwrap();
+        let (command, selected) = shell_command_for(shell.clone());
+        let expected_path = command
+            .get_env("PATH")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let state = TerminalState::default();
+        let _cleanup = Cleanup(state.clone());
+        let (tx, rx) = mpsc::channel();
+        let sink: EventSink = Arc::new(move |event| tx.send(event).map_err(|e| e.to_string()));
+        let info = state
+            .open_command(
+                "main".into(),
+                directory.path().into(),
+                size(80, 24).unwrap(),
+                command,
+                selected,
+                sink,
+            )
+            .unwrap();
+        let bytes = text_until(&rx, "fixture-ready");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("args:-l,-i"), "{text}");
+        assert!(text.contains(&format!("shell:{shell}")), "{text}");
+        assert!(text.contains("term:xterm-256color,truecolor"), "{text}");
+        assert!(text.contains(&format!("path:{expected_path}")), "{text}");
+        state.close("main", &info.id).unwrap();
     }
 
     #[test]
@@ -749,5 +971,21 @@ mod tests {
             )
             .is_err());
         assert!(lock(&state.registry).sessions.is_empty());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn shell_command_keeps_windows_arguments_and_does_not_override_shell() {
+        let shell = r"C:\Windows\System32\cmd.exe";
+        let (command, selected) = shell_command_for(shell.into());
+        assert_eq!(selected, shell);
+        assert_eq!(command.get_argv(), &[shell, "/D", "/Q"]);
+        assert!(!command
+            .iter_extra_env_as_str()
+            .any(|(name, _)| name == "SHELL"));
     }
 }

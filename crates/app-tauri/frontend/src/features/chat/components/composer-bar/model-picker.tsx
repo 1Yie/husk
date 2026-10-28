@@ -3,7 +3,7 @@
 // list with a back arrow at the top-left. The trigger keeps the same summary
 // (model + tier) it always had.
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { ReasoningEffort } from "@/components/ui/reasoning-effort";
+import { TooltipSimple } from "@/components/ui/tooltip";
 import { THINKING_LEVELS, thinkingTone } from "@/lib/thinking";
 import { groupOptions } from "@/lib/group-options";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
+  Zap,
 } from "@keyline-icons/react";
 import type * as agent from "@/lib/agent-ipc/index";
 
@@ -48,17 +50,27 @@ function tierLabel(value: string): string {
   return THINKING_LEVELS.find((level) => level.value === value)?.label ?? value;
 }
 
+function FastIndicator({ className }: { className: string }) {
+  return (
+    <span role="img" aria-label="Fast 已开启" className="inline-flex shrink-0 items-center">
+      <Zap aria-hidden="true" className={cn("text-purple-600 dark:text-purple-400", className)} />
+    </span>
+  );
+}
+
 /** A row in the root level: label on the left, the current value on the right. */
 function SummaryRow({
   icon,
   label,
   value,
+  status,
   disabled,
   onOpen,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  status?: React.ReactNode;
   disabled?: boolean;
   onOpen: () => void;
 }) {
@@ -81,6 +93,7 @@ function SummaryRow({
         text={value}
         className="min-w-0 truncate text-xs font-medium text-neutral-900"
       />
+      {status}
       <ChevronRight className="size-3.5 flex-none text-neutral-400" />
     </DropdownMenuItem>
   );
@@ -107,7 +120,7 @@ function LevelHeader({ title, onBack, trailing }: {
         <ChevronLeft className="size-4" />
       </button>
       <span className="text-xs font-normal leading-5 text-neutral-500">{title}</span>
-      {trailing && <span className="ml-auto pr-1">{trailing}</span>}
+      {trailing && <div className="ml-auto flex items-center gap-2">{trailing}</div>}
     </div>
   );
 }
@@ -118,31 +131,63 @@ type View = "root" | "models" | "thinking";
  *  drill-in grows out of the summary instead of hard-swapping from one size to
  *  the next. The measured child is a sibling of the animated box, not inside
  *  it, so its natural height is never confused with the height being tweened. */
-function LevelSwitch({ view, children }: { view: View; children: React.ReactNode }) {
+function LevelSwitch({ view, children, onReadyChange }: {
+  view: View;
+  children: React.ReactNode;
+  onReadyChange: (ready: boolean) => void;
+}) {
   const measureRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | undefined>(undefined);
   // The first measurement lands with the popover's own opening animation: no
   // tween from zero.
   const settled = useRef(false);
+  const targetHeight = useRef<number>();
+  const moving = useRef(false);
 
   useLayoutEffect(() => {
+    onReadyChange(false);
     const el = measureRef.current;
     if (!el) return;
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const apply = () => {
       // Clamped to the popover's own ceiling; the lists scroll inside it.
-      setHeight(Math.min(el.offsetHeight, 320));
+      const next = Math.min(el.offsetHeight, 320);
+      if (settled.current && !motion.matches && targetHeight.current !== undefined
+        && Math.abs(next - targetHeight.current) > 0.5) {
+        moving.current = true;
+        onReadyChange(false);
+      }
+      targetHeight.current = next;
+      setHeight(next);
       settled.current = true;
+      if (!moving.current) onReadyChange(true);
+    };
+    const finishReduced = () => {
+      if (motion.matches) {
+        moving.current = false;
+        onReadyChange(true);
+      }
     };
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [view]);
+    motion.addEventListener("change", finishReduced);
+    return () => {
+      ro.disconnect();
+      motion.removeEventListener("change", finishReduced);
+    };
+  }, [view, onReadyChange]);
 
   return (
     <div
-      className={cn("overflow-hidden", settled.current && "transition-[height] duration-200 ease-out")}
+      className={cn("overflow-hidden", settled.current && "transition-[height] duration-200 ease-out motion-reduce:transition-none")}
       style={{ height }}
+      onTransitionEnd={(event) => {
+        if (event.target === event.currentTarget && event.propertyName === "height") {
+          moving.current = false;
+          onReadyChange(true);
+        }
+      }}
     >
       <div ref={measureRef} key={view}>
         {children}
@@ -161,6 +206,9 @@ export function ModelPicker({
   thinkingMap,
   effectiveThinkingLevels,
   onSelectThinkingLevel,
+  activeFastMode = false,
+  fastModePending = false,
+  onSelectFastMode,
   open: openProp,
   onOpenChange,
   density = "full",
@@ -174,6 +222,9 @@ export function ModelPicker({
   thinkingMap?: Record<string, string | null>;
   effectiveThinkingLevels: readonly { value: string; token: string }[];
   onSelectThinkingLevel: (level: string) => Promise<void>;
+  activeFastMode?: boolean;
+  fastModePending?: boolean;
+  onSelectFastMode?: (enabled: boolean) => Promise<void>;
   /** Controlled open state — `/model` opens the picker from the panel, which
    *  the trigger alone cannot do. Uncontrolled when absent. */
   open?: boolean;
@@ -182,6 +233,8 @@ export function ModelPicker({
   density?: ToolbarDensity;
 }) {
   const [view, setView] = useState<View>("root");
+  const [readyView, setReadyView] = useState<View | null>(null);
+  const handleLevelReady = useCallback((ready: boolean) => setReadyView(ready ? view : null), [view]);
   const [selfOpen, setSelfOpen] = useState(false);
   const open = openProp ?? selfOpen;
   const setOpen = (next: boolean) => {
@@ -221,6 +274,36 @@ export function ModelPicker({
     label: tierLabel(level.value),
   }));
   const thinkingAvailable = hasReasoning && tiers.length > 0;
+  const fastAvailable = Boolean(activeItem?.supports_fast_mode && onSelectFastMode);
+  const fastActive = fastAvailable && activeFastMode;
+  const fastToggle = fastAvailable ? (
+    <TooltipSimple
+      content="更快速的吐字模式，可能会产生额外费用"
+      onEscapeKeyDown={() => setOpen(false)}
+    >
+      <DropdownMenuItem
+        density="compact"
+        role="switch"
+        aria-checked={activeFastMode}
+        aria-label="Fast 模式"
+        aria-busy={fastModePending}
+        disabled={fastModePending}
+        className="size-5 shrink-0 justify-center"
+        onSelect={(event) => {
+          event.preventDefault();
+          void onSelectFastMode?.(!activeFastMode);
+        }}
+      >
+        <Zap
+          aria-hidden="true"
+          className={cn(
+            "size-4",
+            activeFastMode ? "text-purple-600 dark:text-purple-400" : "text-neutral-400",
+          )}
+        />
+      </DropdownMenuItem>
+    </TooltipSimple>
+  ) : null;
 
   /** How much of the model name the trigger may print. Full keeps a cap so a
    *  long id cannot stretch a roomy row; below full the name takes whatever the
@@ -234,7 +317,7 @@ export function ModelPicker({
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
-          aria-label={`当前模型: ${activeItem ? modelLabel(activeItem) : activeModel || "未选择"} (${activeProvider}/${activeModel})`}
+          aria-label={`当前模型: ${activeItem ? modelLabel(activeItem) : activeModel || "未选择"} (${activeProvider}/${activeModel})${fastActive ? "，Fast 已开启" : ""}`}
           className={cn(
             "flex items-center gap-1.5 min-w-0 px-2.5 py-1 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors select-none cursor-pointer",
             // Below full the trigger is the one thing on the row that gives way:
@@ -272,6 +355,7 @@ export function ModelPicker({
               </span>
             </span>
           )}
+          {fastActive && <FastIndicator className="size-3" />}
           <ChevronsUpDown className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
         </button>
       </DropdownMenuTrigger>
@@ -281,7 +365,7 @@ export function ModelPicker({
         side="top"
         className="w-80 max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] overflow-hidden"
       >
-        <LevelSwitch view={view}>
+        <LevelSwitch view={view} onReadyChange={handleLevelReady}>
         {view === "root" && (
           <>
             <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
@@ -306,7 +390,8 @@ export function ModelPicker({
                 }
                 label="思考"
                 value={thinkingAvailable ? tierLabel(activeThinkingLevel) : "该模型不支持思考等级"}
-                disabled={!thinkingAvailable}
+                status={fastActive ? <FastIndicator className="size-3.5" /> : undefined}
+                disabled={!thinkingAvailable && !fastAvailable}
                 onOpen={() => setView("thinking")}
               />
             </DropdownMenuGroup>
@@ -374,16 +459,21 @@ export function ModelPicker({
               title="思考"
               onBack={() => setView("root")}
               trailing={
-                thinkingOverride ? (
-                  <span className="font-mono text-[10px] text-neutral-400">→ {thinkingOverride}</span>
-                ) : undefined
+                <>
+                  {thinkingOverride && (
+                    <span className="max-w-28 truncate font-mono text-[10px] text-neutral-400">→ {thinkingOverride}</span>
+                  )}
+                  {fastToggle}
+                </>
               }
             />
             <DropdownMenuSeparator />
-            <div className="px-3 pb-2.5 pt-1.5">
+            <div className="px-2 pb-2 pt-1.5">
               {/* The stepped control: stops follow the active model's own
                   tiers, and one gesture reports the tier it landed on. */}
-              <ReasoningEffort
+              {thinkingAvailable ? <ReasoningEffort
+                accent={fastActive ? "purple" : "blue"}
+                effectsEnabled={readyView === "thinking"}
                 stops={tiers.map((tier) => tier.label)}
                 levelTones={tiers.map((tier) => thinkingTone(tier.value))}
                 value={Math.max(0, tiers.findIndex((tier) => tier.value === activeThinkingLevel))}
@@ -395,7 +485,9 @@ export function ModelPicker({
                     void onSelectThinkingLevel(tier.value);
                   }
                 }}
-              />
+              /> : (
+                <p className="py-1 text-xs text-neutral-500">此模型没有可调思考等级。</p>
+              )}
             </div>
           </>
         )}

@@ -121,6 +121,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, TooltipSimple
 import { cn } from "@/lib/utils";
 import { INK_MUTED, SURFACE_OVERLAY } from "@/lib/theme";
 
+function isImeKeyDown(event: KeyboardEvent): boolean {
+  // WebKit may deliver compositionend before the final keydown, so checking
+  // isComposing alone can still turn an IME confirmation into a submission.
+  return event.isComposing || event.keyCode === 229;
+}
+
 /** Tool name → icon for the approval strip. */
 function toolIcon(name: string) {
   const cls = "h-3.5 w-3.5";
@@ -229,6 +235,9 @@ function ComposerBarContent({
   const [activeProvider, setActiveProvider] = useState<string>("");
   const [models, setModels] = useState<agent.ModelItem[]>([]);
   const [activeThinkingLevel, setActiveThinkingLevel] = useState<string>("off");
+  const [activeFastMode, setActiveFastMode] = useState(false);
+  const [fastModePending, setFastModePending] = useState(false);
+  const fastModeSeq = useRef(0);
 
   // Right-click in the chat stream ("就选中内容提问" / "粘贴到输入框")
   // lands here via the selection bus. A passage arrives as a quoted
@@ -281,6 +290,7 @@ function ComposerBarContent({
           info.active_thinking_level,
           active?.available_levels,
         ));
+        setActiveFastMode(Boolean(info.active_fast_mode && active?.supports_fast_mode));
         if (info.active_permission_mode) setMode(info.active_permission_mode);
         if (info.active_agent_mode) setAgentMode(info.active_agent_mode);
         if (info.models && Array.isArray(info.models)) {
@@ -293,6 +303,9 @@ function ComposerBarContent({
   };
 
   useEffect(() => {
+    ++fastModeSeq.current;
+    setActiveFastMode(false);
+    setFastModePending(false);
     void fetchModels(sessionKey);
   }, [workspaceRoot, sessionKey]);
 
@@ -331,10 +344,13 @@ function ComposerBarContent({
     // A refresh already in flight describes the old route and cannot undo
     // this selection. The backend switches model + normalized level together.
     ++fetchSeq.current;
+    ++fastModeSeq.current;
+    setFastModePending(false);
     setActiveModel(model);
     setActiveProvider(provider);
     const target = models.find((m) => m.model === model && m.provider === provider);
     setActiveThinkingLevel(normalizeThinkingLevel(activeThinkingLevel, target?.available_levels));
+    setActiveFastMode((enabled) => enabled && Boolean(target?.supports_fast_mode));
     // SetModel is a fire-and-forget session command — getModelInfo can race
     // it and hand back the OLD active model, so the chips are set straight
     // from the list entry we already hold instead of re-reading the backend.
@@ -359,6 +375,28 @@ function ComposerBarContent({
       await agent.setThinkingLevel(level);
     } catch (err) {
       console.error("setThinkingLevel failed:", err);
+    }
+  };
+
+  const handleSelectFastMode = async (enabled: boolean) => {
+    if (!currentModelObj?.supports_fast_mode || fastModePending) return;
+    const seq = ++fastModeSeq.current;
+    const forSession = sessionKeyRef.current;
+    ++fetchSeq.current;
+    setFastModePending(true);
+    try {
+      const result = await agent.setFastMode(enabled, sessionId, workspaceRoot || storeRoot);
+      if (seq !== fastModeSeq.current || forSession !== sessionKeyRef.current) return;
+      ++fetchSeq.current;
+      setActiveFastMode(result.fast_mode);
+    } catch (err) {
+      if (seq === fastModeSeq.current && forSession === sessionKeyRef.current) {
+        toast.error(`切换 Fast 模式失败：${String(err)}`);
+      }
+    } finally {
+      if (seq === fastModeSeq.current && forSession === sessionKeyRef.current) {
+        setFastModePending(false);
+      }
     }
   };
 
@@ -1122,7 +1160,8 @@ function ComposerBarContent({
                       value={questionInput}
                       onChange={(e) => setQuestionInput(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                        if (isImeKeyDown(e.nativeEvent)) return;
+                        if (e.key === "Enter") {
                           void answerQuestion(questionInput);
                         }
                       }}
@@ -1517,6 +1556,9 @@ function ComposerBarContent({
                   onModelPickerOpenChange={setModelPickerOpen}
                   hasReasoning={hasReasoning}
                   activeThinkingLevel={activeThinkingLevel}
+                  activeFastMode={activeFastMode}
+                  fastModePending={fastModePending}
+                  onSelectFastMode={handleSelectFastMode}
                   thinkingMap={currentModelObj?.thinking_level_map ?? undefined}
                   effectiveThinkingLevels={effectiveThinkingLevels}
                   onSelectThinkingLevel={handleSelectThinkingLevel}
@@ -1577,6 +1619,9 @@ function ComposerBarContent({
                 onModelPickerOpenChange={setModelPickerOpen}
                 hasReasoning={hasReasoning}
                 activeThinkingLevel={activeThinkingLevel}
+                activeFastMode={activeFastMode}
+                fastModePending={fastModePending}
+                onSelectFastMode={handleSelectFastMode}
                 thinkingMap={currentModelObj?.thinking_level_map ?? undefined}
                 effectiveThinkingLevels={effectiveThinkingLevels}
                 onSelectThinkingLevel={handleSelectThinkingLevel}
@@ -1927,6 +1972,7 @@ function ComposerTextarea({
             });
           }}
           onKeyDown={(e) => {
+            if (isImeKeyDown(e.nativeEvent)) return;
             if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) {
               // WebKitGTK's paste event can carry no image at all, so the
               // system clipboard is read from Rust. Text pastes are left to
@@ -2103,6 +2149,9 @@ function ComposerToolbar({
   onModelPickerOpenChange,
   hasReasoning,
   activeThinkingLevel,
+  activeFastMode,
+  fastModePending,
+  onSelectFastMode,
   thinkingMap,
   effectiveThinkingLevels,
   onSelectThinkingLevel,
@@ -2133,6 +2182,9 @@ function ComposerToolbar({
   onModelPickerOpenChange: (open: boolean) => void;
   hasReasoning: boolean;
   activeThinkingLevel: string;
+  activeFastMode: boolean;
+  fastModePending: boolean;
+  onSelectFastMode: (enabled: boolean) => Promise<void>;
   thinkingMap?: Record<string, string | null>;
   effectiveThinkingLevels: readonly { value: string; token: string }[];
   onSelectThinkingLevel: (level: string) => Promise<void>;
@@ -2233,6 +2285,9 @@ function ComposerToolbar({
           onOpenChange={onModelPickerOpenChange}
           hasReasoning={hasReasoning}
           activeThinkingLevel={activeThinkingLevel}
+          activeFastMode={activeFastMode}
+          fastModePending={fastModePending}
+          onSelectFastMode={onSelectFastMode}
           thinkingMap={thinkingMap}
           effectiveThinkingLevels={effectiveThinkingLevels}
           onSelectThinkingLevel={onSelectThinkingLevel}

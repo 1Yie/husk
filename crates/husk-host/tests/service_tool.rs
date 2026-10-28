@@ -54,7 +54,19 @@ fn persistent_service_lifecycle() {
         .trim_start_matches("id=")
         .to_string();
 
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    // Readiness depends on sandbox/process scheduling, not a fixed sleep.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let logs = loop {
+        let out = call(
+            "service",
+            serde_json::json!({"action": "logs", "id": id}),
+            ctx.clone(),
+        );
+        if out.contains("ready") || std::time::Instant::now() >= deadline {
+            break out;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
 
     // list shows it running.
     let out = call(
@@ -65,20 +77,13 @@ fn persistent_service_lifecycle() {
     assert!(out.contains(&id), "list should contain {id}: {out}");
     assert!(out.contains("running"), "{id} should be running: {out}");
 
-    // logs show its output.
-    let out = call(
-        "service",
-        serde_json::json!({"action": "logs", "id": id}),
-        ctx.clone(),
-    );
-    assert!(out.contains("ready"), "log should have 'ready': {out}");
-
     // stop kills it.
     let out = call(
         "service",
         serde_json::json!({"action": "stop", "id": id}),
         ctx.clone(),
     );
+    assert!(logs.contains("ready"), "log should have 'ready': {logs}");
     assert!(out.contains("stopped"), "stop should report: {out}");
 
     // gone from the registry.

@@ -101,6 +101,32 @@ async fn usage_events_forward_the_cache_write_counter() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn standalone_checkpoint_observes_actual_messages_and_tools_even_for_compaction() {
+    use futures::StreamExt;
+    let (_dir, store, checkpoint, _output) = setup();
+    let system = ChatMessage::system("session prompt");
+    checkpoint.begin(std::slice::from_ref(&system), "task", meta());
+    let scripted = Arc::new(agent_testkit::ScriptedProvider::new());
+    let provider = checkpoint.wrap(scripted.clone());
+    for messages in [
+        vec![system, ChatMessage::user("task")],
+        vec![ChatMessage::system("independent compactor"), ChatMessage::user("summarize")],
+    ] {
+        scripted.script_text("answer");
+        let tools = Some(serde_json::json!([{"name": "fixture"}]));
+        let mut stream = provider.chat_stream(
+            "m", &messages, tools.clone(), 0.0, None, &ModelParams::EMPTY,
+        ).await.unwrap();
+        while stream.next().await.is_some() {}
+        assert_eq!(checkpoint.last_breakdown(), Some(crate::context_breakdown::estimate(
+            &messages, tools.as_ref(), crate::session::is_memory_context,
+        )));
+    }
+    checkpoint.drain().await;
+    assert!(!store.load_history(1).unwrap().iter().any(|m| m.content.as_deref() == Some("summarize")));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_busy_file_lock_does_not_block_the_async_thread() {
     let (dir, store, checkpoint, _output) = setup();
     let lock_path = dir

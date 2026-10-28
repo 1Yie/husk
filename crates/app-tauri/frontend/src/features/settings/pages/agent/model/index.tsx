@@ -3,14 +3,14 @@
 import { SkeletonKvList } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
-import { ChevronRight, Cpu, Plus, SquarePen } from "@keyline-icons/react";
+import { Cpu, Plus, SquarePen } from "@keyline-icons/react";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { KvList, KvListContent } from "@/components/ui/kv-list";
 import { SettingSelect } from "@/features/settings/components/index";
+import { AdvancedFields } from "@/features/settings/components/advanced-fields";
 import { DeleteButton } from "@/features/settings/components/delete-button";
 import { FormDialog } from "@/features/settings/components/form-dialog";
 import {
@@ -23,6 +23,7 @@ import {
 import { EmptyState, Field, ItemIcon, Tag } from "@/features/settings/pages/agent/shared/index";
 import { ApiKeyInput } from "./api-key-input";
 import { FallbackChain } from "./fallback-chain";
+import { FastModeFields, fastModeDraft, validateFastMode } from "./fast-mode";
 
 /* ============================ 模型 ============================ */
 
@@ -124,24 +125,6 @@ function Group({ title, hint, children }: { title: string; hint?: string; childr
   );
 }
 
-/** Rarely-touched options, folded away until asked for. */
-function Advanced({ label, children }: { label: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 hover:text-neutral-800">
-        <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
-        {label}
-      </CollapsibleTrigger>
-      {/* Keep the 3px focus rings inside the animation's clipping boundary.
-          Negative margins preserve alignment with the other form fields. */}
-      <CollapsibleContent className="-mx-1">
-        <div className="flex flex-col gap-3 px-1 pb-1 pt-3">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
 /** Scrolls inside the dialog instead of growing it past the window. */
 const FORM = "flex max-h-[60vh] flex-col gap-5 overflow-y-auto p-1";
 
@@ -202,6 +185,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
   const [mCostCr, setMCostCr] = useState("");
   const [mCostCw, setMCostCw] = useState("");
   const [mThink, setMThink] = useState<Record<string, string>>({});
+  const [mFast, setMFast] = useState(() => fastModeDraft());
 
   const loadCfg = () => {
     void getAppConfig()
@@ -439,10 +423,13 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     setMCostCw(c.cache_write != null ? String(c.cache_write) : "");
     const t = m.thinking_level_map ?? m.thinkingLevelMap ?? {};
     setMThink(Object.fromEntries(THINKING_LEVELS.map((l) => [l.value, t[l.value] ?? ""])));
+    setMFast(fastModeDraft(m.fastMode ?? m.fast_mode, cfg?.providers?.[provider]?.kind));
   };
 
   const submitEditModel = async () => {
     if (!editModel || !cfg) return;
+    const fast = validateFastMode(mFast);
+    if (fast.error) return;
     const p = { ...cfg.providers[editModel.provider] };
     const models = [...(p.models ?? [])];
     const m = { ...normModel(models[editModel.index]) };
@@ -450,6 +437,11 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
     const id = mId.trim();
     if (!id) return;
     m.id = id;
+    if (fast.config) setAliased(m, ["fastMode", "fast_mode"], fast.config);
+    else {
+      delete m.fastMode;
+      delete m.fast_mode;
+    }
     if (mName.trim()) m.name = mName.trim(); else delete m.name;
     const cw = numOr(mCtx);
     if (cw !== undefined) m.context_window = cw; else delete m.context_window;
@@ -738,7 +730,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                   placeholder="默认同第一个模型" className="h-8 text-xs font-mono" />
               </Field>
             </Group>
-            <Advanced label="兼容性与请求头">
+            <AdvancedFields label="兼容性与请求头">
               <div className="grid grid-cols-2 gap-3">
                 <Field label="supports_store">
                   <SettingSelect value={nStore} onChange={setNStore} options={TRI_OPTS} />
@@ -786,7 +778,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 <Textarea value={nHeaders} onChange={(e) => setNHeaders(e.target.value)}
                   rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono max-h-40" />
               </Field>
-            </Advanced>
+            </AdvancedFields>
           </div>
       </FormDialog>
 
@@ -831,7 +823,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 <Input value={eDefault} onChange={(e) => setEDefault(e.target.value)} className="h-8 text-xs font-mono" />
               </Field>
             </Group>
-            <Advanced label="兼容性与请求头">
+            <AdvancedFields label="兼容性与请求头">
               <div className="grid grid-cols-2 gap-3">
                 <Field label="supports_store">
                   <SettingSelect value={eStore} onChange={setEStore} options={TRI_OPTS} />
@@ -879,7 +871,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 <Textarea value={eHeaders} onChange={(e) => setEHeaders(e.target.value)}
                   rows={3} placeholder={'{\n  "X-Title": "my-app"\n}'} className="text-xs font-mono max-h-40" />
               </Field>
-            </Advanced>
+            </AdvancedFields>
           </div>
       </FormDialog>
 
@@ -890,7 +882,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
         title={isNewModel ? "新建模型" : "编辑模型"}
         submitLabel={isNewModel ? "添加" : "保存"}
         busy={busy}
-        disabled={!mId.trim()}
+        disabled={!mId.trim() || !!validateFastMode(mFast).error}
         onSubmit={() => void submitEditModel()}
         secondary={
           isNewModel ? undefined : (
@@ -915,6 +907,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 </Field>
               </div>
             </Group>
+            <FastModeFields value={mFast} onChange={setMFast} />
             <Group title="能力">
               <div className="grid grid-cols-2 gap-3">
                 <Field label="上下文窗口（tokens）">
@@ -922,7 +915,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                     placeholder="262144" className="h-8 text-xs font-mono" />
                 </Field>
                 <Field label="推理/思考支持">
-                  <SettingSelect value={mReasoning} onChange={setMReasoning} options={TRI_OPTS} />
+                  <SettingSelect value={mReasoning} onChange={setMReasoning} options={TRI_OPTS} triggerClassName="w-full min-w-0" />
                 </Field>
               </div>
               <Field label="输入模态（逗号分隔）">
@@ -946,7 +939,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
                 </Field>
               </div>
             </Group>
-            <Advanced label="思考等级映射">
+            <AdvancedFields label="思考等级映射">
               <div className="grid grid-cols-2 gap-3">
                 {THINKING_LEVELS.map((l) => (
                   <Field key={l.value} label={l.label}>
@@ -958,7 +951,7 @@ export function ModelPane({ ov, reload }: { ov: AgentOverview | null; reload: ()
               <p className="text-[11px] text-neutral-500">
                 思考等级映射：留空 = 不映射（按提供商默认传参）
               </p>
-            </Advanced>
+            </AdvancedFields>
           </div>
       </FormDialog>
     </div>

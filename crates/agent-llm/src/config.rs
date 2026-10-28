@@ -253,11 +253,44 @@ impl ProviderConfig {
 }
 
 /// A model entry can be either a bare string ID or a rich pi-agent model object.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum ModelEntry {
     Simple(String),
     Detailed(ModelConfig),
+}
+
+// An untagged derive hides a rich model's validation error behind "did not
+// match any variant". Dispatch by shape so malformed Fast profiles retain
+// their actionable error, including when nested in a full config document.
+impl<'de> Deserialize<'de> for ModelEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct EntryVisitor;
+        impl<'de> serde::de::Visitor<'de> for EntryVisitor {
+            type Value = ModelEntry;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a model id string or a model configuration object")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, id: &str) -> Result<Self::Value, E> {
+                Ok(ModelEntry::Simple(id.to_string()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, id: String) -> Result<Self::Value, E> {
+                Ok(ModelEntry::Simple(id))
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                ModelConfig::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(ModelEntry::Detailed)
+            }
+        }
+        de.deserialize_any(EntryVisitor)
+    }
 }
 
 impl ModelEntry {
@@ -363,6 +396,15 @@ pub struct ModelConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub sampling_params: Option<serde_json::Value>,
+    /// Explicit Fast capability and wire settings. Inert until Fast is enabled
+    /// on the provider; independent of thinking/reasoning.
+    #[serde(
+        default,
+        rename = "fastMode",
+        alias = "fast_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fast_mode: Option<FastModeConfig>,
     /// Request limits / image preprocessing (pi `inputLimits`).
     #[serde(
         default,
@@ -595,6 +637,14 @@ pub struct ModelOverride {
         skip_serializing_if = "Option::is_none"
     )]
     pub sampling_params: Option<serde_json::Value>,
+    /// Replaces the entire Fast profile when present, rather than mixing modes.
+    #[serde(
+        default,
+        rename = "fastMode",
+        alias = "fast_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fast_mode: Option<FastModeConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -665,9 +715,13 @@ impl ModelConfig {
                 _ => v.clone(),
             });
         }
+        if let Some(v) = &ov.fast_mode {
+            out.fast_mode = Some(v.clone());
+        }
         if let Some(v) = &ov.headers {
             let mut merged = out.headers.take().unwrap_or_default();
             for (k, val) in v {
+                merged.retain(|name, _| !name.eq_ignore_ascii_case(k));
                 merged.insert(k.clone(), val.clone());
             }
             out.headers = Some(merged);
@@ -681,6 +735,114 @@ impl ModelConfig {
     /// The sampling-parameter object to merge into the request body, if any.
     pub fn sampling_object(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
         self.sampling_params.as_ref().and_then(|v| v.as_object())
+    }
+
+    /// Capability is explicit configuration, never inferred from a model id.
+    pub fn supports_fast_mode(&self) -> bool {
+        self.fast_mode.is_some()
+    }
+}
+
+/// The wire mechanism a deployment explicitly supports for this model.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FastMode {
+    Priority,
+    Speed,
+    Model,
+    Custom,
+}
+
+/// Opt-in Fast profile. Params are a shallow overlay applied after ordinary
+/// sampling; headers override ordinary headers case-insensitively.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(try_from = "FastModeFields")]
+pub struct FastModeConfig {
+    pub mode: FastMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FastModeFields {
+    mode: FastMode,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    params: Option<serde_json::Value>,
+    #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+}
+
+impl TryFrom<FastModeFields> for FastModeConfig {
+    type Error = String;
+
+    fn try_from(fields: FastModeFields) -> Result<Self, Self::Error> {
+        let config = Self {
+            mode: fields.mode,
+            model: fields.model,
+            params: fields.params,
+            headers: fields.headers,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+}
+
+impl FastModeConfig {
+    /// Also checked at provider construction for Rust-created configurations.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.mode == FastMode::Model {
+            if self.model.as_ref().is_none_or(|id| id.trim().is_empty()) {
+                return Err("fastMode mode 'model' requires a nonempty model id".into());
+            }
+        } else if self.model.is_some() {
+            return Err("fastMode model is only valid with mode 'model'".into());
+        }
+        if self
+            .params
+            .as_ref()
+            .is_some_and(|params| !params.is_object())
+        {
+            return Err("fastMode params must be a JSON object".into());
+        }
+        if let Some(params) = self.params.as_ref().and_then(|p| p.as_object()) {
+            if params.contains_key("model") {
+                return Err(
+                    "fastMode params must not contain model; use mode 'model' for model routing"
+                        .into(),
+                );
+            }
+            if params.contains_key("fast_mode") || params.contains_key("fastMode") {
+                return Err(
+                    "fastMode params must not contain app-only fast_mode/fastMode keys".into(),
+                );
+            }
+        }
+        if let Some(headers) = &self.headers {
+            for (name, value) in headers {
+                reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| format!("fastMode header name {name:?} is invalid"))?;
+                reqwest::header::HeaderValue::from_str(value)
+                    .map_err(|_| format!("fastMode header value for {name:?} is invalid"))?;
+            }
+        }
+        if self.mode == FastMode::Custom
+            && self
+                .params
+                .as_ref()
+                .and_then(|p| p.as_object())
+                .is_none_or(|p| p.is_empty())
+            && self.headers.as_ref().is_none_or(|h| h.is_empty())
+        {
+            return Err("fastMode mode 'custom' requires nonempty params or headers".into());
+        }
+        Ok(())
     }
 }
 
@@ -1117,9 +1279,8 @@ impl ConfigTable {
             Self::Values => Self::Values,
             Self::Fields => match key {
                 "providers" | "model_overrides" => Self::Entries,
-                "compat" | "cost" | "input_limits" | "images" | "resize" | "prompt_cache" => {
-                    Self::Fields
-                }
+                "compat" | "cost" | "input_limits" | "images" | "resize" | "prompt_cache"
+                | "fastMode" | "fast_mode" => Self::Fields,
                 _ => Self::Values,
             },
         }
@@ -1134,6 +1295,7 @@ impl ConfigTable {
         let extra: &[&str] = match key {
             "kind" => &["type", "api"],
             "max_tokens" => &["max_output_tokens"],
+            "fastMode" => &["fast_mode"],
             _ => &[],
         };
         for alias in extra {

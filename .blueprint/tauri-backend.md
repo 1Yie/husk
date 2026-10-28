@@ -1,6 +1,7 @@
 +++
 owns = ["crates/app-tauri/*", "crates/app-tauri/{backend,capabilities,icons,linux}/**"]
 forbidden_deps = ["ratatui*", "agent-plugin", "agent-computer", "tauri-frontend"]
+invariants = ["侧栏专用sidebar/ sidebar_page IPC默认每页30、最大30；cursor不透明并绑定root、归档筛选与snapshot generation，失效明确拒绝；旧projects/list完整列表接口保持兼容", "侧栏缓存仅在Tauri一处持有轻量会话投影，不持有完整SessionMeta/JournalIndex/history；首读、强制刷新、本地结构修改或工作区集合变化重建，跨进程更新每60秒reconcile；普通轮询只更新live与已加载行，发现新增/删除/归档成员变化立即废弃旧枚举并在摘要重建", "缓存扫描、单项meta读取与非活动store打开在manager锁外，事件转发线程不执行全量IO；只保留一个当前排序快照，旧代际cursor明确失效，不累积历史快照", "侧栏页响应不隐含全量sessions；新前端pick/switch请求使用bounded响应选项，旧调用仍保留原sessions形状；存在性查询独立于分页结果", "侧栏投影/缓存（含live覆盖）的title与preview各最多512个Unicode标量；不改持久meta与旧完整列表；全部global pins数量不设总字节上限，重命名按需session_title单项详情读取完整标题"]
 +++
 
 Husk 桌面端 Tauri 2 后端：内核之上的适配层与打包配置。

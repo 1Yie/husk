@@ -20,6 +20,28 @@ const REST_W = 27.2;
 const DRAG_W = 33.6;
 const REST_H = 27.2;
 const EDGE_PAD = (HEIGHT - REST_H) / 2;
+const FAST_FRONT_SPARKLES = [
+  { x: 4, y: 6, size: 3.5, delay: 20 },
+  { x: 15, y: 20, size: 2.5, delay: 130 },
+  { x: 1, y: 15, size: 4, delay: 210 },
+  { x: 25, y: 9, size: 2, delay: 80 },
+  { x: 10, y: 27, size: 3, delay: 300 },
+  { x: 32, y: 23, size: 2, delay: 230 },
+  { x: 18, y: 3, size: 2.5, delay: 330 },
+  { x: 38, y: 15, size: 3, delay: 180 },
+] as const;
+const FAST_POINTS = [
+  { x: 9, y: 32, size: 1.3, duration: 3.7, delay: -1.1 },
+  { x: 19, y: 74, size: 1.7, duration: 4.8, delay: -3.2 },
+  { x: 29, y: 21, size: 1.2, duration: 3.1, delay: -2.1 },
+  { x: 37, y: 58, size: 1.8, duration: 5.2, delay: -0.8 },
+  { x: 47, y: 83, size: 1.1, duration: 4.1, delay: -2.7 },
+  { x: 54, y: 35, size: 1.5, duration: 3.4, delay: -1.6 },
+  { x: 65, y: 67, size: 1.2, duration: 4.6, delay: -3.6 },
+  { x: 73, y: 18, size: 1.7, duration: 5.4, delay: -2.2 },
+  { x: 82, y: 49, size: 1.1, duration: 3.9, delay: -0.4 },
+  { x: 92, y: 78, size: 1.4, duration: 4.3, delay: -3.1 },
+] as const;
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
@@ -184,6 +206,10 @@ export interface ReasoningEffortProps {
   /** Text colour per stop (same order as `stops`). The tier word takes it so
    *  its strength reads at a glance; absent keeps the dim caption colour. */
   levelTones?: readonly (string | undefined)[];
+  /** Changes only the rail palette; geometry, gradient and interaction stay intact. */
+  accent?: "blue" | "purple";
+  /** The surrounding panel has finished its opening animation. */
+  effectsEnabled?: boolean;
 }
 
 export function ReasoningEffort({
@@ -193,6 +219,8 @@ export function ReasoningEffort({
   ariaLabel = "Reasoning effort",
   onChange,
   levelTones,
+  accent = "blue",
+  effectsEnabled = true,
 }: ReasoningEffortProps = {}) {
   // The caller owns the real tier list; index 0 is the lowest.
   const start = Math.round(value ?? 1);
@@ -223,6 +251,65 @@ export function ReasoningEffort({
   const revealRef = useRef(1);
   const [reveal, setReveal] = useState(1);
   const gradId = useId().replace(/:/g, "");
+  const previousAccent = useRef(accent);
+  const [paletteSettled, setPaletteSettled] = useState(true);
+  const [starPointsVisible, setStarPointsVisible] = useState(false);
+  const effectsReady = accent === "purple" && effectsEnabled && paletteSettled;
+  const ambientId = useRef(0);
+  const [ambientStars, setAmbientStars] = useState<
+    { id: number; y: number; size: number; duration: number }[]
+  >([]);
+
+  useLayoutEffect(() => {
+    if (previousAccent.current === accent) return;
+    previousAccent.current = accent;
+    setPaletteSettled(
+      accent !== "purple" || window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    );
+  }, [accent]);
+
+  useEffect(() => {
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const stop = () => { if (motion.matches) setPaletteSettled(true); };
+    motion.addEventListener("change", stop);
+    return () => motion.removeEventListener("change", stop);
+  }, []);
+
+  useEffect(() => {
+    if (!effectsReady) {
+      setAmbientStars([]);
+      setStarPointsVisible(false);
+      return;
+    }
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let timer: number | undefined;
+    const ready = () => !document.hidden && !motion.matches;
+    const spawn = () => {
+      if (!ready()) return;
+      const star = {
+        id: ++ambientId.current,
+        y: 4 + Math.random() * 22,
+        size: 2 + Math.random() * 2,
+        duration: 750 + Math.random() * 550,
+      };
+      setAmbientStars((stars) => [...stars.slice(-1), star]);
+      timer = window.setTimeout(spawn, 1700 + Math.random() * 2200);
+    };
+    const sync = () => {
+      window.clearTimeout(timer);
+      setAmbientStars([]);
+      setStarPointsVisible(ready());
+      if (ready()) timer = window.setTimeout(spawn, 1400 + Math.random() * 800);
+    };
+    motion.addEventListener("change", sync);
+    document.addEventListener("visibilitychange", sync);
+    sync();
+    return () => {
+      window.clearTimeout(timer);
+      motion.removeEventListener("change", sync);
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, [effectsReady]);
 
   useLayoutEffect(() => {
     const el = rootRef.current;
@@ -493,6 +580,7 @@ export function ReasoningEffort({
       ref={rootRef}
       className={s.root}
       data-theme={theme}
+      data-accent={accent}
       data-dragging={dragging ? "true" : "false"}
     >
       <svg
@@ -552,7 +640,74 @@ export function ReasoningEffort({
         onPointerCancel={onPointerUp}
         onKeyDown={onKeyDown}
       >
-        <div className={s.fill} style={{ width: fillW }} />
+        <div className={s.fill} style={{ width: fillW }}>
+          <div
+            className={s.fastFill}
+            data-fast-fill=""
+            aria-hidden="true"
+            onTransitionEnd={(event) => {
+              if (event.target === event.currentTarget && event.propertyName === "transform" && accent === "purple") {
+                setPaletteSettled(true);
+              }
+            }}
+          >
+            {accent === "purple" && !paletteSettled && effectsEnabled && (
+              <span className={s.frontSparkles} data-fast-front="" aria-hidden="true">
+                {FAST_FRONT_SPARKLES.map((star, index) => (
+                  <span
+                    key={index}
+                    className={s.frontStar}
+                    style={{
+                      left: star.x, top: star.y, width: star.size, height: star.size,
+                      animationDelay: `${star.delay}ms`,
+                    }}
+                  />
+                ))}
+              </span>
+            )}
+          </div>
+        </div>
+        <div
+          className={s.railEffects}
+          data-fast-background=""
+          style={{ clipPath: `inset(0 ${Math.max(0, track - fillW)}px 0 0 round 16px)` }}
+          aria-hidden="true"
+        >
+          {effectsReady && starPointsVisible && (
+            <span className={s.fastPoints} data-fast-points="" aria-hidden="true">
+              {FAST_POINTS.map((point, index) => (
+                <span
+                  key={index}
+                  className={s.fastPoint}
+                  style={{
+                    left: `${point.x}%`, top: `${point.y}%`,
+                    width: point.size, height: point.size,
+                    animationDuration: `${point.duration}s`, animationDelay: `${point.delay}s`,
+                  }}
+                />
+              ))}
+            </span>
+          )}
+          {effectsReady && ambientStars.map((star) => (
+            <span
+              key={star.id}
+              className={s.ambientPass}
+              data-fast-ambient=""
+              aria-hidden="true"
+              style={{
+                top: star.y, height: star.size,
+                animationDuration: `${star.duration}ms`,
+              }}
+              onAnimationEnd={(event) => {
+                if (event.target === event.currentTarget) {
+                  setAmbientStars((stars) => stars.filter((item) => item.id !== star.id));
+                }
+              }}
+            >
+              <span className={s.ambientStar} style={{ width: star.size }} />
+            </span>
+          ))}
+        </div>
         <div
           className={s.thumb}
           style={{

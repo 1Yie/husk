@@ -14,9 +14,20 @@ export interface TextareaProps
 }
 
 const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
-  ({ className, chrome = "box", shellClassName, ...props }, ref) => {
+  ({
+    className,
+    chrome = "box",
+    shellClassName,
+    autoCorrect = "off",
+    autoCapitalize = "none",
+    spellCheck = false,
+    ...props
+  }, ref) => {
     const field = (
       <textarea
+        autoCorrect={autoCorrect}
+        autoCapitalize={autoCapitalize}
+        spellCheck={spellCheck}
         className={cn(
           // `overflow-x-hidden`: WebKitGTK 2.54 honors the global
           // ::-webkit-scrollbar styles, and at fractional devicePixelRatio

@@ -7,7 +7,11 @@ import { POPPER_PENDING, usePopperPlacedRef } from "@/components/ui/use-popper-p
 
 const TooltipProvider = TooltipPrimitive.Provider;
 const Tooltip = TooltipPrimitive.Root;
-const TooltipTrigger = TooltipPrimitive.Trigger;
+const TooltipTrigger = React.forwardRef<
+  React.ElementRef<typeof TooltipPrimitive.Trigger>,
+  React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Trigger>
+>((props, ref) => <TooltipPrimitive.Trigger {...props} ref={ref} data-husk-tooltip-trigger="" />);
+TooltipTrigger.displayName = TooltipPrimitive.Trigger.displayName;
 
 const TooltipContent = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Content>,
@@ -51,18 +55,20 @@ export function TooltipSimple({
   side = "top",
   sideOffset = 6,
   className,
+  onEscapeKeyDown,
 }: {
   content: React.ReactNode;
   children: React.ReactNode;
   side?: "top" | "bottom" | "left" | "right";
   sideOffset?: number;
   className?: string;
+  onEscapeKeyDown?: React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content>["onEscapeKeyDown"];
 }) {
   if (!content) return <>{children}</>;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side={side} sideOffset={sideOffset} className={className}>
+      <TooltipContent side={side} sideOffset={sideOffset} className={className} onEscapeKeyDown={onEscapeKeyDown}>
         {content}
       </TooltipContent>
     </Tooltip>
@@ -149,20 +155,19 @@ export function GlobalTooltip() {
         return;
       }
 
-      // Radix stamps `data-state` on the TRIGGER itself — testing an ancestor disabled
-            // the fallback for every Radix-wrapped subtree (the whole chat stream sits in
-            // a ContextMenuTrigger, so streamdown's buttons leaked the native bubble).
-      if (el.hasAttribute("data-state")) {
-        return;
-      }
-
       // Convert native title to data-tooltip to suppress browser tooltip. The
       // strip is one-way on purpose: a title handed back on hide would let the
       // webview paint its own bubble over a pointer that never left the element.
       const rawTitle = el.getAttribute("title");
-      if (rawTitle) {
+      if (rawTitle !== null) {
         el.setAttribute("data-tooltip", rawTitle);
         el.removeAttribute("title");
+      }
+      // All Radix controls use data-state, not only Tooltip triggers.
+      // Strip titles first, and defer only to an explicitly themed Tooltip.
+      if (el.closest("[data-husk-tooltip-trigger]")) {
+        hide();
+        return;
       }
 
       const text = el.getAttribute("data-tooltip");

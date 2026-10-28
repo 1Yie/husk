@@ -45,6 +45,23 @@ struct PersistedSeed {
     queued: Vec<String>,
 }
 
+/// New sidebar callers do not consume this legacy full-list field. Crucially
+/// the bounded branch never calls sidebar_rows (or serializes its full output).
+fn workspace_switch_sessions(
+    mgr: &husk_host::session_manager::SessionManager,
+    payload: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    compatibility_sessions(payload, || mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
+        serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
+    }).collect())
+}
+
+fn compatibility_sessions(payload: Option<&serde_json::Value>, full: impl FnOnce() -> Vec<serde_json::Value>) -> serde_json::Value {
+    if payload.and_then(|p| p.get("sidebar")).and_then(|v| v.as_bool()) == Some(true) {
+        serde_json::json!([])
+    } else { serde_json::json!(full()) }
+}
+
 impl PersistedSeed {
     fn of(mgr: &husk_host::session_manager::SessionManager, id: i64) -> Self {
         match mgr.store_meta(id) {
@@ -101,6 +118,12 @@ fn agent_session_inner(
     // nested runloop pumps webview IPC callbacks, and a re-entrant
     // `state.lock()` self-deadlocks the main thread (the 0.1.11 spindump:
     // NSSavePanel runModal → WebKit work → pthread mutex wait).
+    // Boot opens the already-active conversation to read history. That
+    // idempotent open must not force a second cold sidebar catalog scan.
+    let _sidebar_mutation = super::sidebar::Mutation::for_op(if op == "open" { "" } else { &op });
+    if super::sidebar::handles(&op) {
+        return super::sidebar::dispatch(&state, &op, path.as_deref(), id, payload);
+    }
     if op == "save_download" {
         return save_download(&app, payload);
     }
@@ -206,9 +229,7 @@ fn agent_session_inner(
             "task_total": persisted.tasks,
             "usage": persisted.usage,
             "queued_prompts": persisted.queued,
-            "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
-                serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
-            }).collect::<Vec<_>>(),
+            "sessions": workspace_switch_sessions(&mgr, payload.as_ref()),
         }));
     }
     // Same reason: filesystem work that has nothing to do with the running
@@ -739,6 +760,7 @@ fn agent_session_inner(
         // actor is resumed separately — this is display-only data.
         "open" => {
             let id = id.ok_or("open needs id")?;
+            let _sidebar_open_mutation = super::sidebar::Mutation::for_op(if mgr.active_id != id { "open" } else { "" });
             mgr.open_session(id);
             // Paged: only the newest slice mounts — older pages stream in
             // on scroll-up via `history_page`. `history_total` lets the
@@ -1006,10 +1028,16 @@ fn agent_session_inner(
                 "task_total": persisted.tasks,
                 "usage": persisted.usage,
                 "queued_prompts": persisted.queued,
-                "sessions": mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
-                    serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
-                }).collect::<Vec<_>>(),
+                "sessions": workspace_switch_sessions(&mgr, payload.as_ref()),
             }))
+        }
+        "set_fast_mode" => {
+            let enabled = payload.as_ref()
+                .and_then(|p| p.get("enabled"))
+                .and_then(serde_json::Value::as_bool)
+                .ok_or("set_fast_mode needs boolean payload.enabled")?;
+            let fast_mode = mgr.set_fast_mode(id, path.as_deref(), enabled)?;
+            Ok(serde_json::json!({ "fast_mode": fast_mode }))
         }
         "model_info" => {
             let info = mgr.model_info();
@@ -2806,6 +2834,17 @@ fn workspace_paths_match(root: &str, expected: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sidebar_ops_and_workspace_switch_do_not_leak_the_legacy_full_list() {
+        for op in ["sidebar", "sidebar_page", "sidebar_rows", "sidebar_row"] {
+            assert!(super::super::sidebar::handles(op));
+        }
+        assert!(!super::super::sidebar::handles("projects"));
+        let payload = serde_json::json!({"sidebar": true});
+        assert_eq!(super::compatibility_sessions(Some(&payload), || panic!("bounded caller must not list")), serde_json::json!([]));
+        let legacy = serde_json::json!({"id": 9, "title": "legacy", "active": true});
+        assert_eq!(super::compatibility_sessions(None, || vec![legacy.clone()]), serde_json::json!([legacy]));
+    }
     /// The store picks the rows (see `agent-store`'s `tool_results` test); this
     /// layer only names the fields the webview reads.
     #[test]
