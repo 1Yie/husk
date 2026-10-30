@@ -23,6 +23,8 @@ import "./dock.css";
 import { DirectoryLoadingSkeleton } from "@/features/workspace-files/loading";
 import { cn } from "@/lib/utils";
 import { ChangesList } from "@/features/chat/components/changes-panel";
+import { WorkspaceChangesNotice } from "@/features/chat/components/changes-panel/workspace-changes-notice";
+import type { WorkspaceChanges } from "@/features/chat/components/changes-panel/workspace-changes";
 import { ArtifactsList } from "@/features/chat/components/artifacts-panel";
 import { JobsList } from "@/features/chat/components/jobs-panel";
 import { SubagentsList } from "@/features/chat/components/subagents-panel";
@@ -51,6 +53,7 @@ const WorkspaceFiles = lazy(() =>
 
 export function SessionDock({
   changes,
+  workspaceChanges,
   artifacts,
   jobs = [],
   jobsAt = 0,
@@ -66,6 +69,8 @@ export function SessionDock({
   officeMode = false,
 }: {
   changes: FileChange[];
+  /** Current root's Git read state, including a retained stale snapshot. */
+  workspaceChanges?: WorkspaceChanges;
   artifacts: Artifact[];
   /** The session's background jobs, and when that snapshot arrived. */
   jobs?: BgJob[];
@@ -235,6 +240,7 @@ export function SessionDock({
         {tabs.length > 0 && (
           <DockTabs tabs={tabs} counts={counts} active={activeTab} onSelect={setTab} />
         )}
+        {!officeMode && <WorkspaceChangesNotice root={root} state={workspaceChanges} />}
 
         {/* `overflow-x-hidden` is load-bearing, not cosmetic: a box with
             `overflow-y: auto` and `overflow-x: visible` computes the X axis to
@@ -254,6 +260,13 @@ export function SessionDock({
             <WorkspaceTools
               root={root}
               hasChanges={changes.length > 0}
+              changesDescription={
+                workspaceChanges?.error
+                  ? "工作区改动读取失败"
+                  : workspaceChanges?.at === 0
+                    ? "正在读取工作区改动"
+                    : undefined
+              }
               officeMode={officeMode}
               onReview={() => setTab("changes")}
               onFiles={() => setTab("files")}

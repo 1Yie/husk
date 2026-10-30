@@ -605,7 +605,7 @@ impl Blueprint {
     pub fn check_turn(&self, touched: &[PathBuf]) -> Report {
         let rels: Vec<String> = touched
             .iter()
-            .filter_map(|p| p.strip_prefix(&self.root).ok().map(|r| rel_path(r)))
+            .filter_map(|p| p.strip_prefix(&self.root).ok().map(rel_path))
             .collect();
         if rels.is_empty() {
             return Report::default();

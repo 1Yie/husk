@@ -620,6 +620,7 @@ fn main() {
             ipc::terminal::terminal_write,
             ipc::terminal::terminal_resize,
             ipc::terminal::terminal_close,
+            ipc::terminal::terminal_fonts,
             ipc::commands::agent_cmd,
             ipc::commands::get_ui_stats,
             ipc::commands::paste_clipboard,

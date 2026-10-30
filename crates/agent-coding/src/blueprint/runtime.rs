@@ -102,7 +102,7 @@ pub fn changed_since(root: &Path, before: &Baseline) -> Vec<PathBuf> {
             before
                 .files
                 .get(f)
-                .map_or(true, |old| *old != stamp(&root.join(f)))
+                .is_none_or(|old| *old != stamp(&root.join(f)))
         })
         .map(|f| root.join(f))
         .collect()

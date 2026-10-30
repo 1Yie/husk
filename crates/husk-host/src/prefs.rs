@@ -445,6 +445,64 @@ pub fn save_default_preferences(prefs: &DefaultPreferences) -> std::io::Result<(
     global_put("default_preferences", prefs)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryPreferences {
+    pub enabled: bool,
+    pub distill: bool,
+}
+
+impl From<&DefaultPreferences> for MemoryPreferences {
+    fn from(prefs: &DefaultPreferences) -> Self {
+        Self {
+            enabled: prefs.memory_enabled,
+            distill: prefs.memory_distill,
+        }
+    }
+}
+
+/// Do not present corrupt/unreadable storage as a successful default read.
+pub fn memory_preferences() -> std::io::Result<MemoryPreferences> {
+    let prefs = agent_store::try_global_get::<DefaultPreferences>("default_preferences")?
+        .unwrap_or_default();
+    Ok(MemoryPreferences::from(&prefs))
+}
+
+/// Patch only the memory choices while holding the global-row lock. Unreadable
+/// or corrupt data is not replaced, and unrelated preferences are preserved.
+pub fn set_memory_preferences(
+    enabled: Option<bool>,
+    distill: Option<bool>,
+) -> std::io::Result<MemoryPreferences> {
+    let mut saved = None;
+    global_update::<DefaultPreferences>("default_preferences", |prefs| {
+        if let Some(enabled) = enabled {
+            prefs.memory_enabled = enabled;
+        }
+        if let Some(distill) = distill {
+            prefs.memory_distill = distill;
+        }
+        saved = Some(MemoryPreferences::from(&*prefs));
+    })?;
+    saved.ok_or_else(|| std::io::Error::other("memory preferences were not updated"))
+}
+
+/// The persisted desktop-notification choice, with a missing row using the
+/// product default. Storage or decoding errors must not enable notifications.
+pub fn desktop_notifications_enabled() -> std::io::Result<bool> {
+    Ok(
+        agent_store::try_global_get::<DefaultPreferences>("default_preferences")?
+            .unwrap_or_default()
+            .desktop_notifications,
+    )
+}
+
+/// Update only the notification choice under the store's global-row lock.
+pub fn set_desktop_notifications_enabled(enabled: bool) -> std::io::Result<()> {
+    global_update::<DefaultPreferences>("default_preferences", |prefs| {
+        prefs.desktop_notifications = enabled;
+    })
+}
+
 /// A per-install secret mixed into every conversation's routing key. Session
 /// ids are small integers and workspace paths are guessable, so a key derived
 /// from them alone could be brute-forced back to the session it names; the salt
@@ -584,7 +642,8 @@ mod tests {
         .unwrap();
         assert!(!p.semantic_recall);
         // Saving it back leaves the switch off rather than dropping the field.
-        let round: DefaultPreferences = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+        let round: DefaultPreferences =
+            serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
         assert!(!round.semantic_recall);
     }
 

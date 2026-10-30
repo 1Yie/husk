@@ -221,7 +221,8 @@ export interface WorkspaceChangeRow {
 
 /** The workspace's WHOLE uncommitted change list — the repository's own answer,
  *  not a session's write log, so it does not shrink when a session reopens.
- *  `repo: false` = the workspace is not a git repository (or git failed). */
+ *  `repo: false` only means GitError::NotARepo. Scan/read errors reject with
+ *  `workspace_changes_failed: ...`; they are never a successful empty list. */
 export function workspaceChanges(root?: string) {
   return invoke<{ repo: boolean; files: WorkspaceChangeRow[] }>("agent_session", {
     op: "workspace_changes",

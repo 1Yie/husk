@@ -25,10 +25,7 @@ function appearanceOf(prefs: TerminalPrefs): TerminalAppearance {
   const palette = resolveTerminalPalette(prefs.scheme, isAppDark(), token);
   return {
     theme: { ...palette, cursorAccent: palette.background },
-    fontFamily: resolveTerminalFont(
-      prefs.fontFamily,
-      token("--husk-code-font"),
-    ),
+    fontFamily: resolveTerminalFont(prefs.fontFamily),
     fontSize: prefs.fontSize,
     lineHeight: prefs.lineHeight,
     cursorStyle: prefs.cursorStyle,

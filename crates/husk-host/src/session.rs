@@ -2479,17 +2479,19 @@ impl SessionActor {
     /// `SessionMeta` — the two copies keep a switched-away view and a
     /// reopened session in sync with the actor's deque.
     fn emit_queued(&mut self) {
-        let items: Vec<String> = self.queued.lock().unwrap().iter().cloned().collect();
-        let _ = self.io.ui_tx.send(UiEvent::QueuedPrompts {
-            items: items.clone(),
-        });
+        // IPC can change this deque while a turn runs. Keep the guard through
+        // the persistence and event write, so an older actor snapshot cannot
+        // overwrite or appear after a newer direct queue mutation.
+        let queue = self.queued.lock().unwrap();
+        let items: Vec<String> = queue.iter().cloned().collect();
         if let Some(store) = &self.store {
-            if let Err(error) = store.update_queue(self.session_id, items) {
+            if let Err(error) = store.update_queue(self.session_id, items.clone()) {
                 let _ = self.io.ui_tx.send(UiEvent::SystemMessage(format!(
                     "保存待执行任务失败: {error}"
                 )));
             }
         }
+        let _ = self.io.ui_tx.send(UiEvent::QueuedPrompts { items });
     }
 
     /// `UiCommand::SetQueued` — the composer replaces the whole parked

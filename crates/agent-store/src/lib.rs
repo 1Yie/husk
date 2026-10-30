@@ -470,6 +470,11 @@ pub fn global_get<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
     files::get(global_db()?.as_ref(), key)
 }
 
+/// Read a global row while preserving database and decoding errors.
+pub fn try_global_get<T: serde::de::DeserializeOwned>(key: &str) -> std::io::Result<Option<T>> {
+    files::try_get(try_global_db()?.as_ref(), key)
+}
+
 /// Write a global row, replacing whatever was there.
 pub fn global_put(key: &str, value: &impl serde::Serialize) -> std::io::Result<()> {
     files::put(try_global_db()?.as_ref(), key, value)

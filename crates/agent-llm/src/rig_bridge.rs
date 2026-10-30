@@ -1751,8 +1751,8 @@ fn compat_body_patches(
                     msg.insert("reasoning_content".into(), json!(""));
                 }
             }
-            "tool" if tool_result_name => {
-                if !msg.contains_key("name") {
+            "tool" if tool_result_name
+                && !msg.contains_key("name") => {
                     let id = msg
                         .get("tool_call_id")
                         .and_then(Value::as_str)
@@ -1761,7 +1761,6 @@ fn compat_body_patches(
                         msg.insert("name".into(), json!(name));
                     }
                 }
-            }
             _ => {}
         }
     }

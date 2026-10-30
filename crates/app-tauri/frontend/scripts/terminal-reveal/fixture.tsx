@@ -13,6 +13,7 @@ import { useAgentStore } from "@/stores/agent-store";
 import { useDockStore } from "@/features/chat/components/dock/state";
 import { viewFromHistory } from "@/features/chat/hooks/view-from-history";
 import type { ChatMessage } from "@/types";
+import { checkTerminalFonts } from "./font-probe";
 
 const TerminalSettings = lazy(() => import("@/features/settings/pages/terminal")
   .then((module) => ({ default: module.TerminalSettings })));
@@ -20,6 +21,7 @@ const AppearanceFixture = lazy(() => import("./appearance-fixture"));
 
 // Fixture-only access to the real class works in both dev and bundled builds.
 (window as unknown as { __terminalTestSession: typeof TerminalSession }).__terminalTestSession = TerminalSession;
+(window as unknown as { __checkTerminalFonts: typeof checkTerminalFonts }).__checkTerminalFonts = checkTerminalFonts;
 
 const history: ChatMessage[] = [{ role: "user", content: "长会话中打开终端" }];
 for (let i = 0; i < 160; i++) {

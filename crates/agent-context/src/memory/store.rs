@@ -1647,7 +1647,7 @@ fn path_tokens(text: &str) -> Vec<String> {
             }
             _ => word,
         };
-        let word = word.trim_end_matches(|c: char| c == '.' || c == ':');
+        let word = word.trim_end_matches(['.', ':']);
         let looks_like_path = word.contains('/')
             && !word.starts_with('/')
             && !word.starts_with('~')

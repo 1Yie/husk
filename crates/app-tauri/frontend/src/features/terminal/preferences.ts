@@ -4,6 +4,7 @@
 // pulling the renderer into its chunk.
 
 import { create } from "zustand";
+import { BUNDLED_TERMINAL_FONT_STACK, normalizeTerminalFont } from "./fonts";
 
 const STORAGE_KEY = "husk.terminal.v1";
 
@@ -238,24 +239,11 @@ export const TERMINAL_SCHEMES: {
   },
 ];
 
-/** `value: ""` follows the app's code font (外观). */
-export const TERMINAL_FONTS: { value: string; label: string }[] = [
-  { value: "", label: "跟随代码字体" },
-  { value: '"JetBrains Mono"', label: "JetBrains Mono" },
-  { value: '"Fira Code"', label: "Fira Code" },
-  { value: '"Cascadia Code"', label: "Cascadia Code" },
-  { value: '"SF Mono", Menlo', label: "SF Mono" },
-  { value: "Menlo", label: "Menlo" },
-  { value: "Consolas", label: "Consolas" },
-  { value: '"Source Code Pro"', label: "Source Code Pro" },
-  { value: '"Noto Sans Mono"', label: "Noto Sans Mono" },
-];
-
 export type TerminalCursorStyle = "block" | "bar" | "underline";
 
 export interface TerminalPrefs {
   scheme: TerminalSchemeId;
-  /** CSS font-family list; "" follows the app's code font. */
+  /** Quoted system family (legacy lists accepted); "" uses the bundled font. */
   fontFamily: string;
   fontSize: number;
   lineHeight: number;
@@ -303,12 +291,7 @@ export function sanitizeTerminalPrefs(
   const scheme = TERMINAL_SCHEMES.some((s) => s.id === raw.scheme)
     ? (raw.scheme as TerminalSchemeId)
     : d.scheme;
-  const fontFamily =
-    typeof raw.fontFamily === "string" &&
-    raw.fontFamily.length <= 200 &&
-    !/[;{}<>]/.test(raw.fontFamily)
-      ? raw.fontFamily.trim()
-      : d.fontFamily;
+  const fontFamily = normalizeTerminalFont(raw.fontFamily);
   const cursorStyle =
     raw.cursorStyle === "bar" || raw.cursorStyle === "underline"
       ? raw.cursorStyle
@@ -409,23 +392,10 @@ export function resolveTerminalPalette(
   };
 }
 
-/** Keep the chosen/app code font primary (including the system ui-monospace).
- *  The bundled JetBrains Mono is Nerd Font Mono: use its cell-aligned icons
- *  before the final generic monospace, without changing the app's code font. */
-export function resolveTerminalFont(
-  fontFamily: string,
-  codeFont: string | undefined,
-): string {
-  const families = [fontFamily, codeFont || "ui-monospace, monospace"]
-    // A quoted family name may itself contain commas.
-    .flatMap((list) => list.match(/(?:"[^"]*"|'[^']*'|[^,])+/g) ?? [])
-    .map((family) => family.trim())
-    .filter((family) => family && family.toLowerCase() !== "monospace");
-  const hasNerdFont = families.some(
-    (family) => family.replace(/^["']|["']$/g, "").toLowerCase() === "jetbrains mono",
-  );
-  if (!hasNerdFont) families.push('"JetBrains Mono"');
-  return [...families, "monospace"].join(", ");
+/** The terminal never inherits the application's code font. */
+export function resolveTerminalFont(fontFamily: string): string {
+  const chosen = normalizeTerminalFont(fontFamily);
+  return chosen ? `${chosen}, ${BUNDLED_TERMINAL_FONT_STACK}` : BUNDLED_TERMINAL_FONT_STACK;
 }
 
 export function isAppDark(): boolean {

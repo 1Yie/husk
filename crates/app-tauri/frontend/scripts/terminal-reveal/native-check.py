@@ -225,13 +225,14 @@ manager.add_script(WebKit2.UserScript.new(r"""
     const split = { panes: boxes.length, retainedHost, nestedGeometry: Math.abs(top.bottom - bottom.top) < 1,
       renamed: true, tabMenuCompact, openedPtys: splitMetrics.ipc.filter((call) => call.command === "terminal_open").length,
       closedPtys: splitMetrics.ipc.filter((call) => call.command === "terminal_close").length };
+    const fonts = await window.__checkTerminalFonts();
     window.webkit.messageHandlers.terminalCheck.postMessage(JSON.stringify({
       engine: "WebKitGTK", reducedMotion, runs, menuDismissedOnShortcut: true,
-      drag, split, warmSwitch, screenMenuStyle,
+      drag, split, warmSwitch, screenMenuStyle, fonts,
       errors,
     }));
   } catch (error) {
-    window.webkit.messageHandlers.terminalCheck.postMessage(JSON.stringify({ error: String(error.stack ?? error), errors }));
+    window.webkit.messageHandlers.terminalCheck.postMessage(JSON.stringify({ error: `${String(error)}\n${error.stack ?? ""}`, errors }));
   }
 })();
 """, WebKit2.UserContentInjectedFrames.TOP_FRAME, WebKit2.UserScriptInjectionTime.END, None, None))

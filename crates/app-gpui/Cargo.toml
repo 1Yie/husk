@@ -1,0 +1,56 @@
+[package]
+name = "husk-gpui"
+version = "0.3.13"
+edition = "2024"
+description = "Husk native desktop application"
+license = "MIT"
+
+[[bin]]
+name = "husk-gpui"
+path = "src/main.rs"
+
+[dependencies]
+agent-context = { path = "../agent-context" }
+agent-ipc.workspace = true
+agent-kernel.workspace = true
+agent-llm = { path = "../agent-llm" }
+agent-paths.workspace = true
+agent-store = { path = "../agent-store" }
+husk-host = { path = "../husk-host" }
+husk-terminal = { path = "../husk-terminal" }
+gpui-kit = "=0.8.1"
+# The color-query adapter forwards every vte Handler callback; audit both
+# versions together before upgrading either one.
+alacritty_terminal = "=0.26.0"
+vte = "=0.15.0"
+async-channel = "2"
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+chrono = "0.4"
+url = "2"
+tracing.workspace = true
+tokio.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# macOS uses UserNotifications, not the legacy NSUserNotification backend.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+notify-rust = "4.18.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSError", "NSString", "NSUUID"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+
+[features]
+default = ["semantic"]
+semantic = ["husk-host/semantic"]
+test-support = ["gpui-kit/test-support"]
+
+[dev-dependencies]
+tempfile = "3"

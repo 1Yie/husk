@@ -38,6 +38,7 @@ export interface TerminalAppearance {
 
 const validSize = (cols: number, rows: number) =>
   Number.isInteger(cols) && Number.isInteger(rows) && cols > 0 && rows > 0;
+const MAX_STARTUP_REPLY_CHARS = 64 * 1024;
 
 function bytesOf(message: unknown): Uint8Array | null {
   if (message instanceof ArrayBuffer) return new Uint8Array(message);
@@ -81,6 +82,8 @@ export class TerminalSession {
   private fitTimer: number | undefined;
   private immediateFit = false;
   private writes = Promise.resolve();
+  private startupReplies = "";
+  private colorReplyRestoreQueued = false;
   private resizing = false;
   private pendingSize: { cols: number; rows: number } | undefined;
   private lastSize = "";
@@ -131,6 +134,10 @@ export class TerminalSession {
             this.update({ ...this.state, title: value });
         }),
       );
+      for (const id of [4, 10, 11, 12]) {
+        this.subscriptions.push(this.terminal.parser.registerOscHandler(id, (data) =>
+          this.allowColorReply(data)));
+      }
     } catch (error) {
       this.terminal.dispose();
       throw error;
@@ -162,6 +169,9 @@ export class TerminalSession {
           status:
             this.state.status === "opening" ? "running" : this.state.status,
         });
+        const replies = this.startupReplies;
+        this.startupReplies = "";
+        if (replies) this.write(replies);
         this.scheduleFit({ immediate: true });
       })
       .catch(() => {
@@ -201,9 +211,34 @@ export class TerminalSession {
 
   private update(state: SessionState) {
     this.state = state;
-    this.terminal.options.disableStdin =
-      !this.visible || state.status !== "running";
+    if (state.status === "exited" || state.status === "error") this.startupReplies = "";
+    this.syncInput();
     this.onState(state);
+  }
+
+  private syncInput() {
+    this.terminal.options.disableStdin =
+      this.disposed || !this.visible || this.state.status !== "running";
+  }
+
+  private allowColorReply(data: string): false {
+    if (this.disposed || (this.state.status !== "opening" && this.state.status !== "running")
+      || !data.split(";").includes("?")) return false;
+    // disableStdin also suppresses xterm's own OSC replies. Allow its native
+    // color handler to answer in this parser turn, then restore the current
+    // input gate before another browser input event can run.
+    if (this.terminal.options.disableStdin) {
+      this.terminal.options.disableStdin = false;
+      if (!this.colorReplyRestoreQueued) {
+        this.colorReplyRestoreQueued = true;
+        queueMicrotask(() => {
+          this.colorReplyRestoreQueued = false;
+          if (!this.disposed) this.syncInput();
+        });
+      }
+    }
+    // Never consume or reinterpret the query: xterm owns palette/RGB values.
+    return false;
   }
 
   private handleKey(event: KeyboardEvent): boolean {
@@ -222,7 +257,15 @@ export class TerminalSession {
   }
 
   private write(data: string) {
-    if (this.disposed || this.state.status !== "running" || !this.id) return;
+    if (this.disposed) return;
+    if (!this.id && this.state.status === "opening") {
+      // Keyboard input is disabled here; parser-generated replies may arrive
+      // before terminal_open acknowledges the PTY id.
+      if (this.startupReplies.length + data.length <= MAX_STARTUP_REPLY_CHARS)
+        this.startupReplies += data;
+      return;
+    }
+    if (this.state.status !== "running" || !this.id) return;
     // Serialize chunks across onData events; never split a UTF-16 surrogate pair.
     for (let start = 0; start < data.length; ) {
       let end = Math.min(start + 4096, data.length);
@@ -250,8 +293,7 @@ export class TerminalSession {
 
   setVisible(visible: boolean, focus = true) {
     this.visible = visible;
-    this.terminal.options.disableStdin =
-      !visible || this.state.status !== "running";
+    this.syncInput();
     if (visible) {
       this.focusPending = focus;
       if (!this.fittedGeometry) this.remeasureFonts();
@@ -457,6 +499,7 @@ export class TerminalSession {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.startupReplies = "";
     this.pendingSize = undefined;
     this.output.onmessage = () => {};
     this.cancelFit();

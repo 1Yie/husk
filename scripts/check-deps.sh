@@ -24,16 +24,18 @@ declare -A ALLOW=(
   [agent-coding]="agent-capabilities agent-context agent-ipc agent-kernel agent-llm-core agent-skills agent-tools-fs"
   # host layer over the kernel — session assembly, commands, modes, sandbox prefs
   [husk-host]="agent-capabilities agent-coding agent-skills agent-store agent-context agent-ipc agent-kernel agent-llm agent-llm-core agent-paths agent-plugin agent-sandbox agent-tools-computer agent-tools-fs agent-tools-office agent-tools-serena agent-tools-shell agent-tools-web"
+  [husk-terminal]=""
   # products / frontends — nothing may depend on these
   [app-cli]="agent-ipc agent-kernel agent-llm agent-paths agent-store husk-host"
   [app-tui]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host"
   [app-tauri]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host agent-plugin agent-skills agent-context agent-llm-core"
   [app-desktop]="agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-store husk-host"
-  [husk]="agent-context agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-skills agent-store husk-host"
+  [husk]="agent-context agent-ipc agent-kernel agent-llm agent-paths agent-sandbox agent-skills agent-store husk-host husk-terminal"
+  [husk-gpui]="agent-context agent-ipc agent-kernel agent-llm agent-paths agent-store husk-host husk-terminal"
 )
 
 # Crates nobody may depend on (frontends).
-LEAF_PRODUCTS=" app-cli app-tui husk "
+LEAF_PRODUCTS=" app-cli app-tui husk husk-gpui "
 
 meta=$(cargo metadata --no-deps --format-version 1)
 fail=0
@@ -59,7 +61,9 @@ done < <(jq -r '
   | .packages[]
   | [ .name,
       ([ .dependencies[]
-         | select(.kind != "dev" and (.name | test("^(agent-|husk-)")))
+         | select(.kind != "dev")
+         | select(.name as $dep
+             | ($dep | test("^(agent-|husk-)")) or ($ws | index($dep) != null))
          | .name ] | unique | join(" ")) ]
   | @tsv' <<<"$meta")
 

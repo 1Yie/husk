@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   terminals: [] as Array<{
     cols: number; rows: number; options: Record<string, unknown>;
     emit: (data: string) => void; write: ReturnType<typeof vi.fn>;
+    reportColor: (id: number, data: string, response: string) => boolean;
     dispose: ReturnType<typeof vi.fn>; focus: ReturnType<typeof vi.fn>;
     paste: ReturnType<typeof vi.fn>; key: (event: Partial<KeyboardEvent>) => boolean;
     title: (title: string) => void; selection: string;
@@ -41,6 +42,13 @@ vi.mock("@xterm/xterm", () => ({
     private input = (_data: string) => {};
     private keys = (_event: KeyboardEvent) => true;
     private titles = (_title: string) => {};
+    private oscHandlers = new Map<number, (data: string) => boolean>();
+    parser = {
+      registerOscHandler: (id: number, handler: (data: string) => boolean) => {
+        this.oscHandlers.set(id, handler);
+        return { dispose: vi.fn(() => this.oscHandlers.delete(id)) };
+      },
+    };
     constructor(options: Record<string, unknown>) {
       this.options = new Proxy(options, {
         set(target, key, value) {
@@ -59,6 +67,13 @@ vi.mock("@xterm/xterm", () => ({
     hasSelection() { return this.selection.length > 0; }
     getSelection() { return this.selection; }
     emit(data: string) { this.input(data); }
+    reportColor(id: number, data: string, response: string) {
+      const handled = this.oscHandlers.get(id)?.(data) ?? false;
+      // xterm's CoreService disables protocol replies as well as keyboard
+      // input when disableStdin is true.
+      if (!handled && !this.options.disableStdin) this.input(response);
+      return handled;
+    }
     key(event: Partial<KeyboardEvent>) {
       return this.keys({ type: "keydown", altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
         preventDefault: () => {}, ...event } as KeyboardEvent);
@@ -168,6 +183,27 @@ test("font-size changes preserve the palette and refit geometry once", async () 
   await flush();
   expect(mocks.optionWrites.mock.calls.map(([key]) => key)).toEqual(["fontSize"]);
   expect(mocks.fit).toHaveBeenCalledOnce();
+});
+
+test("late font loads remeasure the latest chosen stack, without restoring an old selection", async () => {
+  const session = create();
+  session.setVisible(true);
+  await flush();
+  const fontFamily = '"Iosevka Nerd Font Mono", "Husk Terminal Mono", monospace';
+  session.setAppearance({ ...appearance, fontFamily });
+  await flush();
+  mocks.fit.mockClear();
+  session.remeasureFonts();
+  await flush();
+  expect(mocks.terminals[0].options.fontFamily).toBe(`${fontFamily}, monospace`);
+  expect(mocks.fit).toHaveBeenCalledOnce();
+  session.remeasureFonts();
+  await flush();
+  expect(mocks.terminals[0].options.fontFamily).toBe(fontFamily);
+  session.dispose();
+  mocks.optionWrites.mockClear();
+  session.remeasureFonts();
+  expect(mocks.optionWrites).not.toHaveBeenCalled();
 });
 
 test("switching a same-sized terminal back on reuses fitted cell geometry", async () => {
@@ -382,6 +418,125 @@ test("serializes separate input events instead of reordering writes", async () =
   await flush();
   expect(calls("terminal_write")[1][1]).toEqual({ id: "pty-fixture", data: "second" });
   finishFirst();
+});
+
+test("preserves initial shell color replies until terminal_open returns its PTY id", async () => {
+  let opened!: (value: unknown) => void;
+  mocks.invoke.mockImplementation((command: string) => command === "terminal_open"
+    ? new Promise((resolve) => { opened = resolve; })
+    : Promise.resolve());
+  create().setVisible(true);
+  const terminal = mocks.terminals[0];
+  const replies = [
+    [11, "?", "\x1b]11;rgb:1111/2222/3333\x1b\\"],
+    [4, "1;?", "\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\"],
+    [10, "?", "\x1b]10;rgb:dddd/eeee/ffff\x1b\\"],
+  ] as const;
+  expect(terminal.options.disableStdin).toBe(true);
+  for (const [id, query, reply] of replies) expect(terminal.reportColor(id, query, reply)).toBe(false);
+  await flush();
+  expect(calls("terminal_write")).toHaveLength(0);
+  expect(terminal.options.disableStdin).toBe(true);
+  opened({ id: "pty-colors", cwd: "/fixture", shell: "/bin/bash" });
+  await flush();
+  terminal.emit("echo after-handshake\r");
+  await flush();
+  const written = calls("terminal_write").map(([, args]) => (args as { data: string }).data).join("");
+  expect(written).toBe(replies.map(([, , reply]) => reply).join("") + "echo after-handshake\r");
+});
+
+test("a hidden terminal answers color probes without enabling user input or refitting", async () => {
+  const session = create();
+  session.setVisible(true);
+  await flush();
+  session.setVisible(false);
+  const fits = mocks.fit.mock.calls.length;
+  const terminal = mocks.terminals[0];
+  const reply = "\x1b]12;rgb:aaaa/bbbb/cccc\x1b\\";
+  expect(terminal.reportColor(12, "?", reply)).toBe(false);
+  await flush();
+  expect(calls("terminal_write")).toEqual([["terminal_write", { id: "pty-fixture", data: reply }]]);
+  expect(terminal.options.disableStdin).toBe(true);
+  expect(mocks.fit).toHaveBeenCalledTimes(fits);
+});
+
+test("color-reply input restoration follows the latest pane visibility", async () => {
+  const session = create();
+  session.setVisible(true);
+  await flush();
+  session.setVisible(false);
+  mocks.terminals[0].reportColor(11, "?", "\x1b]11;rgb:0000/0000/0000\x1b\\");
+  session.setVisible(true);
+  await flush();
+  expect(mocks.terminals[0].options.disableStdin).toBe(false);
+});
+
+test("a queued color-reply restoration does not mutate a disposed renderer", async () => {
+  const session = create();
+  mocks.terminals[0].reportColor(11, "?", "\x1b]11;rgb:0000/0000/0000\x1b\\");
+  session.dispose();
+  mocks.optionWrites.mockClear();
+  await flush();
+  expect(mocks.optionWrites).not.toHaveBeenCalled();
+  expect(calls("terminal_write")).toHaveLength(0);
+});
+
+test("color setters fall through without temporarily enabling input", async () => {
+  const session = create();
+  await flush();
+  session.setVisible(false);
+  const terminal = mocks.terminals[0];
+  mocks.optionWrites.mockClear();
+  expect(terminal.reportColor(11, "#123456", "")).toBe(false);
+  expect(terminal.options.disableStdin).toBe(true);
+  expect(mocks.optionWrites).not.toHaveBeenCalled();
+  expect(calls("terminal_write")).toHaveLength(0);
+});
+
+test.each(["exit", "dispose"] as const)("queued shell color replies are discarded after %s before open", async (ending) => {
+  let opened!: (value: unknown) => void;
+  mocks.invoke.mockImplementation((command: string) => command === "terminal_open"
+    ? new Promise((resolve) => { opened = resolve; })
+    : Promise.resolve());
+  const session = create();
+  mocks.terminals[0].reportColor(11, "?", "\x1b]11;rgb:0000/0000/0000\x1b\\");
+  if (ending === "dispose") session.dispose();
+  else mocks.channels[0].onmessage({ type: "exit", code: 0, signal: null });
+  opened({ id: "pty-ended", cwd: "/fixture", shell: "/bin/bash" });
+  await flush();
+  expect(calls("terminal_write")).toHaveLength(0);
+});
+
+test("startup color replies are bounded and never truncate an individual response", async () => {
+  let opened!: (value: unknown) => void;
+  mocks.invoke.mockImplementation((command: string) => command === "terminal_open"
+    ? new Promise((resolve) => { opened = resolve; })
+    : Promise.resolve());
+  create().setVisible(true);
+  const reply = "\x1b]11;rgb:1111/2222/3333\x1b\\";
+  for (let index = 0; index < 3000; index++) mocks.terminals[0].reportColor(11, "?", reply);
+  await flush();
+  opened({ id: "pty-bounded", cwd: "/fixture", shell: "/bin/bash" });
+  await flush();
+  const written = calls("terminal_write").map(([, args]) => (args as { data: string }).data).join("");
+  expect(written.length).toBeGreaterThan(0);
+  expect(written.length).toBeLessThanOrEqual(64 * 1024);
+  expect(written).toBe(reply.repeat(written.length / reply.length));
+});
+
+test("opening failure discards shell replies and leaves input disabled", async () => {
+  let failed!: (reason: Error) => void;
+  mocks.invoke.mockImplementation((command: string) => command === "terminal_open"
+    ? new Promise((_resolve, reject) => { failed = reject; })
+    : Promise.resolve());
+  create().setVisible(true);
+  const terminal = mocks.terminals[0];
+  terminal.reportColor(11, "?", "\x1b]11;rgb:0000/0000/0000\x1b\\");
+  failed(new Error("cannot spawn shell"));
+  await flush();
+  expect(states[states.length - 1].status).toBe("error");
+  expect(terminal.options.disableStdin).toBe(true);
+  expect(calls("terminal_write")).toHaveLength(0);
 });
 
 test("splits a large paste without corrupting surrogate pairs", async () => {

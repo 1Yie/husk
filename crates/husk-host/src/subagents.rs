@@ -50,7 +50,7 @@ impl SubagentHost for HuskSubagents {
         // The grants the session holds, so a child knows it may read a linked
         // repository instead of concluding the path does not exist. It sees
         // the same slots the tools resolve against, so this cannot go stale.
-        let linked = agent_capabilities::WorkspaceCtx::linked_roots(&*ctx);
+        let linked = agent_capabilities::WorkspaceCtx::linked_roots(ctx);
         out.push_str(&crate::session::linked_roots_block(&linked));
         if spec.inherits_instructions() {
             if let Some(paths) = ctx.paths() {

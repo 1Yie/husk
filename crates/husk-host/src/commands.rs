@@ -220,7 +220,7 @@ impl CommandRegistry {
             },
             "model" => {
                 // `/model provider/model` or bare `/model provider model`
-                let parts: Vec<&str> = args.splitn(2, |c| c == '/' || c == ' ').collect();
+                let parts: Vec<&str> = args.splitn(2, ['/', ' ']).collect();
                 let (provider, model) = match parts.as_slice() {
                     [p, m] => ((*p).to_string(), (*m).to_string()),
                     [m] => ("".to_string(), (*m).to_string()),

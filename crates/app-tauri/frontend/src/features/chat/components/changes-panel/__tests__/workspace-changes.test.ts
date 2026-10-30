@@ -81,10 +81,49 @@ describe("workspace 改动", () => {
   test("a failed read keeps the list it already had", async () => {
     mockCommand("agent_session", () => answer([row("a.ts")]), "workspace_changes");
     await refreshWorkspaceChanges("/project");
+    const previous = workspaceChangesNow("/project");
     mockCommand("agent_session", () => Promise.reject(new Error("ipc down")), "workspace_changes");
     await refreshWorkspaceChanges("/project");
-    expect(workspaceChangesNow("/project")).toMatchObject({ loading: false });
-    expect(workspaceChangesNow("/project").files.map((f) => f.path)).toEqual(["a.ts"]);
+    expect(workspaceChangesNow("/project")).toMatchObject({
+      loading: false, repo: true, at: previous.at, error: "ipc down",
+    });
+    expect(workspaceChangesNow("/project").files).toBe(previous.files);
+  });
+
+  test("an initial failure is unknown, not a clean repo or a plain folder", async () => {
+    mockCommand("agent_session", () => Promise.reject("workspace_changes_failed: unreadable index"), "workspace_changes");
+    await refreshWorkspaceChanges("/project");
+    expect(workspaceChangesNow("/project")).toMatchObject({
+      repo: null, files: [], loading: false, at: 0,
+      error: "workspace_changes_failed: unreadable index",
+    });
+  });
+
+  test("a successful retry replaces the stale snapshot and clears its error", async () => {
+    mockCommand("agent_session", () => answer([row("old.ts")]), "workspace_changes");
+    await refreshWorkspaceChanges("/project");
+    mockCommand("agent_session", () => Promise.reject("read denied"), "workspace_changes");
+    await refreshWorkspaceChanges("/project");
+    const next = deferred<ReturnType<typeof answer>>();
+    mockCommand("agent_session", () => next.promise, "workspace_changes");
+    const retry = refreshWorkspaceChanges("/project");
+    expect(workspaceChangesNow("/project")).toMatchObject({ loading: true, error: "read denied" });
+    expect(workspaceChangesNow("/project").files.map((f) => f.path)).toEqual(["old.ts"]);
+    next.resolve(answer([row("new.ts")]));
+    await retry;
+    expect(workspaceChangesNow("/project")).toMatchObject({ loading: false, repo: true, error: null });
+    expect(workspaceChangesNow("/project").files.map((f) => f.path)).toEqual(["new.ts"]);
+  });
+
+  test("a failed refresh preserves even a confirmed non-repository snapshot", async () => {
+    mockCommand("agent_session", () => answer([], false), "workspace_changes");
+    await refreshWorkspaceChanges("/project");
+    const at = workspaceChangesNow("/project").at;
+    mockCommand("agent_session", () => Promise.reject("read failed"), "workspace_changes");
+    await refreshWorkspaceChanges("/project");
+    expect(workspaceChangesNow("/project")).toMatchObject({
+      repo: false, at, error: "read failed", loading: false,
+    });
   });
 
   test("a burst of asks earns one read once the debounce closes", async () => {

@@ -11,19 +11,21 @@ import type { FileChange } from "@/features/chat/hooks/stream-view";
 /** One workspace's slice of the panel. */
 export interface WorkspaceChanges {
   files: FileChange[];
-  /** False = the root is not a git repository; the page then falls back to the
-   *  session's own change list. */
-  repo: boolean;
+  /** False only after a successful non-repo result. Null before any success. */
+  repo: boolean | null;
   loading: boolean;
-  /** When the list last landed (epoch ms) — 0 before the first read. */
+  /** The last read's failure; a retained snapshot is stale while this is set. */
+  error: string | null;
+  /** When the last successful list landed (epoch ms) — 0 before any success. */
   at: number;
 }
 
 /** Stable "nothing yet" handle: a selector must not mint a fresh object. */
 export const EMPTY_WORKSPACE_CHANGES: WorkspaceChanges = {
   files: [],
-  repo: true,
+  repo: null,
   loading: false,
+  error: null,
   at: 0,
 };
 
@@ -81,12 +83,14 @@ async function read(root: string) {
       files: r.files.map(toFileChange),
       repo: r.repo,
       loading: false,
+      error: null,
       at: Date.now(),
     });
-  } catch {
-    // A failed read keeps the previous list: an empty panel claims "the tree
-    // is clean", which is a different thing from "could not tell".
-    write(root, { loading: false });
+  } catch (error) {
+    // Never advance `at` or change repo/files on failure. An initial failure
+    // stays unknown; a later failure leaves the last successful list stale.
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    write(root, { loading: false, error: message || "无法读取工作区改动" });
   }
 }
 

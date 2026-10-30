@@ -5,7 +5,12 @@ import { SessionDock } from "../index";
 import { readFileSync } from "node:fs";
 import { URL as NodeURL } from "node:url";
 import { useLayoutStore } from "@/app/layout/layout-store";
-import { mockCommand } from "@/test/tauri";
+import { deferred, mockCommand } from "@/test/tauri";
+import { useWorkspaceChanges } from "@/features/chat/hooks/use-workspace-changes";
+import {
+  clearWorkspaceChanges,
+  refreshWorkspaceChanges,
+} from "@/features/chat/components/changes-panel/workspace-changes";
 import {
   DOCK_DEFAULT_WIDTH,
   DOCK_MAX_WIDTH,
@@ -46,6 +51,7 @@ const artifact = (path: string): Artifact => ({
 });
 
 beforeEach(() => {
+  clearWorkspaceChanges();
   localStorage.clear();
   useDockStore.setState({
     open: true,
@@ -57,6 +63,70 @@ beforeEach(() => {
 });
 
 describe("unified session dock", () => {
+  function WorkspaceDock({ root = "/project" }: { root?: string }) {
+    const state = useWorkspaceChanges(root);
+    return <SessionDock root={root} changes={state.files} workspaceChanges={state} artifacts={[]} />;
+  }
+
+  test("an initial Git failure is not a clean empty workspace and retry can recover", async () => {
+    mockCommand("agent_session", () => Promise.reject("workspace_changes_failed: unreadable index"), "workspace_changes");
+    render(<WorkspaceDock />);
+    expect(screen.getByText("正在读取工作区改动")).toBeVisible();
+    expect(screen.queryByText("当前没有未提交改动")).not.toBeInTheDocument();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole("alert")).toHaveTextContent("尚未成功读取");
+    expect(screen.getByRole("alert")).toHaveTextContent("workspace_changes_failed: unreadable index");
+    expect(screen.queryByText("当前没有未提交改动")).not.toBeInTheDocument();
+
+    const retry = deferred<{ repo: boolean; files: [] }>();
+    mockCommand("agent_session", () => retry.promise, "workspace_changes");
+    fireEvent.click(screen.getByRole("button", { name: "重新读取工作区改动" }));
+    expect(screen.getByRole("button", { name: "重新读取工作区改动" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("尚未成功读取");
+    await act(async () => {
+      retry.resolve({ repo: true, files: [] });
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("当前没有未提交改动")).toBeVisible();
+  });
+
+  test("a failed refresh retains file rows with an explicit stale warning", async () => {
+    mockCommand("agent_session", () => ({
+      repo: true,
+      files: [{ path: "retained.ts", kind: "update", adds: 1, dels: 0, diff: "", binary: false, truncated: false }],
+    }), "workspace_changes");
+    render(<WorkspaceDock />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText("retained.ts")).toBeVisible();
+
+    mockCommand("agent_session", () => Promise.reject("index read denied"), "workspace_changes");
+    await act(async () => { await refreshWorkspaceChanges("/project"); });
+    expect(screen.getByText("retained.ts")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("显示上次成功结果，可能已过期");
+    expect(screen.getByRole("alert")).toHaveTextContent("index read denied");
+
+    mockCommand("agent_session", () => ({ repo: true, files: [] }), "workspace_changes");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "重新读取工作区改动" }));
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("retained.ts")).not.toBeInTheDocument();
+    expect(screen.getByText("当前没有未提交改动")).toBeVisible();
+  });
+
+  test("even a previously empty snapshot is stale, not clean, after a failed refresh", async () => {
+    mockCommand("agent_session", () => ({ repo: true, files: [] }), "workspace_changes");
+    render(<WorkspaceDock />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText("当前没有未提交改动")).toBeVisible();
+    mockCommand("agent_session", () => Promise.reject("scan failed"), "workspace_changes");
+    await act(async () => { await refreshWorkspaceChanges("/project"); });
+    expect(screen.getByRole("alert")).toHaveTextContent("显示上次成功结果，可能已过期");
+    expect(screen.queryByText("当前没有未提交改动")).not.toBeInTheDocument();
+  });
+
   test("tab captions retain their complete names and counts", () => {
     render(<SessionDock root="/workspace" changes={[change("a.ts")]} artifacts={[artifact("report.pdf")]} jobs={[job()]} />);
     const tabs = screen.getAllByRole("tab");

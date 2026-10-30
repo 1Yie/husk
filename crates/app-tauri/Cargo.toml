@@ -15,6 +15,7 @@ agent-context = { path = "../agent-context" }
 agent-kernel = { workspace = true }
 agent-store = { path = "../agent-store" }
 husk-host = { path = "../husk-host" }
+husk-terminal = { path = "../husk-terminal" }
 agent-skills.workspace = true
 agent-ipc = { workspace = true }
 agent-llm = { path = "../agent-llm" }
@@ -31,6 +32,7 @@ reqwest.workspace = true
 rfd = "0.15"
 png = "0.17"
 portable-pty = "0.9"
+fontdb = "0.23"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-single-instance = "2"
 xxhash-rust.workspace = true

@@ -1492,7 +1492,11 @@ impl SessionStore {
         Ok(())
     }
     pub fn is_deleted(&self, id: i64) -> bool {
-        self.read_index(id).map(|i| i.deleted).unwrap_or(true)
+        self.is_deleted_checked(id).unwrap_or(true)
+    }
+    /// Distinguish a durable tombstone from an unreadable session index.
+    pub fn is_deleted_checked(&self, id: i64) -> std::io::Result<bool> {
+        self.read_index(id).map(|i| i.deleted)
     }
     pub fn delete_workspace(&self) -> std::io::Result<()> {
         for meta in self.list() {
@@ -1571,9 +1575,13 @@ fn empty_meta(id: i64) -> SessionMeta {
 }
 
 pub(super) fn get<T: serde::de::DeserializeOwned>(db: &SessionDatabase, key: &str) -> Option<T> {
+    try_get(db, key).ok().flatten()
+}
+pub(super) fn try_get<T: serde::de::DeserializeOwned>(
+    db: &SessionDatabase,
+    key: &str,
+) -> std::io::Result<Option<T>> {
     read_json(&db.root.join("globals").join(format!("{key}.json")))
-        .ok()
-        .flatten()
 }
 pub(super) fn put(db: &SessionDatabase, key: &str, value: &impl Serialize) -> std::io::Result<()> {
     locked(&db.root.join("globals").join(format!("{key}.lock")), || {
@@ -1600,6 +1608,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::open_at(dir.path(), &dir.path().join("conversations")).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn global_read_distinguishes_missing_from_invalid_data() {
+        let (_dir, store) = store();
+        assert!(try_get::<serde_json::Value>(&store.db, "sample")
+            .unwrap()
+            .is_none());
+        put(&store.db, "sample", &serde_json::json!({"enabled": false})).unwrap();
+        assert_eq!(
+            try_get::<serde_json::Value>(&store.db, "sample")
+                .unwrap()
+                .unwrap()["enabled"],
+            false
+        );
+        std::fs::write(store.db.root.join("globals/sample.json"), b"{invalid").unwrap();
+        assert!(try_get::<serde_json::Value>(&store.db, "sample").is_err());
+        assert!(get::<serde_json::Value>(&store.db, "sample").is_none());
     }
 
     #[test]

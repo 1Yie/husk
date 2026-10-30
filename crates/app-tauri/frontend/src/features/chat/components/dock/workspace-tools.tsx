@@ -5,6 +5,7 @@ import { TERMINAL_SHORTCUT } from "@/lib/platform";
 export function WorkspaceTools({
   root,
   hasChanges,
+  changesDescription,
   onReview,
   onFiles,
   onOpenWorkspace,
@@ -12,6 +13,8 @@ export function WorkspaceTools({
 }: {
   root: string;
   hasChanges: boolean;
+  /** Do not call an unreadable or not-yet-read workspace clean. */
+  changesDescription?: string;
   onReview: () => void;
   onFiles: () => void;
   onOpenWorkspace?: () => void;
@@ -76,7 +79,7 @@ export function WorkspaceTools({
                 查看工作区改动
               </span>
               <span className="mt-0.5 block text-[11px] leading-4 text-neutral-600">
-                {hasChanges ? "审阅文件差异和未提交内容" : "当前没有未提交改动"}
+                {changesDescription ?? (hasChanges ? "审阅文件差异和未提交内容" : "当前没有未提交改动")}
               </span>
             </span>
           </button>

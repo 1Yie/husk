@@ -13,6 +13,7 @@ function redraw(output: Channel | undefined, cols = 80, rows = 24) {
   output?.onmessage(new TextEncoder().encode(`\x1b[H${lines}`).buffer);
 }
 export async function invoke(command: string, args: Args = {}) {
+  if (command === "terminal_fonts") return [];
   const metrics = (window as unknown as { __terminalMetrics?: Metrics }).__terminalMetrics;
   if (command.startsWith("terminal_")) {
     metrics?.ipc.push({ command, at: performance.now() - metrics.start, ...args, output: undefined });

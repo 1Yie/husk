@@ -26,6 +26,13 @@ fail the check and include their URI and error code.
 Coverage includes repeated open/close, layout and composer alignment, split
 geometry and retained renderers, drag-time fit suppression, warm switching,
 compact tab menus, rename, and closing each requested process exactly once.
+It also loads the bundled terminal font from production assets and checks actual
+Canvas rasterization through xterm's computed font stack: default ASCII and Nerd
+Mono icons, switching to an installed Linux monospace font, and an unavailable
+family falling back to bundled JB without inheriting the app's code font. The
+Linux font probe requires DejaVu Sans Mono, Liberation Mono or Noto Sans Mono.
+This is native-WebKit production-resource coverage with simulated PTY/font-list
+IPC, not a claim that an installed Tauri package or other OSes were exercised.
 Reduced motion is requested through GTK's local animation setting and must be
 observed by the page's actual media query.
 

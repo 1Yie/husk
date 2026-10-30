@@ -60,7 +60,7 @@ impl App {
         }
         let t = self.composer.text();
         // only complete while the input is a single /word token
-        if t.contains([' ', '\n']) || t.len() < 1 {
+        if t.contains([' ', '\n']) || t.is_empty() {
             return Vec::new();
         }
         SLASH_COMMANDS

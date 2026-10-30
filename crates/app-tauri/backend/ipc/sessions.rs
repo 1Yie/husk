@@ -681,60 +681,18 @@ fn agent_session_inner(
             Some(root) => std::path::PathBuf::from(root),
             None => {
                 let mgr = state.lock().map_err(|e| e.to_string())?;
-                // No workspace open: nothing to diff, and no repo to report.
+                // No workspace selected is not a successful Git scan.
                 if !mgr.workspace_active {
-                    return Ok(serde_json::json!({ "repo": false, "files": [] }));
+                    return Err("workspace_changes_failed: no active workspace".into());
                 }
                 mgr.workspace_root.clone()
             }
         };
-        // A workspace can be a subdirectory of a repository (a crate in a
-        // monorepo): git reports paths from the worktree root, but the panel
-        // speaks the workspace's own paths — strip the prefix and drop the
-        // sibling files that are not this workspace's changes.
-        let workspace = root.canonicalize().unwrap_or_else(|_| root.clone());
-        let worktree = agent_context::git::worktree_root(&workspace)
-            .ok()
-            .and_then(|wt| wt.canonicalize().ok());
-        // An empty prefix means the workspace IS the repository root.
-        let prefix = worktree
-            .and_then(|wt| {
-                workspace
-                    .strip_prefix(&wt)
-                    .ok()
-                    .map(|rel| rel.to_path_buf())
-            })
-            .filter(|p| !p.as_os_str().is_empty());
-        // A plain folder is a workspace too — it answers `repo: false` and the
-        // panel shows its empty state, exactly like `git_info` does.
-        return Ok(match agent_context::git::worktree_changes(&workspace) {
-            Ok(files) => serde_json::json!({
-                "repo": true,
-                "files": files
-                    .into_iter()
-                    .filter_map(|f| {
-                        let path = match &prefix {
-                            Some(base) => std::path::Path::new(&f.path)
-                                .strip_prefix(base)
-                                .ok()?
-                                .to_string_lossy()
-                                .into_owned(),
-                            None => f.path,
-                        };
-                        Some(serde_json::json!({
-                            "path": path,
-                            "kind": f.kind.as_str(),
-                            "adds": f.adds,
-                            "dels": f.dels,
-                            "diff": f.diff,
-                            "binary": f.binary,
-                            "truncated": f.truncated,
-                        }))
-                    })
-                    .collect::<Vec<_>>(),
-            }),
-            Err(_) => serde_json::json!({ "repo": false, "files": [] }),
-        });
+        let (workspace, prefix) = workspace_changes_scope(&root)?;
+        return workspace_changes_response(
+            agent_context::git::worktree_changes(&workspace),
+            prefix.as_deref(),
+        );
     }
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     // Memory pane ops share one store open — `~/.local/share/husk/memory.db`
@@ -2454,6 +2412,72 @@ pub(crate) fn open_from_notification(app: &tauri::AppHandle, target: serde_json:
     });
 }
 
+fn workspace_changes_scope(
+    root: &std::path::Path,
+) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), String> {
+    use agent_context::git::GitError;
+    let workspace = root
+        .canonicalize()
+        .map_err(|error| format!("workspace_changes_failed: {error}"))?;
+    let metadata = std::fs::metadata(&workspace)
+        .map_err(|error| format!("workspace_changes_failed: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("workspace_changes_failed: workspace must be a directory".into());
+    }
+    let prefix = match agent_context::git::worktree_root(&workspace) {
+        Ok(worktree) => {
+            let worktree = worktree
+                .canonicalize()
+                .map_err(|error| format!("workspace_changes_failed: {error}"))?;
+            let relative = workspace
+                .strip_prefix(&worktree)
+                .map_err(|_| "workspace_changes_failed: workspace is outside its worktree")?;
+            (!relative.as_os_str().is_empty()).then(|| relative.to_path_buf())
+        }
+        Err(GitError::NotARepo(_)) => None,
+        Err(error) => return Err(format!("workspace_changes_failed: {error}")),
+    };
+    Ok((workspace, prefix))
+}
+
+/// Keep absence distinct from a failed scan; this does not change Git IO safety.
+fn workspace_changes_response(
+    result: Result<Vec<agent_context::git::FileDiff>, agent_context::git::GitError>,
+    prefix: Option<&std::path::Path>,
+) -> Result<serde_json::Value, String> {
+    use agent_context::git::GitError;
+
+    match result {
+        Ok(files) => Ok(serde_json::json!({
+            "repo": true,
+            "files": files
+                .into_iter()
+                .filter_map(|f| {
+                    let path = match prefix {
+                        Some(base) => std::path::Path::new(&f.path)
+                            .strip_prefix(base)
+                            .ok()?
+                            .to_string_lossy()
+                            .into_owned(),
+                        None => f.path,
+                    };
+                    Some(serde_json::json!({
+                        "path": path,
+                        "kind": f.kind.as_str(),
+                        "adds": f.adds,
+                        "dels": f.dels,
+                        "diff": f.diff,
+                        "binary": f.binary,
+                        "truncated": f.truncated,
+                    }))
+                })
+                .collect::<Vec<_>>(),
+        })),
+        Err(GitError::NotARepo(_)) => Ok(serde_json::json!({ "repo": false, "files": [] })),
+        Err(error) => Err(format!("workspace_changes_failed: {error}")),
+    }
+}
+
 /// Workspace-relative path → absolute, canonicalized and contained —
 /// the artifact actions (`open_path` / `reveal_path` / `save_artifact`)
 /// accept `path` strings the model wrote as tool args, so absolute paths,
@@ -2834,6 +2858,83 @@ fn workspace_paths_match(root: &str, expected: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workspace_changes_scope_rejects_missing_or_non_directory_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        assert!(workspace_changes_scope(&missing)
+            .unwrap_err()
+            .starts_with("workspace_changes_failed:"));
+        let file = dir.path().join("file");
+        std::fs::write(&file, "not a directory").unwrap();
+        assert!(workspace_changes_scope(&file)
+            .unwrap_err()
+            .contains("workspace must be a directory"));
+
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("nested")).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let (_, prefix) = workspace_changes_scope(&repo.join("nested")).unwrap();
+        assert_eq!(prefix.as_deref(), Some(std::path::Path::new("nested")));
+    }
+
+    #[test]
+    fn workspace_changes_only_not_a_repo_is_a_successful_non_repo() {
+        use agent_context::git::GitError;
+
+        let plain =
+            workspace_changes_response(Err(GitError::NotARepo("/plain-folder".into())), None)
+                .unwrap();
+        assert_eq!(plain, serde_json::json!({"repo": false, "files": []}));
+        for message in ["status scan failed", "index read: permission denied"] {
+            let error = workspace_changes_response(Err(GitError::Op(message.into())), None)
+                .expect_err("Git scan/read failures must reject the IPC");
+            assert_eq!(
+                error,
+                format!("workspace_changes_failed: git operation failed: {message}")
+            );
+        }
+        assert_eq!(
+            workspace_changes_response(Ok(vec![]), None).unwrap(),
+            serde_json::json!({"repo": true, "files": []}),
+        );
+    }
+
+    #[test]
+    fn workspace_changes_success_keeps_legacy_rows_and_workspace_scope() {
+        use agent_context::git::{ChangeKind, FileDiff};
+
+        let row = |path: &str| FileDiff {
+            path: path.into(),
+            kind: ChangeKind::Update,
+            adds: 2,
+            dels: 1,
+            diff: "@@ -1 +1,2 @@\n-old\n+new\n+extra".into(),
+            binary: false,
+            truncated: false,
+        };
+        let response = workspace_changes_response(
+            Ok(vec![row("crate/src/a.rs"), row("sibling/b.rs")]),
+            Some(std::path::Path::new("crate")),
+        )
+        .unwrap();
+        assert_eq!(response["repo"], true);
+        assert_eq!(response["files"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            response["files"][0],
+            serde_json::json!({
+                "path": "src/a.rs", "kind": "update", "adds": 2, "dels": 1,
+                "diff": "@@ -1 +1,2 @@\n-old\n+new\n+extra",
+                "binary": false, "truncated": false,
+            })
+        );
+    }
+
     #[test]
     fn sidebar_ops_and_workspace_switch_do_not_leak_the_legacy_full_list() {
         for op in ["sidebar", "sidebar_page", "sidebar_rows", "sidebar_row"] {

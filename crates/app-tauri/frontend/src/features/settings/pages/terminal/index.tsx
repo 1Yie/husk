@@ -2,6 +2,7 @@
 // terminal. Every change applies live to open terminals: the panel subscribes
 // to the same store.
 
+import { useMemo } from "react";
 import {
   CursorText,
   Layers,
@@ -21,7 +22,6 @@ import {
   SettingsSection,
 } from "@/features/settings/components";
 import {
-  TERMINAL_FONTS,
   TERMINAL_FONT_SIZE,
   TERMINAL_LINE_HEIGHTS,
   TERMINAL_SCHEMES,
@@ -34,6 +34,7 @@ import {
   type TerminalPalette,
   type TerminalSchemeId,
 } from "@/features/terminal/preferences";
+import { terminalFontOptions, useSystemTerminalFonts } from "@/features/terminal/fonts";
 
 const CURSORS: { value: TerminalCursorStyle; label: string }[] = [
   { value: "block", label: "方块" },
@@ -102,15 +103,14 @@ function SchemeSwatches({ palette }: { palette: TerminalPalette }) {
 
 export function TerminalSettings() {
   const prefs = useTerminalPrefs();
+  const { fonts, status: fontStatus } = useSystemTerminalFonts();
+  const fontOptions = useMemo(() => terminalFontOptions(fonts, prefs.fontFamily), [fonts, prefs.fontFamily]);
   const { update, reset } = prefs;
   const dark = isAppDark();
   const css = getComputedStyle(document.documentElement);
   const token = (name: string) =>
     css.getPropertyValue(name).trim() || undefined;
-  const previewFont = resolveTerminalFont(
-    prefs.fontFamily,
-    token("--husk-code-font"),
-  );
+  const previewFont = resolveTerminalFont(prefs.fontFamily);
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-8">
@@ -144,7 +144,9 @@ export function TerminalSettings() {
           <KvListContent>
             <SettingRow
               title="字体"
-              description="未安装的字体会回退到外观中的代码字体"
+              description={fontStatus === "error" ? "系统字体读取失败，仍可使用内置 JetBrains Mono"
+                : fontStatus === "loading" ? "正在读取系统字体，默认使用内置 JetBrains Mono"
+                : "系统等宽字体优先；不可用时回退到内置 JetBrains Mono"}
               icon={<TextQuote className="h-4 w-4" />}
               wideControl
             >
@@ -152,7 +154,7 @@ export function TerminalSettings() {
                 value={prefs.fontFamily}
                 onChange={(v) => update({ fontFamily: v })}
                 ariaLabel="终端字体"
-                options={TERMINAL_FONTS}
+                options={fontOptions}
               />
             </SettingRow>
             <SettingRow

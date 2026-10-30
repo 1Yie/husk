@@ -1740,7 +1740,12 @@ impl SessionManager {
         }
         if let Err(error) = self.store.remove(id) {
             tracing::error!(%error, session=id, "session deletion failed");
-            return;
+            // A cleanup operation can fail after the tombstone was committed.
+            // In that case the actor must still be stopped and the active
+            // session moved away; a failed tombstone read stays fail-closed.
+            if !matches!(self.store.is_deleted_checked(id), Ok(true)) {
+                return;
+            }
         }
         if let Some(h) = self.handles.remove(&id) {
             h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2706,19 +2711,28 @@ impl SessionManager {
         self.reload_model_config();
         let handle = self.active().ok_or("no active session")?;
         let (provider, model) = handle.model.read().unwrap().clone();
-        let enabled = enabled && crate::session::supports_fast_mode(&self.provider_cfg, &provider, &model);
+        let enabled =
+            enabled && crate::session::supports_fast_mode(&self.provider_cfg, &provider, &model);
         // Reserve first: failure must not leave a persisted preference with no wakeup.
-        let permit = handle.cmd_tx.clone().try_reserve_owned().map_err(|e| e.to_string())?;
-        crate::session::write_fast_mode(&self.store, self.active_id, enabled).map_err(|e| e.to_string())?;
+        let permit = handle
+            .cmd_tx
+            .clone()
+            .try_reserve_owned()
+            .map_err(|e| e.to_string())?;
+        crate::session::write_fast_mode(&self.store, self.active_id, enabled)
+            .map_err(|e| e.to_string())?;
         *handle.fast_mode.write().unwrap() = enabled;
         permit.send(crate::command::UiCommand::SetFastMode { enabled });
         Ok(enabled)
     }
 
     fn normalize_active_fast_mode(&self, provider: &str, model: &str) -> bool {
-        let requested = self.active().map(|h| *h.fast_mode.read().unwrap())
+        let requested = self
+            .active()
+            .map(|h| *h.fast_mode.read().unwrap())
             .unwrap_or_else(|| crate::session::read_fast_mode(&self.store, self.active_id));
-        let enabled = requested && crate::session::supports_fast_mode(&self.provider_cfg, provider, model);
+        let enabled =
+            requested && crate::session::supports_fast_mode(&self.provider_cfg, provider, model);
         if requested && !enabled {
             if let Some(handle) = self.active() {
                 *handle.fast_mode.write().unwrap() = false;
@@ -2826,7 +2840,9 @@ impl SessionManager {
                     name: Some(active_model.clone()),
                     reasoning: false,
                     supports_fast_mode: crate::session::supports_fast_mode(
-                        &self.provider_cfg, &active_provider, &active_model,
+                        &self.provider_cfg,
+                        &active_provider,
+                        &active_model,
                     ),
                     thinking_level_map: None,
                     available_levels: Vec::new(),
@@ -3195,6 +3211,22 @@ impl SessionManager {
         let _ = crate::prefs::save_default_preferences(&self.defaults_for_save());
     }
 
+    /// Persist a narrow memory update before changing process defaults or
+    /// notifying actors. A storage error must not silently change live state.
+    /// Running turns are not interrupted; actors apply their queued command.
+    pub fn set_memory_prefs_checked(
+        &mut self,
+        enabled: Option<bool>,
+        distill: Option<bool>,
+    ) -> std::io::Result<()> {
+        let saved = crate::prefs::set_memory_preferences(enabled, distill)?;
+        self.memory_enabled = saved.enabled;
+        self.memory_distill = saved.distill;
+        self.apply_semantic_switch();
+        self.broadcast_memory_prefs();
+        Ok(())
+    }
+
     /// Push the current memory switches into every LIVE actor — same
     /// reason `broadcast_compact_at` exists: a settings change only
     /// reached the next spawn otherwise, and parked sessions keep writing
@@ -3486,8 +3518,13 @@ pub(crate) fn build_fallback_chain(
         .filter(|name| name.as_str() != primary)
         .filter_map(|name| {
             let pcfg = cfg.providers.get(name)?;
-            let p = ProviderFactory::build_with_fast_mode(pcfg, observer.cloned(), conversation, fast_mode)
-                .ok()?;
+            let p = ProviderFactory::build_with_fast_mode(
+                pcfg,
+                observer.cloned(),
+                conversation,
+                fast_mode,
+            )
+            .ok()?;
             Some((name.clone(), p))
         })
         .collect()

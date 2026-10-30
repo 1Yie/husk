@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Documentation follows the `docs-engineering` skill; `docs/README.md` maps where each kind of document lives.
+
 ## Build resources
 
 - Rust builds and tests may use at most 20% of the system. `.cargo/config.toml`

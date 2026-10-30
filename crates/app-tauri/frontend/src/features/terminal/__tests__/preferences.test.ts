@@ -65,16 +65,19 @@ test("跟随应用 takes the app's colours and switches with the theme", () => {
 });
 
 test.each([
-  ['"Fira Code"', "ui-monospace, monospace", '"Fira Code", ui-monospace, "JetBrains Mono", monospace'],
-  ['"SF Mono", Menlo', "Consolas", '"SF Mono", Menlo, Consolas, "JetBrains Mono", monospace'],
-  ["", "Menlo", 'Menlo, "JetBrains Mono", monospace'],
-  ["", 'ui-monospace, "SFMono-Regular", monospace', 'ui-monospace, "SFMono-Regular", "JetBrains Mono", monospace'],
-  ["", undefined, 'ui-monospace, "JetBrains Mono", monospace'],
-  ["", "", 'ui-monospace, "JetBrains Mono", monospace'],
-  ['"Fira Code"', undefined, '"Fira Code", ui-monospace, "JetBrains Mono", monospace'],
-  ['"JetBrains Mono"', "Menlo", '"JetBrains Mono", Menlo, monospace'],
-  ["", '"JetBrains Mono", monospace', '"JetBrains Mono", monospace'],
-  ['"A, monospace, B"', "monospace", '"A, monospace, B", "JetBrains Mono", monospace'],
-])("terminal font %s follows code font %s with bundled Nerd glyphs before monospace", (chosen, code, expected) => {
-  expect(resolveTerminalFont(chosen!, code)).toBe(expected);
+  ["", '"Husk Terminal Mono", monospace'],
+  ['"Fira Code"', '"Fira Code", "Husk Terminal Mono", monospace'],
+  ['"SF Mono", Menlo', '"SF Mono", "Menlo", "Husk Terminal Mono", monospace'],
+  ['"JetBrains Mono"', '"JetBrains Mono", "Husk Terminal Mono", monospace'],
+  ['"A, monospace, B"', '"A, monospace, B", "Husk Terminal Mono", monospace'],
+  ["monospace", '"Husk Terminal Mono", monospace'],
+])("terminal font %s falls back directly to the bundled Nerd Mono font", (chosen, expected) => {
+  document.documentElement.style.setProperty("--husk-code-font", "Consolas");
+  expect(resolveTerminalFont(chosen)).toBe(expected);
+  document.documentElement.style.removeProperty("--husk-code-font");
+});
+
+test("legacy unquoted font choices are normalized without changing their families", () => {
+  expect(sanitizeTerminalPrefs({ fontFamily: "Menlo" }).fontFamily).toBe('"Menlo"');
+  expect(sanitizeTerminalPrefs({ fontFamily: '"SF Mono", Menlo' }).fontFamily).toBe('"SF Mono", "Menlo"');
 });

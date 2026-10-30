@@ -203,7 +203,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // shrinks while the tree it changed is still dirty. `repo: false` = a plain
   // folder has no git to ask, and the session's own list is all there is.
   const workspaceChanges = useWorkspaceChanges(officeMode ? "" : workspaceRoot);
-  const changes = officeMode ? [] : workspaceChanges.repo ? workspaceChanges.files : view.changes;
+  const changes = officeMode ? [] : workspaceChanges.repo === false ? view.changes : workspaceChanges.files;
   const visibleDockTab = resolveDockTab(dockTab, {
     changes: changes.length,
     artifacts: artifacts.length,
@@ -479,6 +479,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               page only feeds content and the manual-close dismissal. */}
           <SessionDock
             changes={changes}
+            workspaceChanges={officeMode || !workspaceRoot ? undefined : workspaceChanges}
             artifacts={artifacts}
             jobs={view.bgJobs}
             jobsAt={view.bgJobsAt}

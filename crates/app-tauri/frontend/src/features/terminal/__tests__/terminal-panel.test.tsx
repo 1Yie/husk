@@ -81,6 +81,20 @@ test("settings update visible panes only and hidden tabs catch up once when sele
   expect(sessions[0].dispose).not.toHaveBeenCalled();
 });
 
+test("terminal font changes are independent of the app code font and retain the live session", async () => {
+  document.documentElement.style.setProperty("--husk-code-font", "Consolas");
+  render(<TerminalPanel open onOpenChange={() => {}} />);
+  await waitFor(() => expect(sessions).toHaveLength(1));
+  expect(sessions[0].appearance.fontFamily).toBe('"Husk Terminal Mono", monospace');
+  act(() => useTerminalPrefs.getState().update({ fontFamily: '"Iosevka Nerd Font Mono"' }));
+  await waitFor(() => expect(sessions[0].setAppearance).toHaveBeenLastCalledWith(
+    expect.objectContaining({ fontFamily: '"Iosevka Nerd Font Mono", "Husk Terminal Mono", monospace' }),
+  ));
+  expect(sessions).toHaveLength(1);
+  expect(sessions[0].dispose).not.toHaveBeenCalled();
+  document.documentElement.style.removeProperty("--husk-code-font");
+});
+
 test("shows the real panel before initializing xterm at its final size", async () => {
   paintedHeight = 40;
   const { container } = render(<TerminalPanel open onOpenChange={() => {}} />);
