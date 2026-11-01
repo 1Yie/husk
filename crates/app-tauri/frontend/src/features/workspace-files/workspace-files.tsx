@@ -1,7 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Streamdown } from "streamdown";
-import { openUrl } from "@/lib/agent-ipc/sessions";
 import { ArrowLeft, ChevronDown, ChevronRight, Folder, Link, Maximize2, RefreshCw } from "lucide-react";
 import { WorkspaceFileIcon } from "./file-icon";
 import { CodeLoadingSkeleton, DirectoryLoadingSkeleton } from "./loading";
@@ -10,15 +8,20 @@ import { TooltipSimple } from "@/components/ui/tooltip";
 import { codeHighlightPlugin, normalizeLanguage, type HighlightResult, type HighlightToken } from "@/lib/syntax-highlight";
 import type { DirectoryListing, FilePreview, WorkspaceEntry } from "./types";
 import "./workspace-files.css";
+import { parseWorkspaceFileReference, type WorkspaceFileRequest, type MarkdownResourceTarget } from "./file-reference";
+import { WorkspaceMarkdown } from "./markdown-resources";
 
 export interface WorkspaceFilesProps {
   root: string;
   onOpenWorkspace?: () => void;
   onBack?: () => void;
+  openRequest?: WorkspaceFileRequest;
 }
 
 type DirectoryState = { listing?: DirectoryListing; error?: string; loading?: boolean };
-type PreviewState = { file?: FilePreview; path?: string; error?: string; loading?: boolean };
+type FileLocation = MarkdownResourceTarget & { activation: number };
+type PreviewState = { file?: FilePreview; path?: string; error?: string; loading?: boolean; location?: FileLocation };
+type PreviewContext = { root: string; onNavigate: (target: MarkdownResourceTarget) => void };
 
 function WorkspaceFilesHeader({ name, path, onBack, backLabel, icon, children }: {
   name: string;
@@ -66,7 +69,7 @@ function PreviewStatus({ file, language, lines }: { file: FilePreview; language?
   );
 }
 
-function SourcePreview({ file, large }: { file: FilePreview; large: boolean }) {
+function SourcePreview({ file, large, location }: { file: FilePreview; large: boolean; location?: FileLocation }) {
   const source = file.text ?? "";
   // Bound DOM/tokenization cost independently of the backend's byte limit.
   const cap = large ? 1_000_000 : 200_000;
@@ -100,26 +103,59 @@ function SourcePreview({ file, large }: { file: FilePreview; large: boolean }) {
   }, [text, language]);
   const ready = highlight?.code === text && highlight.language === language ? highlight : null;
   const lines: HighlightToken[][] = ready?.result?.tokens ?? text.split("\n").map(content => [{ content }]);
+  const scroller = useRef<HTMLDivElement>(null);
+  const sourceLines = source.split("\n");
+  const visibleLines = text.split("\n");
+  const line = location?.line;
+  const column = location?.column;
+  let notice = "";
+  if (line !== undefined) {
+    if (!Number.isSafeInteger(line) || line < 1 || (column !== undefined && (!Number.isSafeInteger(column) || column < 1))) notice = "无效的行列位置。";
+    else if (line > sourceLines.length) notice = `第 ${line} 行超出文件范围（共 ${sourceLines.length} 行）。`;
+    else if (column !== undefined && column > sourceLines[line - 1].length + 1) notice = `第 ${line} 行的第 ${column} 列超出行范围。`;
+    else if (line > visibleLines.length || (column !== undefined && column > visibleLines[line - 1].length + 1)) notice = "目标位置超出当前预览范围；可展开预览查看。";
+    else notice = `第 ${line} 行${column === undefined ? "" : `，第 ${column} 列`} · 只读`;
+  }
+  const located = line !== undefined && notice.endsWith("只读");
+  useLayoutEffect(() => {
+    if (!ready || !located || !scroller.current) return;
+    const element = scroller.current.querySelector<HTMLElement>('[aria-current="location"]');
+    if (!element) return;
+    const pane = scroller.current;
+    pane.scrollTop += element.getBoundingClientRect().top - pane.getBoundingClientRect().top - pane.clientHeight / 2;
+    const marker = element.querySelector<HTMLElement>("[data-source-column]");
+    if (marker) pane.scrollLeft += marker.getBoundingClientRect().left - pane.getBoundingClientRect().left - pane.clientWidth / 2;
+  }, [ready, located, line, column, location?.activation]);
   return <>
+    {location?.fragment !== undefined && <p className="workspace-files-note" role="status" aria-label="文件定位">已打开文档；暂不支持标题锚点定位：#{location.fragment}</p>}
+    {line !== undefined && <p className="workspace-files-note" role="status" aria-label="文件定位">{notice}</p>}
     {text.length < source.length && <p className="workspace-files-note">为保持流畅，仅显示前 {lineCap.toLocaleString()} 行 / {cap.toLocaleString()} 字符。{!large && "展开预览可阅读更多内容。"}</p>}
-    {ready ? <div className="workspace-files-code-scroll" tabIndex={0} aria-label="文件源码"
+    {ready ? <div ref={scroller} className="workspace-files-code-scroll" tabIndex={0} aria-label="文件源码"
       style={{ "--workspace-gutter": `calc(${Math.max(3, String(lines.length).length)}ch + 20px)` } as CSSProperties}>
-      <pre><code>{lines.map((line, index) => <span className="workspace-files-code-line" key={index}>
+      <pre><code>{lines.map((tokens, index) => {
+        let offset = 0;
+        const selected = located && line === index + 1;
+        return <span className="workspace-files-code-line" key={index} data-line={index + 1} aria-current={selected ? "location" : undefined}>
         <span className="workspace-files-line-number" aria-hidden="true">{index + 1}</span>
-        <span>{line.map((token, i) => (
+        <span>{tokens.map((token, i) => {
+          const at = column === undefined ? -1 : column - 1 - offset;
+          offset += token.content.length;
+          return (
           // The shared chat highlighter intentionally emits dark-only inline
           // colors. Preview uses semantic token classes and its own light/dark
           // editor palette; unclassified tokens inherit readable foreground.
-          <span key={i} className={token.htmlAttrs?.className}>{token.content}</span>
-        ))}{"\n"}</span>
-      </span>)}</code></pre>
+          <span key={i} className={token.htmlAttrs?.className}>{selected && at >= 0 && at < token.content.length
+            ? <>{token.content.slice(0, at)}<mark data-source-column>{token.content[at]}</mark>{token.content.slice(at + 1)}</>
+            : token.content}</span>
+        ); })}{selected && column === visibleLines[index].length + 1 && <mark data-source-column>{" "}</mark>}{"\n"}</span>
+      </span>; })}</code></pre>
     </div> : <CodeLoadingSkeleton />}
     <PreviewStatus file={file} language={language || "text"} lines={source.split("\n").length} />
   </>;
 }
 
-function PreviewBody({ file, large = false }: { file: FilePreview; large?: boolean }) {
-  if (file.kind === "text") return <TextPreview file={file} large={large} />;
+function PreviewBody({ file, large = false, location, root, onNavigate }: { file: FilePreview; large?: boolean; location?: FileLocation } & PreviewContext) {
+  if (file.kind === "text") return <TextPreview key={file.path} file={file} large={large} location={location} root={root} onNavigate={onNavigate} />;
   // Only signature-verified raster MIME types from the read-only command are allowed.
   if (file.kind === "image" && file.data && /^image\/(png|jpeg|gif|webp)$/.test(file.mime ?? "")) {
     return <>
@@ -133,9 +169,10 @@ function PreviewBody({ file, large = false }: { file: FilePreview; large?: boole
   </p>;
 }
 
-function TextPreview({ file, large = false }: { file: FilePreview; large?: boolean }) {
+function TextPreview({ file, large = false, location, root, onNavigate }: { file: FilePreview; large?: boolean; location?: FileLocation } & PreviewContext) {
   const [source, setSource] = useState(false);
-  if (!/\.(md|markdown)$/i.test(file.name)) return <SourcePreview file={file} large={large} />;
+  useEffect(() => { setSource(location?.line !== undefined); }, [location?.activation, location?.line]);
+  if (!/\.(md|markdown)$/i.test(file.name)) return <SourcePreview file={file} large={large} location={location} />;
   const text = file.text ?? "";
   const rendered = text.slice(0, 200_000);
   return (
@@ -144,21 +181,10 @@ function TextPreview({ file, large = false }: { file: FilePreview; large?: boole
         <button type="button" role="tab" aria-selected={!source} onClick={() => setSource(false)}>预览</button>
         <button type="button" role="tab" aria-selected={source} onClick={() => setSource(true)}>源码</button>
       </div>
-      {source ? <SourcePreview file={file} large={large} /> : (
+      {!source && location?.fragment !== undefined && <p className="workspace-files-note" role="status" aria-label="文件定位">已打开文档；暂不支持标题锚点定位：#{location.fragment}</p>}
+      {source ? <SourcePreview file={file} large={large} location={location} /> : (
         <div className="workspace-files-markdown" aria-label="Markdown 预览">
-          <Streamdown mode="static" skipHtml parseIncompleteMarkdown={false} isAnimating={false}
-            plugins={{ code: codeHighlightPlugin }} controls={false}
-            components={{
-              a: ({ href, children }) => /^https?:\/\//i.test(href ?? "") ? (
-                <a href={href} onClick={(event) => {
-                  event.preventDefault();
-                  void openUrl(href!).catch(() => {});
-                }}>{children}</a>
-              ) : <span title={href}>{children}</span>,
-              img: ({ alt }) => <span className="workspace-files-note">{alt ? `图片：${alt}` : "图片"}（请从文件树预览）</span>,
-            }}>
-            {rendered}
-          </Streamdown>
+          <WorkspaceMarkdown text={rendered} root={root} documentPath={file.path} onNavigate={onNavigate} />
           {rendered.length < text.length && <p className="workspace-files-note">Markdown 预览仅渲染前 200,000 字符；源码模式可查看有界原文。</p>}
         </div>
       )}
@@ -167,17 +193,17 @@ function TextPreview({ file, large = false }: { file: FilePreview; large?: boole
   );
 }
 
-export function WorkspaceFiles({ root, onOpenWorkspace, onBack }: WorkspaceFilesProps) {
+export function WorkspaceFiles({ root, onOpenWorkspace, onBack, openRequest }: WorkspaceFilesProps) {
   if (!root.trim()) return <section className="workspace-files workspace-files-empty" aria-label="预览工作区文件">
     <p>尚未打开工作区</p>
     {onOpenWorkspace && <button onClick={onOpenWorkspace}>打开工作区</button>}
     {onBack && <button onClick={onBack}>返回侧栏</button>}
   </section>;
   // A workspace switch must not retain paths, cached listings, dialogs or pending requests.
-  return <WorkspaceBrowser key={root} root={root} onBack={onBack} />;
+  return <WorkspaceBrowser key={root} root={root} onBack={onBack} openRequest={openRequest} />;
 }
 
-function WorkspaceBrowser({ root, onBack }: { root: string; onBack?: () => void }) {
+function WorkspaceBrowser({ root, onBack, openRequest }: Pick<WorkspaceFilesProps, "root" | "onBack" | "openRequest">) {
   const [directories, setDirectories] = useState<Record<string, DirectoryState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
   const [preview, setPreview] = useState<PreviewState>({});
@@ -238,18 +264,39 @@ function WorkspaceBrowser({ root, onBack }: { root: string; onBack?: () => void 
     loadDirectory("");
   }
 
-  function openFile(entry: WorkspaceEntry) {
+  const openFile = useCallback((entry: Pick<WorkspaceEntry, "path">, location?: FileLocation) => {
     treeScroll.current = tree.current?.scrollTop ?? treeScroll.current;
     lastOpened.current = entry.path;
     const id = ++previewRequest.current;
     const epoch = generation.current;
-    setPreview({ path: entry.path, loading: true });
+    setPreview({ path: entry.path, loading: true, location });
     void invoke<FilePreview>("workspace_preview_file", { root, path: entry.path }).then(file => {
-      if (id === previewRequest.current && epoch === generation.current) setPreview({ path: entry.path, file });
+      if (id === previewRequest.current && epoch === generation.current) setPreview({ path: entry.path, file, location });
     }).catch(error => {
-      if (id === previewRequest.current && epoch === generation.current) setPreview({ path: entry.path, error: String(error) });
+      if (id === previewRequest.current && epoch === generation.current) setPreview({ path: entry.path, error: String(error), location });
     });
-  }
+  }, [root]);
+
+  const navigate = useCallback((target: MarkdownResourceTarget) => {
+    setDialogOpen(false);
+    openFile(target, { ...target, activation: previewRequest.current + 1 });
+  }, [openFile]);
+
+  useEffect(() => {
+    if (!openRequest || openRequest.workspaceRoot !== root) return;
+    const target = parseWorkspaceFileReference(openRequest.path, root);
+    if (!target || target.path !== openRequest.path) return;
+    const parents = openRequest.path.split("/").slice(0, -1);
+    let path = "";
+    for (const part of parents) {
+      path = path ? `${path}/${part}` : part;
+      const directory = path;
+      setExpanded(current => new Set([...current, directory]));
+      loadDirectory(directory);
+    }
+    setDialogOpen(false);
+    openFile(target, openRequest);
+  }, [openRequest, root]);
 
   function backToFiles() {
     previewRequest.current += 1;
@@ -331,7 +378,7 @@ function WorkspaceBrowser({ root, onBack }: { root: string; onBack?: () => void 
           </TooltipSimple>
           <DialogContent className="workspace-files-dialog" aria-describedby={undefined}>
             <DialogTitle className="workspace-files-dialog-title" title={preview.path}>{preview.path}</DialogTitle>
-            {dialogOpen && <PreviewBody file={preview.file} large />}
+            {dialogOpen && <PreviewBody file={preview.file} large location={preview.location} root={root} onNavigate={navigate} />}
           </DialogContent>
         </Dialog>}
       </WorkspaceFilesHeader>
@@ -340,7 +387,7 @@ function WorkspaceBrowser({ root, onBack }: { root: string; onBack?: () => void 
       </div>
       {preview.loading && <CodeLoadingSkeleton label="正在读取文件" />}
       {preview.error && <p className="workspace-files-note" role="alert">{preview.error}</p>}
-      {preview.file && <PreviewBody file={preview.file} />}
+      {preview.file && <PreviewBody file={preview.file} location={preview.location} root={root} onNavigate={navigate} />}
     </section>
     )}
   </section>;

@@ -3,6 +3,7 @@ import { cjk } from "@streamdown/cjk";
 import { createMathPlugin } from "@streamdown/math";
 import {
   Streamdown,
+  defaultRehypePlugins,
   type CustomRenderer,
   type CustomRendererProps,
   type DiagramPlugin,
@@ -10,6 +11,7 @@ import {
 } from "streamdown";
 import { Check, Copy } from "@keyline-icons/react";
 import { chatMarkdownComponents } from "@/features/chat/components/chat-stream/markdown-components";
+import { parseWorkspaceFileReference, workspaceFileLinks, type WorkspaceFileTarget } from "@/features/workspace-files/file-reference";
 import { codeHighlightPlugin, codeHighlightPluginStreaming } from "@/lib/syntax-highlight";
 import { DiffView } from "@/features/chat/components/diff-view/index";
 
@@ -152,6 +154,8 @@ export const MemoStreamdown = memo(function MemoStreamdown({
   animating,
   components = chatMarkdownComponents,
   streamFx = "none",
+  workspaceRoot,
+  onOpenWorkspaceFile,
 }: {
   text: string;
   animating?: boolean;
@@ -160,7 +164,28 @@ export const MemoStreamdown = memo(function MemoStreamdown({
   components?: typeof chatMarkdownComponents;
   /** Streaming fade for this surface. Off by default; the answer opts in. */
   streamFx?: StreamFx;
+  workspaceRoot?: string;
+  onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void;
 }) {
+  const localLinks = Boolean(workspaceRoot && onOpenWorkspaceFile);
+  const rehypePlugins = useMemo<React.ComponentProps<typeof Streamdown>["rehypePlugins"]>(() => localLinks
+    ? [defaultRehypePlugins.raw, [workspaceFileLinks, { root: workspaceRoot! }], defaultRehypePlugins.sanitize, defaultRehypePlugins.harden]
+    : undefined, [localLinks, workspaceRoot]);
+  const scopedComponents = useMemo(() => {
+    if (!localLinks) return components;
+    const Link = components.a;
+    return {
+      ...components,
+      a: ({ href, children, ...props }: React.ComponentProps<"a">) => {
+        const target = href ? parseWorkspaceFileReference(href, workspaceRoot!) : null;
+        if (!target) return <Link href={href} {...props}>{children}</Link>;
+        return <Link {...props} href={href} target={undefined} onClick={(event) => {
+          event.preventDefault();
+          onOpenWorkspaceFile!(target);
+        }}>{children}</Link>;
+      },
+    };
+  }, [components, localLinks, workspaceRoot, onOpenWorkspaceFile]);
   const needsMermaid = useMemo(() => MERMAID_FENCE.test(text), [text]);
   const [mermaidPlugin, setMermaidPlugin] = useState<DiagramPlugin | null>(null);
   useEffect(() => {
@@ -189,7 +214,8 @@ export const MemoStreamdown = memo(function MemoStreamdown({
       isAnimating={animating}
       plugins={plugins}
       shikiTheme={["github-dark", "github-dark"]}
-      components={components}
+      components={scopedComponents}
+      rehypePlugins={rehypePlugins}
       icons={streamdownIcons}
       translations={streamdownTranslations}
       controls={streamdownControls}

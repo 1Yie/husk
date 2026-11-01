@@ -25,6 +25,72 @@ function deferred<T>() {
 beforeEach(() => { invoke.mockReset(); });
 
 describe("workspace files", () => {
+  it("resolves rendered Markdown resources from the document directory through the workspace reader", async () => {
+    invoke.mockImplementation((command, args) => {
+      if (command === "workspace_list_files") return Promise.resolve(listing([entry("start.md", "file", "docs/start.md")]));
+      if (args.path === "assets/picture.png") return Promise.resolve({
+        path: args.path, name: "picture.png", kind: "image", size: 67, mime: "image/png", data: "AA==",
+      });
+      return Promise.resolve(text(args.path, args.path === "docs/start.md"
+        ? "[sibling](guide.md#L2C3)\n\n[parent](../README.md)\n\n![local picture](../assets/picture.png)"
+        : "# guide\nsecond line"));
+    });
+    const { rerender } = render(<WorkspaceFiles root="/fixture" />);
+    fireEvent.click(await screen.findByRole("button", { name: "start.md" }));
+    expect(await screen.findByRole("link", { name: "sibling" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "预览" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("img", { name: "local picture" })).toHaveAttribute("src", "data:image/png;base64,AA==");
+    const image = screen.getByRole("img", { name: "local picture" });
+    const reads = invoke.mock.calls.length;
+    for (let i = 0; i < 8; i++) {
+      await act(async () => rerender(<WorkspaceFiles root="/fixture" onBack={vi.fn()} />));
+    }
+    expect(screen.getByRole("img", { name: "local picture" })).toBe(image);
+    expect(invoke).toHaveBeenCalledTimes(reads);
+    expect(screen.getByRole("link", { name: "parent" })).toHaveAttribute("href", "/fixture/README.md");
+    fireEvent.click(screen.getByRole("link", { name: "sibling" }));
+    expect(await screen.findByRole("status", { name: "文件定位" })).toHaveTextContent("第 2 行，第 3 列");
+    expect(screen.getByRole("tab", { name: "源码" })).toHaveAttribute("aria-selected", "true");
+    expect(invoke).toHaveBeenCalledWith("workspace_preview_file", { root: "/fixture", path: "docs/guide.md" });
+  });
+
+  it("opens external targets, selects Markdown source, and repositions repeated activations", async () => {
+    invoke.mockImplementation(command => Promise.resolve(command === "workspace_list_files"
+      ? listing([entry("notes.md")]) : text("notes.md", "# heading\nsecond line\nthird line")));
+    const request = { workspaceRoot: "/fixture", sessionId: 1, activation: 1, path: "notes.md", line: 2, column: 3 };
+    const { rerender } = render(<WorkspaceFiles root="/fixture" openRequest={request} />);
+    const source = await screen.findByLabelText("文件源码");
+    expect(screen.getByRole("tab", { name: "源码" })).toHaveAttribute("aria-selected", "true");
+    expect(source.querySelector('[data-line="2"]')).toHaveAttribute("aria-current", "location");
+    expect(screen.getByRole("status", { name: "文件定位" })).toHaveTextContent("第 2 行，第 3 列");
+    rerender(<WorkspaceFiles root="/fixture" openRequest={{ ...request, line: 3, activation: 2 }} />);
+    await waitFor(() => expect(screen.getByLabelText("文件源码").querySelector('[data-line="3"]')).toHaveAttribute("aria-current", "location"));
+    rerender(<WorkspaceFiles root="/fixture" openRequest={{ ...request, activation: 3 }} />);
+    await waitFor(() => expect(screen.getByLabelText("文件源码").querySelector('[data-line="2"]')).toHaveAttribute("aria-current", "location"));
+  });
+
+  it("reports out-of-range and truncated locations without selecting another line", async () => {
+    invoke.mockImplementation(command => Promise.resolve(command === "workspace_list_files"
+      ? listing([]) : text("long.ts", Array.from({ length: 2100 }, () => "line").join("\n"))));
+    render(<WorkspaceFiles root="/fixture" openRequest={{ workspaceRoot: "/fixture", sessionId: 1, activation: 1, path: "long.ts", line: 2050 }} />);
+    expect(await screen.findByRole("status", { name: "文件定位" })).toHaveTextContent("预览范围");
+    expect(screen.getByLabelText("文件源码").querySelector('[aria-current="location"]')).toBeNull();
+  });
+
+  it("keeps the latest external target when earlier reads settle late and discards old roots", async () => {
+    const a = deferred<FilePreview>();
+    invoke.mockImplementation((command, args) => command === "workspace_list_files" ? Promise.resolve(listing([]))
+      : args.path === "a.ts" ? a.promise : Promise.resolve(text("b.ts", "new file")));
+    const request = { workspaceRoot: "/fixture", sessionId: 1, activation: 1, path: "a.ts", line: 1 };
+    const { rerender } = render(<WorkspaceFiles root="/fixture" openRequest={request} />);
+    rerender(<WorkspaceFiles root="/fixture" openRequest={{ ...request, path: "b.ts", activation: 2 }} />);
+    expect(await screen.findByLabelText("文件源码")).toHaveTextContent("new file");
+    await act(async () => a.resolve(text("a.ts", "stale file")));
+    expect(screen.getByLabelText("文件源码")).toHaveTextContent("new file");
+    rerender(<WorkspaceFiles root="/other" openRequest={request} />);
+    expect(screen.queryByLabelText("文件预览")).toBeNull();
+  });
+
   it("keeps the same toolbar and icon size when entering and leaving a file preview", async () => {
     invoke.mockImplementation(command => Promise.resolve(command === "workspace_list_files"
       ? listing([entry("main.ts")]) : text("main.ts", "export const value = 1;")));
@@ -134,7 +200,11 @@ describe("workspace files", () => {
     fireEvent.click(await screen.findByRole("button", { name: "README.md" }));
     expect(await screen.findByRole("heading", { name: "Workspace notes" })).toBeVisible();
     expect(document.querySelector("script")).toBeNull();
-    expect(document.querySelector('img[src^="https://example.invalid"]')).toBeNull();
+    const image = screen.getByRole("img", { name: "tracking" });
+    expect(image).toHaveAttribute("src", "https://example.invalid/tracker.png");
+    expect(image).toHaveAttribute("referrerpolicy", "no-referrer");
+    expect(image).toHaveAttribute("alt", "tracking");
+    expect(screen.getByLabelText("Markdown 预览").querySelector("svg, object, embed")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "源码" }));
     expect((await screen.findByLabelText("文件源码")).textContent).toContain("# Workspace notes");
   });

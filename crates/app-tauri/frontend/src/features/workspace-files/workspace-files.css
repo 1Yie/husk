@@ -10,6 +10,7 @@
 .workspace-files-markdown ul { padding-left: 20px; list-style: disc; }
 .workspace-files-markdown ol { padding-left: 20px; list-style: decimal; }
 .workspace-files-markdown a { color: var(--husk-accent); text-decoration: underline; }
+.workspace-files-markdown img { display: inline; max-width: 100%; height: auto; vertical-align: middle; }
 .workspace-files,
 .workspace-files-dialog {
   --preview-keyword: #0000ff;
@@ -95,6 +96,8 @@
 .workspace-files-code-scroll { overflow: auto; min-height: 0; flex: 1; background: var(--husk-bg); color: var(--husk-fg); user-select: text; }
 .workspace-files-code-scroll pre { margin: 0; padding: 8px 0; min-width: max-content; font: 13px/20px var(--husk-code-font, ui-monospace, SFMono-Regular, Consolas, monospace); tab-size: 4; }
 .workspace-files-code-line { display: flex; white-space: pre; padding-right: 12px; min-height: 20px; }
+.workspace-files-code-line[aria-current="location"] { background: var(--husk-hover); box-shadow: inset 2px 0 var(--husk-accent); }
+.workspace-files-code-line mark[data-source-column] { background: var(--husk-accent); color: var(--husk-accent-fg, var(--husk-bg)); }
 .workspace-files-line-number { position: sticky; left: 0; user-select: none; flex-shrink: 0; width: var(--workspace-gutter, 4em); padding: 0 12px 0 8px; text-align: right; color: var(--husk-fg-muted); background: var(--husk-bg); font-variant-numeric: tabular-nums; }
 .workspace-files-image { display: flex; flex: 1; align-items: center; justify-content: center; padding: 12px; min-height: 0; overflow: auto; }
 .workspace-files-image img { display: block; max-width: 100%; max-height: 100%; height: auto; margin: auto; object-fit: contain; }

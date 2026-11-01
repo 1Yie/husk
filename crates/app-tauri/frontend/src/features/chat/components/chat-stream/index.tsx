@@ -16,6 +16,12 @@ import { createStepMeasurements, stepBoxHeight as boxHeight } from "./step-measu
 import { isLayoutResizing, onLayoutResizeEnd } from "@/lib/layout-resize";
 export { scrollAnchorDelta } from "./step-measurements";
 import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
+import type { WorkspaceFileTarget } from "@/features/workspace-files/file-reference";
+
+interface WorkspaceLinkProps {
+  workspaceRoot?: string;
+  onOpenWorkspaceFile?: (target: WorkspaceFileTarget) => void;
+}
 import {
   toolRowId,
   type SessionView,
@@ -382,7 +388,7 @@ function getAssistantPreview(steps: AssistantStep[]): string {
   return "助手已回复";
 }
 
-interface Props {
+interface Props extends WorkspaceLinkProps {
   view: SessionView;
   /** Extra bottom room so the last message can scroll above the floating
    * composer — measured from the real composer height upstream. */
@@ -1209,7 +1215,9 @@ function sliceAtBoundary(text: string, max: number): string {
 function CappedAssistantText({
   text,
   animating,
-}: {
+  workspaceRoot,
+  onOpenWorkspaceFile,
+}: WorkspaceLinkProps & {
   text: string;
   animating?: boolean;
 }) {
@@ -1220,7 +1228,7 @@ function CappedAssistantText({
     <>
       {/* The answer is the one surface that opts into the per-character fade:
           it is what the reader is watching arrive. */}
-      <MemoStreamdown text={shown} animating={animating} streamFx="animate" />
+      <MemoStreamdown text={shown} animating={animating} streamFx="animate" workspaceRoot={workspaceRoot} onOpenWorkspaceFile={onOpenWorkspaceFile} />
       {capped && (
         <button
           type="button"
@@ -1252,7 +1260,9 @@ const TurnStep = memo(
     isLastStep,
     streaming,
     allowPlain = true,
-  }: {
+    workspaceRoot,
+    onOpenWorkspaceFile,
+  }: WorkspaceLinkProps & {
     step: AssistantStep;
     turnId: string;
     stepIdx: number;
@@ -1295,7 +1305,7 @@ const TurnStep = memo(
               {step.text}
             </div>
           ) : (
-            <CappedAssistantText text={step.text} animating={isAnimating} />
+            <CappedAssistantText text={step.text} animating={isAnimating} workspaceRoot={workspaceRoot} onOpenWorkspaceFile={onOpenWorkspaceFile} />
           )}
         </div>
       );
@@ -1389,6 +1399,8 @@ const TurnStep = memo(
     a.stepIdx === b.stepIdx &&
     a.isLastStep === b.isLastStep &&
     a.allowPlain === b.allowPlain &&
+    a.workspaceRoot === b.workspaceRoot &&
+    a.onOpenWorkspaceFile === b.onOpenWorkspaceFile &&
     (!a.isLastStep || a.streaming === b.streaming),
 );
 
@@ -1510,7 +1522,9 @@ const VirtualStep = memo(function VirtualStep({
   isLastStep,
   streaming,
   scope,
-}: {
+  workspaceRoot,
+  onOpenWorkspaceFile,
+}: WorkspaceLinkProps & {
   step: AssistantStep;
   turnId: string;
   stepIdx: number;
@@ -1640,6 +1654,8 @@ const VirtualStep = memo(function VirtualStep({
           isLastStep={isLastStep}
           streaming={streaming}
           allowPlain={allowPlainRef.current}
+          workspaceRoot={workspaceRoot}
+          onOpenWorkspaceFile={onOpenWorkspaceFile}
         />
       )}
     </div>
@@ -1683,7 +1699,9 @@ const ChatTurn = memo(function ChatTurn({
   retryable,
   streaming,
   scope,
-}: {
+  workspaceRoot,
+  onOpenWorkspaceFile,
+}: WorkspaceLinkProps & {
   turn: Turn;
   isLast: boolean;
   /** Carries the retry control — the last ANSWER turn, which is not always
@@ -1760,6 +1778,8 @@ const ChatTurn = memo(function ChatTurn({
               isLastStep={stepIdx === turn.steps.length - 1}
               streaming={streaming}
               scope={scope}
+              workspaceRoot={workspaceRoot}
+              onOpenWorkspaceFile={onOpenWorkspaceFile}
             />
           ))}
         </div>
@@ -1815,6 +1835,8 @@ export function ChatStream({
   subagentsOpen,
   onToggleSubagents,
   suppressPills = false,
+  workspaceRoot,
+  onOpenWorkspaceFile,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -3310,6 +3332,8 @@ export function ChatStream({
                           retryable={turnIdx === lastAnswerIdx}
                           streaming={view.streaming && isLast}
                           scope={sessionKey ?? ""}
+                          workspaceRoot={workspaceRoot}
+                          onOpenWorkspaceFile={onOpenWorkspaceFile}
                         />
                       );
                     })}
