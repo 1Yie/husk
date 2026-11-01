@@ -10,6 +10,8 @@ mod dev_config;
 mod ipc;
 mod kernel;
 mod logging;
+#[cfg(target_os = "macos")]
+mod macos_menu;
 mod terminal;
 #[cfg(target_os = "linux")]
 mod webview_recovery;
@@ -472,6 +474,12 @@ fn main() {
     // terminate another window just because it uses the same executable.
 
     let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(|handle| {
+        let menu = tauri::menu::Menu::default(handle)?;
+        macos_menu::localize(&menu)?;
+        Ok(menu)
+    });
     // Single instance: a second `husk` process exits immediately and the
     // running instance raises its main window instead — which is how a
     // tray-hidden window comes back when the app is launched again.

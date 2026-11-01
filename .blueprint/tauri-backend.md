@@ -18,6 +18,7 @@ Husk 桌面端 Tauri 2 后端：内核之上的适配层与打包配置。
 - 后台任务操作（`bg_list` / `bg_logs` / `bg_control`）：列表与操作结果都是宿主的完整列表（恢复的记录 + 活任务）；`remove` 先尝试记录条目，未命中再交给活注册表
 - 偏好透传：`get_default_prefs` / `set_default_prefs` 承载语义召回开关（`semantic_recall`）；`memory_overview` 另外报 `semantic_ready`（开着但模型还在加载），设置页据此把描述从「下载中」换成「已就绪」
 - 窗口、托盘、单实例、系统通知投递（`notify` op）与打包配置
+- macOS 原生应用菜单：`backend/main.rs` 在首次安装前通过 `backend/macos_menu.rs` 校验并翻译 Tauri 默认项，保留预定义角色、快捷键和原生菜单关联。`Info.plist` 声明本应用的简体中文资源语言，由 Tauri 在开发构建中嵌入、打包时合并，AppKit 据此本地化系统附加项；其他平台使用 Tauri 默认菜单。
 - 系统通知的点击回传：唤起主窗口，把发送时附带的 `target` 经 `husk://notification-click` 交还前端；Linux/Windows 经 `notify-rust` 投递；macOS 11+ 直接使用 `UNUserNotificationCenter`，处理异步权限与持久通知的 delegate 回调，不依赖已弃用的 `NSUserNotificationCenter` 或借用 Terminal 身份。
 - 点击队列通过 `peek_notification_click` / `ack_notification_click` 与前端交接，界面就绪前或重挂载期间的点击保留到导航处理完成。
 - 构建特性：`default = ["semantic"]`——语义召回是主流程的一部分，默认关闭的是那道开关本身，不是构建；关成本的构建用 `--no-default-features`。库 crate 自己仍保持默认关闭
