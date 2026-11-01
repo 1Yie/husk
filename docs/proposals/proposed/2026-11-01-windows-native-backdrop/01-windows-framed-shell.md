@@ -47,3 +47,21 @@ change, no Linux rendering.
   Windows capability cannot leak into the macOS class list.
 - A local render check at 1280×840 shows the frame, the gaps and opaque inner
   surfaces on the Windows path.
+
+## Result
+
+- `framedShell` (`isMac || isWindows`) is the single gate in
+  `crates/app-tauri/frontend/src/lib/platform.ts`; the workspace frame, title
+  bar, chat card, session sidebar, Dock, terminal panel and settings page read
+  it, and the traffic-light lane, window controls, resize edges and shortcut
+  spelling keep `isMac`.
+- `sidebar-glass.ts` now asks for a surface wherever the framed shell draws; the
+  command still answers `false` until a platform backend proves the material, so
+  an unsupported machine issues no IPC and stays solid.
+- `npx tsc --noEmit` passes and the frontend suite reports 102 files / 1006 tests
+  passing (Node 24; the Homebrew Node 26 breaks the suite's setup file).
+- New tests pin the capability across macOS, Windows and Linux, and pin that a
+  platform without the framed shell never measures or invokes the backdrop.
+- The Windows appearance itself is checked by class assertions and a local
+  render, not by a human looking at a Windows 11 window; that run belongs with
+  `02`.

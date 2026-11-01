@@ -1,5 +1,7 @@
 # Enable the native window backdrop on Windows
 
+Accepted: 2026-11-01
+
 ## Problem
 
 The frameless shell only gets a native backdrop on macOS, so the 「外层玻璃」 the
@@ -186,9 +188,11 @@ already uses:
 - Desktop Acrylic with Mica as the fallback material.
 - The framed shell is part of this request, so Windows and macOS share one
   shell design.
+- The target-gated `windows` and `windows-version` dependencies are approved;
+  both are already in the graph, so the build gains no new crate.
 
-## Open questions for the owner
+## State
 
-1. Approve the new target-gated `windows` dependency for `app-tauri`?
-2. Accept the framed shell on Windows, or keep Windows edge-to-edge and accept
-   the sidebar-only material instead (see Alternatives)?
+Both parts are implemented on `task/windows-backdrop`. `01` is verified here;
+`02` compiles for the Windows target and its behaviour waits for a run on
+Windows 11 hardware, which this machine cannot provide.

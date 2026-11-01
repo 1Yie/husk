@@ -15,13 +15,12 @@ make the command's `bool` an honest activation proof on that platform.
 - The transparency overrides in `backend/main.rs:395-420` and the window's
   background colour: transparent only while a backdrop is active, restored
   opaque on fallback, and no opaque frame before the first correct paint.
-- A Windows capability gate and event source: build 22621 minimum, reduced
+- The Windows capability gate and event source: build 22621 minimum, reduced
   transparency, high contrast, battery saver, remote session, plus
   `WM_SETTINGCHANGE` and `WM_DWMCOMPOSITIONCHANGED` re-sync. Tauri does not
   expose the window procedure, so the subclass lives in this module.
-- The frontend gate at `sidebar-glass.ts:58` becomes the platform capability
-  from `01` instead of `isMac`, without touching the queue, the revision or the
-  `settle(false)` path.
+- The command's Windows branch. The frontend gate belongs to `01`, so this part
+  touches no frontend file.
 
 ## Inputs
 
@@ -58,3 +57,22 @@ make the command's `bool` an honest activation proof on that platform.
   returns `false`, removes `data-sidebar-glass` and restores the solid frame.
 - A machine where the platform is known unsupported issues no IPC from the
   frontend, and macOS behaviour is unchanged.
+
+## Result
+
+- `backend/ipc/sidebar_glass/windows.rs` carries the material, the gate and the
+  window-procedure subclass; `sidebar_glass.rs` dispatches to it and every other
+  target keeps `Ok(false)`.
+- The client area is kept unpainted while a material is live: tao's erase fill is
+  skipped and the window and WebView2 ground move between the theme colour and
+  transparency, so a fallback is never left translucent.
+- `cargo check -p husk` still passes on macOS with only its pre-existing
+  `log_path` warning, and `cargo test -p husk sidebar_glass` passes.
+- The Windows module type-checks against the real crates: a throwaway crate that
+  compiles the same file for `x86_64-pc-windows-msvc` passes `cargo check` and
+  `cargo clippy` with no warnings. The app crate itself cannot be built for
+  Windows here, because `aws-lc-sys` needs the Windows SDK headers.
+- **Behaviour is unverified.** Nothing here proves the material composites on a
+  real window, that Acrylic degrades to Mica when refused, or that each policy
+  branch returns to solid. Those are the acceptance runs on Windows 11 hardware,
+  and until they pass this part stays unshipped.
