@@ -20,6 +20,7 @@ import {
   Terminal,
   Wrench,
   ChartColumn,
+  Keyboard,
 } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 import { WindowControls } from "@/components/window-controls";
@@ -28,6 +29,7 @@ import { GeneralPane } from "@/features/settings/pages/general/index";
 import { DeveloperPane } from "@/features/settings/pages/general/developer";
 import { AppearanceSettings } from "@/features/settings/pages/appearance/index";
 import { TerminalSettings } from "@/features/settings/pages/terminal/index";
+import { ShortcutsSettings } from "@/features/settings/pages/shortcuts/index";
 import { StatsPane } from "@/features/settings/pages/stats/index";
 import { AboutSettings } from "@/features/settings/pages/about/index";
 import {
@@ -40,6 +42,7 @@ type SettingsTab =
   | "general"
   | "appearance"
   | "terminal"
+  | "shortcuts"
   | "developer"
   | "stats"
   | AgentTab
@@ -66,6 +69,11 @@ const NAV_GROUPS: {
         key: "terminal",
         label: "终端",
         icon: <Terminal className="h-4 w-4 shrink-0" />,
+      },
+      {
+        key: "shortcuts",
+        label: "快捷键",
+        icon: <Keyboard className="h-4 w-4 shrink-0" />,
       },
     ],
   },
@@ -288,3 +296,5 @@ export function SettingsPage({
     </div>
   );
 }
+          ) : activeTab === "shortcuts" ? (
+            <ShortcutsSettings />

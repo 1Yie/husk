@@ -24,6 +24,7 @@ import {
 } from "@keyline-icons/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Download, ExternalLink } from "lucide-react";
+import { useRegisterCommand } from "@/lib/command-registry";
 import { toast } from "sonner";
 import type { ProjectOverview, ProjectSessionRow, SessionRow, SidebarEntry } from "@/types";
 import type { SidebarPaging } from "@/features/chat/hooks/use-agent-session";
@@ -271,6 +272,14 @@ export function SessionSidebar({
   const officeProject = projects.find((p) => p.office);
   const projectList = projects.filter((p) => !p.office);
   const officeMode = officeProject?.current === true;
+  useRegisterCommand("mode-build", () => {
+    const target = projectList[0]?.root;
+    if (target) onSwitchMode?.(target);
+    else onPickWorkspace?.();
+  });
+  useRegisterCommand("mode-office", () => {
+    if (officeProject) onSwitchMode?.(officeProject.root);
+  });
   // Rows are named the way the desktop toast was — one headline rule, fed by
   // the title index the app shell keeps current.
   const sessionTitles = useSessionTitles();
@@ -505,7 +514,7 @@ export function SessionSidebar({
                     tab's `active` state, so the selected label fell back to grey.
                     The hover wrapper keeps that attribute off the trigger. */}
                 <TooltipSimple
-                  content="编程 — 在项目中读写代码、运行命令"
+                  content={<ShortcutHint action="mode-build">编程 — 在项目中读写代码、运行命令</ShortcutHint>}
                   side="bottom"
                 >
                   <span className="inline-flex" data-nodrag>
@@ -524,9 +533,11 @@ export function SessionSidebar({
                     wrapper that stays hoverable while the tab itself is disabled. */}
                 <TooltipSimple
                   content={
-                    officeProject
-                      ? "工作 — 创建与编辑 Word / Excel / PPT"
-                      : "尚无工作目录"
+                    <ShortcutHint action="mode-office">
+                      {officeProject
+                        ? "工作 — 创建与编辑 Word / Excel / PPT"
+                        : "尚无工作目录"}
+                    </ShortcutHint>
                   }
                   side="bottom"
                 >
@@ -766,7 +777,7 @@ export function SessionSidebar({
           )}
         </div>
 
-        <div className="h-11 px-4 flex items-center select-none flex-none bg-panel">
+        <div className="session-navigation-surface h-11 px-4 flex items-center select-none flex-none bg-panel">
           <div
             data-nodrag
             data-tauri-drag-region="false"
@@ -784,7 +795,7 @@ export function SessionSidebar({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top" className="text-xs">
-                设置
+                <ShortcutHint action="settings">设置</ShortcutHint>
               </TooltipContent>
             </Tooltip>
 

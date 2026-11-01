@@ -7,6 +7,14 @@ import { useLayoutStore } from "@/app/layout/layout-store";
 import { useDockStore } from "@/features/chat/components/dock/state";
 import { SessionSidebar } from "@/features/chat/components/session-sidebar";
 import { LeftSidebarToggle, RightSidebarToggle } from "../layout-controls";
+import { isMac } from "@/lib/platform";
+
+vi.mock("@/lib/platform", async (original) => ({ ...await original<object>(), isMac: true }));
+vi.mock("@tauri-apps/api/core", async () => ({
+  invoke: (await import("@/test/tauri")).tauri.invoke,
+  convertFileSrc: (path: string) => `asset://localhost/${path}`,
+  isTauri: () => false,
+}));
 
 beforeEach(() => {
   useLayoutStore.setState({ sidebarOpen: true, terminalOpen: false });
@@ -67,11 +75,13 @@ test("the right toggle changes visibility without selecting a different tab", as
 
 test("terminal shortcut toggles the panel once and ignores key repeats", () => {
   shell();
-  fireEvent.keyDown(window, { key: "J", ctrlKey: true, shiftKey: true });
+  // Bindings use the platform's primary modifier, so the dispatch must too.
+  const mod = isMac ? { metaKey: true } : { ctrlKey: true };
+  fireEvent.keyDown(window, { key: "j", ...mod, shiftKey: true });
   expect(useLayoutStore.getState().terminalOpen).toBe(true);
-  fireEvent.keyDown(window, { key: "J", ctrlKey: true, shiftKey: true, repeat: true });
+  fireEvent.keyDown(window, { key: "j", ...mod, shiftKey: true, repeat: true });
   expect(useLayoutStore.getState().terminalOpen).toBe(true);
-  fireEvent.keyDown(window, { key: "j", metaKey: true, shiftKey: true });
+  fireEvent.keyDown(window, { key: "j", ...mod, shiftKey: true });
   expect(useLayoutStore.getState().terminalOpen).toBe(false);
 });
 

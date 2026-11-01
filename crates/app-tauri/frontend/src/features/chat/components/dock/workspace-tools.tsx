@@ -1,6 +1,7 @@
 import { FileDiff, FolderOpen, SquareTerminal } from "lucide-react";
 import { useLayoutStore } from "@/app/layout/layout-store";
-import { TERMINAL_SHORTCUT } from "@/lib/platform";
+import { bindingLabel } from "@/lib/shortcuts";
+import { useShortcutStore } from "@/lib/shortcuts-store";
 
 export function WorkspaceTools({
   root,
@@ -21,6 +22,12 @@ export function WorkspaceTools({
   officeMode?: boolean;
 }) {
   const openTerminal = useLayoutStore((state) => state.setTerminalOpen);
+  const terminalShortcut = bindingLabel(
+    useShortcutStore((state) => state.bindings.terminal),
+  );
+  const filesShortcut = bindingLabel(
+    useShortcutStore((state) => state.bindings["workspace-file"]),
+  );
   const row =
     "flex w-full items-start gap-3 px-3 py-3 text-left text-neutral-800 transition-colors enabled:hover:bg-[var(--husk-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--husk-accent)] disabled:cursor-default disabled:opacity-50 motion-reduce:transition-none";
   return (
@@ -32,7 +39,7 @@ export function WorkspaceTools({
         </p>
       </div>
       <div className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-[var(--husk-bg)]">
-        {!officeMode && (
+        {(
           <button
             type="button"
             className={row}
@@ -51,7 +58,7 @@ export function WorkspaceTools({
               className="mt-0.5 flex-none text-neutral-500"
               aria-hidden="true"
             />
-            <span className="min-w-0">
+            <span className="min-w-0 flex-1">
               <span className="block text-[13px] font-medium leading-5">
                 预览工作区文件
               </span>
@@ -59,6 +66,9 @@ export function WorkspaceTools({
                 {root ? "浏览代码、Markdown 与图片" : "先选择一个工作区"}
               </span>
             </span>
+            <kbd className="mt-0.5 flex-none whitespace-nowrap [font-family:inherit] text-[10px] text-neutral-500">
+              {filesShortcut}
+            </kbd>
           </button>
         )}
         {!officeMode && (
@@ -101,7 +111,7 @@ export function WorkspaceTools({
               <span>本机 shell</span>
               {/* Keep the shortcut with the caption so narrow panels can wrap it. */}
               <kbd className="whitespace-nowrap [font-family:inherit] text-[10px] text-neutral-500">
-                {TERMINAL_SHORTCUT}
+                {terminalShortcut}
               </kbd>
             </span>
           </span>

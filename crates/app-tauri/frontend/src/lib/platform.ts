@@ -33,5 +33,3 @@ export function shortcutLabel(
  return mac ? mapped.join("") : mapped.join("+");
 }
 
-/** The terminal panel's toggle (see MainLayout). */
-export const TERMINAL_SHORTCUT = shortcutLabel(["mod", "shift", "j"]);

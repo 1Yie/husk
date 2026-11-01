@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { useLayoutStore } from "@/app/layout/layout-store";
-import { TERMINAL_SHORTCUT } from "@/lib/platform";
+import { bindingLabel } from "@/lib/shortcuts";
+import { defaultBindings } from "@/lib/shortcuts";
 import { WorkspaceTools } from "../workspace-tools";
 
 beforeEach(() => {
@@ -22,7 +23,7 @@ test("workspace actions retain their behavior and the full root remains availabl
   expect(onReview).toHaveBeenCalledOnce();
 
   const terminal = screen.getByRole("button", { name: "打开终端" });
-  expect(terminal.querySelector("kbd")).toHaveTextContent(TERMINAL_SHORTCUT);
+  expect(terminal.querySelector("kbd")).toHaveTextContent(bindingLabel(defaultBindings().terminal));
   fireEvent.click(terminal);
   expect(useLayoutStore.getState().terminalOpen).toBe(true);
 });

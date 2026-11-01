@@ -24,6 +24,7 @@ import { DirectoryLoadingSkeleton } from "@/features/workspace-files/loading";
 import { cn } from "@/lib/utils";
 import { ChangesList } from "@/features/chat/components/changes-panel";
 import { WorkspaceChangesNotice } from "@/features/chat/components/changes-panel/workspace-changes-notice";
+import { useRegisterCommand } from "@/lib/command-registry";
 import type { WorkspaceChanges } from "@/features/chat/components/changes-panel/workspace-changes";
 import { ArtifactsList } from "@/features/chat/components/artifacts-panel";
 import { JobsList } from "@/features/chat/components/jobs-panel";
@@ -104,6 +105,14 @@ export function SessionDock({
   const setWidth = useDockStore((s) => s.setWidth);
   const browserOpen = useDockStore((s) => s.browserOpen);
   const closeBrowser = useDockStore((s) => s.closeBrowser);
+  useRegisterCommand("workspace-file", () => {
+    if (!root) {
+      onOpenWorkspace?.();
+      return;
+    }
+    useDockStore.getState().setOpen(true);
+    setTab("files");
+  });
 
   // Width is dragged; a CSS transition would fight the pointer, so the slide
   // is switched off for the duration of the drag. The live width stays local

@@ -23,6 +23,7 @@ import { agentRowsByChild } from "@/features/chat/hooks/agent-rows";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Document extensions that pop the ready-toast — the office deliverable.
+import { useRegisterCommand } from "@/lib/command-registry";
  *  Downloaded assets (images etc.) register silently in the dock. */
 const DOC_EXTS = new Set(["pptx", "ppt", "docx", "doc", "xlsx", "xls", "pdf"]);
 
@@ -64,6 +65,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   // The conversation's live data comes from the store, not from props: the
   // shell must not be a subscriber of the 60 fps stream (it used to re-render —
   // and drag the sidebar with it — for a whole turn).
+  useRegisterCommand("new-session", () => onNewSession?.());
   const view = useActiveView();
   const { gitInfo, ctxWindow: contextWindowHint, modelCost } = useAgentChips();
   const hasMore = useHasMoreHistory();

@@ -8,12 +8,27 @@ import {
 import type { ReactNode } from "react";
 import { useLayoutStore } from "@/app/layout/layout-store";
 import { useDockStore } from "@/features/chat/components/dock/state";
-import { isMac, TERMINAL_SHORTCUT } from "@/lib/platform";
+import { isMac } from "@/lib/platform";
+import { bindingLabel, type ShortcutAction } from "@/lib/shortcuts";
+import { useShortcutStore } from "@/lib/shortcuts-store";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipSimple, TooltipTrigger } from "@/components/ui/tooltip";
 
 const BUTTON =
   "flex h-7 w-7 flex-none items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-[var(--husk-hover)] hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400";
+
+/** One action's hint: the wording on the left, its live binding on the right. */
+export function ShortcutHint({ action, children }: { action: ShortcutAction; children: ReactNode }) {
+  const shortcut = bindingLabel(useShortcutStore((state) => state.bindings[action]));
+  return (
+    <span className="flex items-center gap-2">
+      <span>{children}</span>
+      {shortcut ? (
+        <kbd data-shortcut-hint className="[font-family:inherit] text-[11px] opacity-60">{shortcut}</kbd>
+      ) : null}
+    </span>
+  );
+}
 
 export function LeftSidebarToggle() {
   const open = useLayoutStore((state) => state.sidebarOpen);
@@ -35,7 +50,7 @@ export function LeftSidebarToggle() {
         isMac && !open ? "pl-[55px]" : "pl-0",
       )}
     >
-      <TooltipSimple content={label} side="bottom">
+      <TooltipSimple content={<ShortcutHint action="session-sidebar">{label}</ShortcutHint>} side="bottom">
         <button
           type="button"
           data-nodrag
@@ -58,7 +73,7 @@ export function RightSidebarToggle() {
   const label = open ? "收起工具侧栏" : "展开工具侧栏";
   const Icon = open ? PanelRightClose : PanelRightOpen;
   return (
-    <TooltipSimple content={label} side="bottom">
+    <TooltipSimple content={<ShortcutHint action="tools-sidebar">{label}</ShortcutHint>} side="bottom">
       <button
         type="button"
         data-nodrag
@@ -77,12 +92,13 @@ export function RightSidebarToggle() {
 
 /** Both terminal entry points share the wording and shortcut presentation. */
 export function TerminalVisibilityTooltip({ open, children }: { open: boolean; children: ReactNode }) {
+  const shortcut = bindingLabel(useShortcutStore((state) => state.bindings.terminal));
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent side="top" className="flex items-center gap-2 text-xs">
         <span>{open ? "隐藏终端（保持运行）" : "打开终端"}</span>
-        <kbd data-terminal-shortcut className="[font-family:inherit] text-[11px] opacity-60">{TERMINAL_SHORTCUT}</kbd>
+        <kbd data-terminal-shortcut className="[font-family:inherit] text-[11px] opacity-60">{shortcut}</kbd>
       </TooltipContent>
     </Tooltip>
   );
