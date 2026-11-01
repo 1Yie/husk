@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Plus } from "@keyline-icons/react";
 import { toast } from "sonner";
-import { isMac } from "@/lib/platform";
+import { framedShell } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/features/chat/components/chat-stream";
@@ -410,8 +410,8 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
       />
       <div className="flex flex-1 min-h-0">
       <div className={cn("chat-workspace-card flex flex-1 min-w-0 min-h-0 flex-col",
-        isMac && "chat-workspace-card--inset relative rounded-lg border border-hairline bg-workspace overflow-hidden")}
-        style={isMac ? { ["--chat-composer-height" as string]: `${composerH}px` } : undefined}>
+        framedShell && "chat-workspace-card--inset relative rounded-lg border border-hairline bg-workspace overflow-hidden")}
+        style={framedShell ? { ["--chat-composer-height" as string]: `${composerH}px` } : undefined}>
       {!workspaceRoot ? (
         workspaceReady ? (
           <WorkspaceWelcome

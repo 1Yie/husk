@@ -24,7 +24,7 @@ import {
 } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
 import { WindowControls } from "@/components/window-controls";
-import { isMac } from "@/lib/platform";
+import { framedShell, isMac } from "@/lib/platform";
 import { GeneralPane } from "@/features/settings/pages/general/index";
 import { DeveloperPane } from "@/features/settings/pages/general/developer";
 import { AppearanceSettings } from "@/features/settings/pages/appearance/index";
@@ -188,7 +188,7 @@ export function SettingsPage({
   return (
     <div className={cn(
       "settings-layout relative flex h-full w-full overflow-hidden select-none",
-      isMac ? "main-workspace-frame bg-panel" : "bg-white",
+      framedShell ? "main-workspace-frame bg-panel" : "bg-white",
     )}>
       {/* Top draggable strip across the right area + window controls anchored at top-right */}
       <div
@@ -203,7 +203,7 @@ export function SettingsPage({
         data-tauri-drag-region="deep"
         className={cn(
           "w-[240px] flex-none flex flex-col justify-between h-full select-none",
-          isMac ? "bg-transparent" : "bg-panel border-r border-hairline",
+          framedShell ? "bg-transparent" : "bg-panel border-r border-hairline",
         )}
       >
         <div className="flex flex-col min-h-0 flex-1">
@@ -212,7 +212,7 @@ export function SettingsPage({
             data-tauri-drag-region="deep"
             className={cn(
               "h-9 flex-none flex items-center px-3 gap-2 select-none cursor-default",
-              isMac ? "bg-transparent" : "bg-panel",
+              framedShell ? "bg-transparent" : "bg-panel",
             )}
           >
             {/* The traffic lights end near 72px; this leaves a small gap before the title. */}
@@ -280,7 +280,7 @@ export function SettingsPage({
         ref={contentRef}
         className={cn(
           "flex-1 min-h-0 min-w-0 overflow-y-auto bg-white no-scrollbar",
-          isMac && "m-2 rounded-lg border border-hairline",
+          framedShell && "m-2 rounded-lg border border-hairline",
         )}
       >
         <div className="w-full max-w-3xl mx-auto px-6 sm:px-10 py-8 pb-16">

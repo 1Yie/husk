@@ -9,7 +9,7 @@ import { SessionSidebar } from "@/features/chat/components/session-sidebar";
 import { LeftSidebarToggle, RightSidebarToggle } from "../layout-controls";
 import { isMac } from "@/lib/platform";
 
-vi.mock("@/lib/platform", async (original) => ({ ...await original<object>(), isMac: true }));
+vi.mock("@/lib/platform", async (original) => ({ ...await original<object>(), isMac: true, framedShell: true }));
 vi.mock("@tauri-apps/api/core", async () => ({
   invoke: (await import("@/test/tauri")).tauri.invoke,
   convertFileSrc: (path: string) => `asset://localhost/${path}`,

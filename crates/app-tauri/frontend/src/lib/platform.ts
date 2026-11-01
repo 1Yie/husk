@@ -18,6 +18,11 @@ export const isWindows = /Windows/.test(ua) || /^Win/.test(platform);
  *  non-Linux user can't write a meaningless flag into `settings.toml`. */
 export const isLinux = !isMac && !isWindows;
 
+/** Platforms that draw the inset rounded shell: one outer frame wrapped around
+ *  separate rounded work surfaces. Linux stays edge-to-edge until it gets its
+ *  own compositor backdrop, so a frame there would only wrap solid pixels. */
+export const framedShell = isMac || isWindows;
+
 /** A shortcut spelled the way this platform writes it: `⌘⇧J` on macOS,
  *  `Ctrl+Shift+J` elsewhere. `mod` is ⌘ on macOS and Ctrl otherwise. */
 export function shortcutLabel(

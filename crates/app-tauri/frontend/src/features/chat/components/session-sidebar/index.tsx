@@ -76,7 +76,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isMac } from "@/lib/platform";
+import { framedShell, isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import {
   useNotifications,
@@ -458,12 +458,12 @@ export function SessionSidebar({
       <aside
         data-tauri-drag-region="deep"
         className={cn("session-navigation-panel w-full flex-none flex flex-col bg-panel border-hairline select-none h-full text-neutral-800",
-          !isMac && "border-r")}
+          !framedShell && "border-r")}
       >
         <div
           data-tauri-drag-region="deep"
           className={cn("session-navigation-surface h-9 flex-none flex items-center px-3 gap-2 border-hairline bg-panel select-none cursor-default",
-            !isMac && "border-b")}
+            !framedShell && "border-b")}
         >
           {isMac && <div className="w-[55px] shrink-0" />}
 

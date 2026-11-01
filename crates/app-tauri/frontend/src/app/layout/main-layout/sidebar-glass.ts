@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, type RefObject } from "react";
-import { isMac } from "@/lib/platform";
+import { framedShell } from "@/lib/platform";
 
 interface Surface {
   x: number; y: number; width: number; height: number;
@@ -55,7 +55,7 @@ function enqueue(surface: Surface | null, settle: Update["settle"]) {
 export function useSidebarGlass(ref: RefObject<HTMLDivElement>) {
   useEffect(() => {
     const shell = ref.current;
-    if (!shell || !isMac || !isTauri()) return;
+    if (!shell || !framedShell || !isTauri()) return;
     const root = document.documentElement;
     let dead = false;
     let frame = 0;

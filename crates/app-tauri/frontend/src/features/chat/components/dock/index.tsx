@@ -22,7 +22,7 @@ import { WorkspaceTools } from "./workspace-tools";
 import type { WorkspaceFileRequest } from "@/features/workspace-files/file-reference";
 import { DirectoryLoadingSkeleton } from "@/features/workspace-files/loading";
 import { cn } from "@/lib/utils";
-import { isMac } from "@/lib/platform";
+import { framedShell } from "@/lib/platform";
 import { ChangesList } from "@/features/chat/components/changes-panel";
 import { useRegisterCommand } from "@/lib/command-registry";
 import { WorkspaceChangesNotice } from "@/features/chat/components/changes-panel/workspace-changes-notice";
@@ -207,7 +207,7 @@ export function SessionDock({
     <div
       className={cn(
         "relative flex-none overflow-hidden",
-        isMac && "rounded-lg",
+        framedShell && "rounded-lg",
         // The column eases open rather than snapping: WebKit has no scroll
         // anchoring, so a one-frame 300px re-flow of the stream threw the
         // reader's place by however much the text re-wrapped above them —
@@ -216,7 +216,7 @@ export function SessionDock({
           ? ""
           : "transition-[width] duration-300 ease-out motion-reduce:transition-none",
       )}
-      style={{ width: open ? shownWidth + (isMac ? 8 : 0) : 0 }}
+      style={{ width: open ? shownWidth + (framedShell ? 8 : 0) : 0 }}
       aria-hidden={!open}
       {...(!open ? { inert: "" } : {})}
     >
@@ -234,18 +234,18 @@ export function SessionDock({
             else if (e.key === "ArrowRight") setWidth(width - 24);
           }}
           className={cn("workspace-dock__separator layout-resize-grip absolute inset-y-0 z-10 w-1.5 cursor-col-resize",
-            isMac ? "left-px" : "left-0")}
+            framedShell ? "left-px" : "left-0")}
         />
       <aside
         id="workspace-tools-sidebar"
         aria-label="工作区工具侧栏"
         style={{
           width: shownWidth,
-          ...(isMac ? { marginLeft: 8, background: "color-mix(in srgb, var(--husk-n50) 70%, var(--husk-bg))" } : {}),
+          ...(framedShell ? { marginLeft: 8, background: "color-mix(in srgb, var(--husk-n50) 70%, var(--husk-bg))" } : {}),
         }}
         className={cn(
           "relative flex h-full flex-none flex-col overflow-hidden border-hairline select-none",
-          isMac ? "rounded-lg border" : "border-l bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)]",
+          framedShell ? "rounded-lg border" : "border-l bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)]",
           resizing || snap
             ? ""
             : "transition-transform duration-300 ease-out motion-reduce:transition-none",

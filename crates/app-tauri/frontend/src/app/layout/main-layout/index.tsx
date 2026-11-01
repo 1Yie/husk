@@ -2,7 +2,7 @@
 // composer) on the right. The changes panel lives inside `main-col`,
 // below the title bar, so it never covers the window controls.
 import { cn } from "@/lib/utils";
-import { isMac } from "@/lib/platform";
+import { framedShell } from "@/lib/platform";
 import { useEffect, useRef } from "react";
 import { useSidebarGlass } from "./sidebar-glass";
 import { useLayoutStore } from "../layout-store";
@@ -140,7 +140,7 @@ export function MainLayout({ sidebar, children, terminal, className }: MainLayou
   }, []);
   const main = (
     <div className={cn("main-col isolate h-full overflow-hidden",
-      isMac && "bg-transparent")}>{children}{terminal}</div>
+      framedShell && "bg-transparent")}>{children}{terminal}</div>
   );
   return (
     <div
@@ -160,10 +160,10 @@ export function MainLayout({ sidebar, children, terminal, className }: MainLayou
         </div>
       </div>
       <div className={cn("relative flex h-full min-w-0 flex-1",
-        isMac && "main-workspace-frame bg-panel px-2 pb-2")}>
+        framedShell && "main-workspace-frame bg-panel px-2 pb-2")}>
         {main}
         <div className={cn("session-navigation-resize layout-resize-grip absolute bottom-0 top-9 z-50 w-1.5 cursor-col-resize",
-          isMac ? "left-px" : "-left-[3px]")}
+          framedShell ? "left-px" : "-left-[3px]")}
           role="separator" aria-label="调整会话侧栏宽度" aria-orientation="vertical"
           aria-controls="session-navigation" aria-valuemin={SIDEBAR_MIN_WIDTH} aria-valuemax={SIDEBAR_MAX_WIDTH} aria-valuenow={SIDEBAR_DEFAULT_WIDTH}
           hidden={!sidebarOpen} tabIndex={sidebarOpen ? 0 : -1} />

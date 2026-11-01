@@ -6,7 +6,7 @@ import { useSidebarGlass } from "./sidebar-glass";
 
 const boundary = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn(() => true) }));
 vi.mock("@tauri-apps/api/core", () => boundary);
-vi.mock("@/lib/platform", () => ({ isMac: true }));
+vi.mock("@/lib/platform", () => ({ framedShell: true }));
 
 let frames: FrameRequestCallback[];
 let width: number;

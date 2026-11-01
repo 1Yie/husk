@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import { beginLayoutResize } from "@/lib/layout-resize";
-import { isMac } from "@/lib/platform";
+import { framedShell } from "@/lib/platform";
 import type { TerminalAppearance } from "./terminal-session";
 import {
   isAppDark, resolveTerminalFont, resolveTerminalPalette,
@@ -17,7 +17,7 @@ export interface TerminalPanelProps {
   cwd?: string;
 }
 const MIN_HEIGHT = 120;
-const PANEL_GAP = isMac ? 8 : 0;
+const PANEL_GAP = framedShell ? 8 : 0;
 
 /** Prefs + the app's current theme, as the renderer takes them. */
 function appearanceOf(prefs: TerminalPrefs): TerminalAppearance {
@@ -204,7 +204,7 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
   return (
     <section
       ref={root}
-      className={isMac ? "terminal-panel terminal-panel--inset" : "terminal-panel"}
+      className={framedShell ? "terminal-panel terminal-panel--inset" : "terminal-panel"}
       aria-label="终端面板"
       aria-hidden={!open}
       {...(open ? {} : { inert: "" })}
