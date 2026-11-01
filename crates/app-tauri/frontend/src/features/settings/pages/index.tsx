@@ -214,40 +214,46 @@ export function SettingsPage({
               <ArrowLeft className="h-4 w-4 shrink-0" />
               返回工作区
             </button>
-
-            {NAV_GROUPS.map((g) => (
-              <div key={g.label} className="flex flex-col gap-1">
-                <span className="px-3 pb-1 text-[11px] font-medium text-neutral-500 tracking-wide">
-                  {g.label}
-                </span>
-                {g.items
-                  .filter((item) => item.key !== "developer" || devUnlocked)
-                  .map((item) => (
           </div>
-                    <button
+
+          {/* Same scroller rules as the session sidebar — `false` outer so a
+              scrollbar drag can't move the window, `deep` inner so row gaps and
+              the empty tail still drag it. */}
           <div
             data-settings-nav
-            className="min-h-0 flex-1 overflow-y-auto px-3 pt-4 pb-3 flex flex-col gap-4"
+            data-tauri-drag-region="false"
+            className="min-h-0 flex-1 overflow-y-auto px-3 pt-3 pb-3"
           >
-                      key={item.key}
-                      type="button"
-                      onClick={() => setActiveTab(item.key)}
-                      className={cn(
-                        "w-full flex items-center gap-2.5 h-9 rounded-lg px-3 text-[13px] transition-all cursor-pointer",
-                        activeTab === item.key
-                          ? // Same recipe as the session sidebar's active row:
-                            // 6% black wash + bright text — the vars lift it in
-                            // both themes, no dark: override needed.
-                            "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
-                          : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] font-normal",
-                      )}
-                    >
-                      {item.icon}
-                      <span>{item.label}</span>
-                    </button>
-                  ))}
-              </div>
-            ))}
+            <div data-tauri-drag-region="deep" className="min-h-full flex flex-col gap-4">
+              {NAV_GROUPS.map((g) => (
+                <div key={g.label} className="flex flex-col gap-1">
+                  <span className="px-3 pb-1 text-[11px] font-medium text-neutral-500 tracking-wide">
+                    {g.label}
+                  </span>
+                  {g.items
+                    .filter((item) => item.key !== "developer" || devUnlocked)
+                    .map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => setActiveTab(item.key)}
+                        className={cn(
+                          "w-full flex items-center gap-2.5 h-9 rounded-lg px-3 text-[13px] transition-all cursor-pointer",
+                          activeTab === item.key
+                            ? // Same recipe as the session sidebar's active row:
+                              // 6% black wash + bright text — the vars lift it in
+                              // both themes, no dark: override needed.
+                              "bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] text-neutral-900"
+                            : "text-neutral-600 hover:text-neutral-900 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] font-normal",
+                        )}
+                      >
+                        {item.icon}
+                        <span>{item.label}</span>
+                      </button>
+                    ))}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </aside>
