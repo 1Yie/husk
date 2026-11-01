@@ -76,3 +76,28 @@ make the command's `bool` an honest activation proof on that platform.
   real window, that Acrylic degrades to Mica when refused, or that each policy
   branch returns to solid. Those are the acceptance runs on Windows 11 hardware,
   and until they pass this part stays unshipped.
+
+## Hardware run once a Windows 11 22H2+ machine is available
+
+Build and start the shell with `cargo tauri dev` from `crates/app-tauri`, then
+walk the six acceptance criteria of the proposal. What each branch looks like
+from the outside:
+
+1. Default machine: the desktop colour shows through the frame and the sidebar,
+   `data-sidebar-glass` is present on `<html>`, and the inner work surfaces, chat
+   card, Dock and terminal stay opaque. If the frame is solid here, the material
+   was refused — check that the build is 22621 or newer.
+2. Resize the window, drag it between two monitors with different scaling, enter
+   and leave fullscreen, and focus another window: the frame must not show a
+   stale rectangle, a black band or a flash of the theme colour.
+3. Turn Settings → Personalisation → Transparency effects off and on: the frame
+   must go solid and back without a restart.
+4. Repeat with high contrast, with battery saver, and over a remote session; each
+   must end solid. Under `cargo tauri dev`, `Get-Latest` on the debug console
+   shows whether the command answered `true`.
+5. On a Windows 10 machine the frame must be solid and the shell must issue no
+   IPC at all.
+6. macOS behaviour must be unchanged on the same build.
+
+Any failure is evidence for a follow-up commit on this branch; the parts that
+fail stay out of `main` until they pass.
