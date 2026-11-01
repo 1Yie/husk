@@ -131,7 +131,7 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background-color: var(--husk-bg);
+  background-color: var(--husk-document-background, var(--husk-bg));
   color: var(--husk-fg);
   font-family:
     var(--husk-ui-font),
@@ -145,6 +145,27 @@ body,
 
 body {
   @apply bg-workspace text-text-primary font-sans text-sm antialiased overflow-hidden select-none;
+}
+
+html[data-sidebar-glass] {
+  --husk-document-background: transparent;
+}
+
+html[data-sidebar-glass] body,
+html[data-sidebar-glass] #root,
+html[data-sidebar-glass] .main-layout,
+html[data-sidebar-glass] #session-navigation .session-navigation-surface {
+  background-color: transparent;
+}
+
+html[data-sidebar-glass] #session-navigation .session-navigation-panel,
+html[data-sidebar-glass] .main-workspace-frame {
+  background-color: color-mix(in srgb, var(--husk-panel) 68%, transparent);
+}
+
+html[data-sidebar-glass] .main-layout:has(~ div > .settings-layout) {
+  opacity: 0;
+  pointer-events: none;
 }
 
 ::-webkit-scrollbar {

@@ -29,5 +29,15 @@ Husk 桌面端 React 前端：聊天流、会话侧栏、设置与产物面板�
 - 新增摘要解析器时不另立工具清单：把工具加进 `WRITE_TOOLS` / `ARTIFACT_*`，`SUMMARY_TOOLS` 自动跟随
 - 不判断某个目录能否关联：拒绝列表在后端，界面只显示后端给的理由
 - 不在设置页重复一个会话级入口：许可跟着会话走，配置就放在会话的输入框旁
+macOS 的 `MainLayout` 以 panel 外框包住透明的 `main-col` 排布层，聊天、右侧 `SessionDock` 和底部 `TerminalPanel` 各自绘制主题一致的不透明圆角工作面。`TitleBar` 是横跨主区的透明统一工具条，顶部与会话侧栏顶栏对齐；外框只在左右和底部留白。圆角取共享尺寸，面板间隙露出同一个外框；具体几何由 `app/layout/main-layout/index.tsx`、`features/chat/pages/chat/index.tsx` 和面板 owner 定义。Dock 的宽度与终端的高度偏好表示可见卡片尺寸，各自的 reveal wrapper 额外承担间隙，关闭时同时收回；拖动本地预览，释放后落盘。终端 reveal 的目标、拖动初值与最大高度都计入同一间隙预算。聊天卡片按可用高度约束内联命令菜单的滚动区，浮动 composer 保持原定位和键盘行为。侧栏开关及面板布局变化保持聊天与 renderer 的节点身份，其他平台继续使用平铺布局。
+
+会话侧栏在各平台均可向两侧调宽，宽度由 `MainLayout` 的窗口私有 CSS 变量保存，导航外层、内层和 `SessionSidebar` 共享该值；收起只将可见宽度归零，展开恢复已提交宽度。最小宽度保留模式按钮与固定操作，macOS 顶栏始终不绘制 Husk 品牌图标、文字，保留原生交通灯占位和模式按钮；其他平台保留品牌。最大宽度受主区可用空间限制，窗口缩小时重新约束，默认值与边界定义在 MainLayout 的 resize owner 中。指针预览按帧合并且保留原输入焦点，释放提交到 DOM，取消、失焦、丢失捕获和卸载恢复已提交值；不写入 layout store 或持久化配置。拖动通过既有 layout resize token 抑制终端中间尺寸适配。左手柄从工具条下方开始，关闭侧栏时隐藏。
+
+`MainLayout` 左侧调宽、`SessionDock` 右侧调宽、`TerminalPanel` 调高及 `SplitHandle` 的 columns/rows 五种入口共用 `index.css` 的 `.layout-resize-grip` 绘制中性胶囊。`aria-orientation` 决定横竖方向，指示位于各自命中区中央，默认隐藏，仅在 hover、真实键盘 focus-visible 或拖动时显示，并遵循 reduced motion。几何、边界、比例与尺寸提交仍由各控制器负责；终端鼠标拖动保留输入焦点，结束、取消、失焦、隐藏和卸载释放拖动状态及 capture。非 Mac 调高命中区与面板内实际可见范围对齐，macOS 使用面板间隙。
+
+背景桥 `app/layout/main-layout/sidebar-glass.ts` 测量整个 MainLayout 根矩形，并将当前主题的 `--husk-panel` 传给原生着色，合并帧更新并在单次在途调用期间保留最新值；根尺寸不变的侧栏开关不更新原生几何。只有原生准备成功才以 `data-sidebar-glass` 打开根节点、布局及侧栏内部结构表面的透明链；会话侧栏与主区外框各以一层低不透明度的原 panel 色覆盖材质，桌面画面从侧栏和工作面间隙透出，侧栏内部顶栏、底栏及项目/产物分组保持透明；内层工作面与卡片保持实色。业务工作面及共享控件保持实色；实色回退同时恢复侧栏和外框的原 panel 表面，内嵌几何保持不变。启动主题和运行时外观通过同一文档背景变量衔接；卸载恢复当前主题并清理观察器、事件、动画帧和原生视图。真实组件验收入口为 `scripts/terminal-reveal/check.mjs --panels` 和 `scripts/terminal-reveal/sidebar-glass-check.mjs`，浏览器检查的原生命令使用 mock IPC。
+
+设置页以同一 WebView 中的覆盖页呈现，工作区保持挂载。macOS 的 `features/settings/pages/index.tsx` 复用 `main-workspace-frame` 作为整页外框，导航与标题条透明，原内容滚动节点绘制实色圆角卡片；卡片四边留白，几何取该组件中的共享 spacing/radius utilities。绝对定位的窗口拖动层与 `WindowControls` 保留。原生材质激活且覆盖页存在时，`index.css` 仅关闭下层 MainLayout 的绘制和指针命中，根矩形、私有侧栏宽度与玻璃 owner 保持。关闭设置恢复工作区，其他平台保持平铺表面。设置导航、表单与共享控件沿用各自 owner，覆盖页和 portal 的层级保持 `App.tsx` 与共享菜单定义；真实组件 mock 验收入口见 `scripts/terminal-reveal/README.md`。
+
 - 不解释 `action` 的语义：它只被原样回传
 - 不在组件里写死颜色：思考强度等语义色走 `index.css` 的 `--husk-*` 令牌，亮暗各一套，取用统一走 `lib/thinking.ts` 这类单点函数

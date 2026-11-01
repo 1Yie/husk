@@ -23,6 +23,8 @@ Husk 桌面端 Tauri 2 后端：内核之上的适配层与打包配置。
 - 点击队列通过 `peek_notification_click` / `ack_notification_click` 与前端交接，界面就绪前或重挂载期间的点击保留到导航处理完成。
 - 构建特性：`default = ["semantic"]`——语义召回是主流程的一部分，默认关闭的是那道开关本身，不是构建；关成本的构建用 `--no-default-features`。库 crate 自己仍保持默认关闭
 
+主窗口的原生背景由 `backend/ipc/sidebar_glass.rs` 和其 macOS 模块承载：命令限定当前 `main` 窗口，校验有限几何与颜色，并将前端可见矩形裁剪、换算为 WebView 本地点坐标。macOS 26+ 且 `NSGlassEffectView` 可用时在单个 WKWebView 下方维护覆盖整个应用外壳的一个窗口私有视图，以低不透明度的前端 panel 色为玻璃着色，透出桌面画面而由不透明工作面遮住内部区域；减少透明度时返回实色状态，其他平台返回未启用。原生对象和辅助功能、窗口通知在主线程管理，版本戳拒绝迟到的更新与释放。macOS 交通灯的原生 inset 由 `tauri.macos.conf.json` 配置，与侧栏顶栏对齐。
+
 ## 不做
 - 不复制内核逻辑；行为变更先落在 kernel
 - 不渲染界面（属于 tauri-frontend）
