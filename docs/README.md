@@ -14,8 +14,13 @@
 ## 记录
 
 `docs/research/` 保存调研资料。调研记录描述其日期时的发现，不随系统现状改写。
+`docs/proposals/` 保存请求变更的记录，按 `proposed/`、`implemented/`、`archived/` 分状态。
 `docs/` 中已有的 handoff、summary 等文件保持现有路径；再次涉及其内容时先判断它属于
 当前文档还是记录，不为统一布局批量搬迁。
+
+当前提案：
+
+- [`windows-native-backdrop`](./proposals/proposed/2026-11-01-windows-native-backdrop/proposal.md)：在 Windows 11 上启用内嵌外框与原生窗外材质。
 
 新增指南、参考、ADR 或提案时，先按 `docs-engineering` 确认分类和位置，再扩展此索引。
 ADR 与已加载的代理指令仍须经所有者批准后修改。
