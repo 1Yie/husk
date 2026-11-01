@@ -102,11 +102,10 @@ per-platform behaviour. Linux stays edge-to-edge until its own work.
 ### Out of scope
 
 - **Linux (KDE X11 and Wayland).** A compositor blur only shows through a
-  transparent window, and the main window is deliberately opaque on Linux
-  because WebKitGTK does not paint one correctly on this stack
-  (`backend/main.rs:197-206`). That reproduction has to be answered before
-  blur-behind is even observable, so Linux needs its own investigation and
-  proposal; nothing in this one compiles on Linux.
+  transparent window, and the main window is deliberately opaque on Linux. The
+  research record `webkitgtk-transparent-window` owns that question, its open
+  experiments and what each result decides; until it concludes, a Linux part
+  could only ever answer `false`. Nothing in this proposal compiles on Linux.
 - **macOS 13.4–25 classic material.** Separate request; the current macOS 26+
   path is untouched.
 
