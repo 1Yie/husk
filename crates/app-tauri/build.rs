@@ -4,6 +4,9 @@ fn main() {
     // in place and the app kept serving the old UI until an unrelated edit
     // forced a recompile.
     println!("cargo:rerun-if-changed=frontend/dist");
+    // tauri_build only watches the Tauri config and resources, so a change to
+    // the sibling Info.plist alone would leave its embedded copy stale.
+    println!("cargo:rerun-if-changed=Info.plist");
     link_compiler_rt_on_macos();
     tauri_build::build()
 }
