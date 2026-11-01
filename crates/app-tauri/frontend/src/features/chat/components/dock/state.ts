@@ -37,7 +37,7 @@ export function availableDockTabs(
   { browserOpen, officeMode = false }: DockAvailability,
 ): DockTab[] {
   const tabs: DockTab[] = [];
-  if (!officeMode && browserOpen) tabs.push("files");
+  if (browserOpen) tabs.push("files");
   if (!officeMode && counts.changes > 0) tabs.push("changes");
   if (counts.artifacts > 0) tabs.push("artifacts");
   if (counts.jobs > 0) tabs.push("jobs");

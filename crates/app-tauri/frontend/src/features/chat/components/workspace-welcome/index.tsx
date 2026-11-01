@@ -99,7 +99,7 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, offic
     // a shade off from the chat — give it the same `bg-white` the stream
     // uses.
     <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto px-6 py-10 select-none bg-white">
-      <div className="w-full max-w-[720px] flex flex-col items-center gap-8">
+      <div className="workspace-welcome-content w-full max-w-[720px] flex flex-col items-center gap-8">
         <div className="flex flex-col items-center gap-5 text-center">
           {/* Greeting + tail come from `lib/greeting` — the same line the
               in-session empty state shows, so the two never drift. */}
@@ -200,13 +200,10 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, offic
           </div>
         )}
 
-        {/* Always rendered, like GitHub's contribution graph on an empty
-            profile: with no records the grid is all zero-level cells plus a
-            line saying so, rather than the whole block disappearing (which read
-            as "this app has no stats"). The numbers are TOTALS across every
-            project — the empty workspace has no project to scope them to. */}
+        {/* Totals span every project; zero records still produce an empty grid
+            when the welcome content has room for the activity card. */}
             {stats && (
-          <div className="w-full rounded-[14px] border border-hairline bg-card px-4 py-3.5">
+          <div className="workspace-welcome-activity w-full rounded-[14px] border border-hairline bg-card px-4 py-3.5">
             <header className="mb-3 flex items-baseline justify-between">
               <span className="text-[13px] font-medium text-neutral-800">活跃对话</span>
               <span className="text-[11px] text-neutral-500">

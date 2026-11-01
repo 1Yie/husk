@@ -68,14 +68,28 @@ export function SplitHandle({ layout, split, groupKey, active, onResize }: {
     paint(current.root, resizeSplit(current.layout, split.key, current.ratio));
     drag.current = undefined;
     handle.current?.removeAttribute("data-dragging");
+    if (handle.current?.hasPointerCapture(current.pointer))
+      handle.current.releasePointerCapture(current.pointer);
     onResize(groupKey, split.key, current.ratio);
     current.release();
   }, [groupKey, onResize, split.key]);
   useEffect(() => { if (!active) finish(); }, [active, finish]);
-  useEffect(() => () => {
-    if (frame.current !== undefined) cancelAnimationFrame(frame.current);
-    drag.current?.release();
-    drag.current = undefined;
+  useEffect(() => {
+    window.addEventListener("blur", finish);
+    return () => window.removeEventListener("blur", finish);
+  }, [finish]);
+  useEffect(() => {
+    const element = handle.current;
+    return () => {
+      if (frame.current !== undefined) cancelAnimationFrame(frame.current);
+      frame.current = undefined;
+      const current = drag.current;
+      drag.current = undefined;
+      element?.removeAttribute("data-dragging");
+      if (current && element?.hasPointerCapture(current.pointer))
+        element.releasePointerCapture(current.pointer);
+      current?.release();
+    };
   }, []);
   const update = (x: number, y: number) => {
     const current = drag.current;
@@ -90,7 +104,7 @@ export function SplitHandle({ layout, split, groupKey, active, onResize }: {
       aria-label={split.direction === "columns" ? "调整终端分屏宽度" : "调整终端分屏高度"}
       aria-orientation={split.direction === "columns" ? "vertical" : "horizontal"}
       aria-valuemin={10} aria-valuemax={90} aria-valuenow={Math.round(split.ratio * 100)}
-      tabIndex={active ? 0 : -1} className="terminal-panel__splitter" data-direction={split.direction}
+      tabIndex={active ? 0 : -1} className="terminal-panel__splitter layout-resize-grip" data-direction={split.direction}
       data-split-key={split.key} style={splitBox(split)}
       onPointerDown={(event) => {
         if (event.button !== 0 || !active || drag.current) return;
@@ -99,7 +113,6 @@ export function SplitHandle({ layout, split, groupKey, active, onResize }: {
         const bounds = root.getBoundingClientRect();
         if (!bounds.width || !bounds.height) return;
         event.preventDefault();
-        event.currentTarget.focus();
         event.currentTarget.setPointerCapture(event.pointerId);
         const limits = ratioBounds(layout, split, bounds);
         drag.current = { pointer: event.pointerId, root, layout, bounds, ratio: split.ratio,

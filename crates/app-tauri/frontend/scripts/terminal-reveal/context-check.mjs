@@ -77,11 +77,13 @@ export async function checkTerminalContextMenu(page) {
     width: document.querySelector(".main-col").getBoundingClientRect().width,
     panel: document.querySelector(".terminal-panel").getBoundingClientRect().toJSON(),
     surface: document.querySelector(".terminal-panel__surface").getBoundingClientRect().toJSON(),
+    gap: Number.parseFloat(getComputedStyle(document.querySelector(".terminal-panel")).getPropertyValue("--terminal-gap")) || 0,
     menu: document.querySelector('[role="menu"]').getBoundingClientRect().toJSON(),
   }));
   assert.equal(during.pointerEvents, before.pointerEvents, "terminal context menu must not disable pointer input on the app body");
   assert.equal(during.width, before.width, "opening a terminal context menu must not resize the app");
-  assert.ok(Math.abs(during.panel.height - during.surface.height) < 1, "menu trigger surface must match the real panel");
+  assert.ok(Math.abs(during.panel.height - during.surface.height - during.gap) < 1, "menu trigger surface must match the real card, excluding its reveal gutter");
+  assert.ok(Math.abs(during.surface.top - during.panel.top - during.gap) < 1, "menu trigger surface starts after the real gutter");
 
   await page.keyboard.press("Escape");
   await menu.waitFor({ state: "detached" });

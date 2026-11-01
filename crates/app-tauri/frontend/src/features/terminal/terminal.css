@@ -17,6 +17,7 @@
 .terminal-panel__surface {
  position: absolute;
  inset: 0;
+ top: var(--terminal-gap, 0px);
  display: flex;
  min-height: 0;
  contain: layout paint;
@@ -36,31 +37,24 @@
 }
 .terminal-panel__separator {
  position: absolute;
- top: -2px;
+ top: 0;
  left: 0;
  right: 0;
  z-index: 3;
- height: 6px;
+ height: 4px;
  cursor: ns-resize;
  touch-action: none;
 }
-.terminal-panel__separator::after {
- content: "";
- position: absolute;
- left: 0;
- right: 0;
- top: 2px;
- height: 2px;
- background: transparent;
- transition: background-color 120ms;
+.terminal-panel--inset,
+.terminal-panel--inset .terminal-panel__surface {
+ @apply rounded-lg;
 }
-.terminal-panel__separator:hover::after,
-.terminal-panel__separator:focus-visible::after,
-.terminal-panel[data-resizing] .terminal-panel__separator::after {
- background: var(--husk-accent);
+.terminal-panel--inset .terminal-panel__inner {
+ @apply rounded-lg border border-hairline;
 }
-.terminal-panel__separator:focus-visible {
- outline: none;
+.terminal-panel--inset .terminal-panel__separator {
+ top: 0;
+ height: var(--terminal-gap);
 }
 .terminal-panel__toolbar {
  display: flex;
@@ -321,11 +315,6 @@
  height: 6px;
  transform: translateY(-50%);
  cursor: row-resize;
-}
-.terminal-panel__splitter:hover,
-.terminal-panel__splitter:focus-visible,
-.terminal-panel__splitter[data-dragging] {
- background: color-mix(in srgb, var(--husk-accent) 45%, transparent);
 }
 .terminal-panel__view[hidden] {
  display: none;

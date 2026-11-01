@@ -19,12 +19,13 @@ import {
 } from "react";
 import { DockTabs } from "./dock-tabs";
 import { WorkspaceTools } from "./workspace-tools";
-import "./dock.css";
+import type { WorkspaceFileRequest } from "@/features/workspace-files/file-reference";
 import { DirectoryLoadingSkeleton } from "@/features/workspace-files/loading";
 import { cn } from "@/lib/utils";
+import { isMac } from "@/lib/platform";
 import { ChangesList } from "@/features/chat/components/changes-panel";
-import { WorkspaceChangesNotice } from "@/features/chat/components/changes-panel/workspace-changes-notice";
 import { useRegisterCommand } from "@/lib/command-registry";
+import { WorkspaceChangesNotice } from "@/features/chat/components/changes-panel/workspace-changes-notice";
 import type { WorkspaceChanges } from "@/features/chat/components/changes-panel/workspace-changes";
 import { ArtifactsList } from "@/features/chat/components/artifacts-panel";
 import { JobsList } from "@/features/chat/components/jobs-panel";
@@ -68,6 +69,7 @@ export function SessionDock({
   onClose,
   onOpenWorkspace,
   officeMode = false,
+  fileRequest,
 }: {
   changes: FileChange[];
   /** Current root's Git read state, including a retained stale snapshot. */
@@ -96,15 +98,13 @@ export function SessionDock({
   onClose?: () => void;
   onOpenWorkspace?: () => void;
   officeMode?: boolean;
+  fileRequest?: WorkspaceFileRequest;
 }) {
   const storeOpen = useDockStore((s) => s.open);
   const open = openProp ?? storeOpen;
   const tab = useDockStore((s) => s.tab);
   const width = useDockStore((s) => s.width);
   const setTab = useDockStore((s) => s.setTab);
-  const setWidth = useDockStore((s) => s.setWidth);
-  const browserOpen = useDockStore((s) => s.browserOpen);
-  const closeBrowser = useDockStore((s) => s.closeBrowser);
   useRegisterCommand("workspace-file", () => {
     if (!root) {
       onOpenWorkspace?.();
@@ -113,6 +113,9 @@ export function SessionDock({
     useDockStore.getState().setOpen(true);
     setTab("files");
   });
+  const setWidth = useDockStore((s) => s.setWidth);
+  const browserOpen = useDockStore((s) => s.browserOpen);
+  const closeBrowser = useDockStore((s) => s.closeBrowser);
 
   // Width is dragged; a CSS transition would fight the pointer, so the slide
   // is switched off for the duration of the drag. The live width stays local
@@ -203,7 +206,8 @@ export function SessionDock({
   return (
     <div
       className={cn(
-        "flex-none overflow-hidden",
+        "relative flex-none overflow-hidden",
+        isMac && "rounded-lg",
         // The column eases open rather than snapping: WebKit has no scroll
         // anchoring, so a one-frame 300px re-flow of the stream threw the
         // reader's place by however much the text re-wrapped above them —
@@ -212,24 +216,10 @@ export function SessionDock({
           ? ""
           : "transition-[width] duration-300 ease-out motion-reduce:transition-none",
       )}
-      style={{ width: open ? shownWidth : 0 }}
+      style={{ width: open ? shownWidth + (isMac ? 8 : 0) : 0 }}
       aria-hidden={!open}
       {...(!open ? { inert: "" } : {})}
     >
-      <aside
-        id="workspace-tools-sidebar"
-        aria-label="工作区工具侧栏"
-        style={{ width: shownWidth }}
-        className={cn(
-          "relative flex h-full flex-none flex-col overflow-hidden border-l border-hairline bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)] select-none",
-          resizing || snap
-            ? ""
-            : "transition-transform duration-300 ease-out motion-reduce:transition-none",
-          open ? "translate-x-0" : "translate-x-full",
-        )}
-      >
-        {/* Resize handle — a thin lane on the outer edge, so the hit area
-            costs no room from the rows. */}
         <div
           role="separator"
           aria-orientation="vertical"
@@ -243,9 +233,25 @@ export function SessionDock({
             if (e.key === "ArrowLeft") setWidth(width + 24);
             else if (e.key === "ArrowRight") setWidth(width - 24);
           }}
-          className="workspace-dock__separator absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize"
+          className={cn("workspace-dock__separator layout-resize-grip absolute inset-y-0 z-10 w-1.5 cursor-col-resize",
+            isMac ? "left-px" : "left-0")}
         />
-
+      <aside
+        id="workspace-tools-sidebar"
+        aria-label="工作区工具侧栏"
+        style={{
+          width: shownWidth,
+          ...(isMac ? { marginLeft: 8, background: "color-mix(in srgb, var(--husk-n50) 70%, var(--husk-bg))" } : {}),
+        }}
+        className={cn(
+          "relative flex h-full flex-none flex-col overflow-hidden border-hairline select-none",
+          isMac ? "rounded-lg border" : "border-l bg-[color-mix(in_srgb,var(--husk-n50)_70%,transparent)]",
+          resizing || snap
+            ? ""
+            : "transition-transform duration-300 ease-out motion-reduce:transition-none",
+          open ? "translate-x-0" : "translate-x-full",
+        )}
+      >
         {tabs.length > 0 && (
           <DockTabs tabs={tabs} counts={counts} active={activeTab} onSelect={setTab} />
         )}
@@ -284,8 +290,9 @@ export function SessionDock({
           ) : activeTab === "files" ? (
             <Suspense fallback={<DirectoryLoadingSkeleton header />}>
               <WorkspaceFiles
-                key={root}
+                key={`${root}:${session}`}
                 root={root}
+                openRequest={fileRequest?.workspaceRoot === root && fileRequest.sessionId === session ? fileRequest : undefined}
                 onOpenWorkspace={onOpenWorkspace}
                 onBack={closeBrowser}
               />

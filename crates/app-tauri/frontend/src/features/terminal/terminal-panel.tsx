@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import { beginLayoutResize } from "@/lib/layout-resize";
+import { isMac } from "@/lib/platform";
 import type { TerminalAppearance } from "./terminal-session";
 import {
   isAppDark, resolveTerminalFont, resolveTerminalPalette,
@@ -16,6 +17,7 @@ export interface TerminalPanelProps {
   cwd?: string;
 }
 const MIN_HEIGHT = 120;
+const PANEL_GAP = isMac ? 8 : 0;
 
 /** Prefs + the app's current theme, as the renderer takes them. */
 function appearanceOf(prefs: TerminalPrefs): TerminalAppearance {
@@ -95,7 +97,7 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
   const preview = useRef<ReturnType<typeof createTerminalResizePreview>>();
   if (!preview.current) {
     preview.current = createTerminalResizePreview((next) => {
-      if (root.current) root.current.style.height = `${next}px`;
+      if (root.current) root.current.style.height = `${next + PANEL_GAP}px`;
       separator.current?.setAttribute("aria-valuenow", String(next));
     });
   }
@@ -108,7 +110,7 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
     const releaseLayout = beginLayoutResize();
     const cancel = afterTerminalReveal(
       root.current,
-      () => drag.current ? null : open ? targetHeight.current : 0,
+      () => drag.current ? null : open ? targetHeight.current + PANEL_GAP : 0,
       () => {
         setActivated(open);
         if (!open && empty.current) {
@@ -136,14 +138,21 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
       preview.current?.cancel();
       root.current?.removeAttribute("data-resizing");
       separator.current?.setAttribute("aria-valuenow", String(shownHeight));
+      if (d && separator.current?.hasPointerCapture(d.pointer))
+        separator.current.releasePointerCapture(d.pointer);
       d?.releaseLayout();
     }
   }, [open]);
-  useEffect(() => () => {
-    preview.current?.cancel();
-    const d = drag.current;
-    drag.current = null;
-    d?.releaseLayout();
+  useEffect(() => {
+    const element = root.current, handle = separator.current;
+    return () => {
+      preview.current?.cancel();
+      const d = drag.current;
+      drag.current = null;
+      element?.removeAttribute("data-resizing");
+      if (d && handle?.hasPointerCapture(d.pointer)) handle.releasePointerCapture(d.pointer);
+      d?.releaseLayout();
+    };
   }, []);
   useEffect(() => {
     const parent = root.current?.parentElement;
@@ -157,7 +166,7 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
           setMaxHeight(
             Math.max(
               0,
-              Math.min(parent.clientHeight * 0.7, parent.clientHeight - 96),
+              Math.min(parent.clientHeight * 0.7, parent.clientHeight - 96) - PANEL_GAP,
             ),
           );
       });
@@ -171,7 +180,7 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
     };
   }, []);
 
-  const endDrag = () => {
+  const endDrag = useCallback(() => {
     const d = drag.current;
     if (!d) return;
     drag.current = null;
@@ -183,27 +192,33 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
     updatePrefs({ panelHeight: finalHeight });
     setResizeEpoch((epoch) => epoch + 1);
     root.current?.removeAttribute("data-resizing");
+    if (separator.current?.hasPointerCapture(d.pointer))
+      separator.current.releasePointerCapture(d.pointer);
     d.releaseLayout();
-  };
+  }, [clamp, updatePrefs]);
+  useEffect(() => {
+    window.addEventListener("blur", endDrag);
+    return () => window.removeEventListener("blur", endDrag);
+  }, [endDrag]);
 
   return (
     <section
       ref={root}
-      className="terminal-panel"
+      className={isMac ? "terminal-panel terminal-panel--inset" : "terminal-panel"}
       aria-label="终端面板"
       aria-hidden={!open}
       {...(open ? {} : { inert: "" })}
       data-open={open}
       style={{
-        height: open ? shownHeight : 0,
+        height: open ? shownHeight + PANEL_GAP : 0,
+        ["--terminal-gap" as string]: `${PANEL_GAP}px`,
         ["--terminal-bg" as string]: appearance.theme.background,
         ["--terminal-fg" as string]: appearance.theme.foreground,
       }}
     >
-      <div className="terminal-panel__surface">
       <div
         ref={separator}
-        className="terminal-panel__separator"
+        className="terminal-panel__separator layout-resize-grip"
         role="separator"
         aria-label="调整终端高度"
         aria-orientation="horizontal"
@@ -231,8 +246,8 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
         onPointerDown={(event) => {
           if (event.button !== 0 || !open || drag.current) return;
           event.preventDefault();
-          const initialHeight = clamp(root.current?.getBoundingClientRect().height || shownHeight);
-          event.currentTarget.focus();
+          const bounds = root.current?.getBoundingClientRect().height;
+          const initialHeight = clamp(bounds ? bounds - PANEL_GAP : shownHeight);
           event.currentTarget.setPointerCapture(event.pointerId);
           drag.current = {
             pointer: event.pointerId,
@@ -267,6 +282,7 @@ export function TerminalPanel({ open, onOpenChange, cwd }: TerminalPanelProps) {
           })
         }
       />
+      <div className="terminal-panel__surface">
       {generation > 0 && (
         <TerminalWorkspace
           key={generation}

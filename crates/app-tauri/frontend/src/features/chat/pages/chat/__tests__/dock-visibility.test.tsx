@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ChatPage } from "../index";
 import { RightSidebarToggle } from "@/components/layout-controls";
@@ -51,17 +51,23 @@ test.each([false, true])(
   },
 );
 
-test("working mode does not fetch git changes or resurrect coding-mode tabs", async () => {
+test("working mode shows read-only files without changes or fetching git", async () => {
   const git = vi.fn(() => ({ repo: true, files: [] }));
+  const listFiles = vi.fn(() => ({ path: "", entries: [], truncated: false }));
   mockCommand("agent_session", git, "workspace_changes");
+  mockCommand("workspace_list_files", listFiles);
   useDockStore.setState({ open: true, tab: "files", browserOpen: true });
   renderWithProviders(
     <ChatPage title="工作" workspaceRoot="/project" officeMode sessionKey="/project:1" sessionId={1} />,
   );
-  await act(async () => { await Promise.resolve(); });
-  expect(screen.queryByRole("tab", { name: /^文件/ })).toBeNull();
+  const browser = await screen.findByRole("region", { name: "预览工作区文件" });
+  const tree = within(browser).getByLabelText("工作区目录");
+  expect(await within(tree).findByText("此目录为空")).toBeVisible();
+  expect(listFiles).toHaveBeenCalledWith({ root: "/project", path: "" });
+  expect(screen.getByRole("tab", { name: /^文件/ })).toBeVisible();
+  expect(screen.getByRole("tab", { name: /^文件/ })).toHaveAttribute("aria-selected", "true");
   expect(screen.queryByRole("tab", { name: /^改动/ })).toBeNull();
   expect(screen.queryByRole("tab", { name: "工具" })).toBeNull();
-  expect(screen.getByText("工作区工具")).toBeVisible();
+  expect(screen.queryByText("工作区工具")).toBeNull();
   expect(git).not.toHaveBeenCalled();
 });

@@ -140,9 +140,11 @@ describe("unified session dock", () => {
     expect(screen.getByRole("button", { name: "工作区工具" })).toHaveClass("flex-none");
   });
 
-  test("the width handle uses themed hover and drag feedback", () => {
+  test("the width handle shares a short neutral grip with hover and drag feedback", () => {
     const style = document.createElement("style");
-    style.textContent = readFileSync(new NodeURL("../dock.css", import.meta.url), "utf8");
+    const css = readFileSync(new NodeURL("../../../../../index.css", import.meta.url), "utf8");
+    const start = css.indexOf(".layout-resize-grip {");
+    style.textContent = css.slice(start, css.indexOf("@media", start));
     document.head.append(style);
     try {
       const rules = Array.from(style.sheet?.cssRules ?? []);
@@ -150,13 +152,19 @@ describe("unified session dock", () => {
         (entry) => "selectorText" in entry &&
           (entry as CSSStyleRule).selectorText.split(",").some((s) => s.trim() === selector),
       ) as CSSStyleRule | undefined;
-      expect(rule(".workspace-dock__separator::after")?.style.background).toBe("transparent");
+      const grip = rule(".layout-resize-grip::after")?.style;
+      expect(grip?.background).toBe("var(--husk-fg-muted)");
+      expect(grip?.width).toBe("3px");
+      expect(grip?.height).toBe("26px");
+      expect(grip?.left).toBe("50%");
+      expect(grip?.top).toBe("50%");
+      expect(Number(grip?.opacity)).toBe(0);
       for (const selector of [
-        ".workspace-dock__separator:hover::after",
-        ".workspace-dock__separator:focus-visible::after",
-        ".workspace-dock__separator[data-resizing]::after",
+        ".layout-resize-grip:hover::after",
+        ".layout-resize-grip:focus-visible::after",
+        ".layout-resize-grip[data-resizing]::after",
       ]) {
-        expect(rule(selector)?.style.background).toBe("var(--husk-accent)");
+        expect(Number(rule(selector)?.style.opacity)).toBe(0.8);
       }
     } finally {
       style.remove();
@@ -325,7 +333,7 @@ describe("unified session dock", () => {
     );
   });
 
-  test("working mode filters file and changes tabs even when the browser was open", () => {
+  test("working mode retains read-only files while filtering changes", () => {
     useDockStore.setState({ tab: "files", browserOpen: true });
     render(
       <SessionDock
@@ -334,18 +342,18 @@ describe("unified session dock", () => {
         artifacts={[artifact("report.docx")]}
       />,
     );
-    expect(screen.queryByRole("tab", { name: /^文件/ })).toBeNull();
+    expect(screen.getByRole("tab", { name: /^文件/ })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("tab", { name: /^改动/ })).toBeNull();
     expect(screen.getByRole("tab", { name: /^产物/ })).toHaveAttribute(
       "aria-selected",
-      "true",
+      "false",
     );
   });
 
-  test("working mode's empty home does not offer file or git actions", () => {
-    render(<SessionDock officeMode changes={[]} artifacts={[]} />);
+  test("working mode's empty home offers files and terminal while filtering git actions", () => {
+    render(<SessionDock officeMode root="/fixture" changes={[]} artifacts={[]} />);
     expect(screen.queryByRole("tab")).toBeNull();
-    expect(screen.queryByRole("button", { name: "预览工作区文件" })).toBeNull();
+    expect(screen.getByRole("button", { name: "预览工作区文件" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "查看工作区改动" })).toBeNull();
     expect(screen.getByRole("button", { name: "打开终端" })).toBeEnabled();
   });
@@ -439,7 +447,7 @@ describe("unified session dock", () => {
       />,
     );
     const frame = container.firstElementChild as HTMLElement;
-    const aside = frame.firstElementChild as HTMLElement;
+    const aside = frame.querySelector("aside") as HTMLElement;
     // A session switch is a jump: neither the column nor the slide animates.
     expect(frame.className).not.toMatch(/transition/);
     expect(aside.className).not.toMatch(/transition/);

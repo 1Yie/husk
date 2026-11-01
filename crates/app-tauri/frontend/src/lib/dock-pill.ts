@@ -1,6 +1,6 @@
 // Which file view the dock pill speaks for. One rule, so the page and its
 // tests cannot drift: 后台 is a detour and never names the pill, 改动 counts
-// while the session has written files, 产物 whenever it has any.
+// while the session has written files, 产物 whenever it has any.`
 
 import type { FilesTab } from "@/features/chat/components/dock/state";
 

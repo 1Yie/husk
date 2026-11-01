@@ -312,6 +312,14 @@ test("hiding during a drag discards the preview and cancels later frame writes",
   act(() => vi.advanceTimersByTime(100));
   expect(view.container.querySelector(".terminal-panel")).toHaveStyle({ height: "280px" });
   expect(sessions).toHaveLength(1);
+  const panel = view.container.querySelector(".terminal-panel");
+  fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientY: 500 });
+  fireEvent.pointerMove(handle, { pointerId: 1, clientY: 400 });
+  expect(panel).toHaveAttribute("data-resizing");
+  view.unmount();
+  act(() => vi.advanceTimersByTime(100));
+  expect(panel).not.toHaveAttribute("data-resizing");
+  expect(isLayoutResizing()).toBe(false);
 });
 
 test("the active screen stays rendered while closing, without accepting input or restarting", async () => {
@@ -477,6 +485,13 @@ test("split dragging previews without React renders and fits only after release"
     expect(session.scheduleFit).toHaveBeenCalledWith({ immediate: true });
     expect(session.dispose).not.toHaveBeenCalled();
   }
+  fireEvent.pointerDown(handle, { button: 0, pointerId: 30, clientX: 520, clientY: 100 });
+  fireEvent.pointerMove(handle, { pointerId: 30, clientX: 560, clientY: 100 });
+  expect(handle).toHaveAttribute("data-dragging");
+  view.unmount();
+  act(() => vi.advanceTimersByTime(100));
+  expect(handle).not.toHaveAttribute("data-dragging");
+  expect(isLayoutResizing()).toBe(false);
 });
 
 test("tab menus rename and restore labels without recreating the renderer", async () => {

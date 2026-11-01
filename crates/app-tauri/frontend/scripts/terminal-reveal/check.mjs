@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import react from "@vitejs/plugin-react";
 import { createServer } from "vite";
 import { chromium, webkit } from "playwright";
@@ -15,10 +16,17 @@ import { checkTerminalTabs } from "./tabs-check.mjs";
 import { checkTerminalSplits } from "./split-check.mjs";
 import { checkTerminalSettings } from "./settings-check.mjs";
 import { checkAppearance } from "./appearance-check.mjs";
+import { checkSettingsShell } from "./workspace-settings-check.mjs";
+import { checkWorkspaceLinks } from "./workspace-file-links-check.mjs";
+import { checkMarkdownResources } from "./markdown-resources-check.mjs";
+import { checkRemoteMarkdownImages } from "./markdown-remote-images-check.mjs";
+import { checkWelcomeResponsive } from "./welcome-responsive-check.mjs";
+import { checkPanelClip } from "./panel-clip-check.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
 const engine = process.argv.includes("--webkit") ? "webkit" : "chromium";
+const mac = !process.argv.includes("--non-mac");
 const server = await createServer({
   configFile: false, root, cacheDir: "node_modules/.vite-terminal-reveal", logLevel: "error",
   plugins: [react(), {
@@ -41,7 +49,43 @@ const server = await createServer({
 let browser;
 try {
   await server.listen();
-  if (process.argv.includes("--native-webkit")) {
+  if (process.argv.includes("--panel-clip")) {
+    browser = await chromium.launch({
+      headless: true,
+      ...(process.env.CHAT_TERMINAL_EXECUTABLE ? { executablePath: process.env.CHAT_TERMINAL_EXECUTABLE } : {}),
+    });
+    await checkPanelClip({ browser, base: server.resolvedUrls.local[0] });
+  } else if (process.argv.includes("--welcome-responsive")) {
+    browser = await chromium.launch({
+      headless: true,
+      ...(process.env.CHAT_TERMINAL_EXECUTABLE ? { executablePath: process.env.CHAT_TERMINAL_EXECUTABLE } : {}),
+    });
+    await checkWelcomeResponsive({ browser, base: server.resolvedUrls.local[0] });
+  } else if (process.argv.includes("--remote-badges")) {
+    browser = await chromium.launch({
+      headless: true,
+      ...(process.env.CHAT_TERMINAL_EXECUTABLE ? { executablePath: process.env.CHAT_TERMINAL_EXECUTABLE } : {}),
+    });
+    await checkRemoteMarkdownImages({ browser, base: server.resolvedUrls.local[0], root });
+  } else if (process.argv.includes("--markdown-resources")) {
+    browser = await chromium.launch({
+      headless: true,
+      ...(process.env.CHAT_TERMINAL_EXECUTABLE ? { executablePath: process.env.CHAT_TERMINAL_EXECUTABLE } : {}),
+    });
+    await checkMarkdownResources({ browser, base: server.resolvedUrls.local[0], root });
+  } else if (process.argv.includes("--workspace-links")) {
+    browser = await chromium.launch({
+      headless: true,
+      ...(process.env.CHAT_TERMINAL_EXECUTABLE ? { executablePath: process.env.CHAT_TERMINAL_EXECUTABLE } : {}),
+    });
+    await checkWorkspaceLinks({ browser, base: server.resolvedUrls.local[0], root });
+  } else if (process.argv.includes("--settings-shell")) {
+    browser = await (engine === "webkit" ? webkit : chromium).launch({
+      headless: true,
+      ...(process.env.CHAT_TERMINAL_EXECUTABLE ? { executablePath: process.env.CHAT_TERMINAL_EXECUTABLE } : {}),
+    });
+    await checkSettingsShell({ browser, base: server.resolvedUrls.local[0], engine, mac });
+  } else if (process.argv.includes("--native-webkit")) {
     const child = spawn("python3", [path.join(here, "native-check.py"), `${server.resolvedUrls.local[0]}terminal-reveal.html?resize`], {
       stdio: "inherit",
       env: { ...process.env, GDK_BACKEND: process.env.WAYLAND_DISPLAY ? "wayland" : "x11",
@@ -65,7 +109,10 @@ try {
     errors.push(error.message);
     console.error("Browser error:", error.message);
   });
-  await page.addInitScript(() => {
+  await page.addInitScript((mac) => {
+    Object.defineProperty(navigator, "platform", { value: mac ? "MacIntel" : "Linux x86_64" });
+    Object.defineProperty(navigator, "userAgent", { value: mac
+      ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" : "Mozilla/5.0 (X11; Linux x86_64)" });
     window.__terminalMetrics = { start: 0, ipc: [], frames: [], chatCommits: [] };
     document.addEventListener("click", (event) => {
       if (window.__terminalMetrics.active) return;
@@ -82,6 +129,8 @@ try {
       const sample = () => {
         const now = performance.now();
         const panel = document.querySelector(".terminal-panel");
+        const gap = Number.parseFloat(getComputedStyle(panel).getPropertyValue("--terminal-gap")) || 0;
+        const bounds = panel.getBoundingClientRect();
         const surface = document.querySelector(".terminal-panel__surface")?.getBoundingClientRect();
         metrics.frames.push({
           at: now - metrics.start, gap: now - previous,
@@ -89,27 +138,48 @@ try {
           height: surface ? Math.max(0, Math.min(surface.height, panel.getBoundingClientRect().bottom - surface.top)) : 0,
           streamHeight: streamHeight(),
           followGap: surface
-            ? document.querySelector("[data-terminal-composer]").getBoundingClientRect().bottom - Math.min(panel.getBoundingClientRect().bottom, surface.top)
+            ? document.querySelector("[data-terminal-composer]").getBoundingClientRect().bottom + Math.min(gap, bounds.height) - Math.min(bounds.bottom, surface.top)
             : 0,
-          geometryGap: surface ? Math.abs(surface.height - panel.getBoundingClientRect().height) : 0,
+          geometryGap: surface ? Math.abs(surface.height - Math.max(0, bounds.height - gap)) : 0,
         });
         previous = now;
         if (now - metrics.start < 700) requestAnimationFrame(sample);
       };
       requestAnimationFrame(sample);
     }, true);
-  });
+  }, mac);
   const resizing = process.argv.includes("--resize");
   const tabs = process.argv.includes("--tabs");
   const splits = process.argv.includes("--split");
   const settings = process.argv.includes("--settings");
   const appearance = process.argv.includes("--appearance");
-  await page.goto(`${server.resolvedUrls.local[0]}terminal-reveal.html${appearance ? "?appearance" : settings ? "?settings" : resizing || tabs || splits ? "?resize" : ""}`);
+  await page.goto(`${server.resolvedUrls.local[0]}terminal-reveal.html${appearance ? "?appearance" : settings ? "?settings" : resizing || tabs || splits ? "?resize" : process.argv.includes("--panels") ? "?panels" : ""}`);
   await page.waitForSelector(appearance ? "[data-appearance-fixture]" : settings ? "[data-terminal-settings-fixture] button[aria-pressed]" : ".terminal-panel", { state: "attached", timeout: 10000 }).catch(async (error) => {
     console.error(await page.evaluate(() => document.querySelector("vite-error-overlay")?.shadowRoot?.textContent ?? document.body.innerText));
     throw error;
   });
   await page.waitForTimeout(1500);
+  await page.evaluate(async () => {
+    await document.fonts.load('12px "Husk Terminal Mono"');
+    await document.fonts.ready;
+  });
+  if (!settings && !appearance) {
+    const geometry = await page.evaluate(() => {
+      const main = document.querySelector(".main-col"), frame = document.querySelector(".main-workspace-frame");
+      const rect = main.getBoundingClientRect(), outer = frame?.getBoundingClientRect();
+      return { radius: getComputedStyle(main).borderTopLeftRadius,
+        insets: outer && [rect.left - outer.left, rect.top - outer.top, outer.right - rect.right, outer.bottom - rect.bottom],
+        bottom: rect.bottom, viewportBottom: innerHeight };
+    });
+    if (mac) {
+      assert.equal(geometry.radius, "0px", "main-col is a transparent layout, not the card");
+      assert.equal(await page.locator(".chat-workspace-card").evaluate(el => getComputedStyle(el).borderTopLeftRadius), "14px");
+      assert.ok(geometry.insets.every((inset, i) => Math.abs(inset - (i === 1 ? 0 : 8)) < .1), JSON.stringify(geometry));
+    } else {
+      assert.equal(geometry.insets, undefined);
+      assert.equal(geometry.bottom, geometry.viewportBottom);
+    }
+  }
   if (engine === "chromium" && Number(process.env.CHAT_TERMINAL_CPU) > 1) {
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: Number(process.env.CHAT_TERMINAL_CPU) });
@@ -601,7 +671,8 @@ try {
       const run = await page.evaluate(() => ({
         ...window.__terminalMetrics,
         rows: document.querySelector(".xterm-rows")?.children.length,
-        height: Number.parseFloat(document.querySelector(".terminal-panel").style.height) || window.__terminalMetrics.expandedHeight,
+        height: (Number.parseFloat(document.querySelector(".terminal-panel").style.height) || window.__terminalMetrics.expandedHeight)
+          - (Number.parseFloat(getComputedStyle(document.querySelector(".terminal-panel")).getPropertyValue("--terminal-gap")) || 0),
         shellRenders: Number(document.documentElement.dataset.fixtureRenders),
       }));
       const settledAt = run.frames.find((f) => opening ? f.height >= run.height - 0.5 : f.height < 0.5)?.at;
@@ -623,6 +694,7 @@ try {
         maxFrameGapMs: Math.max(...run.frames.map((f) => f.gap)),
         opens: run.ipc.filter((call) => call.command === "terminal_open"),
         resizes: run.ipc.filter((call) => call.command === "terminal_resize").length,
+        resizeRequests: run.ipc.filter((call) => call.command === "terminal_resize"),
         rows: run.rows,
       };
       assert.ok(settledAt < 700, `${name}: slide must finish`);
@@ -645,7 +717,7 @@ try {
     assert.ok(runs[0].settledPaintMs < runs[0].opens[0].at, "paint the revealed panel before initialization");
     assert.equal(runs[0].opens[0].rows, runs[0].rows, "PTY must start at the final screen size");
     assert.equal(runs[2].opens.length, 0, "reopening must reuse the existing process");
-    for (const run of runs) assert.equal(run.resizes, 0, "sliding must not resize xterm or its PTY");
+    for (const run of runs) assert.equal(run.resizes, 0, `${run.name}: sliding must not resize xterm or its PTY`);
 
     // Reverse both directions before either animation can commit geometry.
     for (const name of ["打开终端", "隐藏终端", "打开终端"]) {
@@ -657,6 +729,8 @@ try {
     assert.equal(await page.locator(".terminal-panel").getAttribute("data-resizing"), null);
     assert.ok(await page.evaluate(() => Math.abs(
       document.querySelector("[data-terminal-composer]").getBoundingClientRect().bottom
+      + (Number.parseFloat(getComputedStyle(document.querySelector(".terminal-panel")).getPropertyValue("--terminal-gap")) || 0)
+      + Number.parseFloat(getComputedStyle(document.querySelector(".chat-workspace-card")).borderBottomWidth)
       - document.querySelector(".terminal-panel__surface").getBoundingClientRect().top,
     ) < 0.5), "reversal must not strand chat controls at an obsolete offset");
     await page.getByRole("button", { name: "隐藏终端", exact: true }).click();
@@ -667,6 +741,26 @@ try {
     await record("reduced-motion-close", false);
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await record("before-last-tab-close", true);
+    await page.evaluate(() => {
+      window.__frameHosts = [document.querySelector(".main-col"), document.querySelector(".stream-scroll"),
+        document.querySelector(".terminal-panel__screen")];
+      window.__frameOpenCount = window.__terminalMetrics.ipc.filter(call => call.command === "terminal_open").length;
+    });
+    for (const [name, width] of [["收起会话侧栏", 0], ["展开会话侧栏", 240]]) {
+      await page.getByRole("button", { name, exact: true }).click();
+      await page.waitForFunction(width => document.getElementById("session-navigation").getBoundingClientRect().width === width, width);
+      await page.waitForTimeout(500);
+      const retained = await page.evaluate(() => ({
+        hosts: [document.querySelector(".main-col"), document.querySelector(".stream-scroll"),
+          document.querySelector(".terminal-panel__screen")].every((node, i) => node === window.__frameHosts[i]),
+        opens: window.__terminalMetrics.ipc.filter(call => call.command === "terminal_open").length === window.__frameOpenCount,
+      }));
+      assert.deepEqual(retained, { hosts: true, opens: true }, "sidebar layout keeps chat/xterm hosts and PTY identity");
+    }
+    const revealOutput = process.env.CHAT_TERMINAL_OUTPUT || path.resolve(root, "../../../.husk/scratch/sidebar-glass-integration");
+    await mkdir(revealOutput, { recursive: true });
+    await page.screenshot({ path: path.join(revealOutput, "frame-terminal-expanded.png") });
+    console.log(JSON.stringify({ retainedChatAndTerminalHosts: true, sidebarToggleExtraPtys: 0 }));
     await record("last-tab-close", false, "关闭终端 repo");
     assert.equal(await page.locator(".terminal-panel__inner").count(), 0, "remove the empty terminal shell only after its closing animation");
     assert.equal(errors.length, 0, "no browser runtime errors");
@@ -676,4 +770,10 @@ try {
 } finally {
   await browser?.close();
   await server.close();
+}
+async function attachmentVisible(page) {
+  return page.getByRole("button", { name: "添加附件", exact: true }).evaluate(el => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.left >= 0 && r.right <= innerWidth;
+  });
 }

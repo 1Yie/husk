@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { checkResizeGrip } from "./resize-check.mjs";
 
 export async function checkTerminalSplits(page) {
   const panel = page.locator(".terminal-panel");
@@ -56,6 +57,8 @@ export async function checkTerminalSplits(page) {
   assert.ok(Math.abs(first.bottom - bottom.top) < 1 && Math.abs(first.left - bottom.left) < 1);
 
   const separator = panel.getByRole("separator", { name: "调整终端分屏宽度", exact: true });
+  await checkResizeGrip(page, separator, "columns");
+  await checkResizeGrip(page, panel.getByRole("separator", { name: "调整终端分屏高度", exact: true }), "rows");
   const box = await separator.boundingBox();
   const x = box.x + box.width / 2, y = box.y + box.height / 4;
   await page.mouse.move(x, y);

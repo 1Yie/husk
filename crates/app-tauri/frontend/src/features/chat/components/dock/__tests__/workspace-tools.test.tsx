@@ -45,8 +45,17 @@ test("the file entry can select a workspace before previewing", () => {
   expect(onFiles).not.toHaveBeenCalled();
 });
 
-test("office mode only offers the terminal entry", () => {
-  render(<WorkspaceTools root="/workspace" hasChanges onFiles={vi.fn()} onReview={vi.fn()} officeMode />);
-  expect(screen.getAllByRole("button")).toHaveLength(1);
-  expect(screen.getByRole("button", { name: "打开终端" })).toBeVisible();
+test("office mode offers read-only files and terminal while keeping changes unavailable", () => {
+  const onFiles = vi.fn();
+  const onReview = vi.fn();
+  render(<WorkspaceTools root="/workspace" hasChanges onFiles={onFiles} onReview={onReview} officeMode />);
+  expect(screen.getAllByRole("button")).toHaveLength(2);
+  fireEvent.click(screen.getByRole("button", { name: "预览工作区文件" }));
+  expect(onFiles).toHaveBeenCalledOnce();
+  const terminal = screen.getByRole("button", { name: "打开终端" });
+  expect(terminal).toBeVisible();
+  fireEvent.click(terminal);
+  expect(useLayoutStore.getState().terminalOpen).toBe(true);
+  expect(screen.queryByRole("button", { name: "查看工作区改动" })).toBeNull();
+  expect(onReview).not.toHaveBeenCalled();
 });
