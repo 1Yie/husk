@@ -192,7 +192,7 @@ export function SettingsPage({
         data-tauri-drag-region="deep"
         className="w-[240px] flex-none bg-panel border-r border-hairline flex flex-col justify-between h-full select-none"
       >
-        <div className="flex flex-col">
+        <div className="flex flex-col min-h-0 flex-1">
           {/* Top title strip matching the main sidebar */}
           <div
             data-tauri-drag-region="deep"
@@ -204,7 +204,7 @@ export function SettingsPage({
             </span>
           </div>
 
-          <div className="p-3 flex flex-col gap-4">
+          <div className="flex-none px-3 pt-3 flex flex-col">
             <button
               type="button"
               onClick={onClose}
@@ -222,7 +222,12 @@ export function SettingsPage({
                 {g.items
                   .filter((item) => item.key !== "developer" || devUnlocked)
                   .map((item) => (
+          </div>
                     <button
+          <div
+            data-settings-nav
+            className="min-h-0 flex-1 overflow-y-auto px-3 pt-4 pb-3 flex flex-col gap-4"
+          >
                       key={item.key}
                       type="button"
                       onClick={() => setActiveTab(item.key)}
