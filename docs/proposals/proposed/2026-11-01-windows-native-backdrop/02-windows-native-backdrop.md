@@ -101,3 +101,40 @@ from the outside:
 
 Any failure is evidence for a follow-up commit on this branch; the parts that
 fail stay out of `main` until they pass.
+
+### What the sources already rule out, and what they leave open
+
+Checked in the pinned crates rather than assumed:
+
+- **Hit testing and the client area stay with tao.** `WM_NCCALCSIZE` (tao
+  `platform_impl/windows/event_loop.rs:2123`) and `WM_NCHITTEST` (`:2178`, which
+  is what gives an undecorated window its resize borders) are handled by tao's
+  own window procedure; this module delegates every message it does not handle
+  to that procedure, so extending the frame into the client area does not take
+  the drag region or the edge resize with it. Watch for it anyway: the first
+  drag of an undecorated window is the cheapest way to notice.
+- **The legacy blur-behind call is a live variable.** tao calls
+  `DwmEnableBlurBehindWindow` with an *empty* region whenever the window is
+  created `transparent` (tao `platform_impl/windows/window.rs:1284-1296`), which
+  is the pre-Windows-11 way to get a see-through client area. That is an older
+  mechanism than a system backdrop, and which one wins is not documented. If the
+  material does not appear, the next thing to try is creating the main window
+  without `transparent` on Windows and letting the system backdrop plus the
+  WEBVIEW2 alpha-0 background carry it; the current config reaches Windows
+  through the `transparent` path because there is no Windows platform config.
+- **Still unresolved by reading:** whether WebView2's own composited surface is
+  opaque here, whether an accepted `DWMWA_SYSTEMBACKDROP_TYPE` renders as a
+  material or as solid under each policy combination, and whether the acrylic to
+  mica fallback actually triggers. None of that can be read out of the source.
+
+### Capture with each run
+
+Save the answer of the command, the window state and a screenshot together:
+
+- `ver` (build number), whether the session is remote, and the power state;
+- the `data-sidebar-glass` attribute on `<html>` and the value the command
+  returned;
+- whether the frame paints the desktop through it, and whether the inner
+  surfaces stayed opaque;
+- which of `DWMSBT_TRANSIENTWINDOW` and `DWMSBT_MAINWINDOW` the answer implies,
+  by looking at whether the frame looks milky (mica) or paper-like (acrylic).
