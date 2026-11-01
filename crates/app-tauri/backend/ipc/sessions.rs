@@ -51,15 +51,26 @@ fn workspace_switch_sessions(
     mgr: &husk_host::session_manager::SessionManager,
     payload: Option<&serde_json::Value>,
 ) -> serde_json::Value {
-    compatibility_sessions(payload, || mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
+    compatibility_sessions(payload, || {
+        mgr.sidebar_rows().iter().map(|(id,t,p,a,r,pn)| {
         serde_json::json!({"id":id,"title":t,"preview":p,"active":a,"running":r,"pinned":pn})
-    }).collect())
+    }).collect()
+    })
 }
 
-fn compatibility_sessions(payload: Option<&serde_json::Value>, full: impl FnOnce() -> Vec<serde_json::Value>) -> serde_json::Value {
-    if payload.and_then(|p| p.get("sidebar")).and_then(|v| v.as_bool()) == Some(true) {
+fn compatibility_sessions(
+    payload: Option<&serde_json::Value>,
+    full: impl FnOnce() -> Vec<serde_json::Value>,
+) -> serde_json::Value {
+    if payload
+        .and_then(|p| p.get("sidebar"))
+        .and_then(|v| v.as_bool())
+        == Some(true)
+    {
         serde_json::json!([])
-    } else { serde_json::json!(full()) }
+    } else {
+        serde_json::json!(full())
+    }
 }
 
 impl PersistedSeed {
@@ -718,7 +729,8 @@ fn agent_session_inner(
         // actor is resumed separately — this is display-only data.
         "open" => {
             let id = id.ok_or("open needs id")?;
-            let _sidebar_open_mutation = super::sidebar::Mutation::for_op(if mgr.active_id != id { "open" } else { "" });
+            let _sidebar_open_mutation =
+                super::sidebar::Mutation::for_op(if mgr.active_id != id { "open" } else { "" });
             mgr.open_session(id);
             // Paged: only the newest slice mounts — older pages stream in
             // on scroll-up via `history_page`. `history_total` lets the
@@ -990,7 +1002,8 @@ fn agent_session_inner(
             }))
         }
         "set_fast_mode" => {
-            let enabled = payload.as_ref()
+            let enabled = payload
+                .as_ref()
                 .and_then(|p| p.get("enabled"))
                 .and_then(serde_json::Value::as_bool)
                 .ok_or("set_fast_mode needs boolean payload.enabled")?;
@@ -1775,21 +1788,24 @@ fn agent_session_inner(
         }
         // Semantic recall's fetch state, on its own op: the settings dialog
         // polls it twice a second, and `memory_overview` opens the store.
-        "semantic_progress" => Ok(serde_json::to_value(
-            agent_context::memory::semantic::progress(),
-        )
-        .unwrap_or_default()),
+        "semantic_progress" => Ok(
+            serde_json::to_value(agent_context::memory::semantic::progress()).unwrap_or_default(),
+        ),
         // Retry after a failure and stop a fetch in progress. Both answer with
         // the state they left, so the pane needs no extra round trip.
         "semantic_retry" => {
             agent_context::memory::semantic::retry();
-            Ok(serde_json::to_value(agent_context::memory::semantic::progress())
-                .unwrap_or_default())
+            Ok(
+                serde_json::to_value(agent_context::memory::semantic::progress())
+                    .unwrap_or_default(),
+            )
         }
         "semantic_cancel" => {
             agent_context::memory::semantic::cancel();
-            Ok(serde_json::to_value(agent_context::memory::semantic::progress())
-                .unwrap_or_default())
+            Ok(
+                serde_json::to_value(agent_context::memory::semantic::progress())
+                    .unwrap_or_default(),
+            )
         }
         // 卸载: the weights are the quarter gigabyte, not the switch.
         "semantic_remove" => Ok(serde_json::json!({
@@ -2942,15 +2958,27 @@ mod tests {
         }
         assert!(!super::super::sidebar::handles("projects"));
         let payload = serde_json::json!({"sidebar": true});
-        assert_eq!(super::compatibility_sessions(Some(&payload), || panic!("bounded caller must not list")), serde_json::json!([]));
+        assert_eq!(
+            super::compatibility_sessions(Some(&payload), || panic!(
+                "bounded caller must not list"
+            )),
+            serde_json::json!([])
+        );
         let legacy = serde_json::json!({"id": 9, "title": "legacy", "active": true});
-        assert_eq!(super::compatibility_sessions(None, || vec![legacy.clone()]), serde_json::json!([legacy]));
+        assert_eq!(
+            super::compatibility_sessions(None, || vec![legacy.clone()]),
+            serde_json::json!([legacy])
+        );
     }
     /// The store picks the rows (see `agent-store`'s `tool_results` test); this
     /// layer only names the fields the webview reads.
     #[test]
     fn change_feed_rows_carry_the_fields_the_webview_reads() {
-        let rows = change_feed_rows(vec![("fuzzy_patch".into(), "{\"path\":\"a.ts\"}".into(), "patched a.ts".into())]);
+        let rows = change_feed_rows(vec![(
+            "fuzzy_patch".into(),
+            "{\"path\":\"a.ts\"}".into(),
+            "patched a.ts".into(),
+        )]);
         assert_eq!(rows[0]["tool"], "fuzzy_patch");
         assert_eq!(rows[0]["args"], "{\"path\":\"a.ts\"}");
         assert_eq!(rows[0]["content"], "patched a.ts");

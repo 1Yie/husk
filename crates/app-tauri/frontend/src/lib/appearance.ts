@@ -49,7 +49,7 @@ export function applyAppearance(cfg: AppearanceConfig) {
 
   // Body inherits the themed surface — the html element paints before
   // React mounts, so the first frame already matches the stored theme.
-  document.body.style.backgroundColor = bg ?? "";
+  document.body.style.backgroundColor = "var(--husk-document-background, var(--husk-bg))";
   document.body.style.color = fg ?? "";
   document.body.style.fontFamily = cfg.ui_font;
 }

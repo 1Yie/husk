@@ -396,7 +396,7 @@ export function MemoryPane() {
 
   return (
     <div className="flex flex-col gap-8 w-full">
-      <SettingsSection title="记忆开关">
+      <SettingsSection>
         <KvList>
           <KvListContent>
             <ItemRow

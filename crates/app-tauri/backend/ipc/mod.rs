@@ -14,6 +14,7 @@ pub mod macos_notifications;
 pub mod overlay;
 pub mod sessions;
 mod sidebar;
+pub mod sidebar_glass;
 pub mod terminal;
 pub mod update;
 pub mod workspace_files;

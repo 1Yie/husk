@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Plus } from "@keyline-icons/react";
 import { toast } from "sonner";
+import { isMac } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 import { TitleBar } from "@/components/title-bar";
 import { ChatStream } from "@/features/chat/components/chat-stream";
+import type { WorkspaceFileRequest, WorkspaceFileTarget } from "@/features/workspace-files/file-reference";
 import { SessionDock } from "@/features/chat/components/dock";
 import { resolveDockTab, useDockStore } from "@/features/chat/components/dock/state";
 import { ComposerBar } from "@/features/chat/components/composer-bar";
@@ -20,10 +23,10 @@ import {
   withoutDismissed,
 } from "@/features/chat/hooks/running-children";
 import { agentRowsByChild } from "@/features/chat/hooks/agent-rows";
+import { useRegisterCommand } from "@/lib/command-registry";
 import type { BgJob } from "@/features/chat/hooks/stream-view";
 
 /** Document extensions that pop the ready-toast — the office deliverable.
-import { useRegisterCommand } from "@/lib/command-registry";
  *  Downloaded assets (images etc.) register silently in the dock. */
 const DOC_EXTS = new Set(["pptx", "ppt", "docx", "doc", "xlsx", "xls", "pdf"]);
 
@@ -62,10 +65,10 @@ interface ChatPageProps {
 }
 
 export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey, sessionId = 0, onLoadOlder, onShowRaw, onOpenWorkspace, recents, onOpenRecent, workspaceReady = true, sessionsEmpty = false, onNewSession }: ChatPageProps) {
+  useRegisterCommand("new-session", () => onNewSession?.());
   // The conversation's live data comes from the store, not from props: the
   // shell must not be a subscriber of the 60 fps stream (it used to re-render —
   // and drag the sidebar with it — for a whole turn).
-  useRegisterCommand("new-session", () => onNewSession?.());
   const view = useActiveView();
   const { gitInfo, ctxWindow: contextWindowHint, modelCost } = useAgentChips();
   const hasMore = useHasMoreHistory();
@@ -199,6 +202,17 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
   const browserOpen = useDockStore((s) => s.browserOpen);
   const setDockOpen = useDockStore((s) => s.setOpen);
   const setDockTab = useDockStore((s) => s.setTab);
+  const [fileRequest, setFileRequest] = useState<WorkspaceFileRequest>();
+  const fileActivation = useRef(0);
+  useEffect(() => { setFileRequest(undefined); }, [workspaceRoot, sessionId, sessionKey]);
+  const handleOpenWorkspaceFile = useCallback((target: WorkspaceFileTarget) => {
+    if (!workspaceRoot) return;
+    setFileRequest({ ...target, workspaceRoot, sessionId, sessionKey, activation: ++fileActivation.current });
+    setDockTab("files");
+    setDockOpen(true);
+  }, [workspaceRoot, sessionId, sessionKey, setDockTab, setDockOpen]);
+  const activeFileRequest = fileRequest?.workspaceRoot === workspaceRoot && fileRequest.sessionId === sessionId && fileRequest.sessionKey === sessionKey
+    ? fileRequest : undefined;
   const filesTab = useDockStore((s) => s.filesTab);
   // 改动 is the WORKSPACE's uncommitted git files, not this session's write
   // log: a reopened session replays part of its history, so its folded list
@@ -395,6 +409,9 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
         noSession={sessionsEmpty}
       />
       <div className="flex flex-1 min-h-0">
+      <div className={cn("chat-workspace-card flex flex-1 min-w-0 min-h-0 flex-col",
+        isMac && "chat-workspace-card--inset relative rounded-lg border border-hairline bg-workspace overflow-hidden")}
+        style={isMac ? { ["--chat-composer-height" as string]: `${composerH}px` } : undefined}>
       {!workspaceRoot ? (
         workspaceReady ? (
           <WorkspaceWelcome
@@ -428,7 +445,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
         // title bar spans the full width, so the panel can't cover the
         // window controls. The dock's wrapper animates its width so the
         // stream re-flows smoothly instead of jumping.
-          <div className="relative flex-1 min-w-0 flex flex-col transition-[flex-basis,margin] duration-300 ease-out">
+          <div className="relative flex-1 min-w-0 min-h-0 flex flex-col transition-[flex-basis,margin] duration-300 ease-out">
             <ChatStream
               // Remount per session — scroll position, pin state, landing
               // flag and the windowing shell state are all per-session.
@@ -453,6 +470,8 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
               subagentsOpen={subagentsShown}
               onToggleSubagents={workspaceRoot ? handleToggleSubagents : undefined}
               suppressPills={mentionOpen}
+              workspaceRoot={workspaceRoot}
+              onOpenWorkspaceFile={handleOpenWorkspaceFile}
             />
 
             {/* Bottom gradient mask: subtle, soft dissolve behind the floating composer */}
@@ -476,6 +495,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
           </div>
 
       )}
+      </div>
           {/* The unified dock: 工具 + 改动 + 产物 + 后台 + 子代理 in one sidebar, either
               mode. It reads its own open/tab/width from the dock store; the
               page only feeds content and the manual-close dismissal. */}
@@ -489,6 +509,7 @@ export function ChatPage({ title, workspaceRoot, officeMode, loading, sessionKey
             childRows={childRows}
             root={workspaceRoot}
             session={sessionId}
+            fileRequest={activeFileRequest}
             onJobs={writeJobs}
             open={dockVisible}
             snap={dockSnap}

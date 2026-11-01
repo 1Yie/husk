@@ -2,6 +2,8 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { WindowControls } from "@/components/window-controls";
 import { LeftSidebarToggle, RightSidebarToggle } from "@/components/layout-controls";
 import { useCurrencySymbol } from "@/lib/appearance";
+import { isMac } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 import { formatCacheRate } from "@/lib/cache-rate";
 import { GitBranch, Zap, BarChartHorizontalStart, Database } from "@keyline-icons/react";
 import { CardBody, CardDivider, CardHeader, CardRow, StatPopover } from "./stat-popover";
@@ -416,7 +418,8 @@ export function TitleBar({ title = "新会话", view, gitInfo, contextWindowHint
     <div
       ref={barRef}
       data-tauri-drag-region="deep"
-      className="flex items-center h-9 flex-none bg-white border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)] select-none px-3 justify-between"
+      className={cn("flex items-center h-9 flex-none select-none px-3 justify-between",
+        isMac ? "bg-transparent" : "bg-white border-b border-[color-mix(in_srgb,var(--husk-n200)_80%,transparent)]")}
     >
       <LeftSidebarToggle />
       {!noWorkspace && (

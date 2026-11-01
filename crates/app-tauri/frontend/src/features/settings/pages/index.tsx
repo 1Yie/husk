@@ -186,7 +186,10 @@ export function SettingsPage({
   );
 
   return (
-    <div className="relative flex h-full w-full bg-white overflow-hidden select-none">
+    <div className={cn(
+      "settings-layout relative flex h-full w-full overflow-hidden select-none",
+      isMac ? "main-workspace-frame bg-panel" : "bg-white",
+    )}>
       {/* Top draggable strip across the right area + window controls anchored at top-right */}
       <div
         data-tauri-drag-region="deep"
@@ -198,13 +201,19 @@ export function SettingsPage({
       {/* Left nav — same rail as session sidebar: panel bg, white active card */}
       <aside
         data-tauri-drag-region="deep"
-        className="w-[240px] flex-none bg-panel border-r border-hairline flex flex-col justify-between h-full select-none"
+        className={cn(
+          "w-[240px] flex-none flex flex-col justify-between h-full select-none",
+          isMac ? "bg-transparent" : "bg-panel border-r border-hairline",
+        )}
       >
         <div className="flex flex-col min-h-0 flex-1">
           {/* Top title strip matching the main sidebar */}
           <div
             data-tauri-drag-region="deep"
-            className="h-9 flex-none flex items-center px-3 gap-2 bg-panel select-none cursor-default"
+            className={cn(
+              "h-9 flex-none flex items-center px-3 gap-2 select-none cursor-default",
+              isMac ? "bg-transparent" : "bg-panel",
+            )}
           >
             {/* The traffic lights end near 72px; this leaves a small gap before the title. */}
             {isMac && <div className="w-[68px] shrink-0" />}
@@ -269,7 +278,10 @@ export function SettingsPage({
       {/* Content — big page title + grouped setting rows. */}
       <div
         ref={contentRef}
-        className="flex-1 min-h-0 min-w-0 overflow-y-auto bg-white no-scrollbar"
+        className={cn(
+          "flex-1 min-h-0 min-w-0 overflow-y-auto bg-white no-scrollbar",
+          isMac && "m-2 rounded-lg border border-hairline",
+        )}
       >
         <div className="w-full max-w-3xl mx-auto px-6 sm:px-10 py-8 pb-16">
           <h1 className="text-xl font-semibold text-neutral-900 mb-6 tracking-tight">
@@ -286,6 +298,8 @@ export function SettingsPage({
             <AppearanceSettings />
           ) : activeTab === "terminal" ? (
             <TerminalSettings />
+          ) : activeTab === "shortcuts" ? (
+            <ShortcutsSettings />
           ) : activeTab === "about" ? (
             <AboutSettings />
           ) : (
@@ -296,5 +310,3 @@ export function SettingsPage({
     </div>
   );
 }
-          ) : activeTab === "shortcuts" ? (
-            <ShortcutsSettings />

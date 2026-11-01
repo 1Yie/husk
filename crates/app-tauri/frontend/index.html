@@ -86,8 +86,9 @@
           if (fg) el.style.color = fg;
           if (accent) el.style.setProperty("--husk-splash-accent", accent);
           root.classList.toggle("dark", dark2);
-          if (bg) root.style.background = bg;
-          if (document.body && bg) document.body.style.backgroundColor = bg;
+          if (bg) root.style.setProperty("--husk-bg", bg);
+          root.style.backgroundColor = "var(--husk-document-background, var(--husk-bg))";
+          if (document.body) document.body.style.backgroundColor = "var(--husk-document-background, var(--husk-bg))";
         }
         // Exposed for the bootstrap correction below — main.tsx's own
         // appearance applier takes over after React mounts.

@@ -186,6 +186,67 @@ html[data-sidebar-glass] .main-layout:has(~ div > .settings-layout) {
 }
 
 /* Layout shells — used by App/ChatStream. */
+#session-navigation[data-resizing] {
+  transition: none;
+}
+
+.layout-resize-grip {
+  touch-action: none;
+}
+.layout-resize-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 26px;
+  border-radius: 9999px;
+  transform: translate(-50%, -50%);
+  background: var(--husk-fg-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms;
+}
+.layout-resize-grip[aria-orientation="horizontal"]::after {
+  width: 26px;
+  height: 3px;
+}
+.layout-resize-grip:hover::after,
+.layout-resize-grip:focus-visible::after,
+.layout-resize-grip[data-resizing]::after,
+.layout-resize-grip[data-dragging]::after,
+section[data-resizing] > .layout-resize-grip::after {
+  opacity: .8;
+}
+.layout-resize-grip:focus-visible {
+  outline: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .layout-resize-grip::after {
+    transition: none;
+  }
+}
+
+.workspace-welcome-content {
+  container: workspace-welcome / inline-size;
+}
+
+/* Keep the 480px heatmap plus card padding and borders readable. */
+@container workspace-welcome (width < 514px) {
+  .workspace-welcome-activity {
+    display: none;
+  }
+}
+
+.chat-workspace-card--inset {
+  container-type: size;
+}
+
+.chat-workspace-card--inset [data-terminal-composer] [role="listbox"] > div:first-child {
+  /* Keep an inline command menu inside the card above the floating composer. */
+  max-height: min(18rem, max(36px, calc(100cqh - var(--chat-composer-height) - 36px)));
+}
+
 @layer components {
   .app-shell {
     @apply flex flex-1 min-h-0 bg-workspace;

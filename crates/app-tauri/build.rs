@@ -34,4 +34,3 @@ fn link_compiler_rt_on_macos() {
     println!("cargo:rustc-link-search=native={}", dir.display());
     println!("cargo:rustc-link-lib=static=clang_rt.osx");
 }
-

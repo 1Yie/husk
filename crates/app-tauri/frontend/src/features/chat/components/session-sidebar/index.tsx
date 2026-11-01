@@ -1,5 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
-import { TerminalToggle } from "@/components/layout-controls";
+import { ShortcutHint, TerminalToggle } from "@/components/layout-controls";
 import iconUrl from "@/assets/husk-icon.png";
 import {
   Plus,
@@ -457,23 +457,29 @@ export function SessionSidebar({
     <TooltipProvider delayDuration={300}>
       <aside
         data-tauri-drag-region="deep"
-        className="w-[240px] flex-none flex flex-col bg-panel border-r border-hairline select-none h-full text-neutral-800"
+        className={cn("session-navigation-panel w-full flex-none flex flex-col bg-panel border-hairline select-none h-full text-neutral-800",
+          !isMac && "border-r")}
       >
         <div
           data-tauri-drag-region="deep"
-          className="h-9 flex-none flex items-center px-3 gap-2 border-b border-hairline bg-panel select-none cursor-default"
+          className={cn("session-navigation-surface h-9 flex-none flex items-center px-3 gap-2 border-hairline bg-panel select-none cursor-default",
+            !isMac && "border-b")}
         >
           {isMac && <div className="w-[55px] shrink-0" />}
 
-          <img
-            src={iconUrl}
-            alt=""
-            draggable={false}
-            className="h-4 w-4 shrink-0"
-          />
-          <span className="text-[12px] font-semibold text-neutral-700 tracking-tight">
-            Husk
-          </span>
+          {!isMac && (
+            <>
+              <img
+                className="session-navigation-brand h-4 w-4 shrink-0"
+                src={iconUrl}
+                alt=""
+                draggable={false}
+              />
+              <span className="session-navigation-brand min-w-0 truncate text-[12px] font-semibold text-neutral-700 tracking-tight">
+                Husk
+              </span>
+            </>
+          )}
 
           {/* Mode tabs — the 编程 ↔ 工作 switch lives in the sidebar header,
               not the composer. 工作 targets the built-in office workspace
@@ -629,7 +635,7 @@ export function SessionSidebar({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="right" className="text-xs">
-                    新建会话
+                    <ShortcutHint action="new-session">新建会话</ShortcutHint>
                   </TooltipContent>
                 </Tooltip>
               )}
@@ -1276,7 +1282,7 @@ function OfficeFileGroup({
       <div
         data-nodrag
         data-tauri-drag-region="false"
-        className={cn(open && "sticky top-0 z-10 bg-panel pb-0.5")}
+        className={cn("session-navigation-surface", open && "sticky top-0 z-10 bg-panel pb-0.5")}
       >
         <div
           role="button"
@@ -1472,7 +1478,7 @@ function ProjectItem({
       <div
         data-nodrag
         data-tauri-drag-region="false"
-        className={cn(open && "sticky top-0 z-10 bg-panel pb-0.5")}
+        className={cn("session-navigation-surface", open && "sticky top-0 z-10 bg-panel pb-0.5")}
       >
         <TooltipSimple content={project.root} side="right" sideOffset={8}>
           <div

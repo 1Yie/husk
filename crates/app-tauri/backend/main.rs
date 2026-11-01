@@ -622,6 +622,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            ipc::sidebar_glass::sidebar_glass_update,
             ipc::workspace_files::workspace_list_files,
             ipc::workspace_files::workspace_preview_file,
             ipc::terminal::terminal_open,
