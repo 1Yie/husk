@@ -64,6 +64,11 @@ useLayoutStore.setState({ sidebarOpen: true, terminalOpen: new URLSearchParams(l
 useAgentStore.getState().setWorkspaceRoot("/repo");
 useAgentStore.getState().setActiveId(1);
 useAgentStore.getState().loadView("/repo", 1, view);
+useAgentStore.setState({
+  gitInfo: { repo: true, branch: "main", dirty: 1 },
+  ctxWindow: 200_000,
+  modelCost: { input: 0, output: 0 },
+});
 useDockStore.setState({ open: !workspaceLinks, tab: markdownResources ? "files" : "tools", browserOpen: markdownResources, width: markdownResources ? 360 : 300 });
 Object.assign(window, { workspacePanelsFixture: {
   terminalOpen: (open: boolean) => useLayoutStore.setState({ terminalOpen: open }),
@@ -89,6 +94,7 @@ let appRenders = 0;
 function App() {
   const [, setParentUpdate] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mainEpoch, setMainEpoch] = useState(0);
   const [officeMode, setOfficeMode] = useState(false);
   const [workspaceRoot, setWorkspaceRoot] = useState("/repo");
   const [sessionId, setSessionId] = useState(1);
@@ -121,12 +127,15 @@ function App() {
       setSessionId(id);
     },
   } });
-  Object.assign(window, { settingsShellFixture: { open: () => setSettingsOpen(true) } });
+  Object.assign(window, { settingsShellFixture: {
+    open: () => setSettingsOpen(true),
+    remountMain: () => setMainEpoch((value) => value + 1),
+  } });
   document.documentElement.dataset.fixtureRenders = String(++appRenders);
   return (
     <TooltipProvider>
       <div style={{ height: "100vh" }}>
-        <MainLayout sidebar={
+        <MainLayout key={mainEpoch} sidebar={
           <SessionSidebar projects={[{ root: "/repo", name: "Fixture project with a long workspace name",
             current: !workspacePanels || !officeMode, last_opened: 0, sessions: Array.from({ length: 40 }, (_, i) => ({
               id: i + 1, title: `Session ${i + 1} — long session label`, preview: "",

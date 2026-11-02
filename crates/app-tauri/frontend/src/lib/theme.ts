@@ -15,22 +15,48 @@
  * defined once and every consumer stays in step.
  */
 
+/** Translucent material shared by floating controls and layered surfaces. */
+export const SURFACE_FROSTED = [
+  "backdrop-blur-md",
+  "bg-[color-mix(in_srgb,var(--husk-white)_82%,transparent)]",
+  "dark:bg-[color-mix(in_srgb,var(--husk-hover)_82%,transparent)]",
+].join(" ");
+
+/** Hover fill retains the translucent material on floating controls. */
+export const SURFACE_FROSTED_HOVER = [
+  "hover:bg-[color-mix(in_srgb,var(--husk-white)_90%,transparent)]",
+  "dark:hover:bg-[color-mix(in_srgb,var(--husk-active)_90%,transparent)]",
+].join(" ");
+
 /** Menus, popovers, the composer's mention popup: one step above a card in dark. */
 export const SURFACE_OVERLAY = [
-  "rounded-xl border border-neutral-200 bg-white",
-  "dark:bg-[var(--husk-hover)] dark:border-[var(--husk-border)]",
+  "rounded-xl border border-neutral-200",
+  SURFACE_FROSTED,
+  "dark:border-[var(--husk-border)]",
   "dark:shadow-[0_18px_44px_-12px_rgba(0,0,0,0.85),0_2px_8px_-2px_rgba(0,0,0,0.6)]",
 ].join(" ");
 
 /** Hover/focus fill INSIDE an overlay — must read lighter than the surface in dark. */
-export const SURFACE_OVERLAY_FOCUS = "focus:bg-neutral-100 dark:focus:bg-[var(--husk-border)]";
+export const SURFACE_OVERLAY_FOCUS = "focus:bg-[var(--husk-overlay-highlight)]";
+export const SURFACE_OVERLAY_HOVER = "hover:bg-[var(--husk-overlay-highlight)]";
+export const SURFACE_OVERLAY_SELECTED = "bg-[var(--husk-overlay-highlight)]";
 
 /** The same fill for a row that stays open (submenu trigger). */
 export const SURFACE_OVERLAY_OPEN =
-  "data-[state=open]:bg-neutral-100 dark:data-[state=open]:bg-[var(--husk-border)]";
+  "data-[state=open]:bg-[var(--husk-overlay-highlight)]";
 
 /** Separator inside an overlay. */
-export const OVERLAY_DIVIDER = "bg-neutral-100 dark:bg-[var(--husk-border)]";
+export const OVERLAY_DIVIDER = "bg-[var(--husk-overlay-divider)]";
+export const BORDER_OVERLAY_DIVIDER = "border-[color:var(--husk-overlay-divider)]";
+export const OVERLAY_HEADING = "font-medium text-neutral-800";
+
+/** Secondary and status ink remains readable over the overlay's translucent fill. */
+export const INK_OVERLAY_SECONDARY = "text-[color:var(--husk-overlay-secondary)]";
+export const INK_OVERLAY_WARNING = "text-[color:var(--husk-overlay-warning)]";
+export const INK_OVERLAY_SUCCESS = "text-[color:var(--husk-overlay-success)]";
+export const INK_OVERLAY_ERROR = "text-[color:var(--husk-overlay-error)]";
+export const INK_OVERLAY_DESTRUCTIVE =
+  `${INK_OVERLAY_ERROR} focus:text-[color:var(--husk-overlay-error)]`;
 
 /** Always-dark bubble (tooltip, hover card): token surface, literal ink. */
 export const SURFACE_BUBBLE = "bg-neutral-900 dark:bg-[var(--husk-card)]";

@@ -7,6 +7,7 @@ import { describe, expect, test, vi } from "vitest";
 import { ChatStream } from "@/features/chat/components/chat-stream";
 import { emptyView } from "@/features/chat/hooks/stream-view";
 import { renderWithProviders } from "@/test/render";
+import { INK_OVERLAY_ERROR, INK_OVERLAY_SUCCESS } from "@/lib/theme";
 
 vi.mock("@/features/chat/components/chat-stream/markdown-stream", () => ({
   MemoStreamdown: ({ text }: { text: string }) => <div>{text}</div>,
@@ -29,6 +30,20 @@ describe("dock pill", () => {
     const pill = screen.getByRole("button", { name: "侧栏" }).textContent ?? "";
     expect(pill).toContain("+12");
     expect(pill).toContain("−4");
+    expect(screen.getByText("+12")).toHaveClass(INK_OVERLAY_SUCCESS);
+    expect(screen.getByText("−4")).toHaveClass(INK_OVERLAY_ERROR);
+  });
+
+  test("the return-to-bottom button shares the frosted capsule material", () => {
+    renderStream();
+    const button = screen.getByRole("button", { name: "回到底部" });
+    expect(button).toHaveClass(
+      "backdrop-blur-md",
+      "bg-[color-mix(in_srgb,var(--husk-white)_82%,transparent)]",
+      "dark:bg-[color-mix(in_srgb,var(--husk-hover)_82%,transparent)]",
+      "transition-transform",
+    );
+    expect(button).not.toHaveClass("bg-white", "transition-all");
   });
 
   test("names the file count without dimming the inherited foreground", () => {

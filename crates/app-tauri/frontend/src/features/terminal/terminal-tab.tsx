@@ -6,8 +6,10 @@ import {
 import { openSettings } from "@/lib/settings-bus";
 import type { SplitDirection } from "./pane-layout";
 
+import { INK_OVERLAY_DESTRUCTIVE } from "@/lib/theme";
+
 const ITEM = "gap-2 text-xs cursor-pointer";
-const DANGER = `${ITEM} text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400`;
+const DANGER = `${ITEM} ${INK_OVERLAY_DESTRUCTIVE}`;
 
 export const TerminalTab = memo(function TerminalTab({
   id, groupKey, label, customName, cwd, selected, open, panes, ended,

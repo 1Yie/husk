@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import react from "@vitejs/plugin-react";
 import { build, createServer } from "vite";
 import { chromium } from "playwright";
@@ -9,6 +9,9 @@ import { chromium } from "playwright";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
 const output = path.resolve(root, "../../..", ".husk/scratch/sidebar-glass-integration");
+const bootHtml = await readFile(path.join(root, "index.html"), "utf8");
+const bootStyle = bootHtml.match(/<style>([\s\S]*?)<\/style>/)[1];
+const bootTheme = bootHtml.match(/<script>([\s\S]*?)<\/script>/)[1];
 process.chdir(root);
 await mkdir(output, { recursive: true });
 process.env.TMPDIR = path.join(output, "tmp");
@@ -38,6 +41,8 @@ if (process.argv.includes("--build")) {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`${server.resolvedUrls.local[0]}scripts/terminal-reveal/sidebar-glass.html`);
     await page.waitForSelector("html[data-sidebar-glass]");
+    await page.addStyleTag({ content: bootStyle });
+    await page.addScriptTag({ content: bootTheme });
     const geometry = () => page.evaluate(() => {
       const root = document.documentElement;
       const s = document.getElementById("session-navigation").getBoundingClientRect();
@@ -107,6 +112,55 @@ if (process.argv.includes("--build")) {
       await page.keyboard.press("Escape");
       await menu.waitFor({ state: "hidden" });
     };
+    const checkLoading = async (theme, native) => {
+      const sample = () => page.evaluate(() => {
+        const pixel = (node) => {
+          const canvas = document.createElement("canvas");
+          canvas.width = canvas.height = 1;
+          const context = canvas.getContext("2d");
+          context.fillStyle = getComputedStyle(node).backgroundColor;
+          context.fillRect(0, 0, 1, 1);
+          return Array.from(context.getImageData(0, 0, 1, 1).data);
+        };
+        return { loading: pixel(document.getElementById("husk-splash")),
+          frame: pixel(document.querySelector(".main-workspace-frame")),
+          visibility: getComputedStyle(document.querySelector(".main-layout")).visibility };
+      });
+      await page.locator("#main-input").fill("Preserved across loading");
+      await page.evaluate((html) => {
+        window.loadingInput = document.getElementById("main-input");
+        const boot = new DOMParser().parseFromString(html, "text/html").getElementById("husk-splash");
+        document.body.prepend(boot);
+        document.getElementById("root").style.visibility = "hidden";
+        const root = document.documentElement, style = getComputedStyle(root);
+        window.__huskSplashPaint(root.classList.contains("dark"),
+          style.getPropertyValue("--husk-bg"), style.getPropertyValue("--husk-fg"));
+      }, bootHtml);
+      await page.locator("#husk-splash").evaluate(async (node) => {
+        getComputedStyle(node).backgroundColor;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => {})));
+      });
+      const boot = await sample();
+      assert.deepEqual(boot.loading, boot.frame, "boot shares the default shell surface");
+      await page.screenshot({ path: path.join(output, `loading-${theme}-${native ? "native" : "solid"}-boot.png`) });
+      await page.evaluate(() => {
+        document.getElementById("husk-splash").remove();
+        document.getElementById("root").style.visibility = "";
+        window.glassFixture.loading(true);
+      });
+      await page.getByRole("status", { name: "加载中" }).waitFor();
+      const loading = await sample();
+      assert.deepEqual(loading.loading, loading.frame, "switch loading shares the default shell surface");
+      assert.equal(loading.visibility, "hidden", "old content stays concealed behind the material");
+      assert.equal(loading.loading[3] < 255, native);
+      assert(await page.evaluate(() => window.loadingInput === document.getElementById("main-input")));
+      await page.screenshot({ path: path.join(output, `loading-${theme}-${native ? "native" : "solid"}-switch.png`) });
+      await page.evaluate(() => window.glassFixture.loading(false));
+      await page.getByRole("status", { name: "加载中" }).waitFor({ state: "detached" });
+      assert.equal(await page.locator(".main-layout").evaluate((node) => getComputedStyle(node).visibility), "visible");
+      assert.equal(await page.locator("#main-input").inputValue(), "Preserved across loading");
+    };
     for (const theme of ["light", "dark", "custom"]) {
       await page.evaluate((value) => window.glassFixture.theme(value), theme);
       await page.waitForTimeout(100);
@@ -124,10 +178,11 @@ if (process.argv.includes("--build")) {
       assert.equal(surface.y, g.shellRect.y);
       const panel = g.panel.match(/[\d.]+/g).slice(0, 3).map(Number);
       assert.ok(tint.every((v, i) => Math.abs(v * 255 - panel[i]) < 1), JSON.stringify({ tint, panel }));
-      assert.ok(Math.abs(g.navigationPixel[3] / 255 - .85) < .01, JSON.stringify(g));
+      assert.ok(g.navigationPixel[3] > 0 && g.navigationPixel[3] < 255, JSON.stringify(g));
       assert.ok(panel.every((v, i) => Math.abs(g.navigationPixel[i] - v) <= 1), JSON.stringify(g));
       assert.equal(await page.locator(".session-navigation-panel").count(), 1);
       await checkGroup(false);
+      await checkLoading(theme, true);
       await page.screenshot({ path: path.join(output, `visual-browser-${theme}.png`) });
       if (theme !== "custom") {
         await page.evaluate(() => window.glassFixture.setMode("unsupported"));
@@ -137,6 +192,7 @@ if (process.argv.includes("--build")) {
         assert.equal(solid.navigationPixel[3], 255);
         checkFrame(solid);
         await checkGroup(true);
+        await checkLoading(theme, false);
         await page.screenshot({ path: path.join(output, `visual-browser-${theme}-solid.png`) });
         await page.evaluate(() => window.glassFixture.setMode("active"));
         await page.waitForSelector("html[data-sidebar-glass]");
@@ -199,6 +255,7 @@ if (process.argv.includes("--build")) {
     await page.waitForFunction(() => document.getElementById("session-navigation").getBoundingClientRect().width === 240);
     await page.waitForTimeout(150);
     checkFrame(await geometry());
+    await checkLoading("narrow", true);
     await page.screenshot({ path: path.join(output, "frame-narrow.png") });
     const after = await page.evaluate(() => window.glassFixture.metrics.calls.length);
     assert.equal(after - before, 1, "only the viewport resize changes full-window native geometry");

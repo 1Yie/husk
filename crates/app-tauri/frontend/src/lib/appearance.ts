@@ -10,7 +10,7 @@ import type { AppearanceConfig } from "@/lib/agent-ipc/index";
 import { getAppearance } from "@/lib/agent-ipc/index";
 
 const mq = window.matchMedia("(prefers-color-scheme: dark)");
-const APPEARANCE_CHANGED = "appearance://changed";
+export const APPEARANCE_CHANGED = "appearance://changed";
 
 /** Effective dark flag for a config — `system` resolves against the OS. */
 export function isDarkMode(cfg: AppearanceConfig): boolean {

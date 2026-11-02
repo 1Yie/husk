@@ -22,7 +22,16 @@ export async function checkTerminalContextMenu(page) {
     await page.getByRole("menuitem", { name: "全选", exact: true }).waitFor();
     await waitForMenu();
   };
-  const checkMenuStyle = async (theme, expectedColor) => {
+  const checkMenuStyle = async (theme) => {
+    const expectedColor = await page.evaluate(() => {
+      const probe = document.createElement("span");
+      probe.hidden = true;
+      probe.style.color = "var(--husk-overlay-error)";
+      document.body.appendChild(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    });
     const items = await menu.getByRole("menuitem").evaluateAll((nodes) => nodes.map((node) => {
       const icon = node.querySelector("svg");
       const box = node.getBoundingClientRect();
@@ -70,7 +79,7 @@ export async function checkTerminalContextMenu(page) {
   const terminalItemStyle = await itemStyle();
   assert.deepEqual(terminalItemStyle, referenceItemStyle, "terminal menu must use the same item density as the chat context menu");
   assert.equal(await menu.evaluate((node) => getComputedStyle(node).minWidth), referenceMinWidth, "terminal and chat menus must share their minimum width");
-  const lightMenuStyle = await checkMenuStyle("light", "rgb(220, 38, 38)");
+  const lightMenuStyle = await checkMenuStyle("light");
   await page.screenshot({ path: "/tmp/terminal-context-current.png" });
   const during = await page.evaluate(() => ({
     pointerEvents: document.body.style.pointerEvents,
@@ -89,7 +98,7 @@ export async function checkTerminalContextMenu(page) {
   await menu.waitFor({ state: "detached" });
   await page.evaluate(() => document.documentElement.classList.add("dark"));
   await showMenu();
-  const darkMenuStyle = await checkMenuStyle("dark", "rgb(248, 113, 113)");
+  const darkMenuStyle = await checkMenuStyle("dark");
   await page.keyboard.press("Escape");
   await menu.waitFor({ state: "detached" });
   await page.evaluate(() => document.documentElement.classList.remove("dark"));

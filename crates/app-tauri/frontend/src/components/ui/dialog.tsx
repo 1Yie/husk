@@ -3,6 +3,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "@keyline-icons/react";
 
 import { cn } from "@/lib/utils";
+import { INK_OVERLAY_SECONDARY } from "@/lib/theme";
 
 const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;
@@ -104,7 +105,7 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn("text-sm text-neutral-500", className)}
+    className={cn("text-sm", INK_OVERLAY_SECONDARY, className)}
     {...props}
   />
 ));

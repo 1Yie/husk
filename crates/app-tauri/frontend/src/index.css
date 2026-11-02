@@ -40,6 +40,7 @@
   --husk-fg: #1a1c1f;
   --husk-accent: #339cff;
   --husk-panel: #f3f3f5;
+  --husk-shell-surface: var(--husk-panel);
   --husk-card: #ffffff;
   --husk-hover: #e8e8ed;
   --husk-active: #ffffff;
@@ -48,19 +49,25 @@
   --husk-fg-secondary: #52525b;
   --husk-fg-muted: #71717a;
   --husk-fg-dim: #a1a1aa;
+  --husk-overlay-divider: color-mix(in srgb, var(--husk-fg) 10%, transparent);
+  --husk-overlay-highlight: color-mix(in srgb, var(--husk-fg) 6%, transparent);
+  --husk-overlay-secondary: color-mix(in srgb, var(--husk-fg) 90%, transparent);
+  --husk-overlay-warning: #78350f;
+  --husk-overlay-success: #065f46;
+  --husk-overlay-error: #991b1b;
   --husk-bubble-user: #e3e3e8;
   /* 活跃度（统计热力图）— the one place the app needs a "more is better"
      ramp; kept out of the neutral ramp so it reads as data, not chrome. */
   --husk-activity: #10b981;
   /* 思考强度 — one ramp from calm to intense, cool to warm, so the tier word
      beside the effort slider reads its strength at a glance. */
-  --husk-think-off: #a1a1aa;
-  --husk-think-minimal: #64748b;
-  --husk-think-low: #0284c7;
-  --husk-think-medium: #2563eb;
-  --husk-think-high: #7c3aed;
-  --husk-think-xhigh: #c026d3;
-  --husk-think-max: #e11d48;
+  --husk-think-off: #52525b;
+  --husk-think-minimal: #475569;
+  --husk-think-low: #075985;
+  --husk-think-medium: #1d4ed8;
+  --husk-think-high: #6d28d9;
+  --husk-think-xhigh: #a21caf;
+  --husk-think-max: #be123c;
   --husk-contrast: 0;
   --husk-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --husk-code-font: ui-monospace, "SFMono-Regular", monospace;
@@ -98,15 +105,18 @@
   --husk-fg-secondary: #a1a1aa;
   --husk-fg-muted: #7a7a84;
   --husk-fg-dim: #5b5b66;
+  --husk-overlay-warning: #fcd34d;
+  --husk-overlay-success: #6ee7b7;
+  --husk-overlay-error: #fecaca;
   --husk-bubble-user: #2c2c34;
   --husk-activity: #34d399;
-  --husk-think-off: #71717a;
-  --husk-think-minimal: #94a3b8;
-  --husk-think-low: #38bdf8;
-  --husk-think-medium: #60a5fa;
-  --husk-think-high: #a78bfa;
-  --husk-think-xhigh: #e879f9;
-  --husk-think-max: #fb7185;
+  --husk-think-off: #e4e4e7;
+  --husk-think-minimal: #e2e8f0;
+  --husk-think-low: #bae6fd;
+  --husk-think-medium: #c4defe;
+  --husk-think-high: #ddd6fe;
+  --husk-think-xhigh: #f5d0fe;
+  --husk-think-max: #fecdd3;
   /* Inverted ramp — n50 becomes the darkest, n950 the lightest, so
      `bg-neutral-100` (a light surface in light mode) reads as the matching
      dark surface, and `text-neutral-900` (darkest text) reads as the
@@ -149,6 +159,7 @@ body {
 
 html[data-sidebar-glass] {
   --husk-document-background: transparent;
+  --husk-shell-surface: color-mix(in srgb, var(--husk-panel) 68%, transparent);
 }
 
 html[data-sidebar-glass] body,
@@ -159,8 +170,9 @@ html[data-sidebar-glass] #session-navigation .session-navigation-surface {
 }
 
 html[data-sidebar-glass] #session-navigation .session-navigation-panel,
+html[data-sidebar-glass] .settings-layout,
 html[data-sidebar-glass] .main-workspace-frame {
-  background-color: color-mix(in srgb, var(--husk-panel) 68%, transparent);
+  background-color: var(--husk-shell-surface);
 }
 
 html[data-sidebar-glass] .main-layout:has(~ div > .settings-layout) {
@@ -962,15 +974,15 @@ img.emoji {
 #husk-splash.leaving {
   z-index: 45;
 }
-/* Shown over a live layout, so the boot's transparent background (it sits on
-   <html>) is not enough — the veil needs its own theme-coloured ground. */
-#husk-splash.husk-veil-visible {
-  background: #fafafa;
-  color: #1a1c1f;
+/* Keep mounted views concealed while the native ground shows through. */
+#root:has(.husk-veil-visible) .main-layout,
+#root:has(.husk-veil-visible) .settings-layout {
+  visibility: hidden;
 }
-.dark #husk-splash.husk-veil-visible {
-  background: #16161a;
-  color: #e4e4e7;
+
+#husk-splash.husk-veil-visible {
+  background: var(--husk-shell-surface);
+  color: var(--husk-fg);
 }
 
 /* Live window resize (`WindowResizeEdges` sets the flag until the size has

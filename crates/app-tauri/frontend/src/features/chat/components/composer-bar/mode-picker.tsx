@@ -36,6 +36,7 @@ import {
 import { useLinkedRoots } from "@/lib/linked-roots";
 import { LinkedRootRow } from "@/components/linked-roots";
 import { cn } from "@/lib/utils";
+import { INK_OVERLAY_SECONDARY, OVERLAY_HEADING, SURFACE_OVERLAY_HOVER } from "@/lib/theme";
 import type { ToolbarDensity } from "@/features/chat/components/composer-bar/toolbar-density";
 import { useState } from "react";
 
@@ -125,16 +126,16 @@ function ModeItem({
   return (
     <DropdownMenuItem
       onClick={() => onSelect(mode.value)}
-      className="flex flex-col items-start py-2 px-2 cursor-pointer rounded-lg gap-0.5"
+      className="flex flex-col items-start py-2 px-2 cursor-pointer gap-0.5"
     >
       <div className="flex items-center justify-between w-full">
         <span className="flex items-center gap-1.5 font-medium text-xs text-neutral-800">
-          <Icon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />
+          <Icon className={cn("h-3.5 w-3.5 shrink-0", INK_OVERLAY_SECONDARY)} />
           {mode.label}
         </span>
-        {active && <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />}
+        {active && <Check className="h-3.5 w-3.5 text-neutral-800 shrink-0" />}
       </div>
-      <span className="text-[11px] text-neutral-500 leading-tight">{mode.desc}</span>
+      <span className={cn("text-[11px] leading-tight", INK_OVERLAY_SECONDARY)}>{mode.desc}</span>
     </DropdownMenuItem>
   );
 }
@@ -201,7 +202,7 @@ export function ModePicker({
             <TooltipContent side="top">模式与权限</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="start" side="top" className="w-64">
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+            <DropdownMenuLabel className={OVERLAY_HEADING}>
               代理模式
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -216,7 +217,7 @@ export function ModePicker({
               ))}
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+            <DropdownMenuLabel className={OVERLAY_HEADING}>
               权限模式
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -247,7 +248,7 @@ export function ModePicker({
             icon={<AgentModeIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />}
           />
           <DropdownMenuContent align="start" side="top" className="w-64">
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+            <DropdownMenuLabel className={OVERLAY_HEADING}>
               代理模式
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -275,7 +276,7 @@ export function ModePicker({
             icon={<ModeIcon className="h-3.5 w-3.5 text-neutral-500 shrink-0" />}
           />
           <DropdownMenuContent align="start" side="top" className="w-64">
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+            <DropdownMenuLabel className={OVERLAY_HEADING}>
               权限模式
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -311,12 +312,12 @@ export function ModePicker({
             icon={<Folders className="h-3.5 w-3.5 text-neutral-500 shrink-0" />}
           />
           <DropdownMenuContent align="start" side="top" className="w-[22rem] p-1">
-            <DropdownMenuLabel className="text-xs text-neutral-500 font-normal">
+            <DropdownMenuLabel className={OVERLAY_HEADING}>
               关联工作区
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             {links.all.length === 0 ? (
-              <p className="px-2 py-1.5 text-[11px] text-neutral-500">
+              <p className={cn("px-2 py-1.5 text-[11px]", INK_OVERLAY_SECONDARY)}>
                 还没有关联目录。跨仓库的项目可以在这里把另一个仓库加进来。
               </p>
             ) : (
@@ -338,9 +339,9 @@ export function ModePicker({
                 type="button"
                 aria-disabled={links.busy}
                 onClick={() => void links.pickAndAdd("readwrite", addScope === "workspace")}
-                className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs text-neutral-700 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)]"
+                className={cn("flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs text-neutral-700 transition-colors", SURFACE_OVERLAY_HOVER)}
               >
-                <Plus className="h-3.5 w-3.5 shrink-0 text-neutral-500" />
+                <Plus className={cn("h-3.5 w-3.5 shrink-0", INK_OVERLAY_SECONDARY)} />
                 添加目录
               </button>
               <div className="flex shrink-0 items-center gap-0.5 rounded-full bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] p-0.5">
@@ -354,7 +355,7 @@ export function ModePicker({
                       "cursor-pointer rounded-full px-2 py-0.5 text-[10px] transition-colors",
                       addScope === scope
                         ? "bg-white text-neutral-900 shadow-2xs"
-                        : "text-neutral-500 hover:text-neutral-900",
+                        : "text-neutral-800 hover:text-neutral-900",
                     )}
                   >
                     {scope === "session" ? "本会话" : "本工作区"}

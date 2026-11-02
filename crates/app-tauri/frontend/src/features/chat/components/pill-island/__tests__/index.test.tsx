@@ -5,6 +5,7 @@ import { screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import { PillIsland, pillCollapsed, type IslandPill } from "@/features/chat/components/pill-island";
 import { renderWithProviders } from "@/test/render";
+import { INK_OVERLAY_SECONDARY } from "@/lib/theme";
 
 const pill = (label: string): IslandPill => ({
   key: label,
@@ -36,10 +37,23 @@ describe("PillIsland", () => {
     expect(compact("a")).toBeNull();
   });
 
+  test("shares the popup's frosted material while keeping reveal and press motion", () => {
+    renderWithProviders(<PillIsland pills={[pill("后台任务")]} />);
+    const button = screen.getByRole("button", { name: "后台任务" });
+    expect(button).toHaveClass(
+      "backdrop-blur-md",
+      "bg-[color-mix(in_srgb,var(--husk-white)_82%,transparent)]",
+      "dark:bg-[color-mix(in_srgb,var(--husk-hover)_82%,transparent)]",
+      "transition-transform",
+    );
+    expect(button).not.toHaveClass("bg-white", "transition-all");
+    expect(button.lastElementChild).toHaveClass("transition-[max-width,margin-left,opacity]");
+  });
+
   test("uses theme foreground tokens without overriding the configured UI font", () => {
     renderWithProviders(<PillIsland pills={[pill("后台任务")]} />);
     const button = screen.getByRole("button", { name: "后台任务" });
-    expect(button).toHaveClass("text-text-secondary", "hover:text-text-primary");
+    expect(button).toHaveClass(INK_OVERLAY_SECONDARY, "hover:text-text-primary");
     expect(button.className).not.toMatch(/\bdark:(?:hover:)?text-neutral-/);
     expect(button).not.toHaveClass("font-mono");
     expect(button).not.toHaveClass("font-sans");

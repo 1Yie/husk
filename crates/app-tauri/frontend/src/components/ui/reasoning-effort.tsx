@@ -210,6 +210,10 @@ export interface ReasoningEffortProps {
   accent?: "blue" | "purple";
   /** The surrounding panel has finished its opening animation. */
   effectsEnabled?: boolean;
+  /** The gesture started/ended. A caller inside a popup suppresses its
+   *  outside-dismiss while this is true: dragging the thumb past the edge is a
+   *  normal way to reach the end of the rail, not a click on the page. */
+  onDraggingChange?: (dragging: boolean) => void;
 }
 
 export function ReasoningEffort({
@@ -221,6 +225,7 @@ export function ReasoningEffort({
   levelTones,
   accent = "blue",
   effectsEnabled = true,
+  onDraggingChange,
 }: ReasoningEffortProps = {}) {
   // The caller owns the real tier list; index 0 is the lowest.
   const start = Math.round(value ?? 1);
@@ -474,6 +479,7 @@ export function ReasoningEffort({
   function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     draggingRef.current = true;
+    onDraggingChange?.(true);
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
     } catch {
@@ -499,6 +505,7 @@ export function ReasoningEffort({
       /* Ignore when the event was not trusted. */
     }
     setDragging(false);
+    onDraggingChange?.(false);
     report();
   }
 
@@ -618,7 +625,9 @@ export function ReasoningEffort({
         <span className={s.swap}>
           <span className={s.current}>{label}</span>
           <span key={level} className={s.swap + (animateLabel ? " " + s.enter : "")}>
-            <span className={s.next} style={levelTones?.[active] ? { color: levelTones[active] } : undefined}>
+            <span className={s.next} style={levelTones?.[active] ? {
+              color: levelTones[active],
+            } : undefined}>
               {level}
             </span>
           </span>

@@ -11,11 +11,12 @@ import { TerminalSession, type SessionState, type TerminalAppearance } from "./t
 import type { TerminalPane } from "./pane-layout";
 import { queueTerminalWork } from "./render-queue";
 import { Skeleton } from "@/components/ui/skeleton";
+import { INK_OVERLAY_DESTRUCTIVE } from "@/lib/theme";
 
 const COPY_KEYS = shortcutLabel(isMac ? ["mod", "c"] : ["mod", "shift", "c"]);
 const PASTE_KEYS = shortcutLabel(isMac ? ["mod", "v"] : ["mod", "shift", "v"]);
 const MENU_ITEM = "gap-2 text-xs cursor-pointer";
-const MENU_DANGER = `${MENU_ITEM} text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400`;
+const MENU_DANGER = `${MENU_ITEM} ${INK_OVERLAY_DESTRUCTIVE}`;
 const MENU_ICON = "h-3.5 w-3.5 shrink-0";
 
 async function readClipboard(): Promise<string | null> {

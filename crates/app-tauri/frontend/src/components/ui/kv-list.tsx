@@ -1,5 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { INK_OVERLAY_SECONDARY, OVERLAY_DIVIDER, OVERLAY_HEADING } from "@/lib/theme";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -113,12 +114,16 @@ KvRow.displayName = "KvRow";
 
 function isLightColor(hex: string): boolean {
   const cleanHex = hex.replace("#", "");
-  if (cleanHex.length !== 6) return true;
+  if (!/^[\da-f]{6}$/i.test(cleanHex)) return true;
   const r = parseInt(cleanHex.substring(0, 2), 16);
   const g = parseInt(cleanHex.substring(2, 4), 16);
   const b = parseInt(cleanHex.substring(4, 6), 16);
-  const yiq = (r * 299 + g * 587 + b * 114) / 1000;
-  return yiq >= 180;
+  const [red, green, blue] = [r, g, b].map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05);
 }
 
 const PRESET_COLORS = [
@@ -162,8 +167,8 @@ export function ColorPill({
           className={cn(
             "h-8 px-4 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-2xs transition-colors select-none border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)]",
             light
-              ? "text-neutral-800 hover:bg-neutral-50"
-              : "text-zinc-50 hover:opacity-90 hover:text-zinc-50 border-zinc-50/20",
+              ? "text-zinc-800 hover:text-zinc-800"
+              : "text-[#ffffff] hover:text-[#ffffff] border-zinc-50/20",
             disabled && "opacity-50 cursor-not-allowed pointer-events-none",
             className
           )}
@@ -184,12 +189,12 @@ export function ColorPill({
       <PopoverContent
         align="end"
         sideOffset={6}
-        className="w-56 p-3 bg-white rounded-xl border border-neutral-200 shadow-popup select-none"
+        className="w-56 p-3 select-none"
       >
         <div className="flex flex-col gap-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-neutral-700">预设颜色</span>
-            <span className="text-[11px] font-mono text-neutral-500">{value}</span>
+            <span className={cn("text-xs", OVERLAY_HEADING)}>预设颜色</span>
+            <span className={cn("text-[11px] font-mono", INK_OVERLAY_SECONDARY)}>{value}</span>
           </div>
 
           <div className="grid grid-cols-5 gap-1.5">
@@ -200,6 +205,7 @@ export function ColorPill({
                 <Button
                   key={c}
                   type="button"
+                  aria-label={`预设颜色 ${c}`}
                   variant="outline"
                   size="icon"
                   onClick={() => onChange(c)}
@@ -214,7 +220,7 @@ export function ColorPill({
                     <Check
                       className={cn(
                         "w-3.5 h-3.5",
-                        isPresetLight ? "text-neutral-900" : "text-zinc-50"
+                        isPresetLight ? "text-zinc-900" : "text-zinc-50"
                       )}
                     />
                   )}
@@ -223,12 +229,13 @@ export function ColorPill({
             })}
           </div>
 
-          <div className="h-px bg-neutral-100 my-0.5" />
+          <div className={cn("h-px my-0.5", OVERLAY_DIVIDER)} />
 
           <div className="flex items-center gap-2">
             <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-neutral-200 shrink-0 cursor-pointer">
               <input
                 type="color"
+                aria-label="自定义颜色"
                 value={value}
                 onChange={(e) => onChange(e.target.value.toUpperCase())}
                 className="absolute -inset-2 w-12 h-12 cursor-pointer opacity-0"
@@ -240,6 +247,7 @@ export function ColorPill({
             </div>
             <Input
               type="text"
+              aria-label="颜色值"
               value={value}
               onChange={(e) => onChange(e.target.value.toUpperCase())}
               placeholder="#FFFFFF"

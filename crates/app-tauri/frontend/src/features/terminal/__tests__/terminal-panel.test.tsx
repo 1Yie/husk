@@ -646,7 +646,10 @@ test("terminal screen menu has aligned decorative icons and a destructive close 
     expect(item).toHaveClass("gap-2", "text-xs");
   }
   const close = within(menu).getByRole("menuitem", { name: "关闭终端" });
-  expect(close).toHaveClass("text-red-600", "focus:text-red-600", "dark:text-red-400", "dark:focus:text-red-400");
+  expect(close).toHaveClass(
+    "text-[color:var(--husk-overlay-error)]",
+    "focus:text-[color:var(--husk-overlay-error)]",
+  );
   await user.click(close);
   expect(sessions[0].dispose).toHaveBeenCalledOnce();
   expect(onOpenChange).toHaveBeenCalledWith(false);

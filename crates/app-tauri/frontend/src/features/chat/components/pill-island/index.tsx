@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { TooltipSimple } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { INK_OVERLAY_SECONDARY, SURFACE_FROSTED, SURFACE_FROSTED_HOVER } from "@/lib/theme";
 
 /** One capsule on the row above the composer. The row decides whether its
  *  text shows; the caller only says what the capsule is. */
@@ -25,7 +26,7 @@ export function pillCollapsed(index: number, count: number): boolean {
 }
 
 /** One class pair so expanded and collapsed text can never animate differently. */
-const PILL_TEXT = "flex min-w-0 items-center gap-1.5 overflow-hidden transition-all duration-200 ease-out";
+const PILL_TEXT = "flex min-w-0 items-center gap-1.5 overflow-hidden transition-[max-width,margin-left,opacity] duration-200 ease-out";
 const PILL_TEXT_OPEN = "ml-1.5 max-w-[180px] opacity-100";
 const PILL_TEXT_COLLAPSED =
   "ml-0 max-w-0 opacity-0 " +
@@ -33,13 +34,16 @@ const PILL_TEXT_COLLAPSED =
   "group-focus-visible:ml-1.5 group-focus-visible:max-w-[180px] group-focus-visible:opacity-100";
 
 const PILL_BUTTON = cn(
-  "group flex h-8 items-center gap-0 rounded-full border px-2 text-[12px] transition-all duration-200 ease-out active:scale-95 cursor-pointer",
+  "group flex h-8 items-center gap-0 rounded-full border px-2 text-[12px] transition-transform duration-200 ease-out active:scale-95 cursor-pointer",
+  SURFACE_FROSTED,
   "border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)]",
   // One look whether the panel behind it is open or closed — an open panel is
   // not a selected tab. Hover is the only state change.
   // Foreground tokens already follow the theme; a second neutral inversion
   // makes small dark-mode labels nearly the same colour as the capsule.
-  "bg-white text-text-secondary hover:bg-neutral-50 hover:text-text-primary dark:bg-[var(--husk-active)] dark:hover:bg-[var(--husk-hover)]",
+  INK_OVERLAY_SECONDARY,
+  "hover:text-text-primary",
+  SURFACE_FROSTED_HOVER,
 );
 
 /** The capsules above the composer as one row. Spacing is the row's `gap`, so

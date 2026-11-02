@@ -7,6 +7,7 @@ import { X } from "@keyline-icons/react";
 import { linkedName } from "@/lib/linked-roots";
 import type { LinkedRoot } from "@/lib/agent-ipc/index";
 import { cn } from "@/lib/utils";
+import { INK_OVERLAY_SECONDARY, SURFACE_OVERLAY_HOVER } from "@/lib/theme";
 
 export function LinkedRootRow({
   root,
@@ -21,14 +22,14 @@ export function LinkedRootRow({
 }) {
   const writable = root.access === "readwrite";
   return (
-    <div className="flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)]">
+    <div className={cn("flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1", SURFACE_OVERLAY_HOVER)}>
       <span className="max-w-[7em] shrink-0 truncate text-xs font-medium text-neutral-800">
         {linkedName(root.path)}
       </span>
-      <span className="shrink-0 rounded bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-1 text-[10px] text-neutral-500">
+      <span className="shrink-0 rounded bg-[color-mix(in_srgb,var(--husk-black)_6%,transparent)] px-1 text-[10px] text-neutral-800">
         {root.scope === "workspace" ? "本工作区" : "本会话"}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[10px] text-neutral-400" title={root.path}>
+      <span className={cn("min-w-0 flex-1 truncate text-[10px]", INK_OVERLAY_SECONDARY)} title={root.path}>
         {root.path}
       </span>
       {/* Two tabs, one of them lit — the same segmented shape as the scope
@@ -49,7 +50,7 @@ export function LinkedRootRow({
                 "cursor-pointer rounded-full px-1.5 py-0.5 text-[10px] transition-colors",
                 active
                   ? "bg-white text-neutral-900 shadow-2xs"
-                  : "text-neutral-500 hover:text-neutral-900",
+                  : "text-neutral-800 hover:text-neutral-900",
               )}
             >
               {access === "read" ? "只读" : "读写"}
@@ -62,7 +63,7 @@ export function LinkedRootRow({
         aria-disabled={busy}
         aria-label="取消关联"
         onClick={() => onRemove(root.path)}
-        className="shrink-0 cursor-pointer rounded p-0.5 text-neutral-400 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_8%,transparent)] hover:text-neutral-700"
+        className={cn("shrink-0 cursor-pointer rounded p-0.5 transition-colors hover:text-neutral-800", INK_OVERLAY_SECONDARY, SURFACE_OVERLAY_HOVER)}
       >
         <X className="h-3 w-3" />
       </button>

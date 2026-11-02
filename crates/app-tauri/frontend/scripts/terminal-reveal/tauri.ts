@@ -1,6 +1,19 @@
 // Simulate the desktop boundary, not xterm. Real DOM/canvas/font layout and
 // the actual terminal/session code run in the browser.
+import type { LinkedRootLayers, ModelInfo } from "@/lib/agent-ipc/sessions";
+import type { UiCommand } from "@/types";
+
 export class Channel { onmessage = (_event: ArrayBuffer) => {}; }
+let fixtureModels: ModelInfo = { active_provider: "fixture", active_model: "fixture", models: [] };
+let fixtureLinks: LinkedRootLayers = { workspace: [], session: [] };
+let fixturePickedDir: string | null = null;
+Object.assign(window, { popupBackendFixture: {
+  configure: (data: { models?: ModelInfo; links?: LinkedRootLayers; pickedDir?: string | null }) => {
+    if (data.models) fixtureModels = structuredClone(data.models);
+    if (data.links) fixtureLinks = structuredClone(data.links);
+    if ("pickedDir" in data) fixturePickedDir = data.pickedDir ?? null;
+  },
+} });
 const settingsShell = new URLSearchParams(location.search).has("settings-shell");
 const nativeGlass = settingsShell && !new URLSearchParams(location.search).has("fallback");
 export const isTauri = () => nativeGlass;
@@ -14,7 +27,7 @@ const appearance = {
   ui_font: "system-ui", code_font: "monospace", contrast: 45, currency: "usd",
 };
 if (settingsShell) Object.assign(window, { settingsShellMetrics: settingsMetrics });
-type Args = { root?: string; cwd?: string; id?: string; path?: string; cols?: number; rows?: number; output?: Channel; op?: string; payload?: { paths?: string[] } };
+type Args = { root?: string; cwd?: string; id?: string; path?: string; cols?: number; rows?: number; output?: Channel; op?: string; cmd?: UiCommand; payload?: { paths?: string[]; path?: string; access?: string; persist?: boolean; enabled?: boolean } };
 const workspaceLinks = new URLSearchParams(location.search).has("workspace-links");
 const markdownResources = new URLSearchParams(location.search).has("markdown-resources");
 const workspaceFileCalls: { command: string; root?: string; path?: string }[] = [];
@@ -30,6 +43,20 @@ function redraw(output: Channel | undefined, cols = 80, rows = 24) {
   output?.onmessage(new TextEncoder().encode(`\x1b[H${lines}`).buffer);
 }
 export async function invoke(command: string, args: Args = {}) {
+  if (command === "agent_cmd" && args.cmd && typeof args.cmd === "object") {
+    const cmd = args.cmd;
+    if ("SetModel" in cmd || "SetThinkingLevel" in cmd || "SetPermissionMode" in cmd || "SetAgentMode" in cmd) {
+      if (settingsShell) settingsMetrics.calls.push({ command, args });
+      if ("SetModel" in cmd) {
+        fixtureModels.active_provider = cmd.SetModel.provider;
+        fixtureModels.active_model = cmd.SetModel.model;
+      }
+      if ("SetThinkingLevel" in cmd) fixtureModels.active_thinking_level = cmd.SetThinkingLevel.level;
+      if ("SetPermissionMode" in cmd) fixtureModels.active_permission_mode = cmd.SetPermissionMode.mode;
+      if ("SetAgentMode" in cmd) fixtureModels.active_agent_mode = cmd.SetAgentMode.mode;
+      return;
+    }
+  }
   if ((workspaceLinks || markdownResources) && (command === "workspace_list_files" || command === "workspace_preview_file")) {
     workspaceFileCalls.push({ command, root: args.root, path: args.path });
     if (!["/repo", "/other"].includes(args.root ?? "") || args.path?.startsWith("/") || args.path?.split("/").includes("..")) throw new Error("Invalid fixture workspace read");
@@ -158,10 +185,45 @@ export async function invoke(command: string, args: Args = {}) {
   if (command === "workspace_list_files") return { path: args.path ?? "", entries: [], truncated: false };
   if (command === "agent_session") {
     if (args.op === "stat_paths") return Object.fromEntries((args.payload?.paths ?? []).map(path => [path, path === "out/long-deliverable-name.pdf"]));
-    if (args.op === "model_info") return { active_provider: "fixture", active_model: "fixture", models: [] };
+    if (args.op === "model_info") return structuredClone(fixtureModels);
+    if (args.op === "agent_overview") return {
+      instructions: "", model: structuredClone(fixtureModels),
+      skills: [], plugins: [], subagents: [], rules: [],
+    };
+    if (args.op === "add_mcp") return { success: true, path: "/fixture/connectors/manifest.json" };
+    if (args.op === "reload_mcp") return { plugins: [] };
+    if (args.op === "set_fast_mode") {
+      fixtureModels.active_fast_mode = args.payload?.enabled === true;
+      return { fast_mode: fixtureModels.active_fast_mode };
+    }
     if (args.op === "git_info") return { repo: true, branch: "main", dirty: 0 };
     if (args.op === "workspace_changes") return { repo: false, files: [] };
-    if (args.op === "linked_roots") return { workspace: [], session: [] };
+    if (args.op === "linked_roots") return structuredClone(fixtureLinks);
+    if (args.op === "pick_link_dir") return fixturePickedDir;
+    if (args.op === "set_link_access" || args.op === "unlink_root" || args.op === "link_root") {
+      const linkedPath = args.payload?.path;
+      if (!linkedPath) throw new Error("A linked path is required");
+      if (args.op === "unlink_root") {
+        fixtureLinks.workspace = fixtureLinks.workspace.filter((root) => root.path !== linkedPath);
+        fixtureLinks.session = fixtureLinks.session.filter((root) => root.path !== linkedPath);
+      } else {
+        const access = args.payload?.access;
+        if (access !== "read" && access !== "readwrite") throw new Error("Invalid linked access");
+        if (args.op === "set_link_access") {
+          const update = (rows: LinkedRootLayers["workspace"]) =>
+            rows.map((root) => root.path === linkedPath ? { ...root, access } : root);
+          fixtureLinks.workspace = update(fixtureLinks.workspace);
+          fixtureLinks.session = update(fixtureLinks.session);
+        } else {
+          const scope = args.payload?.persist ? "workspace" : "session";
+          fixtureLinks[scope] = [
+            ...fixtureLinks[scope].filter((root) => root.path !== linkedPath),
+            { path: linkedPath, access, scope },
+          ];
+        }
+      }
+      return structuredClone(fixtureLinks);
+    }
     if (args.op?.startsWith("list_") || args.op === "bg_list" || args.op === "plugin_commands") return [];
   }
   if (settingsShell && command === "terminal_resize") return;
@@ -170,8 +232,19 @@ export async function invoke(command: string, args: Args = {}) {
   return {};
 }
 export const convertFileSrc = (src: string) => src;
-export const listen = async () => () => {};
-export const emit = async () => {};
+export async function listen<T>(
+  event: string,
+  handler: (event: { event: string; id: number; payload: T }) => void,
+) {
+  const listener = (message: Event) => handler({
+    event, id: 0, payload: (message as CustomEvent<T>).detail,
+  });
+  window.addEventListener(event, listener);
+  return () => window.removeEventListener(event, listener);
+}
+export async function emit<T>(event: string, payload?: T) {
+  window.dispatchEvent(new CustomEvent(event, { detail: payload }));
+}
 export const getCurrentWindow = () => ({
   onFocusChanged: async () => () => {}, isFocused: async () => true,
   startDragging: async () => {}, toggleMaximize: async () => {},

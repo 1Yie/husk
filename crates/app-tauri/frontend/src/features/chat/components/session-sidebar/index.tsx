@@ -78,6 +78,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { framedShell, isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import { BORDER_OVERLAY_DIVIDER, INK_OVERLAY_DESTRUCTIVE, INK_OVERLAY_SECONDARY, OVERLAY_HEADING, SURFACE_OVERLAY_HOVER } from "@/lib/theme";
 import {
   useNotifications,
   useUnreadCount,
@@ -833,13 +834,13 @@ export function SessionSidebar({
                 className="w-72 p-0 text-xs overflow-hidden"
               >
                 <div className="flex items-center justify-between px-3 pt-2.5 pb-2">
-                  <div className="font-semibold text-neutral-800">通知</div>
+                  <div className={OVERLAY_HEADING}>通知</div>
                   <div className="flex items-center gap-2.5">
                     {unreadCount > 0 && (
                       <button
                         type="button"
                         onClick={() => markAllRead()}
-                        className="text-[11px] text-text-secondary hover:text-neutral-700 transition-colors cursor-pointer"
+                        className={cn("text-[11px] hover:text-neutral-800 transition-colors cursor-pointer", INK_OVERLAY_SECONDARY)}
                       >
                         全部已读
                       </button>
@@ -848,7 +849,7 @@ export function SessionSidebar({
                       <button
                         type="button"
                         onClick={() => clearAll()}
-                        className="text-[11px] text-text-secondary hover:text-neutral-700 transition-colors cursor-pointer"
+                        className={cn("text-[11px] hover:text-neutral-800 transition-colors cursor-pointer", INK_OVERLAY_SECONDARY)}
                       >
                         清空
                       </button>
@@ -856,18 +857,18 @@ export function SessionSidebar({
                   </div>
                 </div>
                 {notifications.length === 0 ? (
-                  <div className="px-3 pb-3 text-text-secondary">暂无通知。</div>
+                  <div className={cn("px-3 pb-3", INK_OVERLAY_SECONDARY)}>暂无通知。</div>
                 ) : (
                   <div
                     data-tauri-drag-region="false"
-                    className="max-h-64 overflow-y-auto border-t border-[color-mix(in_srgb,var(--husk-n200)_60%,transparent)]"
+                    className={cn("max-h-64 overflow-y-auto border-t", BORDER_OVERLAY_DIVIDER)}
                   >
                     {notifications.map((n) => (
                       <button
                         key={n.id}
                         type="button"
                         onClick={() => openNotification(n)}
-                        className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-[color-mix(in_srgb,var(--husk-black)_4%,transparent)] transition-colors cursor-pointer"
+                        className={cn("w-full flex items-start gap-2 px-3 py-2 text-left transition-colors cursor-pointer", SURFACE_OVERLAY_HOVER)}
                       >
                         {/* The dot keeps its slot once read, so the row's text
                             edge does not shift under the pointer. */}
@@ -882,7 +883,7 @@ export function SessionSidebar({
                             className={cn(
                               "block truncate",
                               n.read
-                                ? "text-text-secondary"
+                                ? INK_OVERLAY_SECONDARY
                                 : "text-neutral-800 font-medium",
                             )}
                           >
@@ -890,13 +891,13 @@ export function SessionSidebar({
                           </span>
                           {n.body && (
                             <span
-                              className="block line-clamp-2 break-words text-text-secondary mt-0.5"
+                              className={cn("block line-clamp-2 break-words mt-0.5", INK_OVERLAY_SECONDARY)}
                               title={n.body}
                             >
                               {n.body}
                             </span>
                           )}
-                          <span className="block text-text-secondary mt-0.5 text-[10.5px]">
+                          <span className={cn("block mt-0.5 text-[10.5px]", INK_OVERLAY_SECONDARY)}>
                             {notifyStamp(n.ts)}
                           </span>
                         </span>
@@ -1068,8 +1069,7 @@ function SessionItem({
       <M.Item
         className={cn(
           "gap-2 text-xs cursor-pointer",
-          danger &&
-            "text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400 focus:bg-red-50 dark:focus:bg-red-950/40",
+          danger && INK_OVERLAY_DESTRUCTIVE,
         )}
         onClick={(e) => {
           e.stopPropagation();

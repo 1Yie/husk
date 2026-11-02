@@ -7,7 +7,7 @@
 import { Fragment, useEffect, useRef } from "react";
 import { FileCode, Plug, Sparkles, Terminal } from "@keyline-icons/react";
 import { cn } from "@/lib/utils";
-import { INK_MUTED, SURFACE_OVERLAY } from "@/lib/theme";
+import { BORDER_OVERLAY_DIVIDER, INK_OVERLAY_SECONDARY, OVERLAY_HEADING, SURFACE_OVERLAY, SURFACE_OVERLAY_HOVER, SURFACE_OVERLAY_SELECTED } from "@/lib/theme";
 
 export type MentionGroup = "command" | "skill" | "plugin" | "file";
 
@@ -74,7 +74,7 @@ export function MentionPopup({
         className={cn("absolute bottom-full left-2 right-2 mb-2 z-50 overflow-hidden", SURFACE_OVERLAY)}
         role="listbox"
       >
-        <div className={cn("px-3 py-2.5 text-xs", INK_MUTED)}>无匹配项</div>
+        <div className={cn("px-3 py-2.5 text-xs", INK_OVERLAY_SECONDARY)}>无匹配项</div>
       </div>
     );
   }
@@ -89,7 +89,8 @@ export function MentionPopup({
             {i === 0 || rows[i - 1].group !== r.group ? (
               <div
                 className={cn(
-                  "px-3 pb-1 text-[10.5px] font-medium tracking-wide text-neutral-400",
+                  "px-3 pb-1 text-[10.5px] tracking-wide",
+                  OVERLAY_HEADING,
                   i === 0 ? "pt-1" : "pt-2",
                 )}
               >
@@ -107,19 +108,19 @@ export function MentionPopup({
               }}
               className={cn(
                 "w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] transition-colors",
-                i === active ? "bg-neutral-100" : "hover:bg-neutral-50",
+                i === active ? SURFACE_OVERLAY_SELECTED : SURFACE_OVERLAY_HOVER,
               )}
             >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] text-neutral-500">
+              <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)]", INK_OVERLAY_SECONDARY)}>
                 <RowIcon icon={r.icon} />
               </span>
               <span className="shrink-0 font-mono font-medium text-neutral-800">{r.label}</span>
               {r.args ? (
-                <span className="shrink-0 font-mono text-[11px] text-neutral-400">{r.args}</span>
+                <span className={cn("shrink-0 font-mono text-[11px]", INK_OVERLAY_SECONDARY)}>{r.args}</span>
               ) : null}
-              <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-500">{r.hint}</span>
+              <span className={cn("min-w-0 flex-1 truncate text-[11px]", INK_OVERLAY_SECONDARY)}>{r.hint}</span>
               {r.local ? (
-                <span className={cn("shrink-0 text-[11px]", INK_MUTED)}>打开</span>
+                <span className={cn("shrink-0 text-[11px]", INK_OVERLAY_SECONDARY)}>打开</span>
               ) : null}
             </button>
           </Fragment>
@@ -127,8 +128,9 @@ export function MentionPopup({
       </div>
       <div
         className={cn(
-          "flex items-center gap-1 border-t border-neutral-100 px-3 py-1.5 text-[11px] dark:border-[var(--husk-border)]",
-          INK_MUTED,
+          "flex items-center gap-1 border-t px-3 py-1.5 text-[11px]",
+          BORDER_OVERLAY_DIVIDER,
+          INK_OVERLAY_SECONDARY,
         )}
       >
         ↑↓ 选择 · Enter 确认 · Esc 关闭

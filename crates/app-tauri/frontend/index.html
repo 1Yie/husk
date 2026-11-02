@@ -14,17 +14,15 @@
         position: fixed; inset: 0; z-index: 9999;
         display: flex; align-items: center; justify-content: center;
         flex-direction: column; gap: 16px;
-        /* Boot overlay, sibling of #root — never re-parented, so its style
-           and animation lifecycle are computed once. No background here:
-           <html> carries the themed colour (boot script sets it before
-           first paint). */
-        background: transparent; color: #1a1c1f;
+        /* The native window owns the pre-palette ground. Once available,
+           the shared shell surface covers boot and workspace loading. */
+        background: var(--husk-shell-surface, var(--husk-panel, var(--husk-bg, transparent)));
+        color: var(--husk-fg, #1a1c1f);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         opacity: 1;
         transition: opacity 320ms ease, color 200ms ease, background-color 200ms ease;
         pointer-events: none;
       }
-      #husk-splash.dark { color: #e4e4e7; }
       #husk-splash.leaving { opacity: 0; }
       /* Bare PNG icon — no card, no animation of its own: the whole splash
          breathes as one unit. It stays hidden until decode() confirms the
@@ -82,11 +80,10 @@
           var el = document.getElementById("husk-splash");
           if (!el) return;
           el.classList.toggle("dark", dark2);
-          if (bg) el.style.background = bg;
-          if (fg) el.style.color = fg;
           if (accent) el.style.setProperty("--husk-splash-accent", accent);
           root.classList.toggle("dark", dark2);
           if (bg) root.style.setProperty("--husk-bg", bg);
+          if (fg) root.style.setProperty("--husk-fg", fg);
           root.style.backgroundColor = "var(--husk-document-background, var(--husk-bg))";
           if (document.body) document.body.style.backgroundColor = "var(--husk-document-background, var(--husk-bg))";
         }
@@ -136,8 +133,8 @@
           const dark =
             cfg.theme_mode === "dark" ? true :
             cfg.theme_mode === "light" ? false : mq.matches;
-          const bg = dark ? (cfg.dark_background || cfg.background) : cfg.background;
-          const fg = dark ? (cfg.dark_foreground || cfg.foreground) : cfg.foreground;
+          const bg = dark ? cfg.dark_background : cfg.background;
+          const fg = dark ? cfg.dark_foreground : cfg.foreground;
           const accent = (dark && cfg.dark_accent) || cfg.accent;
           window.__huskSplashPaint?.(dark, bg, fg, accent);
           // Pre-apply the root tokens React's applier writes — without this,

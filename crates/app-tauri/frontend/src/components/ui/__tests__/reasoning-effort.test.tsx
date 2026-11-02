@@ -4,17 +4,20 @@ import { ReasoningEffort } from "../reasoning-effort";
 import { thinkingTone } from "@/lib/thinking";
 
 describe("reasoning effort tier colour", () => {
-  test("the tier word takes the tone of the stop it sits on", () => {
+  test.each([0, 1, 2])("the tier word keeps its full tone at stop %i", (value) => {
     const values = ["low", "medium", "max"];
+    const stops = ["Low", "Medium", "Max"];
     render(
       <ReasoningEffort
-        stops={["Low", "Medium", "Max"]}
+        stops={stops}
         levelTones={values.map(thinkingTone)}
-        value={2}
+        value={value}
         label="Claude Opus 5.5"
       />,
     );
-    expect(screen.getByText("Max")).toHaveStyle({ color: "var(--husk-think-max, var(--husk-fg-muted))" });
+    expect(screen.getByText(stops[value])).toHaveStyle({
+      color: thinkingTone(values[value]),
+    });
     // The model name stays the caption colour — only the tier is toned.
     expect(screen.getByText("Claude Opus 5.5").getAttribute("style")).toBeNull();
   });

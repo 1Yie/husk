@@ -78,6 +78,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { requestQuote, selectionWithin } from "@/lib/selection-bus";
 import { cn } from "@/lib/utils";
+import { INK_OVERLAY_ERROR, INK_OVERLAY_SECONDARY, INK_OVERLAY_SUCCESS, SURFACE_FROSTED, SURFACE_FROSTED_HOVER } from "@/lib/theme";
 import {
   CircleCheck,
   CircleX,
@@ -3155,10 +3156,10 @@ export function ChatStream({
       text:
         dockTab === "changes" ? (
           <>
-            <span className="flex-none font-mono tabular-nums whitespace-nowrap text-emerald-600 dark:text-emerald-400">
+            <span className={cn("flex-none font-mono tabular-nums whitespace-nowrap", INK_OVERLAY_SUCCESS)}>
               +{dockAdds}
             </span>
-            <span className="flex-none font-mono tabular-nums whitespace-nowrap text-rose-600 dark:text-rose-400">
+            <span className={cn("flex-none font-mono tabular-nums whitespace-nowrap", INK_OVERLAY_ERROR)}>
               −{dockDels}
             </span>
           </>
@@ -3188,14 +3189,14 @@ export function ChatStream({
             <Orb
               variant="B2"
               size={20}
-              className="-m-[2px] text-sky-600 dark:text-sky-400"
+              className="-m-[2px] text-sky-700 dark:text-sky-300"
             />
           ) : jobs.tone === "failed" ? (
-            <CircleX className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+            <CircleX className={cn("h-4 w-4", INK_OVERLAY_ERROR)} />
           ) : (
             // A touch smaller: a filled check carries more ink than an
             // outlined cross at one size.
-            <CircleCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <CircleCheck className={cn("h-3.5 w-3.5", INK_OVERLAY_SUCCESS)} />
           )}
         </span>
       ),
@@ -3203,7 +3204,7 @@ export function ChatStream({
         <span
           className={cn(
             "flex-none whitespace-nowrap",
-            jobs.tone === "failed" && "text-rose-600 dark:text-rose-400",
+            jobs.tone === "failed" && INK_OVERLAY_ERROR,
           )}
         >
           {jobs.text}
@@ -3230,12 +3231,12 @@ export function ChatStream({
               label="子代理"
               // The helix's dots are 2px at this size; the negative margin keeps the
               // 16px box and its collapsed width while the sphere gets room.
-              className="-m-1.5 text-violet-600 dark:text-violet-400"
+              className="-m-1.5 text-violet-700 dark:text-violet-300"
             />
           ) : subagentPill.tone === "failed" ? (
-            <CircleX className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+            <CircleX className={cn("h-4 w-4", INK_OVERLAY_ERROR)} />
           ) : (
-            <CircleCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <CircleCheck className={cn("h-3.5 w-3.5", INK_OVERLAY_SUCCESS)} />
           )}
         </span>
       ),
@@ -3244,8 +3245,7 @@ export function ChatStream({
         <span
           className={cn(
             "flex-none whitespace-nowrap",
-            subagentPill.tone === "failed" &&
-              "text-rose-600 dark:text-rose-400",
+            subagentPill.tone === "failed" && INK_OVERLAY_ERROR,
           )}
         >
           {subagentPill.text}
@@ -3420,7 +3420,12 @@ export function ChatStream({
                   type="button"
                   onClick={scrollToBottom}
                   aria-label="回到底部"
-                  className="w-8 h-8 rounded-full bg-white dark:bg-[var(--husk-active)] hover:bg-neutral-50 dark:hover:bg-[var(--husk-hover)] text-neutral-600 hover:text-neutral-900 flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-all active:scale-95 cursor-pointer"
+                  className={cn(
+                    "w-8 h-8 rounded-full hover:text-text-primary flex items-center justify-center border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-transform active:scale-95 cursor-pointer",
+                    SURFACE_FROSTED,
+                    SURFACE_FROSTED_HOVER,
+                    INK_OVERLAY_SECONDARY,
+                  )}
                 >
                   <ArrowDown className="h-4 w-4" />
                 </button>

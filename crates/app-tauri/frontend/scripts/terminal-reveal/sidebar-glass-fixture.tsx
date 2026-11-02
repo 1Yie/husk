@@ -5,6 +5,7 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { MainLayout } from "@/app/layout/main-layout";
 import { useLayoutStore } from "@/app/layout/layout-store";
 import { SessionSidebar } from "@/features/chat/components/session-sidebar";
+import { WorkspaceLoadingVeil } from "@/features/chat/components/workspace-loading-veil";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { applyAppearance } from "@/lib/appearance";
 import { isMac } from "@/lib/platform";
@@ -50,6 +51,7 @@ applyAppearance(config);
 function Fixture() {
   const [selected, select] = useState(1);
   const [mounted, setMounted] = useState(true);
+  const [loading, setLoading] = useState(false);
   Object.assign(window, { glassFixture: {
     metrics,
     native,
@@ -61,6 +63,7 @@ function Fixture() {
         dark_background: "#16161a", ui_font: value === "custom" ? "Georgia" : "system-ui" });
     },
     mount(value: boolean) { setMounted(value); },
+    loading: setLoading,
     toggle: useLayoutStore.getState().toggleSidebar,
     selected: () => selected,
     sample() {
@@ -89,7 +92,7 @@ function Fixture() {
       <input id="main-input" aria-label="Main input" />
       <div className="bg-panel p-4" id="opaque-panel">Opaque main panel</div>
     </div>
-  </MainLayout>}</TooltipProvider>;
+  </MainLayout>}{loading && <WorkspaceLoadingVeil visible />}</TooltipProvider>;
 }
 createRoot(document.getElementById("root")!).render(<StrictMode><Fixture /></StrictMode>);
 if (native) {

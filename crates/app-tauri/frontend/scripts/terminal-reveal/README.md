@@ -184,6 +184,13 @@ sidebar-glass hook runs against recorded mock IPC; native material, real PTYs
 and HMR are outside this browser scenario. `--settings-shell-baseline` records
 pre-change screenshots and geometry only; acceptance runs omit that flag.
 
+`node crates/app-tauri/frontend/scripts/terminal-reveal/sidebar-glass-check.mjs`
+checks the shared shell surface in light, dark and custom themes, with native
+material active or unavailable and at a narrow window width. It loads the
+production boot styles, compares boot and workspace-loading backgrounds with
+the frame, and verifies that loading conceals old content while retaining its
+DOM and input value. Native IPC is recorded by the fixture.
+
 Install Playwright's Chromium, or select an existing executable with
 `CHAT_TERMINAL_EXECUTABLE`. `CHAT_TERMINAL_CPU=4` enables Chromium CPU throttling.
 The optional `--native-webkit` development check uses the same GTK assertions

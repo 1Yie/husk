@@ -4,6 +4,8 @@ import { ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
+  INK_OVERLAY_SECONDARY,
+  OVERLAY_DIVIDER,
   SURFACE_OVERLAY,
   SURFACE_OVERLAY_FOCUS,
   SURFACE_OVERLAY_OPEN,
@@ -46,7 +48,7 @@ const ContextMenuSubTrigger = React.forwardRef<
   <ContextMenuPrimitive.SubTrigger
     ref={ref}
     className={cn(
-      "flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none focus:bg-neutral-100",
+      "flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none",
       SURFACE_OVERLAY_FOCUS,
       SURFACE_OVERLAY_OPEN,
       inset && "pl-8",
@@ -67,6 +69,7 @@ const ContextMenuSubContent = React.forwardRef<
 >(({ className, ...props }, ref) => {
   const { placed, setRef } = usePopperPlacedRef(ref);
   return (
+  <ContextMenuPrimitive.Portal>
   <ContextMenuPrimitive.SubContent
     ref={setRef}
     className={cn(
@@ -79,6 +82,7 @@ const ContextMenuSubContent = React.forwardRef<
     )}
     {...props}
   />
+  </ContextMenuPrimitive.Portal>
   );
 });
 ContextMenuSubContent.displayName =
@@ -141,7 +145,7 @@ const ContextMenuSeparator = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <ContextMenuPrimitive.Separator
     ref={ref}
-    className={cn("-mx-1 my-1 h-px bg-neutral-100 dark:bg-[var(--husk-border)]", className)}
+    className={cn("mx-0 my-1 h-px", OVERLAY_DIVIDER, className)}
     {...props}
   />
 ));
@@ -156,7 +160,8 @@ const ContextMenuLabel = React.forwardRef<
   <ContextMenuPrimitive.Label
     ref={ref}
     className={cn(
-      "px-2 py-1.5 text-xs text-neutral-500 font-normal",
+      "px-2 py-1.5 text-xs font-normal",
+      INK_OVERLAY_SECONDARY,
       inset && "pl-8",
       className
     )}
@@ -171,7 +176,7 @@ const ContextMenuShortcut = ({
 }: React.HTMLAttributes<HTMLSpanElement>) => {
   return (
     <span
-      className={cn("ml-auto text-xs tracking-widest opacity-60", className)}
+      className={cn("ml-auto text-xs tracking-widest", INK_OVERLAY_SECONDARY, className)}
       {...props}
     />
   );
