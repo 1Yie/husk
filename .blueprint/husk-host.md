@@ -9,7 +9,9 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 关键词：session assembly, session manager, session actor, commands, agent mode, sandbox prefs, subagents, child approval, subagent defaults, todo store, office root, system prompt, background jobs, memory distill, recall delta, recall prune, job log tail, semantic recall, turn budget, repeat guard, observation ledger, linked workspaces, link policy, link hub, scope grant
 
 ## 职责
+
 - `SessionActor` / `SessionConfig` / `SessionManager`（session.rs / session_manager.rs）：装配 provider、registry、ctx、plugins、skills、sandbox、memory
+- 模型元数据：`SessionManager::model_info` 将存储中的占位 provider/model 对解析到当前配置，`configured` 区分真实选择与空配置；provider reload 使用同一模型解析规则。
 - 命令面（command.rs 的 `UiCommand`、commands.rs 的斜杠命令）与模式表（mode.rs 的 `AgentMode`）
 - 沙盒偏好（sandbox_prefs.rs）、插件适配（plugins.rs）、子代理宿主（subagents.rs）
 - 关联工作区的策略（link_policy.rs）：`validate` 是唯一的准入判断（拒绝 `/`、`$HOME`、系统目录、包含工作区的祖先、应用数据与凭据目录及其祖先），`normalize` 让列表 canonical、按路径去重（同一路径取更宽的那份，嵌套路径**保留**——`scope_of` 取最具体根，所以只读父 + 读写子必须两条都在，否则等于把父级整棵树放开），`grant_target` 把「卡片上的文件」折成「要授予的目录」（项目根 → 目录本身 → 父目录），`same_path` 让已消失的目录仍能被取消关联
@@ -22,6 +24,7 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 子代理的预算来自内核常量（不设超时、不设轮次上限），宿主没有出口：它是一个独立的 agent，不是受会话预算节制的工具。系统提示里的预算文案随这些常量走，改一处必须改另一处
 - 子代理编号：进程启动后先 `reserve_child_ids(max_child_id(...))`，从一个会话已有记录之后开始编号——编号写进 transcript 文件名与会话日志，重用会让新子代理顶掉旧记录
 - 系统提示词资产（assets/kernel-system-prompt.md）、办公根目录（office.rs）、待办存储（todo_store.rs）、全局偏好（prefs.rs）。提示里有一段常驻的「如何在需要别的目录时申请」——它必须在没有任何关联时也存在，否则模型不知道这条路
+- 外观布局：`AppearanceSettings` 的全局状态栏字段保存顺序和隐藏项，缺省使用前端模块注册表，模块 id 按原值存储。DTO 与默认值由 `prefs.rs` 定义，Tauri 的补丁合并归其 IPC 层。
 - 提示词缓存布局：固定指令在前，可刷新目录与会话上下文在后；mode / permission / linked roots 不改写出生系统提示，由 `live_context` 在每次前台请求中从引擎共享槽生成可信 system 说明，仅修改 wire 副本。`foreground_provider` 统一 spawn / reload / fallback 的 `checkpoint(context(warming(provider)))` 装配：checkpoint 只看真实历史，warming 捕获并重放实际 wire 快照；独立 compaction / distill / child route 不注入父 contract。动态路径在 JSON 引用前后均脱敏；附加状态后的消息预算复用内核 estimator/fitter，仅整理 wire 副本，完整状态和最新任务/输出不能静默截断。mode/gate/roots 各槽及已生成的 schema 不是跨槽原子快照，不从 schema 推断模式，不在宿主重建 registry。每条消息相关的记忆作为隐藏 user 行随消息发送；会话在回合结束与历史改写时通知保活（`WarmingControl`）
 - 记忆注入记账：会话按历史索引记录已下发的事实 id 与已携带的 persona（`injected_facts` / `injected_persona`），召回行只发增量——同一事实一个会话只出现一次，会话中途 `remember` 的偏好在下一轮以同一行补发；persona 记账以 `<scope>:<key>` 为键，同名不同作用域是两条；`/retry`、`/clear`、`/compact` 回滚历史时同步丢弃对应记账
 - 观察注记与历史同寿命：根上下文装一份 `ObservationLedger`，`forget_after`（`/clear`、`/retry`、`/compact`、hook 改写历史）整份清空——「你看过了」只对仍在上下文里的结果成立。子代理各拿自己的一份
@@ -38,6 +41,7 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 语义召回（`semantic` feature）：`SessionManager::spawn_at` 与 `set_memory_prefs` / `set_semantic_recall` 统一经 `apply_semantic_switch` 调 `agent_context::memory::semantic::set_enabled(memory_enabled && semantic_recall, data_dir/models)`——编码器只在两道开关都开时加载，关记忆即关编码器；本 crate 不直接依赖 fastembed，`semantic` 只是转发到 `agent-context/semantic`
 
 ## 不做
+
 - 不复制内核逻辑；行为变更先落在 kernel 或 agent-coding
 - 不被任何前端反向依赖（前端依赖它）
 - 不自己实现嵌入：模型与服务都在 agent-context
@@ -49,6 +53,7 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 不替子代理决定能做什么：范围来自本会话的门，宿主只负责让它落地并把人能看见的卡接到人手上
 
 ## 对外契约
+
 - `SessionManager` / `SessionActor` 以 `UiCommand` 驱动、`UiEvent` 回流；`base_registries()` 组装完整工具集（patch 工具与 `serena` 元工具在此经 `agent_coding::blueprint::guard_patch` 包装，`.blueprint/` 只能由 `blueprint_edit` 写入；观察工具经 `agent_coding::observe::{read, grep, list, bash}` 包装以追加注记；记忆读写工具 `remember` / `memory_search` 同在这里注册）。观察包装**不得**把 `ToolError::OutOfScope` 拍平成 `Failed`——那会把授权卡吞掉
 - 关联工作区：`links::hub_for(root, paths)` 交出该工作区唯一的 `LinkHub`；`LinkHub::{effective, layers, grant, revoke, set_access, register, refresh}`。`Layer::{Session, Workspace}` 由卡片 action id 决定（`link:session` / `link:workspace`，未知 id 一律拒绝）。`persist: true` 写工作区偏好（该工作区的每个会话都继承），`false` 只写本会话文件。取消关联会把两层里同一路径都删掉——「取消」的意思是这个会话不再能到达它
 - 斜杠命令 `/remember`（全局作用域）、`/forget`（两个作用域）、`/memory`（列出 persona 并标注作用域，`/memory purge` 走 `MemoryStore::purge_polluted` 迁移旧库）

@@ -9,6 +9,7 @@ Husk 桌面端 Tauri 2 后端：内核之上的适配层与打包配置。
 关键词：tauri, ipc commands, desktop shell, kernel bridge, tray, system notification, packaging, capabilities, changes feed, linked workspaces, approval action
 
 ## 职责
+
 - IPC 命令桥（`backend/ipc`）：把前端调用转成 `UiCommand`、把 `UiEvent` 推给前端
 - 审批透传：`decide_tool` 把 `action` 一起送进 `ToolDecision`。判决仍然直写引擎的槽（绕过命令泵），因为卡住的那次调用等的是槽、不是命令队列
 - 会话历史分页：`open` / `history_page` 只回最新一页（`HISTORY_PAGE`），长会话靠滚动续读
@@ -25,7 +26,10 @@ Husk 桌面端 Tauri 2 后端：内核之上的适配层与打包配置。
 
 主窗口的原生背景由 `backend/ipc/sidebar_glass.rs` 和其 macOS 模块承载：命令限定当前 `main` 窗口，校验有限几何与颜色，并将前端可见矩形裁剪、换算为 WebView 本地点坐标。macOS 26+ 且 `NSGlassEffectView` 可用时在单个 WKWebView 下方维护覆盖整个应用外壳的一个窗口私有视图，以低不透明度的前端 panel 色为玻璃着色，透出桌面画面而由不透明工作面遮住内部区域；减少透明度时返回实色状态，其他平台返回未启用。原生对象和辅助功能、窗口通知在主线程管理，版本戳拒绝迟到的更新与释放。macOS 交通灯的原生 inset 由 `tauri.macos.conf.json` 配置，与侧栏顶栏对齐。
 
+`agent_session.set_appearance` 按 `husk_host::prefs::AppearanceSettings` 的已知顶层字段合并补丁，再反序列化为同一类型；未提供字段保留，无法解码的补丁保留当前设置。布局、主题、字体和货币设置共用保存路径。
+
 ## 不做
+
 - 不复制内核逻辑；行为变更先落在 kernel
 - 不渲染界面（属于 tauri-frontend）
 - 不解析 diff：`changes_feed` 只转发行，diff 的解读留给前端的同一套解析器

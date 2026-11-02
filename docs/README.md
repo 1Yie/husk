@@ -21,6 +21,8 @@
 当前提案：
 
 - [`windows-native-backdrop`](./proposals/proposed/2026-11-01-windows-native-backdrop/proposal.md)：在 Windows 11 上启用内嵌外框与原生窗外材质。
+- [`agent-activity`](./proposals/proposed/2026-11-01-agent-activity/proposal.md)：todo 增加进行中状态与一层子任务、子代理可后台运行、工具调用排队时即显示卡片。
+- [`status-strip`](./proposals/proposed/2026-11-01-status-strip/proposal.md)：标题栏统计区改成可配置的状态栏，模块可开关、可拖动排序，并补 todo/子代理/权限/成本模块。
 
 新增指南、参考、ADR 或提案时，先按 `docs-engineering` 确认分类和位置，再扩展此索引。
 ADR 与已加载的代理指令仍须经所有者批准后修改。

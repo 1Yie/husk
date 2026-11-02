@@ -9,6 +9,7 @@ LLM provider 层：把各家协议归一为 StreamChunk。
 关键词：provider, streaming, openai, anthropic, gemini, rig bridge, api key, keyring, masking, sampler, reasoning summary, keepalive
 
 ## 职责
+
 - `rig_bridge` 是唯一的 provider 实现，按 `ProviderKind`（openai_completions / openai_responses / anthropic / gemini）分发，方言差异由 `ProviderCompat` 处理
 - 配置加载、密钥解析（env:/keyring:）、出站脱敏（`EgressMasker`）、重试与续写
 - 客户端标识：出站请求统一带前端在启动时声明的 `User-Agent`（`set_client_user_agent`，版本取发行二进制而非本 crate），单个 provider 可用 `userAgent` 覆盖——按客户端路由或计量的网关要求客户端自报名称，而非挂 SDK 名
@@ -17,10 +18,14 @@ LLM provider 层：把各家协议归一为 StreamChunk。
 - 推理摘要：思考开启且不是严格回放后端时，三条线路请求可见的推理摘要（Responses `reasoning.summary`、Anthropic `thinking.display`、Gemini `includeThoughts`）；请求在流开始前被 400/422 拒绝，就去掉摘要字段重发一次。完整推理块只取 `Text` 与 `Summary`——加密与 redacted 载荷是回放令牌，不是给用户看的文字
 - 存活信号：四条线路的响应体都经同一个包装客户端，每收到一段字节记一次脉搏；上游静默超过一个周期、而这期间仍有字节到达（保活 ping、SSE 注释、不外显的事件），就向调用方送一个 `StreamChunk::Keepalive`。采样器据此重置空闲计时，不外显的长思考不会被当成卡死而整段重发；上游真的一个字节都不发时，空闲计时照旧生效
 
+- 模型消息投影：`to_rig_messages_with_plan` 在四种协议转换前跳过 `NoticeKind::System` 反馈和 UI-only 元数据；真实 system 指令、用户任务、assistant 回复和 host 结果仍进入模型上下文。旧记录的 UI 反馈由展示层独立处理。
+
 ## 不做
+
 - 不知道工具语义与会话状态
 
 ## 对外契约
+
 - `LlmProvider` trait 与归一化的 `StreamChunk`；kernel 与前端不得见到厂商原始 JSON
 - `StreamChunk::Keepalive` 不带内容、不是输出：采样器吸收它，不会转给回合循环；任何直接消费 provider 流的一方（如检查点）都不得把它当作第一块内容或写进草稿
 - `ProviderFactory` 接受一个不透明的会话身份字符串（宿主给出且须含本机私有盐，本层只做哈希），未提供时按实例生成随机路由键

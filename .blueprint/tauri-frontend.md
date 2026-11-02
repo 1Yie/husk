@@ -9,6 +9,7 @@ Husk 桌面端 React 前端：聊天流、会话侧栏、设置与产物面板�
 关键词：react, chat stream, plan card, settings, session sidebar, notification center, artifacts dock, background jobs, apply-event, agent-ipc types, changes feed, frontend, linked workspaces, approval actions, command panel, toolbar density, thinking tiers
 
 ## 职责
+
 - 渲染 `UiEvent`（`apply-event`）并发出命令；设置页与产物面板
 - 前端类型与 `agent-ipc` 的事件契约保持一致
 - 无工作区及工作区无活动会话共用 `WorkspaceWelcome`；活跃对话卡按欢迎内容的本地 inline-size container 决定显隐，阈值由 `index.css` 的 `workspace-welcome` 查询定义。问候、主操作和最近入口独立显示；office 展示最近产物，已有会话空问候与设置统计保持各自布局。
@@ -23,7 +24,7 @@ Husk 桌面端 React 前端：聊天流、会话侧栏、设置与产物面板�
 - 文件管理的 Markdown「预览」由 `workspace-files/markdown-resources.tsx` 独立渲染。资源以当前文档目录为基准，规范化后仍须位于可信工作区内；文件链接复用已有 reader，数字行列沿用源码定位。普通标题片段打开对应文档并提示标题定位尚未支持，本地 URL 查询参数显示明确的不支持原因。本地图片经受限预览 IPC 读取后端验证的 raster 数据，保留 alt、错误与大小限制；无凭据的绝对 HTTPS 图片通过原生 `<img>` 和 `no-referrer` 加载，SVG 限于图片上下文，失败显示错误；HTTP 与其他未授权来源保持占位。安全 width/height 属性传给图片，按真实比例显示并受预览宽度约束，同段图片自然 inline 排列和换行。文件或 root 切换废弃旧响应。小预览和展开预览使用同一策略，保留 `skipHtml` 以及默认 raw、sanitize、harden。
 - Streamdown 本地引用插件将 root（文件预览还包括文档路径）放入标准插件 tuple 的显式选项；processor 缓存按插件名称及选项区分上下文。聊天默认解析规则仍由 `file-reference.ts` 的 `parseWorkspaceFileReference` 管理，文档相对资源使用独立入口。
 - 关联工作区只有**一个入口**：composer 权限选择器右侧的「关联工作区」按钮（`lib/linked-roots.ts` 的 `useLinkedRoots` 是唯一数据源，`components/linked-roots` 是唯一行组件）。列表**每次打开时重读**——授权可能来自模型自己调的 `link_workspace`，本界面没有参与那次写入，只挂载时拉一次就会显示成「还没有关联目录」。添加目录与作用域（本会话 / 本工作区）是同一行上的两个控件，不是两个按钮；设置页不再有这一项
-- 通知中心（`lib/notifications.ts`）：判定哪些事件值得通知，投递到铃铛与系统通知；后台任务失败按会话记住已通知的任务 id，每个失败只通知一次，前台会话且窗口在前时交给页面 toast
+- 通知中心（`lib/notifications.ts`）：循环通知投递到铃铛与系统通知；后台任务失败按会话记住已通知的任务 id，每个失败只通知一次，前台会话且窗口在前时交给页面 toast。`SystemMessage` 的非空反馈直接进入共享 toast，不投递收件箱、OS 通知或提示音，也不进入实时或回放的会话投影。
 - 提示音（`lib/notification-sound.ts`）：agent loop 停下（回合结束 / 等审批或回答 / 失败）时用 Web Audio 合成一段短音，不受窗口可见性门控，也不依赖系统通知开关；`notification_sound` 偏好独立控制
 - 通知点击导航：订阅后按序读取后端保留的点击目标，等待启动会话恢复完成再打开目标项目和会话，处理后确认消费。
 - 指令面板与聊天流里的命令标签共用 `composer-bar/commands.ts` 一份清单。`local` 类命令只驱动界面（模型选择器 / 改动 dock / 设置页，经 `lib/settings-bus.ts`），**绝不**作为文本发给内核；`send` 类才交给 `CommandRegistry`
@@ -35,11 +36,22 @@ macOS 的 `MainLayout` 以 panel 外框包住透明的 `main-col` 排布层，�
 
 `MainLayout` 左侧调宽、`SessionDock` 右侧调宽、`TerminalPanel` 调高及 `SplitHandle` 的 columns/rows 五种入口共用 `index.css` 的 `.layout-resize-grip` 绘制中性胶囊。`aria-orientation` 决定横竖方向，指示位于各自命中区中央，默认隐藏，仅在 hover、真实键盘 focus-visible 或拖动时显示，并遵循 reduced motion。几何、边界、比例与尺寸提交仍由各控制器负责；终端鼠标拖动保留输入焦点，结束、取消、失焦、隐藏和卸载释放拖动状态及 capture。非 Mac 调高命中区与面板内实际可见范围对齐，macOS 使用面板间隙。
 
-背景桥 `app/layout/main-layout/sidebar-glass.ts` 测量整个 MainLayout 根矩形，并将当前主题的 `--husk-panel` 传给原生着色，合并帧更新并在单次在途调用期间保留最新值；根尺寸不变的侧栏开关不更新原生几何。只有原生准备成功才以 `data-sidebar-glass` 打开根节点、布局及侧栏内部结构表面的透明链；会话侧栏与主区外框各以一层低不透明度的原 panel 色覆盖材质，桌面画面从侧栏和工作面间隙透出，侧栏内部顶栏、底栏及项目/产物分组保持透明；内层工作面与卡片保持实色。业务工作面及共享控件保持实色；实色回退同时恢复侧栏和外框的原 panel 表面，内嵌几何保持不变。启动主题和运行时外观通过同一文档背景变量衔接；卸载恢复当前主题并清理观察器、事件、动画帧和原生视图。真实组件验收入口为 `scripts/terminal-reveal/check.mjs --panels` 和 `scripts/terminal-reveal/sidebar-glass-check.mjs`，浏览器检查的原生命令使用 mock IPC。
+背景桥 `app/layout/main-layout/sidebar-glass.ts` 测量整个 MainLayout 根矩形，并将当前主题的 `--husk-panel` 传给原生着色，合并帧更新并在单次在途调用期间保留最新值；根尺寸不变的侧栏开关不更新原生几何。原生准备成功后，`data-sidebar-glass` 打开根节点、布局与侧栏结构表面的透明链；侧栏和外框通过 `--husk-shell-surface` 保留 panel 底色，桌面画面从侧栏及工作面间隙透出，内部顶栏、底栏及项目/产物分组保持透明。业务工作面与卡片保持实色；回退恢复 panel 表面，内嵌几何不变。启动主题、运行时外观及加载层共用壳表面，`WorkspaceLoadingVeil` 隐藏已挂载界面而不卸载会话。卸载恢复当前主题并清理观察器、事件、动画帧和原生视图。真实组件验收入口为 `scripts/terminal-reveal/check.mjs --panels` 和 `scripts/terminal-reveal/sidebar-glass-check.mjs`，原生命令使用 mock IPC。
 
 设置页以同一 WebView 中的覆盖页呈现，工作区保持挂载。macOS 的 `features/settings/pages/index.tsx` 复用 `main-workspace-frame` 作为整页外框，导航与标题条透明，原内容滚动节点绘制实色圆角卡片；卡片四边留白，几何取该组件中的共享 spacing/radius utilities。绝对定位的窗口拖动层与 `WindowControls` 保留。原生材质激活且覆盖页存在时，`index.css` 仅关闭下层 MainLayout 的绘制和指针命中，根矩形、私有侧栏宽度与玻璃 owner 保持。关闭设置恢复工作区，其他平台保持平铺表面。设置导航、表单与共享控件沿用各自 owner，覆盖页和 portal 的层级保持 `App.tsx` 与共享菜单定义；真实组件 mock 验收入口见 `scripts/terminal-reveal/README.md`。
 
+## 状态栏与共享控件
+
+模块、默认可见集合、排序、隐藏与恢复默认由 `components/title-bar/strip.tsx` 定义。工作区栏只展示状态；外观页将同一个 `TitleBar` 放入 `StripPreview` 的仿真窗口，用非零示例数据呈现状态与未显示托盘。拖动在释放时提交一次，Escape 取消；布局保存经 `APPEARANCE_CHANGED` 刷新常驻栏，持久化结构归 `husk-host` 的 `AppearanceSettings`。
+
+详情卡共享 `StatPopoverGroup`，悬浮可替换固定卡，关闭后恢复触发器焦点。共享浮层及浮动胶囊使用 `lib/theme.ts` 的磨砂 surface；思考等级词直接使用 `lib/thinking.ts` 的语义色。composer 外框随换肤立即切色，Todo 内层保留折叠动画。
+
+模型选择器根据 `ModelInfo.configured` 引导空配置到模型设置。活动投影按 `call_id` 关联工具行，并消费可选的排队与后台子代理信息；旧生产端缺省这些信息时保留前台行为。生产端协议的后续范围见 `docs/proposals/proposed/2026-11-01-agent-activity/`。
+
+格式化规则及按文件写入、检查的命令分别由前端 `.prettierrc` 与 `package.json` 定义；生成的 lockfile 由包管理器维护格式。
+
 ## 不做
+
 - 不含内核行为；只经 Tauri IPC 与后端交互
 - 新增摘要解析器时不另立工具清单：把工具加进 `WRITE_TOOLS` / `ARTIFACT_*`，`SUMMARY_TOOLS` 自动跟随
 - 不判断某个目录能否关联：拒绝列表在后端，界面只显示后端给的理由
