@@ -5,259 +5,345 @@
 // the reader clears the finished ones, which the store remembers per session.
 // The dock owns the frame.
 
-import { useCallback, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, CircleCheck, CircleSlash, CircleX } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Orb } from "@/features/chat/components/agent-orb";
-import { MemoStreamdown } from "@/features/chat/components/chat-stream/markdown-stream";
-import { AgentTranscript } from "@/features/chat/components/tool-chips/agent-card";
-import { ToolChips, toolActivityPreview, type ToolChipRow } from "@/features/chat/components/tool-chips/index";
+import { useCallback, useRef, useState } from 'react';
 import {
-  childIsLive,
-  childKey,
-  type ChildStatus,
-  type SessionChild,
-} from "@/features/chat/hooks/running-children";
-import { CHILD_STATUS_LABEL, WAITING_STEER_HINT } from "@/lib/subagents";
-import { useAgentStore } from "@/stores/agent-store";
-import { ChildSteerInput } from "./child-steer";
+	ChevronDown,
+	ChevronRight,
+	CircleCheck,
+	CircleSlash,
+	CircleX,
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { Orb } from '@/features/chat/components/agent-orb';
+import { MemoStreamdown } from '@/features/chat/components/chat-stream/markdown-stream';
+import { AgentTranscript } from '@/features/chat/components/tool-chips/agent-card';
+import {
+	ToolChips,
+	toolActivityPreview,
+	type ToolChipRow,
+} from '@/features/chat/components/tool-chips/index';
+import {
+	childIsLive,
+	childKey,
+	type ChildStatus,
+	type SessionChild,
+} from '@/features/chat/hooks/running-children';
+import { CHILD_STATUS_LABEL, WAITING_STEER_HINT } from '@/lib/subagents';
+import { useAgentStore } from '@/stores/agent-store';
+import { ChildSteerInput } from './child-steer';
 
 /** One 16px lane for every state, so names line up whatever the glyph. */
 function StatusGlyph({ status }: { status: ChildStatus }) {
-  return (
-    <span className="mt-px flex h-4 w-4 flex-none items-center justify-center">
-      {status === "running" || status === "waiting" ? (
-        // The orb's dots are drawn at 2px at this size; the negative margin
-        // lets the helix overhang the lane without moving the names beside it.
-        <Orb variant="G2" size={22} className="-m-1.5 text-violet-600 dark:text-violet-400" />
-      ) : status === "done" ? (
-        // A step below the others: a filled check carries more ink.
-        <CircleCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-      ) : status === "failed" ? (
-        <CircleX className="h-4 w-4 text-rose-600 dark:text-rose-400" />
-      ) : (
-        <CircleSlash className="h-3.5 w-3.5 text-neutral-400" />
-      )}
-    </span>
-  );
+	return (
+		<span className="mt-px flex h-4 w-4 flex-none items-center justify-center">
+			{status === 'running' || status === 'waiting' ? (
+				// The orb's dots are drawn at 2px at this size; the negative margin
+				// lets the helix overhang the lane without moving the names beside it.
+				<Orb
+					variant="G2"
+					size={22}
+					className="-m-1.5 text-violet-600 dark:text-violet-400"
+				/>
+			) : status === 'done' ? (
+				// A step below the others: a filled check carries more ink.
+				<CircleCheck
+					className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400"
+				/>
+			) : status === 'failed' ? (
+				<CircleX className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+			) : (
+				<CircleSlash className="h-3.5 w-3.5 text-neutral-400" />
+			)}
+		</span>
+	);
 }
 
 const STATUS_CHIP: Record<ChildStatus, string> = {
-  running: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
-  waiting: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
-  done: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  failed: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
-  aborted: "bg-neutral-500/10 text-neutral-500",
+	running: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
+	waiting: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+	done: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+	failed: 'bg-rose-500/10 text-rose-700 dark:text-rose-300',
+	aborted: 'bg-neutral-500/10 text-neutral-500',
 };
 
 /** The task a child was handed: three lines in the card, the whole text in a
  *  hover panel that scrolls. A native `title` cannot carry it — the webview
  *  draws that itself, unclamped, and a long task buries the window under it. */
 function TaskText({ text }: { text: string }) {
-  const [clipped, setClipped] = useState(false);
-  const boxRef = useRef<HTMLDivElement | null>(null);
-  const roRef = useRef<ResizeObserver | null>(null);
-  // The clamp hides what overflows, so a box shorter than its content is
-  // exactly a task that was cut.
-  const check = useCallback(() => {
-    const el = boxRef.current;
-    if (el) setClipped(el.scrollHeight > el.clientHeight + 1);
-  }, []);
-  // Keyed to `text`: the box outlives the string, so only a new ref identity
-  // makes React detach and re-attach, re-running the measurement.
-  const measure = useCallback(
-    (el: HTMLDivElement | null) => {
-      roRef.current?.disconnect();
-      roRef.current = null;
-      boxRef.current = el;
-      if (!el || typeof ResizeObserver === "undefined") return;
-      check();
-      const ro = new ResizeObserver(check);
-      ro.observe(el);
-      roRef.current = ro;
-    },
-    [text, check],
-  );
+	const [clipped, setClipped] = useState(false);
+	const boxRef = useRef<HTMLDivElement | null>(null);
+	const roRef = useRef<ResizeObserver | null>(null);
+	// The clamp hides what overflows, so a box shorter than its content is
+	// exactly a task that was cut.
+	const check = useCallback(() => {
+		const el = boxRef.current;
+		if (el) setClipped(el.scrollHeight > el.clientHeight + 1);
+	}, []);
+	// Keyed to `text`: the box outlives the string, so only a new ref identity
+	// makes React detach and re-attach, re-running the measurement.
+	const measure = useCallback(
+		(el: HTMLDivElement | null) => {
+			roRef.current?.disconnect();
+			roRef.current = null;
+			boxRef.current = el;
+			if (!el || typeof ResizeObserver === 'undefined') return;
+			check();
+			const ro = new ResizeObserver(check);
+			ro.observe(el);
+			roRef.current = ro;
+		},
+		[text, check]
+	);
 
-  // The clamped box is the trigger even while nothing opens: a task long
-  // enough to need the panel must not remount the card under the pointer.
-  // Hovering re-measures: a box measured before its font swapped in can read as
-  // fitting, and nothing resizes it afterwards to wake the observer.
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          ref={measure}
-          onPointerEnter={check}
-          className="mt-0.5 line-clamp-3 text-[11.5px] leading-relaxed text-neutral-500 dark:text-neutral-400"
-        >
-          {text}
-        </div>
-      </TooltipTrigger>
-      {clipped && (
-        // Scrollable and hoverable: Radix keeps the bubble open while the
-        // pointer is over it, so the reader can scroll the rest of the task.
-        <TooltipContent side="top" sideOffset={6} className="max-w-[24rem] p-2.5 select-text">
-          <div className="max-h-[min(20rem,var(--radix-tooltip-content-available-height))] overflow-y-auto overflow-x-hidden overscroll-contain whitespace-pre-wrap break-words text-left text-xs leading-relaxed select-text">
-            {text}
-          </div>
-        </TooltipContent>
-      )}
-    </Tooltip>
-  );
+	// The clamped box is the trigger even while nothing opens: a task long
+	// enough to need the panel must not remount the card under the pointer.
+	// Hovering re-measures: a box measured before its font swapped in can read as
+	// fitting, and nothing resizes it afterwards to wake the observer.
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<div
+					ref={measure}
+					onPointerEnter={check}
+					className="mt-0.5 line-clamp-3 text-[11.5px] leading-relaxed
+						text-neutral-500 dark:text-neutral-400"
+				>
+					{text}
+				</div>
+			</TooltipTrigger>
+			{clipped && (
+				// Scrollable and hoverable: Radix keeps the bubble open while the
+				// pointer is over it, so the reader can scroll the rest of the task.
+				<TooltipContent
+					side="top"
+					sideOffset={6}
+					className="max-w-[24rem] select-text p-2.5"
+				>
+					<div
+						className="max-h-[min(20rem,var(--radix-tooltip-content-available-height))]
+							select-text overflow-y-auto overflow-x-hidden overscroll-contain
+							whitespace-pre-wrap break-words text-left text-xs leading-relaxed"
+					>
+						{text}
+					</div>
+				</TooltipContent>
+			)}
+		</Tooltip>
+	);
 }
 
 /** The one line a collapsed 工作过程 shows: the tool the child is in now, else
  *  the last thing it said. */
 function glanceOf(row: ToolChipRow): string {
-  if (row.children?.some((c) => c.status === "running")) return toolActivityPreview(row.children);
-  const segs = row.segments ?? [];
-  for (let i = segs.length - 1; i >= 0; i--) {
-    const s = segs[i];
-    if (s.kind === "text" && !s.muted && s.text.trim()) return s.text.trim().split("\n")[0];
-  }
-  return "";
+	if (row.children?.some((c) => c.status === 'running'))
+		return toolActivityPreview(row.children);
+	const segs = row.segments ?? [];
+	for (let i = segs.length - 1; i >= 0; i--) {
+		const s = segs[i];
+		if (s.kind === 'text' && !s.muted && s.text.trim())
+			return s.text.trim().split('\n')[0];
+	}
+	return '';
 }
 
 function ChildCard({ child, row }: { child: SessionChild; row?: ToolChipRow }) {
-  const live = childIsLive(child);
-  const [workOpen, setWorkOpen] = useState(false);
-  // A child the page holds a card for shows its whole working transcript; one
-  // only the feed knows has nothing but its report to show.
-  const hasReport = !live && !!child.report;
-  const calls = row?.children?.length ?? 0;
-  return (
-    <div
-      data-child-status={child.status}
-      className={cn(
-        "flex w-full flex-col gap-2 rounded-[14px] border border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] px-3 py-2.5",
-        // A finished card steps back so the ones still out read first.
-        live
-          ? "bg-white shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:bg-[var(--husk-active)]"
-          : "bg-[color-mix(in_srgb,var(--husk-n50)_60%,transparent)]",
-      )}
-    >
-      <div className="flex items-start gap-2">
-        <StatusGlyph status={child.status} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="min-w-0 truncate font-mono text-[11.5px] text-neutral-800" title={child.name}>
-              {child.name}
-            </span>
-            <span
-              className={cn(
-                "flex-none rounded-full px-1.5 py-px text-[10px] font-medium",
-                STATUS_CHIP[child.status],
-              )}
-            >
-              {CHILD_STATUS_LABEL[child.status]}
-            </span>
-          </div>
-          {/* The task is what a steer answers: three lines here, the rest in
+	const live = childIsLive(child);
+	const [workOpen, setWorkOpen] = useState(false);
+	// A child the page holds a card for shows its whole working transcript; one
+	// only the feed knows has nothing but its report to show.
+	const hasReport = !live && !!child.report;
+	const calls = row?.children?.length ?? 0;
+	return (
+		<div
+			data-child-status={child.status}
+			className={cn(
+				`flex w-full flex-col gap-2 rounded-[14px] border
+				border-[color-mix(in_srgb,var(--husk-n200)_90%,transparent)] px-3
+				py-2.5`,
+				// A finished card steps back so the ones still out read first.
+				live
+					? `bg-white shadow-[0_2px_8px_rgba(0,0,0,0.04)]
+						dark:bg-[var(--husk-active)]`
+					: 'bg-[color-mix(in_srgb,var(--husk-n50)_60%,transparent)]'
+			)}
+		>
+			<div className="flex items-start gap-2">
+				<StatusGlyph status={child.status} />
+				<div className="min-w-0 flex-1">
+					<div className="flex items-center gap-1.5">
+						<span
+							className="min-w-0 truncate font-mono text-[11.5px]
+								text-neutral-800"
+							title={child.name}
+						>
+							{child.name}
+						</span>
+						<span
+							className={cn(
+								'flex-none rounded-full px-1.5 py-px text-[10px] font-medium',
+								STATUS_CHIP[child.status]
+							)}
+						>
+							{CHILD_STATUS_LABEL[child.status]}
+						</span>
+						{/* It runs on after its turn ended — the reader has to know the
+                work is still going and that stopping the session ends it. */}
+						{child.background && live && (
+							<span
+								className="flex-none rounded-full bg-violet-500/10 px-1.5 py-px
+									text-[10px] font-medium text-violet-700 dark:text-violet-300"
+							>
+								后台
+							</span>
+						)}
+					</div>
+					{/* The task is what a steer answers: three lines here, the rest in
               the hover panel. */}
-          {child.task && <TaskText text={child.task} />}
-        </div>
-      </div>
-      {/* A parked child takes the text only after it resumes — saying so beats
+					{child.task && <TaskText text={child.task} />}
+				</div>
+			</div>
+			{/* A parked child takes the text only after it resumes — saying so beats
           a steer that looks swallowed. `ml-6` clears the glyph lane. */}
-      {child.status === "waiting" && (
-        <div className="ml-6 flex flex-col gap-1">
-          <div className="rounded-[10px] bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] px-2.5 py-1.5 text-[11.5px] leading-relaxed text-neutral-700 select-text dark:text-neutral-300">
-            {child.waiting}
-          </div>
-          <div className="text-[10.5px] leading-relaxed text-amber-600 dark:text-amber-400">
-            {WAITING_STEER_HINT}
-          </div>
-        </div>
-      )}
-      {live && child.childId != null && (
-        <div className="ml-6">
-          <ChildSteerInput childId={child.childId} />
-        </div>
-      )}
-      {(row || hasReport) && (
-        <div className="ml-6">
-          <button
-            type="button"
-            aria-expanded={workOpen}
-            onClick={() => setWorkOpen((o) => !o)}
-            className="flex w-full min-w-0 items-center gap-1 rounded-full text-left text-[11px] text-neutral-500 transition-colors hover:text-neutral-800"
-          >
-            {workOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-            <span className="shrink-0">{row ? "工作过程" : "报告"}</span>
-            {row && !workOpen && (
-              <span className="flex min-w-0 flex-1 items-center gap-1 text-neutral-400">
-                <span className="min-w-0 truncate">{glanceOf(row)}</span>
-                {calls > 0 && <span className="shrink-0">· {calls} 次调用</span>}
-              </span>
-            )}
-          </button>
-          {workOpen && row && (
-            <div className="mt-1.5 max-h-[22rem] overflow-y-auto overscroll-contain rounded-[10px] bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] pt-2.5 text-neutral-700 dark:text-neutral-300">
-              <AgentTranscript
-                row={row}
-                renderProse={(text) => <MemoStreamdown text={text} animating={false} />}
-                renderRow={(c) => <ToolChips key={c.id} rows={[c]} />}
-              />
-            </div>
-          )}
-          {workOpen && !row && (
-            <div className="mt-1.5 max-h-64 overflow-y-auto rounded-[10px] bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] px-2.5 py-2 text-[11.5px] leading-relaxed whitespace-pre-wrap break-words text-neutral-700 select-text dark:text-neutral-300">
-              {child.report}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
+			{child.status === 'waiting' && (
+				<div className="ml-6 flex flex-col gap-1">
+					<div
+						className="select-text rounded-[10px]
+							bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] px-2.5
+							py-1.5 text-[11.5px] leading-relaxed text-neutral-700
+							dark:text-neutral-300"
+					>
+						{child.waiting}
+					</div>
+					<div
+						className="text-[10.5px] leading-relaxed text-amber-600
+							dark:text-amber-400"
+					>
+						{WAITING_STEER_HINT}
+					</div>
+				</div>
+			)}
+			{live && child.childId != null && (
+				<div className="ml-6">
+					<ChildSteerInput childId={child.childId} />
+				</div>
+			)}
+			{(row || hasReport) && (
+				<div className="ml-6">
+					<button
+						type="button"
+						aria-expanded={workOpen}
+						onClick={() => setWorkOpen((o) => !o)}
+						className="flex w-full min-w-0 items-center gap-1 rounded-full
+							text-left text-[11px] text-neutral-500 transition-colors
+							hover:text-neutral-800"
+					>
+						{workOpen ? (
+							<ChevronDown className="h-3 w-3 shrink-0" />
+						) : (
+							<ChevronRight className="h-3 w-3 shrink-0" />
+						)}
+						<span className="shrink-0">{row ? '工作过程' : '报告'}</span>
+						{row && !workOpen && (
+							<span
+								className="flex min-w-0 flex-1 items-center gap-1
+									text-neutral-400"
+							>
+								<span className="min-w-0 truncate">{glanceOf(row)}</span>
+								{calls > 0 && (
+									<span className="shrink-0">· {calls} 次调用</span>
+								)}
+							</span>
+						)}
+					</button>
+					{workOpen && row && (
+						<div
+							className="mt-1.5 max-h-[22rem] overflow-y-auto overscroll-contain
+								rounded-[10px]
+								bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] pt-2.5
+								text-neutral-700 dark:text-neutral-300"
+						>
+							<AgentTranscript
+								row={row}
+								renderProse={(text) => (
+									<MemoStreamdown text={text} animating={false} />
+								)}
+								renderRow={(c) => <ToolChips key={c.id} rows={[c]} />}
+							/>
+						</div>
+					)}
+					{workOpen && !row && (
+						<div
+							className="mt-1.5 max-h-64 select-text overflow-y-auto
+								whitespace-pre-wrap break-words rounded-[10px]
+								bg-[color-mix(in_srgb,var(--husk-n100)_80%,transparent)] px-2.5
+								py-2 text-[11.5px] leading-relaxed text-neutral-700
+								dark:text-neutral-300"
+						>
+							{child.report}
+						</div>
+					)}
+				</div>
+			)}
+		</div>
+	);
 }
 
 /** The 子代理 view's body: children still out first, in the order they were
  *  sent; the finished ones after them, newest first. */
 export function SubagentsList({
-  children,
-  childRows,
-  root,
-  session,
+	children,
+	childRows,
+	root,
+	session,
 }: {
-  children: SessionChild[];
-  /** Each child's own card, by id — its working transcript. A child with no card
-   *  (only the feed knows it) falls back to its report. */
-  childRows?: Map<number, ToolChipRow>;
-  /** Which session the clear addresses — the cleared set lives in the store,
-   *  so a child does not come back on the next event or the next reopen. */
-  root: string;
-  session: number;
+	children: SessionChild[];
+	/** Each child's own card, by id — its working transcript. A child with no card
+	 *  (only the feed knows it) falls back to its report. */
+	childRows?: Map<number, ToolChipRow>;
+	/** Which session the clear addresses — the cleared set lives in the store,
+	 *  so a child does not come back on the next event or the next reopen. */
+	root: string;
+	session: number;
 }) {
-  const dismiss = useAgentStore((s) => s.dismissChildren);
-  const live = children.filter(childIsLive);
-  const ended = children.filter((c) => !childIsLive(c)).reverse();
-  const rowOf = (c: SessionChild) => (c.childId != null ? childRows?.get(c.childId) : undefined);
-  return (
-    <div className="flex w-full flex-col gap-2">
-      {/* Same row and wording as 后台's clear: one gesture for "drop what is
+	const dismiss = useAgentStore((s) => s.dismissChildren);
+	const live = children.filter(childIsLive);
+	const ended = children.filter((c) => !childIsLive(c)).reverse();
+	const rowOf = (c: SessionChild) =>
+		c.childId != null ? childRows?.get(c.childId) : undefined;
+	return (
+		<div className="flex w-full flex-col gap-2">
+			{/* Same row and wording as 后台's clear: one gesture for "drop what is
           done", wherever the reader is. The ones still out are untouched. */}
-      {ended.length > 0 && (
-        <div className="flex justify-end px-2">
-          <button
-            type="button"
-            onClick={() => dismiss(root, session, ended.map(childKey))}
-            className="rounded-full px-2 py-0.5 text-[11px] text-neutral-500 transition-colors hover:bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)] hover:text-neutral-800"
-          >
-            清除已结束
-          </button>
-        </div>
-      )}
-      {live.map((c, i) => (
-        <ChildCard key={c.childId ?? `live-${i}`} child={c} row={rowOf(c)} />
-      ))}
-      {ended.length > 0 && live.length > 0 && (
-        <div className="px-1 pt-1 text-[11px] font-medium text-neutral-400">已结束</div>
-      )}
-      {ended.map((c, i) => (
-        <ChildCard key={c.childId ?? `ended-${i}`} child={c} row={rowOf(c)} />
-      ))}
-    </div>
-  );
+			{ended.length > 0 && (
+				<div className="flex justify-end px-2">
+					<button
+						type="button"
+						onClick={() => dismiss(root, session, ended.map(childKey))}
+						className="rounded-full px-2 py-0.5 text-[11px] text-neutral-500
+							transition-colors
+							hover:bg-[color-mix(in_srgb,var(--husk-black)_5%,transparent)]
+							hover:text-neutral-800"
+					>
+						清除已结束
+					</button>
+				</div>
+			)}
+			{live.map((c, i) => (
+				<ChildCard key={c.childId ?? `live-${i}`} child={c} row={rowOf(c)} />
+			))}
+			{ended.length > 0 && live.length > 0 && (
+				<div className="px-1 pt-1 text-[11px] font-medium text-neutral-400">
+					已结束
+				</div>
+			)}
+			{ended.map((c, i) => (
+				<ChildCard key={c.childId ?? `ended-${i}`} child={c} row={rowOf(c)} />
+			))}
+		</div>
+	);
 }

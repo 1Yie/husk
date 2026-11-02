@@ -249,6 +249,8 @@ export function subagentTranscript(root: string, id: number, childId: number) {
  *  that has not reported yet. */
 export interface RunningChildInfo {
 	child_id: number;
+	/** A child that may remain active after the parent turn. */
+	background?: boolean;
 	/** The card label (`subagent`, `review #1`, …). */
 	label: string;
 	/** The instruction it was handed — the card's chip. */
@@ -1324,6 +1326,8 @@ export interface AppearanceConfig {
 	contrast: number;
 	/** Cost display currency — "usd" | "cny". Absent in older files → usd. */
 	currency?: 'usd' | 'cny';
+	/** Saved module order and visibility; absent uses the built-in layout. */
+	status_strip?: { items: string[]; hidden?: string[] } | null;
 }
 
 export function getAppearance() {

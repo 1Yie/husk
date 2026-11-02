@@ -1879,34 +1879,7 @@ fn agent_session_inner(
         "set_appearance" => {
             let p = payload.ok_or("set_appearance needs payload")?;
             let cur = husk_host::prefs::load_appearance_settings();
-            let merged = serde_json::to_value(&cur).unwrap_or_else(|_| serde_json::json!({}));
-            let mut obj = match merged {
-                serde_json::Value::Object(m) => m,
-                _ => serde_json::Map::new(),
-            };
-            // Merge only the keys the caller sent — partial updates keep
-            // the rest of the file intact.
-            for k in [
-                "theme_mode",
-                "theme_id",
-                "accent",
-                "background",
-                "foreground",
-                "dark_accent",
-                "dark_background",
-                "dark_foreground",
-                "ui_font",
-                "code_font",
-                "contrast",
-                "currency",
-            ] {
-                if let Some(v) = p.get(k) {
-                    obj.insert(k.into(), v.clone());
-                }
-            }
-            let s: husk_host::prefs::AppearanceSettings =
-                serde_json::from_value(serde_json::Value::Object(obj))
-                    .map_err(|e| e.to_string())?;
+            let s = merge_appearance_settings(&cur, &p)?;
             husk_host::prefs::save_appearance_settings(&s).map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "success": true }))
         }
@@ -2872,8 +2845,72 @@ fn workspace_paths_match(root: &str, expected: &std::path::Path) -> bool {
     }
 }
 
+fn merge_appearance_settings(
+    current: &husk_host::prefs::AppearanceSettings,
+    patch: &serde_json::Value,
+) -> Result<husk_host::prefs::AppearanceSettings, String> {
+    let value = serde_json::to_value(current).unwrap_or_else(|_| serde_json::json!({}));
+    let mut fields = match value {
+        serde_json::Value::Object(fields) => fields,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(patch) = patch.as_object() {
+        for (key, value) in patch {
+            if let Some(current) = fields.get_mut(key) {
+                *current = value.clone();
+            }
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(fields)).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn appearance_patch_saves_strip_order_and_hidden_modules() {
+        let current = husk_host::prefs::AppearanceSettings {
+            theme_mode: "dark".into(),
+            currency: "cny".into(),
+            ..Default::default()
+        };
+        let patch = serde_json::json!({
+            "status_strip": {
+                "items": ["context", "tokens", "git", "retired-module"],
+                "hidden": ["git"]
+            }
+        });
+        let merged = super::merge_appearance_settings(&current, &patch).unwrap();
+        assert_eq!(merged.theme_mode, "dark");
+        assert_eq!(merged.currency, "cny");
+        let encoded = serde_json::to_value(&merged).unwrap();
+        assert_eq!(encoded["status_strip"], patch["status_strip"]);
+        let reloaded: husk_host::prefs::AppearanceSettings =
+            serde_json::from_value(encoded).unwrap();
+        assert_eq!(reloaded.status_strip, merged.status_strip);
+    }
+
+    #[test]
+    fn appearance_patch_preserves_layout_and_rejects_invalid_strip_values() {
+        let layout = husk_host::prefs::StatusStripSettings {
+            items: vec!["tokens".into(), "git".into()],
+            hidden: vec!["git".into()],
+        };
+        let current = husk_host::prefs::AppearanceSettings {
+            status_strip: Some(layout.clone()),
+            ..Default::default()
+        };
+        let merged =
+            super::merge_appearance_settings(&current, &serde_json::json!({"theme_mode": "dark"}))
+                .unwrap();
+        assert_eq!(merged.theme_mode, "dark");
+        assert_eq!(merged.status_strip, Some(layout));
+        assert!(super::merge_appearance_settings(
+            &current,
+            &serde_json::json!({"status_strip": {"items": 5}}),
+        )
+        .is_err());
+    }
+
     #[test]
     fn workspace_changes_scope_rejects_missing_or_non_directory_roots() {
         let dir = tempfile::tempdir().unwrap();

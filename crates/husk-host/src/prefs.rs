@@ -277,6 +277,23 @@ pub struct AppearanceSettings {
     /// conversion happens anywhere.
     #[serde(default = "default_currency")]
     pub currency: String,
+    /// Saved status-strip layout. Absent uses the built-in modules.
+    #[serde(default)]
+    pub status_strip: Option<StatusStripSettings>,
+}
+
+/// App-wide status-strip ordering and visibility.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StatusStripSettings {
+    /// Module ids in display order. An id this build does not know is skipped on
+    /// render and kept on write, so a layout survives a version that lost a
+    /// module and comes back with it.
+    #[serde(default)]
+    pub items: Vec<String>,
+    /// Ids the reader switched off. Kept apart from `items` so switching a
+    /// module back on restores its place instead of appending it.
+    #[serde(default)]
+    pub hidden: Vec<String>,
 }
 
 fn default_theme_mode() -> String {
@@ -319,6 +336,7 @@ impl Default for AppearanceSettings {
             code_font: default_code_font(),
             contrast: default_contrast(),
             currency: default_currency(),
+            status_strip: None,
         }
     }
 }
@@ -561,6 +579,25 @@ pub fn save_appearance_settings(s: &AppearanceSettings) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_status_strip_layout_round_trips_and_stays_absent_by_default() {
+        let absent: AppearanceSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.status_strip, None);
+
+        let stored = StatusStripSettings {
+            items: vec!["context".into(), "tokens".into(), "retired-module".into()],
+            hidden: vec!["git".into()],
+        };
+        let settings = AppearanceSettings {
+            status_strip: Some(stored.clone()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let back: AppearanceSettings = serde_json::from_str(&json).unwrap();
+        // Unrecognized module ids remain opaque across persistence.
+        assert_eq!(back.status_strip, Some(stored));
+    }
 
     /// One salt per process and install: every conversation key reads the same
     /// secret, and it is long enough that it cannot be guessed back.
