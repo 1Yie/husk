@@ -6,7 +6,7 @@
  * This is reliable inside Tauri's WebView.
  */
 const ua = navigator.userAgent;
-const platform = navigator.platform ?? "";
+const platform = navigator.platform ?? '';
 
 export const isMac = /Macintosh|Mac OS X/.test(ua) || /^Mac/.test(platform);
 
@@ -26,15 +26,14 @@ export const framedShell = isMac || isWindows;
 /** A shortcut spelled the way this platform writes it: `⌘⇧J` on macOS,
  *  `Ctrl+Shift+J` elsewhere. `mod` is ⌘ on macOS and Ctrl otherwise. */
 export function shortcutLabel(
- keys: ("mod" | "shift" | "alt" | string)[],
- mac = isMac,
+	keys: ('mod' | 'shift' | 'alt' | string)[],
+	mac = isMac
 ): string {
- const mapped = keys.map((key) => {
-  if (key === "mod") return mac ? "\u2318" : "Ctrl";
-  if (key === "shift") return mac ? "\u21e7" : "Shift";
-  if (key === "alt") return mac ? "\u2325" : "Alt";
-  return key.length === 1 ? key.toUpperCase() : key;
- });
- return mac ? mapped.join("") : mapped.join("+");
+	const mapped = keys.map((key) => {
+		if (key === 'mod') return mac ? '\u2318' : 'Ctrl';
+		if (key === 'shift') return mac ? '\u21e7' : 'Shift';
+		if (key === 'alt') return mac ? '\u2325' : 'Alt';
+		return key.length === 1 ? key.toUpperCase() : key;
+	});
+	return mac ? mapped.join('') : mapped.join('+');
 }
-

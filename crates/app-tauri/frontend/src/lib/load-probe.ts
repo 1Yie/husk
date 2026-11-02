@@ -5,14 +5,14 @@
 let t0 = 0;
 
 export function loadReset() {
-  if (!import.meta.env.DEV) return;
-  t0 = performance.now();
-  console.log("[load] ── start ──");
+	if (!import.meta.env.DEV) return;
+	t0 = performance.now();
+	console.log('[load] ── start ──');
 }
 
 export function loadStamp(label: string) {
-  if (!import.meta.env.DEV) return;
-  const now = performance.now();
-  console.log(`[load] ${label}: +${Math.round(now - t0)}ms`);
-  t0 = now;
+	if (!import.meta.env.DEV) return;
+	const now = performance.now();
+	console.log(`[load] ${label}: +${Math.round(now - t0)}ms`);
+	t0 = now;
 }

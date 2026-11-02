@@ -6,19 +6,19 @@
 // It stays inside the app's stacking order: above the layout and the settings
 // overlay, below Radix popups and dialogs.
 
-import iconUrl from "@/assets/husk-icon.png";
+import iconUrl from '@/assets/husk-icon.png';
 
 export function WorkspaceLoadingVeil({ visible }: { visible: boolean }) {
-  return (
-    <div
-      id="husk-splash"
-      className={visible ? "husk-veil-visible" : "leaving"}
-      role="status"
-      aria-hidden={!visible}
-      aria-label={visible ? "加载中" : undefined}
-    >
-      <img className="icon ready" src={iconUrl} alt="" />
-      <div className="bar" />
-    </div>
-  );
+	return (
+		<div
+			id="husk-splash"
+			className={visible ? 'husk-veil-visible' : 'leaving'}
+			role="status"
+			aria-hidden={!visible}
+			aria-label={visible ? '加载中' : undefined}
+		>
+			<img className="icon ready" src={iconUrl} alt="" />
+			<div className="bar" />
+		</div>
+	);
 }

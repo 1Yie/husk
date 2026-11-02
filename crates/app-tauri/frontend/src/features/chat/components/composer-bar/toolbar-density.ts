@@ -3,7 +3,7 @@
 // only ever knows the width it is given. Explicit tiers beat letting flexbox
 // squeeze every control until its label disappears.
 
-export type ToolbarDensity = "full" | "compact" | "tight";
+export type ToolbarDensity = 'full' | 'compact' | 'tight';
 
 /** From here the labelled pills and the model's name plus thinking chip fit. */
 export const TOOLBAR_FULL_MIN = 560;
@@ -13,7 +13,7 @@ export const TOOLBAR_FULL_MIN = 560;
 export const TOOLBAR_COMPACT_MIN = 400;
 
 export function toolbarDensity(width: number): ToolbarDensity {
-  if (width >= TOOLBAR_FULL_MIN) return "full";
-  if (width >= TOOLBAR_COMPACT_MIN) return "compact";
-  return "tight";
+	if (width >= TOOLBAR_FULL_MIN) return 'full';
+	if (width >= TOOLBAR_COMPACT_MIN) return 'compact';
+	return 'tight';
 }

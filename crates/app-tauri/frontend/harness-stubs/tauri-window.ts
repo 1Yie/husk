@@ -1,1 +1,4 @@
-export const getCurrentWindow = () => ({ startDragging: async () => {}, toggleMaximize: async () => {} });
+export const getCurrentWindow = () => ({
+	startDragging: async () => {},
+	toggleMaximize: async () => {},
+});

@@ -1,292 +1,339 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
-vi.mock("@/lib/agent-ipc/sessions", () => ({
-  cancelUpdate: vi.fn(),
-  checkUpdate: vi.fn(),
-  installUpdate: vi.fn(),
-  relaunchApp: vi.fn(),
+vi.mock('@tauri-apps/api/event', () => ({
+	listen: vi.fn(async () => () => {}),
+}));
+vi.mock('@/lib/agent-ipc/sessions', () => ({
+	cancelUpdate: vi.fn(),
+	checkUpdate: vi.fn(),
+	installUpdate: vi.fn(),
+	relaunchApp: vi.fn(),
 }));
 
-import { cancelUpdate, checkUpdate, installUpdate, relaunchApp, type InstallMode, type UpdateCheck } from "@/lib/agent-ipc/sessions";
-import { canInstall, useUpdateStore } from "../update-store";
+import {
+	cancelUpdate,
+	checkUpdate,
+	installUpdate,
+	relaunchApp,
+	type InstallMode,
+	type UpdateCheck,
+} from '@/lib/agent-ipc/sessions';
+import { canInstall, useUpdateStore } from '../update-store';
 
 const NEWER: UpdateCheck = {
-  current: "0.3.0",
-  latest: "0.4.0",
-  url: "https://github.com/1Yie/husk/releases/tag/v0.4.0",
-  notes: "## 新功能",
-  is_newer: true,
-  asset: { name: "Husk_0.4.0_amd64.deb", size: 1024 },
+	current: '0.3.0',
+	latest: '0.4.0',
+	url: 'https://github.com/1Yie/husk/releases/tag/v0.4.0',
+	notes: '## 新功能',
+	is_newer: true,
+	asset: { name: 'Husk_0.4.0_amd64.deb', size: 1024 },
 };
-const CURRENT: UpdateCheck = { ...NEWER, latest: "0.3.0", is_newer: false, asset: null };
+const CURRENT: UpdateCheck = {
+	...NEWER,
+	latest: '0.3.0',
+	is_newer: false,
+	asset: null,
+};
 
 const store = () => useUpdateStore.getState();
 
-describe("update store", () => {
-  beforeEach(() => {
-    localStorage.clear();
-    vi.resetAllMocks();
-    vi.mocked(checkUpdate).mockResolvedValue(NEWER);
-    vi.mocked(installUpdate).mockResolvedValue({ mode: "installed" });
-    vi.mocked(cancelUpdate).mockResolvedValue(undefined);
-    vi.mocked(relaunchApp).mockResolvedValue(undefined);
-    useUpdateStore.setState({ state: { status: "idle" }, open: false, snoozed: null, checking: false });
-  });
+describe('update store', () => {
+	beforeEach(() => {
+		localStorage.clear();
+		vi.resetAllMocks();
+		vi.mocked(checkUpdate).mockResolvedValue(NEWER);
+		vi.mocked(installUpdate).mockResolvedValue({ mode: 'installed' });
+		vi.mocked(cancelUpdate).mockResolvedValue(undefined);
+		vi.mocked(relaunchApp).mockResolvedValue(undefined);
+		useUpdateStore.setState({
+			state: { status: 'idle' },
+			open: false,
+			snoozed: null,
+			checking: false,
+		});
+	});
 
-  it("opens the dialog when a newer release exists", async () => {
-    await store().check({ silent: true });
-    expect(store().state.status).toBe("available");
-    expect(store().open).toBe(true);
-  });
+	it('opens the dialog when a newer release exists', async () => {
+		await store().check({ silent: true });
+		expect(store().state.status).toBe('available');
+		expect(store().open).toBe(true);
+	});
 
-  it("stays closed when already up to date", async () => {
-    vi.mocked(checkUpdate).mockResolvedValue(CURRENT);
-    const info = await store().check({ silent: true });
-    expect(info?.is_newer).toBe(false);
-    expect(store().state.status).toBe("idle");
-    expect(store().open).toBe(false);
-  });
+	it('stays closed when already up to date', async () => {
+		vi.mocked(checkUpdate).mockResolvedValue(CURRENT);
+		const info = await store().check({ silent: true });
+		expect(info?.is_newer).toBe(false);
+		expect(store().state.status).toBe('idle');
+		expect(store().open).toBe(false);
+	});
 
-  it("a silent check swallows failures; a manual one reports them", async () => {
-    vi.mocked(checkUpdate).mockRejectedValue(new Error("offline"));
-    await expect(store().check({ silent: true })).resolves.toBeNull();
-    await expect(store().check()).rejects.toThrow("offline");
-    expect(store().open).toBe(false);
-    expect(store().checking).toBe(false);
-  });
+	it('a silent check swallows failures; a manual one reports them', async () => {
+		vi.mocked(checkUpdate).mockRejectedValue(new Error('offline'));
+		await expect(store().check({ silent: true })).resolves.toBeNull();
+		await expect(store().check()).rejects.toThrow('offline');
+		expect(store().open).toBe(false);
+		expect(store().checking).toBe(false);
+	});
 
-  it("ignoring a version stops the automatic dialog, but a manual check still shows it", async () => {
-    await store().check({ silent: true });
-    store().ignore();
-    expect(store().open).toBe(false);
-    expect(localStorage.getItem("husk.update.ignored")).toBe("0.4.0");
+	it('ignoring a version stops the automatic dialog, but a manual check still shows it', async () => {
+		await store().check({ silent: true });
+		store().ignore();
+		expect(store().open).toBe(false);
+		expect(localStorage.getItem('husk.update.ignored')).toBe('0.4.0');
 
-    useUpdateStore.setState({ state: { status: "idle" } });
-    await store().check({ silent: true });
-    expect(store().open).toBe(false);
-    await store().check();
-    expect(store().open).toBe(true);
-  });
+		useUpdateStore.setState({ state: { status: 'idle' } });
+		await store().check({ silent: true });
+		expect(store().open).toBe(false);
+		await store().check();
+		expect(store().open).toBe(true);
+	});
 
-  it("a newer release than the ignored one is announced again", async () => {
-    localStorage.setItem("husk.update.ignored", "0.3.9");
-    await store().check({ silent: true });
-    expect(store().open).toBe(true);
-  });
+	it('a newer release than the ignored one is announced again', async () => {
+		localStorage.setItem('husk.update.ignored', '0.3.9');
+		await store().check({ silent: true });
+		expect(store().open).toBe(true);
+	});
 
-  it("'later' only silences the rest of this session", async () => {
-    await store().check({ silent: true });
-    store().dismiss();
-    expect(store().open).toBe(false);
-    expect(localStorage.getItem("husk.update.ignored")).toBeNull();
-    useUpdateStore.setState({ state: { status: "idle" } });
-    await store().check({ silent: true });
-    expect(store().open).toBe(false);
-  });
+	it("'later' only silences the rest of this session", async () => {
+		await store().check({ silent: true });
+		store().dismiss();
+		expect(store().open).toBe(false);
+		expect(localStorage.getItem('husk.update.ignored')).toBeNull();
+		useUpdateStore.setState({ state: { status: 'idle' } });
+		await store().check({ silent: true });
+		expect(store().open).toBe(false);
+	});
 
-  it("installs, then waits in `ready` instead of restarting by itself", async () => {
-    await store().check({ silent: true });
-    await store().install();
-    expect(installUpdate).toHaveBeenCalledTimes(1);
-    expect(relaunchApp).not.toHaveBeenCalled();
-    expect(store().state.status).toBe("ready");
-    expect(store().open).toBe(true);
-  });
+	it('installs, then waits in `ready` instead of restarting by itself', async () => {
+		await store().check({ silent: true });
+		await store().install();
+		expect(installUpdate).toHaveBeenCalledTimes(1);
+		expect(relaunchApp).not.toHaveBeenCalled();
+		expect(store().state.status).toBe('ready');
+		expect(store().open).toBe(true);
+	});
 
-  it("a download keeps the dialog open after it finishes", async () => {
-    await store().check({ silent: true });
-    let finish!: (value: { mode: InstallMode }) => void;
-    vi.mocked(installUpdate).mockImplementation(
-      () => new Promise<{ mode: InstallMode }>((resolve) => { finish = resolve; }),
-    );
-    const running = store().install();
-    expect(store().state.status).toBe("installing");
-    store().dismiss();
-    expect(store().open).toBe(false);
-    finish({ mode: "installed" });
-    await running;
-    expect(store().state.status).toBe("ready");
-    expect(store().open).toBe(true);
-  });
+	it('a download keeps the dialog open after it finishes', async () => {
+		await store().check({ silent: true });
+		let finish!: (value: { mode: InstallMode }) => void;
+		vi.mocked(installUpdate).mockImplementation(
+			() =>
+				new Promise<{ mode: InstallMode }>((resolve) => {
+					finish = resolve;
+				})
+		);
+		const running = store().install();
+		expect(store().state.status).toBe('installing');
+		store().dismiss();
+		expect(store().open).toBe(false);
+		finish({ mode: 'installed' });
+		await running;
+		expect(store().state.status).toBe('ready');
+		expect(store().open).toBe(true);
+	});
 
-  it("closing during the download cancels it, and the cancelled run never shows as failed", async () => {
-    await store().check({ silent: true });
-    let fail!: (reason: string) => void;
-    vi.mocked(installUpdate).mockImplementation(
-      () => new Promise<{ mode: InstallMode }>((_, reject) => { fail = reject; }),
-    );
-    const running = store().install();
-    store().dismiss();
-    expect(cancelUpdate).toHaveBeenCalledTimes(1);
-    expect(store().state.status).toBe("available");
-    expect(store().open).toBe(false);
-    expect(store().snoozed).toBeNull();
-    fail("已取消下载");
-    await running;
-    expect(store().state.status).toBe("available");
-    expect(store().open).toBe(false);
-  });
+	it('closing during the download cancels it, and the cancelled run never shows as failed', async () => {
+		await store().check({ silent: true });
+		let fail!: (reason: string) => void;
+		vi.mocked(installUpdate).mockImplementation(
+			() =>
+				new Promise<{ mode: InstallMode }>((_, reject) => {
+					fail = reject;
+				})
+		);
+		const running = store().install();
+		store().dismiss();
+		expect(cancelUpdate).toHaveBeenCalledTimes(1);
+		expect(store().state.status).toBe('available');
+		expect(store().open).toBe(false);
+		expect(store().snoozed).toBeNull();
+		fail('已取消下载');
+		await running;
+		expect(store().state.status).toBe('available');
+		expect(store().open).toBe(false);
+	});
 
-  it("a successful install that lands after the cancel still becomes ready", async () => {
-    await store().check({ silent: true });
-    let finish!: (value: { mode: InstallMode }) => void;
-    vi.mocked(installUpdate).mockImplementation(
-      () => new Promise<{ mode: InstallMode }>((resolve) => { finish = resolve; }),
-    );
-    const running = store().install();
-    store().dismiss();
-    finish({ mode: "installed" });
-    await running;
-    expect(store().state.status).toBe("ready");
-    expect(store().open).toBe(true);
-  });
+	it('a successful install that lands after the cancel still becomes ready', async () => {
+		await store().check({ silent: true });
+		let finish!: (value: { mode: InstallMode }) => void;
+		vi.mocked(installUpdate).mockImplementation(
+			() =>
+				new Promise<{ mode: InstallMode }>((resolve) => {
+					finish = resolve;
+				})
+		);
+		const running = store().install();
+		store().dismiss();
+		finish({ mode: 'installed' });
+		await running;
+		expect(store().state.status).toBe('ready');
+		expect(store().open).toBe(true);
+	});
 
-  it("a check while the download runs reopens the dialog without asking the backend", async () => {
-    await store().check({ silent: true });
-    vi.mocked(installUpdate).mockImplementation(() => new Promise<{ mode: InstallMode }>(() => {}));
-    void store().install();
-    store().setOpen(false);
-    vi.mocked(checkUpdate).mockClear();
-    const info = await store().check();
-    expect(checkUpdate).not.toHaveBeenCalled();
-    expect(info?.latest).toBe("0.4.0");
-    expect(store().open).toBe(true);
-    expect(store().state.status).toBe("installing");
-  });
+	it('a check while the download runs reopens the dialog without asking the backend', async () => {
+		await store().check({ silent: true });
+		vi.mocked(installUpdate).mockImplementation(
+			() => new Promise<{ mode: InstallMode }>(() => {})
+		);
+		void store().install();
+		store().setOpen(false);
+		vi.mocked(checkUpdate).mockClear();
+		const info = await store().check();
+		expect(checkUpdate).not.toHaveBeenCalled();
+		expect(info?.latest).toBe('0.4.0');
+		expect(store().open).toBe(true);
+		expect(store().state.status).toBe('installing');
+	});
 
-  it("after a cancel, check reopens the dialog as available and install starts a fresh download", async () => {
-    await store().check({ silent: true });
-    vi.mocked(installUpdate).mockImplementationOnce(() => new Promise<{ mode: InstallMode }>(() => {}));
-    void store().install();
-    store().dismiss();
-    vi.mocked(installUpdate).mockResolvedValueOnce({ mode: "installed" });
-    const info = await store().check();
-    expect(info?.latest).toBe("0.4.0");
-    expect(store().state.status).toBe("available");
-    expect(store().open).toBe(true);
-    await store().install();
-    expect(installUpdate).toHaveBeenCalledTimes(2);
-    expect(store().state.status).toBe("ready");
-  });
+	it('after a cancel, check reopens the dialog as available and install starts a fresh download', async () => {
+		await store().check({ silent: true });
+		vi.mocked(installUpdate).mockImplementationOnce(
+			() => new Promise<{ mode: InstallMode }>(() => {})
+		);
+		void store().install();
+		store().dismiss();
+		vi.mocked(installUpdate).mockResolvedValueOnce({ mode: 'installed' });
+		const info = await store().check();
+		expect(info?.latest).toBe('0.4.0');
+		expect(store().state.status).toBe('available');
+		expect(store().open).toBe(true);
+		await store().install();
+		expect(installUpdate).toHaveBeenCalledTimes(2);
+		expect(store().state.status).toBe('ready');
+	});
 
-  it("a fresh install right after a cancel waits for the backend to release its slot", async () => {
-    await store().check({ silent: true });
-    vi.mocked(installUpdate).mockImplementationOnce(() => new Promise<{ mode: InstallMode }>(() => {}));
-    void store().install();
-    let releaseCancel!: () => void;
-    vi.mocked(cancelUpdate).mockImplementationOnce(
-      () => new Promise<void>((resolve) => { releaseCancel = resolve; }),
-    );
-    store().dismiss();
-    vi.mocked(installUpdate).mockResolvedValueOnce({ mode: "installed" });
-    const running = store().install();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(installUpdate).toHaveBeenCalledTimes(1);
-    releaseCancel();
-    await running;
-    expect(installUpdate).toHaveBeenCalledTimes(2);
-    expect(store().state.status).toBe("ready");
-  });
+	it('a fresh install right after a cancel waits for the backend to release its slot', async () => {
+		await store().check({ silent: true });
+		vi.mocked(installUpdate).mockImplementationOnce(
+			() => new Promise<{ mode: InstallMode }>(() => {})
+		);
+		void store().install();
+		let releaseCancel!: () => void;
+		vi.mocked(cancelUpdate).mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					releaseCancel = resolve;
+				})
+		);
+		store().dismiss();
+		vi.mocked(installUpdate).mockResolvedValueOnce({ mode: 'installed' });
+		const running = store().install();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(installUpdate).toHaveBeenCalledTimes(1);
+		releaseCancel();
+		await running;
+		expect(installUpdate).toHaveBeenCalledTimes(2);
+		expect(store().state.status).toBe('ready');
+	});
 
-  it("verify and install are not dismissible", async () => {
-    await store().check({ silent: true });
-    vi.mocked(installUpdate).mockImplementation(() => new Promise<{ mode: InstallMode }>(() => {}));
-    void store().install();
-    for (const phase of ["verify", "install"] as const) {
-      useUpdateStore.setState((s) =>
-        s.state.status === "installing"
-          ? { state: { ...s.state, progress: { ...s.state.progress, phase } } }
-          : s,
-      );
-      store().dismiss();
-      expect(store().open).toBe(true);
-    }
-  });
+	it('verify and install are not dismissible', async () => {
+		await store().check({ silent: true });
+		vi.mocked(installUpdate).mockImplementation(
+			() => new Promise<{ mode: InstallMode }>(() => {})
+		);
+		void store().install();
+		for (const phase of ['verify', 'install'] as const) {
+			useUpdateStore.setState((s) =>
+				s.state.status === 'installing'
+					? { state: { ...s.state, progress: { ...s.state.progress, phase } } }
+					: s
+			);
+			store().dismiss();
+			expect(store().open).toBe(true);
+		}
+	});
 
-  it("a ready update stays open until the restart", async () => {
-    await store().check({ silent: true });
-    await store().install();
-    store().dismiss();
-    expect(store().open).toBe(true);
-  });
+	it('a ready update stays open until the restart', async () => {
+		await store().check({ silent: true });
+		await store().install();
+		store().dismiss();
+		expect(store().open).toBe(true);
+	});
 
-  it("a failed install keeps the error and can be retried", async () => {
-    vi.mocked(installUpdate).mockRejectedValueOnce("安装包校验失败");
-    await store().check({ silent: true });
-    await store().install();
-    const failed = store().state;
-    expect(failed.status === "failed" && failed.error).toContain("校验失败");
-    await store().install();
-    expect(store().state.status).toBe("ready");
-  });
+	it('a failed install keeps the error and can be retried', async () => {
+		vi.mocked(installUpdate).mockRejectedValueOnce('安装包校验失败');
+		await store().check({ silent: true });
+		await store().install();
+		const failed = store().state;
+		expect(failed.status === 'failed' && failed.error).toContain('校验失败');
+		await store().install();
+		expect(store().state.status).toBe('ready');
+	});
 
-  it("relaunch does nothing until the update is ready, then asks the backend", async () => {
-    await store().check({ silent: true });
-    await store().relaunch();
-    expect(relaunchApp).not.toHaveBeenCalled();
-    await store().install();
-    await store().relaunch();
-    expect(relaunchApp).toHaveBeenCalledTimes(1);
-  });
+	it('relaunch does nothing until the update is ready, then asks the backend', async () => {
+		await store().check({ silent: true });
+		await store().relaunch();
+		expect(relaunchApp).not.toHaveBeenCalled();
+		await store().install();
+		await store().relaunch();
+		expect(relaunchApp).toHaveBeenCalledTimes(1);
+	});
 
-  it("a ready update is not checked over, and the check reopens its dialog", async () => {
-    await store().check({ silent: true });
-    await store().install();
-    store().setOpen(false);
-    const info = await store().check();
-    expect(info?.latest).toBe("0.4.0");
-    expect(checkUpdate).toHaveBeenCalledTimes(1);
-    expect(store().state.status).toBe("ready");
-    expect(store().open).toBe(true);
-  });
+	it('a ready update is not checked over, and the check reopens its dialog', async () => {
+		await store().check({ silent: true });
+		await store().install();
+		store().setOpen(false);
+		const info = await store().check();
+		expect(info?.latest).toBe('0.4.0');
+		expect(checkUpdate).toHaveBeenCalledTimes(1);
+		expect(store().state.status).toBe('ready');
+		expect(store().open).toBe(true);
+	});
 
-  it("records the install mode and says a staged installer runs on restart", async () => {
-    vi.mocked(installUpdate).mockResolvedValue({ mode: "staged" });
-    await store().check({ silent: true });
-    await store().install();
-    const state = store().state;
-    expect(state.status === "ready" && state.mode).toBe("staged");
-  });
+	it('records the install mode and says a staged installer runs on restart', async () => {
+		vi.mocked(installUpdate).mockResolvedValue({ mode: 'staged' });
+		await store().check({ silent: true });
+		await store().install();
+		const state = store().state;
+		expect(state.status === 'ready' && state.mode).toBe('staged');
+	});
 
-  it("restores a prepared update as ready instead of offering a reinstall", async () => {
-    vi.mocked(checkUpdate).mockResolvedValue({ ...NEWER, prepared_mode: "staged" });
-    await store().check({ silent: true });
-    const state = store().state;
-    expect(state.status).toBe("ready");
-    expect(state.status === "ready" && state.mode).toBe("staged");
-    expect(store().open).toBe(true);
-    expect(installUpdate).not.toHaveBeenCalled();
-  });
+	it('restores a prepared update as ready instead of offering a reinstall', async () => {
+		vi.mocked(checkUpdate).mockResolvedValue({
+			...NEWER,
+			prepared_mode: 'staged',
+		});
+		await store().check({ silent: true });
+		const state = store().state;
+		expect(state.status).toBe('ready');
+		expect(state.status === 'ready' && state.mode).toBe('staged');
+		expect(store().open).toBe(true);
+		expect(installUpdate).not.toHaveBeenCalled();
+	});
 
-  it("a failed relaunch stays ready with the error so the restart can be retried", async () => {
-    await store().check({ silent: true });
-    await store().install();
-    vi.mocked(relaunchApp).mockRejectedValueOnce("无法启动重启程序");
-    await store().relaunch();
-    const failed = store().state;
-    expect(failed.status).toBe("ready");
-    expect(failed.status === "ready" && failed.relaunchError).toContain("无法启动重启程序");
-    // Retrying restart does not reinstall.
-    await store().relaunch();
-    expect(relaunchApp).toHaveBeenCalledTimes(2);
-    expect(installUpdate).toHaveBeenCalledTimes(1);
-  });
+	it('a failed relaunch stays ready with the error so the restart can be retried', async () => {
+		await store().check({ silent: true });
+		await store().install();
+		vi.mocked(relaunchApp).mockRejectedValueOnce('无法启动重启程序');
+		await store().relaunch();
+		const failed = store().state;
+		expect(failed.status).toBe('ready');
+		expect(failed.status === 'ready' && failed.relaunchError).toContain(
+			'无法启动重启程序'
+		);
+		// Retrying restart does not reinstall.
+		await store().relaunch();
+		expect(relaunchApp).toHaveBeenCalledTimes(2);
+		expect(installUpdate).toHaveBeenCalledTimes(1);
+	});
 
-  it("manual_reason turns off the automatic in-app install", () => {
-    expect(canInstall(NEWER)).toBe(true);
-    expect(canInstall({ ...NEWER, manual_reason: "AppImage 版本无法原地更新" })).toBe(false);
-    expect(canInstall({ ...NEWER, asset: null })).toBe(false);
-  });
+	it('manual_reason turns off the automatic in-app install', () => {
+		expect(canInstall(NEWER)).toBe(true);
+		expect(
+			canInstall({ ...NEWER, manual_reason: 'AppImage 版本无法原地更新' })
+		).toBe(false);
+		expect(canInstall({ ...NEWER, asset: null })).toBe(false);
+	});
 
-  it("progress events only apply while installing", async () => {
-    await store().check({ silent: true });
-    const { listen } = await import("@tauri-apps/api/event");
-    const { listenUpdateProgress } = await import("../update-store");
-    listenUpdateProgress();
-    const handler = vi.mocked(listen).mock.calls[0]?.[1] as ((e: { payload: unknown }) => void) | undefined;
-    expect(handler).toBeTypeOf("function");
-    handler!({ payload: { phase: "download", downloaded: 5, total: 10 } });
-    expect(store().state.status).toBe("available");
-  });
+	it('progress events only apply while installing', async () => {
+		await store().check({ silent: true });
+		const { listen } = await import('@tauri-apps/api/event');
+		const { listenUpdateProgress } = await import('../update-store');
+		listenUpdateProgress();
+		const handler = vi.mocked(listen).mock.calls[0]?.[1] as
+			((e: { payload: unknown }) => void) | undefined;
+		expect(handler).toBeTypeOf('function');
+		handler!({ payload: { phase: 'download', downloaded: 5, total: 10 } });
+		expect(store().state.status).toBe('available');
+	});
 });

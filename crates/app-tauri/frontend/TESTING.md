@@ -41,13 +41,19 @@ Bun 也可以用 `bun run test` / `bun run test:watch` 调用相同的 Vitest �
 ```ts
 import { mockCommand, modelInfo, emitAgentEvent } from '@/test/tauri';
 
-mockCommand('agent_session', () => ({
-  ...modelInfo(), active_thinking_level: 'xhigh',
-}), 'model_info');
+mockCommand(
+	'agent_session',
+	() => ({
+		...modelInfo(),
+		active_thinking_level: 'xhigh',
+	}),
+	'model_info'
+);
 
 emitAgentEvent({
-  root: '/project', session: 1,
-  event: { ReasoningDelta: { text: '分析边界', parent: null } },
+	root: '/project',
+	session: 1,
+	event: { ReasoningDelta: { text: '分析边界', parent: null } },
 });
 ```
 

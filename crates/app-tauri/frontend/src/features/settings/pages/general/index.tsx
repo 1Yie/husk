@@ -1,625 +1,693 @@
 // 「通用」pane — the default permission / thinking / agent-mode / sandbox
 // cards. Owns the prefs it edits; the shell only routes to it.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from 'react';
 import {
-  Activity,
-  Archive,
-  Bell,
-  Bot,
-  Cpu,
-  FileText,
-  Globe,
-  Hourglass,
-  Layers,
-  Question,
-  ShieldCheck,
-  Sparkles,
-  SquarePen,
-  TriangleAlert,
-  Volume,
-  Zap,
-} from "@keyline-icons/react";
-import { toast } from "sonner";
-import { Switch } from "@/components/ui/switch";
-import { KvList, KvListContent } from "@/components/ui/kv-list";
-import { SkeletonControl } from "@/components/ui/skeleton";
+	Activity,
+	Archive,
+	Bell,
+	Bot,
+	Cpu,
+	FileText,
+	Globe,
+	Hourglass,
+	Layers,
+	Question,
+	ShieldCheck,
+	Sparkles,
+	SquarePen,
+	TriangleAlert,
+	Volume,
+	Zap,
+} from '@keyline-icons/react';
+import { toast } from 'sonner';
+import { Switch } from '@/components/ui/switch';
+import { KvList, KvListContent } from '@/components/ui/kv-list';
+import { SkeletonControl } from '@/components/ui/skeleton';
 import {
-  SettingSelect,
-  SettingRow,
-  SettingsCards,
-  SettingsSection,
-  Tag,
-  type SettingsCardOption,
-  type SettingSelectOption,
-} from "@/features/settings/components";
-import { THINKING_LEVELS } from "@/lib/thinking";
+	SettingSelect,
+	SettingRow,
+	SettingsCards,
+	SettingsSection,
+	Tag,
+	type SettingsCardOption,
+	type SettingSelectOption,
+} from '@/features/settings/components';
+import { THINKING_LEVELS } from '@/lib/thinking';
 import {
-  getDefaultPrefs,
-  setDefaultPrefs,
-  getAppConfig,
-  type DefaultPrefs,
-} from "@/lib/agent-ipc/sessions";
+	getDefaultPrefs,
+	setDefaultPrefs,
+	getAppConfig,
+	type DefaultPrefs,
+} from '@/lib/agent-ipc/sessions';
 
 const PERMISSION_OPTIONS: SettingsCardOption[] = [
-  {
-    value: "auto",
-    label: "自动",
-    badge: <Tag>推荐</Tag>,
-    description: "自动执行常规操作，高风险操作需要确认",
-    icon: <Zap className="h-4 w-4" />,
-    iconTone: "text-emerald-600 dark:text-emerald-300",
-  },
-  {
-    value: "bypassPermissions",
-    label: "全部权限",
-    description: "文件修改和终端命令均自动执行",
-    icon: <TriangleAlert className="h-4 w-4" />,
-    iconTone: "text-rose-600 dark:text-rose-300",
-  },
-  {
-    value: "acceptEdits",
-    label: "仅接受编辑",
-    description: "自动修改文件，终端命令需要确认",
-    icon: <SquarePen className="h-4 w-4" />,
-    iconTone: "text-sky-600 dark:text-sky-300",
-  },
-  {
-    value: "default",
-    label: "每次确认",
-    description: "文件修改和终端命令均需确认",
-    icon: <ShieldCheck className="h-4 w-4" />,
-    iconTone: "text-violet-600 dark:text-violet-300",
-  },
+	{
+		value: 'auto',
+		label: '自动',
+		badge: <Tag>推荐</Tag>,
+		description: '自动执行常规操作，高风险操作需要确认',
+		icon: <Zap className="h-4 w-4" />,
+		iconTone: 'text-emerald-600 dark:text-emerald-300',
+	},
+	{
+		value: 'bypassPermissions',
+		label: '全部权限',
+		description: '文件修改和终端命令均自动执行',
+		icon: <TriangleAlert className="h-4 w-4" />,
+		iconTone: 'text-rose-600 dark:text-rose-300',
+	},
+	{
+		value: 'acceptEdits',
+		label: '仅接受编辑',
+		description: '自动修改文件，终端命令需要确认',
+		icon: <SquarePen className="h-4 w-4" />,
+		iconTone: 'text-sky-600 dark:text-sky-300',
+	},
+	{
+		value: 'default',
+		label: '每次确认',
+		description: '文件修改和终端命令均需确认',
+		icon: <ShieldCheck className="h-4 w-4" />,
+		iconTone: 'text-violet-600 dark:text-violet-300',
+	},
 ];
 
-const THINKING_OPTIONS = THINKING_LEVELS.map((l) => ({ value: l.value, label: l.label }));
+const THINKING_OPTIONS = THINKING_LEVELS.map((l) => ({
+	value: l.value,
+	label: l.label,
+}));
 
 const AGENT_MODE_OPTIONS = [
-  { value: "build", label: "构建" },
-  { value: "plan", label: "计划" },
-  { value: "goal", label: "目标" },
+	{ value: 'build', label: '构建' },
+	{ value: 'plan', label: '计划' },
+	{ value: 'goal', label: '目标' },
 ];
 
 const WORKSPACE_MODE_OPTIONS = [
-  { value: "last", label: "上次使用" },
-  { value: "build", label: "编程" },
-  { value: "office", label: "工作" },
+	{ value: 'last', label: '上次使用' },
+	{ value: 'build', label: '编程' },
+	{ value: 'office', label: '工作' },
 ];
 
 const COMPACT_AT_OPTIONS = [
-  { value: "70", label: "70%" },
-  { value: "80", label: "80%" },
-  { value: "90", label: "90%" },
+	{ value: '70', label: '70%' },
+	{ value: '80', label: '80%' },
+	{ value: '90', label: '90%' },
 ];
 
 /** One list for both waiting bounds — the backend reads them as seconds,
  *  where 0 means the card may wait forever. */
 const TIMEOUT_OPTIONS = [
-  { value: "60", label: "1 分钟" },
-  { value: "120", label: "2 分钟" },
-  { value: "300", label: "5 分钟" },
-  { value: "600", label: "10 分钟" },
-  { value: "1800", label: "30 分钟" },
-  { value: "0", label: "永不" },
+	{ value: '60', label: '1 分钟' },
+	{ value: '120', label: '2 分钟' },
+	{ value: '300', label: '5 分钟' },
+	{ value: '600', label: '10 分钟' },
+	{ value: '1800', label: '30 分钟' },
+	{ value: '0', label: '永不' },
 ];
 
 const SANDBOX_NETWORK_OPTIONS = [
-  { value: "auto", label: "自动" },
-  { value: "allow", label: "始终允许" },
-  { value: "deny", label: "始终禁止" },
+	{ value: 'auto', label: '自动' },
+	{ value: 'allow', label: '始终允许' },
+	{ value: 'deny', label: '始终禁止' },
 ];
 
 const SANDBOX_MEMORY_OPTIONS = [
-  { value: "default", label: "默认（2048 MB）" },
-  { value: "512", label: "512 MB" },
-  { value: "1024", label: "1 GB" },
-  { value: "4096", label: "4 GB" },
-  { value: "8192", label: "8 GB" },
+	{ value: 'default', label: '默认（2048 MB）' },
+	{ value: '512', label: '512 MB' },
+	{ value: '1024', label: '1 GB' },
+	{ value: '4096', label: '4 GB' },
+	{ value: '8192', label: '8 GB' },
 ];
 
 const SANDBOX_PROCS_OPTIONS = [
-  { value: "default", label: "默认（256）" },
-  { value: "64", label: "64" },
-  { value: "128", label: "128" },
-  { value: "512", label: "512" },
-  { value: "1024", label: "1024" },
+	{ value: 'default', label: '默认（256）' },
+	{ value: '64', label: '64' },
+	{ value: '128', label: '128' },
+	{ value: '512', label: '512' },
+	{ value: '1024', label: '1024' },
 ];
 
 /** Control values derived from stored prefs — absent fields fall back to
  * the same defaults the backend applies. */
 function prefsToState(prefs: DefaultPrefs) {
-  return {
-    permission: prefs.permission_mode || "auto",
-    activeModelKey:
-      prefs.active_provider && prefs.active_model
-        ? `${prefs.active_provider}/${prefs.active_model}`
-        : "__config__",
-    subagentModelKey:
-      prefs.subagent_provider && prefs.subagent_model
-        ? `${prefs.subagent_provider}/${prefs.subagent_model}`
-        : "__parent__",
-    // "" = no level of its own: children follow the parent session's.
-    subagentThinking: prefs.subagent_thinking_level || "",
-    thinking: prefs.thinking_level || "medium",
-    agentMode: prefs.agent_mode || "build",
-    workspaceMode: prefs.default_workspace_mode || "last",
-    compactAt: prefs.compact_at ? String(Math.round(prefs.compact_at * 100)) : "80",
-    // Absent falls back to the bound the backend itself applies.
-    approvalTimeout: String(prefs.approval_timeout_secs ?? 300),
-    questionTimeout: String(prefs.question_timeout_secs ?? 600),
-    // absent = default-off — only an explicit true turns it on.
-    sandboxEnabled: prefs.sandbox_enabled === true,
-    blueprintEnabled: prefs.blueprint_enabled !== false,
-    desktopNotify: prefs.desktop_notifications !== false,
-    notificationSound: prefs.notification_sound !== false,
-    sandboxNetwork: (prefs.sandbox_network || "auto") as string,
-    sandboxMem: prefs.sandbox_max_memory_mb ? String(prefs.sandbox_max_memory_mb) : "default",
-    sandboxProcs: prefs.sandbox_max_processes ? String(prefs.sandbox_max_processes) : "default",
-  };
+	return {
+		permission: prefs.permission_mode || 'auto',
+		activeModelKey:
+			prefs.active_provider && prefs.active_model
+				? `${prefs.active_provider}/${prefs.active_model}`
+				: '__config__',
+		subagentModelKey:
+			prefs.subagent_provider && prefs.subagent_model
+				? `${prefs.subagent_provider}/${prefs.subagent_model}`
+				: '__parent__',
+		// "" = no level of its own: children follow the parent session's.
+		subagentThinking: prefs.subagent_thinking_level || '',
+		thinking: prefs.thinking_level || 'medium',
+		agentMode: prefs.agent_mode || 'build',
+		workspaceMode: prefs.default_workspace_mode || 'last',
+		compactAt: prefs.compact_at
+			? String(Math.round(prefs.compact_at * 100))
+			: '80',
+		// Absent falls back to the bound the backend itself applies.
+		approvalTimeout: String(prefs.approval_timeout_secs ?? 300),
+		questionTimeout: String(prefs.question_timeout_secs ?? 600),
+		// absent = default-off — only an explicit true turns it on.
+		sandboxEnabled: prefs.sandbox_enabled === true,
+		blueprintEnabled: prefs.blueprint_enabled !== false,
+		desktopNotify: prefs.desktop_notifications !== false,
+		notificationSound: prefs.notification_sound !== false,
+		sandboxNetwork: (prefs.sandbox_network || 'auto') as string,
+		sandboxMem: prefs.sandbox_max_memory_mb
+			? String(prefs.sandbox_max_memory_mb)
+			: 'default',
+		sandboxProcs: prefs.sandbox_max_processes
+			? String(prefs.sandbox_max_processes)
+			: 'default',
+	};
 }
 
 /** Last loaded prefs + providers, kept across pane mounts so reopening the
  * pane renders real values at once instead of defaults that then jump. */
-let cached: { prefs: DefaultPrefs; providers: Record<string, any> } | null = null;
+let cached: { prefs: DefaultPrefs; providers: Record<string, any> } | null =
+	null;
 
 export function GeneralPane() {
-  const [init] = useState(() => prefsToState(cached?.prefs ?? {}));
-  const [ready, setReady] = useState(cached !== null);
-  const [permission, setPermission] = useState(init.permission);
-  const [activeModelKey, setActiveModelKey] = useState(init.activeModelKey);
-  const [subagentModelKey, setSubagentModelKey] = useState(init.subagentModelKey);
-  const [subagentThinking, setSubagentThinking] = useState(init.subagentThinking);
-  const [thinking, setThinking] = useState(init.thinking);
-  const [agentMode, setAgentMode] = useState(init.agentMode);
-  const [workspaceMode, setWorkspaceMode] = useState(init.workspaceMode);
-  const [compactAt, setCompactAt] = useState(init.compactAt);
-  const [approvalTimeout, setApprovalTimeout] = useState(init.approvalTimeout);
-  const [questionTimeout, setQuestionTimeout] = useState(init.questionTimeout);
-  const [providers, setProviders] = useState<Record<string, any>>(cached?.providers ?? {});
-  const [sandboxEnabled, setSandboxEnabled] = useState(init.sandboxEnabled);
-  const [blueprintEnabled, setBlueprintEnabled] = useState(init.blueprintEnabled);
-  const [desktopNotify, setDesktopNotify] = useState(init.desktopNotify);
-  const [notificationSound, setNotificationSound] = useState(init.notificationSound);
-  const [sandboxNetwork, setSandboxNetwork] = useState(init.sandboxNetwork);
-  const [sandboxMem, setSandboxMem] = useState(init.sandboxMem);
-  const [sandboxProcs, setSandboxProcs] = useState(init.sandboxProcs);
+	const [init] = useState(() => prefsToState(cached?.prefs ?? {}));
+	const [ready, setReady] = useState(cached !== null);
+	const [permission, setPermission] = useState(init.permission);
+	const [activeModelKey, setActiveModelKey] = useState(init.activeModelKey);
+	const [subagentModelKey, setSubagentModelKey] = useState(
+		init.subagentModelKey
+	);
+	const [subagentThinking, setSubagentThinking] = useState(
+		init.subagentThinking
+	);
+	const [thinking, setThinking] = useState(init.thinking);
+	const [agentMode, setAgentMode] = useState(init.agentMode);
+	const [workspaceMode, setWorkspaceMode] = useState(init.workspaceMode);
+	const [compactAt, setCompactAt] = useState(init.compactAt);
+	const [approvalTimeout, setApprovalTimeout] = useState(init.approvalTimeout);
+	const [questionTimeout, setQuestionTimeout] = useState(init.questionTimeout);
+	const [providers, setProviders] = useState<Record<string, any>>(
+		cached?.providers ?? {}
+	);
+	const [sandboxEnabled, setSandboxEnabled] = useState(init.sandboxEnabled);
+	const [blueprintEnabled, setBlueprintEnabled] = useState(
+		init.blueprintEnabled
+	);
+	const [desktopNotify, setDesktopNotify] = useState(init.desktopNotify);
+	const [notificationSound, setNotificationSound] = useState(
+		init.notificationSound
+	);
+	const [sandboxNetwork, setSandboxNetwork] = useState(init.sandboxNetwork);
+	const [sandboxMem, setSandboxMem] = useState(init.sandboxMem);
+	const [sandboxProcs, setSandboxProcs] = useState(init.sandboxProcs);
 
-  useEffect(() => {
-    let alive = true;
-    // Both requests settle before any state is applied: prefs alone would
-    // show the stored model as the config default until providers arrive.
-    void Promise.all([
-      getDefaultPrefs(),
-      getAppConfig()
-        .then((r) => ((r.config as any)?.providers ?? {}) as Record<string, any>)
-        .catch(() => cached?.providers ?? {}),
-    ])
-      .then(([prefs, provs]) => {
-        cached = { prefs, providers: provs };
-        if (!alive) return;
-        const s = prefsToState(prefs);
-        setPermission(s.permission);
-        setActiveModelKey(s.activeModelKey);
-        setSubagentModelKey(s.subagentModelKey);
-        setSubagentThinking(s.subagentThinking);
-        setThinking(s.thinking);
-        setAgentMode(s.agentMode);
-        setWorkspaceMode(s.workspaceMode);
-        setCompactAt(s.compactAt);
-        setApprovalTimeout(s.approvalTimeout);
-        setQuestionTimeout(s.questionTimeout);
-        setSandboxEnabled(s.sandboxEnabled);
-        setBlueprintEnabled(s.blueprintEnabled);
-        setDesktopNotify(s.desktopNotify);
-        setNotificationSound(s.notificationSound);
-        setSandboxNetwork(s.sandboxNetwork);
-        setSandboxMem(s.sandboxMem);
-        setSandboxProcs(s.sandboxProcs);
-        setProviders(provs);
-      })
-      .catch((e) => console.error("load settings error:", e))
-      .finally(() => alive && setReady(true));
-    return () => {
-      alive = false;
-    };
-  }, []);
+	useEffect(() => {
+		let alive = true;
+		// Both requests settle before any state is applied: prefs alone would
+		// show the stored model as the config default until providers arrive.
+		void Promise.all([
+			getDefaultPrefs(),
+			getAppConfig()
+				.then(
+					(r) => ((r.config as any)?.providers ?? {}) as Record<string, any>
+				)
+				.catch(() => cached?.providers ?? {}),
+		])
+			.then(([prefs, provs]) => {
+				cached = { prefs, providers: provs };
+				if (!alive) return;
+				const s = prefsToState(prefs);
+				setPermission(s.permission);
+				setActiveModelKey(s.activeModelKey);
+				setSubagentModelKey(s.subagentModelKey);
+				setSubagentThinking(s.subagentThinking);
+				setThinking(s.thinking);
+				setAgentMode(s.agentMode);
+				setWorkspaceMode(s.workspaceMode);
+				setCompactAt(s.compactAt);
+				setApprovalTimeout(s.approvalTimeout);
+				setQuestionTimeout(s.questionTimeout);
+				setSandboxEnabled(s.sandboxEnabled);
+				setBlueprintEnabled(s.blueprintEnabled);
+				setDesktopNotify(s.desktopNotify);
+				setNotificationSound(s.notificationSound);
+				setSandboxNetwork(s.sandboxNetwork);
+				setSandboxMem(s.sandboxMem);
+				setSandboxProcs(s.sandboxProcs);
+				setProviders(provs);
+			})
+			.catch((e) => console.error('load settings error:', e))
+			.finally(() => alive && setReady(true));
+		return () => {
+			alive = false;
+		};
+	}, []);
 
-  const save = (patch: Parameters<typeof setDefaultPrefs>[0]) => {
-    if (cached) cached = { ...cached, prefs: { ...cached.prefs, ...patch } };
-    return setDefaultPrefs(patch).catch((e) => console.error("save prefs failed:", e));
-  };
+	const save = (patch: Parameters<typeof setDefaultPrefs>[0]) => {
+		if (cached) cached = { ...cached, prefs: { ...cached.prefs, ...patch } };
+		return setDefaultPrefs(patch).catch((e) =>
+			console.error('save prefs failed:', e)
+		);
+	};
 
-  /** Persist a waiting bound. A failed write is reported AND rolled back: a
-   *  select still showing a limit the host never took is worse than the error. */
-  const saveTimeout = (patch: Parameters<typeof setDefaultPrefs>[0], rollback: () => void) =>
-    setDefaultPrefs(patch)
-      .then(() => {
-        if (cached) cached = { ...cached, prefs: { ...cached.prefs, ...patch } };
-      })
-      .catch((e) => {
-        rollback();
-        toast.error("保存失败", { description: String(e) });
-      });
+	/** Persist a waiting bound. A failed write is reported AND rolled back: a
+	 *  select still showing a limit the host never took is worse than the error. */
+	const saveTimeout = (
+		patch: Parameters<typeof setDefaultPrefs>[0],
+		rollback: () => void
+	) =>
+		setDefaultPrefs(patch)
+			.then(() => {
+				if (cached)
+					cached = { ...cached, prefs: { ...cached.prefs, ...patch } };
+			})
+			.catch((e) => {
+				rollback();
+				toast.error('保存失败', { description: String(e) });
+			});
 
-  // Flatten every provider's model list into one select — the value key
-  // doubles as a lookup into `modelPairs` (model ids can contain `/`,
-  // so never split the key back apart).
-  const { modelOptions, modelPairs } = useMemo(() => {
-    const opts: SettingSelectOption[] = [
-      {
-        value: "__config__",
-        label: "跟随配置默认",
-      },
-    ];
-    const pairs = new Map<string, { provider: string; model: string }>();
-    for (const [pname, p] of Object.entries(providers)) {
-      for (const raw of ((p as any)?.models ?? []) as any[]) {
-        const id = typeof raw === "string" ? raw : raw?.id;
-        if (!id) continue;
-        const key = `${pname}/${id}`;
-        const label = typeof raw === "object" && raw?.name ? raw.name : id;
-        pairs.set(key, { provider: pname, model: id });
-        opts.push({ value: key, label, group: pname });
-      }
-    }
-    return { modelOptions: opts, modelPairs: pairs };
-  }, [providers]);
-  // The list mirrors the provider config as it is now. A stored pair that no
-  // longer names a configured model gets no row of its own — the select
-  // reads as the config default.
-  const shownModelKey = modelPairs.has(activeModelKey) ? activeModelKey : "__config__";
-  // Same list for delegated children; the empty choice means "the parent's
-  // model", not the config default.
-  const subagentOptions = useMemo(
-    () => [{ value: "__parent__", label: "跟随主代理" }, ...modelOptions.slice(1)],
-    [modelOptions],
-  );
-  const shownSubagentKey = modelPairs.has(subagentModelKey) ? subagentModelKey : "__parent__";
+	// Flatten every provider's model list into one select — the value key
+	// doubles as a lookup into `modelPairs` (model ids can contain `/`,
+	// so never split the key back apart).
+	const { modelOptions, modelPairs } = useMemo(() => {
+		const opts: SettingSelectOption[] = [
+			{
+				value: '__config__',
+				label: '跟随配置默认',
+			},
+		];
+		const pairs = new Map<string, { provider: string; model: string }>();
+		for (const [pname, p] of Object.entries(providers)) {
+			for (const raw of ((p as any)?.models ?? []) as any[]) {
+				const id = typeof raw === 'string' ? raw : raw?.id;
+				if (!id) continue;
+				const key = `${pname}/${id}`;
+				const label = typeof raw === 'object' && raw?.name ? raw.name : id;
+				pairs.set(key, { provider: pname, model: id });
+				opts.push({ value: key, label, group: pname });
+			}
+		}
+		return { modelOptions: opts, modelPairs: pairs };
+	}, [providers]);
+	// The list mirrors the provider config as it is now. A stored pair that no
+	// longer names a configured model gets no row of its own — the select
+	// reads as the config default.
+	const shownModelKey = modelPairs.has(activeModelKey)
+		? activeModelKey
+		: '__config__';
+	// Same list for delegated children; the empty choice means "the parent's
+	// model", not the config default.
+	const subagentOptions = useMemo(
+		() => [
+			{ value: '__parent__', label: '跟随主代理' },
+			...modelOptions.slice(1),
+		],
+		[modelOptions]
+	);
+	const shownSubagentKey = modelPairs.has(subagentModelKey)
+		? subagentModelKey
+		: '__parent__';
 
-  return (
-    <div className="flex w-full min-w-0 flex-col gap-8" aria-busy={!ready}>
-      <SettingsSection title="默认权限模式" description="用于新建会话">
-        <SettingsCards
-          loading={!ready}
-          value={permission}
-          onChange={(v) => {
-            setPermission(v);
-            void save({ permission_mode: v });
-          }}
-          options={PERMISSION_OPTIONS}
-        />
-      </SettingsSection>
+	return (
+		<div className="flex w-full min-w-0 flex-col gap-8" aria-busy={!ready}>
+			<SettingsSection title="默认权限模式" description="用于新建会话">
+				<SettingsCards
+					loading={!ready}
+					value={permission}
+					onChange={(v) => {
+						setPermission(v);
+						void save({ permission_mode: v });
+					}}
+					options={PERMISSION_OPTIONS}
+				/>
+			</SettingsSection>
 
-      <SettingsSection title="启动与会话">
-        <KvList>
-          <KvListContent>
-            <SettingRow title="启动模式" icon={<FileText className="h-4 w-4" />} wideControl>
-              {ready ? (
-                <SettingSelect
-                  value={workspaceMode}
-                  onChange={(v) => {
-                    setWorkspaceMode(v);
-                    void save({ default_workspace_mode: v });
-                  }}
-                  options={WORKSPACE_MODE_OPTIONS}
-                  ariaLabel="启动模式"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow title="代理模式" icon={<Bot className="h-4 w-4" />} wideControl>
-              {ready ? (
-                <SettingSelect
-                  value={agentMode}
-                  onChange={(v) => {
-                    setAgentMode(v);
-                    void save({ agent_mode: v });
-                  }}
-                  options={AGENT_MODE_OPTIONS}
-                  ariaLabel="代理模式"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow title="默认模型" icon={<Cpu className="h-4 w-4" />} wideControl>
-              {ready ? (
-                <SettingSelect
-                  value={shownModelKey}
-                  onChange={(v) => {
-                    setActiveModelKey(v);
-                    const pair = modelPairs.get(v);
-                    void save({
-                      active_provider: pair?.provider ?? "",
-                      active_model: pair?.model ?? "",
-                    });
-                  }}
-                  options={modelOptions}
-                  ariaLabel="默认模型"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow
-              title="子代理模型"
-              description="委派任务默认使用的模型，子代理自身指定的模型优先"
-              icon={<Bot className="h-4 w-4" />}
-              wideControl
-            >
-              {ready ? (
-                <SettingSelect
-                  value={shownSubagentKey}
-                  onChange={(v) => {
-                    setSubagentModelKey(v);
-                    const pair = modelPairs.get(v);
-                    void save({
-                      subagent_provider: pair?.provider ?? "",
-                      subagent_model: pair?.model ?? "",
-                    });
-                  }}
-                  options={subagentOptions}
-                  ariaLabel="子代理模型"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow
-              title="子代理思考等级"
-              description="委派任务的思考强度，子代理自身指定的等级优先"
-              icon={<Sparkles className="h-4 w-4" />}
-              wideControl
-            >
-              {ready ? (
-                <SettingSelect
-                  value={subagentThinking}
-                  onChange={(v) => {
-                    setSubagentThinking(v);
-                    void save({ subagent_thinking_level: v });
-                  }}
-                  options={[
-                    { value: "", label: "跟随主代理" },
-                    ...THINKING_OPTIONS,
-                  ]}
-                  ariaLabel="子代理思考等级"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow title="思考深度" icon={<Sparkles className="h-4 w-4" />} wideControl>
-              {ready ? (
-                <SettingSelect
-                  value={thinking}
-                  onChange={(v) => {
-                    setThinking(v);
-                    void save({ thinking_level: v });
-                  }}
-                  options={THINKING_OPTIONS}
-                  ariaLabel="思考深度"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-          </KvListContent>
-        </KvList>
-      </SettingsSection>
+			<SettingsSection title="启动与会话">
+				<KvList>
+					<KvListContent>
+						<SettingRow
+							title="启动模式"
+							icon={<FileText className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={workspaceMode}
+									onChange={(v) => {
+										setWorkspaceMode(v);
+										void save({ default_workspace_mode: v });
+									}}
+									options={WORKSPACE_MODE_OPTIONS}
+									ariaLabel="启动模式"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="代理模式"
+							icon={<Bot className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={agentMode}
+									onChange={(v) => {
+										setAgentMode(v);
+										void save({ agent_mode: v });
+									}}
+									options={AGENT_MODE_OPTIONS}
+									ariaLabel="代理模式"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="默认模型"
+							icon={<Cpu className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={shownModelKey}
+									onChange={(v) => {
+										setActiveModelKey(v);
+										const pair = modelPairs.get(v);
+										void save({
+											active_provider: pair?.provider ?? '',
+											active_model: pair?.model ?? '',
+										});
+									}}
+									options={modelOptions}
+									ariaLabel="默认模型"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="子代理模型"
+							description="委派任务默认使用的模型，子代理自身指定的模型优先"
+							icon={<Bot className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={shownSubagentKey}
+									onChange={(v) => {
+										setSubagentModelKey(v);
+										const pair = modelPairs.get(v);
+										void save({
+											subagent_provider: pair?.provider ?? '',
+											subagent_model: pair?.model ?? '',
+										});
+									}}
+									options={subagentOptions}
+									ariaLabel="子代理模型"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="子代理思考等级"
+							description="委派任务的思考强度，子代理自身指定的等级优先"
+							icon={<Sparkles className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={subagentThinking}
+									onChange={(v) => {
+										setSubagentThinking(v);
+										void save({ subagent_thinking_level: v });
+									}}
+									options={[
+										{ value: '', label: '跟随主代理' },
+										...THINKING_OPTIONS,
+									]}
+									ariaLabel="子代理思考等级"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="思考深度"
+							icon={<Sparkles className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={thinking}
+									onChange={(v) => {
+										setThinking(v);
+										void save({ thinking_level: v });
+									}}
+									options={THINKING_OPTIONS}
+									ariaLabel="思考深度"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+					</KvListContent>
+				</KvList>
+			</SettingsSection>
 
-      <SettingsSection title="等待与超时">
-        <KvList>
-          <KvListContent>
-            <SettingRow
-              title="审批超时"
-              description="未响应的权限请求将按拒绝处理"
-              icon={<Hourglass className="h-4 w-4" />}
-              wideControl
-            >
-              {ready ? (
-                <SettingSelect
-                  value={approvalTimeout}
-                  onChange={(v) => {
-                    const prev = approvalTimeout;
-                    setApprovalTimeout(v);
-                    void saveTimeout({ approval_timeout_secs: Number(v) }, () =>
-                      setApprovalTimeout(prev),
-                    );
-                  }}
-                  options={TIMEOUT_OPTIONS}
-                  ariaLabel="审批超时"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow
-              title="提问超时"
-              description="未回答的提问将交由代理自行判断"
-              icon={<Question className="h-4 w-4" />}
-              wideControl
-            >
-              {ready ? (
-                <SettingSelect
-                  value={questionTimeout}
-                  onChange={(v) => {
-                    const prev = questionTimeout;
-                    setQuestionTimeout(v);
-                    void saveTimeout({ question_timeout_secs: Number(v) }, () =>
-                      setQuestionTimeout(prev),
-                    );
-                  }}
-                  options={TIMEOUT_OPTIONS}
-                  ariaLabel="提问超时"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-          </KvListContent>
-        </KvList>
-      </SettingsSection>
+			<SettingsSection title="等待与超时">
+				<KvList>
+					<KvListContent>
+						<SettingRow
+							title="审批超时"
+							description="未响应的权限请求将按拒绝处理"
+							icon={<Hourglass className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={approvalTimeout}
+									onChange={(v) => {
+										const prev = approvalTimeout;
+										setApprovalTimeout(v);
+										void saveTimeout({ approval_timeout_secs: Number(v) }, () =>
+											setApprovalTimeout(prev)
+										);
+									}}
+									options={TIMEOUT_OPTIONS}
+									ariaLabel="审批超时"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="提问超时"
+							description="未回答的提问将交由代理自行判断"
+							icon={<Question className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={questionTimeout}
+									onChange={(v) => {
+										const prev = questionTimeout;
+										setQuestionTimeout(v);
+										void saveTimeout({ question_timeout_secs: Number(v) }, () =>
+											setQuestionTimeout(prev)
+										);
+									}}
+									options={TIMEOUT_OPTIONS}
+									ariaLabel="提问超时"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+					</KvListContent>
+				</KvList>
+			</SettingsSection>
 
-      <SettingsSection title="上下文">
-        <KvList>
-          <KvListContent>
-            <SettingRow
-              title="自动压缩"
-              description="上下文达到此比例时压缩历史消息"
-              icon={<Archive className="h-4 w-4" />}
-              wideControl
-            >
-              {ready ? (
-                <SettingSelect
-                  value={compactAt}
-                  onChange={(v) => {
-                    setCompactAt(v);
-                    void save({ compact_at: Number(v) / 100 });
-                  }}
-                  options={COMPACT_AT_OPTIONS}
-                  ariaLabel="自动压缩阈值"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow
-              title="架构蓝图"
-              description="向智能体提供项目的模块与依赖信息"
-              icon={<Layers className="h-4 w-4" />}
-            >
-              {ready ? (
-                <Switch
-                  checked={blueprintEnabled}
-                  aria-label="架构蓝图"
-                  onCheckedChange={(v) => {
-                    setBlueprintEnabled(v);
-                    void save({ blueprint_enabled: v });
-                  }}
-                />
-              ) : (
-                <SkeletonControl kind="switch" />
-              )}
-            </SettingRow>
-          </KvListContent>
-        </KvList>
-      </SettingsSection>
+			<SettingsSection title="上下文">
+				<KvList>
+					<KvListContent>
+						<SettingRow
+							title="自动压缩"
+							description="上下文达到此比例时压缩历史消息"
+							icon={<Archive className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={compactAt}
+									onChange={(v) => {
+										setCompactAt(v);
+										void save({ compact_at: Number(v) / 100 });
+									}}
+									options={COMPACT_AT_OPTIONS}
+									ariaLabel="自动压缩阈值"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="架构蓝图"
+							description="向智能体提供项目的模块与依赖信息"
+							icon={<Layers className="h-4 w-4" />}
+						>
+							{ready ? (
+								<Switch
+									checked={blueprintEnabled}
+									aria-label="架构蓝图"
+									onCheckedChange={(v) => {
+										setBlueprintEnabled(v);
+										void save({ blueprint_enabled: v });
+									}}
+								/>
+							) : (
+								<SkeletonControl kind="switch" />
+							)}
+						</SettingRow>
+					</KvListContent>
+				</KvList>
+			</SettingsSection>
 
-      <SettingsSection title="通知">
-        <KvList>
-          <KvListContent>
-            <SettingRow
-              title="系统通知"
-              description="在桌面显示任务进度与待处理提醒"
-              icon={<Bell className="h-4 w-4" />}
-            >
-              {ready ? (
-                <Switch
-                  checked={desktopNotify}
-                  aria-label="系统通知"
-                  onCheckedChange={(v) => {
-                    setDesktopNotify(v);
-                    void save({ desktop_notifications: v });
-                  }}
-                />
-              ) : (
-                <SkeletonControl kind="switch" />
-              )}
-            </SettingRow>
-            <SettingRow
-              title="提示音"
-              description="任务结束、等待确认或出错时播放提示音"
-              icon={<Volume className="h-4 w-4" />}
-            >
-              {ready ? (
-                <Switch
-                  checked={notificationSound}
-                  aria-label="提示音"
-                  onCheckedChange={(v) => {
-                    setNotificationSound(v);
-                    void save({ notification_sound: v });
-                  }}
-                />
-              ) : (
-                <SkeletonControl kind="switch" />
-              )}
-            </SettingRow>
-          </KvListContent>
-        </KvList>
-      </SettingsSection>
+			<SettingsSection title="通知">
+				<KvList>
+					<KvListContent>
+						<SettingRow
+							title="系统通知"
+							description="在桌面显示任务进度与待处理提醒"
+							icon={<Bell className="h-4 w-4" />}
+						>
+							{ready ? (
+								<Switch
+									checked={desktopNotify}
+									aria-label="系统通知"
+									onCheckedChange={(v) => {
+										setDesktopNotify(v);
+										void save({ desktop_notifications: v });
+									}}
+								/>
+							) : (
+								<SkeletonControl kind="switch" />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="提示音"
+							description="任务结束、等待确认或出错时播放提示音"
+							icon={<Volume className="h-4 w-4" />}
+						>
+							{ready ? (
+								<Switch
+									checked={notificationSound}
+									aria-label="提示音"
+									onCheckedChange={(v) => {
+										setNotificationSound(v);
+										void save({ notification_sound: v });
+									}}
+								/>
+							) : (
+								<SkeletonControl kind="switch" />
+							)}
+						</SettingRow>
+					</KvListContent>
+				</KvList>
+			</SettingsSection>
 
-      <SettingsSection title="沙盒">
-        <KvList>
-          <KvListContent>
-            <SettingRow
-              title="启用沙盒"
-              description="隔离命令执行环境"
-              icon={<ShieldCheck className="h-4 w-4" />}
-            >
-              {ready ? (
-                <Switch
-                  checked={sandboxEnabled}
-                  aria-label="启用沙盒"
-                  onCheckedChange={(v) => {
-                    setSandboxEnabled(v);
-                    void save({ sandbox_enabled: v });
-                  }}
-                />
-              ) : (
-                <SkeletonControl kind="switch" />
-              )}
-            </SettingRow>
-            <SettingRow title="网络访问" icon={<Globe className="h-4 w-4" />} wideControl>
-              {ready ? (
-                <SettingSelect
-                  value={sandboxNetwork}
-                  onChange={(v) => {
-                    setSandboxNetwork(v);
-                    void save({ sandbox_network: v as "auto" | "allow" | "deny" });
-                  }}
-                  options={SANDBOX_NETWORK_OPTIONS}
-                  ariaLabel="沙盒网络访问"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow title="内存上限" icon={<Cpu className="h-4 w-4" />} wideControl>
-              {ready ? (
-                <SettingSelect
-                  value={sandboxMem}
-                  onChange={(v) => {
-                    setSandboxMem(v);
-                    void save({ sandbox_max_memory_mb: v === "default" ? null : Number(v) });
-                  }}
-                  options={SANDBOX_MEMORY_OPTIONS}
-                  ariaLabel="沙盒内存上限"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-            <SettingRow title="进程数上限" icon={<Activity className="h-4 w-4" />} wideControl>
-              {ready ? (
-                <SettingSelect
-                  value={sandboxProcs}
-                  onChange={(v) => {
-                    setSandboxProcs(v);
-                    void save({ sandbox_max_processes: v === "default" ? null : Number(v) });
-                  }}
-                  options={SANDBOX_PROCS_OPTIONS}
-                  ariaLabel="沙盒进程数上限"
-                />
-              ) : (
-                <SkeletonControl />
-              )}
-            </SettingRow>
-          </KvListContent>
-        </KvList>
-      </SettingsSection>
-
-    </div>
-  );
+			<SettingsSection title="沙盒">
+				<KvList>
+					<KvListContent>
+						<SettingRow
+							title="启用沙盒"
+							description="隔离命令执行环境"
+							icon={<ShieldCheck className="h-4 w-4" />}
+						>
+							{ready ? (
+								<Switch
+									checked={sandboxEnabled}
+									aria-label="启用沙盒"
+									onCheckedChange={(v) => {
+										setSandboxEnabled(v);
+										void save({ sandbox_enabled: v });
+									}}
+								/>
+							) : (
+								<SkeletonControl kind="switch" />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="网络访问"
+							icon={<Globe className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={sandboxNetwork}
+									onChange={(v) => {
+										setSandboxNetwork(v);
+										void save({
+											sandbox_network: v as 'auto' | 'allow' | 'deny',
+										});
+									}}
+									options={SANDBOX_NETWORK_OPTIONS}
+									ariaLabel="沙盒网络访问"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="内存上限"
+							icon={<Cpu className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={sandboxMem}
+									onChange={(v) => {
+										setSandboxMem(v);
+										void save({
+											sandbox_max_memory_mb: v === 'default' ? null : Number(v),
+										});
+									}}
+									options={SANDBOX_MEMORY_OPTIONS}
+									ariaLabel="沙盒内存上限"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+						<SettingRow
+							title="进程数上限"
+							icon={<Activity className="h-4 w-4" />}
+							wideControl
+						>
+							{ready ? (
+								<SettingSelect
+									value={sandboxProcs}
+									onChange={(v) => {
+										setSandboxProcs(v);
+										void save({
+											sandbox_max_processes: v === 'default' ? null : Number(v),
+										});
+									}}
+									options={SANDBOX_PROCS_OPTIONS}
+									ariaLabel="沙盒进程数上限"
+								/>
+							) : (
+								<SkeletonControl />
+							)}
+						</SettingRow>
+					</KvListContent>
+				</KvList>
+			</SettingsSection>
+		</div>
+	);
 }

@@ -3,173 +3,168 @@
 // persisted so a manual open/close and the chosen width survive session
 // switches and app restarts.
 
-import { create } from "zustand";
+import { create } from 'zustand';
 
 /** The dock's views. New surfaces go here — everything the session produces
  *  hangs off this one sidebar, whatever the workspace mode. */
 export type DockTab =
-  | "tools"
-  | "files"
-  | "changes"
-  | "artifacts"
-  | "jobs"
-  | "subagents";
+	'tools' | 'files' | 'changes' | 'artifacts' | 'jobs' | 'subagents';
 
 export const DOCK_MIN_WIDTH = 260;
 export const DOCK_MAX_WIDTH = 560;
 export const DOCK_DEFAULT_WIDTH = 300;
 
-const STORAGE_KEY = "husk.dock.v1";
+const STORAGE_KEY = 'husk.dock.v1';
 
 /** The file views — what `filesTab` remembers. */
-export type FilesTab = "changes" | "artifacts";
+export type FilesTab = 'changes' | 'artifacts';
 
 type DockCounts = {
-  changes: number;
-  artifacts: number;
-  jobs: number;
-  subagents: number;
+	changes: number;
+	artifacts: number;
+	jobs: number;
+	subagents: number;
 };
 type DockAvailability = { browserOpen: boolean; officeMode?: boolean };
 
 export function availableDockTabs(
-  counts: DockCounts,
-  { browserOpen, officeMode = false }: DockAvailability,
+	counts: DockCounts,
+	{ browserOpen, officeMode = false }: DockAvailability
 ): DockTab[] {
-  const tabs: DockTab[] = [];
-  if (browserOpen) tabs.push("files");
-  if (!officeMode && counts.changes > 0) tabs.push("changes");
-  if (counts.artifacts > 0) tabs.push("artifacts");
-  if (counts.jobs > 0) tabs.push("jobs");
-  if (counts.subagents > 0) tabs.push("subagents");
-  return tabs;
+	const tabs: DockTab[] = [];
+	if (browserOpen) tabs.push('files');
+	if (!officeMode && counts.changes > 0) tabs.push('changes');
+	if (counts.artifacts > 0) tabs.push('artifacts');
+	if (counts.jobs > 0) tabs.push('jobs');
+	if (counts.subagents > 0) tabs.push('subagents');
+	return tabs;
 }
 
 /** "tools" is the dock's launcher, never a visible tab: the home of an empty
  *  dock, and reachable from the tab bar's own button once any list has content —
  *  so a chosen "tools" stays put instead of yielding to the first list. */
 export function resolveDockTab(
-  tab: DockTab,
-  counts: DockCounts,
-  availability: DockAvailability = { browserOpen: tab === "files" },
+	tab: DockTab,
+	counts: DockCounts,
+	availability: DockAvailability = { browserOpen: tab === 'files' }
 ): DockTab {
-  if (tab === "tools") return tab;
-  const tabs = availableDockTabs(counts, availability);
-  return tabs.includes(tab) ? tab : (tabs[0] ?? "tools");
+	if (tab === 'tools') return tab;
+	const tabs = availableDockTabs(counts, availability);
+	return tabs.includes(tab) ? tab : (tabs[0] ?? 'tools');
 }
 
 interface Persisted {
-  open: boolean;
-  tab: DockTab;
-  /** The file view to come back to when a detour (后台 / 子代理) is on screen.
-   *  Without it, leaving 后台 always landed on 改动, even for a reader who was
-   *  on 产物, and the dock pill's label jumped while 后台 was up. */
-  filesTab: FilesTab;
-  browserOpen: boolean;
-  width: number;
+	open: boolean;
+	tab: DockTab;
+	/** The file view to come back to when a detour (后台 / 子代理) is on screen.
+	 *  Without it, leaving 后台 always landed on 改动, even for a reader who was
+	 *  on 产物, and the dock pill's label jumped while 后台 was up. */
+	filesTab: FilesTab;
+	browserOpen: boolean;
+	width: number;
 }
 
 interface DockState extends Persisted {
-  setOpen: (open: boolean) => void;
-  toggle: () => void;
-  setTab: (tab: DockTab) => void;
-  closeBrowser: () => void;
-  setWidth: (width: number) => void;
+	setOpen: (open: boolean) => void;
+	toggle: () => void;
+	setTab: (tab: DockTab) => void;
+	closeBrowser: () => void;
+	setWidth: (width: number) => void;
 }
 
 export function clampDockWidth(width: number): number {
-  if (!Number.isFinite(width)) return DOCK_DEFAULT_WIDTH;
-  return Math.min(DOCK_MAX_WIDTH, Math.max(DOCK_MIN_WIDTH, Math.round(width)));
+	if (!Number.isFinite(width)) return DOCK_DEFAULT_WIDTH;
+	return Math.min(DOCK_MAX_WIDTH, Math.max(DOCK_MIN_WIDTH, Math.round(width)));
 }
 
 function load(): Persisted {
-  const fallback: Persisted = {
-    open: false,
-    tab: "changes",
-    filesTab: "changes",
-    browserOpen: false,
-    width: DOCK_DEFAULT_WIDTH,
-  };
-  if (typeof localStorage === "undefined") return fallback;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return fallback;
-    const p = JSON.parse(raw) as Partial<Persisted>;
-    const filesTab: FilesTab =
-      p.filesTab === "artifacts" ? "artifacts" : "changes";
-    return {
-      open: p.open === true,
-      browserOpen:
-        p.browserOpen === true || (p.browserOpen == null && p.tab === "files"),
-      tab:
-        p.tab === "tools" ||
-        p.tab === "files" ||
-        p.tab === "artifacts" ||
-        p.tab === "jobs" ||
-        p.tab === "subagents"
-          ? p.tab
-          : "changes",
-      // A snapshot written before `filesTab` existed: the stored tab was the
-      // file view whenever it still is one.
-      filesTab:
-        p.filesTab == null && (p.tab === "artifacts" || p.tab === "changes")
-          ? (p.tab as FilesTab)
-          : filesTab,
-      width: clampDockWidth(Number(p.width ?? DOCK_DEFAULT_WIDTH)),
-    };
-  } catch {
-    return fallback;
-  }
+	const fallback: Persisted = {
+		open: false,
+		tab: 'changes',
+		filesTab: 'changes',
+		browserOpen: false,
+		width: DOCK_DEFAULT_WIDTH,
+	};
+	if (typeof localStorage === 'undefined') return fallback;
+	try {
+		const raw = localStorage.getItem(STORAGE_KEY);
+		if (!raw) return fallback;
+		const p = JSON.parse(raw) as Partial<Persisted>;
+		const filesTab: FilesTab =
+			p.filesTab === 'artifacts' ? 'artifacts' : 'changes';
+		return {
+			open: p.open === true,
+			browserOpen:
+				p.browserOpen === true || (p.browserOpen == null && p.tab === 'files'),
+			tab:
+				p.tab === 'tools' ||
+				p.tab === 'files' ||
+				p.tab === 'artifacts' ||
+				p.tab === 'jobs' ||
+				p.tab === 'subagents'
+					? p.tab
+					: 'changes',
+			// A snapshot written before `filesTab` existed: the stored tab was the
+			// file view whenever it still is one.
+			filesTab:
+				p.filesTab == null && (p.tab === 'artifacts' || p.tab === 'changes')
+					? (p.tab as FilesTab)
+					: filesTab,
+			width: clampDockWidth(Number(p.width ?? DOCK_DEFAULT_WIDTH)),
+		};
+	} catch {
+		return fallback;
+	}
 }
 
 function save(s: Persisted) {
-  if (typeof localStorage === "undefined") return;
-  try {
-    // Only the persisted slice — the setters must never leak into storage.
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        open: s.open,
-        tab: s.tab,
-        filesTab: s.filesTab,
-        browserOpen: s.browserOpen,
-        width: s.width,
-      }),
-    );
-  } catch {
-    // A blocked/full quota must not break the toggle.
-  }
+	if (typeof localStorage === 'undefined') return;
+	try {
+		// Only the persisted slice — the setters must never leak into storage.
+		localStorage.setItem(
+			STORAGE_KEY,
+			JSON.stringify({
+				open: s.open,
+				tab: s.tab,
+				filesTab: s.filesTab,
+				browserOpen: s.browserOpen,
+				width: s.width,
+			})
+		);
+	} catch {
+		// A blocked/full quota must not break the toggle.
+	}
 }
 
 export const useDockStore = create<DockState>((set, get) => ({
-  ...load(),
-  setOpen: (open) => {
-    set({ open });
-    save({ ...get(), open });
-  },
-  toggle: () => {
-    const open = !get().open;
-    set({ open });
-    save({ ...get(), open });
-  },
-  setTab: (tab) => {
-    // 后台 and 子代理 are detours, not file views: neither ever becomes the one
-    // the dock pill names or falls back to.
-    const filesTab =
-      tab === "changes" || tab === "artifacts" ? tab : get().filesTab;
-    set({ tab, filesTab, browserOpen: tab === "files" || get().browserOpen });
-    save(get());
-  },
-  closeBrowser: () => {
-    set({
-      browserOpen: false,
-      tab: get().tab === "files" ? "tools" : get().tab,
-    });
-    save(get());
-  },
-  setWidth: (width) => {
-    const w = clampDockWidth(width);
-    set({ width: w });
-    save({ ...get(), width: w });
-  },
+	...load(),
+	setOpen: (open) => {
+		set({ open });
+		save({ ...get(), open });
+	},
+	toggle: () => {
+		const open = !get().open;
+		set({ open });
+		save({ ...get(), open });
+	},
+	setTab: (tab) => {
+		// 后台 and 子代理 are detours, not file views: neither ever becomes the one
+		// the dock pill names or falls back to.
+		const filesTab =
+			tab === 'changes' || tab === 'artifacts' ? tab : get().filesTab;
+		set({ tab, filesTab, browserOpen: tab === 'files' || get().browserOpen });
+		save(get());
+	},
+	closeBrowser: () => {
+		set({
+			browserOpen: false,
+			tab: get().tab === 'files' ? 'tools' : get().tab,
+		});
+		save(get());
+	},
+	setWidth: (width) => {
+		const w = clampDockWidth(width);
+		set({ width: w });
+		save({ ...get(), width: w });
+	},
 }));

@@ -1,67 +1,81 @@
 // The dock pill speaks for THIS session: it appears for the files the session
 // produced, never for the repository's own dirty state.
 
-import type { ComponentProps } from "react";
-import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, test, vi } from "vitest";
-import { ChatStream } from "@/features/chat/components/chat-stream";
-import { emptyView } from "@/features/chat/hooks/stream-view";
-import { renderWithProviders } from "@/test/render";
-import { INK_OVERLAY_ERROR, INK_OVERLAY_SUCCESS } from "@/lib/theme";
+import type { ComponentProps } from 'react';
+import { fireEvent, screen } from '@testing-library/react';
+import { describe, expect, test, vi } from 'vitest';
+import { ChatStream } from '@/features/chat/components/chat-stream';
+import { emptyView } from '@/features/chat/hooks/stream-view';
+import { renderWithProviders } from '@/test/render';
+import { INK_OVERLAY_ERROR, INK_OVERLAY_SUCCESS } from '@/lib/theme';
 
-vi.mock("@/features/chat/components/chat-stream/markdown-stream", () => ({
-  MemoStreamdown: ({ text }: { text: string }) => <div>{text}</div>,
+vi.mock('@/features/chat/components/chat-stream/markdown-stream', () => ({
+	MemoStreamdown: ({ text }: { text: string }) => <div>{text}</div>,
 }));
 
 function renderStream(props: Partial<ComponentProps<typeof ChatStream>> = {}) {
-  return renderWithProviders(
-    <ChatStream view={emptyView()} sessionKey="/project:1" onToggleDock={() => {}} {...props} />,
-  );
+	return renderWithProviders(
+		<ChatStream
+			view={emptyView()}
+			sessionKey="/project:1"
+			onToggleDock={() => {}}
+			{...props}
+		/>
+	);
 }
 
-describe("dock pill", () => {
-  test("stays off while the session has produced nothing", () => {
-    renderStream({ dockCount: 0 });
-    expect(screen.queryByRole("button", { name: "侧栏" })).toBeNull();
-  });
+describe('dock pill', () => {
+	test('stays off while the session has produced nothing', () => {
+		renderStream({ dockCount: 0 });
+		expect(screen.queryByRole('button', { name: '侧栏' })).toBeNull();
+	});
 
-  test("shows up for the session's changes with the diff's own numbers", () => {
-    renderStream({ dockCount: 2, dockTab: "changes", dockAdds: 12, dockDels: 4 });
-    const pill = screen.getByRole("button", { name: "侧栏" }).textContent ?? "";
-    expect(pill).toContain("+12");
-    expect(pill).toContain("−4");
-    expect(screen.getByText("+12")).toHaveClass(INK_OVERLAY_SUCCESS);
-    expect(screen.getByText("−4")).toHaveClass(INK_OVERLAY_ERROR);
-  });
+	test("shows up for the session's changes with the diff's own numbers", () => {
+		renderStream({
+			dockCount: 2,
+			dockTab: 'changes',
+			dockAdds: 12,
+			dockDels: 4,
+		});
+		const pill = screen.getByRole('button', { name: '侧栏' }).textContent ?? '';
+		expect(pill).toContain('+12');
+		expect(pill).toContain('−4');
+		expect(screen.getByText('+12')).toHaveClass(INK_OVERLAY_SUCCESS);
+		expect(screen.getByText('−4')).toHaveClass(INK_OVERLAY_ERROR);
+	});
 
-  test("the return-to-bottom button shares the frosted capsule material", () => {
-    renderStream();
-    const button = screen.getByRole("button", { name: "回到底部" });
-    expect(button).toHaveClass(
-      "backdrop-blur-md",
-      "bg-[color-mix(in_srgb,var(--husk-white)_82%,transparent)]",
-      "dark:bg-[color-mix(in_srgb,var(--husk-hover)_82%,transparent)]",
-      "transition-transform",
-    );
-    expect(button).not.toHaveClass("bg-white", "transition-all");
-  });
+	test('the return-to-bottom button shares the frosted capsule material', () => {
+		renderStream();
+		const button = screen.getByRole('button', { name: '回到底部' });
+		expect(button).toHaveClass(
+			'backdrop-blur-md',
+			'bg-[color-mix(in_srgb,var(--husk-white)_82%,transparent)]',
+			'dark:bg-[color-mix(in_srgb,var(--husk-hover)_82%,transparent)]',
+			'transition-transform'
+		);
+		expect(button).not.toHaveClass('bg-white', 'transition-all');
+	});
 
-  test("names the file count without dimming the inherited foreground", () => {
-    renderStream({ dockCount: 3, dockTab: "artifacts" });
-    expect(screen.getByRole("button", { name: "侧栏" }).textContent).toContain("3 个文件");
-    expect(screen.getByText("3 个文件").className).not.toMatch(/\bopacity-/);
-  });
+	test('names the file count without dimming the inherited foreground', () => {
+		renderStream({ dockCount: 3, dockTab: 'artifacts' });
+		expect(screen.getByRole('button', { name: '侧栏' }).textContent).toContain(
+			'3 个文件'
+		);
+		expect(screen.getByText('3 个文件').className).not.toMatch(/\bopacity-/);
+	});
 
-  test("pressing it asks the page to toggle the sidebar", () => {
-    const onToggleDock = vi.fn();
-    renderStream({ dockCount: 1, dockTab: "changes", onToggleDock });
-    fireEvent.click(screen.getByRole("button", { name: "侧栏" }));
-    expect(onToggleDock).toHaveBeenCalledTimes(1);
-  });
+	test('pressing it asks the page to toggle the sidebar', () => {
+		const onToggleDock = vi.fn();
+		renderStream({ dockCount: 1, dockTab: 'changes', onToggleDock });
+		fireEvent.click(screen.getByRole('button', { name: '侧栏' }));
+		expect(onToggleDock).toHaveBeenCalledTimes(1);
+	});
 
-  test("the row stands down while the composer's command panel is up", () => {
-    renderStream({ dockCount: 1, dockTab: "changes", suppressPills: true });
-    const row = screen.getByRole("button", { name: "侧栏" }).closest("[data-pill-island]")?.parentElement;
-    expect(row).toHaveClass("opacity-0", "pointer-events-none");
-  });
+	test("the row stands down while the composer's command panel is up", () => {
+		renderStream({ dockCount: 1, dockTab: 'changes', suppressPills: true });
+		const row = screen
+			.getByRole('button', { name: '侧栏' })
+			.closest('[data-pill-island]')?.parentElement;
+		expect(row).toHaveClass('opacity-0', 'pointer-events-none');
+	});
 });

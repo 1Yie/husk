@@ -4,63 +4,70 @@
 // the panel shows what the repository looks like right now, which is the same
 // list for every session of that workspace and survives a restart.
 
-import { create } from "zustand";
-import { workspaceChanges, type WorkspaceChangeRow } from "@/lib/agent-ipc";
-import type { FileChange } from "@/features/chat/hooks/stream-view";
+import { create } from 'zustand';
+import { workspaceChanges, type WorkspaceChangeRow } from '@/lib/agent-ipc';
+import type { FileChange } from '@/features/chat/hooks/stream-view';
 
 /** One workspace's slice of the panel. */
 export interface WorkspaceChanges {
-  files: FileChange[];
-  /** False only after a successful non-repo result. Null before any success. */
-  repo: boolean | null;
-  loading: boolean;
-  /** The last read's failure; a retained snapshot is stale while this is set. */
-  error: string | null;
-  /** When the last successful list landed (epoch ms) — 0 before any success. */
-  at: number;
+	files: FileChange[];
+	/** False only after a successful non-repo result. Null before any success. */
+	repo: boolean | null;
+	loading: boolean;
+	/** The last read's failure; a retained snapshot is stale while this is set. */
+	error: string | null;
+	/** When the last successful list landed (epoch ms) — 0 before any success. */
+	at: number;
 }
 
 /** Stable "nothing yet" handle: a selector must not mint a fresh object. */
 export const EMPTY_WORKSPACE_CHANGES: WorkspaceChanges = {
-  files: [],
-  repo: null,
-  loading: false,
-  error: null,
-  at: 0,
+	files: [],
+	repo: null,
+	loading: false,
+	error: null,
+	at: 0,
 };
 
 /** One git row as the panel's row: the file's whole uncommitted delta as a
  *  single patch. The per-call stacking of `view.changes` (`tool · 第 N 次修改`)
  *  has no meaning here — git reports one diff per file, not one per write. */
 export function toFileChange(row: WorkspaceChangeRow): FileChange {
-  return {
-    path: row.path,
-    kind: row.kind,
-    patches: row.diff ? [{ tool: "git", diff: row.diff, n: 1 }] : [],
-    adds: row.adds,
-    dels: row.dels,
-    fuzzy: false,
-    binary: row.binary,
-    truncated: row.truncated,
-  };
+	return {
+		path: row.path,
+		kind: row.kind,
+		patches: row.diff ? [{ tool: 'git', diff: row.diff, n: 1 }] : [],
+		adds: row.adds,
+		dels: row.dels,
+		fuzzy: false,
+		binary: row.binary,
+		truncated: row.truncated,
+	};
 }
 
 interface WorkspaceChangesStore {
-  byRoot: Record<string, WorkspaceChanges>;
-  write: (root: string, patch: Partial<WorkspaceChanges>) => void;
+	byRoot: Record<string, WorkspaceChanges>;
+	write: (root: string, patch: Partial<WorkspaceChanges>) => void;
 }
 
-export const useWorkspaceChangesStore = create<WorkspaceChangesStore>((set) => ({
-  byRoot: {},
-  write: (root, patch) =>
-    set((s) => ({
-      byRoot: { ...s.byRoot, [root]: { ...(s.byRoot[root] ?? EMPTY_WORKSPACE_CHANGES), ...patch } },
-    })),
-}));
+export const useWorkspaceChangesStore = create<WorkspaceChangesStore>(
+	(set) => ({
+		byRoot: {},
+		write: (root, patch) =>
+			set((s) => ({
+				byRoot: {
+					...s.byRoot,
+					[root]: { ...(s.byRoot[root] ?? EMPTY_WORKSPACE_CHANGES), ...patch },
+				},
+			})),
+	})
+);
 
 /** The workspace's list outside React. */
 export function workspaceChangesNow(root: string): WorkspaceChanges {
-  return useWorkspaceChangesStore.getState().byRoot[root] ?? EMPTY_WORKSPACE_CHANGES;
+	return (
+		useWorkspaceChangesStore.getState().byRoot[root] ?? EMPTY_WORKSPACE_CHANGES
+	);
 }
 
 /** A turn ends with a burst of tool results and the read behind this walks
@@ -75,65 +82,66 @@ const rerun = new Set<string>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
 async function read(root: string) {
-  const { write } = useWorkspaceChangesStore.getState();
-  write(root, { loading: true });
-  try {
-    const r = await workspaceChanges(root);
-    write(root, {
-      files: r.files.map(toFileChange),
-      repo: r.repo,
-      loading: false,
-      error: null,
-      at: Date.now(),
-    });
-  } catch (error) {
-    // Never advance `at` or change repo/files on failure. An initial failure
-    // stays unknown; a later failure leaves the last successful list stale.
-    const message = error instanceof Error ? error.message : String(error ?? "");
-    write(root, { loading: false, error: message || "无法读取工作区改动" });
-  }
+	const { write } = useWorkspaceChangesStore.getState();
+	write(root, { loading: true });
+	try {
+		const r = await workspaceChanges(root);
+		write(root, {
+			files: r.files.map(toFileChange),
+			repo: r.repo,
+			loading: false,
+			error: null,
+			at: Date.now(),
+		});
+	} catch (error) {
+		// Never advance `at` or change repo/files on failure. An initial failure
+		// stays unknown; a later failure leaves the last successful list stale.
+		const message =
+			error instanceof Error ? error.message : String(error ?? '');
+		write(root, { loading: false, error: message || '无法读取工作区改动' });
+	}
 }
 
 /** Read `root`'s uncommitted files now. One read runs at a time per root; a
  *  call made while it is in flight is answered by one more read once it lands,
  *  so no caller is left looking at a snapshot older than its own request. */
 export function refreshWorkspaceChanges(root: string): Promise<void> {
-  if (!root) return Promise.resolve();
-  const running = inflight.get(root);
-  if (running) {
-    rerun.add(root);
-    return running;
-  }
-  const run = (async () => {
-    try {
-      await read(root);
-      // Loop, not a single re-run: the second read can be overtaken as well.
-      while (rerun.delete(root)) await read(root);
-    } finally {
-      inflight.delete(root);
-    }
-  })();
-  inflight.set(root, run);
-  return run;
+	if (!root) return Promise.resolve();
+	const running = inflight.get(root);
+	if (running) {
+		rerun.add(root);
+		return running;
+	}
+	const run = (async () => {
+		try {
+			await read(root);
+			// Loop, not a single re-run: the second read can be overtaken as well.
+			while (rerun.delete(root)) await read(root);
+		} finally {
+			inflight.delete(root);
+		}
+	})();
+	inflight.set(root, run);
+	return run;
 }
 
 /** The event-driven entry point — see [`DEBOUNCE_MS`]. */
 export function scheduleWorkspaceChanges(root: string) {
-  if (!root || timers.has(root)) return;
-  timers.set(
-    root,
-    setTimeout(() => {
-      timers.delete(root);
-      void refreshWorkspaceChanges(root);
-    }, DEBOUNCE_MS),
-  );
+	if (!root || timers.has(root)) return;
+	timers.set(
+		root,
+		setTimeout(() => {
+			timers.delete(root);
+			void refreshWorkspaceChanges(root);
+		}, DEBOUNCE_MS)
+	);
 }
 
 /** Drop every cached list and pending read — a launch reset, and test teardown. */
 export function clearWorkspaceChanges() {
-  for (const timer of timers.values()) clearTimeout(timer);
-  timers.clear();
-  inflight.clear();
-  rerun.clear();
-  useWorkspaceChangesStore.setState({ byRoot: {} });
+	for (const timer of timers.values()) clearTimeout(timer);
+	timers.clear();
+	inflight.clear();
+	rerun.clear();
+	useWorkspaceChangesStore.setState({ byRoot: {} });
 }

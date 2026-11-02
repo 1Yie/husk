@@ -5,21 +5,23 @@ let active = 0;
 const ended = new Set<() => void>();
 
 export function isLayoutResizing(): boolean {
-  return active > 0;
+	return active > 0;
 }
 
 export function beginLayoutResize(): () => void {
-  active++;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    active--;
-    if (active === 0) for (const listener of [...ended]) listener();
-  };
+	active++;
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		active--;
+		if (active === 0) for (const listener of [...ended]) listener();
+	};
 }
 
 export function onLayoutResizeEnd(listener: () => void): () => void {
-  ended.add(listener);
-  return () => { ended.delete(listener); };
+	ended.add(listener);
+	return () => {
+		ended.delete(listener);
+	};
 }

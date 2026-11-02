@@ -14,6 +14,10 @@ const SECTION_MARKER = /^── \[\d+\][^\n]*──\s*/;
 /** A report without its leading furniture. Only the START is stripped: the same
  *  wording inside a report is the child's own text and stays. */
 export function reportBody(text: string): string {
-  // Marker first — it wraps the header in a batch section.
-  return text.trimStart().replace(SECTION_MARKER, "").replace(REPORT_HEADER, "").trim();
+	// Marker first — it wraps the header in a batch section.
+	return text
+		.trimStart()
+		.replace(SECTION_MARKER, '')
+		.replace(REPORT_HEADER, '')
+		.trim();
 }

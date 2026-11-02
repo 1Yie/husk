@@ -1,16 +1,19 @@
-import * as React from "react";
-import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronRight, Circle } from "@keyline-icons/react";
+import * as React from 'react';
+import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
+import { Check, ChevronRight, Circle } from '@keyline-icons/react';
 
-import { cn } from "@/lib/utils";
+import { cn } from '@/lib/utils';
 import {
-  INK_OVERLAY_SECONDARY,
-  OVERLAY_DIVIDER,
-  SURFACE_OVERLAY,
-  SURFACE_OVERLAY_FOCUS,
-  SURFACE_OVERLAY_OPEN,
-} from "@/lib/theme";
-import { POPPER_PENDING, usePopperPlacedRef } from "@/components/ui/use-popper-placed";
+	INK_OVERLAY_SECONDARY,
+	OVERLAY_DIVIDER,
+	SURFACE_OVERLAY,
+	SURFACE_OVERLAY_FOCUS,
+	SURFACE_OVERLAY_OPEN,
+} from '@/lib/theme';
+import {
+	POPPER_PENDING,
+	usePopperPlacedRef,
+} from '@/components/ui/use-popper-placed';
 
 // `modal` is removed from the public props: a modal menu makes Radix scroll-lock
 // <body> (scrollbar disappears, layout shifts), and every menu here is modeless.
@@ -19,36 +22,37 @@ import { POPPER_PENDING, usePopperPlacedRef } from "@/components/ui/use-popper-p
 // `DropdownMenuContent`): Radix knows it, but doesn't expose it, and the DOM
 // link (`aria-labelledby` → trigger id) breaks whenever the trigger brings its
 // own `id`.
-const TriggerRefContext = React.createContext<React.MutableRefObject<HTMLElement | null> | null>(null);
+const TriggerRefContext =
+	React.createContext<React.MutableRefObject<HTMLElement | null> | null>(null);
 
 const DropdownMenu = (
-  props: Omit<
-    React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Root>,
-    "modal"
-  >
+	props: Omit<
+		React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Root>,
+		'modal'
+	>
 ) => {
-  const triggerRef = React.useRef<HTMLElement | null>(null);
-  return (
-    <TriggerRefContext.Provider value={triggerRef}>
-      <DropdownMenuPrimitive.Root modal={false} {...props} />
-    </TriggerRefContext.Provider>
-  );
+	const triggerRef = React.useRef<HTMLElement | null>(null);
+	return (
+		<TriggerRefContext.Provider value={triggerRef}>
+			<DropdownMenuPrimitive.Root modal={false} {...props} />
+		</TriggerRefContext.Provider>
+	);
 };
 
 const DropdownMenuTrigger = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Trigger>
+	React.ElementRef<typeof DropdownMenuPrimitive.Trigger>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Trigger>
 >((props, ref) => {
-  const triggerRef = React.useContext(TriggerRefContext);
-  const composedRef = React.useCallback(
-    (node: HTMLButtonElement | null) => {
-      if (triggerRef) triggerRef.current = node;
-      if (typeof ref === "function") ref(node);
-      else if (ref) ref.current = node;
-    },
-    [triggerRef, ref],
-  );
-  return <DropdownMenuPrimitive.Trigger ref={composedRef} {...props} />;
+	const triggerRef = React.useContext(TriggerRefContext);
+	const composedRef = React.useCallback(
+		(node: HTMLButtonElement | null) => {
+			if (triggerRef) triggerRef.current = node;
+			if (typeof ref === 'function') ref(node);
+			else if (ref) ref.current = node;
+		},
+		[triggerRef, ref]
+	);
+	return <DropdownMenuPrimitive.Trigger ref={composedRef} {...props} />;
 });
 DropdownMenuTrigger.displayName = DropdownMenuPrimitive.Trigger.displayName;
 const DropdownMenuGroup = DropdownMenuPrimitive.Group;
@@ -57,235 +61,275 @@ const DropdownMenuSub = DropdownMenuPrimitive.Sub;
 const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 
 const DropdownMenuSubTrigger = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.SubTrigger>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubTrigger> & {
-    inset?: boolean;
-  }
+	React.ElementRef<typeof DropdownMenuPrimitive.SubTrigger>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubTrigger> & {
+		inset?: boolean;
+	}
 >(({ className, inset, children, ...props }, ref) => (
-  <DropdownMenuPrimitive.SubTrigger
-    ref={ref}
-    className={cn(
-      cn(
-      "flex cursor-default select-none items-center rounded-lg px-2 py-1.5 text-sm outline-none",
-      SURFACE_OVERLAY_FOCUS,
-      SURFACE_OVERLAY_OPEN,
-    ),
-      inset && "pl-8",
-      className
-    )}
-    {...props}
-  >
-    {children}
-    <ChevronRight className="ml-auto h-4 w-4" />
-  </DropdownMenuPrimitive.SubTrigger>
+	<DropdownMenuPrimitive.SubTrigger
+		ref={ref}
+		className={cn(
+			cn(
+				`flex cursor-default select-none items-center rounded-lg px-2 py-1.5
+				text-sm outline-none`,
+				SURFACE_OVERLAY_FOCUS,
+				SURFACE_OVERLAY_OPEN
+			),
+			inset && 'pl-8',
+			className
+		)}
+		{...props}
+	>
+		{children}
+		<ChevronRight className="ml-auto h-4 w-4" />
+	</DropdownMenuPrimitive.SubTrigger>
 ));
 DropdownMenuSubTrigger.displayName =
-  DropdownMenuPrimitive.SubTrigger.displayName;
+	DropdownMenuPrimitive.SubTrigger.displayName;
 
 const DropdownMenuSubContent = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.SubContent>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>
+	React.ElementRef<typeof DropdownMenuPrimitive.SubContent>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>
 >(({ className, ...props }, ref) => {
-  const { placed, setRef } = usePopperPlacedRef(ref);
-  return (
-  <DropdownMenuPrimitive.Portal>
-  <DropdownMenuPrimitive.SubContent
-    ref={setRef}
-    className={cn(
-      "z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1",
-      SURFACE_OVERLAY,
-      !placed && POPPER_PENDING,
-      className
-    )}
-    {...props}
-  />
-  </DropdownMenuPrimitive.Portal>
-  );
+	const { placed, setRef } = usePopperPlacedRef(ref);
+	return (
+		<DropdownMenuPrimitive.Portal>
+			<DropdownMenuPrimitive.SubContent
+				ref={setRef}
+				className={cn(
+					`z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup
+					duration-100 ease-out data-[state=open]:animate-in
+					data-[state=closed]:animate-out data-[state=closed]:fade-out-0
+					data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95
+					data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1
+					data-[side=left]:slide-in-from-right-1
+					data-[side=right]:slide-in-from-left-1
+					data-[side=top]:slide-in-from-bottom-1`,
+					SURFACE_OVERLAY,
+					!placed && POPPER_PENDING,
+					className
+				)}
+				{...props}
+			/>
+		</DropdownMenuPrimitive.Portal>
+	);
 });
 DropdownMenuSubContent.displayName =
-  DropdownMenuPrimitive.SubContent.displayName;
+	DropdownMenuPrimitive.SubContent.displayName;
 
 const DropdownMenuContent = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, onCloseAutoFocus, onInteractOutside, onWheel, onTouchMove, ...props }, ref) => {
-  const { placed, setRef } = usePopperPlacedRef(ref);
-  // The portalled content does not contain its trigger. Exempt BOTH pointer
-  // and focus events: focusin delivered after pointerdown can otherwise
-  // dismiss the menu that this very press just opened.
-  const triggerRef = React.useContext(TriggerRefContext);
-  return (
-  <DropdownMenuPrimitive.Portal>
-    <DropdownMenuPrimitive.Content
-      ref={setRef}
-      sideOffset={sideOffset}
-      onInteractOutside={(event) => {
-        const target = event.target as Node | null;
-        if (target && triggerRef?.current?.contains(target)) {
-          event.preventDefault();
-        }
-        onInteractOutside?.(event);
-      }}
-      onCloseAutoFocus={(e) => {
-        e.preventDefault();
-        onCloseAutoFocus?.(e);
-      }}
-      // An open modal Dialog scroll-locks everything outside itself: its
-      // document-level wheel/touch guard cancels any scroll whose target is
-      // not inside the dialog, and this menu is portalled to <body>. Stopping
-      // the event here keeps it from reaching that guard, so a menu opened
-      // from a dialog still scrolls.
-      onWheel={(e) => {
-        e.stopPropagation();
-        onWheel?.(e);
-      }}
-      onTouchMove={(e) => {
-        e.stopPropagation();
-        onTouchMove?.(e);
-      }}
-      className={cn(
-        "z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup duration-100 ease-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1",
-        SURFACE_OVERLAY,
-        !placed && POPPER_PENDING,
-        className
-      )}
-      {...props}
-    />
-  </DropdownMenuPrimitive.Portal>
-  );
-});
+	React.ElementRef<typeof DropdownMenuPrimitive.Content>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
+>(
+	(
+		{
+			className,
+			sideOffset = 4,
+			onCloseAutoFocus,
+			onInteractOutside,
+			onWheel,
+			onTouchMove,
+			...props
+		},
+		ref
+	) => {
+		const { placed, setRef } = usePopperPlacedRef(ref);
+		// The portalled content does not contain its trigger. Exempt BOTH pointer
+		// and focus events: focusin delivered after pointerdown can otherwise
+		// dismiss the menu that this very press just opened.
+		const triggerRef = React.useContext(TriggerRefContext);
+		return (
+			<DropdownMenuPrimitive.Portal>
+				<DropdownMenuPrimitive.Content
+					ref={setRef}
+					sideOffset={sideOffset}
+					onInteractOutside={(event) => {
+						const target = event.target as Node | null;
+						if (target && triggerRef?.current?.contains(target)) {
+							event.preventDefault();
+						}
+						onInteractOutside?.(event);
+					}}
+					onCloseAutoFocus={(e) => {
+						e.preventDefault();
+						onCloseAutoFocus?.(e);
+					}}
+					// An open modal Dialog scroll-locks everything outside itself: its
+					// document-level wheel/touch guard cancels any scroll whose target is
+					// not inside the dialog, and this menu is portalled to <body>. Stopping
+					// the event here keeps it from reaching that guard, so a menu opened
+					// from a dialog still scrolls.
+					onWheel={(e) => {
+						e.stopPropagation();
+						onWheel?.(e);
+					}}
+					onTouchMove={(e) => {
+						e.stopPropagation();
+						onTouchMove?.(e);
+					}}
+					className={cn(
+						`z-50 min-w-[8rem] overflow-hidden p-1 text-neutral-900 shadow-popup
+						duration-100 ease-out data-[state=open]:animate-in
+						data-[state=closed]:animate-out data-[state=closed]:fade-out-0
+						data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95
+						data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1
+						data-[side=left]:slide-in-from-right-1
+						data-[side=right]:slide-in-from-left-1
+						data-[side=top]:slide-in-from-bottom-1`,
+						SURFACE_OVERLAY,
+						!placed && POPPER_PENDING,
+						className
+					)}
+					{...props}
+				/>
+			</DropdownMenuPrimitive.Portal>
+		);
+	}
+);
 DropdownMenuContent.displayName = DropdownMenuPrimitive.Content.displayName;
 
 const DropdownMenuItem = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.Item>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & {
-    inset?: boolean;
-    /** Header controls keep their own height instead of adding row padding. */
-    density?: "default" | "compact";
-  }
->(({ className, inset, density = "default", ...props }, ref) => (
-  <DropdownMenuPrimitive.Item
-    ref={ref}
-    className={cn(
-      "relative flex cursor-default select-none items-center rounded-lg text-sm outline-none transition-colors  focus:text-neutral-900 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-      density === "compact" ? "p-0" : "px-2 py-1.5",
-      SURFACE_OVERLAY_FOCUS,
-      inset && "pl-8",
-      className
-    )}
-    {...props}
-  />
+	React.ElementRef<typeof DropdownMenuPrimitive.Item>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & {
+		inset?: boolean;
+		/** Header controls keep their own height instead of adding row padding. */
+		density?: 'default' | 'compact';
+	}
+>(({ className, inset, density = 'default', ...props }, ref) => (
+	<DropdownMenuPrimitive.Item
+		ref={ref}
+		className={cn(
+			`relative flex cursor-default select-none items-center rounded-lg text-sm
+			outline-none transition-colors focus:text-neutral-900
+			data-[disabled]:pointer-events-none data-[disabled]:opacity-50`,
+			density === 'compact' ? 'p-0' : 'px-2 py-1.5',
+			SURFACE_OVERLAY_FOCUS,
+			inset && 'pl-8',
+			className
+		)}
+		{...props}
+	/>
 ));
 DropdownMenuItem.displayName = DropdownMenuPrimitive.Item.displayName;
 
 const DropdownMenuCheckboxItem = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.CheckboxItem>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.CheckboxItem>
+	React.ElementRef<typeof DropdownMenuPrimitive.CheckboxItem>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.CheckboxItem>
 >(({ className, children, checked, ...props }, ref) => (
-  <DropdownMenuPrimitive.CheckboxItem
-    ref={ref}
-    className={cn(
-      "relative flex cursor-default select-none items-center rounded-lg py-1.5 pl-8 pr-2 text-sm outline-none transition-colors  focus:text-neutral-900 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-      SURFACE_OVERLAY_FOCUS,
-      className
-    )}
-    checked={checked}
-    {...props}
-  >
-    <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
-      <DropdownMenuPrimitive.ItemIndicator>
-        <Check className="h-4 w-4" />
-      </DropdownMenuPrimitive.ItemIndicator>
-    </span>
-    {children}
-  </DropdownMenuPrimitive.CheckboxItem>
+	<DropdownMenuPrimitive.CheckboxItem
+		ref={ref}
+		className={cn(
+			`relative flex cursor-default select-none items-center rounded-lg py-1.5
+			pl-8 pr-2 text-sm outline-none transition-colors focus:text-neutral-900
+			data-[disabled]:pointer-events-none data-[disabled]:opacity-50`,
+			SURFACE_OVERLAY_FOCUS,
+			className
+		)}
+		checked={checked}
+		{...props}
+	>
+		<span
+			className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center"
+		>
+			<DropdownMenuPrimitive.ItemIndicator>
+				<Check className="h-4 w-4" />
+			</DropdownMenuPrimitive.ItemIndicator>
+		</span>
+		{children}
+	</DropdownMenuPrimitive.CheckboxItem>
 ));
 DropdownMenuCheckboxItem.displayName =
-  DropdownMenuPrimitive.CheckboxItem.displayName;
+	DropdownMenuPrimitive.CheckboxItem.displayName;
 
 const DropdownMenuRadioItem = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.RadioItem>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem>
+	React.ElementRef<typeof DropdownMenuPrimitive.RadioItem>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem>
 >(({ className, children, ...props }, ref) => (
-  <DropdownMenuPrimitive.RadioItem
-    ref={ref}
-    className={cn(
-      "relative flex cursor-default select-none items-center rounded-lg py-1.5 pl-8 pr-2 text-sm outline-none transition-colors  focus:text-neutral-900 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-      SURFACE_OVERLAY_FOCUS,
-      className
-    )}
-    {...props}
-  >
-    <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
-      <DropdownMenuPrimitive.ItemIndicator>
-        <Circle className="h-2 w-2 fill-current" />
-      </DropdownMenuPrimitive.ItemIndicator>
-    </span>
-    {children}
-  </DropdownMenuPrimitive.RadioItem>
+	<DropdownMenuPrimitive.RadioItem
+		ref={ref}
+		className={cn(
+			`relative flex cursor-default select-none items-center rounded-lg py-1.5
+			pl-8 pr-2 text-sm outline-none transition-colors focus:text-neutral-900
+			data-[disabled]:pointer-events-none data-[disabled]:opacity-50`,
+			SURFACE_OVERLAY_FOCUS,
+			className
+		)}
+		{...props}
+	>
+		<span
+			className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center"
+		>
+			<DropdownMenuPrimitive.ItemIndicator>
+				<Circle className="h-2 w-2 fill-current" />
+			</DropdownMenuPrimitive.ItemIndicator>
+		</span>
+		{children}
+	</DropdownMenuPrimitive.RadioItem>
 ));
 DropdownMenuRadioItem.displayName = DropdownMenuPrimitive.RadioItem.displayName;
 
 const DropdownMenuLabel = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.Label>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Label> & {
-    inset?: boolean;
-  }
+	React.ElementRef<typeof DropdownMenuPrimitive.Label>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Label> & {
+		inset?: boolean;
+	}
 >(({ className, inset, ...props }, ref) => (
-  <DropdownMenuPrimitive.Label
-    ref={ref}
-    className={cn(
-      "px-2 py-1.5 text-xs font-normal",
-      INK_OVERLAY_SECONDARY,
-      inset && "pl-8",
-      className
-    )}
-    {...props}
-  />
+	<DropdownMenuPrimitive.Label
+		ref={ref}
+		className={cn(
+			'px-2 py-1.5 text-xs font-normal',
+			INK_OVERLAY_SECONDARY,
+			inset && 'pl-8',
+			className
+		)}
+		{...props}
+	/>
 ));
 DropdownMenuLabel.displayName = DropdownMenuPrimitive.Label.displayName;
 
 const DropdownMenuSeparator = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.Separator>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Separator>
+	React.ElementRef<typeof DropdownMenuPrimitive.Separator>,
+	React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Separator>
 >(({ className, ...props }, ref) => (
-  <DropdownMenuPrimitive.Separator
-    ref={ref}
-    className={cn("mx-0 my-1 h-px",
-    OVERLAY_DIVIDER,
-    className)}
-    {...props}
-  />
+	<DropdownMenuPrimitive.Separator
+		ref={ref}
+		className={cn('mx-0 my-1 h-px', OVERLAY_DIVIDER, className)}
+		{...props}
+	/>
 ));
 DropdownMenuSeparator.displayName = DropdownMenuPrimitive.Separator.displayName;
 
 const DropdownMenuShortcut = ({
-  className,
-  ...props
+	className,
+	...props
 }: React.HTMLAttributes<HTMLSpanElement>) => {
-  return (
-    <span
-      className={cn("ml-auto text-xs tracking-widest", INK_OVERLAY_SECONDARY, className)}
-      {...props}
-    />
-  );
+	return (
+		<span
+			className={cn(
+				'ml-auto text-xs tracking-widest',
+				INK_OVERLAY_SECONDARY,
+				className
+			)}
+			{...props}
+		/>
+	);
 };
-DropdownMenuShortcut.displayName = "DropdownMenuShortcut";
+DropdownMenuShortcut.displayName = 'DropdownMenuShortcut';
 
 export {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuCheckboxItem,
-  DropdownMenuRadioItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuShortcut,
-  DropdownMenuGroup,
-  DropdownMenuPortal,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuRadioGroup,
+	DropdownMenu,
+	DropdownMenuTrigger,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuCheckboxItem,
+	DropdownMenuRadioItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
+	DropdownMenuShortcut,
+	DropdownMenuGroup,
+	DropdownMenuPortal,
+	DropdownMenuSub,
+	DropdownMenuSubContent,
+	DropdownMenuSubTrigger,
+	DropdownMenuRadioGroup,
 };

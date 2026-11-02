@@ -1,53 +1,103 @@
-import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useLayoutStore } from "@/app/layout/layout-store";
-import { Toaster } from "@/components/ui/sonner";
-import { toast } from "sonner";
+import {
+	startTransition,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from 'react';
+import { useLayoutStore } from '@/app/layout/layout-store';
+import { Toaster } from '@/components/ui/sonner';
+import { toast } from 'sonner';
 
-import { TerminalDock } from "@/features/terminal/terminal-dock";
-import { activeViewNow, isRunningNow, refreshAgentChips, useAgentStore, useRunningKeys, viewNow } from "@/stores/agent-store";
-import { useAgentSession } from "@/features/chat/hooks/use-agent-session";
+import { TerminalDock } from '@/features/terminal/terminal-dock';
 import {
-  applyChangesFeed,
-  childTranscriptCard,
-  viewFromHistory,
-  viewFromHistoryChunked,
-} from "@/features/chat/hooks/view-from-history";
-import { SUMMARY_TOOLS } from "@/features/chat/hooks/apply-event";
-import { childrenFromFeed, type RunningChild } from "@/features/chat/hooks/running-children";
-import type { ChildSegment, StreamItem } from "@/features/chat/hooks/stream-view";
-import { loadReset, loadStamp } from "@/lib/load-probe";
-import { forgetToldFailures, markSessionRead, setSessionTitles } from "@/lib/notifications";
-import { onOpenSettings, type SettingsTarget } from "@/lib/settings-bus";
-import { getWorkspaceInfo, pickWorkspace, switchWorkspace, removeWorkspace, forkSession, deleteSession, pinSession, pinSessionGlobal, archiveSession, renameSession, sessionTitle as readSessionTitle, exportSession, historyPage, changesFeed, toolRowsFeed, subagentTranscript, activeChildren, onNotificationClick, sidebarRow, type WorkspaceInfo } from "@/lib/agent-ipc/index";
-import type { ProjectOverview } from "@/types";
-import type { SessionRow } from "@/types";
-import { SessionSidebar, type SessionActions } from "@/features/chat/components/session-sidebar/index";
-import { MainLayout } from "@/app/layout/main-layout/index";
-import { ChatPage } from "@/features/chat/pages/chat/index";
-import { SettingsPage } from "@/features/settings/pages/index";
-import { RawHistoryDialog } from "@/features/chat/components/raw-history-dialog/index";
-import { UpdateDialog } from "@/features/update/update-dialog";
-import { useStartupUpdateCheck } from "@/features/update/use-update";
-import { WorkspaceLoadingVeil } from "@/features/chat/components/workspace-loading-veil/index";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+	activeViewNow,
+	isRunningNow,
+	refreshAgentChips,
+	useAgentStore,
+	useRunningKeys,
+	viewNow,
+} from '@/stores/agent-store';
+import { useAgentSession } from '@/features/chat/hooks/use-agent-session';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { WindowResizeEdges } from "@/components/window-resize-edges";
+	applyChangesFeed,
+	childTranscriptCard,
+	viewFromHistory,
+	viewFromHistoryChunked,
+} from '@/features/chat/hooks/view-from-history';
+import { SUMMARY_TOOLS } from '@/features/chat/hooks/apply-event';
+import {
+	childrenFromFeed,
+	type RunningChild,
+} from '@/features/chat/hooks/running-children';
+import type {
+	ChildSegment,
+	StreamItem,
+} from '@/features/chat/hooks/stream-view';
+import { loadReset, loadStamp } from '@/lib/load-probe';
+import {
+	forgetToldFailures,
+	markSessionRead,
+	setSessionTitles,
+} from '@/lib/notifications';
+import { onOpenSettings, type SettingsTarget } from '@/lib/settings-bus';
+import {
+	getWorkspaceInfo,
+	pickWorkspace,
+	switchWorkspace,
+	removeWorkspace,
+	forkSession,
+	deleteSession,
+	pinSession,
+	pinSessionGlobal,
+	archiveSession,
+	renameSession,
+	sessionTitle as readSessionTitle,
+	exportSession,
+	historyPage,
+	changesFeed,
+	toolRowsFeed,
+	subagentTranscript,
+	activeChildren,
+	onNotificationClick,
+	sidebarRow,
+	type WorkspaceInfo,
+} from '@/lib/agent-ipc/index';
+import type { ProjectOverview } from '@/types';
+import type { SessionRow } from '@/types';
+import {
+	SessionSidebar,
+	type SessionActions,
+} from '@/features/chat/components/session-sidebar/index';
+import { MainLayout } from '@/app/layout/main-layout/index';
+import { ChatPage } from '@/features/chat/pages/chat/index';
+import { SettingsPage } from '@/features/settings/pages/index';
+import { RawHistoryDialog } from '@/features/chat/components/raw-history-dialog/index';
+import { UpdateDialog } from '@/features/update/update-dialog';
+import { useStartupUpdateCheck } from '@/features/update/use-update';
+import { WorkspaceLoadingVeil } from '@/features/chat/components/workspace-loading-veil/index';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from '@/components/ui/dialog';
+import { WindowResizeEdges } from '@/components/window-resize-edges';
 
 /** Whether `e.target` is a native-editing surface that keeps its browser
  * context menu (cut/copy/paste/select-all). Text areas and inputs rely on
  * it — Radix menus can't replicate IME/spellcheck entries there. */
 function isEditableTarget(e: Event): boolean {
-  const el = e.target as HTMLElement | null;
-  if (!el || typeof el.closest !== "function") return false;
-  return Boolean(el.closest("input, textarea, [contenteditable=true], [contenteditable='']"));
+	const el = e.target as HTMLElement | null;
+	if (!el || typeof el.closest !== 'function') return false;
+	return Boolean(
+		el.closest("input, textarea, [contenteditable=true], [contenteditable='']")
+	);
 }
 
 /** Global chrome policy for the packaged shell:
@@ -59,51 +109,54 @@ function isEditableTarget(e: Event): boolean {
  *    sibling bootstrap in `main.tsx`).
  * Dev (`vite dev`) keeps both for debugging. */
 function useAppChromeGuards() {
-  useEffect(() => {
-    const onContextMenu = (e: MouseEvent) => {
-      // Dev keeps the native webview menu — right-click inspect is the
-      // debugger's front door on WebKitGTK.
-      if (import.meta.env.DEV) return;
-      // Radix ContextMenuTrigger calls preventDefault itself; letting the
-      // event through to a trigger is what opens our custom menu.
-      // Order matters: our own triggers win even on editable surfaces (the
-      // composer textarea is one), so right-clicking the input opens the app
-      // menu instead of doubling up with the native one.
-      const el = e.target as HTMLElement | null;
-      if (el?.closest?.("[data-allow-contextmenu]")) return;
-      if (isEditableTarget(e)) return;
-      // Radix context-menu triggers are inside our own menu surfaces —
-      // the trigger fires the React handler, then this capture-phase
-      // listener would still see the event. Distinguish by what the
-      // trigger rendered: a `data-state` attribute exists on the trigger
-      // element once Radix wires it, but simplest reliable check is our
-      // own opt-in marker applied by ContextMenuTrigger's wrapper.
-      e.preventDefault();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (import.meta.env.DEV) return;
-      const k = e.key;
-      const mod = e.ctrlKey || e.metaKey;
-      // F12 · Ctrl/Cmd+Shift+I/J/C/K · Cmd/Ctrl+Alt+I/J/C (mac) · Ctrl+U.
-      // Opt-in via `window.__huskDevToolsEnabled` (set by the dev-config
-      // bootstrap in main.tsx) lets a packaged build open devtools for
-      // debugging without rebuilding.
-      const devtoolsEnabled =
-        (window as { __huskDevToolsEnabled?: boolean }).__huskDevToolsEnabled === true;
-      const devtools =
-        k === "F12" ||
-        (mod && e.shiftKey && ["i", "I", "j", "J", "c", "C", "k", "K"].includes(k)) ||
-        (mod && e.altKey && ["i", "I", "j", "J", "c", "C"].includes(k)) ||
-        (e.ctrlKey && (k === "u" || k === "U"));
-      if (devtools && !devtoolsEnabled) e.preventDefault();
-    };
-    document.addEventListener("contextmenu", onContextMenu, true);
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      document.removeEventListener("contextmenu", onContextMenu, true);
-      document.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, []);
+	useEffect(() => {
+		const onContextMenu = (e: MouseEvent) => {
+			// Dev keeps the native webview menu — right-click inspect is the
+			// debugger's front door on WebKitGTK.
+			if (import.meta.env.DEV) return;
+			// Radix ContextMenuTrigger calls preventDefault itself; letting the
+			// event through to a trigger is what opens our custom menu.
+			// Order matters: our own triggers win even on editable surfaces (the
+			// composer textarea is one), so right-clicking the input opens the app
+			// menu instead of doubling up with the native one.
+			const el = e.target as HTMLElement | null;
+			if (el?.closest?.('[data-allow-contextmenu]')) return;
+			if (isEditableTarget(e)) return;
+			// Radix context-menu triggers are inside our own menu surfaces —
+			// the trigger fires the React handler, then this capture-phase
+			// listener would still see the event. Distinguish by what the
+			// trigger rendered: a `data-state` attribute exists on the trigger
+			// element once Radix wires it, but simplest reliable check is our
+			// own opt-in marker applied by ContextMenuTrigger's wrapper.
+			e.preventDefault();
+		};
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (import.meta.env.DEV) return;
+			const k = e.key;
+			const mod = e.ctrlKey || e.metaKey;
+			// F12 · Ctrl/Cmd+Shift+I/J/C/K · Cmd/Ctrl+Alt+I/J/C (mac) · Ctrl+U.
+			// Opt-in via `window.__huskDevToolsEnabled` (set by the dev-config
+			// bootstrap in main.tsx) lets a packaged build open devtools for
+			// debugging without rebuilding.
+			const devtoolsEnabled =
+				(window as { __huskDevToolsEnabled?: boolean })
+					.__huskDevToolsEnabled === true;
+			const devtools =
+				k === 'F12' ||
+				(mod &&
+					e.shiftKey &&
+					['i', 'I', 'j', 'J', 'c', 'C', 'k', 'K'].includes(k)) ||
+				(mod && e.altKey && ['i', 'I', 'j', 'J', 'c', 'C'].includes(k)) ||
+				(e.ctrlKey && (k === 'u' || k === 'U'));
+			if (devtools && !devtoolsEnabled) e.preventDefault();
+		};
+		document.addEventListener('contextmenu', onContextMenu, true);
+		document.addEventListener('keydown', onKeyDown, true);
+		return () => {
+			document.removeEventListener('contextmenu', onContextMenu, true);
+			document.removeEventListener('keydown', onKeyDown, true);
+		};
+	}, []);
 }
 
 /** Fetch and fold the transcript of every finished delegated child in a rebuilt
@@ -111,939 +164,1071 @@ function useAppChromeGuards() {
  *  its report. A few at a time; a child whose history is gone simply keeps its
  *  report, and the store action no-ops if its card is no longer loaded. */
 async function hydrateChildTranscripts(
-  root: string,
-  id: number,
-  items: readonly StreamItem[],
-  apply: (
-    root: string,
-    id: number,
-    childId: number,
-    segments: ChildSegment[],
-    rows: StreamItem[]
-  ) => void,
+	root: string,
+	id: number,
+	items: readonly StreamItem[],
+	apply: (
+		root: string,
+		id: number,
+		childId: number,
+		segments: ChildSegment[],
+		rows: StreamItem[]
+	) => void
 ) {
-  // One fetch per child — a parallel delegation draws one card each, and a
-  // second `delegate` in the same page cannot reuse the first's transcript.
-  const cards = new Map<number, string>();
-  for (const it of items) {
-    if (it.kind !== "tool" || it.parent !== "delegate" || it.childId == null) continue;
-    if (it.content === undefined || it.transcriptLoaded) continue;
-    cards.set(it.childId, it.name);
-  }
-  const pending = [...cards];
-  for (let i = 0; i < pending.length; i += 8) {
-    await Promise.allSettled(
-      pending.slice(i, i + 8).map(async ([childId, label]) => {
-        const { messages } = await subagentTranscript(root, id, childId);
-        if (messages.length === 0) return;
-        const { segments, rows } = childTranscriptCard(messages, label, childId);
-        apply(root, id, childId, segments, rows);
-      }),
-    );
-  }
+	// One fetch per child — a parallel delegation draws one card each, and a
+	// second `delegate` in the same page cannot reuse the first's transcript.
+	const cards = new Map<number, string>();
+	for (const it of items) {
+		if (it.kind !== 'tool' || it.parent !== 'delegate' || it.childId == null)
+			continue;
+		if (it.content === undefined || it.transcriptLoaded) continue;
+		cards.set(it.childId, it.name);
+	}
+	const pending = [...cards];
+	for (let i = 0; i < pending.length; i += 8) {
+		await Promise.allSettled(
+			pending.slice(i, i + 8).map(async ([childId, label]) => {
+				const { messages } = await subagentTranscript(root, id, childId);
+				if (messages.length === 0) return;
+				const { segments, rows } = childTranscriptCard(
+					messages,
+					label,
+					childId
+				);
+				apply(root, id, childId, segments, rows);
+			})
+		);
+	}
 }
 
 /** Fetch the body a still-running child has so far and fold it onto the card
  *  the reload seeded. The card stays OPEN: this is a head start on a turn that
  *  is still streaming, so the live events keep appending to what lands here. */
 async function hydrateRunningChildTranscripts(
-  root: string,
-  id: number,
-  children: readonly RunningChild[],
-  apply: (
-    root: string,
-    id: number,
-    childId: number,
-    segments: ChildSegment[],
-    rows: StreamItem[],
-    opts?: { keepRunning?: boolean }
-  ) => void,
+	root: string,
+	id: number,
+	children: readonly RunningChild[],
+	apply: (
+		root: string,
+		id: number,
+		childId: number,
+		segments: ChildSegment[],
+		rows: StreamItem[],
+		opts?: { keepRunning?: boolean }
+	) => void
 ) {
-  await Promise.allSettled(
-    children.map(async (child) => {
-      const { messages } = await subagentTranscript(root, id, child.childId);
-      if (messages.length === 0) return;
-      const { segments, rows } = childTranscriptCard(messages, child.name, child.childId);
-      apply(root, id, child.childId, segments, rows, { keepRunning: true });
-    }),
-  );
+	await Promise.allSettled(
+		children.map(async (child) => {
+			const { messages } = await subagentTranscript(root, id, child.childId);
+			if (messages.length === 0) return;
+			const { segments, rows } = childTranscriptCard(
+				messages,
+				child.name,
+				child.childId
+			);
+			apply(root, id, child.childId, segments, rows, { keepRunning: true });
+		})
+	);
 }
 
 export function App() {
-  useAppChromeGuards();
-  const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: "", name: "", recents: [] });
-  useEffect(() => {
-    if (workspace.storage_warning) {
-      toast.warning("当前会话不会保存到磁盘", {
-        id: "session-storage-warning",
-        description: workspace.storage_warning,
-        duration: Infinity,
-        closeButton: true,
-      });
-    }
-  }, [workspace.storage_warning]);
-  // One selector per field: the actions are stable references, so only a real
-  // change in `activeId` re-renders this shell — and `useRunningKeys` keeps its
-  // identity while the same sessions run, so a streaming turn never does.
-  const activeId = useAgentStore((s) => s.activeId);
-  const setActiveId = useAgentStore((s) => s.setActiveId);
-  const loadView = useAgentStore((s) => s.loadView);
-  const prependItems = useAgentStore((s) => s.prependItems);
-  const dropView = useAgentStore((s) => s.dropView);
-  const applyChildTranscript = useAgentStore((s) => s.applyChildTranscript);
-  const seedRunningChildren = useAgentStore((s) => s.seedRunningChildren);
-  const runningKeys = useRunningKeys();
+	useAppChromeGuards();
+	const [workspace, setWorkspace] = useState<WorkspaceInfo>({
+		root: '',
+		name: '',
+		recents: [],
+	});
+	useEffect(() => {
+		if (workspace.storage_warning) {
+			toast.warning('当前会话不会保存到磁盘', {
+				id: 'session-storage-warning',
+				description: workspace.storage_warning,
+				duration: Infinity,
+				closeButton: true,
+			});
+		}
+	}, [workspace.storage_warning]);
+	// One selector per field: the actions are stable references, so only a real
+	// change in `activeId` re-renders this shell — and `useRunningKeys` keeps its
+	// identity while the same sessions run, so a streaming turn never does.
+	const activeId = useAgentStore((s) => s.activeId);
+	const setActiveId = useAgentStore((s) => s.setActiveId);
+	const loadView = useAgentStore((s) => s.loadView);
+	const prependItems = useAgentStore((s) => s.prependItems);
+	const dropView = useAgentStore((s) => s.dropView);
+	const applyChildTranscript = useAgentStore((s) => s.applyChildTranscript);
+	const seedRunningChildren = useAgentStore((s) => s.seedRunningChildren);
+	const runningKeys = useRunningKeys();
 
-  // The store keys every view by `root:id`, and it is the only place the active
-  // view is resolved from (`useActiveView`, `activeViewNow`). Keeping its root
-  // in sync with the workspace this shell is showing is therefore mandatory —
-  // without it every lookup misses and the stream renders empty.
-  useLayoutEffect(() => {
-    useAgentStore.getState().setWorkspaceRoot(workspace.root);
-  }, [workspace.root]);
+	// The store keys every view by `root:id`, and it is the only place the active
+	// view is resolved from (`useActiveView`, `activeViewNow`). Keeping its root
+	// in sync with the workspace this shell is showing is therefore mandatory —
+	// without it every lookup misses and the stream renders empty.
+	useLayoutEffect(() => {
+		useAgentStore.getState().setWorkspaceRoot(workspace.root);
+	}, [workspace.root]);
 
-  // `handleLoadOlder` and the rail's placeholder seek loop keep running through
-  // closures captured at an earlier render; reading `historyStart` off a
-  // stale view re-fetches the SAME page and duplicates it (→ duplicate `hi`
-  // → several black marks in the rail). The store is read AT CALL TIME — the
-  // ref this used to need is exactly what `activeViewNow()` returns.
-  const { projects, sessions, loaded: sessionsLoaded, error: sidebarError, refresh, invalidate,
-    newSession, openSession, recents: sidebarRecents, active: sidebarActive, paging } = useAgentSession();
-  // The notification center names sessions in the bell AND in desktop toasts,
-  // which fire outside any render — it keeps its own copy of the titles.
-  useEffect(() => setSessionTitles(projects.map((p) => ({ ...p, sessions:
-    [...new Map([...sidebarRecents.filter((e) => e.root === p.root).map((e) => e.row), ...p.sessions]
-      .map((r) => [r.id, r])).values()],
-  })), true), [projects, sidebarRecents]);
-  // True while a session/workspace switch is fetching history + rebuilding
-  // the view — the stream renders a skeleton instead of a stale/empty pane.
-  // Starts true: before the boot load raises it, an unloaded view would paint
-  // the empty-greeting (a greeting flash) for a session that does have turns.
-  const [viewLoading, setViewLoading] = useState(true);
-  // The full-layout switch veil — only workspace/session switches raise it.
-  // Delete, fork and boot keep their in-pane skeleton (boot already has the
-  // home splash), so a small action never blanks the whole window.
-  const [switchVeil, setSwitchVeil] = useState(false);
-  // Drop the loading veil only AFTER the mounted tree has committed and
-  // painted — session loads full-mount every turn in one synchronous
-  // commit, and if the veil lifts inside that same commit the app shows
-  // a frozen half-frame instead of "loading → ready". Two rAFs carries
-  // the flag past the next paint boundary.
-  const releaseLoading = useCallback(() => {
-    // Every caller reaches here after its backend call has settled, so the
-    // backend's ACTIVE session is final — the first moment the header chips
-    // (the active model's window and price) can be read for it. `setActiveId`
-    // flips the frontend pointer BEFORE that IPC, so the refresh it triggers
-    // reads the PREVIOUS session's model, and nothing re-read afterwards: the
-    // header kept those numbers until the next turn. Failed flows land here
-    // too; re-reading whatever is active then is still correct.
-    refreshAgentChips();
-    requestAnimationFrame(() =>
-      // The reveal commit mounts the real turn tree (Streamdown/Streamdown
-      // blocks) —
-      // a transition keeps its render interruptible so the page never
-      // goes dead to clicks while a long session opens.
-      requestAnimationFrame(() =>
-        startTransition(() => {
-          setViewLoading(false);
-          setSwitchVeil(false);
-        }),
-      ),
-    );
-  }, []);
+	// `handleLoadOlder` and the rail's placeholder seek loop keep running through
+	// closures captured at an earlier render; reading `historyStart` off a
+	// stale view re-fetches the SAME page and duplicates it (→ duplicate `hi`
+	// → several black marks in the rail). The store is read AT CALL TIME — the
+	// ref this used to need is exactly what `activeViewNow()` returns.
+	const {
+		projects,
+		sessions,
+		loaded: sessionsLoaded,
+		error: sidebarError,
+		refresh,
+		invalidate,
+		newSession,
+		openSession,
+		recents: sidebarRecents,
+		active: sidebarActive,
+		paging,
+	} = useAgentSession();
+	// The notification center names sessions in the bell AND in desktop toasts,
+	// which fire outside any render — it keeps its own copy of the titles.
+	useEffect(
+		() =>
+			setSessionTitles(
+				projects.map((p) => ({
+					...p,
+					sessions: [
+						...new Map(
+							[
+								...sidebarRecents
+									.filter((e) => e.root === p.root)
+									.map((e) => e.row),
+								...p.sessions,
+							].map((r) => [r.id, r])
+						).values(),
+					],
+				})),
+				true
+			),
+		[projects, sidebarRecents]
+	);
+	// True while a session/workspace switch is fetching history + rebuilding
+	// the view — the stream renders a skeleton instead of a stale/empty pane.
+	// Starts true: before the boot load raises it, an unloaded view would paint
+	// the empty-greeting (a greeting flash) for a session that does have turns.
+	const [viewLoading, setViewLoading] = useState(true);
+	// The full-layout switch veil — only workspace/session switches raise it.
+	// Delete, fork and boot keep their in-pane skeleton (boot already has the
+	// home splash), so a small action never blanks the whole window.
+	const [switchVeil, setSwitchVeil] = useState(false);
+	// Drop the loading veil only AFTER the mounted tree has committed and
+	// painted — session loads full-mount every turn in one synchronous
+	// commit, and if the veil lifts inside that same commit the app shows
+	// a frozen half-frame instead of "loading → ready". Two rAFs carries
+	// the flag past the next paint boundary.
+	const releaseLoading = useCallback(() => {
+		// Every caller reaches here after its backend call has settled, so the
+		// backend's ACTIVE session is final — the first moment the header chips
+		// (the active model's window and price) can be read for it. `setActiveId`
+		// flips the frontend pointer BEFORE that IPC, so the refresh it triggers
+		// reads the PREVIOUS session's model, and nothing re-read afterwards: the
+		// header kept those numbers until the next turn. Failed flows land here
+		// too; re-reading whatever is active then is still correct.
+		refreshAgentChips();
+		requestAnimationFrame(() =>
+			// The reveal commit mounts the real turn tree (Streamdown/Streamdown
+			// blocks) —
+			// a transition keeps its render interruptible so the page never
+			// goes dead to clicks while a long session opens.
+			requestAnimationFrame(() =>
+				startTransition(() => {
+					setViewLoading(false);
+					setSwitchVeil(false);
+				})
+			)
+		);
+	}, []);
 
-  /** Fold the returned page + mount it, then lift the veil after the
-   * commit has painted. */
-  const mountLoadedView = useCallback(
-    async (
-      root: string,
-      id: number,
-      r: {
-        history: Parameters<typeof viewFromHistory>[0];
-        history_total?: number;
-        turn_total?: number;
-        turn_offset?: number;
-        run_total?: number;
-        task_total?: number;
-        usage?: Parameters<typeof viewFromHistory>[1];
-        queued_prompts?: string[];
-      },
-      // Runs in the same synchronous block as `loadView`, so state it sets
-      // lands in the same commit as the chat view (see handleSwitchWorkspace).
-      alsoCommit?: () => void,
-    ) => {
-      // A subagent still running when the webview reloaded lost every event
-      // that drew its card, and history keeps no row for a child that has not
-      // reported — the kernel's live registry is the only description left.
-      // Read before the fold: a `delegate` call history never answered is an
-      // interrupted child only when nothing is still running.
-      const live = await activeChildren(root, id).catch(() => ({ children: [] }));
-      const running = live.children.length > 0 || isRunningNow(root, id);
-      // The changes panel is a session-level summary, not a page-level one: the
-      // mounted page is only the newest slice, so the file list is rebuilt from
-      // the whole log — in parallel, and a failure keeps the page-derived list
-      // rather than showing an empty panel. A page that already holds the whole
-      // log has nothing to add, and the feed re-reads the full journal.
-      const paged = (r.history_total ?? r.history.length) > r.history.length;
-      // Global baseIndex — items[0] sits at historyStart in the full log, so
-      // hi = historyStart + i. baseIndex=0 collided with real page indices →
-      // duplicate t{hi} turn/mark ids (multiple active rail marks + key remount
-      // churn).
-      const historyStart = (r.history_total ?? r.history.length) - r.history.length;
-      const [folded, feed, childRows] = await Promise.all([
-        viewFromHistoryChunked(r.history, r.usage, historyStart, { dangling: !running }),
-        paged ? changesFeed(id, SUMMARY_TOOLS).catch(() => null) : null,
-        // The 子代理 sidebar is a session-level list, and the page is only the
-        // newest slice: asked even when the page holds the whole log, because a
-        // child's `delegate` row and the `answer_child` that settles it can land
-        // on either side of the boundary. A failed read just leaves the list to
-        // the mounted page.
-        toolRowsFeed(id, ["delegate", "answer_child"]).catch(() => null),
-      ]);
-      if (feed) applyChangesFeed(folded, feed.rows);
-      // With nothing running, a feed child still reading running died with its
-      // process — no notice will ever settle it, so it reads as cancelled.
-      if (childRows) {
-        const feed = childrenFromFeed(childRows.rows);
-        folded.feedChildren = running
-          ? feed
-          : feed.map((c) => (c.status === "running" ? { ...c, status: "aborted" as const } : c));
-      }
-      // Cold view rebuild — the parked queue is session state persisted in
-      // SessionMeta; seed it so the composer shows the same rows the actor
-      // still holds (live updates continue via QueuedPrompts events).
-      folded.queuedPrompts = r.queued_prompts ?? [];
-      loadStamp("fold");
-      alsoCommit?.();
-      loadView(root, id, folded, {
-        historyStart,
-        historyTotal: r.history_total,
-        turnTotal: r.turn_total,
-        turnOffset: r.turn_offset,
-        runTotal: r.run_total,
-        taskTotal: r.task_total,
-      });
-      releaseLoading();
-      // A delegated child's own stream was live-only: the rebuilt page carries
-      // its report, and its body arrives from the kernel afterwards. Off the
-      // veil — the page never waits on it.
-      void hydrateChildTranscripts(root, id, folded.items, applyChildTranscript);
-      // The cards the reload lost, redrawn from the live registry — a running
-      // child also brings back its 子代理 dock entry. Nothing to seed when the
-      // view was dropped by a switch in the meantime.
-      if (live.children.length > 0 && viewNow(root, id)) {
-        const seeded = live.children.map((c) => ({
-          childId: c.child_id,
-          name: c.label,
-          task: c.task,
-          waiting: c.waiting ?? undefined,
-        }));
-        seedRunningChildren(root, id, seeded);
-        void hydrateRunningChildTranscripts(root, id, seeded, applyChildTranscript);
-      }
-    },
-    [applyChildTranscript, loadView, releaseLoading, seedRunningChildren],
-  );
+	/** Fold the returned page + mount it, then lift the veil after the
+	 * commit has painted. */
+	const mountLoadedView = useCallback(
+		async (
+			root: string,
+			id: number,
+			r: {
+				history: Parameters<typeof viewFromHistory>[0];
+				history_total?: number;
+				turn_total?: number;
+				turn_offset?: number;
+				run_total?: number;
+				task_total?: number;
+				usage?: Parameters<typeof viewFromHistory>[1];
+				queued_prompts?: string[];
+			},
+			// Runs in the same synchronous block as `loadView`, so state it sets
+			// lands in the same commit as the chat view (see handleSwitchWorkspace).
+			alsoCommit?: () => void
+		) => {
+			// A subagent still running when the webview reloaded lost every event
+			// that drew its card, and history keeps no row for a child that has not
+			// reported — the kernel's live registry is the only description left.
+			// Read before the fold: a `delegate` call history never answered is an
+			// interrupted child only when nothing is still running.
+			const live = await activeChildren(root, id).catch(() => ({
+				children: [],
+			}));
+			const running = live.children.length > 0 || isRunningNow(root, id);
+			// The changes panel is a session-level summary, not a page-level one: the
+			// mounted page is only the newest slice, so the file list is rebuilt from
+			// the whole log — in parallel, and a failure keeps the page-derived list
+			// rather than showing an empty panel. A page that already holds the whole
+			// log has nothing to add, and the feed re-reads the full journal.
+			const paged = (r.history_total ?? r.history.length) > r.history.length;
+			// Global baseIndex — items[0] sits at historyStart in the full log, so
+			// hi = historyStart + i. baseIndex=0 collided with real page indices →
+			// duplicate t{hi} turn/mark ids (multiple active rail marks + key remount
+			// churn).
+			const historyStart =
+				(r.history_total ?? r.history.length) - r.history.length;
+			const [folded, feed, childRows] = await Promise.all([
+				viewFromHistoryChunked(r.history, r.usage, historyStart, {
+					dangling: !running,
+				}),
+				paged ? changesFeed(id, SUMMARY_TOOLS).catch(() => null) : null,
+				// The 子代理 sidebar is a session-level list, and the page is only the
+				// newest slice: asked even when the page holds the whole log, because a
+				// child's `delegate` row and the `answer_child` that settles it can land
+				// on either side of the boundary. A failed read just leaves the list to
+				// the mounted page.
+				toolRowsFeed(id, ['delegate', 'answer_child']).catch(() => null),
+			]);
+			if (feed) applyChangesFeed(folded, feed.rows);
+			// With nothing running, a feed child still reading running died with its
+			// process — no notice will ever settle it, so it reads as cancelled.
+			if (childRows) {
+				const feed = childrenFromFeed(childRows.rows);
+				folded.feedChildren = running
+					? feed
+					: feed.map((c) =>
+							c.status === 'running' ? { ...c, status: 'aborted' as const } : c
+						);
+			}
+			// Cold view rebuild — the parked queue is session state persisted in
+			// SessionMeta; seed it so the composer shows the same rows the actor
+			// still holds (live updates continue via QueuedPrompts events).
+			folded.queuedPrompts = r.queued_prompts ?? [];
+			loadStamp('fold');
+			alsoCommit?.();
+			loadView(root, id, folded, {
+				historyStart,
+				historyTotal: r.history_total,
+				turnTotal: r.turn_total,
+				turnOffset: r.turn_offset,
+				runTotal: r.run_total,
+				taskTotal: r.task_total,
+			});
+			releaseLoading();
+			// A delegated child's own stream was live-only: the rebuilt page carries
+			// its report, and its body arrives from the kernel afterwards. Off the
+			// veil — the page never waits on it.
+			void hydrateChildTranscripts(
+				root,
+				id,
+				folded.items,
+				applyChildTranscript
+			);
+			// The cards the reload lost, redrawn from the live registry — a running
+			// child also brings back its 子代理 dock entry. Nothing to seed when the
+			// view was dropped by a switch in the meantime.
+			if (live.children.length > 0 && viewNow(root, id)) {
+				const seeded = live.children.map((c) => ({
+					childId: c.child_id,
+					name: c.label,
+					task: c.task,
+					waiting: c.waiting ?? undefined,
+				}));
+				seedRunningChildren(root, id, seeded);
+				void hydrateRunningChildTranscripts(
+					root,
+					id,
+					seeded,
+					applyChildTranscript
+				);
+			}
+		},
+		[applyChildTranscript, loadView, releaseLoading, seedRunningChildren]
+	);
 
-  // Non-null while the delete confirmation dialog is open — holds the row
-  // snapshot taken at click time so the dialog still shows the right title
-  // even if the session list refreshes in between.
-  const [pendingDelete, setPendingDelete] = useState<SessionRow | null>(null);
-  // Same pattern for the fork confirmation — duplicating a session's
-  // history is additive but irreversible, so it confirms first.
-  const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
-  const [pendingRemoveWs, setPendingRemoveWs] = useState<(ProjectOverview & { running?: boolean }) | null>(null);
-  // Rename dialog — the row being renamed (with its workspace) + the draft.
-  const [pendingRename, setPendingRename] = useState<{ root: string; row: SessionRow } | null>(null);
-  // Archive confirmation — the row being archived and its workspace.
-  const [pendingArchive, setPendingArchive] = useState<{ root: string; row: SessionRow } | null>(null);
-  const [renameDraft, setRenameDraft] = useState("");
-  // Settings is an overlay layer, not a page swap — the workspace stays
-  // mounted underneath, so closing it costs nothing (the old takeover
-  // unmounted ChatPage and remounted the whole stream on return).
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  // Which page the next open lands on — a `/skills` style command asks for a
-  // specific one; the sidebar gear always starts at 常规.
-  const [settingsPage, setSettingsPage] = useState<SettingsTarget>("general");
-  useEffect(
-    () =>
-      onOpenSettings((page) => {
-        setSettingsPage(page);
-        setSettingsOpen(true);
-      }),
-    [],
-  );
-  // Changes/artifacts sidebar: open state, active tab and width all live in
-  // `useDockStore` (see `features/chat/components/dock/state.ts`) — the page
-  // reads it directly, so there is nothing to lift into the shell. The veil
-  // and settings layers still sit above it here.
-  // Silent startup update check — starts only once the sessions are on screen,
-  // so the network call never competes with first load.
-  useStartupUpdateCheck(sessionsLoaded);
-  // The trace dialog owns its paged reads.
-  const [rawOpen, setRawOpen] = useState(false);
-  const handleShowRaw = useCallback(() => {
-    // An empty root means workspace info has not loaded; the backend
-    // would reject it as a workspace switch.
-    if (!activeId || !workspace.root) return;
-    setRawOpen(true);
-  }, [activeId, workspace.root]);
+	// Non-null while the delete confirmation dialog is open — holds the row
+	// snapshot taken at click time so the dialog still shows the right title
+	// even if the session list refreshes in between.
+	const [pendingDelete, setPendingDelete] = useState<SessionRow | null>(null);
+	// Same pattern for the fork confirmation — duplicating a session's
+	// history is additive but irreversible, so it confirms first.
+	const [pendingFork, setPendingFork] = useState<SessionRow | null>(null);
+	const [pendingRemoveWs, setPendingRemoveWs] = useState<
+		(ProjectOverview & { running?: boolean }) | null
+	>(null);
+	// Rename dialog — the row being renamed (with its workspace) + the draft.
+	const [pendingRename, setPendingRename] = useState<{
+		root: string;
+		row: SessionRow;
+	} | null>(null);
+	// Archive confirmation — the row being archived and its workspace.
+	const [pendingArchive, setPendingArchive] = useState<{
+		root: string;
+		row: SessionRow;
+	} | null>(null);
+	const [renameDraft, setRenameDraft] = useState('');
+	// Settings is an overlay layer, not a page swap — the workspace stays
+	// mounted underneath, so closing it costs nothing (the old takeover
+	// unmounted ChatPage and remounted the whole stream on return).
+	const [settingsOpen, setSettingsOpen] = useState(false);
+	// Which page the next open lands on — a `/skills` style command asks for a
+	// specific one; the sidebar gear always starts at 常规.
+	const [settingsPage, setSettingsPage] = useState<SettingsTarget>('general');
+	useEffect(
+		() =>
+			onOpenSettings((page) => {
+				setSettingsPage(page);
+				setSettingsOpen(true);
+			}),
+		[]
+	);
+	// Changes/artifacts sidebar: open state, active tab and width all live in
+	// `useDockStore` (see `features/chat/components/dock/state.ts`) — the page
+	// reads it directly, so there is nothing to lift into the shell. The veil
+	// and settings layers still sit above it here.
+	// Silent startup update check — starts only once the sessions are on screen,
+	// so the network call never competes with first load.
+	useStartupUpdateCheck(sessionsLoaded);
+	// The trace dialog owns its paged reads.
+	const [rawOpen, setRawOpen] = useState(false);
+	const handleShowRaw = useCallback(() => {
+		// An empty root means workspace info has not loaded; the backend
+		// would reject it as a workspace switch.
+		if (!activeId || !workspace.root) return;
+		setRawOpen(true);
+	}, [activeId, workspace.root]);
 
-  useEffect(() => {
-    void getWorkspaceInfo().then((ws) => {
-      if (ws) setWorkspace(ws);
-    });
-  }, []);
-  // Hold the skeleton until boot resume resolves — no empty-pane flash.
-  const [wsReady, setWsReady] = useState(false);
-  useEffect(() => {
-    // Keep the recents list even when no workspace is open — the welcome page
-    // offers them as one-click reopen, and this is the only place that reads
-    // them before a project exists. `root`/`name` stay untouched: an
-    // already-active workspace is adopted through the normal open/switch
-    // flows, which also sync `activeId`.
-    void getWorkspaceInfo()
-      .then((ws) => {
-        setWorkspace((prev) => ({ ...prev, recents: ws.recents }));
-        setWsReady(true);
-      })
-      .catch(() => setWsReady(true));
-  }, []);
+	useEffect(() => {
+		void getWorkspaceInfo().then((ws) => {
+			if (ws) setWorkspace(ws);
+		});
+	}, []);
+	// Hold the skeleton until boot resume resolves — no empty-pane flash.
+	const [wsReady, setWsReady] = useState(false);
+	useEffect(() => {
+		// Keep the recents list even when no workspace is open — the welcome page
+		// offers them as one-click reopen, and this is the only place that reads
+		// them before a project exists. `root`/`name` stay untouched: an
+		// already-active workspace is adopted through the normal open/switch
+		// flows, which also sync `activeId`.
+		void getWorkspaceInfo()
+			.then((ws) => {
+				setWorkspace((prev) => ({ ...prev, recents: ws.recents }));
+				setWsReady(true);
+			})
+			.catch(() => setWsReady(true));
+	}, []);
 
-  const handlePickWorkspace = async () => {
-    invalidate();
-    setViewLoading(true);
-    // A rejected IPC must still lower the veil — otherwise it blocks the
-    // whole window with no way out.
-    const res = await pickWorkspace().catch(() => null);
-    if (res) {
-      setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
-      // Views are keyed `root:id` — the outgoing workspace's buffers stay
-      // cached (and keep streaming while a turn is live there), so
-      // switching back restores the live stream, not a store snapshot.
-      setActiveId(res.active);
-      if (res.history.length > 0) {
-        mountLoadedView(res.root, res.active, res);
-      }
-      void refresh({ force: true });
-      void getWorkspaceInfo().then((ws) => {
-        if (ws) setWorkspace(ws);
-      });
-    }
-    if (!res || res.history.length === 0) releaseLoading();
-  };
+	const handlePickWorkspace = async () => {
+		invalidate();
+		setViewLoading(true);
+		// A rejected IPC must still lower the veil — otherwise it blocks the
+		// whole window with no way out.
+		const res = await pickWorkspace().catch(() => null);
+		if (res) {
+			setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
+			// Views are keyed `root:id` — the outgoing workspace's buffers stay
+			// cached (and keep streaming while a turn is live there), so
+			// switching back restores the live stream, not a store snapshot.
+			setActiveId(res.active);
+			if (res.history.length > 0) {
+				mountLoadedView(res.root, res.active, res);
+			}
+			void refresh({ force: true });
+			void getWorkspaceInfo().then((ws) => {
+				if (ws) setWorkspace(ws);
+			});
+		}
+		if (!res || res.history.length === 0) releaseLoading();
+	};
 
-  // `veil` is set only by the 编程 ↔ 工作 mode tab. A plain workspace switch
-  // (project row, recents, folder picker) keeps to the sidebar and chat pane.
-  const handleSwitchWorkspace = async (path: string, { veil = false } = {}) => {
-    if (!path || path === workspace.root) return;
-    invalidate();
-    // Flip the mode NOW — the tab (and `officeMode`, which derives from the
-    // root) follows the click at once; only the content waits on the kernel
-    // load. Same pattern as `handleOpenSession`. Rolled back on failure so
-    // the tab never sits on a workspace that didn't open.
-    const previousRoot = workspace.root;
-    setWorkspace((prev) => ({ ...prev, root: path }));
-    setViewLoading(true);
-    if (veil) setSwitchVeil(true);
-    // Same guard: a rejected switch falls through to the failure branch,
-    // which restores the previous root and lowers the veil.
-    const res = await switchWorkspace(path).catch(() => null);
-    if (res) {
-      evictDiscarded(previousRoot, activeId);
-      // The new summary rebases only pages the user had already opened. A
-      // workspace switch must never request the legacy full conversation list.
-      await refresh({ force: true });
-      setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
-      setActiveId(res.active);
-      if (res.history.length > 0) {
-        await mountLoadedView(res.root, res.active, res);
-      }
-      void getWorkspaceInfo().then((ws) => {
-        if (ws) setWorkspace(ws);
-      });
-    } else {
-      setWorkspace((prev) => ({ ...prev, root: previousRoot }));
-      if (veil) setSwitchVeil(false);
-    }
-    if (!res || res.history.length === 0) releaseLoading();
-  };
+	// `veil` is set only by the 编程 ↔ 工作 mode tab. A plain workspace switch
+	// (project row, recents, folder picker) keeps to the sidebar and chat pane.
+	const handleSwitchWorkspace = async (path: string, { veil = false } = {}) => {
+		if (!path || path === workspace.root) return;
+		invalidate();
+		// Flip the mode NOW — the tab (and `officeMode`, which derives from the
+		// root) follows the click at once; only the content waits on the kernel
+		// load. Same pattern as `handleOpenSession`. Rolled back on failure so
+		// the tab never sits on a workspace that didn't open.
+		const previousRoot = workspace.root;
+		setWorkspace((prev) => ({ ...prev, root: path }));
+		setViewLoading(true);
+		if (veil) setSwitchVeil(true);
+		// Same guard: a rejected switch falls through to the failure branch,
+		// which restores the previous root and lowers the veil.
+		const res = await switchWorkspace(path).catch(() => null);
+		if (res) {
+			evictDiscarded(previousRoot, activeId);
+			// The new summary rebases only pages the user had already opened. A
+			// workspace switch must never request the legacy full conversation list.
+			await refresh({ force: true });
+			setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
+			setActiveId(res.active);
+			if (res.history.length > 0) {
+				await mountLoadedView(res.root, res.active, res);
+			}
+			void getWorkspaceInfo().then((ws) => {
+				if (ws) setWorkspace(ws);
+			});
+		} else {
+			setWorkspace((prev) => ({ ...prev, root: previousRoot }));
+			if (veil) setSwitchVeil(false);
+		}
+		if (!res || res.history.length === 0) releaseLoading();
+	};
 
-  // The 编程 ↔ 工作 tab — the only entry that shows the full-window veil.
-  const handleSwitchMode = (path: string) => handleSwitchWorkspace(path, { veil: true });
+	// The 编程 ↔ 工作 tab — the only entry that shows the full-window veil.
+	const handleSwitchMode = (path: string) =>
+		handleSwitchWorkspace(path, { veil: true });
 
-  // Open a conversation from anywhere in the sidebar tree. Ids are
-  // per-workspace, so a row belonging to another project switches the
-  // active workspace first — its actors get parked (kept alive), not
-  // killed, so a running turn survives the switch.
-  const handleOpenSession = async (root: string, id: number) => {
-    invalidate();
-    loadReset();
-    // Opening the conversation is what "read" means — the bell counts what the
-    // user has not looked at, and the sidebar row is the other way in.
-    markSessionRead(root, id);
-    setViewLoading(true);
-    // Flip the pointer NOW — the clicked session's empty view +
-    // skeleton replace the old content in the same frame instead of
-    // the old conversation lingering through the whole kernel load.
-    const previousId = useAgentStore.getState().activeId;
-    const previousRoot = useAgentStore.getState().workspaceRoot;
-    setActiveId(id);
-    if (root && root !== useAgentStore.getState().workspaceRoot) {
-      const res = await switchWorkspace(root).catch(() => null);
-      if (!res) {
-        setViewLoading(false);
-        return;
-      }
-      useAgentStore.getState().setWorkspaceRoot(res.root);
-      setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
-      void getWorkspaceInfo().then((ws) => {
-        if (ws && ws.root === useAgentStore.getState().workspaceRoot) setWorkspace(ws);
-      });
-    }
-    const r = await openSession(id).catch(() => null);
-    loadStamp("ipc:openSession");
-    evictDiscarded(previousRoot, previousId);
-    if (!r) {
-      // Failed open — nothing to mount; drop the veil and the skeleton.
-      setViewLoading(false);
-      setSwitchVeil(false);
-    } else if (r.history.length > 0) {
-      // `root` (the clicked row's project) is the canonical workspace
-      // after any switch above — key the rebuilt view under it.
-      await mountLoadedView(root || workspace.root, id, r);
-    } else {
-      releaseLoading();
-    }
-  };
+	// Open a conversation from anywhere in the sidebar tree. Ids are
+	// per-workspace, so a row belonging to another project switches the
+	// active workspace first — its actors get parked (kept alive), not
+	// killed, so a running turn survives the switch.
+	const handleOpenSession = async (root: string, id: number) => {
+		invalidate();
+		loadReset();
+		// Opening the conversation is what "read" means — the bell counts what the
+		// user has not looked at, and the sidebar row is the other way in.
+		markSessionRead(root, id);
+		setViewLoading(true);
+		// Flip the pointer NOW — the clicked session's empty view +
+		// skeleton replace the old content in the same frame instead of
+		// the old conversation lingering through the whole kernel load.
+		const previousId = useAgentStore.getState().activeId;
+		const previousRoot = useAgentStore.getState().workspaceRoot;
+		setActiveId(id);
+		if (root && root !== useAgentStore.getState().workspaceRoot) {
+			const res = await switchWorkspace(root).catch(() => null);
+			if (!res) {
+				setViewLoading(false);
+				return;
+			}
+			useAgentStore.getState().setWorkspaceRoot(res.root);
+			setWorkspace((prev) => ({ ...prev, root: res.root, name: res.name }));
+			void getWorkspaceInfo().then((ws) => {
+				if (ws && ws.root === useAgentStore.getState().workspaceRoot)
+					setWorkspace(ws);
+			});
+		}
+		const r = await openSession(id).catch(() => null);
+		loadStamp('ipc:openSession');
+		evictDiscarded(previousRoot, previousId);
+		if (!r) {
+			// Failed open — nothing to mount; drop the veil and the skeleton.
+			setViewLoading(false);
+			setSwitchVeil(false);
+		} else if (r.history.length > 0) {
+			// `root` (the clicked row's project) is the canonical workspace
+			// after any switch above — key the rebuilt view under it.
+			await mountLoadedView(root || workspace.root, id, r);
+		} else {
+			releaseLoading();
+		}
+	};
 
-  // A clicked desktop notification lands here once the shell has raised the
-  // window — the same way in as the bell row. Through a ref: the listener is
-  // installed once the workspace is ready; the ref follows later switches.
-  const openSessionRef = useRef(handleOpenSession);
-  openSessionRef.current = handleOpenSession;
-  const bootLoaded = useRef(false);
-  const bootSessionLoad = useRef<Promise<unknown>>(Promise.resolve());
-  useEffect(() => {
-    if (!wsReady || !sessionsLoaded) return;
-    const controller = new AbortController();
-    void onNotificationClick(async ({ root, session }) => {
-      // A late startup response must not replace the clicked conversation.
-      bootLoaded.current = true;
-      await bootSessionLoad.current;
-      if (controller.signal.aborted) throw new Error("notification navigation cancelled");
-      await openSessionRef.current(root, session);
-    }, controller.signal).catch((e) => {
-      if (!controller.signal.aborted) toast.error(String(e));
-    });
-    return () => controller.abort();
-  }, [wsReady, sessionsLoaded]);
+	// A clicked desktop notification lands here once the shell has raised the
+	// window — the same way in as the bell row. Through a ref: the listener is
+	// installed once the workspace is ready; the ref follows later switches.
+	const openSessionRef = useRef(handleOpenSession);
+	openSessionRef.current = handleOpenSession;
+	const bootLoaded = useRef(false);
+	const bootSessionLoad = useRef<Promise<unknown>>(Promise.resolve());
+	useEffect(() => {
+		if (!wsReady || !sessionsLoaded) return;
+		const controller = new AbortController();
+		void onNotificationClick(async ({ root, session }) => {
+			// A late startup response must not replace the clicked conversation.
+			bootLoaded.current = true;
+			await bootSessionLoad.current;
+			if (controller.signal.aborted)
+				throw new Error('notification navigation cancelled');
+			await openSessionRef.current(root, session);
+		}, controller.signal).catch((e) => {
+			if (!controller.signal.aborted) toast.error(String(e));
+		});
+		return () => controller.abort();
+	}, [wsReady, sessionsLoaded]);
 
-  const handleNewSession = async () => {
-    // A brand-new session has no history to mount, but `viewLoading` may still
-    // be up — it starts true at boot and only the boot effect lowers it. That
-    // effect is one-shot (`bootLoaded`), so a second session created later
-    // would otherwise sit on the skeleton forever.
-    const previousId = activeId;
-    const previousRoot = workspace.root;
-    // Skeleton first, then the greeting: the old turn tree stays up until the
-    // skeleton is showing, instead of being torn down in the click frame.
-    setViewLoading(true);
-    // A rejected IPC must still lower the veil — the skeleton can never stick.
-    const created = await newSession().catch(() => null);
-    if (created) {
-      if (typeof created.id === "number") {
-        setActiveId(created.id);
-      }
-      evictDiscarded(previousRoot, previousId);
-    }
-    releaseLoading();
-  };
+	const handleNewSession = async () => {
+		// A brand-new session has no history to mount, but `viewLoading` may still
+		// be up — it starts true at boot and only the boot effect lowers it. That
+		// effect is one-shot (`bootLoaded`), so a second session created later
+		// would otherwise sit on the skeleton forever.
+		const previousId = activeId;
+		const previousRoot = workspace.root;
+		// Skeleton first, then the greeting: the old turn tree stays up until the
+		// skeleton is showing, instead of being torn down in the click frame.
+		setViewLoading(true);
+		// A rejected IPC must still lower the veil — the skeleton can never stick.
+		const created = await newSession().catch(() => null);
+		if (created) {
+			if (typeof created.id === 'number') {
+				setActiveId(created.id);
+			}
+			evictDiscarded(previousRoot, previousId);
+		}
+		releaseLoading();
+	};
 
-  // Leaving an empty session discards it on the backend. Its cached view must
-  // go too, or a later mount of that key would resurface the dropped session.
-  // An unloaded row is not a deleted session. Check that single identity in
-  // its own workspace instead of treating a paged project as a complete list.
-  const evictDiscarded = (root: string, id: number) => {
-    if (!id || !root) return;
-    void sidebarRow(root, id).then(({ known_project, row }) => {
-      if (!known_project || row) return;
-      dropView(root, id);
-      forgetToldFailures(root, id);
-    }).catch(() => {}); // Failure is not evidence of deletion.
-  };
+	// Leaving an empty session discards it on the backend. Its cached view must
+	// go too, or a later mount of that key would resurface the dropped session.
+	// An unloaded row is not a deleted session. Check that single identity in
+	// its own workspace instead of treating a paged project as a complete list.
+	const evictDiscarded = (root: string, id: number) => {
+		if (!id || !root) return;
+		void sidebarRow(root, id)
+			.then(({ known_project, row }) => {
+				if (!known_project || row) return;
+				dropView(root, id);
+				forgetToldFailures(root, id);
+			})
+			.catch(() => {}); // Failure is not evidence of deletion.
+	};
 
-  const handleDeleteSession = (id: number) => {
-    invalidate();
-    setViewLoading(true);
-    // Evict the cached view NOW — `loadView` never overwrites an existing
-    // entry, so a stale buffer would resurface the deleted session the
-    // next time its key is mounted.
-    dropView(workspace.root, id);
-    forgetToldFailures(workspace.root, id);
-    void deleteSession(id).then((r) => {
-      void refresh({ force: true });
-      // If the deleted session was on screen, the backend already
-      // switched to another — follow it and rebuild its view.
-      setActiveId(r.active);
-      if (r.history.length > 0) mountLoadedView(workspace.root, r.active, r);
-      else releaseLoading();
-    }).catch(() => setViewLoading(false));
-  };
+	const handleDeleteSession = (id: number) => {
+		invalidate();
+		setViewLoading(true);
+		// Evict the cached view NOW — `loadView` never overwrites an existing
+		// entry, so a stale buffer would resurface the deleted session the
+		// next time its key is mounted.
+		dropView(workspace.root, id);
+		forgetToldFailures(workspace.root, id);
+		void deleteSession(id)
+			.then((r) => {
+				void refresh({ force: true });
+				// If the deleted session was on screen, the backend already
+				// switched to another — follow it and rebuild its view.
+				setActiveId(r.active);
+				if (r.history.length > 0) mountLoadedView(workspace.root, r.active, r);
+				else releaseLoading();
+			})
+			.catch(() => setViewLoading(false));
+	};
 
-  /** Older-history page — the stream's scroll-top trigger calls this;
-   * folds the slice with a `baseIndex` so every item carries its global
-   * `hi` and turn keys stay stable across prepends. */
-  const handleLoadOlder = useCallback(async () => {
-    if (!workspace.root || !activeId) return false;
-    // Read through the ref — this callback is re-invoked by the seek
-    // loop and by scroll events while older closure copies are still
-    // alive; the render-captured `active` would hand every call the
-    // same stale `before`.
-    const start = activeViewNow().historyStart ?? 0;
-    if (start <= 0) return false;
-    const r = await historyPage(activeId, start);
-    if (r.history.length === 0) return false;
-    const folded = await viewFromHistoryChunked(r.history, undefined, start - r.history.length);
-    // The prepend commit mounts the whole new page in one commit (the
-    // scroll-restore needs real heights) — a transition keeps its render
-    // interruptible so the stream stays clickable while it lands.
-    startTransition(() =>
-      prependItems(workspace.root, activeId, folded.items, start - r.history.length, r.turn_offset),
-    );
-    return true;
-  }, [workspace.root, activeId, prependItems]);
+	/** Older-history page — the stream's scroll-top trigger calls this;
+	 * folds the slice with a `baseIndex` so every item carries its global
+	 * `hi` and turn keys stay stable across prepends. */
+	const handleLoadOlder = useCallback(async () => {
+		if (!workspace.root || !activeId) return false;
+		// Read through the ref — this callback is re-invoked by the seek
+		// loop and by scroll events while older closure copies are still
+		// alive; the render-captured `active` would hand every call the
+		// same stale `before`.
+		const start = activeViewNow().historyStart ?? 0;
+		if (start <= 0) return false;
+		const r = await historyPage(activeId, start);
+		if (r.history.length === 0) return false;
+		const folded = await viewFromHistoryChunked(
+			r.history,
+			undefined,
+			start - r.history.length
+		);
+		// The prepend commit mounts the whole new page in one commit (the
+		// scroll-restore needs real heights) — a transition keeps its render
+		// interruptible so the stream stays clickable while it lands.
+		startTransition(() =>
+			prependItems(
+				workspace.root,
+				activeId,
+				folded.items,
+				start - r.history.length,
+				r.turn_offset
+			)
+		);
+		return true;
+	}, [workspace.root, activeId, prependItems]);
 
-  // First-load: the kernel resumed the most recent session at boot, but
-  // the webview only sees *new* events — rebuild the stream from the
-  // persisted snapshot so the resumed session isn't blank. `openSession`
-  // is idempotent for a live actor; it only re-reads the store here.
-  useEffect(() => {
-    if (bootLoaded.current) return;
-    // Only a successful summary can declare no active session. A local pointer
-    // may already belong to a user-initiated new/open; never replace it with a
-    // short-lived older summary, or confuse a failed/unresolved read with empty.
-    if (!sessionsLoaded || sidebarError || activeId) return;
-    if (!sidebarActive) {
-      // Archived rows are still selectable in the sidebar, but there is no
-      // conversation to resume/send to. Resolve boot and show the welcome CTA.
-      bootLoaded.current = true;
-      releaseLoading();
-      return;
-    }
-    const current = sidebarActive.row; // May be outside page 1, even archived.
-    // The canonical root from the project tree — `workspace.root` state may
-    // still be empty this early in the boot sequence. Wait for it: the view is
-    // filed under `root:id`, and if the reader's root differs (even empty) the
-    // pane resolves to an empty view and flashes the greeting before the real
-    // history lands. This effect re-runs when the root arrives.
-    const currentRoot = workspace.root || projects.find((p) => p.current)?.root || "";
-    if (!currentRoot) return;
-    bootLoaded.current = true;
-    setViewLoading(true);
-    bootSessionLoad.current = openSession(current.id).then(async (r) => {
-      if (r && r.history.length > 0)
-        await mountLoadedView(currentRoot, current.id, r);
-      else releaseLoading();
-    }).catch(() => releaseLoading());
-    setActiveId(current.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions, sidebarActive, workspace.root, projects, sessionsLoaded, sidebarError, activeId, releaseLoading]);
+	// First-load: the kernel resumed the most recent session at boot, but
+	// the webview only sees *new* events — rebuild the stream from the
+	// persisted snapshot so the resumed session isn't blank. `openSession`
+	// is idempotent for a live actor; it only re-reads the store here.
+	useEffect(() => {
+		if (bootLoaded.current) return;
+		// Only a successful summary can declare no active session. A local pointer
+		// may already belong to a user-initiated new/open; never replace it with a
+		// short-lived older summary, or confuse a failed/unresolved read with empty.
+		if (!sessionsLoaded || sidebarError || activeId) return;
+		if (!sidebarActive) {
+			// Archived rows are still selectable in the sidebar, but there is no
+			// conversation to resume/send to. Resolve boot and show the welcome CTA.
+			bootLoaded.current = true;
+			releaseLoading();
+			return;
+		}
+		const current = sidebarActive.row; // May be outside page 1, even archived.
+		// The canonical root from the project tree — `workspace.root` state may
+		// still be empty this early in the boot sequence. Wait for it: the view is
+		// filed under `root:id`, and if the reader's root differs (even empty) the
+		// pane resolves to an empty view and flashes the greeting before the real
+		// history lands. This effect re-runs when the root arrives.
+		const currentRoot =
+			workspace.root || projects.find((p) => p.current)?.root || '';
+		if (!currentRoot) return;
+		bootLoaded.current = true;
+		setViewLoading(true);
+		bootSessionLoad.current = openSession(current.id)
+			.then(async (r) => {
+				if (r && r.history.length > 0)
+					await mountLoadedView(currentRoot, current.id, r);
+				else releaseLoading();
+			})
+			.catch(() => releaseLoading());
+		setActiveId(current.id);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [
+		sessions,
+		sidebarActive,
+		workspace.root,
+		projects,
+		sessionsLoaded,
+		sidebarError,
+		activeId,
+		releaseLoading,
+	]);
 
-  const activeSession =
-    sessions.find((s) => (activeId ? s.id === activeId : s.active));
-  const sessionTitle =
-    !activeSession
-      ? "" // zero sessions: no phantom "新会话" in the title bar
-      : activeSession?.title === "new session" || !activeSession?.title
-        ? "新会话"
-        : activeSession.title;
-  const pendingDeleteTitle = !pendingDelete
-    ? ""
-    : pendingDelete.title === "new session" || !pendingDelete.title
-      ? "新会话"
-      : pendingDelete.title;
-  const pendingArchiveTitle = !pendingArchive
-    ? ""
-    : pendingArchive.row.title === "new session" || !pendingArchive.row.title
-      ? "新会话"
-      : pendingArchive.row.title;
-  const pendingForkTitle = !pendingFork
-    ? ""
-    : pendingFork.title === "new session" || !pendingFork.title
-      ? "新会话"
-      : pendingFork.title;
+	const activeSession = sessions.find((s) =>
+		activeId ? s.id === activeId : s.active
+	);
+	const sessionTitle = !activeSession
+		? '' // zero sessions: no phantom "新会话" in the title bar
+		: activeSession?.title === 'new session' || !activeSession?.title
+			? '新会话'
+			: activeSession.title;
+	const pendingDeleteTitle = !pendingDelete
+		? ''
+		: pendingDelete.title === 'new session' || !pendingDelete.title
+			? '新会话'
+			: pendingDelete.title;
+	const pendingArchiveTitle = !pendingArchive
+		? ''
+		: pendingArchive.row.title === 'new session' || !pendingArchive.row.title
+			? '新会话'
+			: pendingArchive.row.title;
+	const pendingForkTitle = !pendingFork
+		? ''
+		: pendingFork.title === 'new session' || !pendingFork.title
+			? '新会话'
+			: pendingFork.title;
 
-  // Removing a project always confirms — the copy says what happens to its
-  // records, and warns louder when a running task would be interrupted.
-  const requestRemoveWorkspace = (p: ProjectOverview) => setPendingRemoveWs(p);
+	// Removing a project always confirms — the copy says what happens to its
+	// records, and warns louder when a running task would be interrupted.
+	const requestRemoveWorkspace = (p: ProjectOverview) => setPendingRemoveWs(p);
 
-  const doRemoveWorkspace = async (root: string) => {
-    invalidate();
-    const res = await removeWorkspace(root).catch(() => null);
-    void refresh({ force: true });
-    if (res?.removed_active) {
-      setActiveId(0);
-    }
-    const ws = await getWorkspaceInfo().catch(() => null);
-    if (ws) setWorkspace(ws);
-  };
+	const doRemoveWorkspace = async (root: string) => {
+		invalidate();
+		const res = await removeWorkspace(root).catch(() => null);
+		void refresh({ force: true });
+		if (res?.removed_active) {
+			setActiveId(0);
+		}
+		const ws = await getWorkspaceInfo().catch(() => null);
+		if (ws) setWorkspace(ws);
+	};
 
-  // Meta edits: run, then re-read the tree; failures surface as a toast.
-  const editSession = (op: Promise<unknown>) => {
-    invalidate();
-    void op
-      .then(() => void refresh({ force: true }))
-      .catch((e) => toast.error(String(e)));
-  };
+	// Meta edits: run, then re-read the tree; failures surface as a toast.
+	const editSession = (op: Promise<unknown>) => {
+		invalidate();
+		void op
+			.then(() => void refresh({ force: true }))
+			.catch((e) => toast.error(String(e)));
+	};
 
-  const sessionActions: SessionActions = {
-    rename: (root, row) => {
-      // Sidebar titles are display projections, not editor drafts. Fetch only
-      // this title on demand, so opening/saving cannot silently truncate it.
-      void readSessionTitle(root, row.id).then(({ title }) => {
-        setRenameDraft(title === "new session" ? "" : title);
-        setPendingRename({ root, row });
-      }).catch((e) => toast.error(String(e)));
-    },
-    pin: (root, id, pinned) => editSession(pinSession(root, id, pinned)),
-    pinGlobal: (root, id, pinned) => editSession(pinSessionGlobal(root, id, pinned)),
-    // Archiving hides the session and drops its pins — confirm first.
-    // Restoring is harmless and runs directly.
-    archive: (root, row, archived) => {
-      if (archived) setPendingArchive({ root, row });
-      else editSession(archiveSession(root, row.id, false));
-    },
-    exportRecord: (root, id) => {
-      void exportSession(root, id)
-        .then((r) => {
-          if (r.saved) toast.success(`已导出到 ${r.path}`);
-        })
-        .catch((e) => toast.error(String(e)));
-    },
-    fork: (id) => {
-      // Fork duplicates history — confirm before touching the store,
-      // same pattern as the delete dialog below.
-      const row = sessions.find((s) => s.id === id);
-      if (row) setPendingFork(row);
-    },
-    delete: (id) => {
-      // Deletion is destructive — park the row and let the dialog
-      // below confirm before touching the backend.
-      const row = sessions.find((s) => s.id === id);
-      if (row) setPendingDelete(row);
-    },
-  };
+	const sessionActions: SessionActions = {
+		rename: (root, row) => {
+			// Sidebar titles are display projections, not editor drafts. Fetch only
+			// this title on demand, so opening/saving cannot silently truncate it.
+			void readSessionTitle(root, row.id)
+				.then(({ title }) => {
+					setRenameDraft(title === 'new session' ? '' : title);
+					setPendingRename({ root, row });
+				})
+				.catch((e) => toast.error(String(e)));
+		},
+		pin: (root, id, pinned) => editSession(pinSession(root, id, pinned)),
+		pinGlobal: (root, id, pinned) =>
+			editSession(pinSessionGlobal(root, id, pinned)),
+		// Archiving hides the session and drops its pins — confirm first.
+		// Restoring is harmless and runs directly.
+		archive: (root, row, archived) => {
+			if (archived) setPendingArchive({ root, row });
+			else editSession(archiveSession(root, row.id, false));
+		},
+		exportRecord: (root, id) => {
+			void exportSession(root, id)
+				.then((r) => {
+					if (r.saved) toast.success(`已导出到 ${r.path}`);
+				})
+				.catch((e) => toast.error(String(e)));
+		},
+		fork: (id) => {
+			// Fork duplicates history — confirm before touching the store,
+			// same pattern as the delete dialog below.
+			const row = sessions.find((s) => s.id === id);
+			if (row) setPendingFork(row);
+		},
+		delete: (id) => {
+			// Deletion is destructive — park the row and let the dialog
+			// below confirm before touching the backend.
+			const row = sessions.find((s) => s.id === id);
+			if (row) setPendingDelete(row);
+		},
+	};
 
-  const submitRename = () => {
-    if (!pendingRename) return;
-    editSession(renameSession(pendingRename.root, pendingRename.row.id, renameDraft));
-    setPendingRename(null);
-  };
+	const submitRename = () => {
+		if (!pendingRename) return;
+		editSession(
+			renameSession(pendingRename.root, pendingRename.row.id, renameDraft)
+		);
+		setPendingRename(null);
+	};
 
-  const doFork = (id: number) => {
-    invalidate();
-    // Backend activates the fork — mirror it locally + rebuild the
-    // stream view from the copied history.
-    setViewLoading(true);
-    void forkSession(id).then((r) => {
-      if (!r) {
-        setViewLoading(false);
-        return;
-      }
-      void refresh({ force: true });
-      setActiveId(r.id);
-      if (r.history.length > 0) mountLoadedView(workspace.root, r.id, r);
-      else releaseLoading();
-    }).catch(() => setViewLoading(false));
-  };
+	const doFork = (id: number) => {
+		invalidate();
+		// Backend activates the fork — mirror it locally + rebuild the
+		// stream view from the copied history.
+		setViewLoading(true);
+		void forkSession(id)
+			.then((r) => {
+				if (!r) {
+					setViewLoading(false);
+					return;
+				}
+				void refresh({ force: true });
+				setActiveId(r.id);
+				if (r.history.length > 0) mountLoadedView(workspace.root, r.id, r);
+				else releaseLoading();
+			})
+			.catch(() => setViewLoading(false));
+	};
 
-  // The backend reports `running` from live handles (including parked
-  // workspaces); overlaying `runningKeys` (fresh off `StateChanged`
-  // events) makes the orb appear the moment a turn starts instead of up
-  // to 2s later. Keys are `root:id` — no collision across projects, so a
-  // background workspace's running turn keeps its orb too.
-  const runningRoots = new Set([...runningKeys].map((key) => key.slice(0, key.lastIndexOf(":"))));
-  const sidebarProjects = projects.map((p) => ({
-    ...p,
-    running: p.running || runningRoots.has(p.root),
-    sessions: p.sessions.map((s) => ({
-      ...s,
-      running: s.running || runningKeys.has(`${p.root}:${s.id}`),
-    })),
-  }));
+	// The backend reports `running` from live handles (including parked
+	// workspaces); overlaying `runningKeys` (fresh off `StateChanged`
+	// events) makes the orb appear the moment a turn starts instead of up
+	// to 2s later. Keys are `root:id` — no collision across projects, so a
+	// background workspace's running turn keeps its orb too.
+	const runningRoots = new Set(
+		[...runningKeys].map((key) => key.slice(0, key.lastIndexOf(':')))
+	);
+	const sidebarProjects = projects.map((p) => ({
+		...p,
+		running: p.running || runningRoots.has(p.root),
+		sessions: p.sessions.map((s) => ({
+			...s,
+			running: s.running || runningKeys.has(`${p.root}:${s.id}`),
+		})),
+	}));
 
-  // A missing workspace is also not a welcome until the summary resolves;
-  // a local user-selected pointer always wins over a stale no-active summary.
-  const noActiveSession = sessionsLoaded && !sidebarError && !sidebarActive && !activeId;
-  // Office mode IS a workspace (the `~/.local/share/husk/office`
-  // pseudo-workspace) — the composer only offers「办公」in its mode
-  // dropdown while that workspace is active; everywhere else switching
-  // happens through the sidebar's 办公 block.
-  const officeMode =
-    !!workspace.office_root && workspace.root === workspace.office_root;
+	// A missing workspace is also not a welcome until the summary resolves;
+	// a local user-selected pointer always wins over a stale no-active summary.
+	const noActiveSession =
+		sessionsLoaded && !sidebarError && !sidebarActive && !activeId;
+	// Office mode IS a workspace (the `~/.local/share/husk/office`
+	// pseudo-workspace) — the composer only offers「办公」in its mode
+	// dropdown while that workspace is active; everywhere else switching
+	// happens through the sidebar's 办公 block.
+	const officeMode =
+		!!workspace.office_root && workspace.root === workspace.office_root;
 
-  return (
-    <>
-      <MainLayout
-        terminal={<TerminalDock cwd={workspace.root || undefined} />}
-        sidebar={
-        <SessionSidebar
-          projects={sidebarProjects}
-          recents={sidebarRecents.map((e) => ({ ...e, row: { ...e.row,
-            running: e.row.running || runningKeys.has(`${e.root}:${e.row.id}`) } }))}
-          paging={paging}
-          error={sidebarError}
-          onRetry={() => void refresh({ force: true })}
-          projectsLoaded={sessionsLoaded}
-          activeId={activeId}
-          hasWorkspace={wsReady && !!workspace.root}
-          onNew={handleNewSession}
-          onOpenSession={handleOpenSession}
-          actions={sessionActions}
-          onPickWorkspace={handlePickWorkspace}
-          onSwitchWorkspace={(path) => void handleSwitchWorkspace(path)}
-          onSwitchMode={(path) => void handleSwitchMode(path)}
-          onRemoveWorkspace={requestRemoveWorkspace}
-          onOpenSettings={() => {
-            setSettingsPage("general");
-            setSettingsOpen(true);
-          }}
-          onToggleTerminal={useLayoutStore.getState().toggleTerminal}
-        />
-        }
-      >
-        <ChatPage
-          title={sessionTitle}
-          workspaceRoot={workspace.root}
-          officeMode={officeMode}
-          loading={viewLoading}
-          sessionKey={`${workspace.root}:${activeId}`}
-          sessionId={activeId}
-          sessionsEmpty={noActiveSession}
-          onNewSession={handleNewSession}
-          onLoadOlder={handleLoadOlder}
-          onShowRaw={handleShowRaw}
-          onOpenWorkspace={handlePickWorkspace}
-          recents={workspace.recents}
-          onOpenRecent={(path) => void handleSwitchWorkspace(path)}
-          workspaceReady={wsReady && noActiveSession}
-        />
-      </MainLayout>
+	return (
+		<>
+			<MainLayout
+				terminal={<TerminalDock cwd={workspace.root || undefined} />}
+				sidebar={
+					<SessionSidebar
+						projects={sidebarProjects}
+						recents={sidebarRecents.map((e) => ({
+							...e,
+							row: {
+								...e.row,
+								running:
+									e.row.running || runningKeys.has(`${e.root}:${e.row.id}`),
+							},
+						}))}
+						paging={paging}
+						error={sidebarError}
+						onRetry={() => void refresh({ force: true })}
+						projectsLoaded={sessionsLoaded}
+						activeId={activeId}
+						hasWorkspace={wsReady && !!workspace.root}
+						onNew={handleNewSession}
+						onOpenSession={handleOpenSession}
+						actions={sessionActions}
+						onPickWorkspace={handlePickWorkspace}
+						onSwitchWorkspace={(path) => void handleSwitchWorkspace(path)}
+						onSwitchMode={(path) => void handleSwitchMode(path)}
+						onRemoveWorkspace={requestRemoveWorkspace}
+						onOpenSettings={() => {
+							setSettingsPage('general');
+							setSettingsOpen(true);
+						}}
+						onToggleTerminal={useLayoutStore.getState().toggleTerminal}
+					/>
+				}
+			>
+				<ChatPage
+					title={sessionTitle}
+					workspaceRoot={workspace.root}
+					officeMode={officeMode}
+					loading={viewLoading}
+					sessionKey={`${workspace.root}:${activeId}`}
+					sessionId={activeId}
+					sessionsEmpty={noActiveSession}
+					onNewSession={handleNewSession}
+					onLoadOlder={handleLoadOlder}
+					onShowRaw={handleShowRaw}
+					onOpenWorkspace={handlePickWorkspace}
+					recents={workspace.recents}
+					onOpenRecent={(path) => void handleSwitchWorkspace(path)}
+					workspaceReady={wsReady && noActiveSession}
+				/>
+			</MainLayout>
 
-      {/* Switch veil — same look as the boot splash, over sidebar and chat
+			{/* Switch veil — same look as the boot splash, over sidebar and chat
           together so the two appear as one. Driven by the view-loading flag.
           Also stays up until the workspace info lands (`!wsReady`): the boot
           splash in index.html fades two frames after mount, and without this
           cover the fade exposed the still-blank pane (white flash) before the
           skeleton could mount. */}
-      <WorkspaceLoadingVeil visible={switchVeil || !wsReady} />
+			<WorkspaceLoadingVeil visible={switchVeil || !wsReady} />
 
-      {/* Settings overlay — floats above the workspace, which keeps its
+			{/* Settings overlay — floats above the workspace, which keeps its
           DOM (and the expensive stream tree) mounted the whole time.
           z-40 on purpose: Radix dropdowns/popovers portal at z-50 and
           must render ABOVE the settings pane — a higher overlay hides
           every KV popup inside it. */}
-      {settingsOpen && (
-        <div className="fixed inset-0 z-40">
-          <SettingsPage initialTab={settingsPage} onClose={() => setSettingsOpen(false)} />
-        </div>
-      )}
+			{settingsOpen && (
+				<div className="fixed inset-0 z-40">
+					<SettingsPage
+						initialTab={settingsPage}
+						onClose={() => setSettingsOpen(false)}
+					/>
+				</div>
+			)}
 
-      <UpdateDialog />
+			<UpdateDialog />
 
-      {/* Raw-JSON history viewer — opened from the title-bar icon. */}
-      <RawHistoryDialog
-        open={rawOpen}
-        onOpenChange={setRawOpen}
-        sessionId={activeId || null}
-        workspaceRoot={workspace.root}
-      />
+			{/* Raw-JSON history viewer — opened from the title-bar icon. */}
+			<RawHistoryDialog
+				open={rawOpen}
+				onOpenChange={setRawOpen}
+				sessionId={activeId || null}
+				workspaceRoot={workspace.root}
+			/>
 
-      {/* Fork confirmation — creates a copy of the session's history. */}
-      <Dialog
-        open={pendingFork !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingFork(null);
-        }}
-      >
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-base">Fork 会话</DialogTitle>
-            <DialogDescription>
-              确定要复制会话「{pendingForkTitle}」的完整对话记录，创建一个新会话吗？
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPendingFork(null)}
-            >
-              取消
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                if (!pendingFork) return;
-                doFork(pendingFork.id);
-                setPendingFork(null);
-              }}
-            >
-              Fork
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+			{/* Fork confirmation — creates a copy of the session's history. */}
+			<Dialog
+				open={pendingFork !== null}
+				onOpenChange={(open) => {
+					if (!open) setPendingFork(null);
+				}}
+			>
+				<DialogContent className="max-w-sm">
+					<DialogHeader>
+						<DialogTitle className="text-base">Fork 会话</DialogTitle>
+						<DialogDescription>
+							确定要复制会话「{pendingForkTitle}
+							」的完整对话记录，创建一个新会话吗？
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter className="gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => setPendingFork(null)}
+						>
+							取消
+						</Button>
+						<Button
+							size="sm"
+							onClick={() => {
+								if (!pendingFork) return;
+								doFork(pendingFork.id);
+								setPendingFork(null);
+							}}
+						>
+							Fork
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
-      <Dialog
-        open={pendingRemoveWs !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingRemoveWs(null);
-        }}
-      >
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-base">移除项目</DialogTitle>
-            <DialogDescription>
-              {(pendingRemoveWs?.running || pendingRemoveWs?.sessions.some((r) => r.running))
-                ? `项目「${pendingRemoveWs?.name}」有任务正在运行，移除会立即中断这些任务。`
-                : `确定从列表中移除项目「${pendingRemoveWs?.name}」吗？`}
-              会话记录会保留，重新打开该文件夹即可恢复。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPendingRemoveWs(null)}
-            >
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => {
-                if (!pendingRemoveWs) return;
-                void doRemoveWorkspace(pendingRemoveWs.root);
-                setPendingRemoveWs(null);
-              }}
-            >
-              移除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+			<Dialog
+				open={pendingRemoveWs !== null}
+				onOpenChange={(open) => {
+					if (!open) setPendingRemoveWs(null);
+				}}
+			>
+				<DialogContent className="max-w-sm">
+					<DialogHeader>
+						<DialogTitle className="text-base">移除项目</DialogTitle>
+						<DialogDescription>
+							{pendingRemoveWs?.running ||
+							pendingRemoveWs?.sessions.some((r) => r.running)
+								? `项目「${pendingRemoveWs?.name}」有任务正在运行，移除会立即中断这些任务。`
+								: `确定从列表中移除项目「${pendingRemoveWs?.name}」吗？`}
+							会话记录会保留，重新打开该文件夹即可恢复。
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter className="gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => setPendingRemoveWs(null)}
+						>
+							取消
+						</Button>
+						<Button
+							variant="destructive"
+							size="sm"
+							onClick={() => {
+								if (!pendingRemoveWs) return;
+								void doRemoveWorkspace(pendingRemoveWs.root);
+								setPendingRemoveWs(null);
+							}}
+						>
+							移除
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
-      <Dialog
-        open={pendingRename !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingRename(null);
-        }}
-      >
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-base">重命名会话</DialogTitle>
-            <DialogDescription>留空则恢复为自动生成的标题。</DialogDescription>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitRename();
-            }}
-          >
-            <Input
-              autoFocus
-              value={renameDraft}
-              maxLength={80}
-              onChange={(e) => setRenameDraft(e.target.value)}
-              placeholder="会话标题"
-              className="h-8 text-sm"
-            />
-            <DialogFooter className="gap-2 mt-4">
-              <Button type="button" variant="outline" size="sm" onClick={() => setPendingRename(null)}>
-                取消
-              </Button>
-              <Button type="submit" size="sm">
-                保存
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+			<Dialog
+				open={pendingRename !== null}
+				onOpenChange={(open) => {
+					if (!open) setPendingRename(null);
+				}}
+			>
+				<DialogContent className="max-w-sm">
+					<DialogHeader>
+						<DialogTitle className="text-base">重命名会话</DialogTitle>
+						<DialogDescription>留空则恢复为自动生成的标题。</DialogDescription>
+					</DialogHeader>
+					<form
+						onSubmit={(e) => {
+							e.preventDefault();
+							submitRename();
+						}}
+					>
+						<Input
+							autoFocus
+							value={renameDraft}
+							maxLength={80}
+							onChange={(e) => setRenameDraft(e.target.value)}
+							placeholder="会话标题"
+							className="h-8 text-sm"
+						/>
+						<DialogFooter className="mt-4 gap-2">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => setPendingRename(null)}
+							>
+								取消
+							</Button>
+							<Button type="submit" size="sm">
+								保存
+							</Button>
+						</DialogFooter>
+					</form>
+				</DialogContent>
+			</Dialog>
 
-      <Dialog
-        open={pendingArchive !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingArchive(null);
-        }}
-      >
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-base">归档会话</DialogTitle>
-            <DialogDescription>
-              确定要归档会话「{pendingArchiveTitle}」吗？归档后会从列表中隐藏并取消置顶，可在列表底部的「已归档」中恢复。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" size="sm" onClick={() => setPendingArchive(null)}>
-              取消
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                if (!pendingArchive) return;
-                editSession(archiveSession(pendingArchive.root, pendingArchive.row.id, true));
-                setPendingArchive(null);
-              }}
-            >
-              归档
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+			<Dialog
+				open={pendingArchive !== null}
+				onOpenChange={(open) => {
+					if (!open) setPendingArchive(null);
+				}}
+			>
+				<DialogContent className="max-w-sm">
+					<DialogHeader>
+						<DialogTitle className="text-base">归档会话</DialogTitle>
+						<DialogDescription>
+							确定要归档会话「{pendingArchiveTitle}
+							」吗？归档后会从列表中隐藏并取消置顶，可在列表底部的「已归档」中恢复。
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter className="gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => setPendingArchive(null)}
+						>
+							取消
+						</Button>
+						<Button
+							size="sm"
+							onClick={() => {
+								if (!pendingArchive) return;
+								editSession(
+									archiveSession(
+										pendingArchive.root,
+										pendingArchive.row.id,
+										true
+									)
+								);
+								setPendingArchive(null);
+							}}
+						>
+							归档
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
-      <Dialog
-        open={pendingDelete !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingDelete(null);
-        }}
-      >
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-base">删除会话</DialogTitle>
-            <DialogDescription>
-              确定要删除会话「{pendingDeleteTitle}」吗？此操作无法撤销，会话记录将被永久删除。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPendingDelete(null)}
-            >
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => {
-                if (!pendingDelete) return;
-                handleDeleteSession(pendingDelete.id);
-                setPendingDelete(null);
-              }}
-            >
-              删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+			<Dialog
+				open={pendingDelete !== null}
+				onOpenChange={(open) => {
+					if (!open) setPendingDelete(null);
+				}}
+			>
+				<DialogContent className="max-w-sm">
+					<DialogHeader>
+						<DialogTitle className="text-base">删除会话</DialogTitle>
+						<DialogDescription>
+							确定要删除会话「{pendingDeleteTitle}
+							」吗？此操作无法撤销，会话记录将被永久删除。
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter className="gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => setPendingDelete(null)}
+						>
+							取消
+						</Button>
+						<Button
+							variant="destructive"
+							size="sm"
+							onClick={() => {
+								if (!pendingDelete) return;
+								handleDeleteSession(pendingDelete.id);
+								setPendingDelete(null);
+							}}
+						>
+							删除
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
-      {/* Keep last in the tree: sonner renders its <ol> in place here, so
+			{/* Keep last in the tree: sonner renders its <ol> in place here, so
           if its stylesheet ever fails to apply the unstyled element lands
           below the shell instead of shoving it down from the top. */}
-      <Toaster />
-      <WindowResizeEdges />
-    </>
-  );
+			<Toaster />
+			<WindowResizeEdges />
+		</>
+	);
 }

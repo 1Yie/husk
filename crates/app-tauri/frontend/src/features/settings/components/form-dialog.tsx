@@ -1,12 +1,12 @@
-import type { ReactNode } from "react";
+import type { ReactNode } from 'react';
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+	Dialog,
+	DialogContent,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 
 /**
  * The editor-dialog shell every settings pane repeats: title, body, and a
@@ -17,50 +17,62 @@ import { Button } from "@/components/ui/button";
  * editors that carry a long markdown body).
  */
 export function FormDialog({
-  open,
-  onOpenChange,
-  title,
-  children,
-  width = "md",
-  secondary,
-  busy = false,
-  disabled = false,
-  submitLabel,
-  busyLabel = "保存中…",
-  onSubmit,
+	open,
+	onOpenChange,
+	title,
+	children,
+	width = 'md',
+	secondary,
+	busy = false,
+	disabled = false,
+	submitLabel,
+	busyLabel = '保存中…',
+	onSubmit,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: ReactNode;
-  children: ReactNode;
-  width?: "md" | "sm" | "lg";
-  /** Left-hand footer slot, e.g. a `DeleteButton` in `text` variant. */
-  secondary?: ReactNode;
-  busy?: boolean;
-  disabled?: boolean;
-  submitLabel: string;
-  busyLabel?: string;
-  onSubmit: () => void;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	title: ReactNode;
+	children: ReactNode;
+	width?: 'md' | 'sm' | 'lg';
+	/** Left-hand footer slot, e.g. a `DeleteButton` in `text` variant. */
+	secondary?: ReactNode;
+	busy?: boolean;
+	disabled?: boolean;
+	submitLabel: string;
+	busyLabel?: string;
+	onSubmit: () => void;
 }) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={width === "sm" ? "max-w-sm" : width === "lg" ? "max-w-2xl" : "max-w-md"}>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-        </DialogHeader>
-        {children}
-        <DialogFooter className={secondary ? "flex justify-between sm:justify-between" : undefined}>
-          {secondary}
-          <Button
-            size="sm"
-            className="h-8 text-xs"
-            disabled={disabled || busy}
-            onClick={onSubmit}
-          >
-            {busy ? busyLabel : submitLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+	return (
+		<Dialog open={open} onOpenChange={onOpenChange}>
+			<DialogContent
+				className={
+					width === 'sm'
+						? 'max-w-sm'
+						: width === 'lg'
+							? 'max-w-2xl'
+							: 'max-w-md'
+				}
+			>
+				<DialogHeader>
+					<DialogTitle>{title}</DialogTitle>
+				</DialogHeader>
+				{children}
+				<DialogFooter
+					className={
+						secondary ? 'flex justify-between sm:justify-between' : undefined
+					}
+				>
+					{secondary}
+					<Button
+						size="sm"
+						className="h-8 text-xs"
+						disabled={disabled || busy}
+						onClick={onSubmit}
+					>
+						{busy ? busyLabel : submitLabel}
+					</Button>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
+	);
 }

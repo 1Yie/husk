@@ -3,11 +3,11 @@
 // Every function maps one semantic operation to one `UiCommand` variant.
 // Callers pass plain arguments; the enum wiring stays inside.
 
-import { invoke } from "@tauri-apps/api/core";
-import type { UiCommand } from "@/types";
+import { invoke } from '@tauri-apps/api/core';
+import type { UiCommand } from '@/types';
 
 function send(cmd: UiCommand) {
-  return invoke("agent_cmd", { cmd });
+	return invoke('agent_cmd', { cmd });
 }
 
 /** A fresh user prompt — starts a turn. */
@@ -19,7 +19,7 @@ export const steer = (text: string) => send({ Steer: { text } });
 /** Mid-run steering for one delegated subagent. The kernel routes it to the
  * active session's child; the client names the child only. */
 export const steerChild = (childId: number, text: string) =>
-  send({ SteerChild: { child_id: childId, text } });
+	send({ SteerChild: { child_id: childId, text } });
 
 /** Replace the session's parked queue — every list op (enqueue, edit,
  * remove, reorder) resolves to this one write; the kernel echoes the new
@@ -34,61 +34,63 @@ export const enqueue = (text: string) => send({ Enqueue: { text } });
 /** Resolve a pending approval card. `action` names one of the grants the card
  *  offered (`actions` on `ApprovalRequested`): the kernel hands it to the host,
  *  which applies the grant and then reruns the same call. */
-export const decideTool = (requestId: number, approved: boolean, action?: string) =>
-  send({ ToolDecision: { request_id: requestId, approved, action } });
+export const decideTool = (
+	requestId: number,
+	approved: boolean,
+	action?: string
+) => send({ ToolDecision: { request_id: requestId, approved, action } });
 
 /** Whitelist a tool for the rest of this session — pairs with
  *  `decideTool` on the computer-use approval modal: "本会话允许"
  *  writes the gate AND resolves the pending card. Never persisted; the
  *  kernel revokes a `computer` grant when the turn ends. */
 export const approveSessionTool = (toolName: string) =>
-  send({ ApproveSessionTool: { tool_name: toolName } });
+	send({ ApproveSessionTool: { tool_name: toolName } });
 
 /** Drop a tool from the session whitelist — the overlay's "停止" button.
  *  Session-scoped like the grant; the NEXT `computer` call falls back
  *  to Ask (which re-opens the approval modal). */
 export const revokeSessionTool = (toolName: string) =>
-  send({ RevokeSessionTool: { tool_name: toolName } });
+	send({ RevokeSessionTool: { tool_name: toolName } });
 
 /** Answer a pending `ask_question` card — option label or free text. */
 export const answerQuestion = (requestId: number, answer: string) =>
-  send({ AnswerQuestion: { request_id: requestId, answer } });
+	send({ AnswerQuestion: { request_id: requestId, answer } });
 
 /** Abort the in-flight turn. */
-export const cancelTurn = () => send("Cancel");
+export const cancelTurn = () => send('Cancel');
 
 /** Reverse the last turn's file writes via the HunkTracker (the /undo
  *  slash command's programmatic form). Files modified externally after
  *  the agent's write are skipped, not clobbered. */
-export const undoLastTurn = () => send("UndoLastTurn");
+export const undoLastTurn = () => send('UndoLastTurn');
 
 /** Hot-swap provider/model for the next turn. */
 export const setModel = (provider: string, model: string) =>
-  send({ SetModel: { provider, model } });
+	send({ SetModel: { provider, model } });
 
 /** Switch the kernel permission mode (default / acceptEdits / auto /
  * dontAsk / bypassPermissions) — applies to the next tool dispatch. */
 export const setPermissionMode = (mode: string) =>
-  send({ SetPermissionMode: { mode } });
+	send({ SetPermissionMode: { mode } });
 
 /** Switch the agent mode (`build` | `plan` | `goal` | `office`) — swaps the
  * session's tool registry immediately (plan drops write tools; goal adds the
  * goal_complete contract; office adds the `office_*` document tools). */
-export const setAgentMode = (mode: string) =>
-  send({ SetAgentMode: { mode } });
+export const setAgentMode = (mode: string) => send({ SetAgentMode: { mode } });
 
 /** Set thinking / reasoning effort level (e.g. "off", "low", "medium", "high", "max"). */
 export const setThinkingLevel = (level: string) =>
-  send({ SetThinkingLevel: { level } });
+	send({ SetThinkingLevel: { level } });
 
 /** Regenerate the last turn — the kernel rewinds history to the last
  * user prompt and re-runs it (slash intercept + hooks included). */
-export const retryTurn = () => send("Retry");
+export const retryTurn = () => send('Retry');
 
 /** Kernel UI-event queue counters — one `get_ui_stats` read for the status
  * chip. Cheap: atomics on the Rust side, no locking of session actors. */
 export function getUiStats() {
-  return invoke<import("@/types").UiStats>("get_ui_stats");
+	return invoke<import('@/types').UiStats>('get_ui_stats');
 }
 
 /** Stage the *system* clipboard's image as an attachment — the same chip shape
@@ -99,10 +101,15 @@ export function getUiStats() {
  * (a `<textarea>` paste can deliver no `clipboardData`), so this reads the
  * clipboard from Rust instead. */
 export function pasteClipboardImage() {
-  return invoke<import("@/lib/agent-ipc/sessions").Attachment | null>("paste_clipboard", { kind: "image" });
+	return invoke<import('@/lib/agent-ipc/sessions').Attachment | null>(
+		'paste_clipboard',
+		{ kind: 'image' }
+	);
 }
 
 /** The clipboard's text, for the composer menu's 粘贴 item. `null` when empty. */
 export function pasteClipboardText() {
-  return invoke<{ kind: "text"; text: string } | null>("paste_clipboard", { kind: "text" });
+	return invoke<{ kind: 'text'; text: string } | null>('paste_clipboard', {
+		kind: 'text',
+	});
 }

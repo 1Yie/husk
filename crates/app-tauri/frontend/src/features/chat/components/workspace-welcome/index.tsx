@@ -7,222 +7,292 @@
 // clauses — every line should be something the reader can act on or verify.
 // Colors are theme tokens, so light and dark need no `dark:` variants here.
 
-import type { ComponentType } from "react";
+import type { ComponentType } from 'react';
 import {
-  Bot,
-  Clock,
-  FileCode,
-  FolderOpen,
-  ShieldCheck,
-  Terminal,
-} from "@keyline-icons/react";
-import { useEffect, useMemo, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { timeGreeting } from "@/lib/greeting";
-import { getUsageStats, openPath, recentArtifacts, type RecentArtifact, type UsageRecord } from "@/lib/agent-ipc/sessions";
-import { aggregate, fmtTokens } from "@/features/settings/usage";
-import { ActivityHeatmap } from "@/features/settings/components/activity-heatmap";
-import { ExtIcon } from "@/features/chat/components/artifacts-panel";
-import { toast } from "sonner";
-import { timeAgo } from "@/lib/time";
+	Bot,
+	Clock,
+	FileCode,
+	FolderOpen,
+	ShieldCheck,
+	Terminal,
+} from '@keyline-icons/react';
+import { useEffect, useMemo, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { timeGreeting } from '@/lib/greeting';
+import {
+	getUsageStats,
+	openPath,
+	recentArtifacts,
+	type RecentArtifact,
+	type UsageRecord,
+} from '@/lib/agent-ipc/sessions';
+import { aggregate, fmtTokens } from '@/features/settings/usage';
+import { ActivityHeatmap } from '@/features/settings/components/activity-heatmap';
+import { ExtIcon } from '@/features/chat/components/artifacts-panel';
+import { toast } from 'sonner';
+import { timeAgo } from '@/lib/time';
 
 export interface RecentWorkspace {
-  path: string;
-  name: string;
-  /** Seconds since epoch — the kernel's `last_opened` stamp. */
-  last_opened: number;
+	path: string;
+	name: string;
+	/** Seconds since epoch — the kernel's `last_opened` stamp. */
+	last_opened: number;
 }
 
 interface Props {
-  recents: RecentWorkspace[];
-  onOpenWorkspace: () => void;
-  /** Open a workspace straight from the recents grid. */
-  onOpenRecent: (path: string) => void;
-  /**「工作」variant — the recents/activity blocks swap for a 最近产物
-   *  grid of the newest files under the office workspace. */
-  office?: boolean;
-  /** Replace the primary CTA — the zero-session workspace offers
-   *  「新建会话」instead of the folder picker. `hint` is the line under
-   *  the button (shown unconditionally when a custom CTA is set). */
-  cta?: {
-    Icon: ComponentType<{ className?: string }>;
-    label: string;
-    onClick: () => void;
-    hint: string;
-  };
+	recents: RecentWorkspace[];
+	onOpenWorkspace: () => void;
+	/** Open a workspace straight from the recents grid. */
+	onOpenRecent: (path: string) => void;
+	/**「工作」variant — the recents/activity blocks swap for a 最近产物
+	 *  grid of the newest files under the office workspace. */
+	office?: boolean;
+	/** Replace the primary CTA — the zero-session workspace offers
+	 *  「新建会话」instead of the folder picker. `hint` is the line under
+	 *  the button (shown unconditionally when a custom CTA is set). */
+	cta?: {
+		Icon: ComponentType<{ className?: string }>;
+		label: string;
+		onClick: () => void;
+		hint: string;
+	};
 }
 
 /** What the agent can do once a project is open. Titles are nouns, lines are
  * facts — nothing here sells anything, because the reader is one click from
  * seeing it. */
-const CAPABILITIES: { Icon: ComponentType<{ className?: string }>; title: string; desc: string }[] = [
-  { Icon: FileCode, title: "代码读写", desc: "读取、搜索和修改项目文件" },
-  { Icon: ShieldCheck, title: "沙箱与审批", desc: "命令在沙箱内运行，写操作需批准" },
-  { Icon: Bot, title: "多会话", desc: "切换会话时进行中的任务继续运行" },
-  { Icon: Terminal, title: "命令与技能", desc: "`/` 命令、`$` 技能、MCP 插件" },
+const CAPABILITIES: {
+	Icon: ComponentType<{ className?: string }>;
+	title: string;
+	desc: string;
+}[] = [
+	{ Icon: FileCode, title: '代码读写', desc: '读取、搜索和修改项目文件' },
+	{
+		Icon: ShieldCheck,
+		title: '沙箱与审批',
+		desc: '命令在沙箱内运行，写操作需批准',
+	},
+	{ Icon: Bot, title: '多会话', desc: '切换会话时进行中的任务继续运行' },
+	{ Icon: Terminal, title: '命令与技能', desc: '`/` 命令、`$` 技能、MCP 插件' },
 ];
 
-export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, office = false, cta }: Props) {
-  const { label, tail, Icon, tone } = timeGreeting();
-  const CtaIcon = cta?.Icon ?? FolderOpen;
-  // Activity is read here too (not only in settings): the empty workspace is the
-  // one screen with room for it. Best-effort — a failure just hides the block.
-  const [records, setRecords] = useState<UsageRecord[] | null>(null);
-  useEffect(() => {
-    if (office) return; //「工作」shows 最近产物 instead of build-mode stats
-    let alive = true;
-    void getUsageStats()
-      .then((r) => alive && setRecords(r.sessions ?? []))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [office]);
-  const stats = useMemo(() => (office || !records ? null : aggregate(records)), [records, office]);
+export function WorkspaceWelcome({
+	recents,
+	onOpenWorkspace,
+	onOpenRecent,
+	office = false,
+	cta,
+}: Props) {
+	const { label, tail, Icon, tone } = timeGreeting();
+	const CtaIcon = cta?.Icon ?? FolderOpen;
+	// Activity is read here too (not only in settings): the empty workspace is the
+	// one screen with room for it. Best-effort — a failure just hides the block.
+	const [records, setRecords] = useState<UsageRecord[] | null>(null);
+	useEffect(() => {
+		if (office) return; //「工作」shows 最近产物 instead of build-mode stats
+		let alive = true;
+		void getUsageStats()
+			.then((r) => alive && setRecords(r.sessions ?? []))
+			.catch(() => {});
+		return () => {
+			alive = false;
+		};
+	}, [office]);
+	const stats = useMemo(
+		() => (office || !records ? null : aggregate(records)),
+		[records, office]
+	);
 
-  //「工作」: newest produced files under the office workspace.
-  const [artifacts, setArtifacts] = useState<RecentArtifact[] | null>(null);
-  useEffect(() => {
-    if (!office) return;
-    let alive = true;
-    void recentArtifacts()
-      .then((r) => alive && setArtifacts(r))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [office]);
-  return (
-    // `main-col` paints `bg-workspace` (#16161a dark) but the open-session
-    // stream covers it with `bg-white` (#232329). Without its own surface
-    // the empty workspace showed the darker main-col behind it, so it read
-    // a shade off from the chat — give it the same `bg-white` the stream
-    // uses.
-    <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-y-auto px-6 py-10 select-none bg-white">
-      <div className="workspace-welcome-content w-full max-w-[720px] flex flex-col items-center gap-8">
-        <div className="flex flex-col items-center gap-5 text-center">
-          {/* Greeting + tail come from `lib/greeting` — the same line the
+	//「工作」: newest produced files under the office workspace.
+	const [artifacts, setArtifacts] = useState<RecentArtifact[] | null>(null);
+	useEffect(() => {
+		if (!office) return;
+		let alive = true;
+		void recentArtifacts()
+			.then((r) => alive && setArtifacts(r))
+			.catch(() => {});
+		return () => {
+			alive = false;
+		};
+	}, [office]);
+	return (
+		// `main-col` paints `bg-workspace` (#16161a dark) but the open-session
+		// stream covers it with `bg-white` (#232329). Without its own surface
+		// the empty workspace showed the darker main-col behind it, so it read
+		// a shade off from the chat — give it the same `bg-white` the stream
+		// uses.
+		<div
+			className="flex min-h-0 flex-1 select-none flex-col items-center
+				justify-center overflow-y-auto bg-white px-6 py-10"
+		>
+			<div
+				className="workspace-welcome-content flex w-full max-w-[720px] flex-col
+					items-center gap-8"
+			>
+				<div className="flex flex-col items-center gap-5 text-center">
+					{/* Greeting + tail come from `lib/greeting` — the same line the
               in-session empty state shows, so the two never drift. */}
-          <span className="flex items-center gap-2.5 text-[20px] font-semibold tracking-tight text-neutral-900">
-            <Icon size={20} className={tone} />
-            {label}
-            {tail}
-          </span>
-          <div className="flex flex-col items-center gap-2">
-            <Button size="lg" className="rounded-full px-6" onClick={cta?.onClick ?? onOpenWorkspace}>
-              <CtaIcon className="h-4 w-4" />
-              {cta?.label ?? "打开工作区…"}
-            </Button>
-            {(cta || recents.length === 0) && (
-              <span className="text-[12px] text-neutral-500">
-                {cta ? cta.hint : "或从左侧「项目」打开最近的工作区"}
-              </span>
-            )}
-          </div>
-        </div>
+					<span
+						className="flex items-center gap-2.5 text-[20px] font-semibold
+							tracking-tight text-neutral-900"
+					>
+						<Icon size={20} className={tone} />
+						{label}
+						{tail}
+					</span>
+					<div className="flex flex-col items-center gap-2">
+						<Button
+							size="lg"
+							className="rounded-full px-6"
+							onClick={cta?.onClick ?? onOpenWorkspace}
+						>
+							<CtaIcon className="h-4 w-4" />
+							{cta?.label ?? '打开工作区…'}
+						</Button>
+						{(cta || recents.length === 0) && (
+							<span className="text-[12px] text-neutral-500">
+								{cta ? cta.hint : '或从左侧「项目」打开最近的工作区'}
+							</span>
+						)}
+					</div>
+				</div>
 
-        {/*「工作」: the recents/activity grids mean little here — the
+				{/*「工作」: the recents/activity grids mean little here — the
             deliverables a session produced matter instead. */}
-        {office ? (
-          artifacts && artifacts.length > 0 && (
-            <div className="w-full flex flex-col gap-2">
-              <span className="flex items-center gap-1.5 px-1 text-[12px] text-neutral-500">
-                <Clock className="h-3.5 w-3.5" />
-                最近产物
-              </span>
-              <div className="grid grid-cols-2 gap-2">
-                {artifacts.slice(0, 6).map((a) => {
-                  const dir = a.path.includes("/")
-                    ? a.path.slice(0, a.path.lastIndexOf("/"))
-                    : "";
-                  return (
-                    <button
-                      key={a.path}
-                      type="button"
-                      title={a.path}
-                      onClick={() =>
-                        void openPath(a.path).catch((err) =>
-                          toast.error(`打开失败：${err instanceof Error ? err.message : err}`),
-                        )
-                      }
-                      className="group flex items-center gap-3 rounded-[14px] border border-hairline bg-card px-3 py-2.5 text-left cursor-pointer transition-colors hover:bg-hover"
-                    >
-                      <ExtIcon ext={a.name.split(".").pop() ?? ""} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] text-neutral-800">
-                          {a.name}
-                        </span>
-                        <span className="block truncate text-[11px] text-neutral-500">
-                          {dir || a.path}
-                        </span>
-                      </span>
-                      <span className="shrink-0 text-[11px] text-neutral-500">
-                        {timeAgo(a.mtime)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )
-        ) : (
-          <>
-            {recents.length > 0 && (
-          <div className="w-full flex flex-col gap-2">
-            <span className="flex items-center gap-1.5 px-1 text-[12px] text-neutral-500">
-              <Clock className="h-3.5 w-3.5" />
-              最近打开
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              {recents.slice(0, 6).map((r) => (
-                <button
-                  key={r.path}
-                  type="button"
-                  title={r.path}
-                  onClick={() => onOpenRecent(r.path)}
-                  className="group flex items-center gap-3 rounded-[14px] border border-hairline bg-card px-3 py-2.5 text-left cursor-pointer transition-colors hover:bg-hover"
-                >
-                  <FolderOpen className="h-4 w-4 shrink-0 text-neutral-500 group-hover:text-neutral-600" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] text-neutral-800">
-                      {r.name || r.path}
-                    </span>
-                    <span className="block truncate text-[11px] text-neutral-500">
-                      {r.path}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-[11px] text-neutral-500">
-                    {timeAgo(r.last_opened)}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+				{office ? (
+					artifacts &&
+					artifacts.length > 0 && (
+						<div className="flex w-full flex-col gap-2">
+							<span
+								className="flex items-center gap-1.5 px-1 text-[12px]
+									text-neutral-500"
+							>
+								<Clock className="h-3.5 w-3.5" />
+								最近产物
+							</span>
+							<div className="grid grid-cols-2 gap-2">
+								{artifacts.slice(0, 6).map((a) => {
+									const dir = a.path.includes('/')
+										? a.path.slice(0, a.path.lastIndexOf('/'))
+										: '';
+									return (
+										<button
+											key={a.path}
+											type="button"
+											title={a.path}
+											onClick={() =>
+												void openPath(a.path).catch((err) =>
+													toast.error(
+														`打开失败：${err instanceof Error ? err.message : err}`
+													)
+												)
+											}
+											className="group flex cursor-pointer items-center gap-3
+												rounded-[14px] border border-hairline bg-card px-3
+												py-2.5 text-left transition-colors hover:bg-hover"
+										>
+											<ExtIcon ext={a.name.split('.').pop() ?? ''} />
+											<span className="min-w-0 flex-1">
+												<span
+													className="block truncate text-[13px]
+														text-neutral-800"
+												>
+													{a.name}
+												</span>
+												<span
+													className="block truncate text-[11px]
+														text-neutral-500"
+												>
+													{dir || a.path}
+												</span>
+											</span>
+											<span className="shrink-0 text-[11px] text-neutral-500">
+												{timeAgo(a.mtime)}
+											</span>
+										</button>
+									);
+								})}
+							</div>
+						</div>
+					)
+				) : (
+					<>
+						{recents.length > 0 && (
+							<div className="flex w-full flex-col gap-2">
+								<span
+									className="flex items-center gap-1.5 px-1 text-[12px]
+										text-neutral-500"
+								>
+									<Clock className="h-3.5 w-3.5" />
+									最近打开
+								</span>
+								<div className="grid grid-cols-2 gap-2">
+									{recents.slice(0, 6).map((r) => (
+										<button
+											key={r.path}
+											type="button"
+											title={r.path}
+											onClick={() => onOpenRecent(r.path)}
+											className="group flex cursor-pointer items-center gap-3
+												rounded-[14px] border border-hairline bg-card px-3
+												py-2.5 text-left transition-colors hover:bg-hover"
+										>
+											<FolderOpen
+												className="h-4 w-4 shrink-0 text-neutral-500
+													group-hover:text-neutral-600"
+											/>
+											<span className="min-w-0 flex-1">
+												<span
+													className="block truncate text-[13px]
+														text-neutral-800"
+												>
+													{r.name || r.path}
+												</span>
+												<span
+													className="block truncate text-[11px]
+														text-neutral-500"
+												>
+													{r.path}
+												</span>
+											</span>
+											<span className="shrink-0 text-[11px] text-neutral-500">
+												{timeAgo(r.last_opened)}
+											</span>
+										</button>
+									))}
+								</div>
+							</div>
+						)}
 
-        {/* Totals span every project; zero records still produce an empty grid
+						{/* Totals span every project; zero records still produce an empty grid
             when the welcome content has room for the activity card. */}
-            {stats && (
-          <div className="workspace-welcome-activity w-full rounded-[14px] border border-hairline bg-card px-4 py-3.5">
-            <header className="mb-3 flex items-baseline justify-between">
-              <span className="text-[13px] font-medium text-neutral-800">活跃对话</span>
-              <span className="text-[11px] text-neutral-500">
-                {fmtTokens(stats.totals.prompt + stats.totals.completion)} tokens ·{" "}
-                {stats.totals.sessions} 个会话 · 连续 {stats.streak} 天
-              </span>
-            </header>
-            <ActivityHeatmap daily={stats.daily} />
-            {stats.totals.sessions === 0 && (
-              <p className="mt-2 text-[11px] text-neutral-500">
-                还没有用量记录 —— 完成一轮对话后这里会累计 token 与活跃度。
-              </p>
-            )}
-          </div>
-        )}
-          </>
-        )}
+						{stats && (
+							<div
+								className="workspace-welcome-activity w-full rounded-[14px]
+									border border-hairline bg-card px-4 py-3.5"
+							>
+								<header className="mb-3 flex items-baseline justify-between">
+									<span className="text-[13px] font-medium text-neutral-800">
+										活跃对话
+									</span>
+									<span className="text-[11px] text-neutral-500">
+										{fmtTokens(stats.totals.prompt + stats.totals.completion)}{' '}
+										tokens · {stats.totals.sessions} 个会话 · 连续{' '}
+										{stats.streak} 天
+									</span>
+								</header>
+								<ActivityHeatmap daily={stats.daily} />
+								{stats.totals.sessions === 0 && (
+									<p className="mt-2 text-[11px] text-neutral-500">
+										还没有用量记录 —— 完成一轮对话后这里会累计 token 与活跃度。
+									</p>
+								)}
+							</div>
+						)}
+					</>
+				)}
 
-        {/* <div className="grid w-full grid-cols-2 gap-2.5">
+				{/* <div className="grid w-full grid-cols-2 gap-2.5">
           {CAPABILITIES.map(({ Icon, title, desc }) => (
             <div
               key={title}
@@ -244,19 +314,23 @@ export function WorkspaceWelcome({ recents, onOpenWorkspace, onOpenRecent, offic
           <Sigil k="/" label="命令" />
           <Sigil k="$" label="技能" />
         </div> */}
-      </div>
-    </div>
-  );
+			</div>
+		</div>
+	);
 }
 
 /** A composer sigil rendered as a key cap, matching the textarea's grammar. */
 function Sigil({ k, label }: { k: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <kbd className="flex h-5 min-w-5 items-center justify-center rounded-md border border-hairline bg-card px-1 font-mono text-[11px] text-neutral-600">
-        {k}
-      </kbd>
-      {label}
-    </span>
-  );
+	return (
+		<span className="flex items-center gap-1.5">
+			<kbd
+				className="flex h-5 min-w-5 items-center justify-center rounded-md
+					border border-hairline bg-card px-1 font-mono text-[11px]
+					text-neutral-600"
+			>
+				{k}
+			</kbd>
+			{label}
+		</span>
+	);
 }
