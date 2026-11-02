@@ -1483,7 +1483,7 @@ impl LlmProvider for RigProvider {
             temperature,
             max_tokens,
             tool_choice: None,
-            additional_params: (!additional.is_empty()).then(|| Value::Object(additional)),
+            additional_params: (!additional.is_empty()).then_some(Value::Object(additional)),
             output_schema: None,
             record_telemetry_content: false,
         };
@@ -1751,16 +1751,15 @@ fn compat_body_patches(
                     msg.insert("reasoning_content".into(), json!(""));
                 }
             }
-            "tool" if tool_result_name
-                && !msg.contains_key("name") => {
-                    let id = msg
-                        .get("tool_call_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    if let Some(name) = call_names.get(id) {
-                        msg.insert("name".into(), json!(name));
-                    }
+            "tool" if tool_result_name && !msg.contains_key("name") => {
+                let id = msg
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let Some(name) = call_names.get(id) {
+                    msg.insert("name".into(), json!(name));
                 }
+            }
             _ => {}
         }
     }
@@ -1935,8 +1934,12 @@ fn to_rig_messages_with_plan(
     }
 
     for (message_index, m) in messages.iter().enumerate() {
-        // UI-only rows — render metadata, never context.
-        if m.role == Role::System && m.notice.as_ref().is_some_and(NoticeKind::is_ui_only) {
+        // System feedback and UI card metadata never enter model context.
+        if m.role == Role::System
+            && m.notice
+                .as_ref()
+                .is_some_and(|notice| notice == &NoticeKind::System || notice.is_ui_only())
+        {
             continue;
         }
         match m.role {
@@ -3247,6 +3250,38 @@ mod tests {
             .filter(|m| matches!(m, RigMessage::System { .. }))
             .count();
         assert_eq!(systems, 1, "only the real system prompt stays system");
+    }
+
+    #[test]
+    fn system_feedback_stays_out_of_every_model_wire() {
+        let messages = vec![
+            chat(Role::System, "real-system-instructions"),
+            chat(Role::User, "real-user-task"),
+            ChatMessage::notice("transient-system-feedback-sentinel"),
+            chat(Role::Assistant, "real-assistant-answer"),
+            ChatMessage::host_notice("real-background-result"),
+        ];
+        for kind in [
+            WireKind::Compat,
+            WireKind::Responses,
+            WireKind::Anthropic,
+            WireKind::Gemini,
+        ] {
+            let wire = to_rig_messages(&messages, kind, &ProviderCompat::default(), false);
+            let json = serde_json::to_string(&wire).unwrap();
+            assert!(
+                !json.contains("transient-system-feedback-sentinel"),
+                "{json}"
+            );
+            for text in [
+                "real-system-instructions",
+                "real-user-task",
+                "real-assistant-answer",
+                "real-background-result",
+            ] {
+                assert!(json.contains(text), "{json}");
+            }
+        }
     }
 
     /// Job output cannot close the fence early: every closing tag in the body

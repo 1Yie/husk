@@ -949,16 +949,6 @@ function applyEventInto(
 		}
 		return { ...v, items };
 	}
-	if ('SystemMessage' in ev) {
-		closeOpenThinking(items);
-		items.push({
-			kind: 'system',
-			text: ev.SystemMessage,
-			standalone: true,
-			ts: Date.now(),
-		});
-		return { ...v, items };
-	}
 	if ('Usage' in ev) {
 		// Some wires emit an all-zero Usage on a degraded/failed round. That is
 		// not a measurement; letting it replace the last real one blanked the

@@ -820,14 +820,7 @@ function foldMessage(
 	emitDangling: boolean
 ) {
 	if (m.role === 'system') {
-		if (m.notice === 'system')
-			v.items.push({
-				kind: 'system',
-				text: m.content ?? '',
-				standalone: true,
-				hi,
-			});
-		else if (m.notice === 'error')
+		if (m.notice === 'error')
 			v.items.push({
 				kind: 'system',
 				text: `⚠ ${m.content ?? ''}`,
