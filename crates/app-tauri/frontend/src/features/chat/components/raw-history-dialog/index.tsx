@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipSimple } from "@/components/ui/tooltip";
+import { Skeleton } from "@/components/ui/skeleton";
 import { highlightCodeToHtml } from "@/lib/syntax-highlight";
 import { cn } from "@/lib/utils";
 import { opensUserTurn } from "@/features/chat/hooks/view-from-history";
@@ -147,6 +148,33 @@ function Timeline({ messages, start }: { messages: ChatMessage[]; start: number 
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** The first page's rows stand in as placeholders with `EventRow`'s own
+ *  geometry — index lane, role badge, one-line preview, trailing slot — so the
+ *  real rows land where the blocks were instead of the list jumping, and the
+ *  reader sees the shape of what is coming rather than a lone sentence. */
+function TraceSkeleton({ rows = 8 }: { rows?: number }) {
+  // Fixed widths: a placeholder that reshuffles on every render reads as
+  // content that arrived, not as one still loading.
+  const previews = ["w-3/5", "w-4/5", "w-2/5", "w-3/4", "w-1/2", "w-2/3", "w-5/6", "w-1/3"];
+  return (
+    <div aria-hidden="true" className="animate-pulse">
+      {Array.from({ length: rows }, (_, i) => (
+        <div
+          key={i}
+          className="flex min-h-9 items-center gap-3 border-b border-[color-mix(in_srgb,var(--husk-n200)_50%,transparent)] px-4 py-1.5 last:border-b-0"
+        >
+          <Skeleton className="h-2.5 w-5 flex-none" />
+          <Skeleton className="h-5 w-12 flex-none rounded-md" />
+          <span className="flex min-w-0 flex-1">
+            <Skeleton className={cn("h-3", previews[i % previews.length])} />
+          </span>
+          <Skeleton className="h-2.5 w-6 flex-none" />
+        </div>
+      ))}
     </div>
   );
 }
@@ -400,7 +428,12 @@ export function RawHistoryDialog({
             // unmount the row list now so the zoom-out animates an empty shell.
             <div className="h-full" />
           ) : loading ? (
-            <div className="flex h-full items-center justify-center text-[12px] text-neutral-500">正在读取…</div>
+            // A fetch, so the placeholders are the honest state: `status` carries
+            // the words for a screen reader, the blocks carry the shape.
+            <div role="status" aria-live="polite" className="h-full">
+              <span className="sr-only">正在读取执行轨迹</span>
+              <TraceSkeleton />
+            </div>
           ) : error ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-[12px] text-neutral-500">
               <span>{error}</span>
