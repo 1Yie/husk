@@ -1,0 +1,20 @@
+{
+	"bracketSameLine": false,
+	"endOfLine": "lf",
+	"htmlWhitespaceSensitivity": "ignore",
+	"jsonRecursiveSort": true,
+	"plugins": [
+		"prettier-plugin-sort-json",
+		"prettier-plugin-pkg",
+		"prettier-plugin-tailwindcss",
+		"prettier-plugin-classnames",
+		"prettier-plugin-merge"
+	],
+	"printWidth": 80,
+	"quoteProps": "as-needed",
+	"semi": true,
+	"singleQuote": true,
+	"tabWidth": 2,
+	"trailingComma": "es5",
+	"useTabs": true
+}
