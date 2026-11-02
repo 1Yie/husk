@@ -1,4 +1,4 @@
-// MCP pane — the protocol bridges: every manifest that declares an `entry`
+// Connectors pane — the protocol bridges: every manifest that declares an `entry`
 // (a server to connect to), their connection state, plus add / edit / delete
 // and an explicit reconnect. Host-side capabilities (hooks) are plugins —
 // they live on the 插件 page.
@@ -178,7 +178,7 @@ export function McpPane({
   const doDelete = async (pluginId: string) => {
     try {
       await removeMcp(pluginId);
-      toast.success("已删除 MCP 插件");
+      toast.success("已删除连接器");
       reload();
     } catch (e) {
       toast.error("删除失败", { description: String(e) });
@@ -206,7 +206,7 @@ export function McpPane({
         url: isHttp ? url.trim() : undefined,
         headers: isHttp && Object.keys(hdrs).length ? hdrs : undefined,
       });
-      toast.success(editId ? "已更新 MCP 插件" : "已添加 MCP 插件");
+      toast.success(editId ? "已更新连接器" : "已添加连接器");
       setOpen(false);
       setEditId(null);
       setId(""); setName(""); setCommand(""); setArgs(""); setUrl(""); setHeaders("");
@@ -376,7 +376,7 @@ export function McpPane({
                             </Button>
                           </TooltipSimple>
                           <DeleteButton
-                            confirmTitle="删除 MCP 插件"
+                            confirmTitle="删除连接器"
                             confirmDescription={`确定要删除「${p.id}」吗？其配置将被移除，此操作无法撤销。`}
                             onConfirm={() => void doDelete(p.id)}
                           />
@@ -405,7 +405,7 @@ export function McpPane({
           ) : (
             <EmptyState
               icon={<Server className="h-4 w-4" />}
-              title={query.trim() || filter !== "all" ? "没有匹配的 MCP 服务" : "暂无 MCP 服务"}
+              title={query.trim() || filter !== "all" ? "没有匹配的连接器" : "暂无连接器"}
               description={
                 query.trim() || filter !== "all"
                   ? "调整搜索词或切换传输类型查看"
@@ -414,7 +414,7 @@ export function McpPane({
               action={
                 !query.trim() && filter === "all" && (
                   <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={startCreate}>
-                    <Plus className="h-3.5 w-3.5" /> 添加 MCP 服务
+                    <Plus className="h-3.5 w-3.5" /> 添加连接器
                   </Button>
                 )
               }
@@ -429,7 +429,7 @@ export function McpPane({
           setOpen(v);
           if (!v) setEditId(null);
         }}
-        title={editId ? "编辑 MCP 插件" : "添加 MCP 插件"}
+        title={editId ? "编辑连接器" : "添加连接器"}
         width="sm"
         submitLabel={editId ? "保存" : "添加"}
         busy={busy}

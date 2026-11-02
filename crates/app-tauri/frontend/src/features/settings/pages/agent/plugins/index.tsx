@@ -1,7 +1,7 @@
 // Plugins pane — the kernel's hook layer. A manifest counts as a plugin when
 // it declares lifecycle hooks (`capabilities.hooks` — local commands the
 // kernel runs on intercepted events) or has no `entry` at all. MCP is just a
-// protocol bridge — a manifest's connection side lives on the MCP page
+// protocol bridge — a manifest's connection side lives on the connectors page
 // (transport, reconnect, tools), its hooks live here.
 
 import { SkeletonKvRows } from "@/components/ui/skeleton";
@@ -113,7 +113,7 @@ export function PluginsPane({
   };
 
   /** Plugin = declares kernel hooks, or has no server entry at all. A bare
-   *  `entry` is just a bridge — it stays on the MCP page. */
+   *  `entry` is just a bridge — it stays on the connectors page. */
   const isPlugin = (p: AgentOverview["plugins"][number]) => {
     const e = p.entry;
     const hasServer =

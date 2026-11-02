@@ -112,7 +112,7 @@ const NAV_GROUPS: {
       },
       {
         key: "mcp",
-        label: "MCP",
+        label: "连接器",
         icon: <Wrench className="h-4 w-4 shrink-0" />,
       },
       {
