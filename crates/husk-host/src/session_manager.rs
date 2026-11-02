@@ -62,6 +62,9 @@ pub struct SessionModelInfo {
     /// mode picker reads this on load.
     #[serde(default)]
     pub active_agent_mode: Option<String>,
+    /// Whether the reported provider and model identify a configured choice.
+    #[serde(default)]
+    pub configured: bool,
     pub config_path: Option<String>,
     pub models: Vec<ModelDetails>,
 }
@@ -2828,6 +2831,11 @@ impl SessionManager {
                 .unwrap_or_else(|| (self.provider_name.clone(), self.model_name.clone()))
         });
 
+        // Session metadata can retain a placeholder until a model is configured.
+        let (active_provider, active_model) =
+            effective_pair((active_provider, active_model), &self.provider_cfg);
+
+        // Models selected by id stay visible even if the configured list omits them.
         if !models
             .iter()
             .any(|m| m.provider == active_provider && m.model == active_model)
@@ -2885,6 +2893,7 @@ impl SessionManager {
                 .to_string(),
         );
         let active_fast_mode = self.normalize_active_fast_mode(&active_provider, &active_model);
+        let configured = models.iter().any(|m| m.model != UNCONFIGURED_MODEL);
         SessionModelInfo {
             active_provider,
             active_model,
@@ -2897,6 +2906,7 @@ impl SessionManager {
             // appeared in every other session that happened to end on an
             // assistant block.
             active_agent_mode: live_agent_mode.or_else(|| Some(self.agent_mode.clone())),
+            configured,
             config_path: path,
             models,
         }
@@ -3566,34 +3576,62 @@ pub(crate) fn choose_session_provider(
     }
 }
 
+/// Provider label used when configuration cannot construct a provider.
+const UNCONFIGURED_PROVIDER: &str = "no provider configured";
+
+/// Placeholder model id used when configuration declares no model.
+pub(crate) const UNCONFIGURED_MODEL: &str = "default";
+
 fn resolve_provider(cfg: &AppConfig) -> (Arc<dyn agent_llm::LlmProvider>, String, String) {
     if let Some(name) = &cfg.active_provider {
         if let Some(pcfg) = cfg.providers.get(name) {
             if let Ok(p) = ProviderFactory::build(pcfg) {
-                let model = cfg
-                    .active_model
-                    .clone()
-                    .or_else(|| pcfg.default_model.clone())
-                    .unwrap_or_else(|| "default".into());
-                return (p, model, name.clone());
+                return (p, resolve_model(cfg, pcfg), name.clone());
             }
         }
     }
-    for (name, pcfg) in &cfg.providers {
+    // No `active_provider`: pick by NAME, not by hash order — a config with two
+    // providers otherwise opens on a different model from one launch to the next.
+    let mut names: Vec<&String> = cfg.providers.keys().collect();
+    names.sort();
+    for name in names {
+        let pcfg = &cfg.providers[name];
         if let Ok(p) = ProviderFactory::build(pcfg) {
-            let model = cfg
-                .active_model
-                .clone()
-                .or_else(|| pcfg.default_model.clone())
-                .unwrap_or_else(|| "default".into());
-            return (p, model, name.clone());
+            return (p, resolve_model(cfg, pcfg), name.clone());
         }
     }
     (
         Arc::new(agent_llm::provider::UnconfiguredProvider),
-        "default".into(),
-        "no provider configured".into(),
+        UNCONFIGURED_MODEL.into(),
+        UNCONFIGURED_PROVIDER.into(),
     )
+}
+
+/// Resolves placeholder session metadata against the current configuration.
+fn effective_pair(stored: (String, String), cfg: &AppConfig) -> (String, String) {
+    let (provider, model) = stored;
+    let placeholder = provider == UNCONFIGURED_PROVIDER || model == UNCONFIGURED_MODEL;
+    if !placeholder {
+        return (provider, model);
+    }
+    let (_, resolved_model, resolved_provider) = resolve_provider(cfg);
+    (resolved_provider, resolved_model)
+}
+
+/// Resolves a provider's model, using the placeholder only when none exists.
+fn resolve_model(cfg: &AppConfig, pcfg: &agent_llm::config::ProviderConfig) -> String {
+    cfg.active_model
+        .clone()
+        .or_else(|| pcfg.default_model.clone())
+        .or_else(|| pcfg.models.first().map(|m| m.id().to_string()))
+        .unwrap_or_else(|| UNCONFIGURED_MODEL.into())
+}
+
+/// Resolves a configured provider's model by name.
+pub(crate) fn model_for(cfg: &AppConfig, provider: &str) -> Option<String> {
+    cfg.providers
+        .get(provider)
+        .map(|pcfg| resolve_model(cfg, pcfg))
 }
 
 #[cfg(test)]
@@ -3878,6 +3916,19 @@ max = "max"
     }
 
     #[test]
+    fn model_info_reports_unconfigured_for_an_empty_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(dir.path().join("config"), dir.path().join("data"), ".husk");
+        let (mut mgr, _rx) = SessionManager::spawn_at(Some(dir.path().to_path_buf()), paths);
+
+        let info = mgr.model_info();
+        assert!(!info.configured);
+        assert_eq!(info.active_model, UNCONFIGURED_MODEL);
+        assert_eq!(info.active_provider, UNCONFIGURED_PROVIDER);
+        mgr.store.delete_workspace().unwrap();
+    }
+
+    #[test]
     fn test_model_info_with_devin_swe2() {
         // `spawn()`/boot resolution reads the global `default_preferences`
         // row, which is machine-local developer state — a dev box saved with
@@ -3903,6 +3954,7 @@ max = "max"
             SessionManager::spawn_at(Some(canon.clone()), test_paths_with_config());
 
         let info = mgr.model_info();
+        assert!(info.configured);
         assert_eq!(info.active_provider, "devin");
         assert_eq!(info.active_model, "devin/swe-2");
         assert_eq!(info.active_thinking_level.as_deref(), Some("medium"));
@@ -4219,6 +4271,82 @@ max = "max"
         assert_ne!(mgr.active_id, used);
         mgr.open_session(used);
         assert!(mgr.store.list().iter().any(|m| m.id == used));
+    }
+
+    #[test]
+    fn a_stale_default_pair_is_reported_as_the_configured_model() {
+        let mut cfg = AppConfig::default();
+        cfg.providers.insert(
+            "OpenAI".into(),
+            serde_json::from_value(serde_json::json!({
+                "kind": "openai_responses",
+                "base_url": "https://example.invalid",
+                "models": [{"id": "gpt-6.1-sol", "name": "GPT 6.1 Sol"}],
+            }))
+            .unwrap(),
+        );
+
+        assert_eq!(
+            effective_pair(("OpenAI".into(), UNCONFIGURED_MODEL.into()), &cfg),
+            ("OpenAI".to_string(), "gpt-6.1-sol".to_string()),
+            "a stale `default` must resolve to the model the config lists"
+        );
+        // A real pick is left exactly as it was.
+        assert_eq!(
+            effective_pair(("OpenAI".into(), "gpt-other".into()), &cfg),
+            ("OpenAI".to_string(), "gpt-other".to_string())
+        );
+        // With nothing configured there is nothing to repair to.
+        assert_eq!(
+            effective_pair(("default".into(), "default".into()), &AppConfig::default()),
+            (
+                UNCONFIGURED_PROVIDER.to_string(),
+                UNCONFIGURED_MODEL.to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_provider_with_models_never_resolves_to_the_invented_id() {
+        let listed = |json: serde_json::Value| {
+            serde_json::from_value::<agent_llm::config::ProviderConfig>(json).unwrap()
+        };
+        let pcfg = listed(serde_json::json!({
+            "kind": "openai_responses",
+            "base_url": "https://example.invalid",
+            "models": [{"id": "gpt-6.1-sol", "name": "GPT 6.1 Sol"}],
+        }));
+
+        // No pick, no provider default: the first listed model wins.
+        let cfg = AppConfig::default();
+        assert_eq!(resolve_model(&cfg, &pcfg), "gpt-6.1-sol");
+
+        // The provider's own default beats the list.
+        let with_default = listed(serde_json::json!({
+            "kind": "openai_responses",
+            "base_url": "https://example.invalid",
+            "default_model": "chosen",
+            "models": [{"id": "gpt-6.1-sol", "name": "GPT 6.1 Sol"}],
+        }));
+        assert_eq!(resolve_model(&cfg, &with_default), "chosen");
+
+        // The config's active model wins over both.
+        let picked = AppConfig {
+            active_model: Some("gpt-x".into()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_model(&picked, &pcfg), "gpt-x");
+
+        // Only a provider naming nothing at all falls back, and that pair is
+        // what the UI reports as unconfigured.
+        let bare = listed(serde_json::json!({
+            "kind": "openai_responses",
+            "base_url": "https://example.invalid",
+        }));
+        assert_eq!(
+            resolve_model(&AppConfig::default(), &bare),
+            UNCONFIGURED_MODEL
+        );
     }
 
     /// A session that never picked its own settings falls back to the

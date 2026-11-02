@@ -1,105 +1,162 @@
 // Agent session ops — `agent_session` invokes (sidebar list/new/open).
 
-import { invoke } from "@tauri-apps/api/core";
-import type { ChatMessage, ProjectOverview, SessionRow, ProjectSessionRow, SidebarPage, SidebarSummary } from "@/types";
-import type { BgJob } from "@/features/chat/hooks/stream-view";
+import { invoke } from '@tauri-apps/api/core';
+import type {
+	ChatMessage,
+	ProjectOverview,
+	SessionRow,
+	ProjectSessionRow,
+	SidebarPage,
+	SidebarSummary,
+} from '@/types';
+import type { BgJob } from '@/features/chat/hooks/stream-view';
 
 /** Sidebar project tree — every recent workspace with its full conversation
  * list; the active workspace is first and carries the live running flags. */
 export function listProjects() {
-  return invoke<ProjectOverview[]>("agent_session", { op: "projects" });
+	return invoke<ProjectOverview[]>('agent_session', { op: 'projects' });
 }
 
 export function sidebarSummary(force = false) {
-  return invoke<SidebarSummary>("agent_session", { op: "sidebar", payload: { force } });
+	return invoke<SidebarSummary>('agent_session', {
+		op: 'sidebar',
+		payload: { force },
+	});
 }
 
 /** Cursors are opaque and generation/root/filter bound; at most 30 rows. */
-export function sidebarPage(root: string, archived: boolean, generation: string, cursor?: string | null) {
-  return invoke<SidebarPage>("agent_session", {
-    op: "sidebar_page", path: root, payload: { archived, generation, cursor, limit: 30 },
-  });
+export function sidebarPage(
+	root: string,
+	archived: boolean,
+	generation: string,
+	cursor?: string | null
+) {
+	return invoke<SidebarPage>('agent_session', {
+		op: 'sidebar_page',
+		path: root,
+		payload: { archived, generation, cursor, limit: 30 },
+	});
 }
 
 /** Refresh only rows already displayed; each call is bounded to 30 ids. */
 export function sidebarRows(root: string, generation: string, ids: number[]) {
-  return invoke<{ generation: string; rows: ProjectSessionRow[]; missing: number[] }>("agent_session", {
-    op: "sidebar_rows", path: root, payload: { generation, ids },
-  });
+	return invoke<{
+		generation: string;
+		rows: ProjectSessionRow[];
+		missing: number[];
+	}>('agent_session', {
+		op: 'sidebar_rows',
+		path: root,
+		payload: { generation, ids },
+	});
 }
 
 /** Existence is never inferred from an unloaded page. */
 export function sidebarRow(root: string, id: number) {
-  return invoke<{ known_project: boolean; row: ProjectSessionRow | null }>("agent_session", {
-    op: "sidebar_row", path: root, id,
-  });
+	return invoke<{ known_project: boolean; row: ProjectSessionRow | null }>(
+		'agent_session',
+		{
+			op: 'sidebar_row',
+			path: root,
+			id,
+		}
+	);
 }
 
 /** Full title for an explicit edit, not the sidebar's bounded display value. */
 export function sessionTitle(root: string, id: number) {
-  return invoke<{ title: string }>("agent_session", { op: "session_title", path: root, id });
+	return invoke<{ title: string }>('agent_session', {
+		op: 'session_title',
+		path: root,
+		id,
+	});
 }
 
 export async function newSession() {
-  const r = await invoke<{ active: number }>("agent_session", { op: "new" });
-  return r.active;
+	const r = await invoke<{ active: number }>('agent_session', { op: 'new' });
+	return r.active;
 }
 
 /** Persisted last-turn usage — rides along on ops that return history so
  * a rebuilt view seeds the header meter instead of showing zeros. */
 export interface SessionUsage {
-  prompt: number;
-  completion: number;
-  context_window: number;
-  /** Prompt tokens served from the provider cache (absent on older rows). */
-  cached?: number;
-  /** Prompt tokens written to the provider cache (Anthropic; absent on older rows). */
-  cache_write?: number;
-  /** Estimated prompt composition of the same request (absent on older rows). */
-  breakdown?: import("@/features/chat/hooks/stream-view").ContextBreakdown | null;
+	prompt: number;
+	completion: number;
+	context_window: number;
+	/** Prompt tokens served from the provider cache (absent on older rows). */
+	cached?: number;
+	/** Prompt tokens written to the provider cache (Anthropic; absent on older rows). */
+	cache_write?: number;
+	/** Estimated prompt composition of the same request (absent on older rows). */
+	breakdown?:
+		import('@/features/chat/hooks/stream-view').ContextBreakdown | null;
 }
 
 /** Switch to an existing session — returns the active id plus the
  * persisted history so the caller can rebuild the stream view when it
  * has no in-memory events for that session yet. */
 export async function openSession(id: number) {
-  const r = await invoke<{ active: number; history: ChatMessage[]; history_total?: number;
-  turn_total?: number; turn_offset?: number; run_total?: number; task_total?: number;
-  usage?: SessionUsage | null; queued_prompts?: string[] }>(
-    "agent_session",
-    { op: "open", id },
-  );
-  return r;
+	const r = await invoke<{
+		active: number;
+		history: ChatMessage[];
+		history_total?: number;
+		turn_total?: number;
+		turn_offset?: number;
+		run_total?: number;
+		task_total?: number;
+		usage?: SessionUsage | null;
+		queued_prompts?: string[];
+	}>('agent_session', { op: 'open', id });
+	return r;
 }
 
 /** A session's background jobs — the seed for a rebuilt view; live updates
  *  ride `husk:bg_jobs`. A session with no live actor has none. */
 export function listBgJobs(root: string, id: number) {
-  return invoke<{ jobs: BgJob[] }>("agent_session", { op: "bg_list", id, path: root });
+	return invoke<{ jobs: BgJob[] }>('agent_session', {
+		op: 'bg_list',
+		id,
+		path: root,
+	});
 }
 
 /** The last `lines` of a background job's log. */
 export function bgJobLogs(root: string, id: number, job: string, lines = 80) {
-  return invoke<string>("agent_session", { op: "bg_logs", id, path: root, payload: { job, lines } });
+	return invoke<string>('agent_session', {
+		op: 'bg_logs',
+		id,
+		path: root,
+		payload: { job, lines },
+	});
 }
 
-export type BgJobAction = "kill" | "pause" | "resume" | "remove";
+export type BgJobAction = 'kill' | 'pause' | 'resume' | 'remove';
 
 /** Stop, freeze, continue or drop one job — returns the list after the change. */
-export function controlBgJob(root: string, id: number, job: string, action: BgJobAction) {
-  return invoke<{ jobs: BgJob[] }>("agent_session", { op: "bg_control", id, path: root, payload: { job, action } });
+export function controlBgJob(
+	root: string,
+	id: number,
+	job: string,
+	action: BgJobAction
+) {
+	return invoke<{ jobs: BgJob[] }>('agent_session', {
+		op: 'bg_control',
+		id,
+		path: root,
+		payload: { job, action },
+	});
 }
 
 export interface RawHistoryPage {
-  history: ChatMessage[];
-  history_total: number;
-  history_revision: string;
-  history_start: number;
-  history_end: number;
-  history_anchor_len: number;
-  history_anchor: string;
-  turn_total: number;
-  turn_offset: number;
+	history: ChatMessage[];
+	history_total: number;
+	history_revision: string;
+	history_start: number;
+	history_end: number;
+	history_anchor_len: number;
+	history_anchor: string;
+	turn_total: number;
+	turn_offset: number;
 }
 
 /** At most 40 raw trace records. `before` is an exclusive message index;
@@ -107,32 +164,36 @@ export interface RawHistoryPage {
  * was sliced under: appends keep it valid, a rewrite of it is rejected.
  * Guard session ids with their workspace. */
 export function historyRawPage(
-  id: number,
-  root: string,
-  before?: number,
-  anchor?: { len: number; revision: string },
+	id: number,
+	root: string,
+	before?: number,
+	anchor?: { len: number; revision: string }
 ) {
-  return invoke<RawHistoryPage>("agent_session", {
-    op: "history_raw", id, path: root,
-    payload: { before, anchor_len: anchor?.len, anchor: anchor?.revision },
-  });
+	return invoke<RawHistoryPage>('agent_session', {
+		op: 'history_raw',
+		id,
+		path: root,
+		payload: { before, anchor_len: anchor?.len, anchor: anchor?.revision },
+	});
 }
 
 /** Older chat-history page — `before` is an exclusive end index. */
 export async function historyPage(id: number, before: number) {
-  return invoke<{ history: ChatMessage[]; history_total: number; turn_total?: number; turn_offset?: number }>(
-    "agent_session",
-    { op: "history_page", id, payload: { before } },
-  );
+	return invoke<{
+		history: ChatMessage[];
+		history_total: number;
+		turn_total?: number;
+		turn_offset?: number;
+	}>('agent_session', { op: 'history_page', id, payload: { before } });
 }
 
 /** One write-tool result from the WHOLE persisted log. `content` is the tool's
  *  own result text (a unified diff); `args` is the raw call arguments, which
  *  name the file for artifact writers. */
 export interface ChangeFeedRow {
-  tool: string;
-  args: string;
-  content: string;
+	tool: string;
+	args: string;
+	content: string;
 }
 
 /** Every ok result of `tools` in the session, not just the mounted page's.
@@ -140,11 +201,11 @@ export interface ChangeFeedRow {
  *  artifacts dock rebuild from here — otherwise a long session reopens with
  *  fewer files than it wrote. */
 export async function changesFeed(id: number, tools: readonly string[]) {
-  return invoke<{ rows: ChangeFeedRow[] }>("agent_session", {
-    op: "changes_feed",
-    id,
-    payload: { tools },
-  });
+	return invoke<{ rows: ChangeFeedRow[] }>('agent_session', {
+		op: 'changes_feed',
+		id,
+		payload: { tools },
+	});
 }
 
 /** One result of a named tool from the WHOLE persisted log. Unlike
@@ -152,11 +213,11 @@ export async function changesFeed(id: number, tools: readonly string[]) {
  *  error still has a card — and `index` is the row's position in the full
  *  visible history, the same coordinate `StreamItem.hi` / `historyStart` use. */
 export interface ToolFeedRow {
-  tool: string;
-  args: string;
-  content: string;
-  is_error: boolean;
-  index: number;
+	tool: string;
+	args: string;
+	content: string;
+	is_error: boolean;
+	index: number;
 }
 
 /** Every result of `tools` in the session, not just the mounted page's. The
@@ -164,22 +225,22 @@ export interface ToolFeedRow {
  *  slice, so it rebuilds from here; `index` lets the caller point at the row the
  *  view already holds instead of duplicating its card. */
 export async function toolRowsFeed(id: number, tools: readonly string[]) {
-  return invoke<{ rows: ToolFeedRow[] }>("agent_session", {
-    op: "tool_rows_feed",
-    id,
-    payload: { tools },
-  });
+	return invoke<{ rows: ToolFeedRow[] }>('agent_session', {
+		op: 'tool_rows_feed',
+		id,
+		payload: { tools },
+	});
 }
 
 /** A delegated child's own history — the body its card replays after a reopen.
  *  `[]` when the child left none (parked, or cancelled before it answered). */
 export function subagentTranscript(root: string, id: number, childId: number) {
-  return invoke<{ messages: ChatMessage[] }>("agent_session", {
-    op: "subagent_transcript",
-    id,
-    path: root,
-    payload: { child_id: childId },
-  });
+	return invoke<{ messages: ChatMessage[] }>('agent_session', {
+		op: 'subagent_transcript',
+		id,
+		path: root,
+		payload: { child_id: childId },
+	});
 }
 
 /** A delegated child a session is still running, as the kernel's live registry
@@ -187,36 +248,36 @@ export function subagentTranscript(root: string, id: number, childId: number) {
  *  events that drew the card are gone, and history holds no row for a child
  *  that has not reported yet. */
 export interface RunningChildInfo {
-  child_id: number;
-  /** The card label (`subagent`, `review #1`, …). */
-  label: string;
-  /** The instruction it was handed — the card's chip. */
-  task: string;
-  /** The question it parked on for the parent agent, while it waits. */
-  waiting?: string | null;
+	child_id: number;
+	/** The card label (`subagent`, `review #1`, …). */
+	label: string;
+	/** The instruction it was handed — the card's chip. */
+	task: string;
+	/** The question it parked on for the parent agent, while it waits. */
+	waiting?: string | null;
 }
 
 /** The session's running subagents. Empty when its actor is gone — a child
  *  cannot outlive the process that ran it. */
 export function activeChildren(root: string, id: number) {
-  return invoke<{ children: RunningChildInfo[] }>("agent_session", {
-    op: "active_children",
-    id,
-    path: root,
-  });
+	return invoke<{ children: RunningChildInfo[] }>('agent_session', {
+		op: 'active_children',
+		id,
+		path: root,
+	});
 }
 
 /** One uncommitted file of the workspace's git worktree. `path` is relative to
  *  the workspace root; `diff` is HEAD against the bytes on disk (empty for a
  *  binary or an oversized file). */
 export interface WorkspaceChangeRow {
-  path: string;
-  kind: "add" | "update" | "delete";
-  adds: number;
-  dels: number;
-  diff: string;
-  binary: boolean;
-  truncated: boolean;
+	path: string;
+	kind: 'add' | 'update' | 'delete';
+	adds: number;
+	dels: number;
+	diff: string;
+	binary: boolean;
+	truncated: boolean;
 }
 
 /** The workspace's WHOLE uncommitted change list — the repository's own answer,
@@ -224,32 +285,46 @@ export interface WorkspaceChangeRow {
  *  `repo: false` only means GitError::NotARepo. Scan/read errors reject with
  *  `workspace_changes_failed: ...`; they are never a successful empty list. */
 export function workspaceChanges(root?: string) {
-  return invoke<{ repo: boolean; files: WorkspaceChangeRow[] }>("agent_session", {
-    op: "workspace_changes",
-    path: root,
-  });
+	return invoke<{ repo: boolean; files: WorkspaceChangeRow[] }>(
+		'agent_session',
+		{
+			op: 'workspace_changes',
+			path: root,
+		}
+	);
 }
 
 /** Duplicate a session's history into a fresh session (which becomes the
  * active one) — returns the new id + the copied history. */
 export async function forkSession(id: number) {
-  return invoke<{ active: number; id: number; history: ChatMessage[]; history_total?: number;
-  turn_total?: number; turn_offset?: number; run_total?: number; task_total?: number;
-  usage?: SessionUsage | null; queued_prompts?: string[] }>(
-    "agent_session",
-    { op: "fork", id },
-  );
+	return invoke<{
+		active: number;
+		id: number;
+		history: ChatMessage[];
+		history_total?: number;
+		turn_total?: number;
+		turn_offset?: number;
+		run_total?: number;
+		task_total?: number;
+		usage?: SessionUsage | null;
+		queued_prompts?: string[];
+	}>('agent_session', { op: 'fork', id });
 }
 
 /** Delete a session entirely. Returns the new active id + its history —
  * the backend auto-switches when the deleted session was on screen. */
 export async function deleteSession(id: number) {
-  return invoke<{ active: number; history: ChatMessage[]; history_total?: number;
-  turn_total?: number; turn_offset?: number; run_total?: number; task_total?: number;
-  usage?: SessionUsage | null; queued_prompts?: string[] }>(
-    "agent_session",
-    { op: "delete", id },
-  );
+	return invoke<{
+		active: number;
+		history: ChatMessage[];
+		history_total?: number;
+		turn_total?: number;
+		turn_offset?: number;
+		run_total?: number;
+		task_total?: number;
+		usage?: SessionUsage | null;
+		queued_prompts?: string[];
+	}>('agent_session', { op: 'delete', id });
 }
 
 // Session meta edits address `root`'s workspace — every listed project's rows
@@ -257,410 +332,447 @@ export async function deleteSession(id: number) {
 
 /** Pin/unpin within the session's workspace. */
 export async function pinSession(root: string, id: number, pinned: boolean) {
-  return invoke<{ pinned: boolean }>("agent_session", {
-    op: "pin",
-    id,
-    path: root,
-    payload: { pinned },
-  });
+	return invoke<{ pinned: boolean }>('agent_session', {
+		op: 'pin',
+		id,
+		path: root,
+		payload: { pinned },
+	});
 }
 
 /** Pin/unpin in the sidebar's cross-project 会话 list. */
-export async function pinSessionGlobal(root: string, id: number, pinned: boolean) {
-  return invoke<{ pinned: boolean }>("agent_session", {
-    op: "pin_global",
-    id,
-    path: root,
-    payload: { pinned },
-  });
+export async function pinSessionGlobal(
+	root: string,
+	id: number,
+	pinned: boolean
+) {
+	return invoke<{ pinned: boolean }>('agent_session', {
+		op: 'pin_global',
+		id,
+		path: root,
+		payload: { pinned },
+	});
 }
 
 /** Archive/restore. Archiving also drops both pins. */
-export async function archiveSession(root: string, id: number, archived: boolean) {
-  return invoke<{ archived: boolean }>("agent_session", {
-    op: "archive",
-    id,
-    path: root,
-    payload: { archived },
-  });
+export async function archiveSession(
+	root: string,
+	id: number,
+	archived: boolean
+) {
+	return invoke<{ archived: boolean }>('agent_session', {
+		op: 'archive',
+		id,
+		path: root,
+		payload: { archived },
+	});
 }
 
 /** Set a session's title; blank resets it to the auto-derived one. */
 export async function renameSession(root: string, id: number, title: string) {
-  return invoke<{ renamed: boolean }>("agent_session", {
-    op: "rename",
-    id,
-    path: root,
-    payload: { title },
-  });
+	return invoke<{ renamed: boolean }>('agent_session', {
+		op: 'rename',
+		id,
+		path: root,
+		payload: { title },
+	});
 }
 
 /** Save the session as a Markdown transcript via a native save dialog.
  *  `saved: false` = the user cancelled. */
 export async function exportSession(root: string, id: number) {
-  return invoke<{ saved: boolean; path?: string }>("agent_session", {
-    op: "export",
-    id,
-    path: root,
-  });
+	return invoke<{ saved: boolean; path?: string }>('agent_session', {
+		op: 'export',
+		id,
+		path: root,
+	});
 }
 
 export interface WorkspaceInfo {
-  root: string;
-  name: string;
-  /** `~/.local/share/husk/office` — the office pseudo-workspace root; the
-   *  composer/sidebar compare `root` against it to detect office mode. */
-  office_root?: string;
-  /** Present when sessions/settings use process-local, non-durable storage. */
-  storage_warning?: string | null;
-  recents: { path: string; name: string; last_opened: number }[];
+	root: string;
+	name: string;
+	/** `~/.local/share/husk/office` — the office pseudo-workspace root; the
+	 *  composer/sidebar compare `root` against it to detect office mode. */
+	office_root?: string;
+	/** Present when sessions/settings use process-local, non-durable storage. */
+	storage_warning?: string | null;
+	recents: { path: string; name: string; last_opened: number }[];
 }
 
 export interface WorkspaceSwitchResult {
-  root: string;
-  name: string;
-  active: number;
-  history: ChatMessage[];
-  history_total?: number;
-  turn_total?: number; turn_offset?: number;
-  run_total?: number; task_total?: number;
-  usage?: SessionUsage | null;
-  queued_prompts?: string[];
-  sessions: SessionRow[];
+	root: string;
+	name: string;
+	active: number;
+	history: ChatMessage[];
+	history_total?: number;
+	turn_total?: number;
+	turn_offset?: number;
+	run_total?: number;
+	task_total?: number;
+	usage?: SessionUsage | null;
+	queued_prompts?: string[];
+	sessions: SessionRow[];
 }
 
 export function getWorkspaceInfo() {
-  return invoke<WorkspaceInfo>("agent_session", { op: "workspace_info" });
+	return invoke<WorkspaceInfo>('agent_session', { op: 'workspace_info' });
 }
 
 /** A directory outside the workspace a session may reach. `scope` says which
  *  grant it came from: a `workspace` link outlives the session, a `session`
  *  link dies with it. */
 export interface LinkedRoot {
-  path: string;
-  access: "read" | "readwrite";
-  scope: "workspace" | "session";
+	path: string;
+	access: 'read' | 'readwrite';
+	scope: 'workspace' | 'session';
 }
 
 export interface LinkedRootLayers {
-  workspace: LinkedRoot[];
-  session: LinkedRoot[];
+	workspace: LinkedRoot[];
+	session: LinkedRoot[];
 }
 
 export function listLinkedRoots(root: string, id: number) {
-  return invoke<LinkedRootLayers>("agent_session", { op: "linked_roots", id, path: root });
+	return invoke<LinkedRootLayers>('agent_session', {
+		op: 'linked_roots',
+		id,
+		path: root,
+	});
 }
 
 /** Grant a directory. `persist` remembers it for every session of this
  *  workspace; otherwise it applies to this session only. Refusals (`/`,
  *  `$HOME`, system dirs, the app's own data) come back as the reason. */
 export function linkRoot(
-  root: string,
-  id: number,
-  path: string,
-  access: LinkedRoot["access"],
-  persist: boolean,
+	root: string,
+	id: number,
+	path: string,
+	access: LinkedRoot['access'],
+	persist: boolean
 ) {
-  return invoke<LinkedRootLayers>("agent_session", {
-    op: "link_root",
-    id,
-    path: root,
-    payload: { path, access, persist },
-  });
+	return invoke<LinkedRootLayers>('agent_session', {
+		op: 'link_root',
+		id,
+		path: root,
+		payload: { path, access, persist },
+	});
 }
 
 export function unlinkRoot(root: string, id: number, path: string) {
-  return invoke<LinkedRootLayers>("agent_session", {
-    op: "unlink_root",
-    id,
-    path: root,
-    payload: { path },
-  });
+	return invoke<LinkedRootLayers>('agent_session', {
+		op: 'unlink_root',
+		id,
+		path: root,
+		payload: { path },
+	});
 }
 
 export function setLinkAccess(
-  root: string,
-  id: number,
-  path: string,
-  access: LinkedRoot["access"],
+	root: string,
+	id: number,
+	path: string,
+	access: LinkedRoot['access']
 ) {
-  return invoke<LinkedRootLayers>("agent_session", {
-    op: "set_link_access",
-    id,
-    path: root,
-    payload: { path, access },
-  });
+	return invoke<LinkedRootLayers>('agent_session', {
+		op: 'set_link_access',
+		id,
+		path: root,
+		payload: { path, access },
+	});
 }
 
 /** The system folder picker — the chosen path, or null when dismissed. */
 export function pickLinkDir() {
-  return invoke<string | null>("agent_session", { op: "pick_link_dir" });
+	return invoke<string | null>('agent_session', { op: 'pick_link_dir' });
 }
 
 export function pickWorkspace() {
-  return invoke<WorkspaceSwitchResult | null>("agent_session", { op: "pick_workspace", payload: { sidebar: true } });
+	return invoke<WorkspaceSwitchResult | null>('agent_session', {
+		op: 'pick_workspace',
+		payload: { sidebar: true },
+	});
 }
 
 export function switchWorkspace(path: string) {
-  return invoke<WorkspaceSwitchResult>("agent_session", { op: "switch_workspace", path, payload: { sidebar: true } });
+	return invoke<WorkspaceSwitchResult>('agent_session', {
+		op: 'switch_workspace',
+		path,
+		payload: { sidebar: true },
+	});
 }
 
 /** Drop a project from recents; running turns die with it. */
 export function removeWorkspace(path: string) {
-  return invoke<{ removed_active: boolean }>("agent_session", { op: "remove_workspace", path });
+	return invoke<{ removed_active: boolean }>('agent_session', {
+		op: 'remove_workspace',
+		path,
+	});
 }
 
 /** Explicit per-model wire mapping. Fast never implies a lower thinking tier. */
 export interface FastModeConfig {
-  mode: "priority" | "speed" | "model" | "custom";
-  model?: string;
-  params?: Record<string, unknown>;
-  headers?: Record<string, string>;
+	mode: 'priority' | 'speed' | 'model' | 'custom';
+	model?: string;
+	params?: Record<string, unknown>;
+	headers?: Record<string, string>;
 }
 
 export interface ModelItem {
-  provider: string;
-  model: string;
-  name?: string;
-  reasoning?: boolean;
-  thinking_level_map?: Record<string, string | null>;
-  available_levels?: string[];
-  supports_fast_mode?: boolean;
-  context_window?: number;
-  /** $/1M tokens — from the model's config `cost` block. Absent when the
-   * model carries no pricing; the header cost chip hides itself then. */
-  cost?: {
-    input?: number;
-    output?: number;
-    cache_read?: number;
-    cache_write?: number;
-  };
+	provider: string;
+	model: string;
+	name?: string;
+	reasoning?: boolean;
+	thinking_level_map?: Record<string, string | null>;
+	available_levels?: string[];
+	supports_fast_mode?: boolean;
+	context_window?: number;
+	/** $/1M tokens — from the model's config `cost` block. Absent when the
+	 * model carries no pricing; the header cost chip hides itself then. */
+	cost?: {
+		input?: number;
+		output?: number;
+		cache_read?: number;
+		cache_write?: number;
+	};
 }
 
 /** Broadcast after any config write (model list, prefs, instructions) so
  * mounted views re-fetch — without it a settings save only surfaced on
  * remount (the stale model-picker bug). */
-export const CONFIG_CHANGED_EVENT = "husk:config-changed";
+export const CONFIG_CHANGED_EVENT = 'husk:config-changed';
 
 export function notifyConfigChanged() {
-  window.dispatchEvent(new CustomEvent(CONFIG_CHANGED_EVENT));
+	window.dispatchEvent(new CustomEvent(CONFIG_CHANGED_EVENT));
 }
 
 export interface ModelInfo {
-  active_provider: string;
-  active_model: string;
-  active_thinking_level?: string;
-  active_fast_mode?: boolean;
-  active_permission_mode?: string;
-  /** `build` | `plan` | `goal` — the composer's agent-mode picker. */
-  active_agent_mode?: string;
-  config_path?: string;
-  models: ModelItem[];
+	active_provider: string;
+	active_model: string;
+	active_thinking_level?: string;
+	active_fast_mode?: boolean;
+	active_permission_mode?: string;
+	/** `build` | `plan` | `goal` — the composer's agent-mode picker. */
+	active_agent_mode?: string;
+	/** Whether a real model is configured. Absent on older hosts. */
+	configured?: boolean;
+	config_path?: string;
+	models: ModelItem[];
 }
 
 export function getModelInfo() {
-  return invoke<ModelInfo>("agent_session", { op: "model_info" });
+	return invoke<ModelInfo>('agent_session', { op: 'model_info' });
 }
 
 /** Acknowledged by the host after applying the session preference. */
 export function setFastMode(enabled: boolean, id?: number, root?: string) {
-  return invoke<{ fast_mode: boolean }>("agent_session", {
-    op: "set_fast_mode", id, path: root, payload: { enabled },
-  });
+	return invoke<{ fast_mode: boolean }>('agent_session', {
+		op: 'set_fast_mode',
+		id,
+		path: root,
+		payload: { enabled },
+	});
 }
 
 /** A discovered MCP/plugin manifest (listing only — the server is never
  * spawned for the settings display). */
 export interface PluginItem {
-  id: string;
-  name: string;
-  /** Manifest version — "" for servers added through the UI (a remote server
-   *  has no such version; the live one is `serverVersion`). */
-  version: string;
-  /** Runtime kind — present only when `entry` exists (a pure plugin has no
-   *  runtime to describe). The UI never filters on this: what a manifest IS
-   *  is decided by its shape — `entry` makes a bridge, `hooks` make a plugin. */
-  kind?: string | null;
-  /** The bridge to a server — absent entirely for a pure plugin. */
-  entry?: {
-    command?: string;
-    args?: string[];
-    url?: string;
-    /** Present for HTTP servers added with custom headers. */
-    headers?: Record<string, string>;
-  } | string | null;
-  /** Tool names from the connection the app loaded at BOOT — reading this does
-   *  not reconnect. Empty when the plugin is not loaded. */
-  tools: string[];
-  /** Lifecycle hooks the plugin declares — a local command per event name
-   *  (`before_tool_execute`, `on_user_input`, …). Present even when the plugin
-   *  never loaded, so an untrusted manifest still shows what it would run. */
-  hooks?: { event: string; command: string }[];
-  /** Consent state for a repo-local manifest. Untrusted repo-local plugins
-   *  never load (their hooks are local code), so the card offers to trust one. */
-  trusted?: boolean;
-  repoLocal?: boolean;
-  /** The user's persisted on/off intent — `plugin-state.json`. NOT the live
-   *  load state: a failed or untrusted plugin still reads `enabled: true`
-   *  (it would run once the blocker clears). */
-  enabled?: boolean;
-  commands: number;
-  /** Declared slash commands — name/qualified/description — so a tool or
-   *  wasm plugin card shows what it contributes (hooks stay hook-only). */
-  commandList?: {
-    name: string;
-    qualified: string;
-    description: string;
-    action: string;
-  }[];
-  sandboxed: boolean;
-  dir: string;
-  /** Registered at boot. `false` means it failed to load (`error` explains),
-   *  or the app started before the manifest existed. */
-  connected: boolean;
-  serverVersion?: string;
-  error?: string;
+	id: string;
+	name: string;
+	/** Manifest version — "" for servers added through the UI (a remote server
+	 *  has no such version; the live one is `serverVersion`). */
+	version: string;
+	/** Runtime kind — present only when `entry` exists (a pure plugin has no
+	 *  runtime to describe). The UI never filters on this: what a manifest IS
+	 *  is decided by its shape — `entry` makes a bridge, `hooks` make a plugin. */
+	kind?: string | null;
+	/** The bridge to a server — absent entirely for a pure plugin. */
+	entry?:
+		| {
+				command?: string;
+				args?: string[];
+				url?: string;
+				/** Present for HTTP servers added with custom headers. */
+				headers?: Record<string, string>;
+		  }
+		| string
+		| null;
+	/** Tool names from the connection the app loaded at BOOT — reading this does
+	 *  not reconnect. Empty when the plugin is not loaded. */
+	tools: string[];
+	/** Lifecycle hooks the plugin declares — a local command per event name
+	 *  (`before_tool_execute`, `on_user_input`, …). Present even when the plugin
+	 *  never loaded, so an untrusted manifest still shows what it would run. */
+	hooks?: { event: string; command: string }[];
+	/** Consent state for a repo-local manifest. Untrusted repo-local plugins
+	 *  never load (their hooks are local code), so the card offers to trust one. */
+	trusted?: boolean;
+	repoLocal?: boolean;
+	/** The user's persisted on/off intent — `plugin-state.json`. NOT the live
+	 *  load state: a failed or untrusted plugin still reads `enabled: true`
+	 *  (it would run once the blocker clears). */
+	enabled?: boolean;
+	commands: number;
+	/** Declared slash commands — name/qualified/description — so a tool or
+	 *  wasm plugin card shows what it contributes (hooks stay hook-only). */
+	commandList?: {
+		name: string;
+		qualified: string;
+		description: string;
+		action: string;
+	}[];
+	sandboxed: boolean;
+	dir: string;
+	/** Registered at boot. `false` means it failed to load (`error` explains),
+	 *  or the app started before the manifest existed. */
+	connected: boolean;
+	serverVersion?: string;
+	error?: string;
 }
 
 /** One subagent type the kernel can spawn. */
 export interface SubagentItem {
-  name: string;
-  description: string;
-  prompt: string;
-  timeout_secs?: number;
-  max_tool_rounds?: number;
-  max_depth?: number;
-  /** Builtin kernel delegate vs a `*.md` manifest under the agent dirs. */
-  builtin: boolean;
-  /** Manifest path — custom agents only. */
-  path?: string;
-  global?: boolean;
-  /** Manifest `model:` — `provider/model` (or a bare id under the parent's
-   *  provider). Absent → the subagent default, then the parent's model. */
-  model?: string | null;
-  /** Manifest `thinking:` — absent → the subagent default, then the parent's
-   *  level. */
-  thinking?: string | null;
-  /** Runs on the read-only registry — inspection tools only, no file edits or
-   *  commands. */
-  readonly?: boolean;
+	name: string;
+	description: string;
+	prompt: string;
+	timeout_secs?: number;
+	max_tool_rounds?: number;
+	max_depth?: number;
+	/** Builtin kernel delegate vs a `*.md` manifest under the agent dirs. */
+	builtin: boolean;
+	/** Manifest path — custom agents only. */
+	path?: string;
+	global?: boolean;
+	/** Manifest `model:` — `provider/model` (or a bare id under the parent's
+	 *  provider). Absent → the subagent default, then the parent's model. */
+	model?: string | null;
+	/** Manifest `thinking:` — absent → the subagent default, then the parent's
+	 *  level. */
+	thinking?: string | null;
+	/** Runs on the read-only registry — inspection tools only, no file edits or
+	 *  commands. */
+	readonly?: boolean;
 }
 
 /** One always-on constraint. `always` rules are inlined into the system
  *  prompt; the rest are listed and read before editing a matching file. */
 export interface RuleItem {
-  name: string;
-  description: string;
-  /** Globs the rule claims — empty means it only applies when `always`. */
-  globs: string[];
-  always: boolean;
-  path: string;
-  /** Living in the global rules dir; a workspace rule shadows a same-named
-   *  global one. */
-  global: boolean;
+	name: string;
+	description: string;
+	/** Globs the rule claims — empty means it only applies when `always`. */
+	globs: string[];
+	always: boolean;
+	path: string;
+	/** Living in the global rules dir; a workspace rule shadows a same-named
+	 *  global one. */
+	global: boolean;
 }
 
 /** The agent's configuration surfaces for the settings "智能体" pane —
  * read-only: system-prompt template, live model info, skills, MCP
  * plugins, subagent specs and rules. */
 export interface AgentOverview {
-  instructions: string;
-  model: ModelInfo;
-  skills: SkillItem[];
-  plugins: PluginItem[];
-  subagents: SubagentItem[];
-  rules?: RuleItem[];
+	instructions: string;
+	model: ModelInfo;
+	skills: SkillItem[];
+	plugins: PluginItem[];
+	subagents: SubagentItem[];
+	rules?: RuleItem[];
 }
 
 export function getAgentOverview() {
-  return invoke<AgentOverview>("agent_session", { op: "agent_overview" });
+	return invoke<AgentOverview>('agent_session', { op: 'agent_overview' });
 }
 
 /** One instructions file (AGENTS.md) the session prompt appends verbatim. */
 export interface InstructionsFile {
-  path: string | null;
-  content: string;
+	path: string | null;
+	content: string;
 }
 export interface InstructionsSet {
-  global: InstructionsFile;
-  workspace: InstructionsFile;
+	global: InstructionsFile;
+	workspace: InstructionsFile;
 }
 export function getInstructions() {
-  return invoke<InstructionsSet>("agent_session", { op: "get_instructions" });
+	return invoke<InstructionsSet>('agent_session', { op: 'get_instructions' });
 }
-export function setInstructions(scope: "global" | "workspace", content: string) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "set_instructions",
-    payload: { scope, content },
-  });
+export function setInstructions(
+	scope: 'global' | 'workspace',
+	content: string
+) {
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'set_instructions',
+		payload: { scope, content },
+	});
 }
 
 export function createSkill(p: {
-  name: string;
-  description: string;
-  scope: "workspace" | "global";
-  body: string;
+	name: string;
+	description: string;
+	scope: 'workspace' | 'global';
+	body: string;
 }) {
-  return invoke<{ success: boolean; path: string }>("agent_session", {
-    op: "create_skill",
-    payload: p,
-  });
+	return invoke<{ success: boolean; path: string }>('agent_session', {
+		op: 'create_skill',
+		payload: p,
+	});
 }
 
 /** One session's last recorded usage — the raw material for the 统计 pane.
  *  Bucketing by day is the frontend's job: only it knows the reader's timezone. */
 export interface UsageRecord {
-  session: number;
-  title: string;
-  workspace: string;
-  /** Unix seconds of the session's last activity. */
-  ts: number;
-  prompt: number;
-  completion: number;
-  cached: number;
-  /** Cache-write tokens (Anthropic); absent on rows from older builds. */
-  cache_write?: number;
-  context_window: number;
-  model?: string | null;
-  provider?: string | null;
-  /** Post-turn distillation: calls made and the tokens they spent. A side
-   *  channel — never part of `prompt`/`completion` above. */
-  distill_calls?: number;
-  distill_prompt?: number;
-  distill_completion?: number;
+	session: number;
+	title: string;
+	workspace: string;
+	/** Unix seconds of the session's last activity. */
+	ts: number;
+	prompt: number;
+	completion: number;
+	cached: number;
+	/** Cache-write tokens (Anthropic); absent on rows from older builds. */
+	cache_write?: number;
+	context_window: number;
+	model?: string | null;
+	provider?: string | null;
+	/** Post-turn distillation: calls made and the tokens they spent. A side
+	 *  channel — never part of `prompt`/`completion` above. */
+	distill_calls?: number;
+	distill_prompt?: number;
+	distill_completion?: number;
 }
 
 export function getUsageStats() {
-  return invoke<{ sessions: UsageRecord[] }>("agent_session", { op: "usage_stats" });
+	return invoke<{ sessions: UsageRecord[] }>('agent_session', {
+		op: 'usage_stats',
+	});
 }
 
 export function addMcp(p: {
-  id: string;
-  name: string;
-  transport: "stdio" | "http";
-  command?: string;
-  args?: string[];
-  url?: string;
-  headers?: Record<string, string>;
+	id: string;
+	name: string;
+	transport: 'stdio' | 'http';
+	command?: string;
+	args?: string[];
+	url?: string;
+	headers?: Record<string, string>;
 }) {
-  return invoke<{ success: boolean; path: string }>("agent_session", {
-    op: "add_mcp",
-    payload: p,
-  });
+	return invoke<{ success: boolean; path: string }>('agent_session', {
+		op: 'add_mcp',
+		payload: p,
+	});
 }
 
 /** Live answer from `mcp_probe` — the server's own name/version + tool names. */
 export interface McpProbe {
-  ok: boolean;
-  serverVersion?: string;
-  tools?: string[];
-  error?: string;
+	ok: boolean;
+	serverVersion?: string;
+	tools?: string[];
+	error?: string;
 }
 
 /** Connect one MCP server on demand and report what it actually serves. The
  *  stored manifest says nothing useful (version "1.0.0", no tool list). */
 export function probeMcp(id: string) {
-  return invoke<McpProbe>("mcp_probe", { id });
+	return invoke<McpProbe>('mcp_probe', { id });
 }
 
 /** Drop a plugin directory — the settings card's delete action. */
@@ -668,173 +780,179 @@ export function probeMcp(id: string) {
  *  the engine reads per request, so a server added in settings reaches the agent
  *  on the next turn — no restart. */
 export function reloadMcp() {
-  return invoke<{ plugins: unknown[] }>("agent_session", { op: "reload_mcp" });
+	return invoke<{ plugins: unknown[] }>('agent_session', { op: 'reload_mcp' });
 }
 
 /** Grant a repo-local plugin consent to load, then reload the router so it
  *  comes up without a restart. A plugin hook runs a local command, so this is
  *  the gate between a cloned repo and code execution. */
 export function trustMcp(id: string) {
-  return invoke<{ plugins: PluginItem[] }>("agent_session", {
-    op: "trust_mcp",
-    payload: { id },
-  });
+	return invoke<{ plugins: PluginItem[] }>('agent_session', {
+		op: 'trust_mcp',
+		payload: { id },
+	});
 }
 
 /** Persist a plugin/MCP's on/off toggle (`plugin-state.json`) and reload —
  *  hooks stop firing / tools stop advertising on the next turn. */
 export function setPluginEnabled(id: string, enabled: boolean) {
-  return invoke<{ plugins: PluginItem[] }>("agent_session", {
-    op: "set_plugin_enabled",
-    payload: { id, enabled },
-  });
+	return invoke<{ plugins: PluginItem[] }>('agent_session', {
+		op: 'set_plugin_enabled',
+		payload: { id, enabled },
+	});
 }
 
 export function removeMcp(id: string) {
-  return invoke<{ success: boolean }>("agent_session", { op: "remove_mcp", payload: { id } });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'remove_mcp',
+		payload: { id },
+	});
 }
 
 export function createSubagent(p: {
-  name: string;
-  description: string;
-  scope: "workspace" | "global";
-  prompt: string;
-  /** `provider/model`; "" or absent writes no `model:` line. */
-  model?: string;
-  /** One of the thinking levels; "" or absent writes no `thinking:` line. */
-  thinking?: string;
-  /** 权限: `true` = 只读 (inspection tools only), `false` = 可读写 (may edit
-   *  files and run commands); absent keeps the manifest's own line. */
-  readonly?: boolean;
+	name: string;
+	description: string;
+	scope: 'workspace' | 'global';
+	prompt: string;
+	/** `provider/model`; "" or absent writes no `model:` line. */
+	model?: string;
+	/** One of the thinking levels; "" or absent writes no `thinking:` line. */
+	thinking?: string;
+	/** 权限: `true` = 只读 (inspection tools only), `false` = 可读写 (may edit
+	 *  files and run commands); absent keeps the manifest's own line. */
+	readonly?: boolean;
 }) {
-  return invoke<{ success: boolean; path: string }>("agent_session", {
-    op: "create_subagent",
-    payload: p,
-  });
+	return invoke<{ success: boolean; path: string }>('agent_session', {
+		op: 'create_subagent',
+		payload: p,
+	});
 }
 
 /** One rule file, body included — the edit dialog's source. */
 export interface RuleDetail {
-  name: string;
-  description: string;
-  globs: string[];
-  always: boolean;
-  body: string;
-  scope: "workspace" | "global";
+	name: string;
+	description: string;
+	globs: string[];
+	always: boolean;
+	body: string;
+	scope: 'workspace' | 'global';
 }
 
 export function readRule(name: string) {
-  return invoke<RuleDetail>("agent_session", { op: "read_rule", payload: { name } });
+	return invoke<RuleDetail>('agent_session', {
+		op: 'read_rule',
+		payload: { name },
+	});
 }
 
 /** Write a rule. `scope` picks the directory, so changing it MOVES the file. */
 export function saveRule(p: {
-  name: string;
-  scope: "workspace" | "global";
-  description: string;
-  globs: string[];
-  /** `true` = inline into the system prompt, `false` = read on glob match. */
-  always: boolean;
-  body: string;
+	name: string;
+	scope: 'workspace' | 'global';
+	description: string;
+	globs: string[];
+	/** `true` = inline into the system prompt, `false` = read on glob match. */
+	always: boolean;
+	body: string;
 }) {
-  return invoke<{ success: boolean; path: string }>("agent_session", {
-    op: "save_rule",
-    payload: p,
-  });
+	return invoke<{ success: boolean; path: string }>('agent_session', {
+		op: 'save_rule',
+		payload: p,
+	});
 }
 
 /** Drop a rule file. `scope` names the one file; omitting it drops every
  *  scope's copy of that name. */
-export function deleteRule(name: string, scope?: "workspace" | "global") {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "delete_rule",
-    payload: scope ? { name, scope } : { name },
-  });
+export function deleteRule(name: string, scope?: 'workspace' | 'global') {
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'delete_rule',
+		payload: scope ? { name, scope } : { name },
+	});
 }
 
 export interface DefaultPrefs {
-  permission_mode?: string;
-  thinking_level?: string;
-  agent_mode?: string;
-  /** Which mode the app opens in — "last" (上次使用) | "build" (编程) |
-   * "office" (工作). Read only at launch: the running window is not
-   * switched. */
-  default_workspace_mode?: string;
-  /** Settings-pane default model (Agent 偏好) — provider/model pair; either
-   * null/absent → the config's own active_provider/active_model wins. Send
-   * both or neither; "" clears. */
-  active_provider?: string | null;
-  active_model?: string | null;
-  /** Global subagent default model — delegated children without a manifest
-   *  `model:` run on it instead of the parent's model. Same pair rule as
-   *  `active_*`: send both; "" clears (children follow the parent). Applied
-   *  to live sessions from their next `delegate` call. */
-  subagent_provider?: string | null;
-  subagent_model?: string | null;
-  /** Global thinking level for delegated children — independent of the model
-   *  pair. "" clears it: children follow the parent session's level. */
-  subagent_thinking_level?: string | null;
-  /** Fraction of the context window that triggers compaction — 0.7/0.8/0.9. */
-  compact_at?: number;
-  /** How long a permission request may sit unanswered before it is denied —
-   *  seconds; 0 = wait forever. Applies to running sessions too. */
-  approval_timeout_secs?: number;
-  /** How long an `ask_question` card may sit unanswered before the agent
-   *  decides on its own — seconds; 0 = wait forever. */
-  question_timeout_secs?: number;
-  /** Sandbox master switch — absent/true = sandboxed; false = every process
-   *  tool runs through the loud unsandboxed `none` backend. */
-  sandbox_enabled?: boolean;
-  /** Sandbox network override — "auto" (per-command audit) | "allow" | "deny". */
-  sandbox_network?: "auto" | "allow" | "deny";
-  /** Per-command memory cap (MB) — null/absent → the audit plan's 2048. */
-  sandbox_max_memory_mb?: number | null;
-  /** Fork-bomb process cap — null/absent → the audit plan's 256. */
-  sandbox_max_processes?: number | null;
-  /** Memory subsystem master switch — off = no <memory> block, no writes. */
-  memory_enabled?: boolean;
-  /** Model distillation — off = deterministic writes only, no extra call. */
-  memory_distill?: boolean;
-  /** Semantic recall — score facts with a local sentence encoder instead of
-   *  the bag-of-hashed-tokens stand-in. Only a build carrying the model
-   *  honours it; the pane's switch reads `getMemoryOverview` for that. */
-  semantic_recall?: boolean;
-  /** `.blueprint/` architecture layer — off = the directory is ignored. */
-  blueprint_enabled?: boolean;
-  /** Desktop (OS) notifications — off = the notification center stays in-app
-   *  (bell + badge), nothing is pushed to the system shell. Absent/true = on. */
-  desktop_notifications?: boolean;
-  /** Cue sound for the states that stop the agent loop — a finished turn, a
-   *  pending approval or question, a failure. Absent/true = on. */
-  notification_sound?: boolean;
+	permission_mode?: string;
+	thinking_level?: string;
+	agent_mode?: string;
+	/** Which mode the app opens in — "last" (上次使用) | "build" (编程) |
+	 * "office" (工作). Read only at launch: the running window is not
+	 * switched. */
+	default_workspace_mode?: string;
+	/** Settings-pane default model (Agent 偏好) — provider/model pair; either
+	 * null/absent → the config's own active_provider/active_model wins. Send
+	 * both or neither; "" clears. */
+	active_provider?: string | null;
+	active_model?: string | null;
+	/** Global subagent default model — delegated children without a manifest
+	 *  `model:` run on it instead of the parent's model. Same pair rule as
+	 *  `active_*`: send both; "" clears (children follow the parent). Applied
+	 *  to live sessions from their next `delegate` call. */
+	subagent_provider?: string | null;
+	subagent_model?: string | null;
+	/** Global thinking level for delegated children — independent of the model
+	 *  pair. "" clears it: children follow the parent session's level. */
+	subagent_thinking_level?: string | null;
+	/** Fraction of the context window that triggers compaction — 0.7/0.8/0.9. */
+	compact_at?: number;
+	/** How long a permission request may sit unanswered before it is denied —
+	 *  seconds; 0 = wait forever. Applies to running sessions too. */
+	approval_timeout_secs?: number;
+	/** How long an `ask_question` card may sit unanswered before the agent
+	 *  decides on its own — seconds; 0 = wait forever. */
+	question_timeout_secs?: number;
+	/** Sandbox master switch — absent/true = sandboxed; false = every process
+	 *  tool runs through the loud unsandboxed `none` backend. */
+	sandbox_enabled?: boolean;
+	/** Sandbox network override — "auto" (per-command audit) | "allow" | "deny". */
+	sandbox_network?: 'auto' | 'allow' | 'deny';
+	/** Per-command memory cap (MB) — null/absent → the audit plan's 2048. */
+	sandbox_max_memory_mb?: number | null;
+	/** Fork-bomb process cap — null/absent → the audit plan's 256. */
+	sandbox_max_processes?: number | null;
+	/** Memory subsystem master switch — off = no <memory> block, no writes. */
+	memory_enabled?: boolean;
+	/** Model distillation — off = deterministic writes only, no extra call. */
+	memory_distill?: boolean;
+	/** Semantic recall — score facts with a local sentence encoder instead of
+	 *  the bag-of-hashed-tokens stand-in. Only a build carrying the model
+	 *  honours it; the pane's switch reads `getMemoryOverview` for that. */
+	semantic_recall?: boolean;
+	/** `.blueprint/` architecture layer — off = the directory is ignored. */
+	blueprint_enabled?: boolean;
+	/** Desktop (OS) notifications — off = the notification center stays in-app
+	 *  (bell + badge), nothing is pushed to the system shell. Absent/true = on. */
+	desktop_notifications?: boolean;
+	/** Cue sound for the states that stop the agent loop — a finished turn, a
+	 *  pending approval or question, a failure. Absent/true = on. */
+	notification_sound?: boolean;
 }
 
 /** The stored default preferences — what NEWLY created sessions spawn with.
  * Distinct from `model_info`'s `active_*` fields, which report the live
  * session's actual mode/level. */
 export function getDefaultPrefs() {
-  return invoke<DefaultPrefs>("agent_session", { op: "get_default_prefs" });
+	return invoke<DefaultPrefs>('agent_session', { op: 'get_default_prefs' });
 }
 
 /** Update the default preferences. Only affects sessions created AFTER this
  * call — already-started sessions keep their current mode/level. */
 export function setDefaultPrefs(prefs: DefaultPrefs) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "set_default_prefs",
-    payload: prefs,
-  }).then((r) => {
-    // Prefs shape the composer's mode/level pickers too — same refresh
-    // trigger as a full config save.
-    notifyConfigChanged();
-    return r;
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'set_default_prefs',
+		payload: prefs,
+	}).then((r) => {
+		// Prefs shape the composer's mode/level pickers too — same refresh
+		// trigger as a full config save.
+		notifyConfigChanged();
+		return r;
+	});
 }
 
 /** Where a clicked desktop notification leads — echoed back on
  *  `onNotificationClick`. */
 export interface NotificationTarget {
-  root: string;
-  session: number;
+	root: string;
+	session: number;
 }
 
 /** Deliver a desktop (OS) notification through the shell. The frontend owns
@@ -843,116 +961,116 @@ export interface NotificationTarget {
  *  sent only for a hidden window so a visible one is never nagged. `target`
  *  is handed back on `onNotificationClick` when the user clicks the toast. */
 export function notifyDesktop(
-  title: string,
-  body?: string,
-  attention = false,
-  target?: NotificationTarget
+	title: string,
+	body?: string,
+	attention = false,
+	target?: NotificationTarget
 ) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "notify",
-    payload: { title, body, attention, target },
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'notify',
+		payload: { title, body, attention, target },
+	});
 }
 
 /** Ask the shell for one cue tone. The webview owns the rule (which event,
  *  whether the switch is on, the anti-drumbeat throttle); the shell owns
  *  playback, so the tone does not depend on the window being in front. */
-export function playCueSound(cue: "turn" | "attention" | "error") {
-  return invoke<{ ok: boolean }>("agent_session", {
-    op: "play_cue",
-    payload: { cue },
-  });
+export function playCueSound(cue: 'turn' | 'attention' | 'error') {
+	return invoke<{ ok: boolean }>('agent_session', {
+		op: 'play_cue',
+		payload: { cue },
+	});
 }
 
 /** Open an external link in the system browser (xdg-open / open / start). */
 export function openUrl(url: string) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "open_url",
-    payload: { url },
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'open_url',
+		payload: { url },
+	});
 }
 
 /** Open a workspace-relative artifact with the system handler (xdg-open /
  *  open / cmd start) — the office dock's「打开」. */
 export function openPath(path: string) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "open_path",
-    payload: { path },
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'open_path',
+		payload: { path },
+	});
 }
 
 /** Reveal a workspace-relative artifact in the file manager — `open -R`
  *  on macOS, the parent folder elsewhere. */
 export function revealPath(path: string) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "reveal_path",
-    payload: { path },
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'reveal_path',
+		payload: { path },
+	});
 }
 
 /** Copy a workspace-relative artifact to a user-picked path — the
  *  office dock's「另存为」. Same main-thread rfd channel as
  *  `saveDownload`; cancelled returns `{saved:false}`. */
 export function saveArtifact(path: string) {
-  return invoke<{ saved: boolean; path?: string }>("agent_session", {
-    op: "save_artifact",
-    payload: { path },
-  });
+	return invoke<{ saved: boolean; path?: string }>('agent_session', {
+		op: 'save_artifact',
+		payload: { path },
+	});
 }
 
 /** Existence check for workspace-relative paths — the artifacts dock
  *  filters rows whose file was renamed/deleted after registration
  *  (tool args don't track later `mv`). `{path: exists}` per input. */
 export function statPaths(paths: string[]) {
-  return invoke<Record<string, boolean>>("agent_session", {
-    op: "stat_paths",
-    payload: { paths },
-  });
+	return invoke<Record<string, boolean>>('agent_session', {
+		op: 'stat_paths',
+		payload: { paths },
+	});
 }
 
 /** Newest files under the office workspace — the「工作」empty state's
  *  最近产物 grid. `path` is workspace-relative (feeds `openPath`). */
 export interface RecentArtifact {
-  path: string;
-  name: string;
-  /** Epoch seconds (file mtime). */
-  mtime: number;
+	path: string;
+	name: string;
+	/** Epoch seconds (file mtime). */
+	mtime: number;
 }
 export function recentArtifacts() {
-  return invoke<RecentArtifact[]>("agent_session", { op: "recent_artifacts" });
+	return invoke<RecentArtifact[]>('agent_session', { op: 'recent_artifacts' });
 }
 
 /** How an update finished on this platform. `installed` = the package was
  *  applied in place (Linux/macOS); `staged` = the installer is prepared and
  *  runs when the app restarts (Windows). */
-export type InstallMode = "installed" | "staged";
+export type InstallMode = 'installed' | 'staged';
 
 /** Result of a real update check against the GitHub Releases API. `latest`
  *  is `null` when the API returned no release (or the check couldn't be
  *  completed) — distinct from "you're up to date". */
 export interface UpdateCheck {
-  current: string;
-  latest: string | null;
-  url: string | null;
-  notes: string | null;
-  is_newer: boolean;
-  /** Installer matching this platform; `null` = none published, so the UI can
-   *  only link to the release page. */
-  asset: { name: string; size: number } | null;
-  /** A previously prepared update restored from disk (Windows staged
-   *  installer), or `null`. */
-  prepared_mode?: InstallMode | null;
-  /** Set when an installer exists but this install is not package-managed
-   *  (AppImage/Flatpak/dev/unmanaged): automatic install is unavailable and
-   *  the value explains why. The UI then offers a manual download. */
-  manual_reason?: string | null;
+	current: string;
+	latest: string | null;
+	url: string | null;
+	notes: string | null;
+	is_newer: boolean;
+	/** Installer matching this platform; `null` = none published, so the UI can
+	 *  only link to the release page. */
+	asset: { name: string; size: number } | null;
+	/** A previously prepared update restored from disk (Windows staged
+	 *  installer), or `null`. */
+	prepared_mode?: InstallMode | null;
+	/** Set when an installer exists but this install is not package-managed
+	 *  (AppImage/Flatpak/dev/unmanaged): automatic install is unavailable and
+	 *  the value explains why. The UI then offers a manual download. */
+	manual_reason?: string | null;
 }
 
 /** Query GitHub for the newest published release and compare it to the
  *  running build. The network call lives in Rust — the webview CSP blocks
  *  off-origin `fetch`. */
 export function checkUpdate() {
-  return invoke<UpdateCheck>("check_update");
+	return invoke<UpdateCheck>('check_update');
 }
 
 /** Download, verify and install the update found by the last `checkUpdate`.
@@ -960,177 +1078,181 @@ export function checkUpdate() {
  *  `mode: 'staged'` means the installer only runs on restart. Progress arrives
  *  as `update-progress` events. */
 export function installUpdate() {
-  return invoke<{ mode: InstallMode }>("install_update");
+	return invoke<{ mode: InstallMode }>('install_update');
 }
 
 /** Abort the running download. Resolves once the backend has wound down, so a
  *  fresh `checkUpdate` is accepted. Nothing running is not an error. */
 export function cancelUpdate() {
-  return invoke<void>("cancel_update");
+	return invoke<void>('cancel_update');
 }
 
 /** Restart into the installed update. Only valid after `installUpdate` resolved.
  *  The backend only clears the prepared update once the replacement process
  *  has actually started, so a failed call can be retried. */
 export function relaunchApp() {
-  return invoke<void>("relaunch_app");
+	return invoke<void>('relaunch_app');
 }
 
 export interface AppConfigData {
-  path?: string;
-  config: Record<string, any>;
-  /** Set when the file on disk exists but does not parse. The editor must
-   * stay read-only in that case — saving would replace the user's file. */
-  load_error?: string | null;
-  permission_mode?: string;
-  thinking_level?: string;
+	path?: string;
+	config: Record<string, any>;
+	/** Set when the file on disk exists but does not parse. The editor must
+	 * stay read-only in that case — saving would replace the user's file. */
+	load_error?: string | null;
+	permission_mode?: string;
+	thinking_level?: string;
 }
 
 export interface SandboxInfo {
-  backend: string;
-  tier: string;
-  is_fallback: boolean;
+	backend: string;
+	tier: string;
+	is_fallback: boolean;
 }
 
 export function getAppConfig() {
-  return invoke<AppConfigData>("agent_session", { op: "get_app_config" });
+	return invoke<AppConfigData>('agent_session', { op: 'get_app_config' });
 }
 
 /** Requested only by the API Key eye button. Keeps env:/keyring: references
  * intact instead of resolving them into a different value for the editor. */
 export function getProviderApiKey(provider: string) {
-  return invoke<string>("agent_session", {
-    op: "get_provider_api_key",
-    payload: { provider },
-  });
+	return invoke<string>('agent_session', {
+		op: 'get_provider_api_key',
+		payload: { provider },
+	});
 }
 
 export function saveAppConfig(payload: any) {
-  return invoke<{ success: boolean }>("agent_session", { op: "save_app_config", payload })
-    .then((r) => {
-      notifyConfigChanged();
-      return r;
-    });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'save_app_config',
+		payload,
+	}).then((r) => {
+		notifyConfigChanged();
+		return r;
+	});
 }
 
 export function getSandboxInfo() {
-  return invoke<SandboxInfo>("agent_session", { op: "get_sandbox_info" });
+	return invoke<SandboxInfo>('agent_session', { op: 'get_sandbox_info' });
 }
 
 /* ------------------------- memory pane ------------------------- */
 
 export interface PersonaEntry {
-  key: string;
-  value: string;
-  /** where the entry applies — omitted on older payloads, which are global. */
-  scope?: "global" | "workspace";
+	key: string;
+	value: string;
+	/** where the entry applies — omitted on older payloads, which are global. */
+	scope?: 'global' | 'workspace';
 }
 
 export interface FactRow {
-  id: number;
-  text: string;
-  confidence: number;
-  created_at: number;
+	id: number;
+	text: string;
+	confidence: number;
+	created_at: number;
 }
 
 export interface MemoryOverview {
-  /** master switch — off: no MemoryStore opens at spawn. */
-  enabled: boolean;
-  /** model distillation switch — off: deterministic writes only. */
-  distill: boolean;
-  /** semantic recall switch — off: recall keeps the hash vector. */
-  semantic?: boolean;
-  /** the model is loaded and recall is actually scored semantically. */
-  semantic_ready?: boolean;
-  /** whether this build carries the encoder at all — a build without it must
-   *  not draw a switch that can do nothing. */
-  semantic_available?: boolean;
-  /** the encoder's name, shown when the switch is on. */
-  semantic_model?: string;
-  /** the weights are already on disk — turning the switch on costs no download,
-   *  so it must not ask for one. */
-  semantic_cached?: boolean;
-  persona: PersonaEntry[];
-  facts: FactRow[];
-  episodes: number;
-  /** set when the store couldn't open — the pane shows this instead of 暂无. */
-  error?: string;
+	/** master switch — off: no MemoryStore opens at spawn. */
+	enabled: boolean;
+	/** model distillation switch — off: deterministic writes only. */
+	distill: boolean;
+	/** semantic recall switch — off: recall keeps the hash vector. */
+	semantic?: boolean;
+	/** the model is loaded and recall is actually scored semantically. */
+	semantic_ready?: boolean;
+	/** whether this build carries the encoder at all — a build without it must
+	 *  not draw a switch that can do nothing. */
+	semantic_available?: boolean;
+	/** the encoder's name, shown when the switch is on. */
+	semantic_model?: string;
+	/** the weights are already on disk — turning the switch on costs no download,
+	 *  so it must not ask for one. */
+	semantic_cached?: boolean;
+	persona: PersonaEntry[];
+	facts: FactRow[];
+	episodes: number;
+	/** set when the store couldn't open — the pane shows this instead of 暂无. */
+	error?: string;
 }
 
 export function getMemoryOverview() {
-  return invoke<MemoryOverview>("agent_session", { op: "memory_overview" });
+	return invoke<MemoryOverview>('agent_session', { op: 'memory_overview' });
 }
 
 /** Where the local model's fetch is. Polled by the settings dialog while it
  *  runs — no store is opened and no directory is walked for it, so it is cheap
  *  at 2 Hz. */
 export interface SemanticProgress {
-  phase: "off" | "idle" | "downloading" | "loading" | "ready" | "failed";
-  /** Bytes verified plus what has landed of the file in flight. */
-  bytes: number;
-  /** The model's download size, from the backend's file manifest. */
-  total: number;
-  /** The file being fetched, while one is. */
-  file?: string;
-  /** Why the fetch or the load failed — the backend's full error chain. */
-  error?: string;
+	phase: 'off' | 'idle' | 'downloading' | 'loading' | 'ready' | 'failed';
+	/** Bytes verified plus what has landed of the file in flight. */
+	bytes: number;
+	/** The model's download size, from the backend's file manifest. */
+	total: number;
+	/** The file being fetched, while one is. */
+	file?: string;
+	/** Why the fetch or the load failed — the backend's full error chain. */
+	error?: string;
 }
 
 export function getSemanticProgress() {
-  return invoke<SemanticProgress>("agent_session", { op: "semantic_progress" });
+	return invoke<SemanticProgress>('agent_session', { op: 'semantic_progress' });
 }
 
 /** Try again after a failure, reusing every file that already verified. */
 export function retrySemanticRecall() {
-  return invoke<SemanticProgress>("agent_session", { op: "semantic_retry" });
+	return invoke<SemanticProgress>('agent_session', { op: 'semantic_retry' });
 }
 
 /** Stop a fetch in progress; verified files stay, the partial one resumes. */
 export function cancelSemanticRecall() {
-  return invoke<SemanticProgress>("agent_session", { op: "semantic_cancel" });
+	return invoke<SemanticProgress>('agent_session', { op: 'semantic_cancel' });
 }
 
 /** Delete the downloaded model. `removed: false` means there was nothing on
  *  disk to delete. */
 export function removeSemanticModel() {
-  return invoke<{ removed: boolean }>("agent_session", { op: "semantic_remove" });
+	return invoke<{ removed: boolean }>('agent_session', {
+		op: 'semantic_remove',
+	});
 }
 
 /** Add or overwrite a persona entry (the manual `/remember` path). */
 export function setMemoryPersona(
-  key: string,
-  value: string,
-  scope: "global" | "workspace" = "global",
+	key: string,
+	value: string,
+	scope: 'global' | 'workspace' = 'global'
 ) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "memory_set",
-    payload: { key, value, scope },
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'memory_set',
+		payload: { key, value, scope },
+	});
 }
 
 /** Drop a persona entry. `scope` names the one row to drop — the same label may
  *  be a separate entry in the other scope; omitting it forgets the key in every
  *  scope, which is what the `/forget` command means. */
-export function forgetMemory(key: string, scope?: "global" | "workspace") {
-  return invoke<{ success: boolean; removed: boolean }>("agent_session", {
-    op: "memory_forget",
-    payload: scope ? { key, scope } : { key },
-  });
+export function forgetMemory(key: string, scope?: 'global' | 'workspace') {
+	return invoke<{ success: boolean; removed: boolean }>('agent_session', {
+		op: 'memory_forget',
+		payload: scope ? { key, scope } : { key },
+	});
 }
 
 export function removeMemoryFact(id: number) {
-  return invoke<{ success: boolean; removed: boolean }>("agent_session", {
-    op: "memory_remove_fact",
-    payload: { id },
-  });
+	return invoke<{ success: boolean; removed: boolean }>('agent_session', {
+		op: 'memory_remove_fact',
+		payload: { id },
+	});
 }
 
 /** `table`: "facts" | "episodes" | "persona" | "all". */
 export function clearMemory(table: string) {
-  return invoke<{ success: boolean; removed: number }>("agent_session", {
-    op: "memory_clear",
-    payload: { table },
-  });
+	return invoke<{ success: boolean; removed: number }>('agent_session', {
+		op: 'memory_clear',
+		payload: { table },
+	});
 }
 
 /** User-level developer overrides — `~/.config/husk/settings.toml`. Each
@@ -1139,173 +1261,182 @@ export function clearMemory(table: string) {
  *  it, `gpu_acceleration = false` on a stack that needs hardware GL) —
  *  the recovery path is a single obvious file beside `config.toml`. */
 export interface DevConfig {
-  /** "x11" | "wayland" — GTK/WebKitGTK backend. null = follow the session. */
-  renderer?: "x11" | "wayland" | null;
-  /** false = software GL (dmabuf off + LIBGL_ALWAYS_SOFTWARE); true / null =
-   *  hardware acceleration on. */
-  gpu_acceleration?: boolean | null;
-  /** true = Skia rasterises on the CPU, GPU still composites; null = on for
-   *  NVIDIA, off elsewhere. */
-  cpu_raster?: boolean | null;
-  /** Shift+Ctrl+P HUD toggle — `true` enables it, `null` falls back to
-   *  dev-build default. */
-  monitor_panel?: boolean | null;
-  /** `true` → F12 / Ctrl+Shift+I/C/J/K reach the WebKitGTK inspector in a
-   *  packaged build. `null` falls back to dev-build default. */
-  devtools?: boolean | null;
-  /** `true` → the "开发者选项" settings entry shows in the left nav.
-   *  Hidden by default — opting in is a manual edit of
-   *  `~/.config/husk/settings.toml` (`developer_ui = true`) + relaunch. */
-  developer_ui?: boolean | null;
+	/** "x11" | "wayland" — GTK/WebKitGTK backend. null = follow the session. */
+	renderer?: 'x11' | 'wayland' | null;
+	/** false = software GL (dmabuf off + LIBGL_ALWAYS_SOFTWARE); true / null =
+	 *  hardware acceleration on. */
+	gpu_acceleration?: boolean | null;
+	/** true = Skia rasterises on the CPU, GPU still composites; null = on for
+	 *  NVIDIA, off elsewhere. */
+	cpu_raster?: boolean | null;
+	/** Shift+Ctrl+P HUD toggle — `true` enables it, `null` falls back to
+	 *  dev-build default. */
+	monitor_panel?: boolean | null;
+	/** `true` → F12 / Ctrl+Shift+I/C/J/K reach the WebKitGTK inspector in a
+	 *  packaged build. `null` falls back to dev-build default. */
+	devtools?: boolean | null;
+	/** `true` → the "开发者选项" settings entry shows in the left nav.
+	 *  Hidden by default — opting in is a manual edit of
+	 *  `~/.config/husk/settings.toml` (`developer_ui = true`) + relaunch. */
+	developer_ui?: boolean | null;
 }
 
 export function getDevConfig() {
-  return invoke<DevConfig>("agent_session", { op: "get_dev_config" });
+	return invoke<DevConfig>('agent_session', { op: 'get_dev_config' });
 }
 
 export function saveDevConfig(payload: DevConfig) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "save_dev_config",
-    payload,
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'save_dev_config',
+		payload,
+	});
 }
 
 /** Git branch + dirty count for the active workspace. `repo` separates a
  * clean repository from a plain folder: both report `dirty: 0`, but only the
  * repository has anything to commit. `branch` is null outside a repository. */
 export interface GitInfo {
-  repo: boolean;
-  branch: string | null;
-  dirty: number;
+	repo: boolean;
+	branch: string | null;
+	dirty: number;
 }
 
 export function getGitInfo() {
-  return invoke<GitInfo>("agent_session", { op: "git_info" });
+	return invoke<GitInfo>('agent_session', { op: 'git_info' });
 }
 
 /** Appearance settings — persisted at the app-data root as
  * `appearance.json`. The frontend applies it at boot (dark class + CSS
  * vars) so the shell paints with the user's choices from the first frame. */
 export interface AppearanceConfig {
-  theme_mode: "system" | "light" | "dark";
-  theme_id?: string | null;
-  accent: string;
-  background: string;
-  foreground: string;
-  /** Dark-mode overrides — applied instead of the base values while the
-   *  effective mode is dark; absent → the `.dark` palette defaults win. */
-  dark_accent?: string | null;
-  dark_background?: string | null;
-  dark_foreground?: string | null;
-  ui_font: string;
-  code_font: string;
-  contrast: number;
-  /** Cost display currency — "usd" | "cny". Absent in older files → usd. */
-  currency?: "usd" | "cny";
+	theme_mode: 'system' | 'light' | 'dark';
+	theme_id?: string | null;
+	accent: string;
+	background: string;
+	foreground: string;
+	/** Dark-mode overrides — applied instead of the base values while the
+	 *  effective mode is dark; absent → the `.dark` palette defaults win. */
+	dark_accent?: string | null;
+	dark_background?: string | null;
+	dark_foreground?: string | null;
+	ui_font: string;
+	code_font: string;
+	contrast: number;
+	/** Cost display currency — "usd" | "cny". Absent in older files → usd. */
+	currency?: 'usd' | 'cny';
 }
 
 export function getAppearance() {
-  return invoke<AppearanceConfig>("agent_session", { op: "get_appearance" });
+	return invoke<AppearanceConfig>('agent_session', { op: 'get_appearance' });
 }
 
 /** Partial update — only the keys sent are merged into the stored file. */
 export function setAppearance(patch: Partial<AppearanceConfig>) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "set_appearance",
-    payload: patch,
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'set_appearance',
+		payload: patch,
+	});
 }
 
 /** A workspace file entry for the `@` mention picker. */
 export interface FileItem {
-  path: string;
-  name: string;
+	path: string;
+	name: string;
 }
 
 /** A workspace skill (`.agents/skills/<name>/SKILL.md`) for the `/$` picker. */
 export interface SkillDetail {
-  name: string;
-  description: string;
-  body: string;
-  scope: "workspace" | "global";
-  writable: boolean;
+	name: string;
+	description: string;
+	body: string;
+	scope: 'workspace' | 'global';
+	writable: boolean;
 }
 
 /** `SKILL.md` body + scope for the edit dialog. */
 export function readSkill(name: string) {
-  return invoke<SkillDetail>("agent_session", { op: "read_skill", payload: { name } });
+	return invoke<SkillDetail>('agent_session', {
+		op: 'read_skill',
+		payload: { name },
+	});
 }
 
 export function deleteSkill(name: string) {
-  return invoke<{ success: boolean }>("agent_session", { op: "delete_skill", payload: { name } });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'delete_skill',
+		payload: { name },
+	});
 }
 
 export interface SubagentDetail {
-  name: string;
-  description: string;
-  prompt: string;
-  scope: "workspace" | "global";
-  model?: string | null;
-  /** Manifest `thinking:` — absent → the subagent default, then the parent. */
-  thinking?: string | null;
-  /** 权限: `true` = 只读, `false` = 可读写. A builtin without a manifest
-   *  reports its own registry (review is read-only). */
-  readonly?: boolean;
-  /** No manifest file behind this profile — saving an edit writes an
-   *  override that shadows the built-in. */
-  builtin?: boolean;
+	name: string;
+	description: string;
+	prompt: string;
+	scope: 'workspace' | 'global';
+	model?: string | null;
+	/** Manifest `thinking:` — absent → the subagent default, then the parent. */
+	thinking?: string | null;
+	/** 权限: `true` = 只读, `false` = 可读写. A builtin without a manifest
+	 *  reports its own registry (review is read-only). */
+	readonly?: boolean;
+	/** No manifest file behind this profile — saving an edit writes an
+	 *  override that shadows the built-in. */
+	builtin?: boolean;
 }
 
 /** `*.md` body + scope for the edit dialog. */
 export function readSubagent(name: string) {
-  return invoke<SubagentDetail>("agent_session", { op: "read_subagent", payload: { name } });
+	return invoke<SubagentDetail>('agent_session', {
+		op: 'read_subagent',
+		payload: { name },
+	});
 }
 
 export function deleteSubagent(name: string) {
-  return invoke<{ success: boolean }>("agent_session", {
-    op: "delete_subagent",
-    payload: { name },
-  });
+	return invoke<{ success: boolean }>('agent_session', {
+		op: 'delete_subagent',
+		payload: { name },
+	});
 }
 
 export interface SkillItem {
-  name: string;
-  description: string;
-  path: string;
-  /** Lives in a global skills dir rather than the workspace. */
-  global: boolean;
-  /** False for skills outside the two writable pi roots (installed packs). */
-  writable: boolean;
+	name: string;
+	description: string;
+	path: string;
+	/** Lives in a global skills dir rather than the workspace. */
+	global: boolean;
+	/** False for skills outside the two writable pi roots (installed packs). */
+	writable: boolean;
 }
 
 /** Fuzzy file index for the `@` picker — `query` is a lowercase substring. */
 export function listFiles(query?: string) {
-  return invoke<FileItem[]>("agent_session", {
-    op: "list_files",
-    payload: { query: query ?? "" },
-  });
+	return invoke<FileItem[]>('agent_session', {
+		op: 'list_files',
+		payload: { query: query ?? '' },
+	});
 }
 
 /** Workspace skills — `.agents/skills/` + aliases, for `/` and `$` pickers. */
 export function listSkills() {
-  return invoke<SkillItem[]>("agent_session", { op: "list_skills" });
+	return invoke<SkillItem[]>('agent_session', { op: 'list_skills' });
 }
 
 /** One plugin-declared slash command — `capabilities.commands` flattened.
  * `qualified` is `plugin_id:name` — the collision-safe spelling the kernel
  * also accepts on `/x`. */
 export interface PluginCommand {
-  name: string;
-  qualified: string;
-  pluginId: string;
-  description: string;
-  action: string;
+	name: string;
+	qualified: string;
+	pluginId: string;
+	description: string;
+	action: string;
 }
 
 /** Enabled plugins' declared slash commands — the `/` picker's plugin
  * half. Empty when no plugin is loaded or none declare commands. */
 export function listPluginCommands() {
-  return invoke<PluginCommand[]>("agent_session", { op: "plugin_commands" });
+	return invoke<PluginCommand[]>('agent_session', { op: 'plugin_commands' });
 }
 
 /** One attached file for the composer chips — `kind` decides how the
@@ -1315,28 +1446,28 @@ export function listPluginCommands() {
  * inside `.husk/attachments/` — sandbox-visible; `data_url` is the
  * image's inline preview (chips + user bubble). */
 export interface Attachment {
-  path: string;
-  name: string;
-  kind: "text" | "image" | "binary";
-  content?: string;
-  truncated?: boolean;
-  data_url?: string;
+	path: string;
+	name: string;
+	kind: 'text' | 'image' | 'binary';
+	content?: string;
+	truncated?: boolean;
+	data_url?: string;
 }
 
 /** Native multi-select file picker for the `+` attach button —
  * `kind` presets the filter list. */
-export function pickAttachments(kind: "image" | "text" | "any") {
-  return invoke<string[]>("agent_session", {
-    op: "pick_attachments",
-    payload: { kind },
-  });
+export function pickAttachments(kind: 'image' | 'text' | 'any') {
+	return invoke<string[]>('agent_session', {
+		op: 'pick_attachments',
+		payload: { kind },
+	});
 }
 
 export function readAttachment(path: string) {
-  return invoke<Attachment>("agent_session", {
-    op: "read_attachment",
-    payload: { path },
-  });
+	return invoke<Attachment>('agent_session', {
+		op: 'read_attachment',
+		payload: { path },
+	});
 }
 
 /** Stage clipboard bytes as an attachment. A pasted image has no path to
@@ -1345,10 +1476,10 @@ export function readAttachment(path: string) {
  * a picked file — same `Attachment` shape back, so both flows feed one chip
  * list. `mime` supplies the extension when the pasted blob has no name. */
 export function attachBytes(name: string, mime: string, data: string) {
-  return invoke<Attachment>("agent_session", {
-    op: "attach_bytes",
-    payload: { name, mime, data },
-  });
+	return invoke<Attachment>('agent_session', {
+		op: 'attach_bytes',
+		payload: { name, mime, data },
+	});
 }
 
 /** Write a frontend-made export (diagram SVG/PNG, table CSV, image bytes) to a
@@ -1357,8 +1488,11 @@ export function attachBytes(name: string, mime: string, data: string) {
  *  through here: the webview's own `<a download>` has no handler under Tauri
  *  (see `lib/download-bridge.ts`). */
 export function saveDownload(name: string, data: string) {
-  return invoke<{ saved: boolean; path?: string; bytes?: number }>("agent_session", {
-    op: "save_download",
-    payload: { name, data },
-  });
+	return invoke<{ saved: boolean; path?: string; bytes?: number }>(
+		'agent_session',
+		{
+			op: 'save_download',
+			payload: { name, data },
+		}
+	);
 }

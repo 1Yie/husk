@@ -894,7 +894,8 @@ fn unobserved_fast_provider_from(
     fast_mode: bool,
 ) -> Option<Arc<dyn agent_llm::LlmProvider>> {
     let provider = app.providers.get(provider_name)?;
-    agent_llm::ProviderFactory::build_with_fast_mode(provider, None, Some(conversation), fast_mode).ok()
+    agent_llm::ProviderFactory::build_with_fast_mode(provider, None, Some(conversation), fast_mode)
+        .ok()
 }
 
 /// Wrap the foreground session provider in prompt-cache warming when the
@@ -949,7 +950,10 @@ fn resolved_model(cfg: &SessionConfig) -> Option<agent_llm::ModelConfig> {
 
 /// Host-owned keyed session preference. Legacy sessions have no entry and stay off.
 pub(crate) fn read_fast_mode(store: &agent_store::SessionStore, id: i64) -> bool {
-    store.read_state(id, "husk:fast_mode").ok().flatten()
+    store
+        .read_state(id, "husk:fast_mode")
+        .ok()
+        .flatten()
         .and_then(|bytes| serde_json::from_slice::<bool>(&bytes).ok())
         .unwrap_or(false)
 }
@@ -959,11 +963,17 @@ pub(crate) fn write_fast_mode(
     id: i64,
     enabled: bool,
 ) -> std::io::Result<()> {
-    store.write_state(id, "husk:fast_mode", if enabled { b"true" } else { b"false" })
+    store.write_state(
+        id,
+        "husk:fast_mode",
+        if enabled { b"true" } else { b"false" },
+    )
 }
 
 pub(crate) fn supports_fast_mode(cfg: &agent_llm::AppConfig, provider: &str, model: &str) -> bool {
-    cfg.providers.get(provider).is_some_and(|p| p.model_opts(model).fast_mode.is_some())
+    cfg.providers
+        .get(provider)
+        .is_some_and(|p| p.model_opts(model).fast_mode.is_some())
 }
 
 impl SessionActor {
@@ -1329,12 +1339,14 @@ impl SessionActor {
         // reaches every other live session of this workspace.
         {
             let hub = links.clone();
-            tool_ctx.install_scope_grant(Arc::new(move |action: &str, path: &str, access: &str| {
-                let Some(layer) = crate::links::Layer::from_action(action) else {
-                    return Err(format!("`{action}` 不是本会话支持的授权动作"));
-                };
-                hub.grant(session_id, path, access, layer).map(|_| ())
-            }));
+            tool_ctx.install_scope_grant(Arc::new(
+                move |action: &str, path: &str, access: &str| {
+                    let Some(layer) = crate::links::Layer::from_action(action) else {
+                        return Err(format!("`{action}` 不是本会话支持的授权动作"));
+                    };
+                    hub.grant(session_id, path, access, layer).map(|_| ())
+                },
+            ));
         }
         // This actor's handle is what the hub refreshes on every grant; the
         // notice channel is how the model hears about one it did not make.
@@ -1668,8 +1680,11 @@ impl SessionActor {
             cancel: cancel.clone(),
         };
 
-        let initial_fast_mode = store.as_ref().is_some_and(|store| read_fast_mode(store, session_id))
-            && agent_llm::AppConfig::load(&cfg.paths.config_dir, None).ok()
+        let initial_fast_mode = store
+            .as_ref()
+            .is_some_and(|store| read_fast_mode(store, session_id))
+            && agent_llm::AppConfig::load(&cfg.paths.config_dir, None)
+                .ok()
                 .is_some_and(|app| supports_fast_mode(&app, &cfg.provider_name, &cfg.model));
         (
             Self {
@@ -1793,7 +1808,10 @@ impl SessionActor {
         // record is gone and must stay gone.
         if let Some(store) = &self.store {
             if !store.is_deleted(self.session_id) && !self.bg_jobs.jobs().is_empty() {
-                let _ = store.save_bg_jobs(self.session_id, &bg_record(&self.bg_restored, &self.bg_jobs));
+                let _ = store.save_bg_jobs(
+                    self.session_id,
+                    &bg_record(&self.bg_restored, &self.bg_jobs),
+                );
             }
         }
         // A closed or deleted session must not keep paying for refreshes.
@@ -1900,8 +1918,7 @@ impl SessionActor {
         // The loop guard is this session's own hook, not a plugin: it goes in
         // as the local layer so a reload (which replaces the shared chain)
         // cannot take it away.
-        let local: Vec<Arc<dyn agent_kernel::hooks::AgentHook>> =
-            vec![self.repeat_guard.clone()];
+        let local: Vec<Arc<dyn agent_kernel::hooks::AgentHook>> = vec![self.repeat_guard.clone()];
         let layered = HookChain::layered(local, &chain);
         let engine_chain = self.checkpoint.as_ref().map_or_else(
             || layered.clone(),
@@ -1966,7 +1983,9 @@ impl SessionActor {
     /// The shared tool-decision slot — the bridge writes `ToolDecision`
     /// **here directly**, bypassing the command channel so a mid-turn
     /// approval isn't queued behind the running `run_turn`.
-    pub fn decision_writer(&self) -> Arc<std::sync::Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>> {
+    pub fn decision_writer(
+        &self,
+    ) -> Arc<std::sync::Mutex<Option<(u64, agent_kernel::tools::registry::ToolVerdict)>>> {
         self.decision_slot.clone()
     }
 
@@ -2068,8 +2087,7 @@ impl SessionActor {
                 let persona_seen = self.injected_persona.clone();
                 let prompt = text.clone();
                 tokio::task::spawn_blocking(move || {
-                    let (facts, ids) =
-                        m.facts_block_excluding(&prompt, &seen).unwrap_or_default();
+                    let (facts, ids) = m.facts_block_excluding(&prompt, &seen).unwrap_or_default();
                     let (persona, rows) = m.persona_delta_block(&persona_seen).unwrap_or_default();
                     (format!("{facts}{persona}"), ids, rows)
                 })
@@ -2086,7 +2104,8 @@ impl SessionActor {
                 "{MEMORY_CONTEXT_OPEN}\n{}\n</memory-context>",
                 block.trim_end()
             )));
-            self.injected_facts.extend(ids.into_iter().map(|id| (at, id)));
+            self.injected_facts
+                .extend(ids.into_iter().map(|id| (at, id)));
         }
         self.injected_persona.extend(persona);
 
@@ -2777,8 +2796,12 @@ impl SessionActor {
                 // Warming is side traffic: on its own instance, so a replay
                 // cannot overwrite the foreground round's cache-write figure.
                 let side = unobserved_fast_provider_from(
-                    &cfg, provider, &self.conversation, self.applied_fast_mode,
-                ).unwrap_or_else(|| built.clone());
+                    &cfg,
+                    provider,
+                    &self.conversation,
+                    self.applied_fast_mode,
+                )
+                .unwrap_or_else(|| built.clone());
                 let resolved = pcfg
                     .find_model(model)
                     .is_some()
@@ -2847,11 +2870,17 @@ impl SessionActor {
                 }
             } else {
                 let (unavailable, _) = crate::session_manager::choose_session_provider(
-                    &cfg, provider, self.usage_observer.as_ref(), Some(&self.conversation), false,
+                    &cfg,
+                    provider,
+                    self.usage_observer.as_ref(),
+                    Some(&self.conversation),
+                    false,
                 );
                 self.warming.cancel();
                 self.engine.set_provider(foreground_provider(
-                    unavailable.clone(), &self.live_context, self.checkpoint.as_ref(),
+                    unavailable.clone(),
+                    &self.live_context,
+                    self.checkpoint.as_ref(),
                 ));
                 self.set_fallbacks(provider, Vec::new());
                 self.child_base.provider = unavailable.clone();
@@ -3258,6 +3287,24 @@ impl SessionActor {
                 // carrying the manager's mirror once re-pointed every actor
                 // at the active session's model. Silent: no history notice.
                 let (provider, model) = (self.provider_name.clone(), self.model.clone());
+                // Stored placeholder model ids resolve against current
+                // configuration before the provider reloads.
+                let (provider, model) =
+                    if model.is_empty() || model == crate::session_manager::UNCONFIGURED_MODEL {
+                        match agent_llm::AppConfig::load(&self.paths.config_dir, None) {
+                            Ok(cfg) => match crate::session_manager::model_for(&cfg, &provider) {
+                                Some(resolved)
+                                    if resolved != crate::session_manager::UNCONFIGURED_MODEL =>
+                                {
+                                    (provider, resolved)
+                                }
+                                _ => (provider, model),
+                            },
+                            Err(_) => (provider, model),
+                        }
+                    } else {
+                        (provider, model)
+                    };
                 info!(%provider, %model, "model config reload");
                 self.apply_model_switch(&provider, &model);
                 self.persist_settings();
@@ -3538,7 +3585,6 @@ mod tests {
             "{{SUBAGENTS_BLOCK}}",
             "{{BLUEPRINT_BLOCK}}",
             "{{MEMORY_BLOCK}}",
-
         ] {
             assert!(session.contains(ph), "{ph} missing");
         }
