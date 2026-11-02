@@ -1098,7 +1098,7 @@ export function relaunchApp() {
 
 export interface AppConfigData {
 	path?: string;
-	config: Record<string, any>;
+	config: Record<string, unknown>;
 	/** Set when the file on disk exists but does not parse. The editor must
 	 * stay read-only in that case — saving would replace the user's file. */
 	load_error?: string | null;
@@ -1327,7 +1327,7 @@ export interface AppearanceConfig {
 	/** Cost display currency — "usd" | "cny". Absent in older files → usd. */
 	currency?: 'usd' | 'cny';
 	/** Saved module order and visibility; absent uses the built-in layout. */
-	status_strip?: { items: string[]; hidden?: string[] } | null;
+	status_strip?: { items?: string[]; hidden?: string[] } | null;
 }
 
 export function getAppearance() {
