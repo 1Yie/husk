@@ -25,6 +25,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:ci
+      - name: Install browser for bundled terminal CSP regression
+        run: npx playwright install --with-deps chromium
+      - name: Check bundled terminal under native CSP
+        run: npm run test:terminal:production -- --csp
       - run: npm run build
       - name: Upload test and coverage reports
         if: always()

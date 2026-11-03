@@ -1,5 +1,21 @@
 # Terminal regression checks
 
+## Production CSP regression
+
+```sh
+npm --prefix crates/app-tauri/frontend run test:terminal:production -- --csp
+npm --prefix crates/app-tauri/frontend run test:terminal:production -- --csp --webkit
+```
+
+These checks use the production fixture bundle and the application's CSP
+configuration. They verify configured terminal fonts, ANSI colours, preserved
+columns and glyph-cell layout in light/dark themes. A nonce-blocked control
+confirms that the browser enforces the policy. Script nonce/hash hardening
+remains enabled.
+
+PTY IPC is simulated. Native installation-package acceptance is a separate
+check. Set `CHAT_TERMINAL_EXECUTABLE` to use an installed Chromium executable.
+
 ## Animated panel clipping
 
 ```sh
