@@ -151,13 +151,6 @@ export function TerminalSettings() {
 					<KvListContent>
 						<SettingRow
 							title="字体"
-							description={
-								fontStatus === 'error'
-									? '系统字体读取失败，仍可使用内置 JetBrains Mono'
-									: fontStatus === 'loading'
-										? '正在读取系统字体，默认使用内置 JetBrains Mono'
-										: '系统等宽字体优先；不可用时回退到内置 JetBrains Mono'
-							}
 							icon={<TextQuote className="h-4 w-4" />}
 							wideControl
 						>
