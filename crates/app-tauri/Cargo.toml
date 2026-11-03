@@ -10,6 +10,11 @@ build = "build.rs"
 name = "husk"
 path = "backend/main.rs"
 
+[[test]]
+name = "macos_traffic_lights"
+path = "backend/macos_traffic_lights_test.rs"
+harness = false
+
 [dependencies]
 agent-context = { path = "../agent-context" }
 agent-kernel = { workspace = true }

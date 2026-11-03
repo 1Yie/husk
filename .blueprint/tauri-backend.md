@@ -25,7 +25,9 @@ Husk 桌面端 Tauri 2 后端：内核之上的适配层与打包配置。
 - 点击队列通过 `peek_notification_click` / `ack_notification_click` 与前端交接，界面就绪前或重挂载期间的点击保留到导航处理完成。
 - 构建特性：`default = ["semantic"]`——语义召回是主流程的一部分，默认关闭的是那道开关本身，不是构建；关成本的构建用 `--no-default-features`。库 crate 自己仍保持默认关闭
 
-主窗口的原生背景由 `backend/ipc/sidebar_glass.rs` 和其 macOS 模块承载：命令限定当前 `main` 窗口，校验有限几何与颜色，并将前端可见矩形裁剪、换算为 WebView 本地点坐标。macOS 26+ 且 `NSGlassEffectView` 可用时在单个 WKWebView 下方维护覆盖整个应用外壳的一个窗口私有视图，以低不透明度的前端 panel 色为玻璃着色，透出桌面画面而由不透明工作面遮住内部区域；减少透明度时返回实色状态，其他平台返回未启用。原生对象和辅助功能、窗口通知在主线程管理，版本戳拒绝迟到的更新与释放。macOS 交通灯的原生 inset 由 `tauri.macos.conf.json` 配置，与侧栏顶栏对齐。
+主窗口的原生背景由 `backend/ipc/sidebar_glass.rs` 和其 macOS 模块承载：命令限定当前 `main` 窗口，校验有限几何与颜色，并将前端可见矩形裁剪、换算为 WebView 本地点坐标。macOS 26+ 且 `NSGlassEffectView` 可用时在单个 WKWebView 下方维护覆盖整个应用外壳的一个窗口私有视图，以低不透明度的前端 panel 色为玻璃着色，透出桌面画面而由不透明工作面遮住内部区域；减少透明度时返回实色状态，其他平台返回未启用。原生对象和辅助功能、窗口通知在主线程管理，版本戳拒绝迟到的更新与释放。
+
+macOS 交通灯的初始 inset 来自 `tauri.macos.conf.json`；`backend/macos_traffic_lights.rs` 根据原生控件的实际窗口坐标维护与顶栏的对齐。观察器由主窗口持有，只保存窗口和原生视图的弱引用，响应 AppKit 与 Tao 的视图 frame 更新，视图替换时重绑定，销毁时注销。全屏系统工具栏由 AppKit 管理。原生重布局回归见 `backend/macos_traffic_lights_test.rs`。
 
 `agent_session.set_appearance` 按 `husk_host::prefs::AppearanceSettings` 的已知顶层字段合并补丁，再反序列化为同一类型；未提供字段保留，无法解码的补丁保留当前设置。布局、主题、字体和货币设置共用保存路径。
 

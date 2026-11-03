@@ -58,13 +58,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-14
+          - platform: xcode-27
             target: aarch64-apple-darwin
             label: macOS Apple Silicon
-          # macos-13 was retired; macos-15-intel is the current Intel image.
-          - platform: macos-15-intel
+            minimum_sdk: 27
+          - platform: macos-26-intel
             target: x86_64-apple-darwin
             label: macOS Intel
+            minimum_sdk: 26
             # No prebuilt ONNX Runtime exists for this target: bundle the dylib
             # the steps below compile from source. Unset (empty) elsewhere.
             tauri_args: --config tauri.macos-x86_64.conf.json
@@ -94,6 +95,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Select and verify macOS SDK
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk=$(xcrun --sdk macosx --show-sdk-version)
+          sdk_major=${sdk%%.*}
+          [[ $sdk_major =~ ^[0-9]+$ ]]
+          [[ $sdk_major -ge ${{ matrix.minimum_sdk }} ]]
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+          xcodebuild -version
+          echo "Selected macOS SDK $sdk"
 
       - uses: swatinem/rust-cache@v2
 
@@ -155,6 +169,25 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }} ${{ matrix.tauri_args }}
+
+      - name: Verify packaged macOS SDK
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          images=(target/${{ matrix.target }}/release/bundle/dmg/Husk_*.dmg)
+          [[ ${#images[@]} -eq 1 ]]
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "${images[0]}"
+          trap 'hdiutil detach "$mnt"' EXIT
+          app="$mnt/Husk.app"
+          build=$(xcrun vtool -show-build "$app/Contents/MacOS/husk")
+          printf '%s\n' "$build"
+          sdk=$(awk '$1 == "sdk" {print $2}' <<<"$build")
+          sdk_major=${sdk%%.*}
+          [[ $sdk_major =~ ^[0-9]+$ ]]
+          [[ $sdk_major -ge ${{ matrix.minimum_sdk }} ]]
+          codesign --verify --deep --strict "$app"
 
       # tauri-action has already attached the bundle to the draft release, so a
       # failure here flags a bad Intel build rather than preventing the upload:

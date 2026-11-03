@@ -12,6 +12,8 @@ mod kernel;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos_menu;
+#[cfg(target_os = "macos")]
+mod macos_traffic_lights;
 mod terminal;
 #[cfg(target_os = "linux")]
 mod webview_recovery;
@@ -454,6 +456,15 @@ fn fit_main_window(app: &tauri::App) {
     reveal(&win);
 }
 
+#[cfg(target_os = "macos")]
+fn install_macos_traffic_lights(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(window) = app.get_webview_window("main") {
+        unsafe { macos_traffic_lights::install(window.ns_window()?.cast()) }
+            .map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
 fn main() {
     // Before anything that can panic or block: a packaged GUI has no terminal,
     // so the file sink is the only record of a renderer/actor failure.
@@ -524,6 +535,8 @@ fn main() {
         // System clipboard access for image paste (see `paste_clipboard`).
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            install_macos_traffic_lights(app)?;
             // System tray. Close-to-tray keeps the process alive, so a click
             // on the tray — or, in release, a relaunch — brings this window
             // back instead of booting a second shell. `退出` is the only real
