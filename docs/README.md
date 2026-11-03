@@ -24,7 +24,3 @@ ADR 与已加载的代理指令仍须经所有者批准后修改。
 
 草稿、探针和临时验证材料放在 Git 忽略的 `.husk/scratch/`，不作为项目事实来源。
 正式文档不引用临时文件、会话记录或工作区材料。
-
-GPUI 的使用方式与迁移边界维护在
-[`crates/app-gpui/README.md`](../crates/app-gpui/README.md)；模块设计在
-[`app-gpui`](../.blueprint/app-gpui.md)。

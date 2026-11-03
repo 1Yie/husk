@@ -15,21 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install native development dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake pkg-config libfontconfig1-dev libfreetype6-dev \
-            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb1-dev libxcb-xkb-dev libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libvulkan-dev libssl-dev
       - uses: swatinem/rust-cache@v2
         with:
-          key: gpui-linux
+          key: terminal-linux
       - run: ./scripts/check-deps.sh
-      - run: cargo fmt -p husk-gpui -p husk-terminal --check
-      - run: nice -n 10 cargo test --locked -p husk-gpui -p husk-terminal --no-default-features --lib
-      - run: nice -n 10 cargo check --locked -p husk-gpui --all-targets
+      - run: cargo fmt -p husk-terminal --check
+      - run: nice -n 10 cargo test --locked -p husk-terminal --no-default-features --lib
+      - run: nice -n 10 cargo check --locked -p husk-terminal --all-targets
 
   platform-check:
     name: Check (${{ matrix.target }})
@@ -51,8 +43,8 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: swatinem/rust-cache@v2
         with:
-          key: gpui-${{ matrix.target }}
+          key: terminal-${{ matrix.target }}
       - name: Set macOS deployment target
         if: runner.os == 'macOS'
         run: echo "MACOSX_DEPLOYMENT_TARGET=15.0" >> "$GITHUB_ENV"
-      - run: cargo check --locked -p husk-gpui --no-default-features --all-targets --target ${{ matrix.target }}
+      - run: cargo check --locked -p husk-terminal --no-default-features --all-targets --target ${{ matrix.target }}

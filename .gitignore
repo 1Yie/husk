@@ -61,8 +61,14 @@ config.local.json
 Thumbs.db
 Desktop.ini
 
-# app-desktop — local iced experiment, untracked
-crates/app-desktop/
+# Local-only application clients
+/crates/app-desktop/
+/crates/app-gpui/
+/crates/app-tui/
+/crates/app-cli/
+/.blueprint/app-gpui.md
+/.blueprint/app-tui.md
+/.blueprint/app-cli.md
 __pycache__/
 
 # Agent runtime scratch (task logs, review output, session artifacts)

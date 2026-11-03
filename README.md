@@ -118,11 +118,11 @@ invariants = ["工具输出必须经过截断预算"]
 
 ```
 ┌──────────────────────── 前端 ─────────────────────────┐
-│        husk (Tauri 2 + React)   │    husk-cli         │
-└────────────────┬────────────────┴──────────┬──────────┘
-                 │        agent-ipc          │
-                 │   UiCommand  /  UiEvent   │
-┌────────────────▼───────────────────────────▼──────────┐
+│                  husk (Tauri 2 + React)               │
+└────────────────┬─────────────────────────────────────┘
+                 │  agent-ipc
+                 │  UiCommand / UiEvent
+┌────────────────▼─────────────────────────────────────┐
 │                     agent-kernel                      │
 │  ReAct 循环 · 工具注册表 · 权限门 · 压缩 · 会话 · 技能   │
 └───┬──────────────┬──────────────┬──────────────┬──────┘
@@ -185,12 +185,6 @@ cd crates/app-tauri/frontend && npx vite --config vite.harness.config.ts
 ```bash
 cd crates/app-tauri
 cargo tauri build     # deb / rpm / nsis / msi / dmg
-```
-
-### headless CLI
-
-```bash
-cargo run -p app-cli -- --headless --workspace . --prompt "解释这个仓库的结构"
 ```
 
 ### 测试
@@ -294,7 +288,6 @@ run()
 | `agent-computer` | 桌面控制后端，包括抓屏（纯 Rust 缩放）和合成输入，支持 X11 与 `none` |
 | `agent-plugin` | 插件清单、MCP stdio 桥、hook 链 |
 | `app-tauri`（`husk`） | Tauri 后端，以及 React / Tailwind / Radix 前端 |
-| `app-cli`（`husk-cli`） | headless 事件泵 |
 
 ## 许可证
 

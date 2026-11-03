@@ -1,8 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-# iced GUI experiment — kept locally, not tracked/built by the workspace.
-exclude = ["crates/app-desktop"]
+# Local-only application clients stay outside the shared workspace.
+exclude = [
+    "crates/app-desktop",
+    "crates/app-gpui",
+    "crates/app-tui",
+    "crates/app-cli",
+]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
