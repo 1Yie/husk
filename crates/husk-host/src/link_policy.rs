@@ -60,8 +60,8 @@ pub fn validate(
         }
     }
     for dir in SYSTEM_DIRS {
-        let dir = PathBuf::from(dir);
-        if canon == dir || canon.starts_with(&dir) {
+        let dir = canonical(Path::new(dir)).unwrap_or_else(|| PathBuf::from(dir));
+        if canon.starts_with(&dir) || dir.starts_with(&canon) {
             return Err(format!("{} 是系统目录", canon.display()));
         }
     }
@@ -134,8 +134,6 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-
-
 /// The nearest directory above `path` that looks like a project root — what a
 /// grant should name. The scan lives in `agent-capabilities`, beside the
 /// refusal that suggests it.
@@ -153,7 +151,9 @@ pub fn grant_target(path: &Path) -> PathBuf {
     if path.is_dir() {
         return path.to_path_buf();
     }
-    path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf())
+    path.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| path.to_path_buf())
 }
 /// Access label for the wire (`"read"` / `"readwrite"`).
 pub fn access_label(access: RootAccess) -> &'static str {
@@ -214,15 +214,16 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let root = tempfile::tempdir().unwrap();
+            let base = if cfg!(target_os = "macos") {
+                PathBuf::from("/tmp")
+            } else {
+                std::env::temp_dir()
+            };
+            let root = tempfile::tempdir_in(base).unwrap();
             let base = root.path().canonicalize().unwrap();
             let ws = base.join("app");
             std::fs::create_dir_all(&ws).unwrap();
-            let paths = agent_paths::AppPaths::new(
-                base.join("config"),
-                base.join("data"),
-                ".host",
-            );
+            let paths = agent_paths::AppPaths::new(base.join("config"), base.join("data"), ".host");
             std::fs::create_dir_all(&paths.config_dir).unwrap();
             Self { root, ws, paths }
         }
@@ -262,6 +263,9 @@ mod tests {
         let f = Fixture::new();
         for p in ["/", "/etc", "/usr/lib", "/proc"] {
             assert!(validate(Path::new(p), &f.ws, &f.paths).is_err(), "{p}");
+            if let Some(real) = canonical(Path::new(p)) {
+                assert!(validate(&real, &f.ws, &f.paths).is_err(), "{real:?}");
+            }
         }
     }
 

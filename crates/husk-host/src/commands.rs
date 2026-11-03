@@ -103,7 +103,11 @@ impl CommandRegistry {
             let line = format!("`${skill_name}` 不是可用技能 — 已作为普通消息发送");
             let _ = ctx.ui_tx.send(UiEvent::SystemMessage(line.clone()));
             ctx.history.push(ChatMessage::notice(line));
-            return Some(CommandResult::FeedToAgent(expand_user_tokens(t, ctx.workspace_root, ctx.linked_roots)));
+            return Some(CommandResult::FeedToAgent(expand_user_tokens(
+                t,
+                ctx.workspace_root,
+                ctx.linked_roots,
+            )));
         }
         // Plain prompt — still expand `@path`/`$skill` mentions so the
         // model sees file contents / skill instructions, not bare tokens.
@@ -308,6 +312,7 @@ fn expand_mentions(text: &str, root: &Path, linked: &[agent_capabilities::Linked
     if !text.contains('@') {
         return text.to_string();
     }
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('@') {
@@ -353,10 +358,9 @@ fn expand_mentions(text: &str, root: &Path, linked: &[agent_capabilities::Linked
         let canon = if rel.is_absolute() {
             rel.canonicalize().unwrap_or_else(|_| rel.to_path_buf())
         } else {
-            let joined = root.join(&norm);
+            let joined = root_canon.join(&norm);
             joined.canonicalize().unwrap_or_else(|_| joined.clone())
         };
-        let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let in_workspace = !escapes && canon.starts_with(&root_canon);
         let in_linked = linked.iter().any(|r| canon.starts_with(&r.path));
         if !in_workspace && !in_linked {
