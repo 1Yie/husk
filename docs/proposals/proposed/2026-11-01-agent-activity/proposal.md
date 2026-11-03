@@ -139,7 +139,13 @@ and adds a `queued` status beside the existing four.
 - [ ] `03-tool-queue.md` — a queued card and `call_id` correlation (after 02).
 - [x] `04-tauri-consumers.md` — independently delivered desktop consumers.
 
-The Tauri consumer portion shipped separately. Kernel/SDK producers, cancellation
-integration, persisted todo changes, system-prompt changes and GPUI/TUI/CLI
-consumers remain local under the owner's delivery boundary. Parts 01–03 stay
-open until their complete producer-to-consumer paths are delivered.
+As of 2026-11-03, the SDK producers, shared todo storage, host cancellation and
+Tauri invocation-state fixes are committed on local task branches. Automated
+coverage includes queued cancellation, same-name result correlation, shared
+boards, background notices and session shutdown.
+
+The owner limited this delivery to SDK, husk-host and Tauri. GPUI/TUI/CLI changes
+are excluded and their existing local edits are preserved. Husk's local SDK
+patch remains in the working configuration; SDK publication and a dependency-pin
+update are outside this delivery. Parts 01–03 stay open for their remaining
+cross-client and native manual acceptance.

@@ -775,13 +775,25 @@ async fn breakdown_matches_final_wire_after_long_linked_state_and_old_history_fi
     checkpoint.begin(
         &messages[..3],
         "current task",
-        agent_store::SessionMeta { id: actor.session_id(), ..Default::default() },
+        agent_store::SessionMeta {
+            id: actor.session_id(),
+            ..Default::default()
+        },
     );
     f.provider.scripted.script_text("answer");
-    let tools = Some(serde_json::json!([{"function": {"name": "fixture", "parameters": {"type": "object"}}}]));
+    let tools = Some(
+        serde_json::json!([{"function": {"name": "fixture", "parameters": {"type": "object"}}}]),
+    );
     let provider = foreground_provider(f.provider.clone(), &actor.live_context, Some(checkpoint));
     let mut stream = provider
-        .chat_stream("test-model", &messages, tools.clone(), 0.0, None, &ModelParams::EMPTY)
+        .chat_stream(
+            "test-model",
+            &messages,
+            tools.clone(),
+            0.0,
+            None,
+            &ModelParams::EMPTY,
+        )
         .await
         .unwrap();
     while stream.next().await.is_some() {}
@@ -792,7 +804,9 @@ async fn breakdown_matches_final_wire_after_long_linked_state_and_old_history_fi
     assert!(!request.messages.iter().any(|m| m == &messages[2]));
     assert_eq!(request.messages.last(), messages.last());
     let expected = crate::context_breakdown::estimate(
-        &request.messages, request.tools.as_ref(), is_memory_context,
+        &request.messages,
+        request.tools.as_ref(),
+        is_memory_context,
     );
     assert_eq!(checkpoint.last_breakdown(), Some(expected));
     let raw = crate::context_breakdown::estimate(&messages, tools.as_ref(), is_memory_context);
@@ -800,24 +814,45 @@ async fn breakdown_matches_final_wire_after_long_linked_state_and_old_history_fi
     assert!(expected.assistant < raw.assistant);
     // The unchanged outer checkpoint persists real, untrimmed history, never
     // the inner observer's live wire snapshot.
-    let saved = actor.store.as_ref().unwrap().load_history(actor.session_id()).unwrap();
+    let saved = actor
+        .store
+        .as_ref()
+        .unwrap()
+        .load_history(actor.session_id())
+        .unwrap();
     assert!(saved.iter().any(|m| m == &messages[2]));
-    assert!(!saved.iter().any(|m| m.content.as_deref().unwrap_or("").contains(CURRENT)));
+    assert!(!saved
+        .iter()
+        .any(|m| m.content.as_deref().unwrap_or("").contains(CURRENT)));
     assert_eq!(messages, original);
-    channels.event_tx.send(agent_ipc::UiEvent::Usage {
-        prompt_tokens: 123, completion_tokens: 4, context_window: 4_000, cached_tokens: 0,
-    }).unwrap();
+    channels
+        .event_tx
+        .send(agent_ipc::UiEvent::Usage {
+            prompt_tokens: 123,
+            completion_tokens: 4,
+            context_window: 4_000,
+            cached_tokens: 0,
+        })
+        .unwrap();
     checkpoint.drain().await;
     let forwarded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            if let Some(agent_ipc::UiEvent::Custom { kind, payload }) = channels.event_rx.recv().await {
+            if let Some(agent_ipc::UiEvent::Custom { kind, payload }) =
+                channels.event_rx.recv().await
+            {
                 if kind == crate::context_breakdown::CONTEXT_BREAKDOWN {
-                    break serde_json::from_value::<agent_store::ContextBreakdown>(payload).unwrap();
+                    break serde_json::from_value::<agent_store::ContextBreakdown>(payload)
+                        .unwrap();
                 }
             }
         }
-    }).await.unwrap();
-    assert_eq!(forwarded, expected, "keep the existing Usage/custom-event consumption chain");
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        forwarded, expected,
+        "keep the existing Usage/custom-event consumption chain"
+    );
 }
 
 #[tokio::test]
@@ -827,16 +862,27 @@ async fn completed_foreground_usage_persists_the_final_wire_breakdown() {
     actor.linked_roots().set(vec![f.link(RootAccess::Read)]);
     f.provider.scripted.push_script(vec![
         StreamChunk::ContentDelta("answer".into()),
-        StreamChunk::Done { prompt_tokens: Some(123), completion_tokens: Some(4), cached_tokens: None },
+        StreamChunk::Done {
+            prompt_tokens: Some(123),
+            completion_tokens: Some(4),
+            cached_tokens: None,
+        },
     ]);
     prompt(&mut actor, "question").await;
     let requests = f.provider.requests.lock().unwrap();
     let request = requests.last().unwrap();
     let expected = crate::context_breakdown::estimate(
-        &request.messages, request.tools.as_ref(), is_memory_context,
+        &request.messages,
+        request.tools.as_ref(),
+        is_memory_context,
     );
     assert_eq!(actor.last_breakdown, Some(expected));
-    let meta = actor.store.as_ref().unwrap().meta(actor.session_id()).unwrap();
+    let meta = actor
+        .store
+        .as_ref()
+        .unwrap()
+        .meta(actor.session_id())
+        .unwrap();
     assert_eq!(meta.usage.unwrap().breakdown, Some(expected));
     assert_no_persisted_state(&actor);
 }

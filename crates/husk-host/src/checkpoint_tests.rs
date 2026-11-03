@@ -110,20 +110,40 @@ async fn standalone_checkpoint_observes_actual_messages_and_tools_even_for_compa
     let provider = checkpoint.wrap(scripted.clone());
     for messages in [
         vec![system, ChatMessage::user("task")],
-        vec![ChatMessage::system("independent compactor"), ChatMessage::user("summarize")],
+        vec![
+            ChatMessage::system("independent compactor"),
+            ChatMessage::user("summarize"),
+        ],
     ] {
         scripted.script_text("answer");
         let tools = Some(serde_json::json!([{"name": "fixture"}]));
-        let mut stream = provider.chat_stream(
-            "m", &messages, tools.clone(), 0.0, None, &ModelParams::EMPTY,
-        ).await.unwrap();
+        let mut stream = provider
+            .chat_stream(
+                "m",
+                &messages,
+                tools.clone(),
+                0.0,
+                None,
+                &ModelParams::EMPTY,
+            )
+            .await
+            .unwrap();
         while stream.next().await.is_some() {}
-        assert_eq!(checkpoint.last_breakdown(), Some(crate::context_breakdown::estimate(
-            &messages, tools.as_ref(), crate::session::is_memory_context,
-        )));
+        assert_eq!(
+            checkpoint.last_breakdown(),
+            Some(crate::context_breakdown::estimate(
+                &messages,
+                tools.as_ref(),
+                crate::session::is_memory_context,
+            ))
+        );
     }
     checkpoint.drain().await;
-    assert!(!store.load_history(1).unwrap().iter().any(|m| m.content.as_deref() == Some("summarize")));
+    assert!(!store
+        .load_history(1)
+        .unwrap()
+        .iter()
+        .any(|m| m.content.as_deref() == Some("summarize")));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -282,20 +302,31 @@ async fn exact_dispatch_ids_cover_vetoes_and_shared_plugin_reload() {
             .unwrap_err(),
         "vetoed"
     );
+    shared.replace(vec![]);
+    hooks.run_before_tool(&mut call("two", "{}")).await.unwrap();
     checkpoint.observe(&agent_ipc::UiEvent::ToolCallFinished {
+        call_id: "queued-only".into(),
         name: "read".into(),
         ok: false,
-        content: "vetoed".into(),
+        content: "not dispatched".into(),
         ui_type: None,
         parent: None,
         child_id: None,
     });
-    shared.replace(vec![]);
-    hooks.run_before_tool(&mut call("two", "{}")).await.unwrap();
     checkpoint.observe(&agent_ipc::UiEvent::ToolCallFinished {
+        call_id: "two".into(),
         name: "read".into(),
         ok: true,
         content: "second output".into(),
+        ui_type: None,
+        parent: None,
+        child_id: None,
+    });
+    checkpoint.observe(&agent_ipc::UiEvent::ToolCallFinished {
+        call_id: "one".into(),
+        name: "read".into(),
+        ok: false,
+        content: "vetoed".into(),
         ui_type: None,
         parent: None,
         child_id: None,

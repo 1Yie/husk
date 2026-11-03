@@ -429,6 +429,9 @@ pub struct SessionHandle {
     /// `model_info` so the UI shows the session's actual value, which may
     /// differ from the stored default after a prefs change.
     pub thinking_level: Arc<std::sync::RwLock<Option<String>>>,
+    /// What a background subagent is stopped by. The turn flag above is cleared
+    /// at every turn start, so a child that outlives its turn needs this one.
+    pub background_cancel: Arc<std::sync::atomic::AtomicBool>,
     pub fast_mode: Arc<std::sync::RwLock<bool>>,
     /// The session's live `(provider, model)`. `SetModel` writes it here
     /// before the command reaches the pump, so `model_info` answers with the
@@ -1434,6 +1437,7 @@ impl SessionManager {
         let model_slot = actor.model_writer();
         let steer_tx = actor.steer_writer();
         let cancel = actor.cancel_writer();
+        let background_cancel = actor.background_cancel_writer();
         let shutdown = actor.shutdown_writer();
         let queue = actor.queue_writer();
         let bg_jobs = actor.bg_registry();
@@ -1550,6 +1554,7 @@ impl SessionManager {
                 steer_tx,
                 queue,
                 cancel,
+                background_cancel,
                 shutdown,
                 preview,
                 running: false,
@@ -3719,6 +3724,7 @@ max = "max"
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                background_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 shutdown: Arc::new(tokio::sync::Notify::new()),
                 preview: String::new(),
                 running: false,
@@ -4092,6 +4098,7 @@ max = "max"
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    background_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     shutdown: Arc::new(tokio::sync::Notify::new()),
                     preview: String::new(),
                     linked_roots: Default::default(),
@@ -4177,6 +4184,7 @@ max = "max"
                     steer_tx: tokio::sync::mpsc::channel(1).0,
                     queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    background_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     shutdown: Arc::new(tokio::sync::Notify::new()),
                     preview: String::new(),
                     linked_roots: Default::default(),
@@ -4414,6 +4422,7 @@ max = "max"
                 steer_tx: tokio::sync::mpsc::channel(1).0,
                 queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                background_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 shutdown: Arc::new(tokio::sync::Notify::new()),
                 preview: String::new(),
                 running: false,

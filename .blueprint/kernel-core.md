@@ -15,7 +15,8 @@ invariants = ["模型请求一律经 agent-llm 归一化的 StreamChunk，内核
 - 授权范围跟着触发它的工具走：只读工具（`ToolRegistry::is_readonly`）越界时申请 `read`，写工具与 `bash` 申请 `readwrite`。一次「让我看看那个文件」不该变成「整个外部仓库可写」——用户点的是卡上写明的那个范围，卡片因此必须同时写出**要授予的目录**和**权限级别**，两者都不许由宿主之外的推断补齐
 - 权限门的继承（permissions.rs `PermissionGate::child_of`）：子代理按父会话的**同一套**模式与规则判定。两条不复制的：用户的「本会话允许」点击（`session_grants`，回答的是父会话那一件任务）、`bypass`（子代理无人守着，降为 `auto`）。`can_ask` 只决定越界时是停在卡上还是当场拒绝，从不放宽能做什么
 - 审批卡的归属：`ApprovalRequested` / `ApprovalTimedOut` 带 `child_id`，请求号进程级唯一；子引擎在等待前把 `(request_id, decision_slot)` 登记到 kernel-tools 的转发表，于是同一个点击能落回真正在等它的那个引擎
-- 取消：`EngineIo::cancel` 在采样间隙与工具派发期间都生效——派发与标志竞速，取消时丢弃 future，沙盒后端随之杀掉整个进程组（bwrap 靠 `--die-with-parent`，其余后端靠组守卫）；被中断的调用仍补一条工具结果，只有已发出 `ToolCallStarted` 的调用才补发 `ToolCallFinished`，历史可重放
+- 工具调用身份：引擎先用 `ToolCallQueued` 公布本轮调用，派发与结束沿用同一个 `call_id`；hook 改写参数时仍保留该调用身份。
+- 取消：`EngineIo::cancel` 在采样间隙与工具派发期间都生效——派发与标志竞速，取消时丢弃 future，沙盒后端随之杀掉整个进程组（bwrap 靠 `--die-with-parent`，其余后端靠组守卫）；被中断和未派发的调用都补工具结果与带身份的 `ToolCallFinished`，排队卡片随之结束，历史可重放
 - `UiChannels` 事件/命令通道（channels.rs，对命令类型泛型）、权限门（permissions.rs）
 - 上下文压缩（compaction.rs）、hook 链（hooks.rs）、插件路由接缝（plugins.rs 的 `PluginRouter` / `PluginHandle`）
 - 回合策略接缝 `TurnPolicy` / `TurnView` / `Verdict`（turn_policy.rs）与宿主注入的模式表

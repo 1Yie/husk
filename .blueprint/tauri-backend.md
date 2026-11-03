@@ -12,6 +12,7 @@ Husk 桌面端 Tauri 2 后端：内核之上的适配层与打包配置。
 
 - IPC 命令桥（`backend/ipc`）：把前端调用转成 `UiCommand`、把 `UiEvent` 推给前端
 - 审批透传：`decide_tool` 把 `action` 一起送进 `ToolDecision`。判决仍然直写引擎的槽（绕过命令泵），因为卡住的那次调用等的是槽、不是命令队列
+- 子代理控制：`active_children` 回传内核活跃子代理的 `background` 状态；会话取消与全局取消先设置句柄的后台取消标记并终止所属子代理，再投递回合取消命令，所以父回合空闲时也能停止后台子代理。
 - 会话历史分页：`open` / `history_page` 只回最新一页（`HISTORY_PAGE`），长会话靠滚动续读
 - 会话变更摘要 `changes_feed`：经 `SessionStore::tool_results` 从**整份**持久日志里取出 `payload.tools` 所列工具的成功结果，连同工具名与调用参数；按索引只读这些行，不读整份日志。工具清单由前端传入——它是解析这些结果的一方，清单只存在一处。改动面板与产物栏必须是会话级摘要，只按页重建会让重开的长会话少文件
 - 工作区 Git 改动 `workspace_changes`：仅 `GitError::NotARepo` 返回 `repo:false`；扫描/读取失败以 `workspace_changes_failed: ...` 拒绝 IPC，没有活动工作区也明确拒绝，不能把失败当作空仓库成功结果。成功行与子目录投影保持旧契约；仍调用旧 Git 扫描路径，不保证消除 gix status 阻塞或提升文件读取安全性

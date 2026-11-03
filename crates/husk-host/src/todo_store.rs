@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_kernel::tools::todo::{TodoStorage, TodoStorageSlot};
+use agent_kernel::tools::todo::TodoStorage;
 use agent_store::SessionStore;
 
 const ROW: &str = "todos.json";
@@ -35,9 +35,11 @@ impl SessionTodoStorage {
         }
     }
 
-    /// Install on a tool context as this session's todo storage.
+    /// Install on a tool context as this session's todo storage. Shared, so a
+    /// delegated child marks the same board: parallel children each finish their
+    /// own task, and the parent reads one list.
     pub fn install(self, ctx: &mut agent_kernel::tools::registry::ToolCtx) {
-        ctx.ext.insert(Arc::new(TodoStorageSlot(Arc::new(self))));
+        agent_kernel::tools::todo::install_shared(ctx, Arc::new(self));
     }
 }
 
@@ -78,6 +80,22 @@ mod tests {
     use super::*;
     use agent_capabilities::WorkspaceCtx;
     use agent_kernel::tools::registry::ToolCtx;
+
+    #[test]
+    fn the_session_board_is_shared_with_delegated_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ToolCtx::new();
+        let store = SessionStore::open_at(dir.path(), &dir.path().join("t.db")).unwrap();
+        let storage = SessionTodoStorage::new(Arc::new(store), 1, dir.path());
+        storage.install(&mut ctx);
+        assert!(
+            ctx.ext
+                .inheritable()
+                .get::<agent_kernel::tools::todo::TodoStorageSlot>()
+                .is_some(),
+            "a child context would keep its own list"
+        );
+    }
 
     fn storage(dir: &std::path::Path) -> SessionTodoStorage {
         let store = SessionStore::open_at(dir, &dir.join("t.db")).unwrap();
@@ -136,7 +154,9 @@ mod tests {
         let out = run(&ctx, serde_json::json!({"action":"list"}))
             .await
             .unwrap();
-        assert!(out.contains("#3 old task"), "{out}");
+        // Labels are positional, so the adopted row is #1 whatever id it was
+        // stored under.
+        assert!(out.contains("#1 old task"), "{out}");
         assert!(
             !legacy.exists(),
             "migration should clean the workspace copy"
@@ -144,7 +164,7 @@ mod tests {
         let out = run(&ctx, serde_json::json!({"action":"add","text":"next"}))
             .await
             .unwrap();
-        assert!(out.contains("#4 next"), "{out}");
+        assert!(out.contains("#2 next"), "{out}");
     }
 
     /// Unreadable legacy state is NOT an empty list: it surfaces, and the file

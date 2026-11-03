@@ -98,6 +98,8 @@ fn agent_cmd_inner(
     let mut mgr = kernel.lock().map_err(|e| e.to_string())?;
     let (
         cancel,
+        background_cancel,
+        session_id,
         steer_tx,
         decision,
         pending_approval,
@@ -114,6 +116,8 @@ fn agent_cmd_inner(
         };
         (
             handle.cancel.clone(),
+            handle.background_cancel.clone(),
+            handle.id,
             handle.steer_tx.clone(),
             handle.decision.clone(),
             handle.pending_approval.clone(),
@@ -131,6 +135,11 @@ fn agent_cmd_inner(
     // behind a running `run_turn`.
     if matches!(cmd, UiCommand::Cancel) {
         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        // A background subagent outlives the turn, so one stop action ends it
+        // too: the flag catches a child that parks later, the abort the ones
+        // already running.
+        background_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        agent_kernel::tools::delegate::abort_children(session_id);
         return Ok(());
     }
     if let UiCommand::Steer { text } = &cmd {

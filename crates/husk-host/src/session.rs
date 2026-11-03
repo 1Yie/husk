@@ -744,6 +744,10 @@ pub struct SessionActor {
     /// and `cancel_writer()` set it; the engine polls it between chunks and
     /// before each tool dispatch.
     cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// What a background subagent is stopped by. Separate from `cancel` because
+    /// that one is cleared at every turn start and a background child outlives
+    /// its turn.
+    background_cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Actor-owned command receiver — `run()` drains it.
     cmd_rx: mpsc::Receiver<UiCommand>,
     shutdown: Arc<tokio::sync::Notify>,
@@ -1302,6 +1306,10 @@ impl SessionActor {
         // subagents inherit it (a user cancel tears down in-flight child
         // runs instead of orphaning them).
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Background children outlive the turn that started them, and `cancel`
+        // above is cleared at every turn start — so they run on this second flag,
+        // which only the session's stop action raises.
+        let background_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         // Engine steering channel — created before the tool context so the
         // background-job notifier can hold a sender from birth.
         let (steer_tx, steer_rx) = mpsc::channel::<String>(32);
@@ -1449,6 +1457,10 @@ impl SessionActor {
                 child_notify(text)
             });
         }
+        agent_kernel::tools::delegate::install_background_cancel(
+            &mut tool_ctx,
+            background_cancel.clone(),
+        );
         let memory_handle = agent_coding::remember::MemoryHandle::default();
         memory_handle.set(memory.clone());
         memory_handle.install(&mut tool_ctx);
@@ -1716,6 +1728,7 @@ impl SessionActor {
                 subagent_thinking,
                 steer_tx,
                 cancel,
+                background_cancel,
                 cmd_rx,
                 shutdown: Arc::new(tokio::sync::Notify::new()),
                 workspace_root: cfg.workspace_root.clone(),
@@ -2043,6 +2056,13 @@ impl SessionActor {
         self.cancel.clone()
     }
 
+    /// The flag a background subagent is stopped by. Separate from the turn's
+    /// own: `run_prompt` clears that one at every turn start, and a background
+    /// child outlives its turn.
+    pub fn background_cancel_writer(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.background_cancel.clone()
+    }
+
     /// Current state-machine position.
     pub fn state(&self) -> &AgentState {
         &self.state
@@ -2164,6 +2184,12 @@ impl SessionActor {
         // abort this one before it starts.
         self.cancel
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        // The background flag only has to outlive the children it stopped: with
+        // none left, a later child must not start already cancelled.
+        if agent_kernel::tools::delegate::active_children(self.session_id).is_empty() {
+            self.background_cancel
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         self.state = AgentState::ScanningWorkspace;
         // The session's own writes feed the same transition slot the engine
         // emits into, so a state both sides announce is one hook event.
@@ -3351,6 +3377,16 @@ impl SessionActor {
                 // `cancel_writer()`, which isn't queued behind `run_turn`.
                 self.cancel
                     .store(true, std::sync::atomic::Ordering::Relaxed);
+                // Background children run on the session's own flag, not this
+                // one, so the same action has to end them here.
+                self.background_cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                let stopped = agent_kernel::tools::delegate::abort_children(self.session_id);
+                if stopped > 0 {
+                    let _ = self.io.ui_tx.send(UiEvent::SystemMessage(format!(
+                        "已停止 {stopped} 个后台子代理"
+                    )));
+                }
                 // Wake a parked ask_question too — its exec polls the flag,
                 // but dropping the oneshot fails it fast either way.
                 self.ask_channel.clear();

@@ -297,6 +297,7 @@ impl TurnCheckpoint {
 
     fn observe(self: &Arc<Self>, event: &agent_ipc::UiEvent) {
         let agent_ipc::UiEvent::ToolCallFinished {
+            call_id,
             name,
             ok,
             content,
@@ -308,13 +309,15 @@ impl TurnCheckpoint {
             return;
         };
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        // The hook recorded the exact call id before dispatch. The relay is
-        // ordered, including veto/permission failures; nested cards never
-        // consume a top-level dispatch. Do not guess by tool name.
-        let Some(call) = state.dispatched.pop_front() else {
-            tracing::warn!(tool = %name, "tool result has no recorded dispatch; checkpoint skipped it");
+        // A queued call can finish without owning a dispatch record.
+        let Some(index) = state.dispatched.iter().position(|call| call.id == *call_id) else {
+            tracing::debug!(tool = %name, call_id = %call_id, "tool result has no recorded dispatch; checkpoint skipped it");
             return;
         };
+        let call = state
+            .dispatched
+            .remove(index)
+            .expect("index came from the locked dispatch queue");
         let Some(active) = &mut state.active else {
             return;
         };

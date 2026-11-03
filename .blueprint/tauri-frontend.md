@@ -46,7 +46,7 @@ macOS 的 `MainLayout` 以 panel 外框包住透明的 `main-col` 排布层，�
 
 详情卡共享 `StatPopoverGroup`，悬浮可替换固定卡，关闭后恢复触发器焦点。共享浮层及浮动胶囊使用 `lib/theme.ts` 的磨砂 surface；思考等级词直接使用 `lib/thinking.ts` 的语义色。composer 外框随换肤立即切色，Todo 内层保留折叠动画。
 
-模型选择器根据 `ModelInfo.configured` 引导空配置到模型设置。活动投影按 `call_id` 关联工具行，并消费可选的排队与后台子代理信息；旧生产端缺省这些信息时保留前台行为。生产端协议的后续范围见 `docs/proposals/proposed/2026-11-01-agent-activity/`。
+模型选择器根据 `ModelInfo.configured` 引导空配置到模型设置。活动投影在同一父子范围内按 `call_id` 关联工具行；缺少调用身份的结束事件只匹配已启动的同名行。排队调用可直接以取消结果结束，根工具与嵌套工具的时间线投影都保留 `queued` 状态，由共享工具卡呈现等待态。后台子代理在父回合结束后保持自己的活动状态。
 
 格式化规则及按文件写入、检查的命令分别由前端 `.prettierrc` 与 `package.json` 定义；生成的 lockfile 由包管理器维护格式。
 

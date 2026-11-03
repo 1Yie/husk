@@ -617,8 +617,8 @@ async fn child_transcript_is_saved_as_jsonl() {
         .expect("the file is named after exactly the session and the child")
         .parse()
         .expect("a numeric child id");
-    let file = husk_host::subagents::find_transcript(&subs, 7, child)
-        .expect("the child's own transcript");
+    let file =
+        husk_host::subagents::find_transcript(&subs, 7, child).expect("the child's own transcript");
     assert!(
         husk_host::subagents::find_transcript(&subs, 8, child).is_none(),
         "another session must not read this child's transcript"
@@ -688,4 +688,144 @@ async fn subagent_default_model_applies_and_manifest_model_wins() {
     // The parent's provider receives its own bare ids, never the qualified key.
     assert_eq!(calls[0].0, "model-b");
     assert_eq!(calls[1].0, "model-a");
+}
+
+/// `background: true` hands back the child's id instead of waiting, and the
+/// report arrives through the child notifier — the parent turn keeps going.
+#[tokio::test]
+async fn a_background_child_returns_at_once_and_reports_as_a_notice() {
+    let _serial = DELEGATE_SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new());
+    provider.script_text("background report");
+
+    let (notice_tx, mut notice_rx) = tokio::sync::mpsc::channel::<String>(4);
+    let mut ctx = ToolCtx::new().with_workspace(dir.path());
+    ctx.install_paths(agent_paths::AppPaths::new(dir.path(), dir.path(), ".husk"));
+    ctx.install_subagent(spawner(provider.clone()));
+    agent_kernel::tools::delegate::install_child_notifier(&mut ctx, move |text| {
+        let _ = notice_tx.try_send(text);
+    });
+
+    let spec = registry().spec("delegate").unwrap();
+    let out = (spec.exec)(
+        serde_json::json!({"task": "check the parser", "background": true}),
+        Arc::new(ctx),
+    )
+    .await
+    .expect("a background delegation must return");
+
+    assert!(
+        out.content.contains("is running in the background"),
+        "the call handed back a report instead of a child id: {}",
+        out.content
+    );
+    assert!(out.content.contains("child_id"), "{}", out.content);
+
+    let notice = tokio::time::timeout(std::time::Duration::from_secs(10), notice_rx.recv())
+        .await
+        .expect("the child's report must arrive as a notice")
+        .expect("notice channel stays open");
+    assert!(
+        notice.contains("finished in the background"),
+        "the notice does not read as a background finish: {notice}"
+    );
+    assert!(notice.contains("background report"), "{notice}");
+}
+
+/// A background child that parks on its parent stays visible with its
+/// background marker, and one stop action ends it.
+#[tokio::test]
+async fn a_parked_background_child_is_listed_and_stopped_with_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new());
+    provider.push_script(vec![
+        agent_llm::types::StreamChunk::ToolCallDelta {
+            slot: 0,
+            id: Some("call_ask".into()),
+            name: Some("ask_parent".into()),
+            args_delta: r#"{"question":"which branch?"}"#.into(),
+        },
+        agent_llm::types::StreamChunk::Done {
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+        },
+    ]);
+
+    let mut ctx = ToolCtx::new().with_workspace(dir.path());
+    ctx.install_paths(agent_paths::AppPaths::new(dir.path(), dir.path(), ".husk"));
+    ctx.install_subagent(spawner(provider));
+
+    // Spawn under the serial lock, then release it: the child is identified by
+    // its own id below, so waiting for it cannot disturb a sibling test.
+    let id = {
+        let _serial = DELEGATE_SERIAL.lock().await;
+        let spec = registry().spec("delegate").unwrap();
+        let out = (spec.exec)(
+            serde_json::json!({"task": "check the parser", "background": true}),
+            Arc::new(ctx),
+        )
+        .await
+        .expect("a background delegation must return");
+        child_id_of(&out.content)
+    };
+
+    // The child parks on its parent; it must read as a live *background* child.
+    let mut found = None;
+    for _ in 0..200 {
+        found = agent_kernel::tools::delegate::active_child_infos(0)
+            .into_iter()
+            .find(|c| c.child_id == id);
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let child = found.expect("the background child must be listed while it runs");
+    assert!(child.background, "it must be listed as a background child");
+    assert_eq!(child.label, "subagent");
+
+    assert!(
+        agent_kernel::tools::delegate::abort_children(0) >= 1,
+        "one stop action must end the background child"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !agent_kernel::tools::delegate::active_child_infos(0)
+            .iter()
+            .any(|c| c.child_id == id),
+        "the stopped child is still listed"
+    );
+}
+
+/// The child id a `delegate` reply names, for tests that must follow one child.
+fn child_id_of(reply: &str) -> u64 {
+    reply
+        .split("child_id ")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or_else(|| panic!("the reply names no child id: {reply}"))
+}
+
+/// A `tasks` batch already runs its siblings detached, so `background` on top of
+/// it would mean two waiting models for one call.
+#[tokio::test]
+async fn background_with_parallel_tasks_is_refused() {
+    let _serial = DELEGATE_SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new());
+    let ctx = ctx_with(dir.path(), spawner(provider.clone()));
+
+    let spec = registry().spec("delegate").unwrap();
+    let err = (spec.exec)(
+        serde_json::json!({"tasks": ["a", "b"], "readonly": true, "background": true}),
+        ctx,
+    )
+    .await
+    .expect_err("background plus tasks must be refused");
+
+    assert!(format!("{err}").contains("background"), "{err}");
+    assert_eq!(provider.calls.lock().unwrap().len(), 0, "nothing may spawn");
 }

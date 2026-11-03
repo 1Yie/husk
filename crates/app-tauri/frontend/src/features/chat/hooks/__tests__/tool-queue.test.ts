@@ -28,8 +28,20 @@ const started = (name: string, callId: string): UiEvent => ({
 	},
 });
 
-const finished = (name: string, content: string): UiEvent => ({
-	ToolCallFinished: { name, ok: true, content, parent: null, child_id: null },
+const finished = (
+	name: string,
+	content: string,
+	callId?: string,
+	ok = true
+): UiEvent => ({
+	ToolCallFinished: {
+		name,
+		ok,
+		content,
+		call_id: callId,
+		parent: null,
+		child_id: null,
+	},
 });
 
 const toolItems = (view: ReturnType<typeof emptyView>) =>
@@ -84,15 +96,31 @@ describe('a queued round', () => {
 		const v = applyEvents(emptyView(), [
 			{ UserPrompt: 'go' },
 			queued('todo', 'call_1'),
-			started('todo', 'call_1'),
-			finished('todo', 'first'),
 			queued('todo', 'call_2'),
+			started('todo', 'call_1'),
 			started('todo', 'call_2'),
-			finished('todo', 'second'),
+			finished('todo', 'first', 'call_1'),
+			finished('todo', 'second', 'call_2'),
 		]);
 		const rows = toolItems(v);
 		expect(rows.filter((r) => r.queued)).toHaveLength(0);
 		expect(rows.map((r) => r.content)).toEqual(['first', 'second']);
+	});
+
+	test('a cancelled queued call settles only its own card before dispatch', () => {
+		const v = applyEvents(emptyView(), [
+			{ UserPrompt: 'go' },
+			queued('todo', 'call_1'),
+			queued('todo', 'call_2'),
+			finished('todo', '已中断', 'call_1', false),
+		]);
+		const rows = toolItems(v);
+		expect(rows[0].callId).toBe('call_1');
+		expect(rows[0].content).toBe('已中断');
+		expect(rows[0].ok).toBe(false);
+		expect(rows[0].queued).toBe(false);
+		expect(rows[1].content).toBeUndefined();
+		expect(rows[1].queued).toBe(true);
 	});
 
 	test('a call the round never dispatched does not stay queued forever', () => {

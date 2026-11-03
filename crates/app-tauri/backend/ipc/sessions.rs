@@ -545,6 +545,7 @@ fn agent_session_inner(
                 .iter()
                 .map(|c| serde_json::json!({
                     "child_id": c.child_id,
+                    "background": c.background,
                     "label": c.label,
                     "task": c.task,
                     "waiting": c.waiting,

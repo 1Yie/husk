@@ -1021,7 +1021,9 @@ function foldTurnSpans(
 								item.uiType === 'rejected'
 									? 'rejected'
 									: item.content === undefined
-										? 'running'
+										? item.queued
+											? 'queued'
+											: 'running'
 										: item.ok === false
 											? 'aborted'
 											: 'done',
@@ -1058,7 +1060,9 @@ function foldTurnSpans(
 								item.uiType === 'rejected'
 									? 'rejected'
 									: item.content === undefined
-										? 'running'
+										? item.queued
+											? 'queued'
+											: 'running'
 										: item.ok === false
 											? 'aborted'
 											: 'done',

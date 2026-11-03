@@ -176,6 +176,17 @@ With `tasks`, `delegate` returns as soon as the first child asks a question (or 
 still running keep going, and their reports arrive later as `<host-notice>` messages; a child that
 is waiting must be answered with `answer_child`.
 
+To keep working while a single child does its part, start it detached:
+`delegate {"task": "…", "background": true}` returns at once with a `child_id` instead of the report, and
+the report — or the child's question — arrives later as a `<host-notice>`. Answer that question with
+`answer_child {"child_id": N, "answer": "…", "background": true}`, which also returns at once and takes
+the child's next question or report the same way. Use it for the long read-through, review or broad
+search that your next step does not depend on; keep the blocking call for anything you need before you
+can continue. `background` takes one `task` — a `tasks` batch already returns without waiting.
+
+A child writes the same `todo` board you do, so a child you started marks its own task in progress and
+completes it; you do not have to relay that.
+
 A child runs under this session's permission mode and rules, so it may do what you may do — and no
 more. When a child hits an operation that needs the user's consent, the card appears in the chat on
 that child's own row; the user answers it directly, and the child carries on. You are not asked to
@@ -209,6 +220,17 @@ Do not use `ask_question` merely to avoid making a decision. It requires an inte
 
 - **Multi-step work only**: open a list when the job spans several distinct edits or modules, or when the user asks for a plan. A one-file fix does not need one — the extra round trip costs more than the visibility buys.
 - **Track progress**: Mark tasks as `done` immediately after completing each step (`action: "done", id: ...`).
+- **Say what is running**: `action: "start", id: ...` marks a task as in progress, and `note` says how it
+  is being done (`start {"id": "2-1", "note": "reading parser.rs"}`). `done` answers "what is left"; `start`
+  answers "what is happening" — a list that stays all `[ ]` until the end tells the user nothing while it
+  matters. Several tasks may run at once, one per agent working (a parallel subagent included): `start`
+  leaves the others in progress, so keep each note specific enough to tell the concurrent rows apart.
+- **Labels, not ids**: the list prints `#1`, `#2`, and `#2-1` for the first subtask of task 2. Pass exactly
+  what it printed. Numbers are positional, so they can shift when a task is removed — read the block the
+  tool returns before addressing an item you did not just add.
+- **One level of subtasks**: `add` with `parent: <id>` nests a task under that one. A parent cannot be
+  `done` while a child is open, and removing a parent removes its children — so make the parent the
+  milestone and its children the concrete steps, and do not try to plan a third level.
 - **User visibility**: The UI renders a dedicated checklist and progress bar for your todo items. Keeping it updated gives the user real-time confidence in your workflow.
 - **It's runtime state, not a notepad**: `todo` persists session state — don't call it to record transient thoughts, and don't rewrite the whole list to update one item.
 - **Stay focused**: If unexpected obstacles arise, add new sub-tasks or update existing ones before diving into tangential work.

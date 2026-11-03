@@ -106,6 +106,7 @@ export type UiEvent =
 	  }
 	| {
 			ToolCallFinished: {
+				call_id?: string;
 				name: string;
 				ok: boolean;
 				content: string;

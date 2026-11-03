@@ -12,9 +12,10 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 
 - `SessionActor` / `SessionConfig` / `SessionManager`（session.rs / session_manager.rs）：装配 provider、registry、ctx、plugins、skills、sandbox、memory
 - 模型元数据：`SessionManager::model_info` 将存储中的占位 provider/model 对解析到当前配置，`configured` 区分真实选择与空配置；provider reload 使用同一模型解析规则。
-- 命令面（command.rs 的 `UiCommand`、commands.rs 的斜杠命令）与模式表（mode.rs 的 `AgentMode`）
+- 回合检查点（checkpoint.rs）：派发 hook 记录真实调用，结束事件按 `ToolCallFinished.call_id` 取回对应记录；未派发的排队取消不占用别的记录，同名调用乱序完成仍按各自身份落盘。
+- 命令面（command.rs 的 `UiCommand`、commands.rs 的斜杠命令）与模式表（mode.rs 的 `AgentMode`）；文件引用相对规范化的工作区根解析，缺失文件保留未找到分类。
 - 沙盒偏好（sandbox_prefs.rs）、插件适配（plugins.rs）、子代理宿主（subagents.rs）
-- 关联工作区的策略（link_policy.rs）：`validate` 是唯一的准入判断（拒绝 `/`、`$HOME`、系统目录、包含工作区的祖先、应用数据与凭据目录及其祖先），`normalize` 让列表 canonical、按路径去重（同一路径取更宽的那份，嵌套路径**保留**——`scope_of` 取最具体根，所以只读父 + 读写子必须两条都在，否则等于把父级整棵树放开），`grant_target` 把「卡片上的文件」折成「要授予的目录」（项目根 → 目录本身 → 父目录），`same_path` 让已消失的目录仍能被取消关联
+- 关联工作区的策略（link_policy.rs）：`validate` 是唯一的准入判断（拒绝 `/`、`$HOME`、系统目录及其祖先、包含工作区的祖先、应用数据与凭据目录及其祖先；系统目录按 canonical 路径比较，包含 macOS 符号链接别名），`normalize` 让列表 canonical、按路径去重（同一路径取更宽的那份，嵌套路径**保留**——`scope_of` 取最具体根，所以只读父 + 读写子必须两条都在，否则等于把父级整棵树放开），`grant_target` 把「卡片上的文件」折成「要授予的目录」（项目根 → 目录本身 → 父目录），`same_path` 让已消失的目录仍能被取消关联
 - 关联工作区的唯一写路径（links.rs）：`LinkHub` 一个工作区一份，经 `hub_for` 按 canonical 根共享——IPC 菜单、`link_workspace` 工具、越界卡片三处都调它，所以规则不会分叉。grant / revoke / set_access 各自是**带锁的读改写**（`SessionStore::update_prefs` / `update_session_links`），并发的授权不会互相覆盖；读回时逐条再跑 `validate`（手改的 prefs、旧版本写入、被换成指向 `~/.ssh` 的目录都不算数）；一次改动 `refresh` **该工作区所有活会话**的句柄并推 notice——否则「取消关联」只对当前窗口生效，别的窗口还能写
 - 子代理的授权范围：装配时建一份 `PermissionGate`，**同一个 `Arc`** 既交给引擎（`set_permissions_shared`）也交给 `SubagentSpawner::with_parent_gate`，所以子代理按本会话的模式与规则跑，中途切模式连已派发的子代理一起生效；`with_child_approvals(true)` 声明这里有人能点卡——没人看的运行（CLI、测试）不声明，子代理就越界即拒。子代理的 instructions 里带本会话的关联根清单，否则它会以为别的仓库根本不存在
 - 授权槽 `ScopeGrantSlot`（session.rs 装配）：内核问「这个路径能给吗」时，actor 把它转给同一个 `LinkHub`，所以引擎的重试立刻能看到新范围。它和 `link_workspace` 工具、以及「拒绝即提问」共用同一段逻辑——一条授权路径，不是三条
@@ -23,7 +24,9 @@ Husk 宿主层：把内核装配成产品——会话、命令面、模式表、
 - 子代理显式设置的三层优先级：manifest `model:` / `thinking:` > 全局子代理默认模型与思考等级 > 父会话的模型与等级。模型与思考等级互相独立——一个子代理可以沿用父会话的模型却想得更少。等级在 `install` 里与默认模型一样写进 `ChildRoute`，且必须写在「无默认模型就 return」之前
 - 子代理的预算来自内核常量（不设超时、不设轮次上限），宿主没有出口：它是一个独立的 agent，不是受会话预算节制的工具。系统提示里的预算文案随这些常量走，改一处必须改另一处
 - 子代理编号：进程启动后先 `reserve_child_ids(max_child_id(...))`，从一个会话已有记录之后开始编号——编号写进 transcript 文件名与会话日志，重用会让新子代理顶掉旧记录
+- 后台子代理：`SessionActor` 单独持有会话级 `background_cancel` 并安装到内核上下文；开始新回合只清回合标记。取消、重置与 actor 退出会设置会话标记并终止本会话子代理，通知沿现有 notice/wake 通道返回。
 - 系统提示词资产（assets/kernel-system-prompt.md）、办公根目录（office.rs）、待办存储（todo_store.rs）、全局偏好（prefs.rs）。提示里有一段常驻的「如何在需要别的目录时申请」——它必须在没有任何关联时也存在，否则模型不知道这条路
+- 会话任务板：`SessionTodoStorage::install` 经内核 `todo::install_shared` 安装可继承的存储槽，父代理与委派子代理写同一份会话记录。任务语义与序列化由 SDK `todo` 定义，宿主负责 session store 的持久化与种子读取；系统提示中的操作约定随工具 schema 对齐。
 - 外观布局：`AppearanceSettings` 的全局状态栏字段保存顺序和隐藏项，缺省使用前端模块注册表，模块 id 按原值存储。DTO 与默认值由 `prefs.rs` 定义，Tauri 的补丁合并归其 IPC 层。
 - 提示词缓存布局：固定指令在前，可刷新目录与会话上下文在后；mode / permission / linked roots 不改写出生系统提示，由 `live_context` 在每次前台请求中从引擎共享槽生成可信 system 说明，仅修改 wire 副本。`foreground_provider` 统一 spawn / reload / fallback 的 `checkpoint(context(warming(provider)))` 装配：checkpoint 只看真实历史，warming 捕获并重放实际 wire 快照；独立 compaction / distill / child route 不注入父 contract。动态路径在 JSON 引用前后均脱敏；附加状态后的消息预算复用内核 estimator/fitter，仅整理 wire 副本，完整状态和最新任务/输出不能静默截断。mode/gate/roots 各槽及已生成的 schema 不是跨槽原子快照，不从 schema 推断模式，不在宿主重建 registry。每条消息相关的记忆作为隐藏 user 行随消息发送；会话在回合结束与历史改写时通知保活（`WarmingControl`）
 - 记忆注入记账：会话按历史索引记录已下发的事实 id 与已携带的 persona（`injected_facts` / `injected_persona`），召回行只发增量——同一事实一个会话只出现一次，会话中途 `remember` 的偏好在下一轮以同一行补发；persona 记账以 `<scope>:<key>` 为键，同名不同作用域是两条；`/retry`、`/clear`、`/compact` 回滚历史时同步丢弃对应记账

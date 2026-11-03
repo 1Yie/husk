@@ -25,4 +25,6 @@ invariants = ["工具输出必须经过截断预算", "内置工具只有通用�
 - `ToolSpec` 的 `readonly` / `ToolClass` / `network` / `staged` / `review` 决定权限、批量与提交行为；新增工具必须声明
 - `ToolContext` / `Extensions` 是工具契约（agent-tool）在内核的实例化点
 - `ScopeGrantSlot`：`Fn(action, path, access) -> Result<(), String>`。宿主装它就等于「支持关联工作区」；`has_scope_grant` 让调用方先问一句再决定要不要弹卡
-- `install_child_notifier`：平行派发提前返回后，还在跑的子代理用它把报告交回父会话（宿主接到通知通道上）
+- `todo::install_shared`：宿主安装可继承的 `TodoStorageSlot`，同一存储身份下的任务板更新串行化；状态、父子关系、进度说明与显示引用由 `todo` 的 schema 和存储实现定义。
+- `delegate` / `answer_child` 的 `background` 提前返回，并与平行 `tasks` 互斥；`install_background_cancel` 接收宿主提供的会话级取消标记，`active_child_infos` 回传后台状态。
+- `install_child_notifier`：后台或平行派发提前返回后，还在跑的子代理用它把结局交回父会话（宿主接到通知通道上）

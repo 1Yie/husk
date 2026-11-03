@@ -767,7 +767,9 @@ function applyEventInto(
 			// delegated children sharing a label stay apart by `childId`.
 			if (
 				it.kind === 'tool' &&
-				it.name === t.name &&
+				(t.call_id
+					? it.callId === t.call_id
+					: it.name === t.name && !it.queued) &&
 				it.content === undefined &&
 				it.parent === parent &&
 				it.childId === childId
@@ -776,6 +778,7 @@ function applyEventInto(
 					...it,
 					content: t.content,
 					ok: t.ok,
+					queued: false,
 					uiType: t.ui_type,
 					// Result stamp — the step's settled span is `ts - startedAt`,
 					// same shape a replayed row carries.
