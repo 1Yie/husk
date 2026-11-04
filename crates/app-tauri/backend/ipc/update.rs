@@ -1421,10 +1421,14 @@ mod tests {
     fn assets() -> Vec<Asset> {
         [
             "Husk-0.3.0-1.x86_64.rpm",
+            "Husk-0.3.0-1.aarch64.rpm",
             "Husk_0.3.0_aarch64.dmg",
             "Husk_0.3.0_amd64.deb",
+            "Husk_0.3.0_arm64.deb",
             "Husk_0.3.0_x64-setup.exe",
+            "Husk_0.3.0_arm64-setup.exe",
             "Husk_0.3.0_x64_en-US.msi",
+            "Husk_0.3.0_arm64_en-US.msi",
             "Husk_0.3.0_x64.dmg",
         ]
         .into_iter()
@@ -1457,6 +1461,10 @@ mod tests {
             Some("Husk_0.3.0_x64-setup.exe")
         );
         assert_eq!(
+            pick("windows", "aarch64", false).as_deref(),
+            Some("Husk_0.3.0_arm64-setup.exe")
+        );
+        assert_eq!(
             pick("linux", "x86_64", false).as_deref(),
             Some("Husk_0.3.0_amd64.deb")
         );
@@ -1464,13 +1472,33 @@ mod tests {
             pick("linux", "x86_64", true).as_deref(),
             Some("Husk-0.3.0-1.x86_64.rpm")
         );
+        assert_eq!(
+            pick("linux", "aarch64", false).as_deref(),
+            Some("Husk_0.3.0_arm64.deb")
+        );
+        assert_eq!(
+            pick("linux", "aarch64", true).as_deref(),
+            Some("Husk-0.3.0-1.aarch64.rpm")
+        );
     }
 
     #[test]
     fn no_installer_for_an_unpublished_target() {
-        assert_eq!(pick("linux", "aarch64", false), None);
-        assert_eq!(pick("windows", "aarch64", false), None);
         assert_eq!(pick("freebsd", "x86_64", false), None);
+        let only_x64: Vec<_> = assets()
+            .into_iter()
+            .filter(|a| {
+                a.name.contains("x64") || a.name.contains("amd64") || a.name.contains("x86_64")
+            })
+            .collect();
+        for (os, rpm) in [
+            ("macos", false),
+            ("windows", false),
+            ("linux", false),
+            ("linux", true),
+        ] {
+            assert!(pick_asset(&only_x64, os, "aarch64", rpm).is_none());
+        }
     }
 
     #[test]
@@ -1479,7 +1507,9 @@ mod tests {
             .into_iter()
             .filter(|a| a.name.ends_with(".msi"))
             .collect();
-        assert!(pick_asset(&only_msi, "windows", "x86_64", false).is_none());
+        for arch in ["x86_64", "aarch64"] {
+            assert!(pick_asset(&only_msi, "windows", arch, false).is_none());
+        }
     }
 
     #[test]
@@ -1967,8 +1997,11 @@ mod tests {
             ("macos", "aarch64", false),
             ("macos", "x86_64", false),
             ("windows", "x86_64", false),
+            ("windows", "aarch64", false),
             ("linux", "x86_64", false),
             ("linux", "x86_64", true),
+            ("linux", "aarch64", false),
+            ("linux", "aarch64", true),
         ] {
             let picked = pick_asset(&assets, os, arch, rpm)
                 .unwrap_or_else(|| panic!("no installer for {os}/{arch} rpm={rpm}"));

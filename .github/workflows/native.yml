@@ -10,18 +10,30 @@ permissions:
 
 jobs:
   linux-tests:
-    name: Native logic and PTY tests
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            name: Native logic and PTY tests
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: Native logic and PTY tests (ARM64)
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: swatinem/rust-cache@v2
         with:
-          key: terminal-linux
+          key: terminal-${{ matrix.target }}
       - run: ./scripts/check-deps.sh
       - run: cargo fmt -p husk-terminal --check
-      - run: nice -n 10 cargo test --locked -p husk-terminal --no-default-features --lib
-      - run: nice -n 10 cargo check --locked -p husk-terminal --all-targets
+      - run: nice -n 10 cargo test --locked -p husk-terminal --no-default-features --lib --target ${{ matrix.target }}
+      - run: nice -n 10 cargo check --locked -p husk-terminal --all-targets --target ${{ matrix.target }}
 
   platform-check:
     name: Check (${{ matrix.target }})
@@ -35,6 +47,8 @@ jobs:
             target: x86_64-apple-darwin
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7

@@ -133,6 +133,10 @@ agent-llm    agent-sandbox   agent-context   agent-plugin
 
 ## 快速开始
 
+发布流程覆盖 macOS、Windows 和 Linux 的 x64 与 ARM64 构建。
+具体构建目标、runner 和打包流程见[发布工作流](.github/workflows/release.yml)。
+Intel Mac 发版前，先确认 `main` 上的 `Warm Intel ONNX cache` 任务成功，再创建版本 tag。
+
 ### 环境要求
 
 - Rust stable 和 Cargo
