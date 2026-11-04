@@ -34,6 +34,14 @@ jobs:
       - run: cargo fmt -p husk-terminal --check
       - run: nice -n 10 cargo test --locked -p husk-terminal --no-default-features --lib --target ${{ matrix.target }}
       - run: nice -n 10 cargo check --locked -p husk-terminal --all-targets --target ${{ matrix.target }}
+      - name: Install desktop system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libdbus-1-dev libssl-dev libgtk-layer-shell-dev
+      - name: Check desktop app and shared dependencies
+        run: nice -n 10 cargo check --locked -p husk --all-targets --target ${{ matrix.target }}
 
   platform-check:
     name: Check (${{ matrix.target }})
