@@ -27,6 +27,7 @@ import {
 	Zap,
 	BarChartHorizontalStart,
 	Database,
+	Receipt,
 } from '@keyline-icons/react';
 import { parseTodos } from '@/features/chat/components/todo-view/index';
 import { extractRunningChildren } from '@/features/chat/hooks/running-children';
@@ -684,24 +685,19 @@ export function TitleBar({
 		cost:
 			cost !== null ? (
 				<StatPopover
-					label={`本轮成本 ${sym}${fmtCost(cost, sym)}`}
+					label={`本轮成本 ${fmtCost(cost, sym)}`}
 					trigger={
 						<>
-							<span
-								className={cn(
-									`flex h-3 w-3 flex-none items-center justify-center
-										text-[11px] leading-none`,
-									INK_OVERLAY_SECONDARY
-								)}
-							>
-								{sym}
-							</span>
+							<Receipt
+								aria-hidden="true"
+								className={cn('h-3 w-3 flex-none', INK_OVERLAY_SECONDARY)}
+							/>
 							{!compact && <span>{fmtCost(cost, sym)}</span>}
 						</>
 					}
 				>
 					<CardHeader
-						icon={<span className="text-xs">{sym}</span>}
+						icon={<Receipt aria-hidden="true" className="h-3 w-3" />}
 						title="本轮成本"
 					/>
 					<CardDivider />

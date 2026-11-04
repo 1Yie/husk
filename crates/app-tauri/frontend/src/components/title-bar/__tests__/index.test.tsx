@@ -14,6 +14,7 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from '@testing-library/react';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { TitleBar } from '../index';
@@ -446,6 +447,43 @@ describe('TitleBar new status modules', () => {
 		// `modelCost` absent is the same as a model without a cost block.
 		expect(screen.queryByRole('button', { name: /本轮成本/ })).toBeNull();
 	});
+
+	it.each([false, true])(
+		'uses a currency-neutral billing icon without repeating the amount unit (preview=%s)',
+		(preview) => {
+			const { container } = render(
+				<TooltipProvider>
+					<TitleBar
+						view={viewWith()}
+						modelCost={{ input: 0, output: 3.6 }}
+						preview={
+							preview
+								? {
+										order: ['cost'],
+										hidden: new Set(),
+										onCommit: vi.fn(),
+										onToggle: vi.fn(),
+										onReset: vi.fn(),
+									}
+								: undefined
+						}
+					/>
+				</TooltipProvider>
+			);
+			const cost = container.querySelector(
+				'button[aria-label^="本轮成本 "]'
+			) as HTMLButtonElement;
+			expect(cost.textContent).toBe('$0.0072');
+			expect(cost).toHaveAccessibleName('本轮成本 $0.0072');
+			expect(cost.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+			if (!preview) {
+				fireEvent.click(cost);
+				const card = screen.getByRole('dialog');
+				expect(within(card).queryByText('$', { exact: true })).toBeNull();
+				expect(card.querySelector('svg')).not.toBeNull();
+			}
+		}
+	);
 });
 
 describe('TitleBar settings preview', () => {
