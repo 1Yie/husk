@@ -70,3 +70,42 @@ test.each([
 		).toBeInTheDocument();
 	}
 );
+
+test('wait_child displays its target while waiting and after the handoff', () => {
+	let view = applyEvents(viewFromHistory([]), [
+		{ UserPrompt: 'Accept the delegated review' },
+		{ StateChanged: 'Reasoning' },
+		{
+			ToolCallStarted: {
+				name: 'wait_child',
+				call_id: 'wait-review',
+				args_preview: '{"child_id":42}',
+				parent: null,
+			},
+		},
+	]);
+	const { rerender } = renderWithProviders(
+		<ChatStream view={view} sessionKey="wait-review" />
+	);
+	expect(screen.getByText('等待子代理 · #42')).toBeInTheDocument();
+	fireEvent.click(screen.getByRole('button', { expanded: false }));
+	expect(
+		screen.getByRole('button', { name: /等待子代理.*#42.*进行中/ })
+	).toBeInTheDocument();
+
+	view = applyEvents(view, [
+		{
+			ToolCallFinished: {
+				name: 'wait_child',
+				call_id: 'wait-review',
+				content: 'subagent 42 delivered its report',
+				ok: true,
+				parent: null,
+			},
+		},
+	]);
+	rerender(<ChatStream view={view} sessionKey="wait-review" />);
+	expect(
+		screen.getByRole('button', { name: /等待子代理.*#42.*完成/ })
+	).toBeInTheDocument();
+});

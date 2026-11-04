@@ -197,6 +197,10 @@ function asChipText(value: unknown): string {
 	return String(value ?? '');
 }
 
+function displayToolLabel(label: string): string {
+	return label === 'wait_child' ? '等待子代理' : label;
+}
+
 function formatChipArgs(label: string, chip: string): string {
 	if (!chip) return '';
 	let text = chip;
@@ -231,6 +235,14 @@ function formatChipArgs(label: string, chip: string): string {
 			if (typeof parsed === 'string') {
 				text = parsed;
 			} else if (typeof parsed === 'object' && parsed !== null) {
+				if (
+					label === 'wait_child' &&
+					typeof parsed.child_id === 'number' &&
+					Number.isSafeInteger(parsed.child_id) &&
+					parsed.child_id > 0
+				) {
+					return `#${parsed.child_id}`;
+				}
 				const candidate =
 					parsed.path ||
 					parsed.file ||
@@ -328,14 +340,16 @@ export function toolActivityPreview(rows: ToolChipRow[]): string {
 			return toolActivityPreview(row.children);
 		}
 		const args = formatChipArgs(row.label, row.chip);
-		return args ? `${row.label} · ${args}` : row.label;
+		const label = displayToolLabel(row.label);
+		return args ? `${label} · ${args}` : label;
 	}
 	const queued = rows.filter((item) => item.status === 'queued').length;
 	if (queued > 0) return `${queued} 个调用排队中`;
 	const last = rows[rows.length - 1];
 	if (!last) return '';
 	const args = formatChipArgs(last.label, last.chip);
-	return args ? `${last.label} · ${args}` : last.label;
+	const label = displayToolLabel(last.label);
+	return args ? `${label} · ${args}` : label;
 }
 
 function DetailLines({
@@ -492,7 +506,7 @@ export function ToolChips({
 						className="shrink-0 text-xs font-medium text-neutral-500
 							transition-colors group-hover:text-neutral-700"
 					>
-						{asChipText(row.label)}
+						{displayToolLabel(asChipText(row.label))}
 					</span>
 					{displayChipText ? (
 						<TooltipSimple

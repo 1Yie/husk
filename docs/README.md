@@ -24,6 +24,10 @@
 - [`agent-activity`](./proposals/proposed/2026-11-01-agent-activity/proposal.md)：todo 增加进行中状态与一层子任务、子代理可后台运行、工具调用排队时即显示卡片。
 - [`status-strip`](./proposals/proposed/2026-11-01-status-strip/proposal.md)：标题栏统计区改成可配置的状态栏，模块可开关、可拖动排序，并补 todo/子代理/权限/成本模块。
 
+已实施提案：
+
+- [`delegate-wait`](./proposals/implemented/2026-11-03-delegate-wait/proposal.md)：父代理通过显式等待动作接收后台子代理的问题或报告，避免重复读文件填充等待时间。
+
 新增指南、参考、ADR 或提案时，先按 `docs-engineering` 确认分类和位置，再扩展此索引。
 ADR 与已加载的代理指令仍须经所有者批准后修改。
 

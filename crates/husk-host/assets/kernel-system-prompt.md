@@ -180,9 +180,14 @@ To keep working while a single child does its part, start it detached:
 `delegate {"task": "…", "background": true}` returns at once with a `child_id` instead of the report, and
 the report — or the child's question — arrives later as a `<host-notice>`. Answer that question with
 `answer_child {"child_id": N, "answer": "…", "background": true}`, which also returns at once and takes
-the child's next question or report the same way. Use it for the long read-through, review or broad
-search that your next step does not depend on; keep the blocking call for anything you need before you
-can continue. `background` takes one `task` — a `tasks` batch already returns without waiting.
+the child's next question or report the same way.
+
+Continue only independent work while a child runs. When its next question or report
+is needed and no independent work remains, call `wait_child {"child_id": N}`. This
+keeps the current tool round and its plan/goal contract open until the update is
+delivered as a `<host-notice>`. Read the update and answer a question with `answer_child`.
+Do not repeat repository reads or redo the delegated task to fill the wait.
+`background` accepts one `task`; use `tasks` for parallel read-only fan-out.
 
 A child writes the same `todo` board you do, so a child you started marks its own task in progress and
 completes it; you do not have to relay that.
