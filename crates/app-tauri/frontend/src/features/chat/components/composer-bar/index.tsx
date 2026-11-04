@@ -78,6 +78,7 @@ import { pendingApprovalOf } from '@/features/chat/hooks/stream-view';
 import { sameComposerView } from './composer-state';
 import { planToMarkdown } from '@/features/chat/components/chat-stream/plan-card';
 import { onQuoteRequest } from '@/lib/selection-bus';
+import { isLinux } from '@/lib/platform';
 import { useAgentStore } from '@/stores/agent-store';
 import { toast } from 'sonner';
 import {
@@ -748,11 +749,8 @@ function ComposerBarContent({
 		}
 	};
 
-	/** Ctrl+V (and the menu's 粘贴图片) — read the *system* clipboard from Rust.
-	 * The webview's own paste event carries no image on WebKitGTK, so this is
-	 * the path that actually works. `announce` is set for the explicit menu
-	 * item: pressing it and seeing nothing would be worse than a hint.
-	 * Never preventDefaults — a text clipboard still pastes natively. */
+	/** Read a system-clipboard image for GTK shortcuts or explicit menu requests.
+	 * Empty or failed reads stay quiet unless the menu requested feedback. */
 	const attachClipboardImage = async (announce: boolean) => {
 		try {
 			const a = await agent.pasteClipboardImage();
@@ -2299,10 +2297,12 @@ function ComposerTextarea({
 				}}
 				onKeyDown={(e) => {
 					if (isImeKeyDown(e.nativeEvent)) return;
-					if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
-						// WebKitGTK's paste event can carry no image at all, so the
-						// system clipboard is read from Rust. Text pastes are left to
-						// the browser (no preventDefault here).
+					if (
+						isLinux &&
+						(e.ctrlKey || e.metaKey) &&
+						(e.key === 'v' || e.key === 'V')
+					) {
+						// WebKitGTK can omit image data from paste events.
 						onAttachClipboardImage(false);
 					}
 					if (e.altKey && e.key === 'ArrowUp' && !value.trim()) {
