@@ -27,7 +27,10 @@ const UNAUTHORIZED: Reply = Reply {
 };
 const ANSWER: Reply = Reply {
     status: 200,
-    sse: "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"sequence_number\":1,\"delta\":\"hi\"}\n\n",
+    sse: concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"sequence_number\":1,\"delta\":\"hi\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"r\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"fixture\",\"output\":[],\"error\":null,\"incomplete_details\":null,\"instructions\":null,\"max_output_tokens\":null,\"metadata\":{},\"parallel_tool_calls\":true,\"previous_response_id\":null,\"reasoning\":{\"effort\":null,\"summary\":null},\"store\":false,\"temperature\":1.0,\"text\":{\"format\":{\"type\":\"text\"}},\"tool_choice\":\"auto\",\"tools\":[],\"top_p\":1.0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":9,\"output_tokens\":2,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}},\"user\":null}}\n\n"
+    ),
 };
 
 /// Records every request body; `reply` decides the answer from the body.

@@ -27,5 +27,8 @@ LLM provider 层：把各家协议归一为 StreamChunk。
 ## 对外契约
 
 - `LlmProvider` trait 与归一化的 `StreamChunk`；kernel 与前端不得见到厂商原始 JSON
+- 流成功以协议完成事件为准；输入结束但缺少完成事件、JSON 解析失败和响应协议错误均向调用方返回失败。协议错误保留部分输出并停止本次请求，不触发传输重试。
+- Gemini 工具调用签名通过 `ProviderState` 随 assistant 消息持久化；`rig_bridge` 校验来源、模型和对应调用后回放。签名只用于协议回放，不进入可见输出。
+- Gemini 原生请求与原生流读取使用局部空 subscriber，保护 payload 中的签名；Husk 的错误、用量和 Sampler 日志保持原有路径，其他协议的日志保持启用。
 - `StreamChunk::Keepalive` 不带内容、不是输出：采样器吸收它，不会转给回合循环；任何直接消费 provider 流的一方（如检查点）都不得把它当作第一块内容或写进草稿
 - `ProviderFactory` 接受一个不透明的会话身份字符串（宿主给出且须含本机私有盐，本层只做哈希），未提供时按实例生成随机路由键

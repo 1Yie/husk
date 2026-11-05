@@ -136,13 +136,12 @@ fn factory_builds_providers() {
 // ---------- Sampler ----------
 
 #[tokio::test]
-async fn sampler_synthesizes_done_on_clean_close() {
-    // Script without a Done chunk — sampler must synthesize it.
+async fn sampler_requires_done_before_success() {
     let stub = ScriptedProvider::new().with_script(vec![StreamChunk::ContentDelta("hi".into())]);
     let sampler = Sampler::new(Arc::new(stub));
 
     let mut chunks = Vec::new();
-    sampler
+    let result = sampler
         .sample(
             SampleRequest {
                 model: "m",
@@ -156,9 +155,12 @@ async fn sampler_synthesizes_done_on_clean_close() {
             |_| {},
             || {},
         )
-        .await
-        .unwrap();
-    assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Done { .. })));
+        .await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("without completion"));
+    assert!(matches!(chunks.as_slice(), [StreamChunk::ContentDelta(text)] if text == "hi"));
 }
 
 #[tokio::test]

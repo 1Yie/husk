@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub(crate) fn origin(
+    protocol: &str,
     base_url: &str,
     api_key: &str,
     headers: &HashMap<String, String>,
@@ -26,7 +27,7 @@ pub(crate) fn origin(
         auth_header,
     ))
     .expect("strings and headers are serializable");
-    format!("openai_responses:{:x}", Sha256::digest(bytes))
+    format!("{protocol}:{:x}", Sha256::digest(bytes))
 }
 
 pub(crate) struct RequestPolicy {
@@ -389,5 +390,30 @@ fn same_arguments(left: &str, right: &str) -> bool {
     ) {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_namespace_preserves_the_responses_origin() {
+        let headers = HashMap::from([("x-fixture-route".into(), "one".into())]);
+        let fingerprint = |protocol| {
+            origin(
+                protocol,
+                "https://fixture.invalid/v1",
+                "fixture-account",
+                &headers,
+                Some("fixture-agent"),
+                true,
+            )
+        };
+        assert_eq!(
+            fingerprint("openai_responses"),
+            "openai_responses:6ed91e7eef6c5424ba60ad80a97f4e0391babd75eb637e123f2b9d0aac22e88c"
+        );
+        assert_ne!(fingerprint("gemini"), fingerprint("openai_responses"));
     }
 }

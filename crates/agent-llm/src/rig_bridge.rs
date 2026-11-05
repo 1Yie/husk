@@ -58,6 +58,8 @@ use rig_core::streaming::{
 use rig_core::wasm_compat::WasmCompatSend;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use tracing::instrument::WithSubscriber;
+use tracing::subscriber::NoSubscriber;
 
 use crate::compat::ProviderCompat;
 use crate::config::{ModelConfig, ProviderConfig, ProviderKind};
@@ -67,7 +69,9 @@ use crate::responses_state::{
     Exchange as ResponsesExchange, ReplayPlan as ResponsesReplayPlan,
     RequestContext as ResponsesContext, RequestPolicy as ResponsesPolicy,
 };
-use crate::types::{ChatMessage, HarmonyStripper, ImageRef, NoticeKind, Role, StreamChunk};
+use crate::types::{
+    ChatMessage, HarmonyStripper, ImageRef, NoticeKind, ProviderState, Role, StreamChunk,
+};
 use crate::usage::UsageObserver;
 
 /// Anthropic rejects a request without `max_tokens`; adapters defaulted 32768.
@@ -395,19 +399,8 @@ fn pulse_stream(inner: BoxedStream, pulse: Pulse) -> BoxedStream {
     }))
 }
 
-/// `reqwest::Client` wrapper for all four wires: it feeds the stream's pulse,
-/// and on the Responses wire it also repairs the bytes. Some
-/// OpenAI-compatible gateways (observed: devin-style shims) stream `response.*`
-/// frames whose `response` object omits `created_at` — a field rig's typed
-/// `ResponseChunk` decode requires. The terminal `response.completed` frame
-/// then classified `WireEvent::Corrupt`, was swallowed by
-/// `swallow_decode_errors`, and `saw_terminal` never flipped: no `Final`, no
-/// `Done`, no usage — title-bar meters sat at 0 while deltas streamed fine.
-///
-/// The patch repairs the wire rather than the decode: `data:` frames whose
-/// JSON carries a `response` object lacking `created_at` get `"created_at":0`
-/// injected before rig's SSE parser sees them. Every other byte — and every
-/// conformant frame — passes through untouched.
+/// Feeds the stream pulse and supplies missing Responses `created_at` fields
+/// before Rig decodes gateway frames. Conformant frames pass through untouched.
 #[derive(Clone, Debug)]
 struct SsePatchClient {
     inner: reqwest::Client,
@@ -1312,6 +1305,7 @@ impl LlmProvider for RigProvider {
                 // Fast headers may route to another gateway account without
                 // changing the model id. Opaque history cannot cross accounts.
                 crate::responses_state::origin(
+                    "openai_responses",
                     &self.base_url,
                     &self.api_key,
                     &settings.headers,
@@ -1331,13 +1325,26 @@ impl LlmProvider for RigProvider {
         } else {
             None
         };
-        let chat_history = if let Some(context) = &responses {
+        let gemini_state = (self.kind == WireKind::Gemini).then(|| ProviderState {
+            origin: crate::responses_state::origin(
+                "gemini",
+                &self.base_url,
+                &self.api_key,
+                &settings.headers,
+                self.user_agent.as_deref(),
+                self.auth_header,
+            ),
+            model: model.to_string(),
+            data: String::new(),
+        });
+        let chat_history = if responses.is_some() || gemini_state.is_some() {
             to_rig_messages_with_plan(
                 messages,
                 self.kind,
                 &compat,
                 reasoning_replay,
-                Some(&context.replay),
+                responses.as_ref().map(|context| &context.replay),
+                gemini_state.as_ref(),
             )
         } else {
             to_rig_messages(messages, self.kind, &compat, reasoning_replay)
@@ -1529,6 +1536,7 @@ impl LlmProvider for RigProvider {
             pulse,
             self.keepalive_every,
             responses,
+            gemini_state,
         ))
     }
 }
@@ -1893,7 +1901,7 @@ fn to_rig_messages(
     compat: &ProviderCompat,
     reasoning_replay: bool,
 ) -> Vec<RigMessage> {
-    to_rig_messages_with_plan(messages, kind, compat, reasoning_replay, None)
+    to_rig_messages_with_plan(messages, kind, compat, reasoning_replay, None, None)
 }
 
 fn to_rig_messages_with_plan(
@@ -1902,6 +1910,7 @@ fn to_rig_messages_with_plan(
     compat: &ProviderCompat,
     reasoning_replay: bool,
     replay: Option<&ResponsesReplayPlan>,
+    gemini_source: Option<&ProviderState>,
 ) -> Vec<RigMessage> {
     // Pairing ledger — assistant call ids that still need results. Orphan
     // results are dropped; dangling calls get a placeholder at the end.
@@ -2046,6 +2055,16 @@ fn to_rig_messages_with_plan(
                         }
                     }
                 }
+                let gemini_calls = gemini_source.and_then(|source| {
+                    m.provider_state
+                        .as_ref()
+                        .filter(|state| {
+                            state.origin == source.origin && state.model == source.model
+                        })
+                        .and_then(|state| {
+                            serde_json::from_str::<Vec<GeminiSignedCall>>(&state.data).ok()
+                        })
+                });
                 for tc in m.tool_calls.iter().flatten() {
                     let id = if tc.id.is_empty() {
                         synth_seq += 1;
@@ -2064,7 +2083,16 @@ fn to_rig_messages_with_plan(
                             arguments: serde_json::from_str(&tc.arguments)
                                 .unwrap_or_else(|_| Value::String(tc.arguments.clone())),
                         },
-                        signature: None,
+                        signature: gemini_calls
+                            .as_ref()
+                            .and_then(|calls| {
+                                calls.iter().find(|call| {
+                                    call.id == tc.id
+                                        && call.name == tc.name
+                                        && call.arguments == tc.arguments
+                                })
+                            })
+                            .map(|call| call.signature.clone()),
                         additional_params: None,
                     }));
                 }
@@ -2256,6 +2284,14 @@ fn tool_defs(raw: Option<Value>) -> Vec<ToolDefinition> {
 // Stream mapping — StreamedAssistantContent → StreamChunk
 // ================================================================
 
+#[derive(serde::Deserialize, serde::Serialize)]
+struct GeminiSignedCall {
+    id: String,
+    name: String,
+    arguments: String,
+    signature: String,
+}
+
 /// Per-stream mapping state: stripper pipelines and the rig `internal_call_id`
 /// → slot-index ledger the assembler counts on.
 struct MapState {
@@ -2277,10 +2313,9 @@ struct MapState {
     /// a known id supersedes its deltas and must not double-emit.
     reasoning_ids: HashSet<String>,
     responses_exchange: Option<Arc<ResponsesExchange>>,
+    gemini_state: Option<ProviderState>,
+    gemini_calls: Vec<GeminiSignedCall>,
     done: bool,
-    /// Swallow mid-stream JSON/decode errors (shims leaking non-JSON framing
-    /// frames — the data-frame case the retired adapter absorbed).
-    swallow_decode_errors: bool,
     /// Total streamed text chars — feeds CallStripper's detection heuristic
     /// on OpenAI wires.
     text_chars: usize,
@@ -2305,8 +2340,9 @@ impl MapState {
             next_slot: 0,
             reasoning_ids: HashSet::new(),
             responses_exchange: None,
+            gemini_state: None,
+            gemini_calls: Vec::new(),
             done: false,
-            swallow_decode_errors: matches!(kind, WireKind::Compat | WireKind::Responses),
             text_chars: 0,
         }
     }
@@ -2406,6 +2442,16 @@ impl MapState {
             }) => {
                 let slot = self.slot_for(&internal_call_id);
                 let id = tool_call.id.to_string();
+                if self.gemini_state.is_some() {
+                    if let Some(signature) = tool_call.signature {
+                        self.gemini_calls.push(GeminiSignedCall {
+                            id: id.clone(),
+                            name: tool_call.function.name.clone(),
+                            arguments: tool_call.function.arguments.to_string(),
+                            signature,
+                        });
+                    }
+                }
                 out.push(StreamChunk::ToolCallDelta {
                     slot,
                     id: Some(id),
@@ -2431,6 +2477,13 @@ impl MapState {
             Ok(StreamedAssistantContent::Final(f)) => {
                 if !self.done {
                     self.done = true;
+                    if !self.gemini_calls.is_empty() {
+                        if let Some(mut state) = self.gemini_state.take() {
+                            state.data = serde_json::to_string(&self.gemini_calls)
+                                .expect("tool signature strings are serializable");
+                            out.push(StreamChunk::ProviderState(state));
+                        }
+                    }
                     let u = f.usage;
                     // Anthropic reports cache reads/writes *beside*
                     // `input_tokens` (which is uncached input only). The
@@ -2473,20 +2526,7 @@ impl MapState {
             }
             Ok(_) => {}
             Err(e) => {
-                // Mid-stream decode failures on OpenAI wires are usually shim
-                // framing leaks (non-JSON `data:` payloads) — the retired
-                // adapters absorbed them; an abort here ended sessions, so
-                // warn-and-continue.
-                if self.swallow_decode_errors
-                    && matches!(
-                        e,
-                        CompletionError::JsonError(_) | CompletionError::ResponseError(_)
-                    )
-                {
-                    tracing::warn!(error = %e, "stream decode error swallowed");
-                } else {
-                    out.push(StreamChunk::Error(map_completion_error(&e)));
-                }
+                out.push(StreamChunk::Error(map_completion_error(&e)));
             }
         }
         out
@@ -2548,7 +2588,12 @@ async fn open_stream(
         RigModel::Compat(m) => m.stream(request).await,
         RigModel::Responses(m) => m.stream(request).await,
         RigModel::Anthropic(m) => m.stream(request).await,
-        RigModel::Gemini(m) => m.stream(request).await,
+        // Rig TRACE dumps provider payloads, including thought signatures.
+        RigModel::Gemini(m) => {
+            m.stream(request)
+                .with_subscriber(NoSubscriber::default())
+                .await
+        }
     }
 }
 
@@ -2637,6 +2682,7 @@ fn map_rig_stream(
     pulse: Pulse,
     keepalive_every: std::time::Duration,
     responses: Option<Arc<ResponsesContext>>,
+    gemini_state: Option<ProviderState>,
 ) -> BoxStream<StreamChunk> {
     struct S {
         inner: StreamingCompletionResponse,
@@ -2650,6 +2696,7 @@ fn map_rig_stream(
     }
     let mut map = MapState::with_observer(kind, usage_observer);
     map.responses_exchange = responses.map(|context| context.exchange.clone());
+    map.gemini_state = gemini_state;
     let init = S {
         inner: stream,
         map,
@@ -2665,7 +2712,16 @@ fn map_rig_stream(
             if let Some(c) = s.pending.pop_front() {
                 return Some((c, s));
             }
-            let next = match tokio::time::timeout(keepalive_every, s.inner.next()).await {
+            let next = if kind == WireKind::Gemini {
+                tokio::time::timeout(
+                    keepalive_every,
+                    s.inner.next().with_subscriber(NoSubscriber::default()),
+                )
+                .await
+            } else {
+                tokio::time::timeout(keepalive_every, s.inner.next()).await
+            };
+            let next = match next {
                 Ok(next) => next,
                 Err(_) => {
                     let beats = s.pulse.count();
@@ -2698,6 +2754,12 @@ fn map_rig_stream(
                 }
                 None if !s.drained => {
                     s.drained = true;
+                    if !s.map.done {
+                        s.pending.push_back(Ok(StreamChunk::Error(
+                            "provider protocol error: stream ended without completion".into(),
+                        )));
+                        continue;
+                    }
                     for c in s.map.drain() {
                         s.pending.push_back(Ok(c));
                     }
@@ -2880,10 +2942,13 @@ fn parse_call_line(body: &str) -> Option<crate::types::ToolCall> {
 // ================================================================
 
 /// `CompletionError` → the message shape `Sampler::classify_transport_error`
-/// parses: `provider HTTP <code>:` when a status is known, otherwise the raw
-/// error text (timeout/connect keywords stay visible to the retryable check).
+/// parses: HTTP status and protocol failures retain their classification;
+/// transport error text keeps its timeout/connect keywords.
 fn map_completion_error(e: &CompletionError) -> String {
     match e {
+        CompletionError::JsonError(_) | CompletionError::ResponseError(_) => {
+            format!("provider protocol error: {e}")
+        }
         CompletionError::HttpError(http_client::Error::InvalidStatusCode(code)) => {
             format!("provider HTTP {code}: (empty body)")
         }
@@ -2973,6 +3038,29 @@ mod tests {
             total_tokens: input + output,
             ..Usage::default()
         })
+    }
+
+    #[test]
+    fn mapping_preserves_decode_and_response_errors() {
+        for kind in [
+            WireKind::Compat,
+            WireKind::Responses,
+            WireKind::Anthropic,
+            WireKind::Gemini,
+        ] {
+            let mut state = MapState::new(kind);
+            let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+            for error in [
+                CompletionError::JsonError(json_error),
+                CompletionError::ResponseError("malformed response".into()),
+            ] {
+                let message = error.to_string();
+                let chunks = state.map_one(Err(error));
+                assert!(
+                    matches!(chunks.as_slice(), [StreamChunk::Error(error)] if error.contains(&message))
+                );
+            }
+        }
     }
 
     /// StreamedAssistantContent → StreamChunk: reasoning/text/call deltas,
