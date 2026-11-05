@@ -161,6 +161,8 @@ export function AssistantStatus({
 	doneLabel,
 	preview,
 	children,
+	open: controlledOpen,
+	onOpenChange,
 }: {
 	mode:
 		| 'reply'
@@ -191,11 +193,14 @@ export function AssistantStatus({
 	 *  list here so the status row IS the collapse toggle, one-to-one with
 	 *  the thinking row's expand-to-trace pattern. */
 	children?: ReactNode;
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
 }) {
 	// Collapsed by default in EVERY mode — the header row alone carries the
 	// state; reasoning body expands on explicit click. Previously the body
 	// auto-opened while streaming, which pushed the answer down the viewport.
-	const [open, setOpen] = useState(false);
+	const [localOpen, setLocalOpen] = useState(false);
+	const open = controlledOpen ?? localOpen;
 	// Live time for the row's header. A row that MOUNTS settled (a thinking
 	// block replayed from history, or one already finished when the turn
 	// scrolled into view) starts with no clock at all — nothing was measured,
@@ -240,7 +245,7 @@ export function AssistantStatus({
 	return (
 		<Collapsible
 			open={open}
-			onOpenChange={canToggle ? setOpen : undefined}
+			onOpenChange={canToggle ? (onOpenChange ?? setLocalOpen) : undefined}
 			className="my-1 w-full min-w-0 select-none"
 		>
 			{/* Pins the header to the top of the stream viewport while the block is

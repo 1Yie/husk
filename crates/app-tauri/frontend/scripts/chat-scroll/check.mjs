@@ -62,6 +62,124 @@ try {
 	});
 	const pageErrors = [];
 	page.on('pageerror', (error) => pageErrors.push(error.message));
+	const url = `${server.resolvedUrls.local[0]}chat-scroll.html`;
+	await page.goto(`${url}?turns`);
+	await page.waitForSelector('[data-step-mounted]');
+	await page.waitForTimeout(1500);
+	const firstTurn = () =>
+		page
+			.locator('[id^="chat-turn-t"]:not([id*="-step-"])')
+			.first()
+			.getAttribute('id');
+	const initialTurn = await firstTurn();
+	await page.locator('.stream-scroll').hover();
+	await page.mouse.wheel(0, -100000);
+	await page.waitForTimeout(700);
+	const revealedTurn = await firstTurn();
+	const earlierReachable = initialTurn !== revealedTurn;
+	await page.goto(url);
+	await page.waitForSelector('[data-step-mounted]');
+	await page.waitForTimeout(1500);
+	await page.evaluate(() => {
+		const root = document.querySelector('.stream-scroll');
+		root.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+		root.scrollTop = root.scrollHeight * 0.65;
+	});
+	await page.waitForTimeout(1500);
+	const expanded = [];
+	for (const label of ['思考过程', '次工具调用']) {
+		const id = await page.evaluate((label) => {
+			return [...document.querySelectorAll('[data-step-mounted]')].find(
+				(el) => {
+					const rect = el.getBoundingClientRect();
+					const button = el.querySelector('button[aria-expanded="false"]');
+					return (
+						rect.top > 0 &&
+						rect.bottom < innerHeight &&
+						button?.textContent.includes(label)
+					);
+				}
+			)?.id;
+		}, label);
+		assert.ok(id, `a visible ${label} row is available`);
+		const row = page.locator(`[id="${id}"] button[aria-expanded]`);
+		await row.click();
+		await page.waitForTimeout(350);
+		const geometry = () =>
+			page.evaluate((id) => {
+				const root = document.querySelector('.stream-scroll');
+				const el = document.getElementById(id);
+				return {
+					top: root.scrollTop,
+					height: el.getBoundingClientRect().height,
+					nextTop: el.nextElementSibling.getBoundingClientRect().top,
+					open: el
+						.querySelector('button[aria-expanded]')
+						?.getAttribute('aria-expanded'),
+				};
+			}, id);
+		const before = await geometry();
+		await page.evaluate(() => {
+			const root = document.querySelector('.stream-scroll');
+			root.dispatchEvent(
+				new WheelEvent('wheel', { deltaY: 30000, bubbles: true })
+			);
+			root.scrollTop = root.scrollHeight;
+		});
+		await page.waitForTimeout(1600);
+		assert.equal(
+			await page.locator(`[id="${id}"][data-step-placeholder]`).count(),
+			1,
+			'expanded row must actually leave the virtual window'
+		);
+		await page.evaluate((top) => {
+			const root = document.querySelector('.stream-scroll');
+			root.dispatchEvent(new WheelEvent('wheel', { deltaY: 1, bubbles: true }));
+			root.scrollTop = top;
+		}, before.top);
+		await page.waitForTimeout(450);
+		const after = await geometry();
+		expanded.push({ id, before, after });
+	}
+	console.log(
+		JSON.stringify({ engine, initialTurn, revealedTurn, expanded }, null, 2)
+	);
+	assert.ok(
+		earlierReachable,
+		'the first real wheel to the top must reveal older loaded turns'
+	);
+	for (const { before, after } of expanded) {
+		assert.equal(
+			after.open,
+			'true',
+			'expanded details must survive virtual unmount'
+		);
+		assert.ok(
+			Math.abs(after.height - before.height) <= 1,
+			'expanded height must survive'
+		);
+		assert.ok(
+			Math.abs(after.nextTop - before.nextTop) <= 1,
+			'the neighboring row must remain anchored'
+		);
+	}
+	await page.getByTestId('switch-session').click();
+	await page.waitForTimeout(1500);
+	await page.evaluate((top) => {
+		const root = document.querySelector('.stream-scroll');
+		root.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+		root.scrollTop = top;
+	}, expanded[0].before.top);
+	await page.waitForTimeout(450);
+	for (const { id } of expanded) {
+		assert.equal(
+			await page
+				.locator(`[id="${id}"] button[aria-expanded]`)
+				.getAttribute('aria-expanded'),
+			'false',
+			'a new session must start collapsed'
+		);
+	}
 	await page.goto(`${server.resolvedUrls.local[0]}chat-scroll.html`);
 	await page.waitForSelector('[data-step-mounted]');
 	await page.waitForTimeout(1500);

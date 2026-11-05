@@ -1344,6 +1344,8 @@ const TurnStep = memo(
 		isLastStep,
 		streaming,
 		allowPlain = true,
+		open,
+		onOpenChange,
 		workspaceRoot,
 		onOpenWorkspaceFile,
 	}: WorkspaceLinkProps & {
@@ -1355,6 +1357,8 @@ const TurnStep = memo(
 		/** The plain-text fast path may be used — false for a step that mounted
 		 *  as the live tail (see the text branch). */
 		allowPlain?: boolean;
+		open: boolean;
+		onOpenChange: (open: boolean) => void;
 	}) {
 		if (step.type === 'thinking') {
 			return (
@@ -1363,6 +1367,8 @@ const TurnStep = memo(
 					done={step.done}
 					startedAt={step.startedAt}
 					elapsedMs={step.elapsedMs}
+					open={open}
+					onOpenChange={onOpenChange}
 				/>
 			);
 		}
@@ -1432,6 +1438,8 @@ const TurnStep = memo(
 						elapsedMs={elapsedMs}
 						doneLabel={`${step.rows.length} 次工具调用`}
 						preview={toolActivityPreview(step.rows)}
+						open={open}
+						onOpenChange={onOpenChange}
 					>
 						<ToolChips
 							rows={step.rows}
@@ -1492,6 +1500,8 @@ const TurnStep = memo(
 		a.stepIdx === b.stepIdx &&
 		a.isLastStep === b.isLastStep &&
 		a.allowPlain === b.allowPlain &&
+		a.open === b.open &&
+		a.onOpenChange === b.onOpenChange &&
 		a.workspaceRoot === b.workspaceRoot &&
 		a.onOpenWorkspaceFile === b.onOpenWorkspaceFile &&
 		(!a.isLastStep || a.streaming === b.streaming)
@@ -1613,8 +1623,8 @@ function estimateStepHeight(step: AssistantStep): number {
 /** A step in the mounted window. Off-window it is a fixed-height placeholder
  *  that still carries the DOM id (rail anchors work); IntersectionObserver
  *  mounts the real TurnStep before it scrolls in and unmounts it after it
- *  leaves the overscan. Expanded tool/thinking state is local to TurnStep,
- *  so leaving the window drops it — the same tradeoff a virtual list makes.
+ *  leaves the overscan. The chat view owns tool/thinking expansion across
+ *  both step unmounts and cross-turn trimming.
  */
 const VirtualStep = memo(function VirtualStep({
 	step,
@@ -1623,6 +1633,8 @@ const VirtualStep = memo(function VirtualStep({
 	isLastStep,
 	streaming,
 	scope,
+	open,
+	onStepOpenChange,
 	workspaceRoot,
 	onOpenWorkspaceFile,
 }: WorkspaceLinkProps & {
@@ -1633,12 +1645,18 @@ const VirtualStep = memo(function VirtualStep({
 	streaming: boolean;
 	/** Session key — the height cache's scope. */
 	scope: string;
+	open: boolean;
+	onStepOpenChange: (turnId: string, stepIdx: number, open: boolean) => void;
 }) {
 	const api = useContext(VirtualStepContext);
 	const [mounted, setMounted] = useState(
 		() => typeof IntersectionObserver === 'undefined'
 	);
 	const id = `chat-turn-${turnId}-step-${stepIdx}`;
+	const onOpenChange = useCallback(
+		(open: boolean) => onStepOpenChange(turnId, stepIdx, open),
+		[onStepOpenChange, turnId, stepIdx]
+	);
 	const [height, setHeight] = useState(
 		() => recallStepHeight(scope, id) ?? estimateStepHeight(step)
 	);
@@ -1756,6 +1774,8 @@ const VirtualStep = memo(function VirtualStep({
 					isLastStep={isLastStep}
 					streaming={streaming}
 					allowPlain={allowPlainRef.current}
+					open={open}
+					onOpenChange={onOpenChange}
 					workspaceRoot={workspaceRoot}
 					onOpenWorkspaceFile={onOpenWorkspaceFile}
 				/>
@@ -1801,6 +1821,8 @@ const ChatTurn = memo(function ChatTurn({
 	retryable,
 	streaming,
 	scope,
+	openSteps,
+	onStepOpenChange,
 	workspaceRoot,
 	onOpenWorkspaceFile,
 }: WorkspaceLinkProps & {
@@ -1815,6 +1837,8 @@ const ChatTurn = memo(function ChatTurn({
 	 *  yet, and a placeholder seeded under the wrong scope fell back to the
 	 *  length estimate on every remount. */
 	scope: string;
+	openSteps?: ReadonlySet<number>;
+	onStepOpenChange: (turnId: string, stepIdx: number, open: boolean) => void;
 }) {
 	// Undo only reverts the turn's file writes (`undo_last_turn`), so offer it
 	// only when a tool row carried a diff — a turn that touched no files has
@@ -1887,6 +1911,8 @@ const ChatTurn = memo(function ChatTurn({
 							isLastStep={stepIdx === turn.steps.length - 1}
 							streaming={streaming}
 							scope={scope}
+							open={openSteps?.has(stepIdx) ?? false}
+							onStepOpenChange={onStepOpenChange}
 							workspaceRoot={workspaceRoot}
 							onOpenWorkspaceFile={onOpenWorkspaceFile}
 						/>
@@ -1950,6 +1976,26 @@ export function ChatStream({
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const endRef = useRef<HTMLDivElement>(null);
 	const [virtualApi, setVirtualApi] = useState<VirtualStepApi | null>(null);
+	// Turn ids use global history positions; step ordinals are within the
+	// full turn, so trimming the mounted window cannot change this identity.
+	const [openSteps, setOpenSteps] = useState(
+		() => new Map<string, ReadonlySet<number>>()
+	);
+	const onStepOpenChange = useCallback(
+		(turnId: string, stepIdx: number, open: boolean) => {
+			setOpenSteps((previous) => {
+				const steps = new Set(previous.get(turnId));
+				if (steps.has(stepIdx) === open) return previous;
+				if (open) steps.add(stepIdx);
+				else steps.delete(stepIdx);
+				const next = new Map(previous);
+				if (steps.size) next.set(turnId, steps);
+				else next.delete(turnId);
+				return next;
+			});
+		},
+		[]
+	);
 	const pinnedRef = useRef(true);
 	// A programmatic smooth scroll (rail jump, scroll-to-bottom) is running.
 	const isSmoothScrollingRef = useRef(false);
@@ -2948,19 +2994,6 @@ export function ChatStream({
 		if (isLayoutResizing()) return;
 		const el = scrollRef.current;
 		if (!el) return;
-		if (el.scrollTop < 480) {
-			// Locally trimmed turns come back first; history pages only once
-			// everything loaded is mounted again.
-			// Same `landed` gate as paging: before the landing snap, the skeleton's
-			// scrollTop 0 is not the reader scrolling up. Never while pinned either
-			// — the trim owns that state, and a short column would trade turns
-			// back and forth between the two.
-			if (hidden > 0) {
-				if (landed && !pinnedRef.current && revealRestoreRef.current === null) {
-					revealTrimmed(hidden - REVEAL_CHUNK);
-				}
-			} else void maybeLoadOlder();
-		}
 		const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 		// Programmatic smooth scrolls emit intermediate events far from the
 		// bottom — letting them rewrite pinnedRef kills follow-mode mid-
@@ -2974,6 +3007,17 @@ export function ChatStream({
 			}
 		}
 		setIsAtBottom(pinnedRef.current);
+		if (el.scrollTop < 480) {
+			// Locally trimmed turns come back first; history pages only once
+			// everything loaded is mounted again.
+			// Use this event's gesture-qualified pin state. Landing, smooth
+			// scrolling and programmatic geometry changes still keep their pin.
+			if (hidden > 0) {
+				if (landed && !pinnedRef.current && revealRestoreRef.current === null) {
+					revealTrimmed(hidden - REVEAL_CHUNK);
+				}
+			} else void maybeLoadOlder();
+		}
 		// One mark update per frame max — scroll events fire faster than
 		// frames, and the rail highlight doesn't need event-rate precision.
 		if (!markRafRef.current) {
@@ -3454,6 +3498,8 @@ export function ChatStream({
 													retryable={turnIdx === lastAnswerIdx}
 													streaming={view.streaming && isLast}
 													scope={sessionKey ?? ''}
+													openSteps={openSteps.get(turn.id)}
+													onStepOpenChange={onStepOpenChange}
 													workspaceRoot={workspaceRoot}
 													onOpenWorkspaceFile={onOpenWorkspaceFile}
 												/>

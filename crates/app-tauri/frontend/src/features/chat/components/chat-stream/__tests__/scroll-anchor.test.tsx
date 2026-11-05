@@ -11,7 +11,9 @@ import {
 } from '@/features/chat/components/chat-stream';
 import { applyEvents } from '@/features/chat/hooks/apply-event';
 import { emptyView } from '@/features/chat/hooks/stream-view';
+import { viewFromHistory } from '@/features/chat/hooks/view-from-history';
 import { renderWithProviders } from '@/test/render';
+import type { ChatMessage } from '@/types';
 
 describe('scrollAnchorDelta', () => {
 	test('a change wholly above the viewport is given back', () => {
@@ -293,4 +295,101 @@ test('an old offscreen notification cannot unmount a step now inside the viewpor
 	});
 	expect(step.hasAttribute('data-step-placeholder')).toBe(true);
 	expect(step.style.height).toBe('36.5px');
+});
+
+test('expansion stays with its step through streaming and virtual unmount, and resets with the session', () => {
+	vi.useFakeTimers();
+	let view = applyEvents(emptyView(), [
+		{ UserPrompt: '保留独立思考阶段' },
+		{ ReasoningDelta: { text: 'First phase' } },
+		{ ToolCallStarted: { name: 'bash', args_preview: 'cargo test' } },
+		{ ReasoningDelta: { text: 'Second phase' } },
+	]);
+	const { container, rerender } = renderWithProviders(
+		<ChatStream key="first" view={view} sessionKey="/project:first" />
+	);
+	const steps = [...container.querySelectorAll('[data-step-placeholder]')];
+	act(() => {
+		for (const io of ManualIntersectionObserver.instances)
+			for (const step of steps) io.show(step);
+	});
+	const button = (step: Element) =>
+		step.querySelector('button[aria-expanded]')!;
+	fireEvent.click(button(steps[0]));
+	expect(button(steps[0]).getAttribute('aria-expanded')).toBe('true');
+	expect(button(steps[2]).getAttribute('aria-expanded')).toBe('false');
+
+	view = applyEvents(view, [{ ReasoningDelta: { text: ' continues' } }]);
+	rerender(<ChatStream key="first" view={view} sessionKey="/project:first" />);
+	expect(button(steps[0]).getAttribute('aria-expanded')).toBe('true');
+	expect(button(steps[2]).getAttribute('aria-expanded')).toBe('false');
+	rects.set(steps[0], { top: -5000, height: 72 });
+	act(() => {
+		for (const io of ManualIntersectionObserver.instances) io.hide(steps[0]);
+		vi.advanceTimersByTime(1300);
+	});
+	expect(steps[0].hasAttribute('data-step-placeholder')).toBe(true);
+	act(() => {
+		for (const io of ManualIntersectionObserver.instances) io.show(steps[0]);
+	});
+	expect(button(steps[0]).getAttribute('aria-expanded')).toBe('true');
+	expect(button(steps[2]).getAttribute('aria-expanded')).toBe('false');
+
+	rerender(
+		<ChatStream key="second" view={view} sessionKey="/project:second" />
+	);
+	act(() => {
+		for (const io of ManualIntersectionObserver.instances)
+			for (const step of io.targets) io.show(step);
+	});
+	for (const row of container.querySelectorAll('button[aria-expanded]'))
+		expect(row.getAttribute('aria-expanded')).toBe('false');
+	expect(container.querySelectorAll('button[aria-expanded]')).toHaveLength(3);
+});
+
+test('a turn trimmed by later turns retains its expanded step when revealed', () => {
+	vi.useFakeTimers();
+	const history: ChatMessage[] = [];
+	const append = (count: number) => {
+		for (let i = 0; i < count; i++) {
+			history.push(
+				{ role: 'user', content: `Prompt ${history.length}` },
+				{ role: 'assistant', reasoning: 'Reasoning', content: 'Answer' }
+			);
+		}
+		return viewFromHistory(history, null, 0);
+	};
+	const { container, rerender } = renderWithProviders(
+		<ChatStream view={append(8)} sessionKey="/project:trim" />
+	);
+	const scroller = container.querySelector('.stream-scroll') as HTMLElement;
+	Object.defineProperties(scroller, {
+		scrollHeight: { value: 5000, configurable: true },
+		clientHeight: { value: 600, configurable: true },
+	});
+	for (let i = 0; i < 3; i++) act(() => vi.advanceTimersByTime(100));
+	const id = 'chat-turn-t12-step-0';
+	const step = container.querySelector(`[id="${id}"]`)!;
+	expect(step).not.toBeNull();
+	act(() => {
+		for (const io of ManualIntersectionObserver.instances) io.show(step);
+	});
+	fireEvent.click(step.querySelector('button[aria-expanded]')!);
+	rerender(<ChatStream view={append(40)} sessionKey="/project:trim" />);
+	expect(container.querySelector(`[id="${id}"]`)).toBeNull();
+	for (let i = 0; i < 2; i++) {
+		scroller.scrollTop = 0;
+		fireEvent.wheel(scroller, { deltaY: -1000 });
+		fireEvent.scroll(scroller);
+	}
+	const revealed = container.querySelector(`[id="${id}"]`)!;
+	expect(revealed).not.toBeNull();
+	act(() => {
+		for (const io of ManualIntersectionObserver.instances) io.show(revealed);
+	});
+	expect(
+		revealed
+			.querySelector('button[aria-expanded]')
+			?.getAttribute('aria-expanded')
+	).toBe('true');
 });

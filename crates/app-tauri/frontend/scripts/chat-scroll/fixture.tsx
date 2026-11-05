@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client';
+import { useState } from 'react';
 import '../../src/index.css';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ChatStream } from '@/features/chat/components/chat-stream';
@@ -45,24 +46,47 @@ history.push({
 	role: 'assistant',
 	content: '检查完成。\n\n```ts\nconst ready = true;\n```\n',
 });
-const view = viewFromHistory(history, null, 0);
-createRoot(document.getElementById('root')!).render(
-	<TooltipProvider>
-		<div
-			style={{
-				height: '100vh',
-				width: '100vw',
-				display: 'flex',
-				flexDirection: 'column',
-				position: 'relative',
-			}}
-		>
-			<ChatStream
-				view={view}
-				sessionKey="/scroll:regression"
-				bottomPad={32}
-				suppressPills
-			/>
-		</div>
-	</TooltipProvider>
+const ordinaryHistory: ChatMessage[] = Array.from({ length: 72 }, (_, i) => [
+	{ role: 'user' as const, content: `User turn ${i}` },
+	{
+		role: 'assistant' as const,
+		content: `Answer ${i}. ${'A settled response with enough scroll travel. '.repeat(35)}`,
+	},
+]).flat();
+const view = viewFromHistory(
+	new URLSearchParams(location.search).has('turns') ? ordinaryHistory : history,
+	null,
+	0
 );
+function Fixture() {
+	const [session, setSession] = useState(0);
+	return (
+		<TooltipProvider>
+			<div
+				style={{
+					height: '100vh',
+					width: '100vw',
+					display: 'flex',
+					flexDirection: 'column',
+					position: 'relative',
+				}}
+			>
+				<button
+					data-testid="switch-session"
+					style={{ position: 'absolute', right: 0, zIndex: 10 }}
+					onClick={() => setSession((s) => s + 1)}
+				>
+					Switch session
+				</button>
+				<ChatStream
+					key={session}
+					view={view}
+					sessionKey={`/scroll:regression-${session}`}
+					bottomPad={32}
+					suppressPills
+				/>
+			</div>
+		</TooltipProvider>
+	);
+}
+createRoot(document.getElementById('root')!).render(<Fixture />);

@@ -11,6 +11,8 @@ export function ThinkingBlock({
 	done,
 	startedAt,
 	elapsedMs,
+	open,
+	onOpenChange,
 }: {
 	text: string;
 	done: boolean;
@@ -18,6 +20,8 @@ export function ThinkingBlock({
 	startedAt?: number;
 	/** Persisted span for a block replayed from history. */
 	elapsedMs?: number;
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
 }) {
 	const thinkingText = text.trim();
 	if (!done && !thinkingText) return null;
@@ -28,6 +32,8 @@ export function ThinkingBlock({
 				thinkingText={thinkingText}
 				startedAt={startedAt}
 				elapsedMs={elapsedMs}
+				open={open}
+				onOpenChange={onOpenChange}
 			/>
 		</div>
 	);
