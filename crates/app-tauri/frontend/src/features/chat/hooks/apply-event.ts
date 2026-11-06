@@ -1175,6 +1175,10 @@ function applyEventInto(
 			case 'subagent:resumed':
 				items[at] = {
 					...card,
+					// History replay can retain a parked delegate's early return.
+					content: undefined,
+					ok: undefined,
+					ts: undefined,
 					waiting: undefined,
 					segments: [
 						...(card.segments ?? []),

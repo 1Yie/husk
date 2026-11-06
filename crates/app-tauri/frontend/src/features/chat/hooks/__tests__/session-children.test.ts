@@ -14,6 +14,7 @@ import {
 } from '@/features/chat/hooks/running-children';
 import type { ChatMessage, UiEvent } from '@/types';
 import type { ToolFeedRow } from '@/lib/agent-ipc/sessions';
+import { summarizeChildren } from '@/lib/subagents';
 
 const card = (childId: number): UiEvent => ({
 	ToolCallStarted: {
@@ -295,6 +296,161 @@ describe('childrenFromFeed', () => {
 });
 
 describe('sessionChildren', () => {
+	test.each([true, false])(
+		'a restored waiting child resumes until its real result (ok=%s)',
+		(ok) => {
+			const waiting =
+				'[subagent reviewer (child_id 7) is waiting for you]\n需要确认分支';
+			const history: ChatMessage[] = [
+				{ role: 'user', content: '委派', ts: 10 },
+				{
+					role: 'assistant',
+					content: '',
+					ts: 20,
+					tool_calls: [
+						{
+							id: 'd1',
+							type: 'function',
+							function: { name: 'delegate', arguments: '{"task":"探索仓库"}' },
+						},
+					],
+				},
+				{ role: 'tool', content: waiting, tool_call_id: 'd1', ts: 30 },
+			];
+			const restored = {
+				...viewFromHistory(history),
+				feedChildren: childrenFromFeed([
+					feedRow(2, 'delegate', '{"task":"探索仓库"}', waiting),
+				]),
+			};
+			const lifecycle = (
+				kind: string,
+				payload: Record<string, unknown>
+			): UiEvent => ({
+				Custom: {
+					kind,
+					payload: { child_id: 7, label: 'reviewer', ...payload },
+				},
+			});
+			const resume = lifecycle('subagent:resumed', { answer: '用 main' });
+			const childCard = (view: ReturnType<typeof emptyView>) =>
+				view.items.find(
+					(it): it is Extract<StreamItem, { kind: 'tool' }> =>
+						it.kind === 'tool' && it.parent === 'delegate' && it.childId === 7
+				)!;
+			expect(sessionChildren(restored)).toMatchObject([
+				{ childId: 7, status: 'waiting' },
+			]);
+			const prepared = applyEvents(restored, [
+				card(8),
+				lifecycle('subagent:background', {}),
+				lifecycle('subagent:steer', { text: '保留记录' }),
+			]);
+			const original = childCard(prepared);
+			const other = prepared.items.find(
+				(it) => it.kind === 'tool' && it.childId === 8
+			);
+			const resumed = applyEvents(prepared, [
+				{
+					ToolCallStarted: {
+						name: 'answer_child',
+						args_preview: '{"child_id":7,"answer":"用 main"}',
+					},
+				},
+				resume,
+			]);
+			const projected = sessionChildren(resumed).filter((c) => c.childId === 7);
+			expect(projected).toHaveLength(1);
+			expect(projected[0]).toMatchObject({
+				childId: 7,
+				status: 'running',
+				task: '探索仓库',
+				background: true,
+				hi: 2,
+			});
+			expect(projected[0].report).toBeUndefined();
+			expect(summarizeChildren(projected)).toMatchObject({
+				tone: 'running',
+				count: 1,
+			});
+			expect(
+				projected.filter(
+					(c) => c.status === 'running' || c.status === 'waiting'
+				)
+			).toHaveLength(1);
+			const runningCard = childCard(resumed);
+			for (const field of ['content', 'ok', 'ts', 'waiting'] as const)
+				expect(runningCard[field]).toBeUndefined();
+			expect(runningCard).toMatchObject({
+				name: original.name,
+				args: original.args,
+				childId: original.childId,
+				hi: original.hi,
+				childIndex: original.childIndex,
+				background: true,
+			});
+			expect(runningCard.segments).toEqual([
+				...(original.segments ?? []),
+				{ kind: 'text', text: '> 主代理回复：用 main', muted: true },
+			]);
+			expect(
+				resumed.items.find((it) => it.kind === 'tool' && it.childId === 8)
+			).toBe(other);
+			const parkedAgain = applyEvents(resumed, [
+				lifecycle('subagent:waiting', { question: '再次确认' }),
+			]);
+			expect(
+				sessionChildren(parkedAgain).find((c) => c.childId === 7)
+			).toMatchObject({ status: 'waiting', waiting: '再次确认' });
+			const runningAgain = applyEvents(parkedAgain, [
+				resume,
+				{ StateChanged: 'Finished' },
+				{ UserPrompt: '继续' },
+			]);
+			expect(
+				sessionChildren(runningAgain).find((c) => c.childId === 7)?.status
+			).toBe('running');
+			const content = ok
+				? '[subagent report — child_id 7 · 2 tool calls, 4s]\n已切到 main'
+				: '编译失败';
+			const settled = applyEvents(runningAgain, [
+				{
+					ToolCallFinished: {
+						name: 'reviewer',
+						parent: 'delegate',
+						child_id: 7,
+						ok,
+						content,
+					},
+				},
+			]);
+			const result = sessionChildren(settled).filter((c) => c.childId === 7);
+			expect(result).toMatchObject([
+				{
+					status: ok ? 'done' : 'failed',
+					report: ok ? '已切到 main' : '编译失败',
+				},
+			]);
+			expect(result).toHaveLength(1);
+			expect(
+				result.filter((c) => c.status === 'running' || c.status === 'waiting')
+			).toHaveLength(0);
+			expect(summarizeChildren(result)?.tone).toBe(ok ? 'ok' : 'failed');
+			expect(childCard(settled).ts).toEqual(expect.any(Number));
+			expect(
+				settled.items.find((it) => it.kind === 'tool' && it.childId === 8)
+			).toBe(other);
+			const live = applyEvents(emptyView(), [
+				card(7),
+				lifecycle('subagent:waiting', { question: '确认' }),
+				resume,
+			]);
+			expect(sessionChildren(live)).toMatchObject([
+				{ childId: 7, status: 'running' },
+			]);
+		}
+	);
+
 	/** A view whose mounted page starts at history 10 and holds one child. */
 	const mountedView = () => ({
 		...applyEvents(emptyView(), [
