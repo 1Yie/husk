@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agent_llm::sampler::{SampleRequest, Sampler, SamplerEvent};
 use agent_llm::{
     ChatMessage, LlmProvider, ModelParams, ProviderConfig, ProviderFactory, ProviderKind,
     StreamChunk,
 };
-use futures::{SinkExt, StreamExt, TryStreamExt};
+use futures::{SinkExt, StreamExt};
 use rig_core::http_client::HeaderMap;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -32,9 +33,11 @@ enum Step {
     LateDone(Value),
     Ping(Value),
     Reject(&'static str),
+    ServiceError,
     PartialClose,
     CloseWith(u16, &'static str),
     CloseAfterDelta,
+    StartedClose(&'static str, bool),
     PartialError,
     Malformed,
     Cancel(Arc<tokio::sync::Notify>),
@@ -45,6 +48,7 @@ struct Server {
     headers: Arc<Mutex<Vec<HeaderMap>>>,
     frames: Arc<Mutex<Vec<Value>>>,
     probes: Arc<AtomicUsize>,
+    http: Arc<Mutex<Vec<(HeaderMap, Value)>>>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Server {
@@ -54,10 +58,22 @@ impl Drop for Server {
 }
 
 impl Server {
+    async fn new(connections: Vec<Vec<Step>>) -> Self {
+        Self::with_http(connections, Vec::new()).await
+    }
+
+    async fn with_http(connections: Vec<Vec<Step>>, replies: Vec<(u16, String)>) -> Self {
+        Self::start(connections, replies, None).await
+    }
+
     // Tungstenite fixes Callback's error ABI to Response<Option<String>>;
     // it cannot be boxed by this fixture.
     #[allow(clippy::result_large_err)]
-    async fn new(connections: Vec<Vec<Step>>) -> Self {
+    async fn start(
+        connections: Vec<Vec<Step>>,
+        replies: Vec<(u16, String)>,
+        stalled_http: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let headers = Arc::new(Mutex::new(Vec::new()));
@@ -66,10 +82,37 @@ impl Server {
         let captured_frames = frames.clone();
         let probes = Arc::new(AtomicUsize::new(0));
         let captured_probes = probes.clone();
+        let http = Arc::new(Mutex::new(Vec::new()));
+        let captured_http = http.clone();
         let task = tokio::spawn(async move {
             let mut stalled_sockets = Vec::new();
-            for turns in connections {
-                let (socket, _) = listener.accept().await.unwrap();
+            let mut connections = connections.into_iter();
+            let mut replies = replies.into_iter();
+            let mut http_tasks = tokio::task::JoinSet::new();
+            let mut stalled_http = stalled_http;
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut method = [0u8; 4];
+                assert!(socket.peek(&mut method).await.unwrap() > 0);
+                if method[0] == b'P' {
+                    let (headers, body) = read_http(&mut socket).await;
+                    captured_http.lock().unwrap().push((headers, body));
+                    if let Some((ready, closed)) = stalled_http.take() {
+                        http_tasks.spawn(async move {
+                            ready.notify_one();
+                            let mut bytes = [0; 1];
+                            assert_eq!(socket.read(&mut bytes).await.unwrap(), 0);
+                            closed.notify_one();
+                        });
+                        continue;
+                    }
+                    let (status, body) = replies.next().unwrap_or((400, "unexpected retry".into()));
+                    socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                    continue;
+                }
+                let turns = connections
+                    .next()
+                    .unwrap_or(vec![Step::Reject("bad_request")]);
                 let h = captured_headers.clone();
                 let mut ws = accept_hdr_async(socket, move |req: &Request, response: Response| {
                     assert_eq!(req.uri().path(), "/v1/responses");
@@ -179,6 +222,10 @@ impl Server {
                         Step::Reject(code) => {
                             ws.send(Message::text(json!({"type":"error","status":400,"error":{"code":code,"message":"fixture rejection"}}).to_string())).await.unwrap();
                         }
+                        Step::ServiceError => {
+                            ws.send(Message::text(json!({"type":"error","status":400,"error":{"code":"invalid_request_error","message":"connection reset is an invalid parameter"}}).to_string())).await.unwrap();
+                            break;
+                        }
                         Step::PartialClose | Step::PartialError | Step::Cancel(_) => {
                             ws.send(Message::text(delta("partial").to_string()))
                                 .await
@@ -205,6 +252,22 @@ impl Server {
                         }
                         Step::Malformed => {
                             ws.send(Message::text("{not-json")).await.unwrap();
+                        }
+                        Step::StartedClose(reason, partial) => {
+                            let event = json!({"type":"response.created","sequence_number":0,"response":{"id":"resp_partial","object":"response","created_at":1,"model":"fixture-gpt","status":"in_progress","output":[],"tools":[]}});
+                            ws.send(Message::text(event.to_string())).await.unwrap();
+                            if partial {
+                                ws.send(Message::text(delta("partial").to_string()))
+                                    .await
+                                    .unwrap();
+                            }
+                            ws.send(Message::Close(Some(CloseFrame {
+                                code: CloseCode::Normal,
+                                reason: reason.into(),
+                            })))
+                            .await
+                            .unwrap();
+                            break;
                         }
                         Step::CloseWith(code, reason) => {
                             ws.close(Some(CloseFrame {
@@ -239,6 +302,7 @@ impl Server {
             headers,
             frames,
             probes,
+            http,
             task,
         }
     }
@@ -266,6 +330,310 @@ impl Server {
     }
 }
 
+async fn read_http(socket: &mut tokio::net::TcpStream) -> (HeaderMap, Value) {
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 4096];
+    let split = loop {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&chunk[..n]);
+        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i;
+        }
+    };
+    let mut headers = HeaderMap::new();
+    for line in String::from_utf8_lossy(&bytes[..split]).lines().skip(1) {
+        let (name, value) = line.split_once(':').unwrap();
+        headers.insert(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            value.trim().parse().unwrap(),
+        );
+    }
+    let length = headers["content-length"]
+        .to_str()
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    while bytes.len() < split + 4 + length {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    (
+        headers,
+        serde_json::from_slice(&bytes[split + 4..split + 4 + length]).unwrap(),
+    )
+}
+
+fn sse_response(id: &str, text: &str) -> String {
+    let event = json!({"type":"response.completed","sequence_number":2,"response":response(id, output(text))});
+    format!("data: {}\n\ndata: {event}\n\ndata: [DONE]\n\n", delta(text))
+}
+
+async fn sample(
+    provider: &Arc<dyn LlmProvider>,
+    history: &[ChatMessage],
+    params: &ModelParams,
+) -> (Result<(), String>, Vec<StreamChunk>, Vec<SamplerEvent>) {
+    let mut chunks = Vec::new();
+    let mut events = Vec::new();
+    let tools = json!([{"name":"read","description":"fixture read","parameters":{"type":"object","properties":{}}}]);
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        Sampler::new(provider.clone()).sample(
+            SampleRequest {
+                model: "fixture-gpt",
+                temperature: 0.0,
+                tools: Some(&tools),
+                reasoning_effort: Some("medium"),
+                params,
+            },
+            history,
+            |chunk| chunks.push(chunk.clone()),
+            |event| events.push(event.clone()),
+            || {},
+        ),
+    )
+    .await
+    .expect("sampler fixture timed out")
+    .map_err(|e| e.to_string());
+    (result, chunks, events)
+}
+
+#[tokio::test]
+async fn sampler_tool_round_pong_close_recovers_once_with_full_http_request() {
+    let tool = json!({"type":"function_call","id":"fc_fixture","call_id":"call_tool","name":"read","arguments":"{}","status":"completed"});
+    let server = Server::with_http(
+        vec![
+            vec![
+                Step::Complete(response(
+                    "resp_tool",
+                    vec![output("")[0].clone(), tool.clone()],
+                )),
+                Step::CloseWith(1000, ""),
+            ],
+            vec![Step::Complete(response("resp_next", output("next")))],
+        ],
+        vec![(200, sse_response("resp_sse", "recovered"))],
+    )
+    .await;
+    let provider = server.provider();
+    let params = ModelParams {
+        sampling_params: Some(
+            json!({"text":{"verbosity":"low"},"prompt_cache_options":{"mode":"fixture"}}),
+        ),
+        ..ModelParams::EMPTY
+    };
+    let mut h = history();
+    let (first, chunks, events) = sample(&provider, &h, &params).await;
+    first.unwrap();
+    assert!(events.is_empty());
+    let message = assistant(&chunks);
+    assert!(message.provider_state.is_some());
+    assert_eq!(message.tool_calls.as_ref().unwrap()[0].id, "call_tool");
+    h.push(message);
+    h.push(ChatMessage::tool_result("call_tool", "fixture tool result"));
+    let (result, chunks, events) = sample(&provider, &h, &params).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(assistant(&chunks).content.as_deref(), Some("recovered"));
+    let recovered = assistant(&chunks);
+    let state = recovered.provider_state.as_ref().expect("SSE replay state");
+    assert_eq!(
+        serde_json::from_str::<Value>(&state.data).unwrap()["response_id"],
+        "resp_sse"
+    );
+    let frames = server.frames();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(server.probes.load(Ordering::SeqCst), 1);
+    assert_eq!(frames[1]["previous_response_id"], "resp_tool");
+    assert_eq!(
+        frames[1]["input"],
+        json!([{"type":"function_call_output","call_id":"call_tool","output":"fixture tool result","status":"completed"}])
+    );
+    {
+        let requests = server.http.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let (headers, body) = &requests[0];
+        for (name, value) in [
+            ("authorization", "Bearer fixture-access-token"),
+            ("chatgpt-account-id", "fixture-account"),
+            ("x-gateway-custom", "kept"),
+            ("user-agent", "husk-wss-fixture"),
+        ] {
+            assert_eq!(headers[name], value);
+        }
+        assert!(headers.get("upgrade").is_none());
+        assert_eq!(body["stream"], true);
+        for field in [
+            "type",
+            "previous_response_id",
+            "stream_id",
+            "generate",
+            "background",
+        ] {
+            assert!(body.get(field).is_none(), "{field}: {body}");
+        }
+        assert_eq!(body["instructions"], "stable instructions");
+        assert_eq!(body["reasoning"], frames[0]["reasoning"]);
+        assert_eq!(body["prompt_cache_key"], frames[0]["prompt_cache_key"]);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["tools"], frames[0]["tools"]);
+        assert!(!body["tools"].as_array().unwrap().is_empty());
+        assert_eq!(body["text"], json!({"verbosity":"low"}));
+        assert_eq!(body["prompt_cache_options"], json!({"mode":"fixture"}));
+        let input = body["input"].as_array().unwrap();
+        assert!(input.contains(&tool));
+        assert!(input
+            .iter()
+            .any(|item| item["encrypted_content"] == "sealed-wss-fixture"));
+        assert!(input
+            .iter()
+            .any(|item| item["output"] == "fixture tool result"));
+        assert_eq!(input[0], frames[0]["input"][0]);
+    }
+    h.push(assistant(&chunks));
+    h.push(ChatMessage::user("independent next turn"));
+    let (next, chunks, events) = sample(&provider, &h, &params).await;
+    next.unwrap();
+    assert_eq!(assistant(&chunks).content.as_deref(), Some("next"));
+    assert!(events.is_empty());
+    assert_eq!(server.headers.lock().unwrap().len(), 2);
+    assert_eq!(server.http.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn sampler_started_close_preserves_partial_without_reason_based_replay() {
+    for partial in [false, true] {
+        for reason in ["", "connection reset"] {
+            let server = Server::with_http(
+                vec![vec![Step::StartedClose(reason, partial)]],
+                vec![(200, sse_response("unexpected", "duplicated"))],
+            )
+            .await;
+            let (result, chunks, events) =
+                sample(&server.provider(), &history(), &ModelParams::EMPTY).await;
+            assert!(result.unwrap_err().contains("fatal:"));
+            assert!(events.is_empty(), "{events:?}");
+            assert_eq!(server.frames().len(), 1);
+            assert!(server.http.lock().unwrap().is_empty());
+            assert_eq!(
+                assistant(&chunks).content.as_deref(),
+                Some(if partial { "partial" } else { "" })
+            );
+            assert!(!chunks.iter().any(|chunk| matches!(
+                chunk,
+                StreamChunk::Done { .. } | StreamChunk::ProviderState(_)
+            )));
+        }
+    }
+}
+
+#[tokio::test]
+async fn sampler_failed_sse_recovery_does_not_restart_ws_or_http() {
+    for (status, body, partial) in [
+        (503, "connection reset upstream error".to_string(), false),
+        (200, format!("data: {}\n\n", delta("partial")), true),
+        (200, "data: invalid\n\n".to_string(), false),
+    ] {
+        let server = Server::with_http(
+            vec![vec![Step::CloseWith(1000, "connection reset")]],
+            vec![(status, body)],
+        )
+        .await;
+        let (result, chunks, events) =
+            sample(&server.provider(), &history(), &ModelParams::EMPTY).await;
+        assert!(result.is_err());
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(server.frames().len(), 1);
+        assert_eq!(server.http.lock().unwrap().len(), 1);
+        assert_eq!(
+            assistant(&chunks).content.as_deref(),
+            Some(if partial { "partial" } else { "" })
+        );
+    }
+}
+
+#[tokio::test]
+async fn sampler_pre_event_transport_classification_is_independent_of_close_reason() {
+    for reason in ["", "connection reset"] {
+        let server = Server::with_http(
+            vec![vec![Step::CloseWith(1000, reason)]],
+            vec![(200, sse_response("resp_sse", "recovered"))],
+        )
+        .await;
+        let mut config = server.config();
+        if reason.is_empty() {
+            config.base_url = config.base_url.replacen("http://", "ws://", 1);
+        }
+        let provider = ProviderFactory::build(&config).unwrap();
+        let (result, chunks, events) = sample(&provider, &history(), &ModelParams::EMPTY).await;
+        result.unwrap();
+        assert_eq!(assistant(&chunks).content.as_deref(), Some("recovered"));
+        assert!(events.is_empty());
+        assert_eq!(server.frames().len(), 1);
+        assert_eq!(server.http.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn sampler_service_and_protocol_failures_never_fall_back_or_replay() {
+    for step in [
+        Step::ServiceError,
+        Step::Malformed,
+        Step::CloseWith(1008, "connection reset"),
+    ] {
+        let server = Server::with_http(
+            vec![vec![step]],
+            vec![(200, sse_response("unexpected", "duplicated"))],
+        )
+        .await;
+        let (result, chunks, events) =
+            sample(&server.provider(), &history(), &ModelParams::EMPTY).await;
+        assert!(result.unwrap_err().contains("fatal:"));
+        assert!(events.is_empty());
+        assert_eq!(server.frames().len(), 1);
+        assert!(server.http.lock().unwrap().is_empty());
+        assert!(assistant(&chunks).content.as_deref().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn cancelling_sse_recovery_releases_socket_and_allows_next_ws_request() {
+    let ready = Arc::new(tokio::sync::Notify::new());
+    let closed = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(
+        vec![
+            vec![Step::CloseWith(1000, "")],
+            vec![Step::Complete(response("resp_next", output("next")))],
+        ],
+        Vec::new(),
+        Some((ready.clone(), closed.clone())),
+    )
+    .await;
+    let provider = server.provider();
+    let pending_provider = provider.clone();
+    let pending =
+        tokio::spawn(
+            async move { sample(&pending_provider, &history(), &ModelParams::EMPTY).await },
+        );
+    tokio::time::timeout(Duration::from_secs(3), ready.notified())
+        .await
+        .unwrap();
+    // The WS Reader's mutex must be available while the SSE open is pending.
+    let (result, chunks, events) = sample(&provider, &history(), &ModelParams::EMPTY).await;
+    result.unwrap();
+    assert_eq!(assistant(&chunks).content.as_deref(), Some("next"));
+    assert!(events.is_empty());
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(Duration::from_secs(3), closed.notified())
+        .await
+        .unwrap();
+    assert_eq!(server.frames().len(), 2);
+    assert_eq!(server.http.lock().unwrap().len(), 1);
+}
+
 fn delta(text: &str) -> Value {
     json!({"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_fixture", "output_index":0,"content_index":0,"delta":text})
 }
@@ -291,11 +659,20 @@ async fn run(
     params: &ModelParams,
 ) -> anyhow::Result<Vec<StreamChunk>> {
     tokio::time::timeout(Duration::from_secs(5), async {
-        provider
+        let mut stream = provider
             .chat_stream("fixture-gpt", history, None, 0.0, Some("medium"), params)
-            .await?
-            .try_collect()
-            .await
+            .await?;
+        let mut chunks = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(chunk) => chunks.push(chunk),
+                Err(error) => {
+                    chunks.push(StreamChunk::Error(error.to_string()));
+                    break;
+                }
+            }
+        }
+        Ok(chunks)
     })
     .await
     .expect("protocol test timed out")
@@ -935,29 +1312,31 @@ async fn unsupported_handshake_falls_back_to_sse_stickily() {
 
 #[tokio::test]
 async fn handshake_auth_failure_is_not_silently_retried_as_sse() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let cfg = ProviderConfig {
-        kind: ProviderKind::OpenaiCodexResponses,
-        base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
-        api_key: "invalid-fixture".into(),
-        ..Default::default()
-    };
-    let task = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut bytes = [0u8; 4096];
-        let read = socket.read(&mut bytes).await.unwrap();
-        assert!(read > 0);
-        socket
-            .write_all(
-                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            )
+    for status in [401, 403] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cfg = ProviderConfig {
+            kind: ProviderKind::OpenaiCodexResponses,
+            base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
+            api_key: "invalid-fixture".into(),
+            ..Default::default()
+        };
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0u8; 4096];
+            let read = socket.read(&mut bytes).await.unwrap();
+            assert!(read > 0);
+            socket
+            .write_all(format!("HTTP/1.1 {status} Rejected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
             .await
             .unwrap();
-    });
-    let p = ProviderFactory::build(&cfg).unwrap();
-    let chunks = run(&p, &history(), &ModelParams::EMPTY).await.unwrap();
-    assert!(failure(&chunks).contains("401"));
-    task.await.unwrap();
+        });
+        let p = ProviderFactory::build(&cfg).unwrap();
+        let (result, chunks, events) = sample(&p, &history(), &ModelParams::EMPTY).await;
+        assert!(result.unwrap_err().contains(&status.to_string()));
+        assert!(events.is_empty());
+        assert!(chunks.is_empty());
+        task.await.unwrap();
+    }
 }
 
 #[tokio::test]

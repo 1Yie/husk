@@ -21,6 +21,42 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 
+#[derive(Debug, thiserror::Error)]
+#[error("{source}")]
+struct TransportFailure {
+    #[source]
+    source: http_client::Error,
+    before_event: bool,
+}
+
+pub(crate) fn can_fallback(error: &http_client::Error) -> bool {
+    matches!(error, http_client::Error::Instance(error)
+        if error.downcast_ref::<TransportFailure>().is_some_and(|failure| failure.before_event))
+}
+
+fn transport(source: http_client::Error, before_event: bool) -> http_client::Error {
+    instance(TransportFailure {
+        source,
+        before_event,
+    })
+}
+
+fn socket_error(
+    cause: tokio_tungstenite::tungstenite::Error,
+    before_event: bool,
+) -> http_client::Error {
+    use tokio_tungstenite::tungstenite::{error::ProtocolError, Error};
+    match cause {
+        Error::Io(_)
+        | Error::ConnectionClosed
+        | Error::AlreadyClosed
+        | Error::Protocol(ProtocolError::ResetWithoutClosingHandshake) => {
+            transport(instance(cause), before_event)
+        }
+        _ => instance(cause),
+    }
+}
+
 type Socket = WebSocketStream<reqwest::Upgraded>;
 const MAX_CONNECTION_AGE: Duration = Duration::from_secs(55 * 60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -165,6 +201,7 @@ struct Continuation {
 }
 
 struct Reader {
+    exchange: Arc<crate::responses_state::Exchange>,
     guard: OwnedMutexGuard<Slot>,
     connection: Option<Connection>,
     client: reqwest::Client,
@@ -186,9 +223,19 @@ struct Diagnostics {
 }
 
 impl Reader {
+    fn socket_failed(&self, cause: tokio_tungstenite::tungstenite::Error) -> http_client::Error {
+        let failure = socket_error(cause, !self.received);
+        if matches!(&failure, http_client::Error::Instance(error) if error.is::<TransportFailure>())
+        {
+            self.interrupted(&format!("transport failed: {failure}"), true)
+        } else {
+            failure
+        }
+    }
+
     /// Report protocol state, never request content or credentials. A close
     /// frame's reason is untrusted and may echo an authentication header.
-    fn interrupted(&self, detail: &str) -> http_client::Error {
+    fn interrupted(&self, detail: &str, recoverable: bool) -> http_client::Error {
         let stage = if self.diagnostics.events == 0 {
             "awaiting_first_event"
         } else if self.diagnostics.saw_output {
@@ -204,7 +251,12 @@ impl Reader {
             self.full.get("temperature").is_some(),
             self.full.get("max_output_tokens").is_some(),
         );
-        error(redact_diagnostic(&message, &self.handshake.headers))
+        let cause = error(redact_diagnostic(&message, &self.handshake.headers));
+        if recoverable {
+            transport(cause, !self.received)
+        } else {
+            cause
+        }
     }
 }
 
@@ -264,13 +316,13 @@ impl CodexTransport {
         })
     }
 
-    /// `None` means a handshake explicitly rejected websocket support. The
-    /// caller may send the original repaired HTTP/SSE request. No inference
-    /// request has been submitted at that point. Authentication, rate-limit,
-    /// transport, and post-submit failures must not silently take this path.
+    /// `None` means a handshake explicitly rejected websocket support.
+    /// Transport failures carry the event phase for the caller's bounded
+    /// HTTP/SSE recovery; protocol and service failures keep their category.
     pub(crate) async fn send(
         &self,
         request: &Request<Bytes>,
+        exchange: Arc<crate::responses_state::Exchange>,
     ) -> http_client::Result<Option<http_client::StreamingResponse>> {
         let mut full: Value = serde_json::from_slice(request.body()).map_err(instance)?;
         let body = full
@@ -318,18 +370,22 @@ impl CodexTransport {
                     return Ok(None);
                 }
                 Ok(Err(e)) => return Err(e),
-                Err(_) => return Err(error("Codex WebSocket handshake timed out")),
+                Err(_) => {
+                    return Err(transport(
+                        error("Codex WebSocket handshake timed out"),
+                        true,
+                    ))
+                }
             },
         };
         let frame = continuation_frame(&full, connection.previous.as_ref());
-        // A send error can mean that bytes were already accepted. Do not
-        // blindly replay on another socket or switch to SSE.
         connection
             .socket
             .send(Message::text(frame.to_string()))
             .await
-            .map_err(instance)?;
+            .map_err(|cause| socket_error(cause, true))?;
         let state = Reader {
+            exchange,
             guard,
             connection: Some(connection),
             client: self.client.clone(),
@@ -358,10 +414,8 @@ impl CodexTransport {
                     .await;
                 let message = match next {
                     Some(Ok(message)) => message,
-                    Some(Err(cause)) => {
-                        return Err(state.interrupted(&format!("transport failed: {cause}")))
-                    }
-                    None => return Err(state.interrupted("ended without a close frame")),
+                    Some(Err(cause)) => return Err(state.socket_failed(cause)),
+                    None => return Err(state.interrupted("ended without a close frame", true)),
                 };
                 let bytes = match message {
                     Message::Text(text) => text.as_bytes().to_vec(),
@@ -374,13 +428,19 @@ impl CodexTransport {
                             .socket
                             .send(Message::Pong(payload))
                             .await
-                            .map_err(instance)?;
+                            .map_err(|cause| socket_error(cause, !state.received))?;
                         return Ok(Some((Bytes::from_static(b": websocket ping\n\n"), state)));
                     }
                     Message::Pong(_) => {
                         return Ok(Some((Bytes::from_static(b": websocket pong\n\n"), state)));
                     }
                     Message::Close(frame) => {
+                        let recoverable = frame.as_ref().is_none_or(|frame| {
+                            matches!(
+                                u16::from(frame.code),
+                                1000 | 1001 | 1005 | 1006 | 1011 | 1012 | 1013 | 1014
+                            )
+                        });
                         let detail = match frame {
                             Some(frame) => format!(
                                 "closed (code={}, reason={:?})",
@@ -389,7 +449,7 @@ impl CodexTransport {
                             ),
                             None => "closed (code=none, reason=none)".into(),
                         };
-                        return Err(state.interrupted(&detail));
+                        return Err(state.interrupted(&detail, recoverable));
                     }
                     Message::Frame(_) => continue,
                 };
@@ -438,14 +498,16 @@ impl CodexTransport {
                             connect(&state.client, &state.handshake),
                         )
                         .await
-                        .map_err(|_| error("Codex WebSocket recovery handshake timed out"))??;
+                        .map_err(|_| {
+                            transport(error("Codex WebSocket recovery handshake timed out"), true)
+                        })??;
                         let mut new = new.ok_or_else(|| {
                             error("Codex WebSocket support disappeared during recovery")
                         })?;
                         new.socket
                             .send(Message::text(state.full.to_string()))
                             .await
-                            .map_err(instance)?;
+                            .map_err(|cause| socket_error(cause, true))?;
                         state.connection = Some(new);
                         state.recovered = true;
                         state.diagnostics = Diagnostics::default();
@@ -458,6 +520,7 @@ impl CodexTransport {
                     return Err(error(format!("Codex WebSocket {code}: {message}")));
                 }
                 state.received = true;
+                state.exchange.forbid_replay();
                 let terminal = match kind.as_str() {
                     "response.completed" => true,
                     "response.done" => {
@@ -618,7 +681,13 @@ async fn connect(
         .header("sec-websocket-key", &key)
         .send()
         .await
-        .map_err(instance)?;
+        .map_err(|cause| {
+            if cause.is_connect() || cause.is_timeout() || cause.is_body() {
+                transport(instance(cause), true)
+            } else {
+                instance(cause)
+            }
+        })?;
     let status = response.status();
     if matches!(status.as_u16(), 404 | 405 | 426 | 501) {
         return Ok(None);
@@ -662,7 +731,10 @@ async fn connect(
     {
         return Err(error("Invalid Codex WebSocket upgrade response"));
     }
-    let upgraded = response.upgrade().await.map_err(instance)?;
+    let upgraded = response
+        .upgrade()
+        .await
+        .map_err(|cause| transport(instance(cause), true))?;
     let socket = WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await;
     Ok(Some(Connection {
         socket,

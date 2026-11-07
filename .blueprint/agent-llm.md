@@ -10,7 +10,7 @@ LLM provider 层：把各家协议归一为 StreamChunk。
 
 ## 职责
 
-- `rig_bridge` 是唯一的 provider 实现，按 `ProviderKind`（openai_completions / openai_responses / anthropic / gemini）分发，方言差异由 `ProviderCompat` 处理
+- `rig_bridge` 是唯一的 provider 实现，按 `ProviderKind`（openai_completions / openai_responses / openai_codex_responses / anthropic / gemini）分发，方言差异由 `ProviderCompat` 处理
 - 配置加载、密钥解析（env:/keyring:）、出站脱敏（`EgressMasker`）、重试与续写
 - 客户端标识：出站请求统一带前端在启动时声明的 `User-Agent`（`set_client_user_agent`，版本取发行二进制而非本 crate），单个 provider 可用 `userAgent` 覆盖——按客户端路由或计量的网关要求客户端自报名称，而非挂 SDK 名
 - 提示词缓存：请求侧断点与 `prompt_cache_key`/粘性路由头（`HUSK_CACHE_RETENTION`），路由键由调用方传入的会话身份经 SHA-256 截断派生（`build_with_conversation`），同一会话内重建 provider 不换键；`cache_warm` 按模型 `promptCache` 寿命与价格在过期前重放上一次请求保活（`HUSK_CACHE_WARMING`）
@@ -28,6 +28,7 @@ LLM provider 层：把各家协议归一为 StreamChunk。
 
 - `LlmProvider` trait 与归一化的 `StreamChunk`；kernel 与前端不得见到厂商原始 JSON
 - 流成功以协议完成事件为准；输入结束但缺少完成事件、JSON 解析失败和响应协议错误均向调用方返回失败。协议错误保留部分输出并停止本次请求，不触发传输重试。
+- Codex WS 的普通响应事件（含 `response.created`）构成 started 边界。首事件前的传输失败可在同一请求内用完整历史、原生状态、参数及 HTTP 头进行一次 SSE 恢复；started 后、恢复再次失败、协议或显式服务错误均结束该请求并保留已有输出。取消通过丢弃流释放 socket 与会话锁；每个独立请求按原 transport 政策重新选择。分类与有限恢复由 `codex_transport` 和 `rig_bridge` 管理，request-local 状态经 Responses exchange 跨过 Rig 错误格式化边界，向 Sampler 返回 `NonRetryableProviderError`；其余 provider 保留各自重试策略。
 - Gemini 工具调用签名通过 `ProviderState` 随 assistant 消息持久化；`rig_bridge` 校验来源、模型和对应调用后回放。签名只用于协议回放，不进入可见输出。
 - Gemini 原生请求与原生流读取使用局部空 subscriber，保护 payload 中的签名；Husk 的错误、用量和 Sampler 日志保持原有路径，其他协议的日志保持启用。
 - `StreamChunk::Keepalive` 不带内容、不是输出：采样器吸收它，不会转给回合循环；任何直接消费 provider 流的一方（如检查点）都不得把它当作第一块内容或写进草稿

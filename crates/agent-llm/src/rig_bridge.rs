@@ -478,7 +478,21 @@ impl SsePatchClient {
                 }
             }
         }
-        http_client::Request::from_parts(parts, body)
+        let mut req = http_client::Request::from_parts(parts, body);
+        if self.websocket.is_some() {
+            let uri = req.uri().to_string();
+            let http_uri = uri
+                .strip_prefix("ws://")
+                .map(|rest| format!("http://{rest}"))
+                .or_else(|| {
+                    uri.strip_prefix("wss://")
+                        .map(|rest| format!("https://{rest}"))
+                });
+            if let Some(uri) = http_uri.and_then(|uri| uri.parse().ok()) {
+                *req.uri_mut() = uri;
+            }
+        }
+        req
     }
 }
 
@@ -536,10 +550,26 @@ impl HttpClientExt for SsePatchClient {
             .map(|context| context.exchange.clone());
         async move {
             let response = match websocket {
-                Some(websocket) => match websocket.send(&req).await? {
-                    Some(response) => Ok(response),
-                    None => HttpClientExt::send_streaming(&inner, req).await,
-                },
+                Some(websocket) => {
+                    let exchange = exchange.as_ref().expect("Codex Responses exchange");
+                    match websocket.send(&req, exchange.clone()).await {
+                        Ok(Some(response)) => Ok(codex_fallback_response(
+                            response,
+                            inner.clone(),
+                            req,
+                            exchange.clone(),
+                        )),
+                        Ok(None) => HttpClientExt::send_streaming(&inner, req).await,
+                        Err(error) => {
+                            exchange.forbid_replay();
+                            if crate::codex_transport::can_fallback(&error) {
+                                HttpClientExt::send_streaming(&inner, req).await
+                            } else {
+                                Err(error)
+                            }
+                        }
+                    }
+                }
                 None => HttpClientExt::send_streaming(&inner, req).await,
             };
             response.map(move |resp| {
@@ -553,6 +583,91 @@ impl HttpClientExt for SsePatchClient {
             })
         }
     }
+}
+
+fn codex_fallback_response(
+    response: http_client::StreamingResponse,
+    client: reqwest::Client,
+    request: http_client::Request<bytes::Bytes>,
+    exchange: Arc<ResponsesExchange>,
+) -> http_client::StreamingResponse {
+    struct State {
+        stream: Option<BoxedStream>,
+        request: Option<http_client::Request<bytes::Bytes>>,
+        client: reqwest::Client,
+        exchange: Arc<ResponsesExchange>,
+    }
+    let (parts, stream) = response.into_parts();
+    let state = State {
+        stream: Some(stream),
+        request: Some(request),
+        client,
+        exchange,
+    };
+    let stream = futures::stream::try_unfold(state, |mut state| async move {
+        loop {
+            let next = state
+                .stream
+                .as_mut()
+                .expect("active Codex stream")
+                .next()
+                .await;
+            match next {
+                Some(Ok(bytes)) => return Ok(Some((bytes, state))),
+                None => return Ok(None),
+                Some(Err(error)) => {
+                    state.exchange.forbid_replay();
+                    // Drop the Reader before opening HTTP so its socket and
+                    // conversation mutex are released even if HTTP stalls.
+                    state.stream.take();
+                    let Some(request) = state
+                        .request
+                        .take()
+                        .filter(|_| crate::codex_transport::can_fallback(&error))
+                    else {
+                        return Err(error);
+                    };
+                    let response = HttpClientExt::send_streaming(&state.client, request).await?;
+                    let (parts, mut body) = response.into_parts();
+                    if !parts.status.is_success() {
+                        let mut bytes = Vec::new();
+                        while let Some(chunk) = body.next().await {
+                            let chunk = chunk?;
+                            let remaining = 16_384_usize.saturating_sub(bytes.len());
+                            bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                            if bytes.len() == 16_384 {
+                                break;
+                            }
+                        }
+                        return Err(http_client::Error::InvalidStatusCodeWithMessage(
+                            parts.status,
+                            String::from_utf8_lossy(&bytes).into_owned(),
+                        ));
+                    }
+                    let valid_sse = parts
+                        .headers
+                        .get("content-type")
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| {
+                            value.split(';').next().is_some_and(|mime| {
+                                mime.trim().eq_ignore_ascii_case("text/event-stream")
+                            })
+                        });
+                    if !valid_sse {
+                        return Err(http_client::Error::InvalidContentType(
+                            parts
+                                .headers
+                                .get("content-type")
+                                .cloned()
+                                .unwrap_or_else(|| http_client::HeaderValue::from_static("")),
+                        ));
+                    }
+                    state.stream = Some(body);
+                }
+            }
+        }
+    });
+    http_client::Response::from_parts(parts, Box::pin(stream) as BoxedStream)
 }
 
 fn patch_streaming_response(
@@ -1524,9 +1639,9 @@ impl LlmProvider for RigProvider {
             &pulse,
             responses.as_ref(),
         )?;
-        let rig_stream = open_stream(&rig_model, request)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", map_completion_error(&e)))?;
+        let rig_stream = open_stream(&rig_model, request).await.map_err(|e| {
+            completion_failure(e, responses.as_ref().map(|context| &*context.exchange))
+        })?;
 
         Ok(map_rig_stream(
             rig_stream,
@@ -2734,6 +2849,15 @@ fn map_rig_stream(
             };
             s.beats_seen = s.pulse.count();
             match next {
+                Some(Err(error))
+                    if s.map
+                        .responses_exchange
+                        .as_ref()
+                        .is_some_and(|exchange| exchange.replay_blocked()) =>
+                {
+                    let error = completion_failure(error, s.map.responses_exchange.as_deref());
+                    return Some((Err(error), s));
+                }
                 // SSE surfaces a refused request as the stream's first item.
                 Some(Err(e)) if !s.started && s.fallback.is_some() && is_rejected_request(&e) => {
                     let open = s.fallback.take().expect("checked above");
@@ -2748,16 +2872,41 @@ fn map_rig_stream(
                 }
                 Some(item) => {
                     s.started = true;
+                    let blocked = s
+                        .map
+                        .responses_exchange
+                        .as_ref()
+                        .is_some_and(|exchange| exchange.replay_blocked());
                     for c in s.map.map_one(item) {
-                        s.pending.push_back(Ok(c));
+                        s.pending.push_back(match c {
+                            StreamChunk::Error(message) if blocked => {
+                                Err(agent_llm_core::NonRetryableProviderError::new(
+                                    anyhow::anyhow!(message),
+                                )
+                                .into())
+                            }
+                            chunk => Ok(chunk),
+                        });
                     }
                 }
                 None if !s.drained => {
                     s.drained = true;
                     if !s.map.done {
-                        s.pending.push_back(Ok(StreamChunk::Error(
-                            "provider protocol error: stream ended without completion".into(),
-                        )));
+                        let message = "provider protocol error: stream ended without completion";
+                        let error =
+                            if s.map
+                                .responses_exchange
+                                .as_ref()
+                                .is_some_and(|exchange| exchange.replay_blocked())
+                            {
+                                Err(agent_llm_core::NonRetryableProviderError::new(
+                                    anyhow::anyhow!(message),
+                                )
+                                .into())
+                            } else {
+                                Ok(StreamChunk::Error(message.into()))
+                            };
+                        s.pending.push_back(error);
                         continue;
                     }
                     for c in s.map.drain() {
@@ -2941,9 +3090,21 @@ fn parse_call_line(body: &str) -> Option<crate::types::ToolCall> {
 // Error mapping
 // ================================================================
 
-/// `CompletionError` → the message shape `Sampler::classify_transport_error`
-/// parses: HTTP status and protocol failures retain their classification;
-/// transport error text keeps its timeout/connect keywords.
+/// Keep the source chain and the request's replay disposition across Rig.
+fn completion_failure(
+    error: CompletionError,
+    exchange: Option<&ResponsesExchange>,
+) -> anyhow::Error {
+    let message = map_completion_error(&error);
+    let error = anyhow::Error::new(error).context(message);
+    if exchange.is_some_and(|exchange| exchange.replay_blocked()) {
+        agent_llm_core::NonRetryableProviderError::new(error).into()
+    } else {
+        error
+    }
+}
+
+/// Format status and protocol categories for the sampler's text classifier.
 fn map_completion_error(e: &CompletionError) -> String {
     match e {
         CompletionError::JsonError(_) | CompletionError::ResponseError(_) => {

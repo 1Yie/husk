@@ -3,6 +3,7 @@
 //! from the same endpoint/account/model. No process-local transcript cache.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_llm_core::{ChatMessage, ProviderState, Role};
@@ -120,6 +121,7 @@ pub(crate) struct Exchange {
     model: String,
     effort: Option<String>,
     captured: Mutex<Captured>,
+    replay_blocked: AtomicBool,
 }
 
 impl Exchange {
@@ -129,7 +131,16 @@ impl Exchange {
             model: model.to_string(),
             effort: effort.map(str::to_string),
             captured: Mutex::new(Captured::default()),
+            replay_blocked: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn forbid_replay(&self) {
+        self.replay_blocked.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn replay_blocked(&self) -> bool {
+        self.replay_blocked.load(Ordering::Relaxed)
     }
 
     /// Only completed items are authoritative. In particular, never save the
